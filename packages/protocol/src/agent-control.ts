@@ -22,7 +22,7 @@ import {
   PlaceContentPartSchema,
   RequestIdSchema,
   RequestKindSchema,
-  RequestSchema,
+  RequestViewSchema,
   RequestStatusSchema,
   RunSchema,
   ThreadIdSchema,
@@ -607,13 +607,13 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...responseBase,
-    requests: readableRequestList(RequestSchema, 100),
+    requests: readableRequestList(RequestViewSchema, 100),
     type: z.literal("request.list.result"),
     window: AgentDurableWindowSchema,
   }),
   z.strictObject({
     ...responseBase,
-    request: RequestSchema,
+    request: RequestViewSchema,
     type: z.literal("request.withdraw.result"),
   }),
   z.strictObject({

@@ -5,11 +5,11 @@ import {
   PasswordsBrokerSignInDecisionSchema,
   PasswordsBrokerSignInApproveResultSchema,
   PasswordsBrokerSignInRequestParamsSchema,
-  PasswordsBrokerSignInRequestV5ParamsSchema,
+  PasswordsBrokerSignInRequestV6ParamsSchema,
   PasswordsBrokerSignInReleaseParamsSchema,
-  PasswordsBrokerSignInReleaseV5ParamsSchema,
+  PasswordsBrokerSignInReleaseV6ParamsSchema,
   passwordsBrokerLatestProtocolVersion,
-  type PasswordsBrokerSignInRequestV5Params,
+  type PasswordsBrokerSignInRequestV6Params,
   type PasswordsBrokerLogin,
   type PasswordsBrokerSignInDecision,
   type PasswordsBrokerSignInApproveResult,
@@ -122,7 +122,7 @@ export class FakePasswordsBroker {
     Map<
       string,
       {
-        params: PasswordsBrokerSignInRequestV5Params;
+        params: PasswordsBrokerSignInRequestV6Params;
         login: PasswordsBrokerLogin | null;
         remembered: boolean;
       }
@@ -359,8 +359,8 @@ export class FakePasswordsBroker {
       return;
     }
     if (method === "signin.request") {
-      if (this.#versions.get(socket) === 5) {
-        const input = PasswordsBrokerSignInRequestV5ParamsSchema.parse(params);
+      if ((this.#versions.get(socket) ?? 0) >= 5) {
+        const input = PasswordsBrokerSignInRequestV6ParamsSchema.parse(params);
         if (input.permissionVersion !== 5) throw new Error("Protocol 5 requires current consent");
         let transactions = this.#v5.get(socket);
         if (!transactions) {
@@ -404,7 +404,8 @@ export class FakePasswordsBroker {
     switch (method) {
       case "hello": {
         const requested = params.protocolVersion;
-        if (requested !== 4 && requested !== 5) throw new Error("Unsupported protocol");
+        if (requested !== 4 && requested !== 5 && requested !== 6)
+          throw new Error("Unsupported protocol");
         const negotiated =
           this.#options.protocolVersion ??
           Math.min(requested, passwordsBrokerLatestProtocolVersion);
@@ -435,6 +436,9 @@ export class FakePasswordsBroker {
           },
         });
         return;
+      case "signin.commit":
+        this.#write(socket, connection, { id, result: { committed: true } });
+        return;
       case "signin.request":
       case "signin.approve":
         this.#held.push({ connection, id, method, params, socket });
@@ -443,8 +447,8 @@ export class FakePasswordsBroker {
         const held = this.#nextRelease;
         this.#nextRelease = null;
         await held;
-        if (this.#versions.get(socket) === 5) {
-          const input = PasswordsBrokerSignInReleaseV5ParamsSchema.parse(params);
+        if ((this.#versions.get(socket) ?? 0) >= 5) {
+          const input = PasswordsBrokerSignInReleaseV6ParamsSchema.parse(params);
           const transaction = this.#v5.get(socket)?.get(input.transactionId);
           const login = transaction?.login;
           const item = login && this.#logins.get(login.id);

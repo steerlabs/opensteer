@@ -1,3 +1,4 @@
+import { afterResponse } from "../server/after-response.js";
 import { OpensteerError } from "@opensteer/core";
 import type { TokenFreeAuthResponse } from "@opensteer/identity";
 import {
@@ -47,7 +48,10 @@ export function createIdentityRpcHandlers(
       rpcSuccess(hostApi["auth.config"].success.parse(await identity.configuration())),
     "auth.invitation.accept": async (_input, context) => {
       requireWorkspaceSharing(options.workspaceSharingAvailable);
-      const result = await identity.acceptInvitation(contextHeaders(context));
+      const result = await identity.acceptInvitation(
+        contextHeaders(context),
+        requireRpcSession(context),
+      );
       applyResponseHeaders(context, result.headers);
       return rpcSuccess(
         hostApi["auth.invitation.accept"].success.parse({
@@ -130,7 +134,11 @@ export function createIdentityRpcHandlers(
       return rpcSuccess({});
     },
     "auth.signOut": async (_input, context) => {
-      await authSuccess(context, await identity.signOut(contextHeaders(context)));
+      await identity.revokeSession(
+        requireRpcSession(context),
+        requireRpcSession(context).id,
+        context.afterResponse,
+      );
       return rpcSuccess({});
     },
     "sessions.list": async (_input, context) =>
@@ -157,7 +165,6 @@ export function registerIdentityRoutes(
   }));
 
   app.post("/v1/auth/account-adoption/proofs", async (request, reply) => {
-    authenticator.requireExactOrigin(request.headers);
     const session = await authenticator.authenticateSession(request.headers, { mutation: true });
     requireInstanceAdministrator(session);
     const body = IssueHostAccountAdoptionProofRequestSchema.parse(request.body);
@@ -206,7 +213,6 @@ export function registerIdentityRoutes(
       );
     }
     app.post("/v1/auth/account-adoption/complete", async (request, reply) => {
-      authenticator.requireExactOrigin(request.headers);
       const session = await authenticator.authenticateSession(request.headers, { mutation: true });
       requireInstanceAdministrator(session);
       const body = CompleteHostAccountAdoptionRequestSchema.parse(request.body);
@@ -380,6 +386,7 @@ async function handleNativeOAuth(
       headers,
       method,
     }),
+    (effect) => afterResponse(reply, effect),
   );
   return sendWebResponse(reply, response);
 }

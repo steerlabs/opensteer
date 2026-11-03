@@ -45,7 +45,7 @@ agent reasons; only the first password release records use, never website succes
 
 Production protected state uses the broker's data-protection keychain group.
 Secure Enclave keys and protected values are AfterFirstUnlockThisDeviceOnly.
-Owner keys use privateKeyUsage without presence; the broker enforces user
+Owner keys use privateKeyUsage without presence; the broker enforces vault-management
 presence separately so remembered sign-ins can work while locked. Key operations
 must use interactionNotAllowed to refuse unexpected prompts. Before first unlock,
 report unavailable, never damage/reset. An old owner-key policy requires reset,
@@ -126,7 +126,7 @@ Source: `Sources/PasswordsCore/Import/`, `Sources/PasswordsBrokerKit/UI/`,
 
 ## The broker
 
-Protocol 4 and 5 are negotiated per connection and echoed, never silently upgraded.
+Protocol 4, 5 and 6 are negotiated per connection and echoed, never silently upgraded.
 Requests/releases must match that connection's selected version. Version 4 is
 session-bound and origin-only. Version 5 is Workspace-scoped with pinned version-5
 consent even for Only this time; app release requires explicit app kind. A missing
@@ -145,9 +145,14 @@ username changes/deletion remove grants. Remove must target the exact displayed
 grant so it cannot remove a newer approval. Screen lock ends the window visit,
 not an already authorized transaction. Sealing is desktop main's responsibility.
 
-Setup, Start Fresh, each Allow/Only this time, opening saved logins and each
+Setup, Start Fresh, opening saved logins and each
 websites/login-page/username change require fresh deviceOwnerAuthentication
 (Touch ID or Mac password); never reuse a previous unlock for these decisions.
+Sign-in consent no longer prompts on the vault Mac. Protocol 6 prepares the
+pinned account without release authority or a remembered grant; `signin.commit`
+follows the Host's successful durable settlement and rechecks revision, expiry,
+cancellation and the off switch before writing a grant. Cancelling an uncommitted
+preparation writes or removes no grant. Older protocols cannot approve new use.
 Remembered use, probe, grant removal and code generation do not prompt. Broker
 prompts use its own reason and cleaned display names, never agent-authored consent;
 the person sees whole usernames while agents receive masked accounts.

@@ -642,6 +642,7 @@ export async function createHostRuntime(
           keys,
         })
       : undefined;
+    await personalRemoteAccess?.purgeExpiredAccountLinkKeys();
     const tokens = new SignedTokenService(keys, {
       deploymentId: deployment.id,
       hostInstanceId: deployment.activeHostInstanceId,
@@ -675,17 +676,7 @@ export async function createHostRuntime(
         computerUse?.forgetRunner(runnerId);
       },
       onDisplayEvent: (runnerId, event) => displayStreams?.handlePhoneEvent(runnerId, event),
-      // Approvals travel on the Mac's own stream in both directions, so a Mac
-      // that (re)attaches or asks is sent every approval waiting on it, and
-      // the person's answer comes back the same way.
-      onRunnerAttached: (runnerId) => {
-        integrationPlatform.computerAppApprovals.pushComputerAppApprovals(runnerId);
-        integrationPlatform.computerRunnerAttached(runnerId);
-      },
-      onComputerAppApprovalsSync: (runnerId) =>
-        integrationPlatform.computerAppApprovals.pushComputerAppApprovals(runnerId),
-      onComputerAppApprovalAnswer: (runnerId, answer) =>
-        void integrationPlatform.computerAppApprovals.answerComputerAppApproval(runnerId, answer),
+      onRunnerAttached: (runnerId) => integrationPlatform.computerRunnerAttached(runnerId),
     });
     computerUse = new ComputerUseService({
       onSessionEnded: (sessionId) => displayStreams?.endSession(sessionId),
@@ -917,7 +908,7 @@ export async function createHostRuntime(
     const browserSources = new BrowserSourceService({
       browser,
       canonicalOrigin: config.canonicalOrigin.origin,
-      currentRoute: async () => (await personalRemoteAccess?.status("remote"))?.route ?? null,
+      currentRoute: async () => (await personalRemoteAccess?.status())?.route ?? null,
       sign: (bytes) => sign(null, bytes, keys.privateKey).toString("base64url"),
       store: new BrowserSourceStore(database),
       requests: store.requests,
@@ -973,6 +964,7 @@ export async function createHostRuntime(
     const hostedOAuthBrokerIssuer = config.personalAccountIssuer ?? config.account?.issuer;
     const hostedOAuthBroker = hostedOAuthBrokerIssuer
       ? {
+          kind: config.workspace.shape.kind,
           accountSubject: integrationAccountSubject,
           broker: new HostedOAuthBrokerClient({
             ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
@@ -1049,6 +1041,8 @@ export async function createHostRuntime(
       vault: integrationVault,
     });
     const mcpOauth = new McpOAuthService({
+      ...(hostedOAuthBroker ? { hostedOAuth: hostedOAuthBroker } : {}),
+      deploymentPosture: integrationDeploymentPosture,
       attempts: integrationAuthAttempts,
       exposure: config.exposure,
       onConnectionConnected: (input) => integrationConnectionConnected(input),
@@ -2686,6 +2680,7 @@ export async function createHostRuntime(
               ]
             : []),
           workspaceDeletion.purgeDue(new Date()),
+          ...(personalRemoteAccess ? [personalRemoteAccess.purgeExpiredAccountLinkKeys()] : []),
           ...(workspaceArchive ? [workspaceArchive.sweep()] : []),
           // What a work location can run is durable state like any other, so it
           // is reconciled rather than captured once and hoped for.

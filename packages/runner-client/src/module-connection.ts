@@ -42,7 +42,7 @@ export interface RunnerModuleStream {
   readonly browserWireVersion?: 1;
   readonly passkeys?: 1;
   readonly loginText?: 1;
-  readonly passwordSignIn?: 1;
+  readonly passwordSignIn?: 2;
   readonly fence: RunnerAuxiliaryFrameFence;
   /** Present on a browser stream so the relay can verify attach tickets. */
   readonly browserAttachPublicKeys:

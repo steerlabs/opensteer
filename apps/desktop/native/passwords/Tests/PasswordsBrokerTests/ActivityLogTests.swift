@@ -80,7 +80,7 @@ final class ActivityPrivacyTests: BrokerTestCase {
       "signin.request", Fixtures.request(id, extra: ["reason": .string(reason)])
     ).result
     let account = try XCTUnwrap(decision?["accounts"]?[0])
-    _ = try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: true))
+    _ = try await desktop.allow(Fixtures.approve(id, account, remember: true))
     _ = try await desktop.call("signin.cancel", Fixtures.transaction(id))
     let automatic = UUID().uuidString.lowercased()
     _ = try await desktop.call(
@@ -171,8 +171,9 @@ final class CopyParityTests: XCTestCase {
     }
     XCTAssertTrue(Copy.setUpLead.contains("never sends your password to the agent"))
     XCTAssertTrue(Copy.setUpLead.contains("website or app, which can read it"))
-    XCTAssertTrue(
-      Copy.setUpLead.contains("You allow an account with Touch ID or your Mac password"))
+    XCTAssertEqual(
+      Copy.setUpLead.components(separatedBy: ". ").last,
+      "You allow an account from any device signed in to this Opensteer.")
     XCTAssertEqual(
       Copy.startFreshConfirm,
       "This permanently deletes the passwords saved on this Mac. Ones you added or changed here can’t be recovered unless you also keep them somewhere else."
@@ -217,12 +218,13 @@ final class CopyParityTests: XCTestCase {
     // Titles end without a period unless they ask.
     for title in [Copy.setUpDone, Copy.locked] { XCTAssertFalse(title.hasSuffix("."), title) }
     XCTAssertEqual(Copy.setUpDone, "You’re all set")
-    XCTAssertEqual(Copy.setUpFacts.last, "In the browser, each password goes only to its own website. In apps, the agent checks it’s the real app.")
+    XCTAssertEqual(
+      Copy.setUpFacts.last,
+      "In the browser, each password goes only to its own website. In apps, the agent checks it’s the real app."
+    )
     // The system prompt reads "“Opensteer Passwords” is trying to <reason>."
     for reason in [
       Copy.setUpReason, Copy.startFreshReason, Copy.showReason,
-      Copy.allowReason(workspace: "Main", site: "a.com", username: "u"),
-      Copy.onceReason(site: "a.com", username: "u"),
       Copy.repointReason(site: "a.com"),
     ] {
       XCTAssertFalse(reason.hasSuffix("."), reason)

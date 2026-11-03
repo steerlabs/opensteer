@@ -94,34 +94,6 @@ const observation = {
 
 const bridgeToken = "t".repeat(32);
 const threadTitle = "Plan the offsite";
-const setupRequestId = "7c1a2b4c-5d6e-4f80-9a1b-2c3d4e5f6071";
-const keyChallenge = {
-  challengeId: "0198ab42-5d6e-4f80-9a1b-2c3d4e5f6071",
-  expiresAt: "2099-09-21T12:00:30.000Z",
-  keyId: `sha256:${"A".repeat(43)}`,
-  nonce: "B".repeat(43),
-  runnerId: fence.runnerId,
-};
-const setupRequest = {
-  access: "read",
-  app: notes,
-  createdAt: "2026-09-21T12:00:00.000Z",
-  definitionDigest: "digest",
-  definitionId: "macos-app",
-  deploymentId: createId("deployment"),
-  expiresAt: "2026-09-28T12:00:00.000Z",
-  id: setupRequestId,
-  kind: "app",
-  ownerUserId: createId("user"),
-  policyAppApproval: null,
-  reason: "Read the note.",
-  runnerId: fence.runnerId,
-  server: null,
-  threadId: createId("thread"),
-  threadTitle,
-  workspaceId: createId("workspace"),
-  workspaceName: "Home",
-} as const;
 
 const teardown: Array<() => Promise<void> | void> = [];
 
@@ -604,7 +576,7 @@ describe("computer use over the desktop bridge", () => {
     let release: (() => void) | undefined;
     fixture.bridge.answer("passwords.capabilities", (request, socket) => {
       release = () =>
-        socket.send(JSON.stringify({ kind: "response", id: request.id, result: { authority: 1 } }));
+        socket.send(JSON.stringify({ kind: "response", id: request.id, result: { authority: 2 } }));
       return "hold";
     });
     await vi.waitFor(() => expect(release, "The inspection never reached Passwords").toBeDefined());
@@ -616,7 +588,7 @@ describe("computer use over the desktop bridge", () => {
     await vi.waitFor(() => expect(hinted).toBe(true));
     expect(computerUse.ownerViewVersion()).toBe(3);
     expect(computerUse.videoProfile()).toBe(1);
-    fixture.bridge.answer("passwords.capabilities", () => ({ result: { authority: 1 } }));
+    fixture.bridge.answer("passwords.capabilities", () => ({ result: { authority: 2 } }));
     release!();
     await vi.waitFor(() =>
       expect(
@@ -752,7 +724,7 @@ describe("computer use over the desktop bridge", () => {
       })
       .parse(fixture.vectors[0]);
     const { receiver, envelope } = vector;
-    f.bridge.answer("passwords.capabilities", () => ({ result: { authority: 1, receiver } }));
+    f.bridge.answer("passwords.capabilities", () => ({ result: { authority: 2, receiver } }));
     const events = f.openStream();
     const canary = vector.plaintext;
     const requestId = envelope.binding.actId;
@@ -804,12 +776,12 @@ describe("computer use over the desktop bridge", () => {
     expect(methodsOf(legacy.bridge)).not.toContain("passwords.capabilities");
     const modern = await setup({ passwords: true });
     modern.bridge.answer("passwords.capabilities", () => ({
-      result: { authority: 1, receiver: null },
+      result: { authority: 2, receiver: null },
     }));
     const current = modern.openStream();
     await eventually(() =>
       expect(
-        statuses(current).some((status) => status.passwordSignIn === 1 && !("loginText" in status)),
+        statuses(current).some((status) => status.passwordSignIn === 2 && !("loginText" in status)),
       ).toBe(true),
     );
   });
@@ -817,10 +789,10 @@ describe("computer use over the desktop bridge", () => {
   it("refuses a whole saved-text batch when an old helper has no receiver key", async () => {
     const bridge = await startFakeBridge();
     teardown.push(() => bridge.close());
-    bridge.answer("passwords.capabilities", () => ({ result: { authority: 1, receiver: null } }));
+    bridge.answer("passwords.capabilities", () => ({ result: { authority: 2, receiver: null } }));
     const handler = new ComputerUseHandler({ bridge: { token: bridgeToken, url: bridge.url } });
     teardown.push(() => handler.close());
-    expect(await handler.passwordsCapabilities()).toEqual({ authority: 1, receiver: null });
+    expect(await handler.passwordsCapabilities()).toEqual({ authority: 2, receiver: null });
     const saved = {
       sealed: {
         binding: {
@@ -958,138 +930,6 @@ describe("computer use over the desktop bridge", () => {
       kind: "error",
       message: "This installed_apps request could not be read (limit).",
     });
-  });
-
-  it("relays the Host's approval list and outcomes to desktop main, and the person's answers back", async () => {
-    const fixture = await setup();
-    const list = {
-      approvalKeyId: null,
-      approvals: [{ request: setupRequest }],
-    };
-    await fixture.handle({ ...list, type: "host.integrations.computer-app-approvals" });
-    const outcome = { outcome: { kind: "allowed" }, setupRequestId };
-    await fixture.handle({ ...outcome, type: "host.integrations.computer-app-approval-outcome" });
-    await eventually(() =>
-      expect(methodsOf(fixture.bridge)).toEqual(["approvals.list", "approvals.outcome"]),
-    );
-    // Neither is a helper call, and neither carries anything the Runner added.
-    expect(paramsOf(fixture.bridge, "approvals.list")).toEqual(list);
-    expect(paramsOf(fixture.bridge, "approvals.outcome")).toEqual(outcome);
-    expect(results(fixture.events)).toEqual([]);
-
-    const approval = {
-      expiresAt: "2026-09-21T12:00:30.000Z",
-      requestId: setupRequestId,
-      signature: "A".repeat(86),
-    };
-    fixture.bridge.emit({
-      event: "approval.answer",
-      kind: "event",
-      params: { answer: { approval, kind: "allow" }, setupRequestId },
-    });
-    await eventually(() =>
-      expect(
-        fixture.events.filter(({ type }) => type.startsWith("runner.integrations.computer-app")),
-      ).toEqual([
-        // Relaying the list is what connected the bridge, and a desktop this
-        // Runner just connected to may have missed a list: it asks again.
-        { ...fence, type: "runner.integrations.computer-app-approvals-sync" },
-        {
-          ...fence,
-          answer: { approval, kind: "allow" },
-          setupRequestId,
-          type: "runner.integrations.computer-app-approval-answer",
-        },
-      ]),
-    );
-    // Every connection asks once more, so a desktop that restarted is sent it.
-    fixture.bridge.dropSockets();
-    await eventually(() => expect(fixture.bridge.sockets).toHaveLength(0));
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await fixture.handle({
-      approvalKeyId: null,
-      approvals: [],
-      type: "host.integrations.computer-app-approvals",
-    });
-    await eventually(() =>
-      expect(
-        fixture.events.filter(
-          ({ type }) => type === "runner.integrations.computer-app-approvals-sync",
-        ),
-      ).toHaveLength(2),
-    );
-    // An approval answer is never a helper session event.
-    expect(computerUseEvents(fixture.events)).toEqual([]);
-  });
-
-  it("drops an approval list quietly when no desktop app is there to show it", async () => {
-    const fixture = await setup({ bridge: false });
-    await fixture.handle({
-      approvalKeyId: null,
-      approvals: [],
-      type: "host.integrations.computer-app-approvals",
-    });
-    await flush();
-    expect(fixture.bridge.requests).toEqual([]);
-    expect(fixture.events.filter(({ type }) => type !== "runner.integrations.status")).toEqual([]);
-  });
-
-  it("proves an approval key only with the desktop's answer on the requesting Host stream", async () => {
-    const fixture = await setup();
-    const proof = { challengeId: keyChallenge.challengeId, signature: "C".repeat(86) };
-    fixture.bridge.answer("approvals.key-challenge", () => ({ result: proof }));
-    await fixture.handle({
-      ...keyChallenge,
-      type: "host.integrations.computer-app-approval-key-challenge",
-    });
-    await eventually(() =>
-      expect(fixture.events).toContainEqual({
-        ...fence,
-        ...proof,
-        type: "runner.integrations.computer-app-approval-key-proof",
-      }),
-    );
-    expect(paramsOf(fixture.bridge, "approvals.key-challenge")).toEqual(keyChallenge);
-    expect(fixture.bridge.requests.at(-1)?.timeoutMs).toBeLessThanOrEqual(10_000);
-    expect(methodsOf(fixture.bridge)).toEqual(["approvals.key-challenge"]);
-  });
-
-  it.each([
-    { challengeId: setupRequestId, signature: "C".repeat(86) },
-    { challengeId: keyChallenge.challengeId, signature: "not a signature" },
-  ])("never forwards an invalid or mismatched key proof: %j", async (proof) => {
-    const fixture = await setup();
-    fixture.bridge.answer("approvals.key-challenge", () => ({ result: proof }));
-    await fixture.handle({
-      ...keyChallenge,
-      type: "host.integrations.computer-app-approval-key-challenge",
-    });
-    // The next request shares the socket and is answered after the invalid proof.
-    await fixture.handle(observeFrame("after-proof"));
-    await fixture.settled(1);
-    expect(
-      fixture.events.some(
-        ({ type }) => type === "runner.integrations.computer-app-approval-key-proof",
-      ),
-    ).toBe(false);
-  });
-
-  it("does not carry a pending key proof across Host stream replacement", async () => {
-    const fixture = await setup();
-    fixture.bridge.answer("approvals.key-challenge", () => "hold");
-    await fixture.handle({
-      ...keyChallenge,
-      type: "host.integrations.computer-app-approval-key-challenge",
-    });
-    await eventually(() => expect(methodsOf(fixture.bridge)).toContain("approvals.key-challenge"));
-    const replacement = fixture.openStream();
-    await fixture.handle(observeFrame("replacement"));
-    await eventually(() => expect(results(replacement)).toHaveLength(1));
-    expect(
-      [...fixture.events, ...replacement].some(
-        ({ type }) => type === "runner.integrations.computer-app-approval-key-proof",
-      ),
-    ).toBe(false);
   });
 
   it("refuses an act that cites no observation before opening a session", async () => {
@@ -1664,13 +1504,6 @@ describe("computer use over the desktop bridge", () => {
     await fixture.settled(6);
     expect(methodsOf(fixture.bridge).at(-1)).toBe("session.close");
     expect(resultFor(fixture.events, "stop")?.result).toEqual({ kind: "ok", value: {} });
-    // An approval list is desktop main's business, never a work slot's.
-    await fixture.handle({
-      approvalKeyId: null,
-      approvals: [],
-      type: "host.integrations.computer-app-approvals",
-    });
-    await eventually(() => expect(methodsOf(fixture.bridge).at(-1)).toBe("approvals.list"));
   });
 
   it("treats an unreadable action answer as an unknown outcome", async () => {
@@ -1958,9 +1791,6 @@ const defaultResponder: FakeBridgeResponder = (request) => {
       };
     case "apps.installed":
       return { result: { apps: [], total: 0 } };
-    case "approvals.list":
-    case "approvals.outcome":
-      return { result: {} };
     case "app.resolve":
       return {
         result: {
@@ -2097,7 +1927,7 @@ async function setup(
     const received: IntegrationsModuleEvent[] = [];
     handler.attach({
       browserAttachPublicKeys: undefined,
-      ...(options.passwords ? { loginText: 1 as const, passwordSignIn: 1 as const } : {}),
+      ...(options.passwords ? { loginText: 1 as const, passwordSignIn: 2 as const } : {}),
       fence,
       send: vi.fn(async (payload: Buffer | string) => {
         received.push(IntegrationsModuleEventSchema.parse(JSON.parse(payload.toString())));

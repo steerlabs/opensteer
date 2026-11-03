@@ -105,7 +105,7 @@ describe("openRunnerAuxiliaryStream", () => {
     expect(legacy.stream).not.toHaveProperty("passwordSignIn");
     legacy.close();
     const modern = await openTestStream({ leaseMs: 60_000, passwords: true });
-    expect(modern.stream).toMatchObject({ loginText: 1, passwordSignIn: 1 });
+    expect(modern.stream).toMatchObject({ loginText: 1, passwordSignIn: 2 });
     modern.close();
   });
 
@@ -217,7 +217,7 @@ async function openTestStream(options: {
           connectionId,
           connectionLeaseId,
           heartbeatIntervalMs: 1_000,
-          ...(options.passwords ? { loginText: 1, passwordSignIn: 1 } : {}),
+          ...(options.passwords ? { loginText: 1, passwordSignIn: 2 } : {}),
           module,
           runnerId,
           serverTime: new Date().toISOString(),

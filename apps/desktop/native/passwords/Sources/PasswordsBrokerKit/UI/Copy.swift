@@ -10,7 +10,7 @@ public enum Copy {
   public static let appName = "Opensteer Passwords"
   public static let agentSignIns = "Agents can sign in with your passwords"
   public static let setUpLead =
-    "Let agents sign in to websites and apps with passwords saved on this Mac. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account with Touch ID or your Mac password."
+    "Let agents sign in to websites and apps with passwords saved on this Mac. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account from any device signed in to this Opensteer."
   public static let setUpFacts = [
     "Import from Chrome, Safari, Firefox, 1Password or Bitwarden.",
     "Opensteer fills the fields the agent focuses on, in the browser, on your phone or in Mac apps.",
@@ -20,7 +20,8 @@ public enum Copy {
   public static let setUpNote =
     "Passwords are kept only on this Mac and aren’t backed up. If this Mac is lost or erased, ones saved only here are gone."
   public static let setUpAction = "Set Up Passwords"
-  public static let updateRequired = "Update Opensteer to use the passwords saved by a newer version."
+  public static let updateRequired =
+    "Update Opensteer to use the passwords saved by a newer version."
   public static let unsupported =
     "This Mac can’t keep Opensteer Passwords. It needs Touch ID–class security hardware (Apple silicon, or an Intel Mac with a T2 chip)."
   public static let developmentBanner = "Development build: use test passwords only."
@@ -30,22 +31,6 @@ public enum Copy {
   public static let setUpReason = "set up Opensteer Passwords"
   public static let startFreshReason = "delete the passwords saved on this Mac"
   public static let showReason = "show your saved passwords"
-  private static let appConsentRisk =
-    "A tricked agent could expose your password."
-  public static func allowReason(
-    workspace: String, site: String, username: String, permissionVersion: Int64 = 4
-  ) -> String {
-    let reason = "let agents in \(workspace) sign in to \(site) as \(username)"
-    return permissionVersion == 5
-      ? "\(reason) on websites and in apps your agents use. \(appConsentRisk)" : reason
-  }
-  public static func onceReason(
-    site: String, username: String, permissionVersion: Int64 = 4
-  ) -> String {
-    let reason = "sign in to \(site) as \(username) once"
-    return permissionVersion == 5
-      ? "\(reason) on websites and in apps your agents use. \(appConsentRisk)" : reason
-  }
   public static func repointReason(site: String) -> String {
     "change the website or username saved for \(site)"
   }

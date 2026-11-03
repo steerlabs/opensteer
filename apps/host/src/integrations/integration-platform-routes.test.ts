@@ -40,14 +40,17 @@ describe("integration platform OAuth routes", () => {
       platform: { computerAppApprovals: { setComputerConnection } } as never,
     };
 
-    await expect(
-      handleIntegrationPlatformCommand(options, command, testHostApiContext(userId)),
-    ).resolves.toEqual({ connection, type: "integration.computer.setup.set" });
+    const context = testHostApiContext(userId);
+    await expect(handleIntegrationPlatformCommand(options, command, context)).resolves.toEqual({
+      connection,
+      type: "integration.computer.setup.set",
+    });
     expect(setComputerConnection).toHaveBeenCalledWith({
       ...command.input,
       actorUserId: userId,
       isAdministrator: false,
       requestId: "test-request",
+      settlementSessionId: context.session?.id,
     });
   });
 

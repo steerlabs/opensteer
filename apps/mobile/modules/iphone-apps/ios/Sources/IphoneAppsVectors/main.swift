@@ -34,29 +34,20 @@ do {
   let source = FileHandle.standardInput.readDataToEndOfFile()
   let input = try object(JSONSerialization.jsonObject(with: source), "input")
   let runner = try Curve25519.Signing.PrivateKey(rawRepresentation: bytes(string(input["runnerSeed"], "runnerSeed")))
-  let approval = try Curve25519.Signing.PrivateKey(rawRepresentation: bytes(string(input["approvalSeed"], "approvalSeed")))
   let descriptor = try object(input["descriptor"], "descriptor")
   let mainChallenge = try challenge(object(input["challenge"], "challenge"))
   let auxChallenge = try challenge(object(input["auxiliaryChallenge"], "auxiliaryChallenge"))
   let token = try string(input["token"], "token")
   let ticket = try string(input["ticket"], "ticket")
-  let request = try object(input["approvalRequest"], "approvalRequest")
-  let answerExpiresAt = try string(input["answerExpiresAt"], "answerExpiresAt")
-  let keyChallenge = try object(input["keyChallenge"], "keyChallenge")
   let fence = try AuxiliaryFence(object(input["fence"], "fence"))
   let runnerId = try string(descriptor["runnerId"], "runnerId")
   let bootId = try string(descriptor["bootId"], "bootId")
   let actual: [String: Any] = [
     "publicKeyPem": IphoneProofs.publicKeyPem(runner),
     "keyId": IphoneProofs.keyId(runner),
-    "approvalPublicKeyPem": IphoneProofs.publicKeyPem(approval),
-    "approvalKeyId": IphoneProofs.keyId(approval),
     "authentication": try IphoneProofs.authenticate(runner, challenge: mainChallenge, descriptor: descriptor),
     "enrollment": try IphoneProofs.enroll(runner, challenge: mainChallenge, descriptor: descriptor, token: token),
     "auxiliary": try IphoneProofs.auxiliary(runner, challenge: auxChallenge, runnerId: runnerId, bootId: bootId, ticket: ticket),
-    "allow": try IphoneProofs.approval(approval, request: request, decision: "allow", expiresAt: answerExpiresAt),
-    "deny": try IphoneProofs.approval(approval, request: request, decision: "deny", expiresAt: answerExpiresAt),
-    "keyProof": try IphoneProofs.keyChallenge(approval, challenge: keyChallenge),
   ]
   let expected = try object(input["expected"], "expected")
   let challengeFields: [Any] = ["challengeId", mainChallenge.challengeId,
@@ -71,13 +62,9 @@ do {
       "hostSessionId", auxChallenge.hostSessionId, "challengeExpiresAt", auxChallenge.expiresAt,
       "challengeModule", "integrations", "runnerId", runnerId, "bootId", bootId,
       "module", "integrations", "ticketDigest", IphoneProofs.tokenDigest(ticket)]),
-    "allow": try IphoneProofs.approvalTranscript(request: request, decision: "allow", expiresAt: answerExpiresAt),
-    "deny": try IphoneProofs.approvalTranscript(request: request, decision: "deny", expiresAt: answerExpiresAt),
-    "keyProof": try IphoneProofs.canonicalJSON([
-      "opensteer-computer-app-approval-key-registration-v1", "challenge", keyChallenge]),
   ]
   var matches: [String: Bool] = [:]
-  for name in ["publicKeyPem", "keyId", "approvalPublicKeyPem", "approvalKeyId"] {
+  for name in ["publicKeyPem", "keyId"] {
     matches[name] = actual[name] as? String == expected[name] as? String
   }
   var rejectsTampering: [String: [String: Bool]] = [:]
@@ -89,9 +76,8 @@ do {
       .replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
     guard let signature = Data(base64Encoded: encoded + String(repeating: "=", count: (4 - encoded.count % 4) % 4)),
       signature.count == 64 else { throw IphoneWireError.invalid(name) }
-    let approvalProof = ["allow", "deny", "keyProof"].contains(name)
-    let publicKey = approvalProof ? approval.publicKey : runner.publicKey
-    let wrongKey = approvalProof ? runner.publicKey : approval.publicKey
+    let publicKey = runner.publicKey
+    let wrongKey = Curve25519.Signing.PrivateKey().publicKey
     var changedSignature = signature
     changedSignature[0] ^= 1
     matches[name] = publicKey.isValidSignature(signature, for: transcript)
@@ -111,11 +97,7 @@ do {
     "status": IphoneWire.status(fence, permissions: ["apple-calendar": .granted,
       "apple-contacts": .limited, "apple-reminders": .denied]),
   ]
-  let keyTranscript = try IphoneProofs.canonicalJSON([
-    "opensteer-computer-app-approval-key-registration-v1", "challenge", keyChallenge,
-  ])
-  let result = ["actual": actual, "matches": matches, "frames": frames, "rejectsTampering": rejectsTampering,
-    "keyTranscript": String(decoding: keyTranscript, as: UTF8.self)] as [String: Any]
+  let result = ["actual": actual, "matches": matches, "frames": frames, "rejectsTampering": rejectsTampering] as [String: Any]
   FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]))
 } catch {
   FileHandle.standardError.write(Data("iPhone vector failure: \(error)\n".utf8))

@@ -24,8 +24,8 @@ import {
   PasswordsBrokerHelloParamsSchema,
   PasswordsBrokerHelloResultSchema,
   PasswordsBrokerSignInReleaseParamsSchema,
-  PasswordsBrokerSignInReleaseV5ParamsSchema,
-  PasswordsBrokerSignInRequestV5ParamsSchema,
+  PasswordsBrokerSignInReleaseV6ParamsSchema,
+  PasswordsBrokerSignInRequestV6ParamsSchema,
   passwordsBrokerRequests,
 } from "./passwords-broker.js";
 
@@ -252,17 +252,17 @@ it("retains v4 origin releases while giving v5 an explicit app release kind", ()
       .success,
   ).toBe(false);
   expect(
-    PasswordsBrokerSignInReleaseV5ParamsSchema.safeParse({
+    PasswordsBrokerSignInReleaseV6ParamsSchema.safeParse({
       transactionId,
       field: "password",
       kind: "app",
     }).success,
   ).toBe(true);
   expect(
-    PasswordsBrokerSignInReleaseV5ParamsSchema.safeParse({ ...legacy, kind: "browser" }).success,
+    PasswordsBrokerSignInReleaseV6ParamsSchema.safeParse({ ...legacy, kind: "browser" }).success,
   ).toBe(true);
   expect(
-    PasswordsBrokerSignInReleaseV5ParamsSchema.safeParse({ ...legacy, kind: "app" }).success,
+    PasswordsBrokerSignInReleaseV6ParamsSchema.safeParse({ ...legacy, kind: "app" }).success,
   ).toBe(false);
   expect(passwordsBrokerRequests["signin.release"].safeParse(legacy).success).toBe(true);
   for (const protocolVersion of [4, 5]) {
@@ -290,16 +290,16 @@ it("retains v4 origin releases while giving v5 an explicit app release kind", ()
     site: "https://example.com",
     transactionId,
     expiresAt: "2027-01-15T08:01:00.000Z",
-    protocolVersion: 5,
+    protocolVersion: 6,
     permissionVersion: 5,
   };
-  expect(PasswordsBrokerSignInRequestV5ParamsSchema.safeParse(request).success).toBe(true);
+  expect(PasswordsBrokerSignInRequestV6ParamsSchema.safeParse(request).success).toBe(true);
   expect(
-    PasswordsBrokerSignInRequestV5ParamsSchema.safeParse({ ...request, permissionVersion: 4 })
+    PasswordsBrokerSignInRequestV6ParamsSchema.safeParse({ ...request, permissionVersion: 4 })
       .success,
   ).toBe(false);
   expect(
-    PasswordsBrokerSignInRequestV5ParamsSchema.safeParse({
+    PasswordsBrokerSignInRequestV6ParamsSchema.safeParse({
       ...request,
       permissionVersion: undefined,
     }).success,

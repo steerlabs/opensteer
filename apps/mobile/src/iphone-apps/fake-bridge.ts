@@ -1,8 +1,6 @@
 import type { MockHostClient } from "@opensteer/client/mock";
-import type { HostApiCommandInput } from "@opensteer/protocol";
 import type {
   IphoneAppId,
-  IphoneAppsApproval,
   IphoneAppsBridge,
   IphoneAppsConnection,
   IphoneAppsEnrollment,
@@ -43,19 +41,18 @@ export interface FakeIphoneDevice {
     readonly name: string;
   }): void;
   lastRetarget(): IphonePairingTarget | null;
-  listApprovals(approvals: readonly IphoneAppsApproval[]): void;
+
   mintKey(): string | null;
   onEnroll(listener: () => void): void;
-  publicKey(): string;
+
   raise(issue: IphoneAppsIssue, message?: string): void;
   reconnect(): void;
-  registerKey(): void;
+
   removedByHost(): void;
   runnerId(): string;
   setLocationAccuracy(accuracy: "approximate" | "precise" | null): void;
   setPermission(app: IphoneAppId, permission: IphonePermission): void;
   /** Mock mode: re-reads the requests the Host would push to this iPhone. */
-  syncFromHost(): Promise<void>;
 }
 
 const iphoneAppIds: readonly IphoneAppId[] = [
@@ -65,9 +62,6 @@ const iphoneAppIds: readonly IphoneAppId[] = [
   "iphone-location",
   "iphone-photos",
 ];
-const fakePublicKey =
-  "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAZmFrZS1pcGhvbmUtYXBwcm92YWwta2V5LTAwMDAwMDA=\n-----END PUBLIC KEY-----\n";
-
 export function createFakeIphoneApps(
   options: {
     /** Connects as soon as an enrollment is stored, as a reachable Host would let it. */
@@ -97,8 +91,6 @@ export function createFakeIphoneApps(
   let hostInstanceId: string | null = null;
   let detachHost: (() => void) | null = null;
   let snapshot: IphoneAppsSnapshot = {
-    approvalKey: null,
-    approvals: [],
     connection: "none",
     deviceName: options.deviceName ?? "iPhone",
     enrollment: null,
@@ -131,18 +123,8 @@ export function createFakeIphoneApps(
   const enrollment = (patch: Partial<IphoneAppsEnrollment>): IphoneAppsEnrollment | null =>
     snapshot.enrollment === null ? null : { ...snapshot.enrollment, ...patch };
 
-  const key = () => ({
-    keyId: `sha256:${runnerId
-      .replace(/[^A-Za-z0-9]/gu, "")
-      .padStart(43, "K")
-      .slice(-43)}`,
-    publicKey: fakePublicKey,
-    registered: snapshot.approvalKey?.registered ?? false,
-  });
-
   const connect = (): void => {
     set({
-      approvalKey: key(),
       connection: "online",
       enrollment: enrollment({ enrollmentId: null, state: "enrolled" }),
       issue: null,
@@ -158,39 +140,12 @@ export function createFakeIphoneApps(
     hostInstanceId = null;
     runnerId = fakeRunnerId();
     set({
-      approvalKey: null,
-      approvals: [],
       connection: "none",
       enrollment: null,
       issue,
       issueMessage: null,
       retryAt: null,
       working: 0,
-    });
-  };
-
-  /** Mock mode: the requests the Host pushes to this iPhone, as native lists them. */
-  const syncApprovals = async (host: MockHostClient): Promise<void> => {
-    const result = await host.rpc["integration.computer.setup.list"]({});
-    if (!result.ok || snapshot.enrollment === null) return;
-    const ownRunnerId = runnerId;
-    set({
-      approvals: result.data.requests.flatMap((request): IphoneAppsApproval[] =>
-        request.kind === "app" && request.runnerId === ownRunnerId && offered(request.definitionId)
-          ? [
-              {
-                access: request.access,
-                createdAt: request.createdAt,
-                definitionId: request.definitionId,
-                expiresAt: request.expiresAt,
-                reason: request.reason,
-                setupRequestId: request.id,
-                threadTitle: request.threadTitle,
-                workspaceName: request.workspaceName,
-              },
-            ]
-          : [],
-      ),
     });
   };
 
@@ -212,8 +167,6 @@ export function createFakeIphoneApps(
       return;
     }
     connect();
-    detachHost = host.subscribe(() => void syncApprovals(host).catch(() => undefined));
-    void syncApprovals(host).catch(() => undefined);
   };
 
   const bridge: IphoneAppsBridge = {
@@ -330,50 +283,6 @@ export function createFakeIphoneApps(
       // The fake picker chooses nothing; closing it changes nothing.
       return current;
     },
-
-    async answerApproval(input) {
-      calls.push(
-        `answerApproval:${input.setupRequestId}:${input.decision}:${input.expected.definitionId}:${input.expected.access}`,
-      );
-      const listed = snapshot.approvals.find(
-        ({ setupRequestId }) => setupRequestId === input.setupRequestId,
-      );
-      if (
-        listed === undefined ||
-        !offered(listed.definitionId) ||
-        listed.definitionId !== input.expected.definitionId ||
-        listed.access !== input.expected.access ||
-        Date.parse(listed.expiresAt) <= Date.now()
-      ) {
-        return {
-          kind: "unavailable",
-          message: "This request is no longer waiting on this iPhone.",
-        };
-      }
-      const host =
-        snapshot.enrollment === null
-          ? null
-          : (options.host?.(snapshot.enrollment.deploymentId) ?? null);
-      if (host !== null) {
-        try {
-          await host.mockAnswerIphoneApproval({
-            decision: input.decision,
-            setupRequestId: input.setupRequestId,
-          });
-        } catch (error) {
-          return {
-            kind: "refused",
-            message: error instanceof Error ? error.message : "The Host refused this answer.",
-          };
-        }
-      }
-      set({
-        approvals: snapshot.approvals.filter(
-          ({ setupRequestId }) => setupRequestId !== input.setupRequestId,
-        ),
-      });
-      return input.decision === "allow" ? { kind: "allowed" } : { kind: "declined" };
-    },
   };
 
   const device: FakeIphoneDevice = {
@@ -385,7 +294,6 @@ export function createFakeIphoneApps(
     enrolledTo(input) {
       prepared = { deploymentId: input.deploymentId, mintKey: fakeMintKey() };
       set({
-        approvalKey: key(),
         connection: input.connection ?? "online",
         enrollment: {
           deploymentId: input.deploymentId,
@@ -401,14 +309,12 @@ export function createFakeIphoneApps(
       });
     },
     lastRetarget: () => retargets.at(-1) ?? null,
-    listApprovals(approvals) {
-      set({ approvals });
-    },
+
     mintKey: () => prepared?.mintKey ?? null,
     onEnroll(listener) {
       enrollListeners.push(listener);
     },
-    publicKey: () => fakePublicKey,
+
     raise(issue, message) {
       set({
         connection:
@@ -421,9 +327,7 @@ export function createFakeIphoneApps(
       set({ connection: "retrying" });
       connect();
     },
-    registerKey() {
-      set({ approvalKey: { ...key(), registered: true } });
-    },
+
     removedByHost() {
       wipe("removed");
     },
@@ -440,42 +344,9 @@ export function createFakeIphoneApps(
           : {}),
       });
     },
-    async syncFromHost() {
-      const host =
-        snapshot.enrollment === null
-          ? null
-          : (options.host?.(snapshot.enrollment.deploymentId) ?? null);
-      if (host !== null) await syncApprovals(host);
-    },
   };
 
   return { bridge, device };
-}
-
-/**
- * Mock mode's stand-in for what a real Host pushes to the iPhone after a
- * command lands: its registered key, once the iPhone proved it holds it, and
- * the requests waiting on it whenever they change.
- */
-export async function observeMockHostCommand(
-  fake: FakeIphoneApps,
-  command: HostApiCommandInput,
-): Promise<void> {
-  if (
-    command.type === "integration.computer.approval-key.set" &&
-    command.input.runnerId === fake.device.runnerId() &&
-    fake.bridge.getSnapshot().approvalKey !== null
-  ) {
-    fake.device.registerKey();
-  }
-  if (
-    command.type === "integration.computer.setup.request" ||
-    command.type === "integration.computer.setup.cancel" ||
-    command.type === "integration.computer.setup.set" ||
-    command.type === "integration.disconnect"
-  ) {
-    await fake.device.syncFromHost();
-  }
 }
 
 function bridgeError(code: IphoneAppsErrorCode): Error & { readonly code: IphoneAppsErrorCode } {

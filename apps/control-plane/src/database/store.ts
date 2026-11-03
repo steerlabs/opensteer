@@ -1232,6 +1232,7 @@ export class ControlPlaneStore {
           throw new ControlPlaneError(
             "conflict",
             "Managed Connect resource must be revoked before disabling the route",
+            { reason: "connect-revocation-required" },
           );
         }
       } else {

@@ -35,6 +35,52 @@ Catalog recovery follows realtime and task/request reads; newer revisions and
 viewer generations fence delayed catalogs. Deadline/size policy lives in the
 transport source, not this document.
 
+## Remote administration
+
+The Host persists owner intent and progress; the desktop app executes it through
+its existing Connect and Account coordinators. Every owner device uses the same
+Host commands. An absent executor leaves a visible pending operation with that
+reason. Recovery resumes the failed action with the same external operation
+identity; turning access Off can supersede pending work. Account steps are admitted
+under the shared session fence and journaled on the exact link before network I/O.
+No Account request holds a Host transaction or session lock. Restart and executor
+recovery replay the idempotent step, then conditionally finalize that link;
+unlink retains its credential until the Account acknowledges removal. A definitive
+Account refusal with a validated reason for that operation retires only the
+rejected step, preserving the credential for prerequisite changes or unlink.
+A completed operation whose result was superseded is finalized against the exact
+link and journal identity. Unknown, malformed, reasonless and temporary failures stay journaled;
+a failed recovery is visible and leaves the executor connected for the next action.
+
+A request persists before acknowledgement. Execution that can remove the current
+route starts only after that response completes, and continues under the
+supervisor's process capability. Unlink never requires another request from the
+session it revokes. Clients warn that these actions can disconnect the initiating
+device and others. Revoked credentials stop authenticating before success; their live
+connections close after the revocation response is sent.
+
+Account linking signs in on the initiating device and uses its challenge/proof
+exchange. Browser linking uses an Account-portal confirmation with exact
+origin/source-bound messaging; native devices use their own Account credentials.
+The Host signs a per-challenge encryption key into its proof; the Account seals
+completion to that key only after verifying the pinned Host signature. The
+courier and desktop recovery journal hold ciphertext. The Host opens and verifies
+the completion outside its transaction, then atomically revalidates the session
+and exact challenge key, deletes that key and stores the linked credential before
+activation.
+Expired keys are erased on startup and by Host maintenance; cancellation
+and unlink erase pending keys. The linked Host credential authorizes fenced
+Connect provision/rotation and teardown, so execution does not require a second
+Account sign-in on the desktop.
+Connector credentials stay on the Host computer. Only the supervisor's private
+executor channel can obtain them; owner sessions request durable intents and
+read status.
+
+Administration status is observed only while Settings is open, invalidated by the
+Host event stream and reread after reconnect. It adds no attach round trips or
+initial-screen dependencies. Stable retains private access and pairing without
+acquiring an Account/Connect path.
+
 ## Durable stream and live progress
 
 Durable events arrive strictly in Workspace sequence order; an early event

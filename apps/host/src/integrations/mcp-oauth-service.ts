@@ -1,3 +1,20 @@
+import {
+  HostedOAuthAttemptIdSchema,
+  OAuthBrokerMcpCallbackRelayContextSchema,
+  OAuthBrokerMcpAuthorizationResponseSchema,
+} from "@opensteer/control-plane-protocol";
+import {
+  generateOAuthBrokerEphemeralKeyPair,
+  openOAuthBrokerPayload,
+  oauthAuthorizationResponseState,
+} from "@opensteer/integration-auth";
+import { integrationSchemaDigest } from "@opensteer/integration-core/digest";
+import {
+  IntegrationAccountBindingSchema,
+  validateIntegrationAccountBinding,
+} from "./integration-account-binding.js";
+import { integrationAuthAttemptLifetimeMilliseconds } from "./integration-auth-attempt-service.js";
+import type { HostedOAuthOptions } from "./integration-service.js";
 import { randomBytes } from "node:crypto";
 import { isLoopbackHostname } from "@opensteer/core";
 import {
@@ -12,6 +29,8 @@ import {
   IntegrationServerIdSchema,
   McpOAuthAttemptIdSchema,
   type IntegrationConnectionId,
+  type IntegrationDeploymentPosture,
+  type McpOAuthAttemptId,
   type IntegrationServer,
   type IntegrationToolId,
   type IntegrationToolMaterial,
@@ -64,6 +83,8 @@ const StoredOAuthStateSchema = z.strictObject({
   codeVerifier: z.string().min(43).max(256).optional(),
   discovery: z.record(z.string(), z.unknown()).optional(),
   tokens: OAuthTokensSchema.optional(),
+  redirectUrl: z.url().optional(),
+  clientMetadataUrl: z.url().optional(),
 });
 
 const McpOAuthAttemptPayloadSchema = z.strictObject({
@@ -78,6 +99,13 @@ const McpOAuthAttemptPayloadSchema = z.strictObject({
     .optional(),
   returnPath: z.string().min(1).max(8_192),
   serverId: IntegrationServerIdSchema,
+  relay: z
+    .strictObject({
+      binding: IntegrationAccountBindingSchema,
+      context: OAuthBrokerMcpCallbackRelayContextSchema,
+      hostPrivateKey: z.string().min(1).max(512),
+    })
+    .optional(),
 });
 
 interface StoredOAuthState {
@@ -85,7 +113,17 @@ interface StoredOAuthState {
   codeVerifier?: string;
   discovery?: OAuthDiscoveryState;
   tokens?: OAuthTokens;
+  redirectUrl?: string;
+  clientMetadataUrl?: string;
 }
+
+type McpClaimedAttempt = Omit<z.infer<typeof McpOAuthAttemptPayloadSchema>, "oauthState"> & {
+  readonly oauthState: StoredOAuthState;
+  readonly id: McpOAuthAttemptId;
+  readonly ownerUserId: UserId;
+  readonly surface: IntegrationAuthAttemptSurface;
+  readonly server: IntegrationServer;
+};
 
 export interface RedactingOAuthClientProvider extends OAuthClientProvider {
   credentialRevision(): number | null;
@@ -103,6 +141,9 @@ export class McpOAuthReauthorizationError extends UnauthorizedError {
 
 export class McpOAuthService {
   readonly #callbackUrl: URL;
+  readonly #hostedOAuth: HostedOAuthOptions | undefined;
+  readonly #deploymentPosture: () => Promise<IntegrationDeploymentPosture>;
+  readonly #authorizationFlights = new Map<string, Promise<void>>();
   readonly #attempts: IntegrationAuthAttemptLifecycle;
   readonly #clientMetadata: OAuthClientMetadata;
   readonly #clientMetadataUrl: URL | null;
@@ -113,6 +154,8 @@ export class McpOAuthService {
   readonly #vault: AesGcmSecretVault;
 
   constructor(options: {
+    readonly hostedOAuth?: HostedOAuthOptions;
+    readonly deploymentPosture?: () => Promise<IntegrationDeploymentPosture>;
     readonly publicUrl: URL;
     readonly attempts: IntegrationAuthAttemptLifecycle;
     readonly exposure: HostExposure;
@@ -120,6 +163,9 @@ export class McpOAuthService {
     readonly store: IntegrationPlatformStore;
     readonly vault: AesGcmSecretVault;
   }) {
+    this.#hostedOAuth = options.hostedOAuth;
+    this.#deploymentPosture =
+      options.deploymentPosture ?? (() => Promise.resolve("account-free-personal"));
     this.#attempts = options.attempts;
     this.#onConnectionConnected = options.onConnectionConnected;
     this.#callbackUrl = new URL("/v1/integration-platform/mcp-oauth/callback", options.publicUrl);
@@ -163,7 +209,31 @@ export class McpOAuthService {
     readonly expiresAt: Date;
     readonly launchTicket: string;
   }> {
-    if (input.requestSurface === "personal-remote") throw canonicalAuthorizationRequired();
+    const posture = await this.#deploymentPosture();
+    const relayed =
+      posture === "account-linked-personal" || posture === "account-adopted-self-hosted";
+    const hosted = relayed ? this.#hostedOAuth : undefined;
+    const binding = hosted
+      ? validateIntegrationAccountBinding(await hosted.accountSubject(input.ownerUserId))
+      : null;
+    if (
+      relayed &&
+      (!hosted || !binding || new URL(binding.issuer).origin !== hosted.broker.issuer)
+    ) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Link your own Opensteer Account before starting MCP sign-in.",
+      });
+    }
+    if (!relayed && input.requestSurface === "personal-remote")
+      throw canonicalAuthorizationRequired();
+    if (hosted && (await hosted.broker.metadata()).mcpCallbackRelay !== 1) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Opensteer Account must be updated before MCP sign-in can use its HTTPS callback.",
+      });
+    }
+    const redirectUrl = hosted ? hosted.broker.callbackUrl("mcp") : this.#callbackUrl.toString();
     const context = await this.#store.getMcpOAuthServer(input);
     const attemptId = createIntegrationId("mcpOauthAttempt");
     let authorizationUrl: URL | undefined;
@@ -172,7 +242,17 @@ export class McpOAuthService {
       id: attemptId,
       ownerUserId: input.ownerUserId,
       payload: async (state) => {
-        const mutable: StoredOAuthState = {};
+        const mutable: StoredOAuthState = {
+          redirectUrl,
+          ...(hosted
+            ? {
+                clientMetadataUrl: new URL(
+                  "/v1/oauth-broker/mcp/client-metadata.json",
+                  hosted.broker.issuer,
+                ).toString(),
+              }
+            : {}),
+        };
         const provider = this.#provider({
           mutable,
           onAuthorization: (url) => {
@@ -205,9 +285,65 @@ export class McpOAuthService {
           await client.close().catch(() => undefined);
         }
         if (!authorizationUrl) throw new Error("MCP OAuth authorization URL was not captured");
+        let relay: z.infer<typeof McpOAuthAttemptPayloadSchema>["relay"];
+        let launchUrl = authorizationUrl.toString();
+        if (hosted && binding) {
+          const discovery = mutable.discovery!;
+          const metadata = discovery.authorizationServerMetadata!;
+          const mcp = {
+            serverId: context.server.id,
+            issuer: discoveryIssuer(discovery),
+            authorizationEndpoint: metadata.authorization_endpoint,
+            authorizationResponseIssuerParameterSupported:
+              Reflect.get(metadata, "authorization_response_iss_parameter_supported") === true,
+          };
+          const brokerAttemptId = HostedOAuthAttemptIdSchema.parse(
+            `hoa_${attemptId.slice("imo_".length)}`,
+          );
+          const keys = generateOAuthBrokerEphemeralKeyPair();
+          const relayContext = OAuthBrokerMcpCallbackRelayContextSchema.parse({
+            accountSubject: { issuer: binding.issuer, subject: binding.subject },
+            attemptId: brokerAttemptId,
+            authorizationDigest: integrationSchemaDigest({
+              serverId: context.server.id,
+              authorizationUrl: launchUrl,
+            }),
+            deploymentAuthorityDigest: hosted.deploymentAuthorityDigest,
+            expiresAt: new Date(
+              Date.now() + integrationAuthAttemptLifetimeMilliseconds,
+            ).toISOString(),
+            clientId: mutable.clientInformation!.client_id,
+            mcp,
+            redirectUrl,
+            schemaVersion: 1,
+          });
+          const created = await hosted.broker.createCallbackRelay({
+            accountSubject: relayContext.accountSubject,
+            attemptId: brokerAttemptId,
+            authorizationDigest: relayContext.authorizationDigest,
+            authorizationUrl: launchUrl,
+            clientId: relayContext.clientId,
+            clientSurface: input.surface,
+            definitionId: context.server.id,
+            deploymentAuthorityDigest: relayContext.deploymentAuthorityDigest,
+            expiresAt: relayContext.expiresAt,
+            hostPublicKey: keys.publicKey,
+            provider: "mcp",
+            providerApplicationRevision: 1,
+            mcp,
+            ...(input.requestSurface === "personal-remote" ? {} : { returnPath: input.returnPath }),
+          });
+          relay = {
+            binding,
+            context: { ...relayContext, expiresAt: created.expiresAt },
+            hostPrivateKey: keys.privateKey,
+          };
+          launchUrl = created.launchUrl;
+        }
         return {
-          authorizationUrl: authorizationUrl.toString(),
+          authorizationUrl: launchUrl,
           payload: serializeAttempt({
+            ...(relay ? { relay } : {}),
             displayName: input.displayName,
             oauthState: StoredOAuthStateSchema.parse(mutable),
             requestId: input.requestId,
@@ -247,7 +383,21 @@ export class McpOAuthService {
         readonly surface: IntegrationAuthAttemptSurface;
       }
   > {
-    const attempt = await this.#claim(input);
+    const posture = await this.#deploymentPosture();
+    if (posture === "account-linked-personal" || posture === "account-adopted-self-hosted") {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This consent must restart through Opensteer Account.",
+      });
+    }
+    return this.#completeAuthorization(await this.#claim(input), input.parameters, input.state);
+  }
+
+  async #completeAuthorization(
+    attempt: McpClaimedAttempt,
+    parameters: URLSearchParams,
+    state: string,
+  ): ReturnType<McpOAuthService["handleAuthorizationCallback"]> {
     let connected: IntegrationConnectionId;
     try {
       const mutable = attempt.oauthState;
@@ -270,7 +420,7 @@ export class McpOAuthService {
         authorizationResponseIssuerParameterSupported: issuerParameterSupported,
         clientId,
         issuer,
-        parameters: input.parameters,
+        parameters: parameters,
       });
       if (authorizationResponse.kind === "error") {
         if (!oauthUserDeniedAuthorization(authorizationResponse.error)) {
@@ -287,7 +437,7 @@ export class McpOAuthService {
           surface: attempt.surface,
         };
       }
-      const provider = this.#provider({ mutable, server: attempt.server, state: input.state });
+      const provider = this.#provider({ mutable, server: attempt.server, state: state });
       const { client, transport } = this.#client(attempt.server, provider);
       try {
         await transport.finishAuth(authorizationResponse.code);
@@ -302,6 +452,14 @@ export class McpOAuthService {
           connectionSecretContext(connectionId, attempt.ownerUserId, attempt.server.id),
         );
         await this.#store.completeMcpOAuthAttempt({
+          ...(attempt.relay
+            ? {
+                accountBinding: {
+                  ...attempt.relay.binding,
+                  kind: this.#hostedOAuth!.kind,
+                },
+              }
+            : {}),
           attemptId: attempt.id,
           connectionId,
           displayName: attempt.displayName,
@@ -344,6 +502,107 @@ export class McpOAuthService {
       status: "completed",
       surface: attempt.surface,
     };
+  }
+
+  async authorizationStatus(input: {
+    readonly attemptId: McpOAuthAttemptId;
+    readonly ownerUserId: UserId;
+  }) {
+    const local = await this.#attempts.status({
+      id: input.attemptId,
+      ownerUserId: input.ownerUserId,
+    });
+    if (!local || local.status !== "launched") return local;
+    const inspected = await this.#attempts.inspect?.({
+      id: input.attemptId,
+      ownerUserId: input.ownerUserId,
+    });
+    if (!inspected) return local;
+    const payload = deserializeAttempt(inspected);
+    const relay = payload.relay;
+    if (!relay) return local;
+    const hosted = this.#hostedOAuth;
+    const binding = hosted
+      ? validateIntegrationAccountBinding(await hosted.accountSubject(input.ownerUserId))
+      : null;
+    if (
+      !binding ||
+      binding.issuer !== relay.binding.issuer ||
+      binding.subject !== relay.binding.subject ||
+      binding.linkGeneration !== relay.binding.linkGeneration
+    ) {
+      await this.#attempts.fail(input.attemptId, "account-link-mismatch");
+      return this.#attempts.status({ id: input.attemptId, ownerUserId: input.ownerUserId });
+    }
+    const remote = await hosted!.broker.status(relay.context.attemptId).catch(() => null);
+    if (!remote || remote.status === "pending" || remote.status === "launched") return local;
+    if (remote.status !== "sealed") {
+      await this.#attempts.fail(
+        input.attemptId,
+        remote.status === "denied"
+          ? "denied"
+          : remote.status === "expired"
+            ? "expired"
+            : "exchange-failed",
+      );
+    } else {
+      let flight = this.#authorizationFlights.get(input.attemptId);
+      if (!flight) {
+        flight = this.#completeRelay(input, relay);
+        this.#authorizationFlights.set(input.attemptId, flight);
+      }
+      try {
+        await flight;
+      } finally {
+        if (this.#authorizationFlights.get(input.attemptId) === flight)
+          this.#authorizationFlights.delete(input.attemptId);
+      }
+    }
+    return this.#attempts.status({ id: input.attemptId, ownerUserId: input.ownerUserId });
+  }
+
+  async #completeRelay(
+    input: { readonly attemptId: McpOAuthAttemptId; readonly ownerUserId: UserId },
+    relay: NonNullable<z.infer<typeof McpOAuthAttemptPayloadSchema>["relay"]>,
+  ) {
+    const hosted = this.#hostedOAuth!;
+    try {
+      const pulled = await hosted.broker.pull(relay.context.attemptId);
+      if (pulled.status !== "sealed" || !pulled.sealedResult)
+        throw new Error("MCP consent result is unavailable");
+      const bundle = OAuthBrokerMcpAuthorizationResponseSchema.parse(
+        openOAuthBrokerPayload(pulled.sealedResult, relay.hostPrivateKey, relay.context),
+      );
+      const parameters = new URLSearchParams(bundle.parameters);
+      const state = oauthAuthorizationResponseState(parameters);
+      const claimed = await this.#attempts.claimHosted?.({
+        id: input.attemptId,
+        ownerUserId: input.ownerUserId,
+        flow: "mcp-oauth",
+        state,
+      });
+      if (!claimed) {
+        // The in-process flight owns completion. A spent claim with no flight
+        // belongs to an interrupted Host, and its code must never be exchanged again.
+        await this.#attempts.fail(input.attemptId, "grant-rejected");
+        return;
+      }
+      const context = await this.#claimedContext(claimed);
+      if (context.relay?.context.attemptId !== relay.context.attemptId)
+        throw new Error("MCP consent changed");
+      if (
+        context.oauthState.redirectUrl !== relay.context.redirectUrl ||
+        context.oauthState.clientInformation?.client_id !== relay.context.clientId ||
+        !context.oauthState.discovery ||
+        discoveryIssuer(context.oauthState.discovery) !== relay.context.mcp.issuer ||
+        context.serverId !== relay.context.mcp.serverId
+      )
+        throw new Error("MCP authorization binding changed");
+      await this.#completeAuthorization(context, parameters, state);
+    } catch {
+      await this.#attempts.fail(input.attemptId, "exchange-failed");
+    }
+    await hosted.broker.acknowledge(relay.context.attemptId).catch(() => undefined);
   }
 
   identifyAuthorizationCallback(state: string) {
@@ -424,6 +683,15 @@ export class McpOAuthService {
         message: "MCP OAuth authorization is invalid, expired, or already used",
       });
     }
+    return this.#claimedContext(claimed);
+  }
+
+  async #claimedContext(claimed: {
+    readonly id: import("@opensteer/integration-core/ports").IntegrationAuthAttemptId;
+    readonly ownerUserId: UserId;
+    readonly payload: Readonly<Record<string, string>>;
+    readonly surface: IntegrationAuthAttemptSurface;
+  }): Promise<McpClaimedAttempt> {
     try {
       const payload = deserializeAttempt(claimed.payload);
       const context = await this.#store.getMcpOAuthServer({
@@ -490,14 +758,18 @@ export class McpOAuthService {
     readonly state: string;
   }): RedactingOAuthClientProvider {
     const changed = async () => input.onChange?.();
+    const redirectUrl = input.mutable.redirectUrl ?? this.#callbackUrl.toString();
+    const clientMetadataUrl =
+      input.mutable.clientMetadataUrl ?? this.#clientMetadataUrl?.toString();
+    const clientMetadata = { ...this.#clientMetadata, redirect_uris: [redirectUrl] };
     return {
       credentialRevision: () => input.credentialRevision?.() ?? null,
-      ...(this.#clientMetadataUrl ? { clientMetadataUrl: this.#clientMetadataUrl.toString() } : {}),
+      ...(clientMetadataUrl ? { clientMetadataUrl } : {}),
       clientInformation: () => {
         requireBoundCredentials(input.mutable);
         return input.mutable.clientInformation;
       },
-      clientMetadata: this.#clientMetadata,
+      clientMetadata,
       codeVerifier: () => {
         if (!input.mutable.codeVerifier) throw new Error("MCP OAuth verifier is unavailable");
         return input.mutable.codeVerifier;
@@ -522,7 +794,7 @@ export class McpOAuthService {
         }
         input.onAuthorization(url);
       },
-      redirectUrl: this.#callbackUrl,
+      redirectUrl: new URL(redirectUrl),
       responseRedactor: () =>
         createCredentialResponseRedactor(
           input.mutable.tokens
@@ -639,10 +911,10 @@ export class McpOAuthService {
     let clientInformation: OAuthClientInformationMixed;
     if (
       authorizationServer.metadata.client_id_metadata_document_supported === true &&
-      this.#clientMetadataUrl
+      (mutable.clientMetadataUrl || this.#clientMetadataUrl)
     ) {
       clientInformation = OAuthClientInformationSchema.parse({
-        client_id: this.#clientMetadataUrl.toString(),
+        client_id: mutable.clientMetadataUrl ?? this.#clientMetadataUrl!.toString(),
       });
     } else {
       const registrationEndpoint = authorizationServer.metadata.registration_endpoint;
@@ -665,7 +937,7 @@ export class McpOAuthService {
             ...(this.#clientMetadata.grant_types
               ? { grant_types: this.#clientMetadata.grant_types }
               : {}),
-            redirect_uris: this.#clientMetadata.redirect_uris,
+            redirect_uris: [mutable.redirectUrl ?? this.#callbackUrl.toString()],
             ...(this.#clientMetadata.response_types
               ? { response_types: this.#clientMetadata.response_types }
               : {}),
@@ -674,9 +946,22 @@ export class McpOAuthService {
           registrationEndpoint,
         },
         { fetch: sharedFetch },
-      );
+      ).catch(() => {
+        throw new OpensteerError({
+          code: "conflict",
+          message: `This MCP service could not register the required redirect URI: ${mutable.redirectUrl ?? this.#callbackUrl.toString()}. It must accept this redirect before sign-in can work.`,
+        });
+      });
+      const redirectUrl = mutable.redirectUrl ?? this.#callbackUrl.toString();
+      if (registered.redirect_uris && !registered.redirect_uris.includes(redirectUrl)) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: `This MCP service rejected the required redirect URI: ${redirectUrl}. It must accept this HTTPS redirect before sign-in can work.`,
+        });
+      }
       clientInformation = OAuthClientInformationFullSchema.parse({
         ...this.#clientMetadata,
+        redirect_uris: [redirectUrl],
         ...registered,
       });
     }

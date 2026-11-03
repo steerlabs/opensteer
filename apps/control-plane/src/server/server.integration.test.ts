@@ -1,5 +1,7 @@
 import { createHmac } from "node:crypto";
 import {
+  ConnectOperationIdSchema,
+  ControlPlaneErrorResponseSchema,
   ControlPlaneAccountIdSchema,
   type ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
@@ -9,7 +11,7 @@ import {
   opensteerAccountNativeOAuthClients,
 } from "@opensteer/core";
 import { sql } from "kysely";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ControlPlaneAuthenticator,
   createControlPlaneAuth,
@@ -22,6 +24,7 @@ import { migrateControlPlaneToLatest } from "../database/migrations.js";
 import { PortalSessionStore } from "../portal/portal-sessions.js";
 import { createControlPlaneServer } from "./server.js";
 import { ControlPlaneStore } from "../database/store.js";
+import { ControlPlaneError } from "./errors.js";
 
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -199,6 +202,51 @@ integration("Opensteer Account host", () => {
     expect(response.statusCode).toBe(303);
     expect(response.headers.location).toBe("/");
     expect(response.headers["set-cookie"]).toBeTruthy();
+  });
+
+  it("preserves the typed completed-operation result in the Account HTTP error", async () => {
+    const authority = {
+      credentialHash: "credential-hash",
+      deploymentId: DeploymentIdSchema.parse(`dep_${crypto.randomUUID()}`),
+      hostInstanceId: HostInstanceIdSchema.parse(`hst_${crypto.randomUUID()}`),
+    };
+    const completedOperation = {
+      operationId: ConnectOperationIdSchema.parse(`cop_${crypto.randomUUID()}`),
+      operationKind: "revoke" as const,
+      generation: 7,
+    };
+    const authenticate = vi
+      .spyOn(store, "authenticateHostCredential")
+      .mockResolvedValueOnce(authority);
+    const revoke = vi.spyOn(connectLifecycle, "revokeForHost").mockRejectedValueOnce(
+      new ControlPlaneError("conflict", "Completed Connect operation was superseded", {
+        reason: "connect-operation-completed-superseded",
+        completedOperation,
+      }),
+    );
+    try {
+      const response = await server.inject({
+        method: "DELETE",
+        url: "/v1/host/connect",
+        headers: { authorization: `Bearer osc_${"a".repeat(43)}` },
+        payload: {
+          hostInstanceId: authority.hostInstanceId,
+          operationId: completedOperation.operationId,
+        },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(ControlPlaneErrorResponseSchema.parse(response.json())).toEqual({
+        error: {
+          code: "conflict",
+          message: "Completed Connect operation was superseded",
+          reason: "connect-operation-completed-superseded",
+          completedOperation,
+        },
+      });
+    } finally {
+      authenticate.mockRestore();
+      revoke.mockRestore();
+    }
   });
 
   async function registerDeployment(name: string, slug: string) {

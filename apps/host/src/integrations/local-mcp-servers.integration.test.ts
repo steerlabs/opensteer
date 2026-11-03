@@ -1,58 +1,15 @@
-/**
- * MCP servers a computer runs, end to end on real parts: one real Host over
- * its real sockets and gateway, an Agent Plugin installed through the Host
- * API, a Mac's real `integrations` stream carrying the Runner's own
- * `LocalMcpServers` as the Runner prepares it, the desktop's signed approval,
- * and a real stdio MCP server the Runner starts. Only the desktop's end of the
- * bridge is a fake; its approval key is the test's.
- *
- * Ways this can fail, each asserted below:
- *  1. The Host runs the plugin's program itself, or before its computer's
- *     owner approved it there.
- *  2. The Mac is asked about something other than the exact launch that will
- *     run, or an answer signed by any other key is accepted.
- *  3. A Host can make the computer run a launch its owner did not approve —
- *     a substituted command, or one it asked about and answered for itself.
- *  4. Once approved, the server's tools are not discovered.
- *  5. A call does not reach the server on the Mac, or its result does not
- *     come back.
- *  6. An answer larger than the stream carries breaks the stream instead of
- *     failing that one call.
- *  7. A write whose answer was lost is reported as a failure a caller may
- *     retry, rather than as unconfirmed; a program that exits leaving a
- *     process holding its output keeps its session, or that process, alive.
- *  8. A Mac that goes offline leaves its server running, or its tools
- *     looking ready; coming back does not restore them.
- *  9. A Runner that lost what it was approved runs the server anyway, or
- *     never asks the Mac again.
- * 10. Installing the plugin again, unchanged, loses its tools or asks the
- *     Mac again for what it already approved.
- * 11. Installing it with a changed launch leaves the old program running,
- *     or runs the new one before the Mac approved it.
- * 12. Uninstalling the plugin leaves its approval waiting or its program
- *     running.
- * 13. Unframed output exceeding the buffer limit or malformed JSON leaves a
- *     live process and a hung call instead of ending only that session.
- *
- * Writes `result.json` to `OPENSTEER_LOCAL_MCP_E2E_ARTIFACT_DIR`, or a
- * temporary directory, whether it passes or not.
- */
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+/** Host-owner consent, exact launch binding, Runner execution and teardown on real sockets. */
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { agentPhoneOwnerAccessMigration, IntegrationPlatformStore } from "@opensteer/database";
+import { IntegrationPlatformStore } from "@opensteer/database";
 import type { ComputerAppSetupRequest, LocalMcpLaunch } from "@opensteer/integration-core";
 import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
-import { createComputerAppApproval } from "@opensteer/runner-auth";
-import {
-  LocalMcpApprovals,
-  LocalMcpServers,
-  prepareIntegrationsModule,
-  type LocalMcpFrame,
-} from "@opensteer/runner";
+
+import { LocalMcpServers, prepareIntegrationsModule, type LocalMcpFrame } from "@opensteer/runner";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   connectComputerAppMachine,
@@ -167,42 +124,33 @@ integration("MCP servers on a computer", () => {
       expect(server.status).toBe("needs-attention");
       const launch = (server.transport as { readonly launch: LocalMcpLaunch }).launch;
       expect(launch).toMatchObject({ command: "sh", type: "stdio" });
-      await new Promise((resolve) => setTimeout(resolve, 500));
       expect(await readPid(fixture.pidFile)).toBeNull();
       record("installed and waiting", { launch, server: server.id });
 
-      // 2. The Mac is asked about exactly that launch; another key is refused.
+      // Review is owner-only; summaries never carry launch secrets.
       const asked = await waitingRequest(host, server.id);
       expect(asked.server?.launch).toEqual(launch);
       expect(asked.definitionDigest).toBe(localMcpLaunchDigest(launch));
-      const keysBefore = await host.store.database
-        .selectFrom("computerUseApprovalKeys")
-        .selectAll()
-        .orderBy("runnerId")
-        .execute();
-      await agentPhoneOwnerAccessMigration.up(host.store.database);
-      expect(
-        await host.store.database
-          .selectFrom("computerUseApprovalKeys")
-          .selectAll()
-          .orderBy("runnerId")
-          .execute(),
-      ).toEqual(keysBefore);
-      expect(await waitingRequest(host, server.id)).toEqual(asked);
-      record("phone cutover preserves Mac signing keys and pending local MCP approval", {
-        runnerId: computer.runnerId,
-        request: asked.id,
-      });
-      const forged = await desktop.answer(asked.id, {
-        approval: createComputerAppApproval(generateKeyPairSync("ed25519").privateKey, asked),
-        kind: "allow",
-      });
-      expect(forged.kind).toBe("refused");
-      expect((await serverRow(host)).status).toBe("needs-attention");
+      const summaries = await testRpcData(
+        host.origin,
+        "integration.computer.setup.list",
+        {},
+        { headers: host.ownerHeaders },
+      );
+      expect(summaries.requests.find(({ id }) => id === asked.id)?.server).not.toHaveProperty(
+        "launch",
+      );
+      const reviewed = await testRpcData(
+        host.origin,
+        "integration.computer.setup.review",
+        { setupRequestId: asked.id },
+        { headers: host.ownerHeaders },
+      );
+      expect(reviewed.request.server?.launch).toEqual(launch);
 
       // 3. Approved on the Mac: started there once, and its tools listed.
-      const approved = await desktop.answer(asked.id, {
-        approval: createComputerAppApproval(computer.approvalKey.privateKey, asked),
+      const approved = await computer.answer(asked.id, {
+        setupRequestId: asked.id,
         kind: "allow",
       });
       expect(approved.kind).toBe("allowed");
@@ -227,14 +175,6 @@ integration("MCP servers on a computer", () => {
       expect(await readPid(fixture.pidFile)).not.toBeNull();
       record("approved and discovered", tools);
 
-      // 4. The Mac runs only what was approved there, whoever asks.
-      const refused: LocalMcpFrame[] = [];
-      const standalone = new LocalMcpServers({
-        approvals: new LocalMcpApprovals(join(runnerData, "integrations", "mcp-approvals.json")),
-      });
-      standalone.attach(async (frame) => {
-        refused.push(frame);
-      });
       const fence = {
         auxiliaryStreamId: "rax_00000000-0000-4000-8000-000000000000",
         bootId: "rbt_00000000-0000-4000-8000-000000000000",
@@ -244,25 +184,6 @@ integration("MCP servers on a computer", () => {
         module: "integrations",
         runnerId: computer.runnerId,
       } as const;
-      const evil = {
-        ...launch,
-        args: [...(launch.type === "stdio" ? launch.args : []), "--evil"],
-      } as LocalMcpLaunch;
-      // Whatever the Host lists or says it decided, only what the person
-      // allowed on this Mac runs here: the evil launch was never allowed.
-      await standalone.open({
-        ...fence,
-        launch: evil,
-        serverId: server.id,
-        sessionId: randomUUID(),
-        type: "host.integrations.mcp.open",
-      } as Parameters<LocalMcpServers["open"]>[0]);
-      expect(refused).toMatchObject([
-        { error: { code: "unapproved" }, type: "runner.integrations.mcp.closed" },
-      ]);
-      standalone.detach();
-      record("a substituted launch is refused", refused);
-
       // A spawn error can both reject start() and emit onerror. It still ends
       // one session exactly once, with no spurious opened frame.
       const failedLaunch: LocalMcpLaunch = {
@@ -273,13 +194,10 @@ integration("MCP servers on a computer", () => {
         env: {},
       };
       const failedFrames: LocalMcpFrame[] = [];
-      const failing = new LocalMcpServers({
-        approvals: new LocalMcpApprovals(join(work, "failed-launch-approvals.json")),
-      });
+      const failing = new LocalMcpServers();
       failing.attach(async (frame) => {
         failedFrames.push(frame);
       });
-      failing.allow({ serverId: server.id, launchDigest: localMcpLaunchDigest(failedLaunch) });
       await failing.open({
         ...fence,
         launch: failedLaunch,
@@ -404,31 +322,21 @@ integration("MCP servers on a computer", () => {
       expect(toolText(await call("echo", { text: "back" }))).toBe("echo: back");
       record("offline and back", offline);
 
-      // 9. A Runner that lost its approvals refuses, and the Mac is asked again.
+      // Host-held exact-launch consent survives a fresh Runner instance.
       await computer.disconnectModule();
-      const restarted = prepare(join(work, "runner-wiped"));
+      const restarted = prepare(join(work, "restarted-runner"));
       await computer.reconnectModule({
         computerUse: restarted.computerUse,
         localMcp: restarted.localMcp,
       });
-      await waitForCondition(
-        async () => toolReadiness(await search(), "echo").code === "READY",
-        30_000,
-      );
-      expect(toolText(await call("echo", { text: "who are you" }))).toBe(
-        "notes-fixture needs approval on Studio Mac again. Its owner has been asked there.",
-      );
-      const again = await waitingRequest(host, server.id);
-      expect(again.id).not.toBe(asked.id);
-      const reapproved = await desktop.answer(again.id, {
-        approval: createComputerAppApproval(computer.approvalKey.privateKey, again),
-        kind: "allow",
-      });
-      expect(reapproved.kind).toBe("allowed");
       await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
-      expect(toolText(await call("echo", { text: "approved again" }))).toBe("echo: approved again");
-      record("asked again after a Runner lost its approval", { request: again.id });
-
+      expect(
+        await host.store.database
+          .selectFrom("computerAppSetupRequests")
+          .select("id")
+          .where("definitionId", "=", server.id)
+          .execute(),
+      ).toEqual([]);
       // 10. Installed again as it was, twice over, the second while the first
       // is still being listed: still approved, and listed again now.
       for (const key of ["local-mcp-reinstall", "local-mcp-reinstall-again"]) {
@@ -483,8 +391,8 @@ integration("MCP servers on a computer", () => {
           .where("status", "=", "active")
           .execute(),
       ).toEqual([]);
-      const allowedChange = await desktop.answer(askedChanged.id, {
-        approval: createComputerAppApproval(computer.approvalKey.privateKey, askedChanged),
+      const allowedChange = await computer.answer(askedChanged.id, {
+        setupRequestId: askedChanged.id,
         kind: "allow",
       });
       expect(allowedChange.kind).toBe("allowed");

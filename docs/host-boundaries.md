@@ -28,37 +28,43 @@ own first-owner credential. Native OAuth is server-only.
 When enabled, `runtimeOrigin` must equal `canonicalOrigin`: external Runners
 must reach every capability URL the Host mints. See [Computers](computers.md).
 
-## Credentials and machine-local ownership
+## Credentials and session authority
 
 [HostAuthenticator](../apps/host/src/identity/auth.ts) selects one Host-issued
-credential family. A malformed or unsupported `Authorization` header must fail,
-never fall through to a browser cookie.
+credential family. Duplicate Authorization fields are rejected from raw HTTP
+headers before Node can discard their ambiguity. A malformed or unsupported
+Authorization header fails rather than falling through to a browser cookie.
 
-Canonical browser cookies, native OAuth `Bearer` tokens and Personal remote
-sessions have different authority. Personal remote sessions have cookie and
-`PersonalRemote` header deliveries, both with `surface: "personal-remote"`.
-Cookie mutations require an origin check; header credentials are not ambient.
-Neither a native token nor a remote session proves machine-local ownership.
+Authority comes from the authenticated user and existing ownership, membership
+and role checks, independently of device or route. Every Personal owner session
+can administer remote access and see the linked Account identity. Server
+administration still requires an administrator; session removal is limited to
+the caller's own sessions, including the current one.
 
-Machine-local authority requires a `machineLocalSessions` marker **and**
-`credentialKind === "browser-cookie"`. Only `claimLocalMachineOwner` writes the
-marker by spending the supervisor's process-launch capability. A native token
-can reference the browser session that authorized it, so checking the marker
-alone would let local authority travel off the computer. A canonical surface,
-an Origin header or the absence of a remote-session row is not proof.
+Cookie mutations require one exact Origin: the configured origin for a canonical
+browser cookie, or the stored issuance origin of a Personal remote cookie whose
+signed route generation is still current. Missing, opaque, repeated or mismatched
+Origins fail. Authenticated native OAuth Bearer and PersonalRemote header
+credentials are non-ambient and need no Origin. CORS is not an authorization
+substitute and route headers never prove who is calling.
+
+`claimLocalMachineOwner` spends the supervisor's process-launch capability to
+bootstrap a normal owner session. That session has no additional administrative
+powers. Owner actions use ordinary authenticated sessions. The process capability
+also authenticates the private desktop executor and tunnel-credential delivery;
+these credentials never go to an owner session or an administration status payload.
 
 [IdentityService](../packages/identity/src/identity-service.ts) checks the native
-token's `authSessions` row on every call. Native OAuth revocation ends that
-session, not just its refresh token; otherwise its access token could survive
-sign-out. Revocation must not end other devices' sessions.
+token's `authSessions` row on every call. Revocation commits before success; the
+request's realtime teardown follows response completion. Native OAuth revocation
+ends its session, not just its refresh token. Other devices' sessions remain
+valid unless explicitly removed.
 
-`sessions.list` names each device from its stored user agent through
-[`describeSessionDevice`](../packages/identity/src/session-device.ts), which
-assembles labels such as "Chrome on Mac" only from fixed names and never echoes
-the header. Personal remote exchanges store the exchanging client's user agent
-for the same reason. The listed `machineLocal` flag lets clients fold the
-hosting computer's own sign-ins into that computer; it is presentation, never
-authority.
+`sessions.list` describes each session through
+[`describeSessionDevice`](../packages/identity/src/session-device.ts), using fixed
+names rather than echoing user-agent headers. Desktop bootstrap sessions are
+ordinary removable entries. Personal remote exchanges store the exchanging
+client's user agent for the same labeling.
 
 Account Connect grants bind `clientSurface`; the exchange derives cookie or
 header delivery from it. Pairing-code clients declare the delivery they can
@@ -86,10 +92,10 @@ RPC. Domain mutations use `commands.dispatch`. Machine protocols, authentication
 bootstrap, webhooks, upgrades, downloads and static distribution are REST
 exceptions, not permission to add parallel browser APIs.
 
-Cookie mutations require origin protection. Exact-origin commands additionally
-exclude routed Personal sessions and origin-less native clients; keep remote
-access-reduction actions usable. `exactOriginCommands` is a subset, so types do
-not catch omissions. Origin checks do not protect against a stolen non-browser token.
+Mutations use credential-aware Origin protection once, during authentication;
+individual destructive commands do not impose an additional canonical-origin
+requirement. Unauthenticated browser sign-in/setup retains its browser-origin
+boundary. Origin checks cannot protect a stolen non-browser credential.
 
 Viewer read/mute state belongs to the authenticated person, never shared durable
 Thread/event records. Viewer updates must be addressed only to that member and
@@ -119,9 +125,10 @@ Phone data loss and consumed-ticket upgrade failures close viewers with retryabl
 
 ## Compatibility
 
-The native-only browser cutover deliberately uses Host API epoch 49. There are no
-users requiring the removed Vault, preparation or Guest-save behavior. Prior
-epochs receive the existing discovery/RPC/subscription update refusal.
+Host API epoch 50 deliberately removes the device-local approval paths: an
+earlier client would offer only decline for saved logins or wait for an answer on
+that Mac. Prior epochs receive the existing discovery/RPC/subscription update
+refusal.
 
 After that boundary, compatibility targets the previous **public** release.
 [The previous-release journey](../apps/host/src/agents/previous-release-compat.integration.test.ts)
@@ -305,8 +312,7 @@ with `browser-target-control-unsupported` and never requests pictures instead
 
 Runner descriptors are signed and read through the owning schemas described above.
 Enrollment does not promise every execution contract is supported. The Host never relies
-on an optional feature that was not advertised, such as `device`,
-`modules.browser.stateImport` or `modules.integrations.computerAppApprovals`.
+on an optional feature that was not advertised, such as `device` or `modules.browser.stateImport`.
 Changing required execution or storage semantics needs an explicit compatibility
 contract; it cannot silently remove the bound agents environment. Upgrade the Host
 before Runners that require semantics it cannot read; a Personal Deployment ships
@@ -348,6 +354,12 @@ hide live-only sessions from other producers. Icons may outlive a session but
 require authorization against its latest session and must never start a browser.
 Group invalidation is owner-addressed. See
 [tab lifetime](browser-sessions.md#open-workspace-tabs).
+
+Computer app approvals use authenticated owner sessions on every device. Mac integrations
+protocol 6 and iPhone integrations protocol 2 remove the desktop/iPhone signing and
+approval relay contracts. Older integrations modules stay visible with an update refusal;
+other enrolled modules remain available. Android integrations and Runner proof format
+are unchanged. The Host alone admits local MCP launches against current owner consent.
 
 ### iPhone apps capability and release order
 

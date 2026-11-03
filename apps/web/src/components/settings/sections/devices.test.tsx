@@ -4,7 +4,7 @@ import { MockHostClient } from "@opensteer/client/mock";
 import { revokeCurrentSession } from "./devices.js";
 
 describe("device disconnection", () => {
-  it("revokes the current Host session instead of invoking cookie-only sign-out", async () => {
+  it("revokes the current authenticated Host session", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const before = unwrapRpcResult(await client.rpc["sessions.list"]({}));
     const current = before.sessions.find((session) => session.current);

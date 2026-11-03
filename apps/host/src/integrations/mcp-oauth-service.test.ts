@@ -1,3 +1,4 @@
+import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createIntegrationId } from "@opensteer/integration-core";
@@ -34,6 +35,7 @@ const sdk = vi.hoisted(() => {
           authorizationServerUrl: string;
         }): Promise<void>;
         state(): Promise<string> | string;
+        redirectUrl: URL;
       };
       if (!transport.finished) {
         await provider.saveDiscoveryState({
@@ -49,7 +51,9 @@ const sdk = vi.hoisted(() => {
         await provider.saveCodeVerifier("v".repeat(43));
         const state = await provider.state();
         provider.redirectToAuthorization(
-          new URL(`https://accounts.example.test/authorize?state=${state}`),
+          new URL(
+            `https://accounts.example.test/authorize?state=${state}&client_id=registered-opensteer&redirect_uri=${encodeURIComponent(provider.redirectUrl.toString())}&response_type=code&code_challenge=${"c".repeat(43)}&code_challenge_method=S256`,
+          ),
         );
         throw new UnauthorizedError();
       }
@@ -77,7 +81,10 @@ vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
 
 import { McpOAuthService } from "./mcp-oauth-service.js";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("McpOAuthService", () => {
   it("requires reconnect before exposing legacy OAuth credentials without an issuer", async () => {
@@ -230,14 +237,21 @@ describe("McpOAuthService", () => {
     expect(replace).toHaveBeenCalledTimes(3);
   });
 
-  it.each([true, false])(
-    "requires supported registration before storing MCP credentials (DCR: %s)",
-    async (supportsDcr) => {
+  it.each(["local-dcr", "unsupported", "relay-dcr", "relay-metadata", "relay-rejected"] as const)(
+    "pins redirect and issuer through supported registration (%s)",
+    async (mode) => {
+      const supportsDcr = mode !== "unsupported";
+      const relay = mode.startsWith("relay");
+      const redirectUrl = relay
+        ? "https://account.example.test/v1/oauth-broker/callback/mcp"
+        : "http://127.0.0.1:43122/v1/integration-platform/mcp-oauth/callback";
+      const metadataUrl = "https://account.example.test/v1/oauth-broker/mcp/client-metadata.json";
+      let registeredMetadata: unknown;
       const ownerUserId = createId("user");
       const connectionId = createIntegrationId("connection");
       const serverId = createIntegrationId("server");
       const endpoint = "http://127.0.0.1:43123/mcp";
-      const fetch_ = vi.fn(async (target: string | URL | Request) => {
+      const fetch_ = vi.fn(async (target: string | URL | Request, init?: RequestInit) => {
         const url = String(target instanceof Request ? target.url : target);
         if (url.includes("oauth-protected-resource")) {
           return new Response(
@@ -254,6 +268,7 @@ describe("McpOAuthService", () => {
               authorization_endpoint: "http://127.0.0.1:43124/authorize",
               issuer: "http://127.0.0.1:43124",
               ...(supportsDcr ? { registration_endpoint: "http://127.0.0.1:43124/register" } : {}),
+              client_id_metadata_document_supported: mode === "relay-metadata",
               response_types_supported: ["code"],
               token_endpoint: "http://127.0.0.1:43124/token",
             }),
@@ -261,9 +276,18 @@ describe("McpOAuthService", () => {
           );
         }
         if (url.endsWith("/register")) {
-          return new Response(JSON.stringify({ client_id: "registered-opensteer" }), {
-            status: 201,
-          });
+          registeredMetadata = JSON.parse(String(init?.body));
+          return new Response(
+            JSON.stringify({
+              client_id: "registered-opensteer",
+              ...(mode === "relay-rejected"
+                ? { redirect_uris: ["http://127.0.0.1:43122/callback"] }
+                : {}),
+            }),
+            {
+              status: 201,
+            },
+          );
         }
         throw new Error(`Unexpected OAuth request ${url}`);
       });
@@ -288,7 +312,12 @@ describe("McpOAuthService", () => {
           replaceMcpOAuthCredential,
         } as never,
         vault: {
-          open: vi.fn(async () => ({ state: "{}" })),
+          open: vi.fn(async () => ({
+            state: JSON.stringify({
+              redirectUrl,
+              ...(mode === "relay-metadata" ? { clientMetadataUrl: metadataUrl } : {}),
+            }),
+          })),
           seal: vi.fn(async () => ({ envelope: Buffer.from("sealed"), keyVersion: 1 })),
         } as never,
       });
@@ -304,12 +333,27 @@ describe("McpOAuthService", () => {
         );
         return;
       }
+      if (mode === "relay-rejected") {
+        await expect(provider.discoveryState?.()).rejects.toThrow(redirectUrl);
+        expect(replaceMcpOAuthCredential).not.toHaveBeenCalled();
+        return;
+      }
       await expect(provider.discoveryState?.()).resolves.toMatchObject({
         authorizationServerUrl: "http://127.0.0.1:43124",
         resourceMetadata: { resource: endpoint },
       });
       expect(provider.clientInformation()).toMatchObject({
-        client_id: "registered-opensteer",
+        client_id: mode === "relay-metadata" ? metadataUrl : "registered-opensteer",
+      });
+      expect(provider.clientMetadata.redirect_uris).toEqual([redirectUrl]);
+      if (mode === "relay-metadata") {
+        expect(registeredMetadata).toBeUndefined();
+        expect(provider.clientMetadataUrl).toBe(metadataUrl);
+        return;
+      }
+      expect(registeredMetadata).toMatchObject({
+        redirect_uris: [redirectUrl],
+        token_endpoint_auth_method: "none",
       });
       expect(fetch_.mock.calls.map(([target]) => String(target))).toEqual(
         expect.arrayContaining([
@@ -382,103 +426,189 @@ describe("McpOAuthService", () => {
     expect(redacted).not.toContain(refreshToken);
   });
 
-  it.each([false, true])(
-    "authorizes a new or existing MCP account (reconnect: %s)",
-    async (reconnect) => {
-      const ownerUserId = createId("user");
-      const requestId = createId("request");
-      const installationId = createIntegrationId("installation");
-      const serverId = createIntegrationId("server");
-      const existingConnectionId = createIntegrationId("connection");
-      const server = {
-        connectionRequirement: { kind: "mcp-oauth" as const },
-        id: serverId,
-        installationId,
-        name: "default",
-        status: "needs-attention" as const,
-        statusDetail: "Unauthorized",
-        toolGeneration: 1,
-        transport: {
-          headers: {},
-          type: "streamable-http" as const,
-          url: "http://127.0.0.1:43123/mcp",
+  it.each([
+    { reconnect: false, relay: false },
+    { reconnect: true, relay: false },
+    { reconnect: false, relay: true },
+    { reconnect: true, relay: true },
+    { reconnect: false, relay: true, badIssuer: true },
+    { reconnect: false, relay: true, abandonedClaim: true },
+  ])("authorizes a new or existing MCP account (%j)", async (scenario) => {
+    const { reconnect, relay, badIssuer, abandonedClaim } = scenario;
+    const ownerUserId = createId("user");
+    const requestId = createId("request");
+    const installationId = createIntegrationId("installation");
+    const serverId = createIntegrationId("server");
+    const existingConnectionId = createIntegrationId("connection");
+    const server = {
+      connectionRequirement: { kind: "mcp-oauth" as const },
+      id: serverId,
+      installationId,
+      name: "default",
+      status: "needs-attention" as const,
+      statusDetail: "Unauthorized",
+      toolGeneration: 1,
+      transport: {
+        headers: {},
+        type: "streamable-http" as const,
+        url: "http://127.0.0.1:43123/mcp",
+      },
+      updatedAt: new Date().toISOString(),
+    };
+    const installation = {
+      createdAt: new Date().toISOString(),
+      description: "Example",
+      id: installationId,
+      manifest: {},
+      name: "example",
+      provenance: {},
+      revision: 1,
+      sourceKind: "remote-mcp" as const,
+      status: "active" as const,
+      title: "Example",
+      trust: "administrator-approved" as const,
+      updatedAt: new Date().toISOString(),
+      version: null,
+    };
+    let attemptId: ReturnType<typeof createIntegrationId<"mcpOauthAttempt">> | undefined;
+    let attemptPayload: Readonly<Record<string, string>> | undefined;
+    let attemptAuthorizationUrl = "";
+    const attemptState = "s".repeat(43);
+    let status = "launched";
+    let failureCode: string | null = null;
+    let resultConnectionId: string | null = null;
+    const attempts = {
+      begin: vi.fn(
+        async (input: {
+          id: ReturnType<typeof createIntegrationId<"mcpOauthAttempt">>;
+          payload: (state: string) => Promise<{
+            authorizationUrl: string;
+            payload: Readonly<Record<string, string>>;
+          }>;
+        }) => {
+          attemptId = input.id;
+          const built = await input.payload(attemptState);
+          attemptAuthorizationUrl = built.authorizationUrl;
+          attemptPayload = built.payload;
+          return {
+            attemptId: input.id,
+            expiresAt: new Date("2026-08-13T12:10:00.000Z"),
+            launchTicket: "t".repeat(43),
+            state: attemptState,
+          };
         },
-        updatedAt: new Date().toISOString(),
-      };
-      const installation = {
-        createdAt: new Date().toISOString(),
-        description: "Example",
-        id: installationId,
-        manifest: {},
-        name: "example",
-        provenance: {},
-        revision: 1,
-        sourceKind: "remote-mcp" as const,
-        status: "active" as const,
-        title: "Example",
-        trust: "administrator-approved" as const,
-        updatedAt: new Date().toISOString(),
-        version: null,
-      };
-      let attemptId: ReturnType<typeof createIntegrationId<"mcpOauthAttempt">> | undefined;
-      let attemptPayload: Readonly<Record<string, string>> | undefined;
-      let attemptAuthorizationUrl = "";
-      const attemptState = "s".repeat(43);
-      const attempts = {
-        begin: vi.fn(
-          async (input: {
-            id: ReturnType<typeof createIntegrationId<"mcpOauthAttempt">>;
-            payload: (state: string) => Promise<{
-              authorizationUrl: string;
-              payload: Readonly<Record<string, string>>;
-            }>;
-          }) => {
-            attemptId = input.id;
-            const built = await input.payload(attemptState);
-            attemptAuthorizationUrl = built.authorizationUrl;
-            attemptPayload = built.payload;
-            return {
-              attemptId: input.id,
-              expiresAt: new Date("2026-08-13T12:10:00.000Z"),
-              launchTicket: "t".repeat(43),
-              state: attemptState,
-            };
-          },
-        ),
-        claim: vi.fn(async () => ({
-          id: attemptId,
-          ownerUserId,
-          payload: attemptPayload,
-          surface: "desktop",
-        })),
-        fail: vi.fn(async () => undefined),
-      };
-      const complete = vi.fn();
-      const store = {
-        completeMcpOAuthAttempt: complete,
-        getMcpOAuthServer: vi.fn(async () => ({
-          installation,
-          server,
-          ...(reconnect ? { reconnect: { connectionId: existingConnectionId, revision: 3 } } : {}),
-        })),
-      };
-      const vault = {
-        open: vi.fn(async (envelope: Buffer) => JSON.parse(envelope.toString("utf8"))),
-        seal: vi.fn(async (value: Readonly<Record<string, string>>) => ({
-          envelope: Buffer.from(JSON.stringify(value)),
-          keyVersion: 1,
-        })),
-      };
-      const onConnectionConnected = vi.fn(async () => undefined);
-      const service = new McpOAuthService({
-        attempts: attempts as never,
-        exposure: "loopback",
-        onConnectionConnected,
-        publicUrl: new URL("http://127.0.0.1:43122"),
-        store: store as never,
-        vault: vault as never,
+      ),
+      claim: vi.fn(async () => ({
+        id: attemptId,
+        ownerUserId,
+        payload: attemptPayload,
+        surface: "desktop",
+      })),
+      fail: vi.fn(async (_id: string, reason: string) => {
+        status = "failed";
+        failureCode = reason === "exchange-failed" ? null : reason;
+      }),
+      status: vi.fn(async () => ({
+        status: status === "claimed" ? "launched" : status,
+        connectionId: resultConnectionId,
+        expiresAt: new Date(),
+        failureCode,
+      })),
+      inspect: vi.fn(async () => attemptPayload),
+      claimHosted: vi.fn(async () => {
+        if (status !== "launched") return null;
+        status = "claimed";
+        return { id: attemptId, ownerUserId, payload: attemptPayload, surface: "web" };
+      }),
+    };
+    const complete = vi.fn(async (input: { connectionId: string }) => {
+      status = "completed";
+      resultConnectionId = input.connectionId;
+    });
+    const completionGate = Promise.withResolvers<void>();
+    if (relay && !badIssuer && !abandonedClaim)
+      complete.mockImplementationOnce(async (input) => {
+        await completionGate.promise;
+        status = "completed";
+        resultConnectionId = input.connectionId;
       });
+    const store = {
+      completeMcpOAuthAttempt: complete,
+      getMcpOAuthServer: vi.fn(async () => ({
+        installation,
+        server,
+        ...(reconnect ? { reconnect: { connectionId: existingConnectionId, revision: 3 } } : {}),
+      })),
+    };
+    const vault = {
+      open: vi.fn(async (envelope: Buffer) => JSON.parse(envelope.toString("utf8"))),
+      seal: vi.fn(async (value: Readonly<Record<string, string>>) => ({
+        envelope: Buffer.from(JSON.stringify(value)),
+        keyVersion: 1,
+      })),
+    };
+    const onConnectionConnected = vi.fn(async () => undefined);
+    const binding = {
+      issuer: "https://account.example.test",
+      subject: `acct_${crypto.randomUUID()}`,
+      linkGeneration: "g".repeat(43),
+    };
+    let hostPublicKey = "";
+    const broker = {
+      issuer: binding.issuer,
+      callbackUrl: () => `${binding.issuer}/v1/oauth-broker/callback/mcp`,
+      metadata: vi.fn(async () => ({ mcpCallbackRelay: 1 })),
+      createCallbackRelay: vi.fn(
+        async (input: { hostPublicKey: string; attemptId: string; expiresAt: string }) => {
+          hostPublicKey = input.hostPublicKey;
+          return {
+            attemptId: input.attemptId,
+            expiresAt: input.expiresAt,
+            launchUrl: `${binding.issuer}/launch`,
+          };
+        },
+      ),
+      status: vi.fn(async () => ({ status: "sealed" })),
+      pull: vi.fn(async () => ({
+        status: "sealed",
+        sealedResult: sealOAuthBrokerPayload(
+          {
+            parameters: [
+              ["state", attemptState],
+              ["code", "authorization-code"],
+              [
+                "iss",
+                badIssuer ? "https://attacker.example.test" : "https://accounts.example.test",
+              ],
+            ],
+          },
+          hostPublicKey,
+          JSON.parse(attemptPayload!.payload!).relay.context,
+        ),
+      })),
+      acknowledge: vi.fn(async () => undefined),
+    };
+    const service = new McpOAuthService({
+      ...(relay
+        ? {
+            hostedOAuth: {
+              kind: "personal" as const,
+              accountSubject: async () => binding as never,
+              broker: broker as never,
+              deploymentAuthorityDigest: "d".repeat(43),
+            },
+            deploymentPosture: async () => "account-linked-personal" as const,
+          }
+        : {}),
+      attempts: attempts as never,
+      exposure: "loopback",
+      onConnectionConnected,
+      publicUrl: new URL("http://127.0.0.1:43122"),
+      store: store as never,
+      vault: vault as never,
+    });
 
+    if (!relay)
       await expect(
         service.beginAuthorization({
           displayName: "Work account",
@@ -493,112 +623,170 @@ describe("McpOAuthService", () => {
         code: "canonical_surface_required",
         message: canonicalAuthorizationRepair,
       });
-      expect(store.getMcpOAuthServer).not.toHaveBeenCalled();
+    if (!relay) expect(store.getMcpOAuthServer).not.toHaveBeenCalled();
 
-      const begun = await service.beginAuthorization({
-        displayName: "Work account",
-        ownerUserId,
-        requestId,
-        requestSurface: "canonical",
-        returnPath: "/",
-        serverId,
-        surface: "desktop",
-      });
-      expect(begun).toMatchObject({ attemptId, launchTicket: "t".repeat(43) });
+    const begun = await service.beginAuthorization({
+      displayName: "Work account",
+      ownerUserId,
+      requestId,
+      requestSurface: relay ? "personal-remote" : "canonical",
+      returnPath: "/",
+      serverId,
+      surface: "desktop",
+    });
+    expect(begun).toMatchObject({ attemptId, launchTicket: "t".repeat(43) });
+    if (relay) expect(attemptAuthorizationUrl).toBe(`${binding.issuer}/launch`);
+    else
       expect(attemptAuthorizationUrl).toMatch(
         /^https:\/\/accounts\.example\.test\/authorize\?state=/u,
       );
-      expect(attempts.begin).toHaveBeenCalledOnce();
-      const previousPayloadSchema = z.strictObject({
-        displayName: z.unknown(),
-        oauthState: z.unknown(),
-        requestId: z.unknown(),
-        returnPath: z.unknown(),
-        serverId: z.unknown(),
-      });
-      expect(previousPayloadSchema.safeParse(JSON.parse(attemptPayload!.payload!)).success).toBe(
-        !reconnect,
-      );
-      const fetchSpy = vi.fn(
-        async (_target: string | URL | Request, _init?: RequestInit) =>
-          new Response(null, {
-            status: 307,
-            headers: { location: "https://attacker.example/token" },
-          }),
-      );
-      vi.stubGlobal("fetch", fetchSpy);
-      const redirect = await sdk.state.fetch!("http://127.0.0.1:43124/token", {
-        method: "POST",
-        body: "refresh_token=test-secret",
-      });
-      expect(redirect.status).toBe(307);
-      expect(fetchSpy).toHaveBeenCalledOnce();
-      expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
-
-      const state = new URL(attemptAuthorizationUrl).searchParams.get("state")!;
-      const completed = await service.handleAuthorizationCallback({
-        attemptId: attemptId!,
-        browserBinding: "b".repeat(43),
-        parameters: new URLSearchParams({
-          code: "authorization-code",
-          future_provider_field: "accepted",
-          scope: "records.read",
-          state,
+    expect(attempts.begin).toHaveBeenCalledOnce();
+    const previousPayloadSchema = z.strictObject({
+      displayName: z.unknown(),
+      oauthState: z.unknown(),
+      requestId: z.unknown(),
+      returnPath: z.unknown(),
+      serverId: z.unknown(),
+    });
+    expect(previousPayloadSchema.safeParse(JSON.parse(attemptPayload!.payload!)).success).toBe(
+      !reconnect && !relay,
+    );
+    const fetchSpy = vi.fn(
+      async (_target: string | URL | Request, _init?: RequestInit) =>
+        new Response(null, {
+          status: 307,
+          headers: { location: "https://attacker.example/token" },
         }),
-        state,
-      });
-      expect(completed.status).toBe("completed");
-      if (completed.status !== "completed") throw new Error("Expected completed authorization");
-      if (reconnect) expect(completed.connectionId).toBe(existingConnectionId);
-      expect(completed.returnPath).toBe("/");
-      expect(complete).toHaveBeenCalledWith(
-        expect.objectContaining({
-          connectionId: completed.connectionId,
-          displayName: "Work account",
-          ownerUserId,
-          serverId,
-          tools: [
-            expect.objectContaining({ connectionId: completed.connectionId, name: "search" }),
-          ],
-        }),
-      );
-      expect(onConnectionConnected).toHaveBeenCalledExactlyOnceWith({
-        connectionId: completed.connectionId,
-        ownerUserId,
-      });
-      expect(onConnectionConnected.mock.invocationCallOrder[0]).toBeGreaterThan(
-        complete.mock.invocationCallOrder[0]!,
-      );
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    const redirect = await sdk.state.fetch!("http://127.0.0.1:43124/token", {
+      method: "POST",
+      body: "refresh_token=test-secret",
+    });
+    expect(redirect.status).toBe(307);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
 
-      const failed = await service.handleAuthorizationCallback({
-        attemptId: attemptId!,
-        browserBinding: "b".repeat(43),
-        parameters: new URLSearchParams({ error: "server_error", state }),
-        state,
-      });
-      expect(failed).toMatchObject({
-        attemptId,
-        returnPath: "/",
-        status: "failed",
-        surface: "desktop",
-      });
-      expect(attempts.fail).toHaveBeenCalledWith(attemptId, "exchange-failed");
-      if (reconnect) {
-        store.getMcpOAuthServer.mockResolvedValue({
-          installation,
-          server,
-          reconnect: { connectionId: existingConnectionId, revision: 4 },
-        });
-        await expect(
-          service.handleAuthorizationCallback({
-            attemptId: attemptId!,
-            browserBinding: "b".repeat(43),
-            parameters: new URLSearchParams({ code: "authorization-code", state }),
+    const state = new URL(attemptAuthorizationUrl).searchParams.get("state")!;
+    if (abandonedClaim) status = "claimed";
+    const finishAuth = vi.spyOn(sdk.Transport.prototype, "finishAuth");
+    const firstPoll = relay
+      ? service.authorizationStatus({ attemptId: attemptId!, ownerUserId })
+      : null;
+    if (relay && !badIssuer && !abandonedClaim) {
+      await vi.waitFor(() =>
+        expect(complete, "MCP completion did not reach persistence").toHaveBeenCalledOnce(),
+      );
+      expect(status).toBe("claimed");
+    }
+    const secondPoll = relay
+      ? service.authorizationStatus({ attemptId: attemptId!, ownerUserId })
+      : null;
+    completionGate.resolve();
+    const completed = relay
+      ? (await Promise.all([firstPoll!, secondPoll!]))[0]!
+      : await service.handleAuthorizationCallback({
+          attemptId: attemptId!,
+          browserBinding: "b".repeat(43),
+          parameters: new URLSearchParams({
+            code: "authorization-code",
+            future_provider_field: "accepted",
+            scope: "records.read",
             state,
           }),
-        ).rejects.toThrow(/restart authorization/i);
-        expect(complete).toHaveBeenCalledOnce();
-      }
-    },
-  );
+          state,
+        });
+    if (abandonedClaim) {
+      expect(completed).toMatchObject({ status: "failed", failureCode: "grant-rejected" });
+      expect(attempts.fail).toHaveBeenCalledWith(attemptId, "grant-rejected");
+      expect(complete).not.toHaveBeenCalled();
+      expect(finishAuth).not.toHaveBeenCalled();
+      expect(onConnectionConnected).not.toHaveBeenCalled();
+      expect(
+        await service.authorizationStatus({ attemptId: attemptId!, ownerUserId }),
+      ).toMatchObject({
+        status: "failed",
+        failureCode: "grant-rejected",
+      });
+      expect(attempts.claimHosted).toHaveBeenCalledOnce();
+      return;
+    }
+    if (badIssuer) {
+      expect(completed.status).toBe("failed");
+      expect(complete).not.toHaveBeenCalled();
+      expect(onConnectionConnected).not.toHaveBeenCalled();
+      return;
+    }
+    expect(completed.status).toBe("completed");
+    if (completed.status !== "completed") throw new Error("Expected completed authorization");
+    if (reconnect) expect(completed.connectionId).toBe(existingConnectionId);
+    if ("returnPath" in completed) expect(completed.returnPath).toBe("/");
+    if (relay) {
+      expect(attempts.claimHosted).toHaveBeenCalledOnce();
+      expect(complete).toHaveBeenCalledWith(
+        expect.objectContaining({ accountBinding: { ...binding, kind: "personal" } }),
+      );
+      expect(JSON.stringify(broker.createCallbackRelay.mock.calls)).not.toContain("v".repeat(43));
+      expect(broker.createCallbackRelay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mcp: expect.objectContaining({ serverId, issuer: "https://accounts.example.test/" }),
+          authorizationUrl: expect.stringContaining(encodeURIComponent(broker.callbackUrl())),
+        }),
+      );
+    }
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: completed.connectionId,
+        displayName: "Work account",
+        ownerUserId,
+        serverId,
+        tools: [expect.objectContaining({ connectionId: completed.connectionId, name: "search" })],
+      }),
+    );
+    expect(onConnectionConnected).toHaveBeenCalledExactlyOnceWith({
+      connectionId: completed.connectionId,
+      ownerUserId,
+    });
+    expect(onConnectionConnected.mock.invocationCallOrder[0]).toBeGreaterThan(
+      complete.mock.invocationCallOrder[0]!,
+    );
+
+    if (relay) {
+      expect(
+        await service.authorizationStatus({ attemptId: attemptId!, ownerUserId }),
+      ).toMatchObject({ status: "completed" });
+      expect(complete).toHaveBeenCalledOnce();
+      expect(attempts.claimHosted).toHaveBeenCalledOnce();
+      return;
+    }
+    const failed = await service.handleAuthorizationCallback({
+      attemptId: attemptId!,
+      browserBinding: "b".repeat(43),
+      parameters: new URLSearchParams({ error: "server_error", state }),
+      state,
+    });
+    expect(failed).toMatchObject({
+      attemptId,
+      returnPath: "/",
+      status: "failed",
+      surface: "desktop",
+    });
+    expect(attempts.fail).toHaveBeenCalledWith(attemptId, "exchange-failed");
+    if (reconnect) {
+      store.getMcpOAuthServer.mockResolvedValue({
+        installation,
+        server,
+        reconnect: { connectionId: existingConnectionId, revision: 4 },
+      });
+      await expect(
+        service.handleAuthorizationCallback({
+          attemptId: attemptId!,
+          browserBinding: "b".repeat(43),
+          parameters: new URLSearchParams({ code: "authorization-code", state }),
+          state,
+        }),
+      ).rejects.toThrow(/restart authorization/i);
+      expect(complete).toHaveBeenCalledOnce();
+    }
+  });
 });

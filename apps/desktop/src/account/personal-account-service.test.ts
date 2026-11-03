@@ -1,3 +1,7 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { desktopPersonalAccountLinkSecretsPath } from "../app/application-paths.js";
 import { createId } from "@opensteer/core";
 import {
   AccountLinkGenerationSchema,
@@ -16,6 +20,7 @@ import {
 import { DesktopPersonalAccountService } from "./personal-account-service.js";
 import {
   DesktopPersonalAccountLinkStateSchema,
+  DesktopPersonalAccountLinkStore,
   type DesktopPersonalAccountLinkState,
   type PersonalAccountUnlinkStep,
 } from "./personal-account-link-store.js";
@@ -176,19 +181,21 @@ describe("DesktopPersonalAccountService", () => {
       operationId,
     );
     expect(fixture.link.ensureLinkedForMutation).not.toHaveBeenCalled();
-    expect(fixture.events).toEqual([]);
+    expect(fixture.events).toEqual(["host-link"]);
     await expect(fixture.links.load()).resolves.toBeNull();
   });
 
-  it("resumes an activating link once for the signed-in Account and never for another", async () => {
+  it("resumes stored Host activation without a desktop Account session and waits for success", async () => {
     const fixture = unlinkFixture(0);
     await fixture.links.clear();
     fixture.startActivating();
+    fixture.account.accountIdentity.mockResolvedValue(null);
 
     await expect(fixture.service.resumeActivatingLink()).resolves.toMatchObject({
-      status: "activating",
+      status: "linked",
     });
-    expect(fixture.link.ensureLinkedForMutation).toHaveBeenCalledOnce();
+    expect(fixture.host.resumeAccountLink).toHaveBeenCalledOnce();
+    expect(fixture.link.ensureLinkedForMutation).not.toHaveBeenCalled();
 
     const other = unlinkFixture(0);
     await other.links.clear();
@@ -197,14 +204,27 @@ describe("DesktopPersonalAccountService", () => {
       issuer: "https://another-account.opensteer.test",
       subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
     });
-    await expect(other.service.resumeActivatingLink()).resolves.toBeNull();
-    expect(other.link.ensureLinkedForMutation).not.toHaveBeenCalled();
+    await expect(other.service.resumeActivatingLink()).resolves.toMatchObject({
+      status: "linked-elsewhere",
+    });
+    expect(other.host.resumeAccountLink).toHaveBeenCalledOnce();
 
-    // An active link has nothing to resume, so startup stays silent.
     const linked = unlinkFixture(0);
     await linked.links.clear();
     await expect(linked.service.resumeActivatingLink()).resolves.toBeNull();
-    expect(linked.link.ensureLinkedForMutation).not.toHaveBeenCalled();
+    expect(linked.host.resumeAccountLink).not.toHaveBeenCalled();
+  });
+
+  it("reports failed or incomplete Host activation as a recovery failure", async () => {
+    const fixture = unlinkFixture(0);
+    await fixture.links.clear();
+    fixture.startActivating();
+    fixture.host.resumeAccountLink.mockRejectedValueOnce(new Error("Account unavailable"));
+    await expect(fixture.service.resumeActivatingLink()).rejects.toThrow("Account unavailable");
+    fixture.host.resumeAccountLink.mockImplementationOnce(() => fixture.host.status());
+    await expect(fixture.service.resumeActivatingLink()).rejects.toThrow(
+      "activation did not complete",
+    );
   });
 
   it("discards an unusable journal only while repair is the reported state", async () => {
@@ -224,6 +244,78 @@ describe("DesktopPersonalAccountService", () => {
     await expect(offline.links.load()).resolves.not.toBeNull();
   });
 
+  it.each(["unlinked", "activating", "active"] as const)(
+    "recovers an old pending journal from Host state %s, then unlinks",
+    async (hostState) => {
+      const fixture = unlinkFixture(0);
+      if (hostState === "unlinked") fixture.clearHostLink();
+      if (hostState === "activating") fixture.startActivating();
+      fixture.account.accountIdentity.mockResolvedValue(null);
+      const dataDirectory = await mkdtemp(path.join(tmpdir(), "opensteer-old-link-"));
+      try {
+        const links = new DesktopPersonalAccountLinkStore({
+          dataDirectory,
+          cryptography: {
+            decryptStringAsync: async (encrypted) => ({
+              result: encrypted.toString("utf8"),
+              shouldReEncrypt: false,
+            }),
+            encryptStringAsync: async (plaintext) => Buffer.from(plaintext, "utf8"),
+            getSelectedStorageBackend: () => "keychain",
+            isAsyncEncryptionAvailable: async () => true,
+          },
+        });
+        const { completionFormat: _format, ...challenge } = fixture.challenge;
+        const { completionPublicKey: _key, ...document } = fixture.proof.document;
+        const oldJournal = {
+          authority: fixture.runtime,
+          schemaVersion: 4,
+          issueOperationId: null,
+          unlinkOperation: null,
+          operation: {
+            challenge,
+            operationId: `plo_${crypto.randomUUID()}`,
+            proof: { ...fixture.proof, document: { ...document, documentVersion: 2 } },
+            completion: {
+              schemaVersion: 1,
+              challengeId: challenge.challengeId,
+              completionGrant: `${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`,
+              hostCredential: `osc_${"h".repeat(43)}`,
+              linkGeneration: "g".repeat(43),
+              resultExpiresAt: fixture.completion.resultExpiresAt,
+            },
+          },
+        };
+        const filePath = desktopPersonalAccountLinkSecretsPath(
+          dataDirectory,
+          fixture.runtime.discovery.deploymentId,
+        );
+        await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+        const saved = JSON.stringify({
+          ciphertext: Buffer.from(JSON.stringify(oldJournal)).toString("base64"),
+          schemaVersion: 1,
+        });
+        await writeFile(filePath, saved, { mode: 0o600 });
+        const service = fixture.createService(links);
+        await expect(service.status()).resolves.toMatchObject({ status: "needs-repair" });
+        expect(await readFile(filePath, "utf8")).toBe(saved);
+        await expect(service.unlink()).rejects.toThrow("incompatible or corrupt");
+        await service.recover();
+        await expect(service.status()).resolves.toMatchObject({
+          status: hostState === "unlinked" ? "unlinked" : "linked",
+        });
+        expect(fixture.host.resumeAccountLink).toHaveBeenCalledTimes(
+          hostState === "activating" ? 1 : 0,
+        );
+        expect(fixture.link.ensureLinkedForMutation).not.toHaveBeenCalled();
+        await expect(links.load(fixture.runtime.discovery.deploymentId)).resolves.toBeNull();
+        await expect(service.unlink()).resolves.toMatchObject({ status: "unlinked" });
+      } finally {
+        await rm(dataDirectory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("serializes two rapid cancels and a resume racing them", async () => {
     const fixture = unlinkFixture(0);
     await fixture.links.clear();
@@ -237,8 +329,8 @@ describe("DesktopPersonalAccountService", () => {
 
     expect(first).toMatchObject({ status: "fulfilled", value: { status: "unlinked" } });
     expect(second).toMatchObject({ status: "fulfilled", value: { status: "unlinked" } });
-    // The second cancel finds the link already gone and does nothing more.
-    expect(fixture.host.removeAccountLinkForUnlink).toHaveBeenCalledOnce();
+    // Each cancel also erases any pending Host completion keys.
+    expect(fixture.host.removeAccountLinkForUnlink).toHaveBeenCalledTimes(2);
     // A resume queued behind a cancel is refused rather than re-linking.
     expect(resumed).toMatchObject({
       reason: { code: "personal-account-unlink-in-progress" },
@@ -340,7 +432,7 @@ function unlinkFixture(boundary: number) {
     updatedAt: "2026-08-20T12:00:00.000Z",
   });
   const account = {
-    accountIdentity: vi.fn(async () => accountIdentity),
+    accountIdentity: vi.fn(async (): Promise<typeof accountIdentity | null> => accountIdentity),
     cancelPersonalHostAccountLinkOperation: vi.fn(async () => undefined),
     renamePersonalDeployment: vi.fn(async (_deploymentId: string, name: string) => ({
       ...directoryDeployment,
@@ -361,6 +453,10 @@ function unlinkFixture(boundary: number) {
           state: "active" as const,
         };
   const host = {
+    resumeAccountLink: vi.fn(async (): Promise<PersonalRemoteAccessStatus> => {
+      if (hostLink) hostLink = { ...hostLink, state: "active" };
+      return host.status();
+    }),
     removeAccountLinkForUnlink: vi.fn(async () => {
       events.push("host-link");
       hostLink = null;
@@ -378,30 +474,35 @@ function unlinkFixture(boundary: number) {
     ),
   };
   const link = { ensureLinkedForMutation: vi.fn(async () => initialState) };
-  const service = new DesktopPersonalAccountService({
-    account,
-    host,
-    link,
-    links,
-    manifest: {
-      load: async () => manifest,
-      save: async (_previous, next) => {
-        manifest = next;
-        return manifest;
+  const createService = (
+    linkStore: ConstructorParameters<typeof DesktopPersonalAccountService>[0]["links"],
+  ) =>
+    new DesktopPersonalAccountService({
+      account,
+      host,
+      link,
+      links: linkStore,
+      manifest: {
+        load: async () => manifest,
+        save: async (_previous, next) => {
+          manifest = next;
+          return manifest;
+        },
       },
-    },
-    remote: {
-      disableConnectForUnlink: async () => {
-        events.push("disable");
-        return {} as never;
+      remote: {
+        disableConnectForUnlink: async () => {
+          events.push("disable");
+          return {} as never;
+        },
+        revokeConnectResourceForUnlink: async () => void events.push("resource"),
       },
-      revokeConnectResourceForUnlink: async () => void events.push("resource"),
-    },
-    runtime: { current: async () => runtime },
-  });
+      runtime: { current: async () => runtime },
+    });
+  const service = createService(links);
   const challenge = IssuePersonalHostAccountLinkChallengeResponseSchema.parse({
     account: accountIdentity,
     authorityEnvelope: runtime.discoveryEnvelope,
+    completionFormat: "sealed-v1",
     challengeCredential: `olc_${"b".repeat(43)}`,
     challengeId: `phc_${crypto.randomUUID()}`,
     expiresAt: "2026-08-20T12:05:00.000Z",
@@ -411,7 +512,8 @@ function unlinkFixture(boundary: number) {
       account: accountIdentity,
       authority: runtime.discoveryEnvelope.document,
       challenge: { credentialSha256: "c".repeat(43), id: challenge.challengeId },
-      documentVersion: 2,
+      documentVersion: 3,
+      completionPublicKey: "k".repeat(43),
       expiresAt: "2026-08-20T12:04:00.000Z",
       issuedAt: "2026-08-20T12:00:00.000Z",
       purpose: "opensteer-personal-host-account-link",
@@ -420,8 +522,15 @@ function unlinkFixture(boundary: number) {
     signature: "A".repeat(86),
   });
   const completion = CompletePersonalHostAccountLinkResponseSchema.parse({
-    completionGrant: `${"completion".repeat(4)}.${"e".repeat(32)}.${"f".repeat(32)}`,
-    hostCredential: `osc_${"d".repeat(43)}`,
+    challengeId: challenge.challengeId,
+    schemaVersion: 2,
+    sealedCompletion: {
+      version: 1,
+      ciphertext: "abc",
+      ephemeralPublicKey: "k".repeat(43),
+      nonce: "n".repeat(16),
+      tag: "t".repeat(22),
+    },
     linkGeneration: "g".repeat(43),
     resultExpiresAt: "2026-08-21T12:00:00.000Z",
   });
@@ -451,6 +560,7 @@ function unlinkFixture(boundary: number) {
     privateRoute: "https://studio.tailnet.test",
     runtime,
     service,
+    createService,
     tokens: ["vault-token-kept"],
   };
 }

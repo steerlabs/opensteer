@@ -5,9 +5,9 @@ import {
   PasswordsBrokerAccountSchema,
   PasswordsBrokerAccountsSchema,
   PasswordsBrokerSignInReleaseParamsSchema,
-  PasswordsBrokerSignInReleaseV5ParamsSchema,
+  PasswordsBrokerSignInReleaseV6ParamsSchema,
   PasswordsBrokerSignInRequestParamsSchema,
-  PasswordsBrokerSignInRequestV5ParamsSchema,
+  PasswordsBrokerSignInRequestV6ParamsSchema,
   passwordsBrokerMaxFrameBytes,
   PasswordsBrokerMethodSchema,
   PasswordsBrokerReplySchema,
@@ -107,20 +107,20 @@ describe("Passwords broker wire fixture", () => {
     const answered = (fixture.results.hello ?? []).map(
       (hello) => passwordsBrokerResults.hello.parse(hello).protocolVersion,
     );
-    expect(new Set(asked)).toEqual(new Set([4, 5]));
-    expect(new Set(answered)).toEqual(new Set([4, 5]));
+    expect(new Set(asked)).toEqual(new Set([4, 5, 6]));
+    expect(new Set(answered)).toEqual(new Set([4, 5, 6]));
   });
 
   it("asks protocol-5 consent for a Workspace, never for a page or at version 4", () => {
     const modern = (fixture.requests["signin.request"] ?? []).filter(
-      (params) => PasswordsBrokerSignInRequestV5ParamsSchema.safeParse(params).success,
+      (params) => PasswordsBrokerSignInRequestV6ParamsSchema.safeParse(params).success,
     );
     expect(modern.length).toBeGreaterThan(0);
     for (const params of modern) {
       expect(params).not.toHaveProperty("sessionId");
       expect(params).not.toHaveProperty("runtimeId");
       expect(
-        PasswordsBrokerSignInRequestV5ParamsSchema.safeParse({
+        PasswordsBrokerSignInRequestV6ParamsSchema.safeParse({
           ...Object(params),
           permissionVersion: 4,
         }).success,
@@ -130,7 +130,7 @@ describe("Passwords broker wire fixture", () => {
 
   it("releases to an app only when asked by kind, and to a browser only with its origin", () => {
     const releases = (fixture.requests["signin.release"] ?? []).flatMap((params) => {
-      const parsed = PasswordsBrokerSignInReleaseV5ParamsSchema.safeParse(params);
+      const parsed = PasswordsBrokerSignInReleaseV6ParamsSchema.safeParse(params);
       return parsed.success ? [parsed.data] : [];
     });
     const app = releases.find((release) => release.kind === "app");
@@ -138,11 +138,11 @@ describe("Passwords broker wire fixture", () => {
     expect(app).toBeDefined();
     expect(browser).toBeDefined();
     expect(
-      PasswordsBrokerSignInReleaseV5ParamsSchema.safeParse({ ...app, origin: "https://github.com" })
+      PasswordsBrokerSignInReleaseV6ParamsSchema.safeParse({ ...app, origin: "https://github.com" })
         .success,
     ).toBe(false);
     const { origin: _origin, ...browserWithoutOrigin } = browser ?? {};
-    expect(PasswordsBrokerSignInReleaseV5ParamsSchema.safeParse(browserWithoutOrigin).success).toBe(
+    expect(PasswordsBrokerSignInReleaseV6ParamsSchema.safeParse(browserWithoutOrigin).success).toBe(
       false,
     );
   });

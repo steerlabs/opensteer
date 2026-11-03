@@ -1,4 +1,3 @@
-import { randomBytes, randomUUID } from "node:crypto";
 import {
   OpensteerError,
   RequestResponseSchema,
@@ -14,7 +13,6 @@ import {
 } from "@opensteer/core";
 import {
   ComputerAppNotOfferedError,
-  assertSeparateIphoneApprovalKey,
   type CallableIntegrationTool,
   type IntegrationRequester,
   type IntegrationPlatformStore,
@@ -26,14 +24,12 @@ import {
   computerAppUsesSessions,
   integrationAccessCovers,
   isComputerAppDefinition,
-  type ComputerAppApproval,
   type ComputerAppIdentity,
   type IntegrationAccess,
   type IntegrationConnectionId,
   type IntegrationConnectionSummary,
   type IntegrationDefinition,
   type IntegrationServerId,
-  type RegisterComputerUseApprovalKey,
   type RequestComputerAppSetupSchema,
   type SetComputerAppConnection,
 } from "@opensteer/integration-core";
@@ -47,17 +43,9 @@ import {
   type AndroidPhoneInstalledAppsResult,
   ComputerUseInstalledAppsResultSchema,
   androidPhoneDefinitionId,
-  computerAppMaxPendingApprovals,
-  type ComputerAppApprovalAnswerFrame,
-  type ComputerAppApprovalOutcome,
   type ComputerUseInstalledAppsParams,
   type ComputerUseSessionId,
 } from "@opensteer/protocol";
-import {
-  canonicalComputerAppApprovalPublicKey,
-  computerAppApprovalKeyId,
-  verifyComputerAppApprovalKeyChallenge,
-} from "@opensteer/runner-auth";
 import type { z } from "zod";
 import type { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import {
@@ -139,22 +127,19 @@ export function endComputerUseSessions(
 export const automaticApprovalMacOnlyRefusal =
   "Automatic approval is only for apps on a Mac. The owner allows phone access from any Opensteer app.";
 
-/**
- * An owner sets phone access from any client. Mac apps are created, widened
- * or unblocked by a signed answer on that Mac; keeping or lowering needs none.
- */
+/** Owner decisions consume exact pending requests; reductions need no new approval. */
 type ComputerConnectionChange =
-  | (SetComputerAppConnection & { readonly approval?: ComputerAppApproval })
+  | (SetComputerAppConnection & { readonly setupRequestId?: string })
   | {
       readonly appApproval: "automatic";
-      readonly approval: ComputerAppApproval;
+      readonly setupRequestId: string;
       readonly kind: "policy";
       readonly runnerId: RunnerId;
     };
 
-/** Whether a change pushes the Mac its approval list itself, or leaves that to its caller. */
-interface ApprovalListPush {
-  readonly pushApprovals?: boolean;
+/** The session is revalidated inside admission after any queued wait. */
+interface ComputerApprovalAuthorization {
+  readonly authorize?: () => Promise<void>;
 }
 
 export interface ComputerAppApprovalServiceOptions {
@@ -163,12 +148,8 @@ export interface ComputerAppApprovalServiceOptions {
     | "appStatus"
     | "reportsApp"
     | "attached"
+    | "compatibilityReason"
     | "machinesFor"
-    | "approvalRelayRefusal"
-    | "relaysComputerAppApprovals"
-    | "sendComputerAppApprovalOutcome"
-    | "sendComputerAppApprovals"
-    | "proveComputerAppApprovalKey"
     | "withRunnerAdmission"
   >;
   readonly computerUse: ComputerUseApprovalGateway | null;
@@ -176,6 +157,7 @@ export interface ComputerAppApprovalServiceOptions {
   readonly deploymentName: string | null;
   /** Materialises a catalog definition an administrator's first approval needs. */
   readonly installCatalogDefinition: (input: {
+    readonly settlementSessionId?: string | undefined;
     readonly actorUserId: UserId;
     readonly definitionId: string;
     readonly digest: string;
@@ -189,8 +171,6 @@ export interface ComputerAppApprovalServiceOptions {
   ) => Promise<readonly IntegrationConnectionSummary[]>;
   readonly onConnectionsChanged: () => void;
   readonly onInputAccessWithdrawn?: (runnerId: RunnerId) => void;
-  /** An unexpected failure of work nobody is waiting on, such as pushing a Mac its list. */
-  readonly onError?: (error: unknown) => void;
   /**
    * A Mac's owner allowed an MCP server to run there. Called once that Mac
    * has been told, so the computer knows before anything asks it to start.
@@ -224,12 +204,9 @@ export class ComputerAppApprovalService {
   readonly #listConnections: ComputerAppApprovalServiceOptions["listConnections"];
   readonly #onConnectionsChanged: () => void;
   readonly #onInputAccessWithdrawn: (runnerId: RunnerId) => void;
-  readonly #onError: (error: unknown) => void;
   readonly #onLocalServerApproved: ComputerAppApprovalServiceOptions["onLocalServerApproved"];
   readonly #publishRequestEvents: (events: readonly AgentEvent[]) => void;
   readonly #store: IntegrationPlatformStore;
-  /** Each Mac's list push in flight, and whether another is owed after it. */
-  readonly #approvalPushes = new Map<RunnerId, { again: boolean }>();
 
   constructor(options: ComputerAppApprovalServiceOptions) {
     this.#computerApps = options.computerApps;
@@ -241,238 +218,156 @@ export class ComputerAppApprovalService {
     this.#listConnections = options.listConnections;
     this.#onConnectionsChanged = options.onConnectionsChanged;
     this.#onInputAccessWithdrawn = options.onInputAccessWithdrawn ?? (() => undefined);
-    this.#onError = options.onError ?? (() => undefined);
     this.#onLocalServerApproved = options.onLocalServerApproved;
     this.#publishRequestEvents = options.publishRequestEvents;
     this.#store = options.store;
   }
 
-  // ---- the Mac's own stream -------------------------------------------
-
-  /** Offline approvals may wait; an attached computer that cannot show them needs an update. */
-  requireApprovalRelay(runnerId: RunnerId): void {
-    const refusal = this.#computerApps.approvalRelayRefusal(runnerId);
-    if (refusal) throw new OpensteerError({ code: "conflict", message: refusal });
+  /** Owner-only details are loaded on review, never in shared events or client snapshots. */
+  async reviewComputerAppSetup(input: {
+    readonly setupRequestId: string;
+    readonly ownerUserId: UserId;
+  }) {
+    const request = await this.#store.getComputerAppSetupRequest({
+      setupRequestId: input.setupRequestId,
+    });
+    if (!request)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This approval is no longer waiting.",
+      });
+    await this.#store.getComputerUsePolicy({
+      runnerId: request.runnerId,
+      ownerUserId: input.ownerUserId,
+    });
+    if (request.ownerUserId !== input.ownerUserId)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Only this computer’s owner can answer its approvals.",
+      });
+    let app = null;
+    if (request.app) {
+      try {
+        if (!this.#computerUse) throw new Error("Helper unavailable");
+        app = await this.#computerUse.resolveApp({
+          app: request.app.bundleId,
+          runnerId: request.runnerId,
+        });
+      } catch {
+        throw new OpensteerError({
+          code: "conflict",
+          message:
+            "Can't verify this app right now. Check that its computer is online and try again.",
+        });
+      }
+      if (!app.allowed)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: app.reason ?? "This app cannot be used by agents.",
+        });
+      if (!computerAppIdentitiesEqual(app.identity, request.app))
+        throw new OpensteerError({
+          code: "conflict",
+          message: "This app changed since it was requested. Request access again.",
+        });
+    }
+    return { request, app };
   }
 
-  /**
-   * Sends one Mac every approval waiting on it, over its own Runner stream.
-   *
-   * It is called after anything changes an approval on that Mac, when the
-   * stream attaches, and when the Mac asks; the list is always complete, so an
-   * approval that ended — declined elsewhere, cancelled, expired, replaced, or
-   * taken back with the app — closes its panel by being absent. Pushes for one
-   * Mac never overlap and the last one always reflects the last change: a
-   * change during a push owes one more.
-   */
-  pushComputerAppApprovals(runnerId: RunnerId): void {
-    if (!this.#computerApps.relaysComputerAppApprovals(runnerId)) return;
-    const running = this.#approvalPushes.get(runnerId);
-    if (running) {
-      running.again = true;
+  async respondComputerAppSetup(input: {
+    readonly settlementSessionId?: string | undefined;
+    readonly setupRequestId: string;
+    readonly decision: "allow" | "deny";
+    readonly actorUserId: UserId;
+    readonly isAdministrator: boolean;
+    readonly requestId: string;
+    readonly authorize: () => Promise<void>;
+  }): Promise<void> {
+    const request = await this.#store.getComputerAppSetupRequest({
+      setupRequestId: input.setupRequestId,
+    });
+    if (!request || request.ownerUserId !== input.actorUserId)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This approval is no longer waiting for you.",
+      });
+    if (input.decision === "allow" && request.app)
+      await this.reviewComputerAppSetup({
+        setupRequestId: request.id,
+        ownerUserId: input.actorUserId,
+      });
+    if (request.kind === "server") {
+      const approved = await this.#computerApps.withRunnerAdmission(request.runnerId, async () => {
+        await input.authorize();
+        const answer = {
+          settlementSessionId: input.settlementSessionId,
+          actorUserId: input.actorUserId,
+          runnerId: request.runnerId,
+          setupRequestId: request.id,
+        };
+        if (input.decision === "deny") {
+          await this.#store.localMcp.decline(answer);
+          return null;
+        }
+        return this.#store.localMcp.approve(answer);
+      });
+      this.#onConnectionsChanged();
+      if (approved) this.#onLocalServerApproved(approved);
       return;
     }
-    const state = { again: false };
-    this.#approvalPushes.set(runnerId, state);
-    void (async () => {
-      try {
-        do {
-          state.again = false;
-          const list = await this.#store.listComputerAppApprovalsForRunner(
-            runnerId,
-            computerAppMaxPendingApprovals,
-          );
-          await this.#computerApps.sendComputerAppApprovals(runnerId, list);
-        } while (state.again);
-      } catch (error) {
-        this.#onError(error);
-      } finally {
-        this.#approvalPushes.delete(runnerId);
-        // A change that arrived while the failed read/send was in flight
-        // still owes the Mac its new complete list.
-        if (state.again) this.pushComputerAppApprovals(runnerId);
-      }
-    })();
-  }
-
-  /** Every Mac this Host can reach, for a change that is not about one Mac. */
-  #pushAllComputerAppApprovals(): void {
-    for (const { runnerId } of this.#computerApps.machinesFor(computerUseDefinitionId)) {
-      this.pushComputerAppApprovals(runnerId);
-    }
-  }
-
-  /**
-   * The person's answer on that Mac, from its own Runner stream.
-   *
-   * Allowing consumes the signed approval exactly as it always has — one
-   * transaction that verifies the signature against the desktop's registered
-   * approval key and creates, widens or unblocks the app, or turns automatic
-   * approval on — and declining cancels it. Either way the Mac is told what
-   * happened before it is sent the list that no longer holds it, so the page
-   * waiting on it learns the answer rather than only that it ended.
-   */
-  async answerComputerAppApproval(
-    runnerId: RunnerId,
-    frame: ComputerAppApprovalAnswerFrame,
-  ): Promise<void> {
-    let outcome: ComputerAppApprovalOutcome;
-    let approvedServer:
-      Parameters<ComputerAppApprovalServiceOptions["onLocalServerApproved"]>[0] | null = null;
-    try {
-      const request = await this.#store.getComputerAppSetupRequest({
-        runnerId,
-        setupRequestId: frame.setupRequestId,
-      });
-      if (!request) {
-        outcome = { kind: "refused", message: "This approval is no longer waiting." };
-      } else if (request.kind === "app" && request.definitionId === androidPhoneDefinitionId) {
-        outcome = { kind: "refused", message: "Allow phone access from any Opensteer app." };
-      } else if (request.kind === "server") {
-        // An MCP server to run on this Mac, answered by its owner there.
-        const answer = { approval: frame.answer.approval, runnerId, setupRequestId: request.id };
-        if (frame.answer.kind === "deny") {
-          await this.#store.localMcp.decline(answer);
-          outcome = { kind: "declined" };
-        } else {
-          approvedServer = await this.#store.localMcp.approve(answer);
-          outcome = { kind: "allowed" };
-        }
-        this.#onConnectionsChanged();
-      } else if (frame.answer.kind === "deny") {
-        const settlement = await this.#store.declineComputerAppSetupFromMac({
-          approval: frame.answer.approval,
-          requestId: request.id,
-          runnerId,
+    if (input.decision === "deny") {
+      await this.#computerApps.withRunnerAdmission(request.runnerId, async () => {
+        await input.authorize();
+        // Recheck current ownership after waiting in admission, including enrolled computers.
+        await this.#store.getComputerUsePolicy({
+          runnerId: request.runnerId,
+          ownerUserId: input.actorUserId,
         });
-        this.#publishRequestEvents(settlement.requestEvents);
-        this.#onConnectionsChanged();
-        outcome = { kind: "declined" };
-      } else {
-        const change: ComputerConnectionChange =
-          request.kind === "policy"
-            ? {
-                appApproval: "automatic",
-                approval: frame.answer.approval,
-                kind: "policy",
-                runnerId,
-              }
-            : {
-                access: request.access,
-                app: request.app,
-                approval: frame.answer.approval,
-                definitionId: request.definitionId,
-                kind: "app",
-                runnerId,
-              };
-        await this.setComputerConnection(
-          {
-            ...change,
-            actorUserId: request.ownerUserId,
-            isAdministrator: await this.#store.isAdministrator(request.ownerUserId),
-            requestId: `computer-app-approval:${request.id}`,
-          },
-          { pushApprovals: false },
-        );
-        outcome = { kind: "allowed" };
-      }
-    } catch (error) {
-      if (!(error instanceof OpensteerError)) this.#onError(error);
-      outcome = {
-        kind: "refused",
-        message:
-          error instanceof OpensteerError
-            ? error.message.slice(0, 1_000)
-            : "Opensteer could not record this answer. Try again.",
-      };
-    }
-    await this.#computerApps.sendComputerAppApprovalOutcome(runnerId, {
-      outcome,
-      setupRequestId: frame.setupRequestId,
-    });
-    this.pushComputerAppApprovals(runnerId);
-    if (approvedServer) this.#onLocalServerApproved(approvedServer);
-  }
-
-  /**
-   * Pins the key the desktop on that Mac signs its approvals with. The page
-   * registers it only on that Mac, from the desktop holding the private half,
-   * and registering again replaces it; the Mac is then sent its list again,
-   * since approvals it could not show before can be answered now.
-   */
-  async registerComputerUseApprovalKey(
-    input: RegisterComputerUseApprovalKey & {
-      readonly ownerUserId: UserId;
-      readonly requestId: string;
-    },
-  ): Promise<{ readonly approvalKeyId: string }> {
-    // The owner session nominates the key, but the live Mac must prove its
-    // desktop holds the private half before the Host pins it. An owner RPC
-    // alone cannot turn a remote process's key into local approval authority.
-    await this.#store.getComputerUsePolicy({
-      ownerUserId: input.ownerUserId,
-      runnerId: input.runnerId,
-    });
-    const phones =
-      (await this.#computerUse?.eligibleMachines(input.ownerUserId, androidPhoneDefinitionId)) ??
-      [];
-    if (phones.some(({ runnerId }) => runnerId === input.runnerId)) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Phone access is allowed from any Opensteer app; phones do not use approval keys.",
+        await this.cancelComputerAppSetup({
+          requestId: request.id,
+          settlementSessionId: input.settlementSessionId,
+          ownerUserId: input.actorUserId,
+        });
       });
+      return;
     }
-    this.requireApprovalRelay(input.runnerId);
-    let publicKey: string;
-    try {
-      publicKey = canonicalComputerAppApprovalPublicKey(input.publicKey);
-    } catch {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "That approval key is unreadable.",
-      });
-    }
-    const runner = await this.#store.computerAppRunner(input.runnerId);
-    if (runner)
-      assertSeparateIphoneApprovalKey(
-        runner.deviceProfile,
-        runner.publicKeyFingerprint,
-        computerAppApprovalKeyId(publicKey),
-      );
-    const challenge = {
-      challengeId: randomUUID(),
-      expiresAt: new Date(Date.now() + 10_000).toISOString(),
-      keyId: computerAppApprovalKeyId(publicKey),
-      nonce: randomBytes(32).toString("base64url"),
-      runnerId: input.runnerId,
-    };
-    const signature = await this.#computerApps.proveComputerAppApprovalKey(
-      input.runnerId,
-      challenge,
+    await this.setComputerConnection(
+      {
+        ...(request.kind === "policy"
+          ? { kind: "policy" as const, appApproval: "automatic" as const }
+          : {
+              kind: "app" as const,
+              access: request.access,
+              app: request.app,
+              definitionId: request.definitionId,
+            }),
+        runnerId: request.runnerId,
+        setupRequestId: request.id,
+        settlementSessionId: input.settlementSessionId,
+        actorUserId: input.actorUserId,
+        isAdministrator: input.isAdministrator,
+        requestId: input.requestId,
+      },
+      {
+        authorize: async () => {
+          await input.authorize();
+          if (request.app && !this.#computerApps.attached(request.runnerId))
+            throw new OpensteerError({
+              code: "conflict",
+              message:
+                "Can't verify this app right now. Check that its computer is online and try again.",
+            });
+        },
+      },
     );
-    if (!signature || !verifyComputerAppApprovalKeyChallenge({ challenge, publicKey, signature })) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message:
-          runner?.deviceProfile === "iphone"
-            ? "This iPhone did not confirm its approval key. Open Opensteer on this iPhone while it is connected, then try again."
-            : "This Mac did not confirm its approval key. Open this Mac's page in Opensteer on the Mac while it is connected, then try again.",
-      });
-    }
-    const registered = await this.#store.registerComputerUseApprovalKey(input);
-    this.#onConnectionsChanged();
-    this.pushComputerAppApprovals(input.runnerId);
-    return { approvalKeyId: registered.approvalKeyId };
   }
 
   // ---- approvals the Mac answers --------------------------------------
 
-  /** The picker's ask, an unblock, or the automatic policy's signed switch. */
+  /** The picker's ask, an unblock, or the automatic policy. */
   async requestComputerAppSetup(
     input: z.infer<typeof RequestComputerAppSetupSchema> & { readonly actorUserId: UserId },
   ) {
-    if (input.kind === "policy" || input.definitionId !== androidPhoneDefinitionId)
-      this.requireApprovalRelay(input.runnerId);
     if (input.kind === "policy") {
       await this.#requireMacForAutomatic(input.runnerId, input.actorUserId);
       const definition = this.#definitions.find(({ id }) => id === computerUseDefinitionId);
@@ -487,7 +382,6 @@ export class ComputerAppApprovalService {
       });
       this.#publishRequestEvents(settlement.requestEvents);
       this.#onConnectionsChanged();
-      this.pushComputerAppApprovals(request.runnerId);
       return request;
     }
     const definition = this.#definitions.find(({ id }) => id === input.definitionId);
@@ -523,6 +417,8 @@ export class ComputerAppApprovalService {
       });
     }
     const createRequest = () => {
+      const incompatibility = this.#computerApps.compatibilityReason(input.runnerId);
+      if (incompatibility) throw new OpensteerError({ code: "conflict", message: incompatibility });
       if (iphone) {
         const report = this.#computerApps.reportsApp(input.runnerId, definition.id);
         const name =
@@ -549,12 +445,12 @@ export class ComputerAppApprovalService {
         runnerId: input.runnerId,
       });
     };
-    const { request, settlement } = iphone
-      ? await this.#computerApps.withRunnerAdmission(input.runnerId, createRequest)
-      : await createRequest();
+    const { request, settlement } = await this.#computerApps.withRunnerAdmission(
+      input.runnerId,
+      createRequest,
+    );
     this.#publishRequestEvents(settlement.requestEvents);
     this.#onConnectionsChanged();
-    this.pushComputerAppApprovals(request.runnerId);
     return request;
   }
 
@@ -568,40 +464,38 @@ export class ComputerAppApprovalService {
    */
   async expireComputerAppSetupRequests(): Promise<void> {
     const settled = await this.#store.expireComputerAppSetupRequests();
-    for (const runnerId of settled.runnerIds) this.pushComputerAppApprovals(runnerId);
     if (settled.requestIds.length === 0) return;
     this.#publishRequestEvents(settled.requestEvents);
     this.#onConnectionsChanged();
   }
 
-  async cancelComputerAppSetup(
-    input: {
-      readonly requestId: string;
-      readonly ownerUserId: UserId;
-    },
-    options: ApprovalListPush = {},
-  ) {
+  async cancelComputerAppSetup(input: {
+    readonly settlementSessionId?: string | undefined;
+    readonly requestId: string;
+    readonly ownerUserId: UserId;
+  }) {
     const settlement = await this.#store.cancelComputerAppSetup(input);
     this.#publishRequestEvents(settlement.requestEvents);
     this.#onConnectionsChanged();
-    if (settlement.runnerId !== null && options.pushApprovals !== false) {
-      this.pushComputerAppApprovals(settlement.runnerId);
-    }
   }
 
   /**
-   * The owner's phone access change, or a Mac app's signed approval or
-   * unsigned access reduction.
+   * The owner's phone access change, or a Mac app approval or access reduction.
    */
   async setComputerConnection(
     input: ComputerConnectionChange & {
+      readonly settlementSessionId?: string | undefined;
       readonly actorUserId: UserId;
       readonly isAdministrator: boolean;
       readonly requestId: string;
     },
-    options: ApprovalListPush = {},
+    options: ComputerApprovalAuthorization = {},
   ) {
-    if (input.kind === "app" && input.definitionId === androidPhoneDefinitionId && input.approval) {
+    if (
+      input.kind === "app" &&
+      input.definitionId === androidPhoneDefinitionId &&
+      input.setupRequestId
+    ) {
       throw new OpensteerError({
         code: "forbidden",
         message: "Allow phone access from any Opensteer app.",
@@ -633,7 +527,9 @@ export class ComputerAppApprovalService {
           message: `Ask an administrator to add ${definition.name} to ${this.#deploymentName ?? "this Deployment"}.`,
         });
       }
+      await options.authorize?.();
       await this.#installCatalogDefinition({
+        settlementSessionId: input.settlementSessionId,
         actorUserId: input.actorUserId,
         definitionId: definition.id,
         digest,
@@ -641,28 +537,31 @@ export class ComputerAppApprovalService {
       });
     }
     if (input.kind === "policy") {
-      // Consuming a signed policy approval is the other way in, so the rule
-      // that it is a Mac's holds here too, whatever approval was signed.
+      // Consuming a policy approval is the other way in, so the rule
+      // that it is a Mac's holds here too, whichever client answered.
       await this.#requireMacForAutomatic(input.runnerId, input.actorUserId);
-      await this.#computerApps.withRunnerAdmission(input.runnerId, () =>
-        this.#store.setComputerUsePolicy({
+      await this.#computerApps.withRunnerAdmission(input.runnerId, async () => {
+        await options.authorize?.();
+        return this.#store.setComputerUsePolicy({
+          settlementSessionId: input.settlementSessionId,
           runnerId: input.runnerId,
           ownerUserId: input.actorUserId,
           requestId: input.requestId,
           appApproval: "automatic",
-          approval: input.approval,
+          setupRequestId: input.setupRequestId,
           definitionDigest: digest,
-        }),
-      );
+        });
+      });
       this.#onConnectionsChanged();
-      if (options.pushApprovals !== false) this.pushComputerAppApprovals(input.runnerId);
       return null;
     }
     const computerApps = this.#computerApps;
     const mutation = await computerApps.withRunnerAdmission(input.runnerId, async () => {
+      await options.authorize?.();
       try {
         const mutation = await this.#store.setComputerConnection({
-          ...(input.approval ? { approval: input.approval } : {}),
+          settlementSessionId: input.settlementSessionId,
+          ...(input.setupRequestId ? { setupRequestId: input.setupRequestId } : {}),
           definitionDigest: digest,
           access: input.access,
           actorUserId: input.actorUserId,
@@ -699,7 +598,6 @@ export class ComputerAppApprovalService {
     this.#onConnectionsChanged();
     // A change can settle, use up or reissue this app's waiting approval; the
     // Mac shows only what its latest list holds.
-    if (options.pushApprovals !== false) this.pushComputerAppApprovals(input.runnerId);
     return mutation.connection;
   }
 
@@ -733,7 +631,6 @@ export class ComputerAppApprovalService {
     });
     this.#publishRequestEvents(mutation.requestEvents);
     this.#onConnectionsChanged();
-    this.pushComputerAppApprovals(connection.runnerId);
     return { notice: null, revokedUpstream: false };
   }
 
@@ -757,15 +654,6 @@ export class ComputerAppApprovalService {
     );
     this.#publishRequestEvents(mutation.requestEvents);
     this.#onConnectionsChanged();
-    this.pushComputerAppApprovals(connection.computer.runnerId);
-  }
-
-  /**
-   * Something removed approvals on Macs this service cannot name — a whole
-   * installation going — so every Mac this Host reaches is sent its list.
-   */
-  approvalsChangedEverywhere(): void {
-    this.#pushAllComputerAppApprovals();
   }
 
   // ---- policy ----------------------------------------------------------
@@ -773,7 +661,7 @@ export class ComputerAppApprovalService {
   /**
    * Automatic approval answers "any app on this Mac". A phone is held whole,
    * and nobody lets a task take over a whole phone without being asked, so
-   * neither asking for the policy nor consuming a signed one is open to any
+   * neither asking for the policy nor consuming one is open to any
    * computer but a Mac this person owns.
    */
   async #requireMacForAutomatic(runnerId: RunnerId, ownerUserId: UserId): Promise<void> {
@@ -784,19 +672,20 @@ export class ComputerAppApprovalService {
       throw new OpensteerError({
         code: "bad_request",
         message: iphone
-          ? "Automatic approval is only for apps on a Mac. Approve access in Opensteer on this iPhone."
+          ? "Automatic approval is only for apps on a Mac. Approve access in Opensteer from any Opensteer app."
           : automaticApprovalMacOnlyRefusal,
       });
     }
   }
 
   async computerUsePolicy(input: { runnerId: RunnerId; ownerUserId: UserId }) {
-    const { appApproval, approvalKeyId } = await this.#store.getComputerUsePolicy(input);
-    return { appApproval, approvalKeyId };
+    const { appApproval } = await this.#store.getComputerUsePolicy(input);
+    return { appApproval };
   }
 
-  /** Turning automatic off works from anywhere; turning it on is a signed setup request. */
+  /** Turning automatic off works from anywhere; turning it on consumes a setup request. */
   async setComputerUsePolicy(input: {
+    readonly settlementSessionId?: string | undefined;
     runnerId: RunnerId;
     ownerUserId: UserId;
     requestId: string;
@@ -807,7 +696,6 @@ export class ComputerAppApprovalService {
     );
     this.#onConnectionsChanged();
     // Switching off also withdraws a waiting "Allow any app" approval.
-    this.pushComputerAppApprovals(input.runnerId);
     return { appApproval: "ask" as const };
   }
 
@@ -987,27 +875,20 @@ export class ComputerAppApprovalService {
 
   // ---- tasks asking ----------------------------------------------------
 
-  /**
-   * The only answer to a `computer.app.access` Request from anywhere but the
-   * Mac itself: approving means consuming the setup request there.
-   */
   async declineComputerAppAccess(input: {
+    readonly settlementSessionId?: string;
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
     readonly response: RequestResponse;
   }): Promise<{ readonly request: Request }> {
     const declined = await this.#store.requests.declineComputerAppAccessRequest({
       actorUserId: input.resolvedBy,
+      ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
       requestId: input.requestId,
       response: RequestResponseSchema.parse(input.response),
     });
     this.#publishRequestEvents(declined.events);
     this.#onConnectionsChanged();
-    // The last decline takes the approval with it, so the Mac's panel for it
-    // closes wherever the person declined from.
-    if (declined.request.payload.kind === "computer.app.access") {
-      this.pushComputerAppApprovals(declined.request.payload.runnerId);
-    }
     return { request: declined.request };
   }
 
@@ -1099,7 +980,7 @@ export class ComputerAppApprovalService {
     if (connection?.computer?.blockedAt)
       throw new OpensteerError({
         code: "forbidden",
-        message: `${resolved.identity.displayName} is blocked on ${machine.name}. The person can unblock it on that Mac.`,
+        message: `${resolved.identity.displayName} is blocked on ${machine.name}. The owner can unblock it from any Opensteer app.`,
       });
     if (!resolved.allowed)
       throw new OpensteerError({
@@ -1211,7 +1092,6 @@ export class ComputerAppApprovalService {
     const decision = await this.#computerApps.withRunnerAdmission(input.runnerId, () => {
       if (!this.#computerApps.attached(input.runnerId))
         throw new ComputerUseError("offline", `${ask.computer} is offline.`);
-      if (definitionId !== androidPhoneDefinitionId) this.requireApprovalRelay(input.runnerId);
       return this.#store.requestComputerAppAccess({
         access: input.access,
         app: ask.app,
@@ -1233,7 +1113,6 @@ export class ComputerAppApprovalService {
     switch (decision.kind) {
       case "approved":
         this.#onConnectionsChanged();
-        this.pushComputerAppApprovals(input.runnerId);
         return {
           status: "fulfilled" as const,
           toolRefs: computerToolRefs(await this.#listCallableTools(scope), decision.connection.id),
@@ -1247,7 +1126,6 @@ export class ComputerAppApprovalService {
         };
       case "computer":
         this.#onConnectionsChanged();
-        this.pushComputerAppApprovals(input.runnerId);
         return {
           status: "pending" as const,
           request: decision.request,

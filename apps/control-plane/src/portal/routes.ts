@@ -255,6 +255,33 @@ export function registerControlPlaneRoutes(
     return RevokeConnectResponseSchema.parse(response);
   });
 
+  app.post("/v1/host/connect/provision", async (request, reply) => {
+    const authority = await dependencies.store.authenticateHostCredential(
+      firstHeader(request.headers.authorization),
+    );
+    const response = await dependencies.connectLifecycle.provision(
+      authority,
+      authority.deploymentId,
+      ProvisionConnectRequestSchema.parse(request.body),
+    );
+    return reply
+      .header("cache-control", "no-store")
+      .send(ConnectCredentialResponseSchema.parse(response));
+  });
+  app.post("/v1/host/connect/credential/rotate", async (request, reply) => {
+    const authority = await dependencies.store.authenticateHostCredential(
+      firstHeader(request.headers.authorization),
+    );
+    const response = await dependencies.connectLifecycle.rotateCredential(
+      authority,
+      authority.deploymentId,
+      RotateConnectCredentialRequestSchema.parse(request.body),
+    );
+    return reply
+      .header("cache-control", "no-store")
+      .send(ConnectCredentialResponseSchema.parse(response));
+  });
+
   app.delete("/v1/host/connect", async (request, reply) => {
     const authority = await dependencies.store.authenticateHostCredential(
       firstHeader(request.headers.authorization),

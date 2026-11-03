@@ -13,7 +13,7 @@ import {
   type PersonalHostAccessRouteDocument,
   type PersonalHostAccessRouteEnvelope,
   IssuePersonalHostAccountLinkChallengeResponseSchema,
-  PersonalHostAccountLinkCompletionGrantSchema,
+  CompletePersonalHostAccountLinkResponseSchema,
   PersonalHostAccountLinkProofEnvelopeSchema,
 } from "@opensteer/control-plane-protocol";
 import { z } from "zod";
@@ -63,16 +63,6 @@ export const PersonalRemoteAccountLinkSchema = HostAccountIdentitySchema.extend(
   state: PersonalRemoteAccountLinkStateSchema,
 });
 export type PersonalRemoteAccountLink = z.infer<typeof PersonalRemoteAccountLinkSchema>;
-
-/**
- * What a session that reached this Host through a signed access route is
- * allowed to learn about the Account link. Whether Connect is usable is a
- * property of this Deployment; which Account owns it is the owner's, and a
- * pairing-code guest is not the owner.
- */
-export const RemotePersonalRemoteAccountLinkSchema = z.strictObject({
-  state: PersonalRemoteAccountLinkStateSchema,
-});
 
 export const ResumePersonalHostAccountLinkRequestSchema = z.strictObject({
   schemaVersion: z.literal(1),
@@ -128,30 +118,21 @@ const refinePersonalRemoteAccessStatus = (
   }
 };
 
-/** The owner's view, answered only to a machine-local session. */
+/** Every authenticated Personal owner sees the same Account and route state. */
 export const PersonalRemoteAccessStatusSchema = z
-  .strictObject({
-    accountLink: PersonalRemoteAccountLinkSchema.nullable(),
+  .object({
+    accountLink: z.object(PersonalRemoteAccountLinkSchema.shape).nullable(),
     ...personalRemoteAccessStatusFields,
   })
   .superRefine(refinePersonalRemoteAccessStatus);
 export type PersonalRemoteAccessStatus = z.infer<typeof PersonalRemoteAccessStatusSchema>;
 
-/** The same status without the Account identity, for a remote session. */
-export const RemotePersonalRemoteAccessStatusSchema = z
-  .strictObject({
-    accountLink: RemotePersonalRemoteAccountLinkSchema.nullable(),
-    ...personalRemoteAccessStatusFields,
-  })
-  .superRefine(refinePersonalRemoteAccessStatus);
-export type RemotePersonalRemoteAccessStatus = z.infer<
-  typeof RemotePersonalRemoteAccessStatusSchema
->;
-
 export const PersonalPairingCodeSchema = z
   .string()
   .regex(/^osp_[A-Za-z0-9_-]{43}$/u)
   .brand<"PersonalPairingCode">();
+export type PersonalPairingCode = z.infer<typeof PersonalPairingCodeSchema>;
+
 export const IssuePersonalPairingCodeResponseSchema = z.strictObject({
   code: PersonalPairingCodeSchema,
   expiresAt: IsoDateTimeSchema,
@@ -219,12 +200,8 @@ export const ApprovePersonalHostAccountLinkRequestSchema =
 export const ApprovePersonalHostAccountLinkResponseSchema =
   PersonalHostAccountLinkProofEnvelopeSchema;
 
-export const ConsumePersonalHostAccountLinkRequestSchema = z.strictObject({
-  completionGrant: PersonalHostAccountLinkCompletionGrantSchema,
-  hostCredential: z.string().regex(/^osc_[A-Za-z0-9_-]{43}$/u),
-  linkGeneration: AccountLinkGenerationSchema,
-  schemaVersion: z.literal(1),
-});
+export const ConsumePersonalHostAccountLinkRequestSchema =
+  CompletePersonalHostAccountLinkResponseSchema.strict();
 
 /**
  * Machine-readable outcomes the Personal Host reports for an Account-link
@@ -265,3 +242,54 @@ export const PublishPersonalConnectProjectionRequestSchema = z
 export type PublishPersonalConnectProjectionRequest = z.infer<
   typeof PublishPersonalConnectProjectionRequestSchema
 >;
+
+export const PersonalRemoteAdministrationIntentSchema = z.discriminatedUnion("action", [
+  DesktopConfigurePersonalRemoteAccessInputSchema.safeExtend({ action: z.literal("configure") }),
+  z.strictObject({ action: z.literal("rotate") }),
+  z.strictObject({ action: z.literal("unlink") }),
+  z.strictObject({ action: z.literal("recover") }),
+]);
+export type PersonalRemoteAdministrationIntent = z.infer<
+  typeof PersonalRemoteAdministrationIntentSchema
+>;
+
+const personalRemoteAdministrationIntentViewSchema = z.discriminatedUnion("action", [
+  z.object(PersonalRemoteAdministrationIntentSchema.options[0].shape),
+  z.object(PersonalRemoteAdministrationIntentSchema.options[1].shape),
+  z.object(PersonalRemoteAdministrationIntentSchema.options[2].shape),
+  z.object(PersonalRemoteAdministrationIntentSchema.options[3].shape),
+]);
+
+export const PersonalRemoteAdministrationOperationSchema = z.object({
+  id: z.string().uuid(),
+  executionId: z.string().uuid(),
+  intent: personalRemoteAdministrationIntentViewSchema,
+  state: z.enum(["pending", "running", "succeeded", "failed"]),
+  detail: z.string().max(1000).nullable(),
+});
+export type PersonalRemoteAdministrationOperation = z.infer<
+  typeof PersonalRemoteAdministrationOperationSchema
+>;
+
+export const PersonalRemoteAdministrationStatusSchema = z.object({
+  access: PersonalRemoteAccessStatusSchema,
+  accountIssuer: z.url().nullable(),
+  authorityEnvelope: IssuePersonalHostAccountLinkChallengeResponseSchema.shape.authorityEnvelope,
+  executorConnected: z.boolean(),
+  operation: PersonalRemoteAdministrationOperationSchema.nullable(),
+  revision: z.number().int().nonnegative(),
+});
+export type PersonalRemoteAdministrationStatus = z.infer<
+  typeof PersonalRemoteAdministrationStatusSchema
+>;
+
+export const PersonalRemoteExecutorProgressSchema = z.strictObject({
+  operationId: z.string().uuid(),
+  state: z.enum(["running", "succeeded", "failed"]),
+  detail: z.string().max(1000).nullable(),
+});
+
+export {
+  IssuePersonalHostAccountLinkChallengeResponseSchema,
+  CompletePersonalHostAccountLinkResponseSchema,
+} from "@opensteer/control-plane-protocol";

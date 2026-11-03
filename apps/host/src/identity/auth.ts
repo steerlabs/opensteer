@@ -18,13 +18,7 @@ export interface RequestHeaders {
 
 export type HostSessionSurface = IntegrationAuthorizationSurface;
 
-/**
- * Which credential the Host actually authenticated, as opposed to who it
- * names. Two Host-rooted families reach the same session row from outside this
- * computer — a native OAuth bearer token and a Personal remote session — and
- * neither is evidence that the owner is at the keyboard, so every check that
- * means "at the keyboard" reads this rather than the surface or an Origin.
- */
+/** The authenticated credential family determines whether CSRF protection is needed. */
 export type HostCredentialKind =
   "browser-cookie" | "native-oauth" | "personal-remote-cookie" | "personal-remote-header";
 
@@ -130,6 +124,7 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
         surface: "personal-remote",
       };
     }
+    if (options.mutation) requireSingletonOrigin(headers.origin);
     const remote = await this.#personalRemote?.authenticateRemoteSession(headers, {
       mutation: options.mutation ?? false,
     });
@@ -140,7 +135,7 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
         surface: "personal-remote",
       };
     }
-    if (options.mutation && firstHeader(headers.origin) !== this.#publicOrigin) {
+    if (options.mutation && requestOrigin(headers.origin) !== this.#publicOrigin) {
       throw new OpensteerError({ code: "forbidden", message: "Request origin is not allowed" });
     }
     return {
@@ -151,7 +146,7 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
   }
 
   requireExactOrigin(headers: RequestHeaders): void {
-    if (firstHeader(headers.origin) !== this.#publicOrigin) {
+    if (requestOrigin(headers.origin) !== this.#publicOrigin) {
       throw new OpensteerError({ code: "forbidden", message: "Request origin is not allowed" });
     }
   }
@@ -219,4 +214,14 @@ export function toWebHeaders(input: RequestHeaders): Headers {
 
 function firstHeader(value: string | readonly string[] | undefined): string | undefined {
   return typeof value === "string" ? value : value?.[0];
+}
+
+function requestOrigin(value: RequestHeaders["origin"]): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function requireSingletonOrigin(value: RequestHeaders["origin"]): void {
+  if (typeof value !== "string" || value === "null") {
+    throw new OpensteerError({ code: "forbidden", message: "Request origin is not allowed" });
+  }
 }

@@ -14,7 +14,10 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { ControlPlaneAuthenticator } from "./auth.js";
 import { ControlPlaneError } from "../server/errors.js";
-import type { HostedOAuthBrokerService } from "./hosted-oauth-broker-service.js";
+import {
+  hostedOAuthBindingCookieName,
+  type HostedOAuthBrokerService,
+} from "./hosted-oauth-broker-service.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import { toWebHeaders } from "../portal/routes.js";
 
@@ -42,6 +45,12 @@ export function registerHostedOAuthBrokerRoutes(
       .header("cache-control", "public, max-age=300")
       .send(dependencies.broker.metadata(version === "2"));
   });
+
+  app.get("/v1/oauth-broker/mcp/client-metadata.json", async (_request, reply) =>
+    reply
+      .header("cache-control", "public, max-age=300")
+      .send(dependencies.broker.mcpClientMetadata()),
+  );
 
   app.post("/v1/host/oauth-broker/attempts", async (request, reply) => {
     const authority = await dependencies.store.authenticateHostCredential(
@@ -94,6 +103,10 @@ export function registerHostedOAuthBrokerRoutes(
         .header("pragma", "no-cache")
         .header("referrer-policy", "no-referrer")
         .code(303)
+        .header(
+          "set-cookie",
+          `${hostedOAuthBindingCookieName(attemptId)}=${ticket}; Path=/v1/oauth-broker; Max-Age=600; HttpOnly; Secure; SameSite=Lax`,
+        )
         .redirect(authorizationUrl);
     },
   );
@@ -106,6 +119,7 @@ export function registerHostedOAuthBrokerRoutes(
       try {
         const result = await dependencies.broker.completeAuthorization({
           parameters: new URL(request.url, "https://opensteer.invalid").searchParams,
+          cookieHeader: request.headers.cookie,
           provider,
         });
         if (result.status === "failed") {

@@ -4678,6 +4678,11 @@ export function migrationProvider() {
         "0127_person_show": personShowMigration,
         "0128_person_message": personMessageMigration,
         "0129_apps": appsMigration,
+        "0130_request_settlement_provenance": requestSettlementProvenanceMigration,
+        "0131_owner_session_computer_approvals": ownerSessionComputerApprovalsMigration,
+        "0132_remote_administration": remoteAdministrationMigration,
+        "0133_personal_account_link_sealing": personalAccountLinkSealingMigration,
+        "0134_personal_account_operation": personalAccountOperationMigration,
       };
     },
   };
@@ -6621,6 +6626,62 @@ const personShowMigration: Migration = {
         )
         .execute(database);
     }
+  },
+};
+
+const requestSettlementProvenanceMigration: Migration = {
+  async up(database) {
+    await sql`alter table requests add column settlement_provenance jsonb`.execute(database);
+  },
+};
+
+export const ownerSessionComputerApprovalsMigration: Migration = {
+  async up(database) {
+    await sql`drop table if exists public.computer_use_approval_keys;
+      alter table public.computer_use_policies drop column if exists approval;`.execute(database);
+  },
+};
+
+export const remoteAdministrationMigration: Migration = {
+  async up(database) {
+    await sql`
+      drop table machine_local_sessions;
+      create table personal_remote_administration (
+        position bigserial unique,
+        execution_id text not null,
+        requested_intent jsonb not null,
+        id text primary key,
+        requested_by text not null references users(id),
+        idempotency_key text not null,
+        intent jsonb not null,
+        state text not null check (state in ('pending', 'running', 'succeeded', 'failed')),
+        detail text,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        unique (requested_by, idempotency_key)
+      );
+      create index personal_remote_administration_latest on personal_remote_administration (position desc);
+    `.execute(database);
+  },
+};
+
+const personalAccountLinkSealingMigration: Migration = {
+  async up(database) {
+    await sql`create table personal_account_link_keys (
+      challenge_id text primary key,
+      public_key text not null,
+      private_key text not null,
+      expires_at timestamptz not null
+    )`.execute(database);
+  },
+};
+
+const personalAccountOperationMigration: Migration = {
+  async up(database) {
+    await sql`alter table personal_remote_account_link add column account_operation jsonb;
+      update personal_remote_account_link
+      set account_operation = jsonb_build_object('id', grant_id, 'kind', 'activate')
+      where state = 'activating';`.execute(database);
   },
 };
 

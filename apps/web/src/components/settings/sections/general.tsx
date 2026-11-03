@@ -1,29 +1,14 @@
 import { useEffect, useState } from "react";
-import type { DeploymentAccessSnapshot } from "@opensteer/protocol/desktop";
 import {
   requestNotificationPermission,
   resolveNotificationAvailability,
   type NotificationAvailability,
 } from "../../../desktop/notifications.js";
 import { actionErrorMessage } from "../../../ui-utils.js";
-import {
-  supportsPersonalAccountLink,
-  usePersonalAccountLink,
-  type PersonalAccountLinkController,
-  type PersonalAccountLinkOperation,
-} from "../../../account/use-personal-account-link.js";
 import { useShell } from "../../app-shell.js";
-import { deploymentMutationsBlockedReason } from "../../deployment-operation.js";
-import { useToast } from "../../toast.js";
 import { settingsPlace, settingsWhatThisIs, settingsWhereItRuns } from "../copy.js";
 import { useHomeComputer } from "./devices.js";
-import {
-  SectionHeader,
-  SettingsError,
-  SettingsRow,
-  StatusChip,
-  type SettingsView,
-} from "../primitives.js";
+import { SectionHeader, SettingsRow, StatusChip, type SettingsView } from "../primitives.js";
 
 /**
  * This Opensteer: what it is called, where it runs, and — for a Personal
@@ -199,169 +184,19 @@ function NotificationsRow() {
  * including the state that is neither success nor failure.
  */
 function AccountListingRow({ view }: { readonly view: SettingsView }) {
-  const { deploymentAccess, desktopBridge } = useShell();
-  const toast = useToast();
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const supported = desktopBridge !== null && supportsPersonalAccountLink(desktopBridge);
-  const controller = usePersonalAccountLink(supported ? desktopBridge : null, deploymentAccess);
-  const personalLink = view.facts.onThisComputer
-    ? (deploymentAccess?.personalAccountLink ?? null)
-    : null;
-  const blockedReason = deploymentMutationsBlockedReason(deploymentAccess);
-  if (desktopBridge && deploymentAccess?.account.available === false) return null;
-  if (!personalLink || !supported) {
-    // A server's Account listing is its operator's business, not a reader's.
-    return view.kind === "personal" ? (
-      <SettingsRow
-        detail={`Whether your account lists it is set in Opensteer on ${view.name}.`}
-        icon="user"
-        title="Your account"
-      />
-    ) : null;
-  }
-  const status = personalLink.status;
-
-  function run(operation: PersonalAccountLinkOperation) {
-    if (controller.pending !== null) return;
-    setError(null);
-    setNotice(null);
-    const request =
-      operation === "link"
-        ? controller.link()
-        : operation === "unlink"
-          ? controller.unlink()
-          : controller.repair();
-    void request
-      .then((outcome) => {
-        if (outcome.succeeded) {
-          toast.success(outcome.message);
-          return;
-        }
-        // Not a failure and not a success: it stays on the page, next to the
-        // button that finishes it.
-        setNotice(outcome.message);
-      })
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)));
-  }
-
-  return (
-    <>
-      <SettingsRow
-        action={accountListingActions({
-          blocked: blockedReason !== null,
-          controller,
-          onAct: run,
-          status,
-        })}
-        detail={
-          <>
-            {accountListingDetail(status)}
-            {blockedReason ? <span className="card__row-reason">{blockedReason}</span> : null}
-          </>
-        }
-        icon="user"
-        title={
-          <>
-            Your account
-            <span className={accountListingChip(status)}>{accountListingLabel(status)}</span>
-          </>
-        }
-      />
-      {notice ? (
-        <p aria-live="polite" className="settings-footnote" role="status">
-          {notice}
-        </p>
-      ) : null}
-      <SettingsError message={error} />
-    </>
-  );
-}
-
-type AccountLinkStatus = DeploymentAccessSnapshot["personalAccountLink"]["status"];
-
-function accountListingActions({
-  blocked,
-  controller,
-  onAct,
-  status,
-}: {
-  readonly blocked: boolean;
-  readonly controller: PersonalAccountLinkController;
-  readonly onAct: (operation: PersonalAccountLinkOperation) => void;
-  readonly status: AccountLinkStatus;
-}) {
-  const disabled = blocked || controller.pending !== null;
-  const button = (
-    operation: PersonalAccountLinkOperation,
-    label: string,
-    workingLabel: string,
-    danger = false,
-  ) => (
-    <button
-      className={danger ? "btn btn--danger btn--small" : "btn btn--small"}
-      disabled={disabled}
-      key={operation}
-      onClick={() => onAct(operation)}
-      type="button"
-    >
-      {controller.pending === operation ? workingLabel : label}
-    </button>
-  );
-
-  if (status === "needs-repair") {
-    return controller.canRepair ? button("repair", "Repair", "Repairing…") : undefined;
-  }
-  if (status === "activating") {
-    return (
-      <>
-        {controller.canLink ? button("link", "Finish adding", "Finishing…") : null}
-        {controller.canUnlink ? button("unlink", "Cancel", "Cancelling…", true) : null}
-      </>
-    );
-  }
-  if (controller.canUnlink) return button("unlink", "Remove from Account", "Removing…", true);
-  if (controller.canLink) return button("link", "Add to your Account", "Adding…");
-  return undefined;
-}
-
-function accountListingLabel(status: AccountLinkStatus): string {
-  if (status === "linked") return "In your account";
-  if (status === "activating") return "Adding…";
-  if (status === "unlinking") return "Removing…";
-  if (status === "linked-elsewhere") return "Different account";
-  if (status === "needs-repair") return "Needs repair";
-  if (status === "unavailable") return "Unavailable";
-  return "Not in your account";
-}
-
-function accountListingChip(status: AccountLinkStatus): string {
-  if (status === "linked") return "chip chip--accent";
-  if (status === "linked-elsewhere" || status === "needs-repair") return "chip chip--bad";
-  if (status === "activating" || status === "unlinking") return "chip chip--warn";
-  return "chip";
-}
-
-function accountListingDetail(status: AccountLinkStatus): string {
-  if (status === "linked-elsewhere") {
-    return "This computer is in a different account than the one signed in to this app. Remove it there before adding it here.";
-  }
-  if (status === "needs-repair") {
-    return "This computer’s records and your account’s records disagree. Opensteer has stopped further changes so neither is overwritten.";
-  }
-  if (status === "unlinking") {
-    return "Removing this computer from your account. Its data stays here.";
-  }
-  if (status === "activating") {
-    return "This computer saved the change and is waiting for your account to finish. Finish it or cancel safely.";
-  }
-  if (status === "unavailable") {
-    return "Adding this computer to an account isn’t available.";
-  }
-  if (status === "linked") {
-    return "Shows in your list on every device you sign in on. Files and agents stay on this computer.";
-  }
-  return "Adding this computer to your account lets you open it from your other devices and use Opensteer-hosted integrations. Workspaces, files, conversations, agents and integration tokens stay on this computer.";
+  const { desktopBridge, deploymentAccess, snapshot } = useShell();
+  if (
+    (desktopBridge && deploymentAccess?.account.available === false) ||
+    (!desktopBridge && !snapshot.identityConfig?.portalOrigin)
+  )
+    return null;
+  return view.kind === "personal" ? (
+    <SettingsRow
+      icon="user"
+      title="Opensteer Account"
+      detail="View and change the linked Account in Devices, from any signed-in device."
+    />
+  ) : null;
 }
 
 function SearchSuggestionsRow() {

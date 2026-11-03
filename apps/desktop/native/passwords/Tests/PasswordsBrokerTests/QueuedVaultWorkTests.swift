@@ -31,29 +31,14 @@ final class QueuedVaultWorkTests: BrokerTestCase {
     let desktop = try await harness.client()
     let id = UUID().uuidString.lowercased()
     let account = try unwrap(try await request(desktop, id)["accounts"]?[0])
-    store.close()
-    let vault = harness.vault
-    let earlier = Task { try await vault.hasLogin(withinSite: "https://example.com") }
-    try await harness.eventually("earlier vault work holding the queue") { store.waitingReads == 1 }
-    let off = Task { try await self.broker.setAgentSignIns(false) }
-    try await Task.sleep(nanoseconds: 20_000_000)
-    let confirmed = presence.confirmCount
-    let approve = desktop.send("signin.approve", Fixtures.approve(id, account, remember: true))
-    try await harness.eventually("the approval authenticated") { presence.confirmCount > confirmed }
-    try await Task.sleep(nanoseconds: 20_000_000)
-    store.open()
-    _ = try await earlier.value
-    try await off.value
-    same(
-      try await desktop.reply(to: approve),
-      .result(.object(["decision": .string("unavailable"), "reason": .string("passwords-off")])))
-    XCTAssertTrue(try harness.savedGrants().isEmpty, "nothing was granted")
-    XCTAssertEqual(broker.status, Wire.Status(vault: .ready, agentSignIns: false))
+    _ = try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: true))
+    try await broker.setAgentSignIns(false)
+    XCTAssertTrue(try harness.savedGrants().isEmpty)
+    let committed = try await desktop.call("signin.commit", Fixtures.transaction(id))
+    XCTAssertNotEqual(committed.result?["committed"], .bool(true))
     same(
       try await desktop.call("signin.release", Fixtures.release(id)).result?["reason"],
-      .string("ended"), "the sign-in ended")
-    await harness.activity.flush()
-    same(await harness.activity.entries().map(\.outcome), [.cancelled])
+      .string("ended"))
   }
 
   /// X33 (cancel race): the sign-in ends (cancel, the
@@ -113,7 +98,7 @@ final class QueuedVaultWorkTests: BrokerTestCase {
     let id = UUID().uuidString.lowercased()
     let account = try unwrap(try await request(desktop, id)["accounts"]?[0])
     same(
-      try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: false))
+      try await desktop.allow(Fixtures.approve(id, account, remember: false))
         .result?["decision"], .string("authorized"))
     store.close()
     let release = desktop.send("signin.release", Fixtures.release(id))

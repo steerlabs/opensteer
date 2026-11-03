@@ -2,6 +2,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
 import type {
+  ConnectOperationCompletion,
   ControlPlaneErrorReason,
   NotificationDevicePlatform,
 } from "@opensteer/control-plane-protocol";
@@ -105,6 +106,9 @@ export async function createControlPlaneServer(
         code: normalized.code,
         message: normalized.message,
         ...(normalized.reason ? { reason: normalized.reason } : {}),
+        ...(normalized.completedOperation
+          ? { completedOperation: normalized.completedOperation }
+          : {}),
       },
     });
   });
@@ -473,6 +477,7 @@ function normalizeHttpError(error: unknown): {
   readonly code: string;
   readonly message: string;
   readonly reason?: ControlPlaneErrorReason;
+  readonly completedOperation?: ConnectOperationCompletion;
   readonly status: number;
 } {
   if (error instanceof z.ZodError) {
@@ -483,6 +488,7 @@ function normalizeHttpError(error: unknown): {
       code: error.code,
       message: error.message,
       ...(error.reason ? { reason: error.reason } : {}),
+      ...(error.completedOperation ? { completedOperation: error.completedOperation } : {}),
       status: error.status,
     };
   }

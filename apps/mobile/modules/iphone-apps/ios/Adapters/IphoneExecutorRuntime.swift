@@ -29,9 +29,6 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
   private var issueMessage: String?
   private var locationAccuracy: String?
   private var permissionStates: [String: IphonePermission] = [:]
-  private var approvalRules: ApprovalRules?
-  private var approvalPrompts: [[String: Any]] = []
-  private var hostKeyId: String?
   private var hostClock: IphoneHostClock?
   private var primaryLeaseEnd: UInt64 = 0
   private var stream: URLSessionWebSocketTask?
@@ -40,7 +37,6 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
   private var session: URLSession?
   private var connectionTask: Task<Void, Never>?
   private var observer: (([String: Any?]) -> Void)?
-  private var pendingOutcomes: [String: CheckedContinuation<[String: Any], Never>] = [:]
   private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
   private var drainTask: Task<Void, Never>?
 
@@ -71,27 +67,13 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
         "state": identity.state.rawValue, "enrollmentId": identity.enrollmentId,
         "hostUrl": identity.hostUrl]
     } else { enrollment = nil }
-    let approvalKey: [String: Any?]?
-    if identity != nil, let storage,
-      let keyId = try? storage.approvalKeyId(), let publicKey = try? storage.approvalPublicKey() {
-      approvalKey = ["keyId": keyId, "publicKey": publicKey, "registered": keyId == hostKeyId]
-    } else { approvalKey = nil }
-    let approvals: [[String: Any?]] = approvalPrompts.compactMap { request in
-      guard let id = request["id"] as? String, let definitionId = request["definitionId"] as? String,
-        let access = request["access"] as? String else { return nil }
-      return ["setupRequestId": id, "definitionId": definitionId, "access": access,
-        "reason": request["reason"] is NSNull ? nil : request["reason"],
-        "threadTitle": request["threadTitle"] is NSNull ? nil : request["threadTitle"],
-        "workspaceName": request["workspaceName"] is NSNull ? nil : request["workspaceName"],
-        "createdAt": request["createdAt"], "expiresAt": request["expiresAt"]]
-    }
     return ["revision": revision, "supported": supported, "unsupportedReason": unsupportedReason,
       "deviceName": UIDevice.current.name, "enrollment": enrollment,
       "connection": connection, "retryAt": retryAt, "issue": issue.map(Self.issueCode),
-      "issueMessage": issueMessage, "approvalKey": approvalKey,
+      "issueMessage": issueMessage,
       "permissions": Dictionary(uniqueKeysWithValues: InvokeRules.apps.map { ($0, (permissionStates[$0] ?? .notDetermined).rawValue) }),
       "locationAccuracy": locationAccuracy,
-      "approvals": approvals, "working": gate?.inFlight ?? 0]
+      "working": gate?.inFlight ?? 0]
   }
 
   private func publish() {
@@ -275,7 +257,6 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     lock.lock()
     identity = try storage.load()
     connection = "none"; issue = nil; issueMessage = nil; retryAt = nil
-    approvalPrompts = []; approvalRules = nil; hostKeyId = nil
     lock.unlock()
     closeSockets(); publish()
     return ["mintKey": mintKey]
@@ -302,7 +283,6 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     connectionTask?.cancel(); connectionTask = nil
     identity = nil
     dispatcher = nil
-    approvalPrompts = []; approvalRules = nil; hostKeyId = nil
     connection = "stopped"; issue = nil
     do { try storage?.wipe() }
     catch {
@@ -347,63 +327,6 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     lock.unlock()
     if current { publish(); await sendStatus() }
     return state.rawValue
-  }
-
-  func answerApproval(requestId: String, decision: String, definitionId: String, access: String) async -> [String: Any] {
-    lock.lock()
-    let allowed = foreground && connection == "online" &&
-      streamFence?.tag == gate?.currentFence &&
-      approvalRules?.registered(hostKeyId: hostKeyId) == true &&
-      approvalRules?.mayAnswer(requestId: requestId, expectedDefinition: definitionId,
-        expectedAccess: access, now: hostClock?.now() ?? Date.distantFuture) == true
-    let request = approvalRules?.request(requestId)
-    let storage = self.storage
-    let stream = self.stream
-    let fence = streamFence
-    let time = hostClock
-    let generation = gate?.generation
-    lock.unlock()
-    guard allowed, let request, let storage, let stream, let fence, let time else {
-      return ["kind": "unavailable", "message": "That approval is no longer waiting on this iPhone."]
-    }
-    do {
-      let expiry = try WireField.date(request, "expiresAt")
-      let answerExpiry = min(expiry, time.now().addingTimeInterval(30))
-      let expiresAt = IphoneHostClock.iso(answerExpiry)
-      let signature = try IphoneProofs.approval(storage.approvalKey(), request: request,
-        decision: decision, expiresAt: expiresAt)
-      let answer: [String: Any] = ["kind": decision, "approval": ["requestId": requestId,
-        "expiresAt": expiresAt, "signature": signature]]
-      let frame = fence.fields.merging(["type": "runner.integrations.computer-app-approval-answer",
-        "setupRequestId": requestId, "answer": answer]) { _, new in new }
-      return await withCheckedContinuation { continuation in
-        lock.lock()
-        guard generation == gate?.generation, self.stream === stream,
-          streamFence == fence, gate?.currentFence == fence.tag,
-          pendingOutcomes[requestId] == nil else {
-          lock.unlock(); continuation.resume(returning: ["kind": "unavailable", "message": "This iPhone is no longer connected."]); return
-        }
-        pendingOutcomes[requestId] = continuation
-        lock.unlock()
-        Task { [weak self] in
-          guard let self else { return }
-          do { try await self.send(frame, over: stream) }
-          catch {
-            self.finishOutcome(requestId, outcome: ["kind": "unavailable", "message": "This iPhone could not send that answer."])
-            return
-          }
-          try? await Task.sleep(nanoseconds: 10_000_000_000)
-          self.finishOutcome(requestId, outcome: ["kind": "unavailable", "message": "Opensteer did not answer in time."])
-        }
-      }
-    } catch {
-      return ["kind": "unavailable", "message": "This iPhone could not send that answer."]
-    }
-  }
-
-  private func finishOutcome(_ id: String, outcome: [String: Any]) {
-    lock.lock(); let continuation = pendingOutcomes.removeValue(forKey: id); lock.unlock()
-    continuation?.resume(returning: outcome)
   }
 
   private func reconnect() {
@@ -624,12 +547,9 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     self.hostClock = hostClock
     streamFence = auxWelcome.fence
     connection = "online"; issue = nil; issueMessage = nil; retryAt = nil
-    let keyId = try storage!.approvalKeyId()
-    approvalRules = ApprovalRules(runnerId: initial.runnerId, keyId: keyId)
     lock.unlock()
     try await send(IphoneWire.modulesReport(welcome.fence, checkedAt: hostClock.isoNow()), over: primary)
     await sendStatus()
-    try await send(auxWelcome.fence.fields.merging(["type": "runner.integrations.computer-app-approvals-sync"]) { _, new in new }, over: stream)
     publish()
     return try await withThrowingTaskGroup(of: Bool.self) { group in
       group.addTask { try await self.primaryLoop(primary, welcome: welcome, generation: generation, session: session, clock: hostClock) }
@@ -753,13 +673,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
           generation: generation, session: session) }
       case "host.integrations.cancel":
         if let requestId = frame["requestId"] as? String { cancel(requestId) }
-      case "host.integrations.computer-app-approvals":
-        applyApprovals(frame, generation: generation, fence: fence)
-      case "host.integrations.computer-app-approval-outcome":
-        if let id = frame["setupRequestId"] as? String,
-          let outcome = frame["outcome"] as? [String: Any] { finishOutcome(id, outcome: outcome) }
-      case "host.integrations.computer-app-approval-key-challenge":
-        try await proveApprovalKey(frame, fence: fence, stream: socket, generation: generation)
+
       default:
         throw IphoneConnectionFailure(.protocolError, violation: true)
       }
@@ -787,40 +701,6 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     let result = await dispatcher.run(frame, fence: fence, receivedAt: receivedAt,
       permission: permission, deviceName: name)
     if let result, transportAlive(generation, session: expected) { try? await send(result, over: socket) }
-  }
-
-  private func applyApprovals(_ frame: [String: Any], generation: UInt64, fence: AuxiliaryFence) {
-    guard let entries = frame["approvals"] as? [[String: Any]] else { return }
-    let requests = entries.compactMap { $0["request"] as? [String: Any] }
-    lock.lock()
-    guard gate?.generation == generation, gate?.currentFence == fence.tag,
-      streamFence == fence else { lock.unlock(); return }
-    approvalRules?.replace(requests)
-    approvalPrompts = requests.filter { request in
-      request["runnerId"] as? String == identity?.runnerId &&
-      request["kind"] as? String == "app" &&
-      InvokeRules.apps.contains(request["definitionId"] as? String ?? "")
-    }
-    hostKeyId = frame["approvalKeyId"] as? String
-    lock.unlock(); publish()
-  }
-
-  private func proveApprovalKey(_ frame: [String: Any], fence: AuxiliaryFence,
-    stream: URLSessionWebSocketTask, generation: UInt64) async throws {
-    lock.lock()
-    let allowed = streamFence == fence && gate?.currentFence == fence.tag && self.stream === stream &&
-      (approvalRules?.mayProve(keyId: frame["keyId"] as? String ?? "",
-        runnerId: frame["runnerId"] as? String ?? "") ?? false)
-    let storage = self.storage
-    lock.unlock()
-    guard allowed, let storage, current(generation) else { throw IphoneConnectionFailure(.protocolError, violation: true) }
-    let challenge: [String: Any] = ["challengeId": try WireField.string(frame, "challengeId"),
-      "expiresAt": try WireField.string(frame, "expiresAt"),
-      "keyId": try WireField.string(frame, "keyId"), "nonce": try WireField.string(frame, "nonce"),
-      "runnerId": try WireField.string(frame, "runnerId")]
-    let signature = try IphoneProofs.keyChallenge(storage.approvalKey(), challenge: challenge)
-    try await send(fence.fields.merging(["type": "runner.integrations.computer-app-approval-key-proof",
-      "challengeId": challenge["challengeId"]!, "signature": signature]) { _, new in new }, over: stream)
   }
 
   private func heartbeats(primary: URLSessionWebSocketTask, stream: URLSessionWebSocketTask,
@@ -863,11 +743,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     let stream = self.stream; self.stream = nil; streamFence = nil
     let session = self.session; self.session = nil
     primaryLeaseEnd = 0
-    let outcomes = pendingOutcomes; pendingOutcomes.removeAll()
     lock.unlock()
-    for continuation in outcomes.values {
-      continuation.resume(returning: ["kind": "unavailable", "message": "This iPhone is no longer connected."])
-    }
     stream?.cancel(with: .goingAway, reason: nil)
     primary?.cancel(with: .goingAway, reason: nil)
     session?.invalidateAndCancel()

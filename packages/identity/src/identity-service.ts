@@ -593,7 +593,10 @@ export class IdentityService {
       : null;
   }
 
-  async handleNativeOAuthRequest(request: Request): Promise<Response> {
+  async handleNativeOAuthRequest(
+    request: Request,
+    afterResponse?: (effect: () => void) => void,
+  ): Promise<Response> {
     if (!this.#options.nativeOAuth) {
       return new Response(JSON.stringify({ error: "not_found" }), {
         headers: { "content-type": "application/json" },
@@ -606,23 +609,30 @@ export class IdentityService {
       forceInteractiveConsent(url);
     }
     if (publicPath === "/oauth2/end-session") {
-      if (request.method === "GET") return this.#endNativeAuthorization(url.searchParams);
+      if (request.method === "GET")
+        return this.#endNativeAuthorization(url.searchParams, afterResponse);
       if (request.method === "POST") {
         const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim();
         if (mediaType !== "application/x-www-form-urlencoded") {
           return nativeOAuthError(415, "invalid_request", "end-session requires a form body");
         }
-        return this.#endNativeAuthorization(new URLSearchParams(await request.text()));
+        return this.#endNativeAuthorization(
+          new URLSearchParams(await request.text()),
+          afterResponse,
+        );
       }
     }
     url.pathname = `${internalAuthPath}${publicPath}`;
     if (request.method === "POST" && publicPath === "/oauth2/revoke") {
-      return this.#revokeNativeAuthorization(url, request);
+      return this.#revokeNativeAuthorization(url, request, afterResponse);
     }
     return this.#auth.handler(new Request(url, request));
   }
 
-  async #endNativeAuthorization(parameters: URLSearchParams): Promise<Response> {
+  async #endNativeAuthorization(
+    parameters: URLSearchParams,
+    afterResponse?: (effect: () => void) => void,
+  ): Promise<Response> {
     // Managed native registrations declare no post-logout callbacks. Refuse a
     // redirect before ending anything instead of accepting an unregistered URL.
     if (parameters.has("post_logout_redirect_uri")) {
@@ -674,7 +684,7 @@ export class IdentityService {
       .where("id", "=", sessionId.data)
       .where("userId", "=", userId.data)
       .execute();
-    this.#options.onSessionEnded?.(sessionId.data);
+    this.announceSessionsEnded([sessionId.data], afterResponse);
     return new Response(null, { status: 200 });
   }
 
@@ -692,7 +702,11 @@ export class IdentityService {
    * authorize from different browsers and therefore hold different sessions,
    * so one application signing out never signs the other out.
    */
-  async #revokeNativeAuthorization(url: URL, request: Request): Promise<Response> {
+  async #revokeNativeAuthorization(
+    url: URL,
+    request: Request,
+    afterResponse?: (effect: () => void) => void,
+  ): Promise<Response> {
     const body = await request.text();
     const anchor = await this.#nativeTokenAnchor(new URLSearchParams(body));
     const response = await this.#auth.handler(
@@ -706,7 +720,7 @@ export class IdentityService {
       .where("id", "=", anchor.sessionId)
       .where("userId", "=", anchor.userId)
       .execute();
-    this.#options.onSessionEnded?.(anchor.sessionId);
+    this.announceSessionsEnded([anchor.sessionId], afterResponse);
     return response;
   }
 
@@ -1829,7 +1843,6 @@ export class IdentityService {
       .digest("base64url");
     if (administrator) {
       const signedIn = await this.#signInPassword({ email, password }, headers);
-      await this.#markMachineLocalSession(signedIn.data.session.id);
       return {
         data: { session: signedIn.data.session },
         headers: signedIn.headers,
@@ -1843,24 +1856,7 @@ export class IdentityService {
       { displayName: owner.displayName, email, password },
       admittedHeaders,
     );
-    await this.#markMachineLocalSession(claimed.data.session.id);
     return claimed;
-  }
-
-  /**
-   * Records that this session was established by spending the process-launch
-   * capability only the application running on this computer holds. Better
-   * Auth owns the transaction that creates the session, so the marker is
-   * written immediately afterwards and before the session is handed back — a
-   * marker that fails to land leaves a session that simply is not
-   * machine-local, which is the safe direction.
-   */
-  async #markMachineLocalSession(sessionId: AuthSessionId): Promise<void> {
-    await this.#database
-      .insertInto("machineLocalSessions")
-      .values({ authSessionId: sessionId, establishedAt: new Date() })
-      .onConflict((conflict) => conflict.column("authSessionId").doNothing())
-      .execute();
   }
 
   async signOut(headers: Headers): Promise<TokenFreeAuthResponse<{ readonly signedOut: true }>> {
@@ -1954,7 +1950,6 @@ export class IdentityService {
     const authenticated = AuthenticatedSessionSchema.parse(current);
     const rows = await this.#database
       .selectFrom("authSessions")
-      .leftJoin("machineLocalSessions", "machineLocalSessions.authSessionId", "authSessions.id")
       .select([
         "authSessions.absoluteExpiresAt",
         "authSessions.createdAt",
@@ -1963,7 +1958,6 @@ export class IdentityService {
         "authSessions.id",
         "authSessions.lastSeenAt",
         "authSessions.userAgent",
-        "machineLocalSessions.authSessionId as machineLocalSessionId",
       ])
       .where("authSessions.userId", "=", authenticated.user.id)
       .where("authSessions.expiresAt", ">", new Date())
@@ -1988,7 +1982,6 @@ export class IdentityService {
         form: device?.form ?? null,
         id: row.id,
         lastSeenAt: row.lastSeenAt.toISOString(),
-        machineLocal: row.machineLocalSessionId !== null,
       };
     });
   }
@@ -1997,11 +1990,22 @@ export class IdentityService {
    * Logins another owner of the session table deleted in its own transaction.
    * Their live connections end exactly as a sign-out's do.
    */
-  announceSessionsEnded(sessionIds: readonly AuthSessionId[]): void {
-    for (const sessionId of sessionIds) this.#options.onSessionEnded?.(sessionId);
+  announceSessionsEnded(
+    sessionIds: readonly AuthSessionId[],
+    afterResponse?: (effect: () => void) => void,
+  ): void {
+    const announce = () => {
+      for (const sessionId of sessionIds) this.#options.onSessionEnded?.(sessionId);
+    };
+    if (afterResponse) afterResponse(announce);
+    else announce();
   }
 
-  async revokeSession(current: AuthenticatedSession, sessionId: string): Promise<void> {
+  async revokeSession(
+    current: AuthenticatedSession,
+    sessionId: string,
+    afterResponse?: (effect: () => void) => void,
+  ): Promise<void> {
     const authenticated = AuthenticatedSessionSchema.parse(current);
     const parsedId = AuthSessionIdSchema.parse(sessionId);
     const result = await this.#database
@@ -2012,7 +2016,7 @@ export class IdentityService {
     if (result.numDeletedRows !== 1n) {
       throw new OpensteerError({ code: "not_found", message: "Session not found" });
     }
-    this.#options.onSessionEnded?.(parsedId);
+    this.announceSessionsEnded([parsedId], afterResponse);
   }
 
   async exchangeInvitation(
@@ -2120,8 +2124,8 @@ export class IdentityService {
     return { invitation, verifier };
   }
 
-  async acceptInvitation(headers: Headers) {
-    const session = await this.requireSession(headers);
+  async acceptInvitation(headers: Headers, authenticated?: AuthenticatedSession) {
+    const session = authenticated ?? (await this.requireSession(headers));
     const admission = await this.#admissionFromHeaders(headers);
     if (!admission || admission.purpose !== "invitation") {
       throw new OpensteerError({ code: "forbidden", message: "Invitation admission required" });

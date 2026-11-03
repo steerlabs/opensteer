@@ -336,7 +336,7 @@ describe("where the viewer is", () => {
 describe("the block's presentation", () => {
   const base: ComputerUseView = {
     appApproval: "ask",
-    approvalKeyId: `sha256:${"A".repeat(43)}`,
+
     apps: [],
     definition: gui(),
     pending: [],
@@ -361,10 +361,6 @@ describe("the block's presentation", () => {
       }),
     ).toBe("attention");
     expect(computerUseTone({ ...base, state: { kind: "offline" } })).toBe("idle");
-    expect(computerUseTone({ ...base, approvalKeyId: null })).toBe("attention");
-    expect(computerUseStatusLine({ ...base, approvalKeyId: null }, studio)).toBe(
-      "Needs app approval setup.",
-    );
   });
 
   it("asks the policy as a question only on a Mac with nothing in it yet", () => {
@@ -372,7 +368,6 @@ describe("the block's presentation", () => {
     expect(computerUseFirstRun({ ...base, appApproval: "automatic" })).toBe(false);
     expect(computerUseFirstRun({ ...base, apps: [row(false)] })).toBe(false);
     expect(computerUseFirstRun({ ...base, state: { kind: "offline" } })).toBe(false);
-    expect(computerUseFirstRun({ ...base, approvalKeyId: null })).toBe(false);
   });
 });
 
@@ -603,8 +598,8 @@ describe("where an app access Request is answered", () => {
         runnerId: mac,
       }),
     ).toEqual({
-      approveOn: "Approve on Studio",
-      detail: "Opensteer shows the approval on Studio by itself.",
+      approveOn: "Allow on this device",
+      detail: "You can give agents access to Studio here.",
     });
     expect(
       computerAppAccessApproval({
@@ -613,7 +608,7 @@ describe("where an app access Request is answered", () => {
         onThatMac: true,
         runnerId: mac,
       }).approveOn,
-    ).toBe("Approve on this Mac");
+    ).toBe("Allow on this device");
     expect(
       computerAppAccessApproval({
         definitionId: "macos-app",
@@ -621,7 +616,7 @@ describe("where an app access Request is answered", () => {
         onThatMac: false,
         runnerId: mac,
       }).approveOn,
-    ).toBe("Approve on that Mac");
+    ).toBe("Allow on this device");
   });
 
   it("says phone access can be allowed from this client", () => {
@@ -768,7 +763,7 @@ function report(
 ): NonNullable<MachineSummary["computerUse"]> {
   return {
     displayStreamSupported: false,
-    approvalKeyId: `sha256:${"A".repeat(43)}`,
+
     appApproval: "ask",
     detail: null,
     permissions: { accessibility: "granted", screenRecording: "granted" },

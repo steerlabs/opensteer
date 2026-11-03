@@ -274,6 +274,7 @@ interface HostedOAuthBrokerAttemptTable {
   provider: string;
   requestedScopeDigest: string;
   launchTicketHash: string | null;
+  browserBindingHash: Generated<string | null>;
   stateHash: string | null;
   expiresAt: Timestamp;
   status:

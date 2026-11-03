@@ -15,8 +15,8 @@ export function runnerAuxiliaryWelcome(
     ...(module === "integrations" && stream.identity.modules.integrations?.loginText === 1
       ? { loginText: 1 }
       : {}),
-    ...(module === "integrations" && stream.identity.modules.integrations?.passwordSignIn === 1
-      ? { passwordSignIn: 1 }
+    ...(module === "integrations" && stream.identity.modules.integrations?.passwordSignIn === 2
+      ? { passwordSignIn: 2 }
       : {}),
     ...(module === "browser" && stream.identity.modules.browser?.passkeys === 1 && passkeys
       ? { passkeys: 1 }

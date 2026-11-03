@@ -26,7 +26,8 @@ afterEach(async () => {
 describe("integration authorization transaction routes", () => {
   it("binds an atomic launch to the callback browser and redirects without caching", async () => {
     const launch = vi.fn(async () => ({
-      authorizationUrl: "https://accounts.example.test/authorize?state=opaque",
+      authorizationUrl:
+        "https://accounts.example.test/authorize?redirect_uri=https%3A%2F%2Fhost.example.test%2Fcallback&state=opaque",
       browserBinding,
       flow: "provider-oauth" as const,
       id: attemptId,
@@ -47,7 +48,7 @@ describe("integration authorization transaction routes", () => {
     });
 
     expect(response.statusCode).toBe(303);
-    expect(response.headers.location).toBe("https://accounts.example.test/authorize?state=opaque");
+    expect(response.headers.location).toContain("redirect_uri=");
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.headers["referrer-policy"]).toBe("no-referrer");
     expect(response.headers["set-cookie"]).toContain("HttpOnly; SameSite=Lax; Secure");

@@ -3,7 +3,6 @@ import type { DesktopPasskeyRequests } from "../passkeys/passkey-requests.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import type { DesktopUpdater } from "../app/desktop-updater.js";
 import type { DesktopBrowserPresentationManager } from "../browser/browser-presentation.js";
-import type { PasswordsSignInOperations } from "../passwords/sign-in-operations.js";
 import type { IpcMain, IpcMainInvokeEvent, NativeImage, WebContents, WebFrameMain } from "electron";
 import type { DeploymentId } from "@opensteer/core";
 import type {
@@ -11,11 +10,8 @@ import type {
   DesktopComputerAppSetupTarget,
   DesktopOpenComputerAppSetupInput,
   DesktopOpenComputerAppSetupResult,
-  DesktopComputerUseApprovalKeyResult,
-  DesktopComputerUseApprovalPresentation,
   DesktopComputerUseSettingsPane,
   DesktopPasswordsStatus,
-  DesktopReviewComputerAppSetupResult,
   DesktopUseComputerViewInput,
   DesktopUseComputerViewResult,
   DesktopAgentPhoneArtifact,
@@ -24,7 +20,6 @@ import type {
 } from "@opensteer/protocol/desktop";
 import type { DeploymentAccessService } from "../connections/deployment-access-service.js";
 import type { DesktopHostTransport } from "../connections/host-transport.js";
-import type { DesktopPersonalRemoteAccessService } from "../connections/personal-remote-access.js";
 import type { LocalRunnerService } from "../supervisor/local-runner-service.js";
 import type { AccountConnectClient } from "@opensteer/client/connections";
 import type { ComputerUsePermissions } from "@opensteer/protocol";
@@ -36,6 +31,10 @@ export interface BridgeEnvelope {
 }
 
 export interface DesktopBridgeOptions {
+  readonly accountLinkCourier?: Pick<
+    import("@opensteer/client/connections").AccountDeploymentDirectoryService,
+    "issuePersonalHostAccountLinkChallenge" | "completePersonalHostAccountLink"
+  >;
   readonly webLinks?: DesktopWebLinks;
   readonly isWorkspaceContents?: (
     sender: Pick<WebContents, "send" | "once" | "removeListener" | "isDestroyed">,
@@ -92,15 +91,12 @@ export interface DesktopBridgeOptions {
   readonly bridgeToken: string;
   readonly computerApps: {
     /** This desktop's approval key's public half, for the page on this Mac to register. */
-    readonly approvalKey: () => Promise<DesktopComputerUseApprovalKeyResult>;
+
     /**
      * Waits for this Mac's answer to one of the Deployment's setup requests by
      * id, which reaches this Mac through its Runner like every other.
      */
-    readonly review: (
-      deploymentId: DeploymentId,
-      setupRequestId: string,
-    ) => Promise<DesktopReviewComputerAppSetupResult>;
+
     /**
      * The setup guide for apps the helper serves: one panel on this Mac that
      * takes every macOS step an app's access needs.
@@ -134,12 +130,9 @@ export interface DesktopBridgeOptions {
       input: DesktopUseComputerViewInput,
     ) => Promise<DesktopUseComputerViewResult>;
     /** Reads the presentation for the panel whose own contents are `sender`. */
-    readonly approvalGet: (
-      token: string,
-      sender: WebContents,
-    ) => DesktopComputerUseApprovalPresentation;
+
     /** Answers for the panel whose own contents are `sender`, and no other. */
-    readonly approvalRespond: (token: string, allow: boolean, sender: WebContents) => void;
+
     readonly closePermissionsPanel: () => Promise<void>;
     readonly openPermissionsPanel: () => Promise<void>;
     /** Throws `AdHocSignedHelperError` when this build would refuse its own helper. */
@@ -184,14 +177,9 @@ export interface DesktopBridgeOptions {
    */
   readonly passwords: {
     readonly open: () => Promise<void>;
-    readonly signIns: Pick<PasswordsSignInOperations, "get" | "approve" | "subscribe">;
     readonly status: () => Promise<DesktopPasswordsStatus>;
     readonly subscribe: (listener: (status: DesktopPasswordsStatus) => void) => () => void;
   };
-  readonly personalRemote: Pick<
-    DesktopPersonalRemoteAccessService,
-    "configure" | "issuePairingCode" | "status" | "subscribe"
-  >;
   readonly portal: {
     readonly openExternal: (url: string) => Promise<void>;
     /** The chosen folder, or null when the dialog was closed without one. */
@@ -214,8 +202,6 @@ export interface DesktopBridgeContext {
    * Sign-in toolbars that read their window through the bridge: the only
    * renderers a window's change is pushed to, and each only its own.
    */
-  readonly passwordsSignInCards: Map<WebContents, Set<string>>;
-  readonly personalRemoteSenders: Set<WebContents>;
   readonly trackedHostSenders: Set<number>;
 }
 

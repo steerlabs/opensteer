@@ -1,6 +1,4 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -9,7 +7,6 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { isLoopbackHostname } from "@opensteer/core";
 import type { LocalMcpLaunch } from "@opensteer/integration-core";
-import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 import {
   computerAppFrameFits,
   computerMcpMaxSessions,
@@ -37,7 +34,6 @@ const terminationGraceMs = 2_000;
  * session ends rather than this computer holding more.
  */
 const maxBufferedBytes = 16 * 1_024 * 1_024;
-const unapprovedSentence = "Its owner has not approved running this MCP server.";
 const capacitySentence =
   "Already running as many MCP server sessions as it can; try again when one ends.";
 const tooLargeSentence =
@@ -58,23 +54,15 @@ interface Session {
  *
  * The Host is each server's MCP client; this carries the JSON-RPC messages of
  * one session to and from the program it started — or the server on its own
- * loopback — without reading them. What it will start is decided here, not
- * by the Host: a launch runs only while its digest is one this computer's
- * owner allowed on this computer. Desktop main says which, naming the launch
- * from the request it showed the person and signed; nothing the Host sends —
- * a list, an outcome — allows anything. A Host can ask; only the person can
- * allow.
+ * loopback — without reading them. The authenticated Host admits the exact
+ * launch against its stored owner decision before opening a session. This
+ * executor never accepts a decision from the desktop bridge.
  */
 export class LocalMcpServers {
-  readonly #approvals: LocalMcpApprovals;
   readonly #sessions = new Map<string, Session>();
   /** Bumped by every attach and detach; work begun under another one stops. */
   #generation = 0;
   #send: ((frame: LocalMcpFrame) => Promise<void>) | undefined;
-
-  constructor(options: { readonly approvals: LocalMcpApprovals }) {
-    this.#approvals = options.approvals;
-  }
 
   attach(send: (frame: LocalMcpFrame) => Promise<void>): void {
     this.detach();
@@ -92,31 +80,11 @@ export class LocalMcpServers {
     }
   }
 
-  /**
-   * The person allowed this server's exact launch on this computer: desktop
-   * main says so over its local bridge, naming the launch from the request it
-   * showed and signed. From this moment it may run here, whatever the Host
-   * then does with the answer.
-   */
-  allow(server: { readonly launchDigest: string; readonly serverId: string }): void {
-    this.#approvals.approve(server.serverId, server.launchDigest);
-  }
-
   async open(frame: HostIntegrationsMcpOpen): Promise<void> {
     const generation = this.#generation;
     if (this.#sessions.has(frame.sessionId)) return;
     if (this.#sessions.size >= computerMcpMaxSessions) {
       await this.#closed(frame.sessionId, "failed", capacitySentence);
-      return;
-    }
-    const approved = await this.#approvals.approved(
-      frame.serverId,
-      localMcpLaunchDigest(frame.launch),
-    );
-    // The stream that asked may have ended meanwhile; nothing starts for it.
-    if (generation !== this.#generation || this.#sessions.has(frame.sessionId)) return;
-    if (!approved) {
-      await this.#closed(frame.sessionId, "unapproved", unapprovedSentence);
       return;
     }
     const transport = launchTransport(frame.launch);
@@ -381,60 +349,4 @@ function stoppedSentence(session: Session): string {
   ]
     .filter((line) => line !== null)
     .join(" ");
-}
-
-/**
- * The launches this computer's owner approved on it, by server, kept beside
- * the Runner's identity so a restart keeps them. Each write replaces the file
- * whole, so a crash leaves the old set or the new one.
- */
-export class LocalMcpApprovals {
-  readonly #file: string;
-  #approved: Promise<Map<string, string>>;
-  #writing: Promise<void> = Promise.resolve();
-
-  constructor(file: string) {
-    this.#file = file;
-    this.#approved = readApprovals(file);
-  }
-
-  async approved(serverId: string, digest: string): Promise<boolean> {
-    return (await this.#approved).get(serverId) === digest;
-  }
-
-  /** Takes effect for every check made after it, before it is on disk. */
-  approve(serverId: string, digest: string): void {
-    this.#approved = this.#approved.then((approved) => {
-      approved.set(serverId, digest);
-      return approved;
-    });
-    const snapshot = this.#approved;
-    this.#writing = this.#writing
-      .then(async () => {
-        const approved = await snapshot;
-        await mkdir(path.dirname(this.#file), { mode: 0o700, recursive: true });
-        const staged = `${this.#file}.${process.pid}.tmp`;
-        await writeFile(staged, `${JSON.stringify(Object.fromEntries(approved))}\n`, {
-          mode: 0o600,
-        });
-        await rename(staged, this.#file);
-      })
-      .catch(() => undefined);
-  }
-}
-
-/** A file that is missing or cannot be read approves nothing: approving again restores it. */
-async function readApprovals(file: string): Promise<Map<string, string>> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await readFile(file, "utf8"));
-  } catch {
-    return new Map();
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return new Map();
-  return new Map(
-    Object.entries(parsed).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
 }

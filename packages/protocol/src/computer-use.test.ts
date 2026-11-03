@@ -1,3 +1,4 @@
+import { computerUseBridgePasswordsResults } from "./computer-use.js";
 import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
@@ -25,7 +26,6 @@ import {
   ComputerUseSessionOpenResultSchema,
   ComputerUseInstalledAppsParamsSchema,
   ComputerUseInstalledAppsResultSchema,
-  MachineComputerUseSchema,
   computerAppIdentityKey,
   computerUseHelperProtocolVersion,
   computerUseHelperResults,
@@ -641,115 +641,7 @@ describe("computer use discovery and approval push", () => {
     ).toBe(false);
     expect(ComputerUseInstalledAppsResultSchema.safeParse({ apps: [] }).success).toBe(false);
   });
-  it("carries approvals on the bridge, never to the helper, and requires thread title on opens", () => {
-    const setupRequestId = "00000000-0000-4000-8000-000000000001";
-    const request = {
-      id: setupRequestId,
-      deploymentId: createId("deployment"),
-      ownerUserId: createId("user"),
-      runnerId: fence.runnerId,
-      definitionId: "macos-app",
-      definitionDigest: "digest",
-      access: "read",
-      kind: "app",
-      policyAppApproval: null,
-      app: identity,
-      reason: "Read the note.",
-      threadId: createId("thread"),
-      workspaceId: createId("workspace"),
-      workspaceName: "Home",
-      threadTitle: "Plan",
-      createdAt: "2026-09-22T00:00:00.000Z",
-      expiresAt: "2026-09-29T00:00:00.000Z",
-    };
-    const list = { approvalKeyId: null, approvals: [{ request }] };
-    expect(
-      ComputerUseBridgeFrameSchema.safeParse({
-        id: 1,
-        kind: "request",
-        method: "approvals.list",
-        params: list,
-      }).success,
-    ).toBe(true);
-    expect(
-      HostToIntegrationsModuleMessageSchema.safeParse({
-        ...fence,
-        ...list,
-        type: "host.integrations.computer-app-approvals",
-      }).success,
-    ).toBe(true);
-    const approval = {
-      expiresAt: "2026-09-22T00:00:30.000Z",
-      requestId: setupRequestId,
-      signature: "A".repeat(86),
-    };
-    const answer = { answer: { approval, kind: "allow" }, setupRequestId };
-    expect(
-      ComputerUseBridgeFrameSchema.safeParse({
-        event: "approval.answer",
-        kind: "event",
-        params: answer,
-      }).success,
-    ).toBe(true);
-    expect(
-      IntegrationsModuleEventSchema.safeParse({
-        ...fence,
-        ...answer,
-        type: "runner.integrations.computer-app-approval-answer",
-      }).success,
-    ).toBe(true);
-    // A signature over one request never answers another.
-    const elsewhere = { ...answer, setupRequestId: "00000000-0000-4000-8000-000000000002" };
-    expect(
-      ComputerUseBridgeFrameSchema.safeParse({
-        event: "approval.answer",
-        kind: "event",
-        params: elsewhere,
-      }).success,
-    ).toBe(false);
-    expect(
-      IntegrationsModuleEventSchema.safeParse({
-        ...fence,
-        ...elsewhere,
-        type: "runner.integrations.computer-app-approval-answer",
-      }).success,
-    ).toBe(false);
-    for (const method of ["review_approvals", "approvals.list", "approvals.outcome"]) {
-      expect(ComputerUseHelperMethodSchema.safeParse(method).success).toBe(false);
-    }
-    expect(
-      ComputerUseBridgeFrameSchema.safeParse({
-        id: 1,
-        kind: "request",
-        method: "review_approvals",
-        params: { setupRequestId },
-      }).success,
-    ).toBe(false);
-    const open = { sessionId, threadTitle: null };
-    expect(ComputerUseSessionOpenParamsSchema.parse(open)).toEqual(open);
-    expect(
-      ComputerUseSessionOpenParamsSchema.safeParse({ ...open, threadTitle: undefined }).success,
-    ).toBe(false);
-    expect(
-      MachineComputerUseSchema.safeParse({
-        appApproval: null,
-        approvalKeyId: null,
-        sessions: [],
-        detail: null,
-        permissions: null,
-        state: "unavailable",
-      }).success,
-    ).toBe(true);
-    expect(
-      MachineComputerUseSchema.safeParse({
-        appApproval: "ask",
-        sessions: [],
-        detail: null,
-        permissions: null,
-        state: "unavailable",
-      }).success,
-    ).toBe(false);
-  });
+
   it("requires geometry even without a screenshot and rejects the retired event and error", () => {
     expect(
       ComputerUseObservationSchema.safeParse({ ...observation, geometry: undefined }).success,
@@ -862,11 +754,11 @@ describe("owner window compatibility", () => {
     expect(ComputerViewSchema.parse(view).window).toEqual({ id: 42, title: "Notes" });
     expect(ComputerViewSchema.parse({ ...view, window: undefined }).window).toBeNull();
     expect(
-      runnerSupportsComputerUse({ platform: "darwin", protocolVersion: 5, computerUseVersion: 2 }),
+      runnerSupportsComputerUse({ platform: "darwin", protocolVersion: 6, computerUseVersion: 2 }),
     ).toBe(true);
     for (const module of [
       undefined,
-      { platform: "darwin" as const, protocolVersion: 5 },
+      { platform: "darwin" as const, protocolVersion: 5, computerUseVersion: 2 as const },
       { platform: "android" as const, protocolVersion: 4, computerUseVersion: 2 as const },
     ])
       expect(runnerSupportsComputerUse(module)).toBe(false);
@@ -925,4 +817,21 @@ it("bounds helper video fps and bitrate while preserving the legacy shape", () =
       }).success,
     ).toBe(valid);
   }
+});
+
+it("ignores unknown Passwords authority versions without discarding the receiver", () => {
+  for (const authority of [1, 3, 99]) {
+    expect(
+      computerUseBridgePasswordsResults["passwords.capabilities"].parse({
+        authority,
+        receiver: null,
+      }),
+    ).toEqual({ authority: null, receiver: null });
+  }
+  expect(
+    computerUseBridgePasswordsResults["passwords.capabilities"].parse({
+      authority: 2,
+      receiver: null,
+    }).authority,
+  ).toBe(2);
 });

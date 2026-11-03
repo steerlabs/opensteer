@@ -2,6 +2,7 @@ import {
   integrationAuthorizationBrowserReturn,
   IntegrationAuthorizationAttemptIdSchema,
   IntegrationOAuthAttemptIdSchema,
+  McpOAuthAttemptIdSchema,
 } from "@opensteer/integration-core";
 import type { IntegrationAuthAttemptFailureReason } from "@opensteer/integration-core/ports";
 import { oauthAuthorizationResponseState } from "@opensteer/integration-auth";
@@ -21,6 +22,7 @@ import {
   integrationAuthAttemptLifetimeMilliseconds,
   type IntegrationAuthAttemptLifecycle,
 } from "./integration-auth-attempt-service.js";
+import type { McpOAuthService } from "./mcp-oauth-service.js";
 import type { IntegrationService } from "./integration-service.js";
 
 const AttemptParamsSchema = z.strictObject({
@@ -35,6 +37,7 @@ export interface IntegrationAuthorizationRpcOptions {
   readonly authenticator: HostAuthenticator;
   readonly deploymentId: DeploymentId;
   readonly integrations?: IntegrationService;
+  readonly mcpOauth?: McpOAuthService;
 }
 
 export function createIntegrationAuthorizationRpcHandlers(
@@ -49,7 +52,12 @@ export function createIntegrationAuthorizationRpcHandlers(
               attemptId: IntegrationOAuthAttemptIdSchema.parse(attemptId),
               ownerUserId,
             })
-          : await options.attempts.status({ id: attemptId, ownerUserId });
+          : options.mcpOauth && McpOAuthAttemptIdSchema.safeParse(attemptId).success
+            ? await options.mcpOauth.authorizationStatus({
+                attemptId: McpOAuthAttemptIdSchema.parse(attemptId),
+                ownerUserId,
+              })
+            : await options.attempts.status({ id: attemptId, ownerUserId });
       if (!status) throw unavailableAttempt();
       return rpcSuccess(
         hostApi["integration.authorization.get"].success.parse({
@@ -106,18 +114,23 @@ export function registerIntegrationAuthorizationRoutes(
       if (returnsToHost(launched.authorizationUrl, options.authenticator.publicOrigin)) {
         options.authenticator.requireCanonicalSurface(request.headers);
       }
-      return reply
-        .header("cache-control", "no-store")
-        .header("pragma", "no-cache")
-        .header("referrer-policy", "no-referrer")
-        .header(
+      const returnsHere = returnsToHost(
+        launched.authorizationUrl,
+        options.authenticator.publicOrigin,
+      );
+      if (returnsHere)
+        reply.header(
           "set-cookie",
           authorizationBindingCookie(
             attemptId,
             launched.browserBinding,
             new URL(options.authenticator.publicOrigin).protocol === "https:",
           ),
-        )
+        );
+      return reply
+        .header("cache-control", "no-store")
+        .header("pragma", "no-cache")
+        .header("referrer-policy", "no-referrer")
         .code(303)
         .redirect(launched.authorizationUrl);
     },

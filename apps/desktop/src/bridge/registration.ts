@@ -1,3 +1,7 @@
+import {
+  handleIssuePersonalAccountLinkChallenge,
+  handleCompletePersonalAccountLink,
+} from "./methods/account-link-courier.js";
 import { personalWebLinksAvailable, WebLinkDeliveryOwner } from "./methods/web-links.js";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { dictationHandlers } from "./methods/dictation.js";
@@ -15,9 +19,7 @@ import {
   DisplayClientDiagnosticSchema,
   DeploymentAccessSnapshotSchema,
   DesktopLocalExecutionStatusSchema,
-  DesktopPasswordsSignInCardChangedSchema,
   DesktopPasswordsStatusSchema,
-  DesktopPersonalRemoteAccessStatusSchema,
 } from "@opensteer/protocol/desktop";
 import { desktopBridgeChannels } from "./desktop-bridge-channels.js";
 import type { DesktopBridgeContext, DesktopBridgeOptions } from "./context.js";
@@ -34,19 +36,15 @@ import {
   handleComputerAppSetupShowAgain,
   handleComputerAppSetupStartDrag,
   handleComputerAppSetupStatus,
-  handleComputerUseApprovalKey,
   handleOpenComputerAppSetup,
-  handleReviewComputerAppSetup,
 } from "./methods/computer-apps.js";
 import {
   handleCloseComputerUsePermissionsPanel,
   handleUseComputerViewOnThisMac,
-  handleGetComputerUseApproval,
   handleGetComputerUsePermissions,
   handleOpenComputerUsePermissionsPanel,
   handleOpenComputerUseSystemSettings,
   handleRequestComputerUsePermissions,
-  handleRespondComputerUseApproval,
 } from "./methods/computer-use.js";
 import {
   handleCreateCloudDeployment,
@@ -101,17 +99,7 @@ import {
   handleStartLocalRunner,
   handleStopLocalRunner,
 } from "./methods/local-execution.js";
-import {
-  handleGetPasswordsSignIn,
-  handleApprovePasswordsSignIn,
-  handleGetPasswordsStatus,
-  handleOpenPasswords,
-} from "./methods/passwords.js";
-import {
-  handleConfigurePersonalRemoteAccess,
-  handleGetPersonalRemoteAccessStatus,
-  handleIssuePersonalPairingCode,
-} from "./methods/personal.js";
+import { handleGetPasswordsStatus, handleOpenPasswords } from "./methods/passwords.js";
 import { handleOpenExternalUrl, handlePickFolder } from "./methods/window.js";
 
 export function registerDesktopBridge(options: DesktopBridgeOptions): () => void {
@@ -122,8 +110,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     localExecutionSenders: new Map(),
     options,
     passwordsSenders: new Set(),
-    passwordsSignInCards: new Map(),
-    personalRemoteSenders: new Set(),
     trackedHostSenders: new Set(),
   };
   const unsubscribeDownloads = options.downloads.subscribe((snapshot) => {
@@ -173,27 +159,12 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
       }
     }
   });
-  const unsubscribePersonalRemote = options.personalRemote.subscribe((status) => {
-    const parsed = DesktopPersonalRemoteAccessStatusSchema.parse(status);
-    for (const sender of context.personalRemoteSenders) {
-      if (!sender.isDestroyed()) {
-        sender.send(desktopBridgeChannels.personalRemoteAccessStatusChanged, parsed);
-      }
-    }
-  });
   const unsubscribePasswords = options.passwords.subscribe((status) => {
     const parsed = DesktopPasswordsStatusSchema.parse(status);
     for (const sender of context.passwordsSenders) {
       if (!sender.isDestroyed()) {
         sender.send(desktopBridgeChannels.passwordsStatusChanged, parsed);
       }
-    }
-  });
-  const unsubscribeSignIns = options.passwords.signIns.subscribe((change) => {
-    const parsed = DesktopPasswordsSignInCardChangedSchema.parse(change);
-    for (const [sender, operations] of context.passwordsSignInCards) {
-      if (operations.has(change.operationId) && !sender.isDestroyed())
-        sender.send(desktopBridgeChannels.passwordsSignInChanged, parsed);
     }
   });
   const visibilitySenders = new Set<WebContents>();
@@ -246,8 +217,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   for (const [channel, handler] of browserPresentationHandlers(context)) register(channel, handler);
 
   register(desktopBridgeChannels.useComputerViewOnThisMac, handleUseComputerViewOnThisMac(context));
-  register(desktopBridgeChannels.computerUseApprovalKey, handleComputerUseApprovalKey(context));
-  register(desktopBridgeChannels.reviewComputerAppSetup, handleReviewComputerAppSetup(context));
   register(desktopBridgeChannels.openComputerAppSetup, handleOpenComputerAppSetup(context));
   register(desktopBridgeChannels.computerAppSetupStatus, handleComputerAppSetupStatus(context));
   register(desktopBridgeChannels.computerAppSetupBegin, handleComputerAppSetupBegin(context));
@@ -260,11 +229,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     handleComputerAppSetupStartDrag(context),
   );
   register(desktopBridgeChannels.closeComputerAppSetup, handleCloseComputerAppSetup(context));
-  register(desktopBridgeChannels.getComputerUseApproval, handleGetComputerUseApproval(context));
-  register(
-    desktopBridgeChannels.respondComputerUseApproval,
-    handleRespondComputerUseApproval(context),
-  );
   register(
     desktopBridgeChannels.getComputerUsePermissions,
     handleGetComputerUsePermissions(context),
@@ -287,8 +251,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   );
   register(desktopBridgeChannels.getPasswordsStatus, handleGetPasswordsStatus(context));
   register(desktopBridgeChannels.openPasswords, handleOpenPasswords(context));
-  register(desktopBridgeChannels.getPasswordsSignIn, handleGetPasswordsSignIn(context));
-  register(desktopBridgeChannels.approvePasswordsSignIn, handleApprovePasswordsSignIn(context));
   register(
     desktopBridgeChannels.acknowledgePortableFsApproval,
     handleAcknowledgePortableFsApproval(context),
@@ -304,10 +266,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.createCloudDeployment, handleCreateCloudDeployment(context));
   register(desktopBridgeChannels.deleteCloudDeployment, handleDeleteCloudDeployment(context));
   register(desktopBridgeChannels.closeHostWebSocket, handleCloseHostWebSocket(context));
-  register(
-    desktopBridgeChannels.configurePersonalRemoteAccess,
-    handleConfigurePersonalRemoteAccess(context),
-  );
   register(desktopBridgeChannels.listCloudDeployments, handleListCloudDeployments(context));
   register(desktopBridgeChannels.retryCloudDeployment, handleRetryCloudDeployment(context));
   register(desktopBridgeChannels.connectPrivate, handleConnectPrivate(context));
@@ -317,10 +275,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     handleGetDeploymentAccessSnapshot(context),
   );
   register(desktopBridgeChannels.getLocalExecutionStatus, handleGetLocalExecutionStatus(context));
-  register(
-    desktopBridgeChannels.getPersonalRemoteAccessStatus,
-    handleGetPersonalRemoteAccessStatus(context),
-  );
   register(desktopBridgeChannels.hostRequest, handleHostRequest(context));
   register(desktopBridgeChannels.hostBinaryOpen, handleHostBinaryOpen(context));
   register(desktopBridgeChannels.hostBinaryWrite, handleHostBinaryWrite(context));
@@ -328,7 +282,14 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.hostBinaryRead, handleHostBinaryRead(context));
   register(desktopBridgeChannels.hostBinaryClose, handleHostBinaryClose(context));
   register(desktopBridgeChannels.installPortableFs, handleInstallPortableFs(context));
-  register(desktopBridgeChannels.issuePersonalPairingCode, handleIssuePersonalPairingCode(context));
+  register(
+    desktopBridgeChannels.issuePersonalAccountLinkChallenge,
+    handleIssuePersonalAccountLinkChallenge(context),
+  );
+  register(
+    desktopBridgeChannels.completePersonalAccountLink,
+    handleCompletePersonalAccountLink(context),
+  );
   register(desktopBridgeChannels.linkPersonal, handleLinkPersonal(context));
   const webLinkOwner = options.webLinks
     ? new WebLinkDeliveryOwner(
@@ -379,14 +340,10 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     visibilitySenders.clear();
     unsubscribeAccess();
     unsubscribeLocalExecution();
-    unsubscribePersonalRemote();
     unsubscribePasswords();
-    unsubscribeSignIns();
-    context.passwordsSignInCards.clear();
     context.accessSenders.clear();
     context.localExecutionSenders.clear();
     context.passwordsSenders.clear();
-    context.personalRemoteSenders.clear();
     for (const channel of Object.values(desktopBridgeChannels)) {
       options.ipcMain.removeHandler(channel);
     }
