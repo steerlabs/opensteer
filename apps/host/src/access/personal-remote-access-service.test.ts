@@ -215,6 +215,8 @@ describe("PersonalRemoteAccessService", () => {
 
     await expect(service.removeAccountLink(ownerSession())).rejects.toThrow(/HTTP 401/);
     expect(fixture.deleteLink).not.toHaveBeenCalled();
+    expect(link.accountOperation).toBeNull();
+    expect(link.hostCredential).toBe(`osc_${"h".repeat(43)}`);
     await expect(service.removeAccountLink(ownerSession())).resolves.toBeUndefined();
     expect(fixture.deleteLink).toHaveBeenCalledOnce();
     expect(fixture.revokeConnectSessions).toHaveBeenCalledOnce();
@@ -303,6 +305,7 @@ describe("PersonalRemoteAccessService", () => {
       code: "conflict",
       reason: "personal-account-link-reservation-expired",
     });
+    expect(link.accountOperation).toBeNull();
     await expect(service.consumeAccountLink(ownerSession(), request)).resolves.toMatchObject({
       accountLink: { generation: link.linkGeneration },
     });

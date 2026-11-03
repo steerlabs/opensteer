@@ -264,37 +264,60 @@ export class AccountDirectoryClient {
       throw new Error(`${label} API request failed`, { cause: error });
     }
     if (!response.ok) {
-      await handleFailure?.(response.clone());
-      await response.body?.cancel();
-      throw new Error(`${label} API returned HTTP ${response.status}`);
+      try {
+        await handleFailure?.(response.clone());
+      } finally {
+        await response.body?.cancel();
+      }
+      throw new AccountRequestError({
+        message: `${label} API returned HTTP ${response.status}`,
+        status: response.status,
+      });
     }
     return response;
   }
 }
 
-export class PersonalAccountLinkActivationExpiredError extends Error {
+export class AccountRequestError extends Error {
+  readonly status: number;
+  readonly definitiveRejection: boolean;
+
+  constructor(options: { readonly message: string; readonly status: number }) {
+    super(options.message);
+    this.name = "AccountRequestError";
+    this.status = options.status;
+    // Timeouts, early requests and throttling do not settle the external step.
+    this.definitiveRejection =
+      options.status >= 400 && options.status < 500 && ![408, 425, 429].includes(options.status);
+  }
+}
+
+export class PersonalAccountLinkActivationExpiredError extends AccountRequestError {
   readonly code = "personal-account-link-activation-expired";
 
   constructor() {
-    super("The Personal Account-link activation result has expired.");
+    super({ message: "The Personal Account-link activation result has expired.", status: 409 });
     this.name = "PersonalAccountLinkActivationExpiredError";
   }
 }
 
-export class PersonalAccountLinkCancelledError extends Error {
+export class PersonalAccountLinkCancelledError extends AccountRequestError {
   readonly code = "personal-account-link-cancelled";
 
   constructor() {
-    super("The Personal Account-link reservation was cancelled.");
+    super({ message: "The Personal Account-link reservation was cancelled.", status: 409 });
     this.name = "PersonalAccountLinkCancelledError";
   }
 }
 
-export class PersonalAccountLinkNotFoundError extends Error {
+export class PersonalAccountLinkNotFoundError extends AccountRequestError {
   readonly code = "personal-account-link-not-found";
 
   constructor() {
-    super("Opensteer Account holds no Personal Host link for this credential.");
+    super({
+      message: "Opensteer Account holds no Personal Host link for this credential.",
+      status: 404,
+    });
     this.name = "PersonalAccountLinkNotFoundError";
   }
 }

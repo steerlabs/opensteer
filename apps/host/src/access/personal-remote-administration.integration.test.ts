@@ -10,7 +10,7 @@ import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import WebSocket from "ws";
 import { once } from "node:events";
-import { sql } from "kysely";
+import { sql, type Selectable } from "kysely";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
 import { HostAuthenticator } from "../identity/auth.js";
@@ -21,7 +21,7 @@ import { registerPersonalRemoteExecutor } from "./personal-remote-administration
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { generateKeyPairSync } from "node:crypto";
 import { createId, type AuthenticatedSession } from "@opensteer/core";
-import { createDatabase, migrateToLatest } from "@opensteer/database";
+import { createDatabase, migrateToLatest, type DatabaseSchema } from "@opensteer/database";
 import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from "vitest";
 import { PersonalRemoteAccessService } from "./personal-remote-access-service.js";
 
@@ -570,6 +570,257 @@ describe("Personal remote administration intents", () => {
           linkGeneration: stored.linkGeneration,
           accountOperation: null,
         });
+    },
+  );
+
+  it("retires a refused disabled projection across restart so Connect can be revoked and the Account unlinked", async () => {
+    const fixture = await sealedLinkCompletion();
+    await fixture.access.consumeAccountLink({ session }, fixture.completion);
+    const originalFetch = fixture.fetch.getMockImplementation()!;
+    const projection = vi.fn(() => new Response(null, { status: 409 }));
+    fixture.fetch.mockImplementation(async (input, init) => {
+      if (input.toString().endsWith("/connect"))
+        return init?.method === "PUT"
+          ? projection()
+          : Response.json({ generation: 7, revoked: true });
+      return originalFetch(input, init);
+    });
+    await expect(
+      fixture.access.publishConnectProjection(
+        { session },
+        { state: "disabled", expectedAccessRoute: null, schemaVersion: 2 },
+      ),
+    ).rejects.toThrow(/HTTP 409/);
+    const stored = await database
+      .selectFrom("personalRemoteAccountLink")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    expect(stored).toMatchObject({
+      accountOperation: null,
+      hostCredential: fixture.hostCredential,
+      state: "active",
+    });
+
+    const restarted = service({ fetch: fixture.fetch });
+    await expect(restarted.publishAccountAuthority()).resolves.toBe("published");
+    expect(projection).toHaveBeenCalledOnce();
+    await expect(
+      restarted.revokeConnectResource(
+        { session },
+        {
+          hostInstanceId: authority.hostInstanceId,
+          operationId: `cop_${crypto.randomUUID()}`,
+        },
+      ),
+    ).resolves.toEqual({ generation: 7, revoked: true });
+    await expect(restarted.removeAccountLink({ session })).resolves.toBeUndefined();
+    expect(await database.selectFrom("personalRemoteAccountLink").selectAll().execute()).toEqual(
+      [],
+    );
+  });
+
+  it.each([408, 425, 429, 500, 503])(
+    "keeps a projection journal for retry after temporary Account HTTP %s",
+    async (status) => {
+      const fixture = await sealedLinkCompletion();
+      await fixture.access.consumeAccountLink({ session }, fixture.completion);
+      fixture.fetch.mockResolvedValue(new Response(null, { status }));
+      await expect(
+        fixture.access.publishConnectProjection(
+          { session },
+          {
+            state: "disabled",
+            expectedAccessRoute: null,
+            schemaVersion: 2,
+          },
+        ),
+      ).rejects.toThrow(`HTTP ${status}`);
+      expect(
+        await database
+          .selectFrom("personalRemoteAccountLink")
+          .selectAll()
+          .executeTakeFirstOrThrow(),
+      ).toMatchObject({
+        accountOperation: { kind: "projection" },
+        hostCredential: fixture.hostCredential,
+      });
+    },
+  );
+
+  it.each(["operation", "link"] as const)(
+    "does not retire a replacement %s when a delayed Account rejection arrives",
+    async (replacement) => {
+      const fixture = await sealedLinkCompletion();
+      await fixture.access.consumeAccountLink({ session }, fixture.completion);
+      let reject!: () => void;
+      let enter!: () => void;
+      const held = new Promise<void>((resolve) => {
+        reject = resolve;
+      });
+      const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      });
+      fixture.fetch.mockImplementation(async () => {
+        enter();
+        await withTimeout(held, 5000, {
+          timeoutError: () => new Error("Account rejection was never released"),
+        });
+        return new Response(null, { status: 409 });
+      });
+      const pending = fixture.access
+        .publishConnectProjection(
+          { session },
+          {
+            state: "disabled",
+            expectedAccessRoute: null,
+            schemaVersion: 2,
+          },
+        )
+        .catch((error: unknown) => error);
+      let expected: Selectable<DatabaseSchema["personalRemoteAccountLink"]> | undefined;
+      try {
+        await withTimeout(entered, 1000, {
+          timeoutError: () => new Error("Account publication never started"),
+        });
+        const stored = await database
+          .selectFrom("personalRemoteAccountLink")
+          .selectAll()
+          .executeTakeFirstOrThrow();
+        expected = await database
+          .updateTable("personalRemoteAccountLink")
+          .set(
+            replacement === "link"
+              ? { linkGeneration: "r".repeat(43) }
+              : { accountOperation: { ...stored.accountOperation!, id: crypto.randomUUID() } },
+          )
+          .returningAll()
+          .executeTakeFirstOrThrow();
+      } finally {
+        reject();
+        await pending;
+      }
+      expect(await pending).toMatchObject({ message: expect.stringContaining("HTTP 409") });
+      expect(
+        await database
+          .selectFrom("personalRemoteAccountLink")
+          .selectAll()
+          .executeTakeFirstOrThrow(),
+      ).toEqual(expected);
+    },
+  );
+
+  it.each(["network", "HTTP 503"])(
+    "fails Account recovery visibly after %s while keeping its journal and the executor connected for Recover and Unlink",
+    async (failure) => {
+      const fixture = await sealedLinkCompletion();
+      await fixture.access.consumeAccountLink({ session }, fixture.completion);
+      if (failure === "network")
+        fixture.fetch.mockRejectedValue(new Error(`network failure ${fixture.hostCredential}`));
+      else
+        fixture.fetch.mockImplementation(
+          async () => new Response(fixture.hostCredential, { status: 503 }),
+        );
+      await expect(
+        fixture.access.publishConnectProjection(
+          { session },
+          {
+            state: "disabled",
+            expectedAccessRoute: null,
+            schemaVersion: 2,
+          },
+        ),
+      ).rejects.toThrow(failure === "network" ? /request failed/ : /HTTP 503/);
+      const journal = await database
+        .selectFrom("personalRemoteAccountLink")
+        .selectAll()
+        .executeTakeFirstOrThrow();
+      const administration = fixture.access.administration;
+      const first = await administration.request(session, { action: "recover" }, "failed-recovery");
+      administration.release(first.id);
+      const app = Fastify();
+      await app.register(websocket);
+      const capability = "desktop-process-capability".padEnd(43, "x");
+      registerPersonalRemoteExecutor(
+        app,
+        new LocalBootstrapService({
+          publicUrl: new URL(authority.canonicalOrigin),
+          requireSetupCredential: true,
+          setupToken: capability,
+          store: {} as never,
+          runners: {} as never,
+        }),
+        administration,
+      );
+      const changed = vi.fn();
+      const unsubscribe = administration.subscribe(changed);
+      let socket: WebSocket | undefined;
+      try {
+        const address = await app.listen({ host: "127.0.0.1", port: 0 });
+        socket = new WebSocket(
+          `${address.replace("http:", "ws:")}/v1/personal-remote-access/executor?apiVersion=${hostApiVersion}`,
+          {
+            headers: { authorization: `Bearer ${capability}` },
+          },
+        );
+        const closed = vi.fn();
+        socket.on("close", closed);
+        await withTimeout(once(socket, "open"), 1000, {
+          timeoutError: () => new Error("Executor never opened"),
+        });
+        await vi.waitFor(
+          async () =>
+            expect((await administration.status(session)).operation).toMatchObject({
+              id: first.id,
+              state: "failed",
+              detail: expect.stringMatching(/Recover.*unlink/i),
+            }),
+          { timeout: 1000 },
+        );
+        expect(changed).toHaveBeenCalledTimes(2); // Executor attachment and durable failure.
+        expect(
+          await database
+            .selectFrom("personalRemoteAccountLink")
+            .selectAll()
+            .executeTakeFirstOrThrow(),
+        ).toEqual(journal);
+        const status = await administration.status(session);
+        expect(status.executorConnected).toBe(true);
+        expect(JSON.stringify(status)).not.toContain(fixture.hostCredential);
+        const second = await administration.request(
+          session,
+          { action: "recover" },
+          "retry-recovery",
+        );
+        expect(second.executionId).toBe(first.executionId);
+        administration.release(second.id);
+        await vi.waitFor(
+          async () =>
+            expect((await administration.status(session)).operation).toMatchObject({
+              id: second.id,
+              state: "failed",
+            }),
+          { timeout: 1000 },
+        );
+        const delivered = withTimeout(once(socket, "message"), 1000, {
+          timeoutError: () => new Error("Unlink never reached the connected executor"),
+        });
+        const unlink = await administration.request(
+          session,
+          { action: "unlink" },
+          "unlink-after-recovery-failure",
+        );
+        administration.release(unlink.id);
+        expect(JSON.parse(String((await delivered)[0]))).toMatchObject({
+          id: unlink.id,
+          intent: { action: "unlink" },
+        });
+        expect(socket.readyState).toBe(WebSocket.OPEN);
+        expect(closed).not.toHaveBeenCalled();
+      } finally {
+        unsubscribe();
+        socket?.terminate();
+        await app.close();
+      }
     },
   );
 

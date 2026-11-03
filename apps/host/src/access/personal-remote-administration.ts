@@ -205,8 +205,25 @@ export class PersonalRemoteAdministration {
       return null;
     // Recover finishes the prior Account step before replaying its coordinator.
     // A fresh Off or unlink intent must still reach the executor while Account is down.
-    if (row.requestedIntent.action === "recover" || row.executionId !== row.id)
-      await this.#resumeAccountOperation(row.intent);
+    if (row.requestedIntent.action === "recover" || row.executionId !== row.id) {
+      try {
+        await this.#resumeAccountOperation(row.intent);
+      } catch {
+        const updated = await this.#database
+          .updateTable("personalRemoteAdministration")
+          .set({
+            state: "failed",
+            detail:
+              "Opensteer Account recovery failed. Check your connection and Account status, then use Recover to retry or turn remote access Off before unlinking the Account.",
+            updatedAt: new Date(),
+          })
+          .where("id", "=", row.id)
+          .where("state", "in", ["pending", "running"])
+          .executeTakeFirst();
+        if (updated.numUpdatedRows > 0n) this.changed();
+        return null;
+      }
+    }
     if (this.#closed || executor !== this.#executor) return null;
     row = await this.#latest();
     return row && !this.#held.has(row.id) && (row.state === "pending" || row.state === "running")

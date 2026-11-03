@@ -45,7 +45,10 @@ identity; turning access Off can supersede pending work. Account steps are admit
 under the shared session fence and journaled on the exact link before network I/O.
 No Account request holds a Host transaction or session lock. Restart and executor
 recovery replay the idempotent step, then conditionally finalize that link;
-unlink retains its credential until the Account acknowledges removal.
+unlink retains its credential until the Account acknowledges removal. A definitive
+Account refusal retires only the rejected step, preserving the credential for
+prerequisite changes or unlink. Ambiguous and temporary failures stay journaled;
+a failed recovery is visible and leaves the executor connected for the next action.
 
 A request persists before acknowledgement. Execution that can remove the current
 route starts only after that response completes, and continues under the

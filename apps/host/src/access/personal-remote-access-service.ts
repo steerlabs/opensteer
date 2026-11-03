@@ -60,6 +60,7 @@ import { signPersonalHostAccountLinkProof } from "../identity/host-keys.js";
 import type { PersonalAccountGrantVerifier } from "./personal-account-grant-verifier.js";
 import {
   AccountDirectoryClient,
+  AccountRequestError,
   PersonalAccountLinkActivationExpiredError,
   PersonalAccountLinkCancelledError,
   PersonalAccountLinkNotFoundError,
@@ -1110,7 +1111,32 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     const id = link.accountOperation.id;
     const running = this.#accountOperations.get(id);
     if (running) return running;
-    const execution = this.#runAccountOperation(link, afterResponse);
+    const execution = this.#runAccountOperation(link, afterResponse).catch(
+      async (error: unknown) => {
+        const accountError = error instanceof OpensteerError ? error.cause : error;
+        if (accountError instanceof AccountRequestError && accountError.definitiveRejection) {
+          // A refusal cannot be recovered by replaying it. Retire only that exact
+          // step, keeping the link credential for prerequisites such as revocation.
+          const retired = await this.#database.transaction().execute(async (transaction) => {
+            await lockRemoteAccess(transaction);
+            return transaction
+              .updateTable("personalRemoteAccountLink")
+              .set({ accountOperation: null, updatedAt: this.#now() })
+              .where("singletonKey", "=", link.singletonKey)
+              .where("challengeId", "=", link.challengeId)
+              .where("linkGeneration", "=", link.linkGeneration)
+              .where("grantId", "=", link.grantId)
+              .where("hostCredential", "=", link.hostCredential)
+              .where("issuer", "=", link.issuer)
+              .where("subject", "=", link.subject)
+              .where(sql<string>`${sql.ref("accountOperation")} ->> 'id'`, "=", id)
+              .executeTakeFirstOrThrow();
+          });
+          if (retired.numUpdatedRows > 0n) this.administration.changed();
+        }
+        throw error;
+      },
+    );
     this.#accountOperations.set(id, execution);
     try {
       return await execution;

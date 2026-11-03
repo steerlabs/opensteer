@@ -73,6 +73,39 @@ const personalAccessRoute = PersonalHostAccessRouteEnvelopeSchema.parse({
 });
 
 describe("AccountDirectoryClient", () => {
+  it.each([
+    [400, true],
+    [401, true],
+    [404, true],
+    [409, true],
+    [422, true],
+    [408, false],
+    [425, false],
+    [429, false],
+    [500, false],
+    [503, false],
+  ] as const)(
+    "classifies Account HTTP %s without exposing its response body",
+    async (status, definitiveRejection) => {
+      const credential = `osc_${"b".repeat(43)}`;
+      const client = new AccountDirectoryClient({
+        controlApiOrigin: new URL("https://control.opensteer.test"),
+        deployment,
+        fetch: async () => new Response(credential, { status }),
+        hostCredential: credential,
+      });
+      const error: unknown = await client
+        .publishPersonalConnect({
+          accessRoute: null,
+          generation: 1,
+          state: "disabled",
+        })
+        .catch((failure: unknown) => failure);
+      expect(error).toMatchObject({ status, definitiveRejection });
+      expect(String(error)).not.toContain(credential);
+    },
+  );
+
   it("publishes a fenced idempotent projection and validates its acknowledgement", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
       expect(input.toString()).toBe(
