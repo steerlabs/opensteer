@@ -72,6 +72,7 @@ export class PluginSettingsStore {
     runnerId?: string;
     installationId?: string;
     pluginId?: string;
+    requestId?: string;
   }): Promise<UserId[]> {
     const result = await sql<{ userId: UserId }>`
       select distinct m.user_id from workspace_memberships m
@@ -84,6 +85,13 @@ export class PluginSettingsStore {
         or exists(select 1 from specialists s where s.workspace_id = w.id and s.plugin_id = ${input.pluginId ?? null}))
       union select c.owner_user_id from integration_connections c where c.runner_id = ${input.runnerId ?? null}
         or exists(select 1 from integration_installations i where i.id = ${input.installationId ?? null} and coalesce(i.manifest->'definition'->>'id',i.name) = c.integration_definition_id)
+      union select m.user_id from requests q
+        join workspace_memberships m on m.workspace_id = q.originating_workspace_id and m.state = 'active'
+        join users u on u.id = m.user_id
+        where q.id = ${input.requestId ?? null} and (
+          (q.required_actor = 'requester' and (q.requested_by = m.user_id or (u.instance_role = 'administrator' and q.kind = 'integration.access' and q.payload->>'installationId' is null)))
+          or (q.required_actor = 'workspace-owner' and m.role = 'owner')
+          or (q.required_actor = 'administrator' and u.instance_role = 'administrator'))
       union select g.owner_user_id from integration_grants g where g.installation_id = ${input.installationId ?? null}
     `.execute(this.database);
     return result.rows.map((r) => r.userId);

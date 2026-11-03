@@ -270,7 +270,7 @@ export interface ComputerAppHubOptions {
    */
   readonly knownDefinitionIds: () => ReadonlySet<string>;
   /** What every attach, detach and changed status makes stale. */
-  readonly onChanged: () => void;
+  readonly onChanged: (runnerId: RunnerId) => void;
   /**
    * That computer's `integrations` stream is gone.
    *
@@ -409,7 +409,7 @@ export class ComputerAppHub {
     this.#byPeer.set(peer.id, entry);
     this.#byRunner.set(runnerId, entry);
     this.#reportPhoneDisplayCapability(entry, "attached");
-    this.#options.onChanged();
+    this.#options.onChanged(runnerId);
     this.#options.onRunnerAttached?.(runnerId);
   }
 
@@ -1390,7 +1390,7 @@ export class ComputerAppHub {
       this.#settleAll(entry, "Opensteer is shutting down.");
       entry.peer.close(1001, "Host stopping");
     }
-    if (attached.length > 0) this.#options.onChanged();
+    for (const entry of attached) this.#options.onChanged(entry.stream.identity.runnerId);
   }
 
   #applyStatus(
@@ -1430,7 +1430,7 @@ export class ComputerAppHub {
     entry.ownerViewVersion = ownerViewVersion;
     entry.displayAvailable = displayAvailable === true;
     this.#reportPhoneDisplayCapability(entry, "reported");
-    this.#options.onChanged();
+    this.#options.onChanged(entry.stream.identity.runnerId);
   }
 
   #reportPhoneDisplayCapability(
@@ -1463,7 +1463,7 @@ export class ComputerAppHub {
       reason === "revoked" ? "That computer was removed." : "That computer went offline.",
     );
     this.#options.onRunnerDetached?.(runnerId, reason);
-    this.#options.onChanged();
+    this.#options.onChanged(runnerId);
   }
 
   #settleAll(entry: AttachedIntegrations, message: string): void {
@@ -1583,7 +1583,7 @@ export class ComputerAppHub {
     }
     this.#settleAll(entry, "That computer went offline.");
     this.#options.onRunnerDetached?.(runnerId, "transport-disconnected");
-    this.#options.onChanged();
+    this.#options.onChanged(runnerId);
   }
 }
 

@@ -667,7 +667,9 @@ describe("IntegrationService OAuth refresh", () => {
 
     if (marked === null) {
       expect(harness.markConnectionNeedsAttention).not.toHaveBeenCalled();
+      expect(harness.onConnectionChanged).not.toHaveBeenCalled();
     } else {
+      expect(harness.onConnectionChanged).toHaveBeenCalledExactlyOnceWith(harness.ownerUserId);
       expect(harness.markConnectionNeedsAttention).toHaveBeenCalledExactlyOnceWith({
         connectionId: harness.connectionId,
         expectedGeneration: 1,
@@ -2467,7 +2469,9 @@ function refreshHarness(input: {
   const connectionId = input.connection.id;
   const markConnectionNeedsAttention = vi.fn(async () => undefined);
   const replaceConnectionCredential = vi.fn(async () => true);
+  const onConnectionChanged = vi.fn();
   const service = new IntegrationService({
+    onConnectionChanged,
     onConnectionConnected: vi.fn(async () => undefined),
     attempts: {} as never,
     definitions: [input.definition],
@@ -2509,6 +2513,7 @@ function refreshHarness(input: {
   });
   return {
     connectionId,
+    onConnectionChanged,
     markConnectionNeedsAttention,
     ownerUserId,
     replaceConnectionCredential,

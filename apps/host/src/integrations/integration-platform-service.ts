@@ -315,6 +315,10 @@ export class IntegrationPlatformService {
   readonly #mcpOauth: Pick<McpOAuthService, "providerFor">;
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
   readonly #onConnectionsChanged: () => void;
+  readonly #onSettingsChanged: (input: {
+    installationId?: string;
+    ownerUserId?: UserId;
+  }) => Promise<void>;
   readonly #onRequestsChanged: () => void;
   readonly #deploymentName: string | null;
   readonly #isRunnerConnected: (runnerId: RunnerId) => boolean;
@@ -372,6 +376,10 @@ export class IntegrationPlatformService {
     readonly mcpOauth: Pick<McpOAuthService, "providerFor">;
     readonly onWorkspaceEvent: (event: AgentEvent) => void;
     readonly onConnectionsChanged: () => void;
+    readonly onSettingsChanged?: (input: {
+      installationId?: string;
+      ownerUserId?: UserId;
+    }) => Promise<void>;
     readonly onInputAccessWithdrawn?: (runnerId: RunnerId) => void;
     readonly onRequestsChanged: () => void;
     readonly isRunnerConnected: (runnerId: RunnerId) => boolean;
@@ -401,6 +409,7 @@ export class IntegrationPlatformService {
     this.#mcpOauth = options.mcpOauth;
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
     this.#onConnectionsChanged = options.onConnectionsChanged;
+    this.#onSettingsChanged = options.onSettingsChanged ?? (async () => undefined);
     this.#onRequestsChanged = options.onRequestsChanged;
     this.#isRunnerConnected = options.isRunnerConnected;
     this.#computerUse = options.computerUse ?? null;
@@ -1330,6 +1339,7 @@ export class IntegrationPlatformService {
           : current.name;
       const definition = definitionsById.get(definitionId);
       if (!definition) {
+        await this.#onSettingsChanged({ installationId: current.id });
         installations.push(current);
         continue;
       }
@@ -1342,6 +1352,7 @@ export class IntegrationPlatformService {
         summary.data.authMethods.some(({ kind }) => kind === "api-key") &&
         summary.data.apiKey === null
       ) {
+        await this.#onSettingsChanged({ installationId: current.id });
         installations.push(current);
         continue;
       }
@@ -1351,6 +1362,7 @@ export class IntegrationPlatformService {
         current.provenance.definitionDigest === digest &&
         current.provenance.definitionId === definition.id
       ) {
+        await this.#onSettingsChanged({ installationId: current.id });
         installations.push(current);
         continue;
       }
@@ -1370,6 +1382,7 @@ export class IntegrationPlatformService {
           current.id,
           "Opensteer couldn’t update this integration. Reinstall it from its page.",
         );
+        await this.#onSettingsChanged({ installationId: current.id });
         installations.push(current);
       }
     }
@@ -2191,6 +2204,7 @@ export class IntegrationPlatformService {
             message: "MCP credentials changed; retry the request",
             retryable: true,
           });
+        await this.#onSettingsChanged({ ownerUserId: callable.grant.ownerUserId as UserId });
         throw new IntegrationAuthorizationRequiredError(callable);
       }
       const unconfirmedWrite =
@@ -2957,6 +2971,7 @@ export class IntegrationPlatformService {
           error instanceof OpensteerError &&
           (error.code === "conflict" || error.code === "not_found")
         ) {
+          await this.#onSettingsChanged({ ownerUserId: callable.grant.ownerUserId as UserId });
           throw new IntegrationAuthorizationRequiredError(callable);
         }
         // A classified authorization failure already says something true and bounded; restating it
@@ -3048,6 +3063,7 @@ export class IntegrationPlatformService {
           error instanceof OpensteerError &&
           (error.code === "conflict" || error.code === "not_found")
         ) {
+          await this.#onSettingsChanged({ ownerUserId: callable.grant.ownerUserId as UserId });
           throw new IntegrationAuthorizationRequiredError(callable);
         }
         // A classified refresh failure is the truest account of this 401; only an unclassified
