@@ -270,7 +270,7 @@ profile; see [SIGNING.md](../apps/desktop/SIGNING.md#passwords-provisioning-and-
 
 ## Account service
 
-The Account service (`accounts.opensteer.com`) ships from the `account`
+The Account service (`accounts.opensteer.com`), shared by both desktop channels, ships from the `account`
 job in [release.yml](../.github/workflows/release.yml) on every eligible main push,
 after the insider preflight and before that insider publishes, so a Beta never
 reaches people ahead of the Account it may depend on. A failed rollout blocks the
@@ -289,7 +289,9 @@ The workload lives in [deploy/account](../deploy/account); secrets stay in Secre
 Manager and only their names and versions are here. New pods migrate the database
 at startup while the previous release keeps serving, so every migration must work
 with the previous release: add first, and drop or rename only once no running
-release reads the old shape.
+release reads the old shape. Cloud operation tables and their historical migrations
+remain for this overlap; the Account no longer reads or writes them. Drop them
+only after every serving replica has stopped using the old cloud runtime.
 
 Outside this repo, the GitHub environment `account` (main only) is the only caller
 the Workload Identity provider `github-account-deployer` in `opensteer-admin`'s

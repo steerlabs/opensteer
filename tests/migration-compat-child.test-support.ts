@@ -35,23 +35,21 @@ async function main(): Promise<void> {
       } else {
         const { ControlPlaneStore }: typeof import("../apps/control-plane/src/database/store.js") =
           await load("apps/control-plane/src/database/store.ts");
+        // The fixture also runs the previous release against the migrated schema.
+        const storeOptions = {
+          portalOrigin: new URL("https://app.migration.invalid"),
+          managedDeploymentDomain: "migration.invalid",
+        };
         const store = new ControlPlaneStore(
           database,
           new URL("https://accounts.migration.invalid"),
-          { managedDeploymentDomain: "migration.invalid" },
-        );
-        const core: typeof import("../packages/core/src/index.js") = await load(
-          "packages/core/src/index.ts",
+          storeOptions,
         );
         const account: typeof import("../packages/control-plane-protocol/src/index.js") =
           await load("packages/control-plane-protocol/src/index.ts");
         const accountId = account.ControlPlaneAccountIdSchema.parse(
           "acct_00000000-0000-4000-8000-000000000001",
         );
-        const deploymentId = core.DeploymentIdSchema.parse(
-          "dep_00000000-0000-4000-8000-000000000001",
-        );
-        const canonicalOrigin = `https://${deploymentId}.migration.invalid`;
         if (phase === "seed") {
           const now = new Date("2026-01-01T00:00:00Z");
           await database
@@ -66,24 +64,17 @@ async function main(): Promise<void> {
               updatedAt: now,
             })
             .execute();
-          await database.transaction().execute((transaction) =>
-            store.provisionManagedDeployment(
-              accountId,
-              {
-                canonicalOrigin,
-                deploymentId,
-                hostInstanceId: core.HostInstanceIdSchema.parse(
-                  "hst_00000000-0000-4000-8000-000000000001",
-                ),
-                hostKeyFingerprint: `sha256:${"a".repeat(43)}`,
-                name: "Migration deployment",
-                reachability: "canonical",
-              },
-              transaction,
-            ),
-          );
         } else {
-          assert.equal(await store.hasActiveDeploymentOrigin(canonicalOrigin), true);
+          assert.equal(
+            (
+              await database
+                .selectFrom("users")
+                .select("id")
+                .where("id", "=", accountId)
+                .executeTakeFirstOrThrow()
+            ).id,
+            accountId,
+          );
           await store.revokeAccountSessions(accountId);
         }
         // The previous store both inserts and updates its own persisted client.

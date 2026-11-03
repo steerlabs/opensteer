@@ -25,32 +25,11 @@ import { escapeHtml } from "./browser-http.js";
 export const browserPageContentSecurityPolicy =
   "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'";
 
-/**
- * The still policy plus exactly what a live page needs: the one inline script
- * carrying this nonce, and same-origin fetches so it can re-read its own URL.
- * `'unsafe-inline'` is never granted to scripts here.
- */
-export function liveBrowserPageContentSecurityPolicy(nonce: string): string {
-  return `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'`;
-}
-
-/**
- * The element a live page swaps in place, and the script's only hook. The
- * region is marked `data-live` for exactly as long as the server considers the
- * page still moving, so the script reads one attribute and never status prose.
- */
-export const liveRegionId = "live-region";
-
 export interface BrowserPage {
   /** Fully composed body markup. Callers own their landmarks. */
   readonly body: string;
   /** `centered` is the auth-moment card; the default is the app layout. */
   readonly layout?: "app" | "centered";
-  /**
-   * Nonce of the in-place refresh script, matching the live policy above.
-   * Present only while the body's live region is still marked `data-live`.
-   */
-  readonly liveScriptNonce?: string;
   readonly preconnect?: string;
   readonly title: string;
 }
@@ -70,42 +49,12 @@ export function renderBrowserPage(page: BrowserPage): string {
     ? `<link rel="preconnect" href="${escapeHtml(page.preconnect)}">`
     : "";
   const bodyClass = page.layout === "centered" ? ' class="centered"' : "";
-  const live = page.liveScriptNonce
-    ? `<script nonce="${escapeHtml(page.liveScriptNonce)}">${liveRegionScript}</script>`
-    : "";
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
 ${preconnect}<title>${escapeHtml(page.title)}</title><style>${pageStyles}</style></head>
-<body${bodyClass}><div class="page">${page.body}</div>${live}</body></html>`;
+<body${bodyClass}><div class="page">${page.body}</div></body></html>`;
 }
-
-/**
- * Re-reads this very URL and swaps the live region for the one the server just
- * rendered: same markup, same truth, no flash and no scroll reset. It stops the
- * moment the fresh region arrives without `data-live`. A non-OK answer (a 401
- * once the session lapses) hands over to one ordinary reload so the usual
- * sign-in redirect happens; a network blip just waits for the next tick.
- */
-const liveRegionScript = `(function(){
-var delay=2500,current=document.getElementById(${JSON.stringify(liveRegionId)});
-if(!current)return;
-function again(){window.setTimeout(poll,delay)}
-function poll(){
-fetch(location.href,{credentials:"same-origin",headers:{accept:"text/html"}}).then(function(response){
-if(!response.ok){location.reload();return null}
-return response.text()
-}).then(function(html){
-if(html===null)return;
-var fresh=new DOMParser().parseFromString(html,"text/html").getElementById(${JSON.stringify(liveRegionId)});
-if(!fresh){location.reload();return}
-current.replaceWith(fresh);
-current=fresh;
-if(current.hasAttribute("data-live"))again()
-}).catch(again)
-}
-again()
-})()`;
 
 const pageStyles = `
 *,*::before,*::after{box-sizing:border-box}

@@ -87,7 +87,7 @@ export interface HostAuthority {
 }
 
 interface ControlPlaneStoreOptions {
-  readonly managedDeploymentDomain: string;
+  readonly portalOrigin: URL;
   readonly adoptionProofVerifier?: HostAccountAdoptionProofVerifier;
   readonly adoptionCompletionGrantIssuer?: HostAccountAdoptionCompletionGrantIssuer;
   readonly adoptionOperationCipher?: AdoptionOperationCipher;
@@ -96,7 +96,7 @@ interface ControlPlaneStoreOptions {
 export class ControlPlaneStore {
   readonly #database: Kysely<ControlPlaneDatabaseSchema>;
   readonly #issuer: string;
-  readonly #managedDeploymentDomain: string;
+  readonly #portalOrigin: URL;
   readonly #adoptionProofVerifier: HostAccountAdoptionProofVerifier | undefined;
   readonly #adoptionCompletionGrantIssuer: HostAccountAdoptionCompletionGrantIssuer | undefined;
   readonly #adoptionOperationCipher: AdoptionOperationCipher | undefined;
@@ -108,7 +108,7 @@ export class ControlPlaneStore {
   ) {
     this.#database = database;
     this.#issuer = issuer.origin;
-    this.#managedDeploymentDomain = normalizedDomain(options.managedDeploymentDomain);
+    this.#portalOrigin = options.portalOrigin;
     this.#adoptionProofVerifier = options.adoptionProofVerifier;
     this.#adoptionCompletionGrantIssuer = options.adoptionCompletionGrantIssuer;
     this.#adoptionOperationCipher = options.adoptionOperationCipher;
@@ -312,7 +312,7 @@ export class ControlPlaneStore {
         userId: null,
         updatedAt: now,
         name: "Opensteer",
-        uri: `https://${this.#managedDeploymentDomain}`,
+        uri: this.#portalOrigin.origin,
         icon: null,
         contacts: null,
         tos: null,
@@ -576,22 +576,6 @@ export class ControlPlaneStore {
       .where("resultExpiresAt", "<=", now)
       .executeTakeFirst();
     return Number(result.numUpdatedRows);
-  }
-
-  /** Account-owned hosting calls this only inside its durable create transaction. */
-  async provisionManagedDeployment(
-    ownerAccountId: ControlPlaneAccountId,
-    input: {
-      readonly canonicalOrigin: string;
-      readonly deploymentId: DeploymentId;
-      readonly hostInstanceId: HostInstanceId;
-      readonly hostKeyFingerprint: HostKeyFingerprint;
-      readonly reachability: "canonical";
-      readonly name: string;
-    },
-    transaction: Transaction<ControlPlaneDatabaseSchema>,
-  ): Promise<DeploymentProvisioningResult> {
-    return this.#provisionDeployment(ownerAccountId, input, transaction);
   }
 
   async #provisionDeployment(
@@ -889,16 +873,6 @@ export class ControlPlaneStore {
       .where("present", "=", true)
       .executeTakeFirst();
     return Boolean(entry);
-  }
-
-  async hasActiveDeploymentOrigin(canonicalOrigin: string): Promise<boolean> {
-    const deployment = await this.#database
-      .selectFrom("deployments")
-      .select("id")
-      .where("canonicalOrigin", "=", canonicalOrigin)
-      .where("lifecycle", "=", "active")
-      .executeTakeFirst();
-    return Boolean(deployment);
   }
 
   async rotateHostCredential(
@@ -1693,28 +1667,6 @@ function deploymentOAuthReference(deploymentId: DeploymentId): string {
 
 function internalId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID()}`;
-}
-
-function normalizedDomain(value: string): string {
-  const domain = value.trim().toLowerCase().replace(/\.$/u, "");
-  let url: URL;
-  try {
-    url = new URL(`https://${domain}`);
-  } catch {
-    throw new TypeError("Managed Deployment domain is invalid");
-  }
-  if (
-    !domain ||
-    domain.length > 253 ||
-    url.hostname !== domain ||
-    url.port ||
-    url.username ||
-    url.password ||
-    url.pathname !== "/"
-  ) {
-    throw new TypeError("Managed Deployment domain is invalid");
-  }
-  return domain;
 }
 
 function accountOwnerProfile(account: {

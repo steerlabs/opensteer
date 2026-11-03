@@ -77,3 +77,9 @@ Store keys encrypted and send only to disclosed destinations. Failed checks expo
 Repair the exact owner's non-revoked key connection for the same provider/definition in place; a known account must prove the same identity. Without connectionId, create a new account rather than guessing. Fence old in-flight failures to the old generation so they cannot invalidate the replacement. Epoch 36 introduced explicit repair targeting. Disclose installed snapshot destinations, including presets; catalog metadata describes a new installation. See `apps/host/src/integrations/api-key-reconnect.integration.test.ts`.
 
 MCP OAuth belongs to an installation and is bound to its discovered authorization server. Legacy unbound credentials and changed issuers require fresh authorization before sending secrets. Older Hosts can read but do not enforce issuer binding and can discard it on rewrite; newer in-flight reconnects cannot complete on the previous release. Reauthorize after downgrade when needed. Slack MCP remains unsupported; use standard Slack's managed or explicitly registered custom app.
+
+The hosted broker uses `https://accounts.opensteer.com`. Provider registrations
+must use that origin for `/v1/oauth-broker/callback/{provider}` (Discord, GitHub,
+Google, Microsoft and Slack). Google Account sign-in separately uses
+`https://accounts.opensteer.com/api/auth/callback/google`. The portal lives at
+`https://app.opensteer.com`; it is not an integration callback authority.

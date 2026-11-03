@@ -15,7 +15,7 @@ import {
 import {
   createId,
   opensteerAccountNativeOAuthClients,
-  opensteerBetaDesktopClient,
+  opensteerDesktopClient,
   opensteerAccountDeleteOAuthScopes,
   opensteerMobileAccountOAuthCallback,
   opensteerMobileOAuthClientId,
@@ -67,7 +67,7 @@ const config: ControlPlaneConfig = {
   authSecret: "test-control-plane-secret-with-at-least-32-bytes",
   googleClientId: "test-google-client",
   googleClientSecret: "test-google-secret",
-  managedDeploymentDomain,
+  portalOrigin: new URL(`https://${managedDeploymentDomain}`),
   connectDomain: "connect.store.test.invalid",
   connectCloudflare: {
     accountId: "a".repeat(32),
@@ -93,7 +93,7 @@ integration("control-plane PostgreSQL boundary", () => {
       return { database, close: () => database.destroy() };
     });
     const store = new ControlPlaneStore(database, publicOrigin, {
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
     });
     const connectLifecycle = new ConnectLifecycleService(database, {
       delete: async () => undefined,
@@ -141,22 +141,22 @@ integration("control-plane PostgreSQL boundary", () => {
     },
   });
 
-  it("provisions every first-party native client without replacing the deployed Beta row or credentials", async ({
+  it("provisions every first-party native client without replacing the desktop row or credentials", async ({
     storeFixture,
   }) => {
     const { store, database, ownerId, connectLifecycle } = storeFixture;
     await store.ensureOfficialNativeClients({
-      clients: [opensteerAccountNativeOAuthClients[1]!],
+      clients: [opensteerAccountNativeOAuthClients[0]!],
     });
-    const betaBefore = await database
+    const desktopBefore = await database
       .selectFrom("oauthClients")
       .select(["id", "clientId"])
-      .where("clientId", "=", "opensteer-desktop-beta")
+      .where("clientId", "=", "opensteer-desktop")
       .executeTakeFirstOrThrow();
     await database
       .updateTable("oauthClients")
       .set({ referenceId: "official-native" })
-      .where("id", "=", betaBefore.id)
+      .where("id", "=", desktopBefore.id)
       .executeTakeFirstOrThrow();
     const auth = createControlPlaneAuth(database, config);
     const cookie = await signedSessionCookie(auth, ownerId);
@@ -164,20 +164,20 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
       publicOrigin,
       store,
     });
     const credentials = await authorizeNativeClient(
       server,
       cookie,
-      opensteerBetaDesktopClient.clientId,
-      opensteerBetaDesktopClient.accountCallback,
+      opensteerDesktopClient.clientId,
+      opensteerDesktopClient.accountCallback,
     );
     const credentialsBefore = await database
       .selectFrom("oauthRefreshToken")
       .select(["id", "revoked"])
-      .where("clientId", "=", opensteerBetaDesktopClient.clientId)
+      .where("clientId", "=", opensteerDesktopClient.clientId)
       .executeTakeFirstOrThrow();
     try {
       await store.ensureOfficialNativeClients({ clients: config.nativeOAuthClients });
@@ -208,9 +208,10 @@ integration("control-plane PostgreSQL boundary", () => {
             expect.objectContaining({
               clientId: client.clientId,
               clientSecret: null,
-              id: client.clientId === betaBefore.clientId ? betaBefore.id : expect.any(String),
+              id:
+                client.clientId === desktopBefore.clientId ? desktopBefore.id : expect.any(String),
               referenceId:
-                client.clientId === betaBefore.clientId
+                client.clientId === desktopBefore.clientId
                   ? "official-native"
                   : `official-native:${client.clientId}`,
               redirectUris: client.redirectUris,
@@ -226,14 +227,14 @@ integration("control-plane PostgreSQL boundary", () => {
           .where("referenceId", "=", "official-native")
           .executeTakeFirstOrThrow(),
       ).resolves.toEqual({
-        clientId: "opensteer-desktop-beta",
+        clientId: "opensteer-desktop",
         referenceId: "official-native",
       });
       await expect(
         database
           .selectFrom("oauthRefreshToken")
           .select(["id", "revoked"])
-          .where("clientId", "=", opensteerBetaDesktopClient.clientId)
+          .where("clientId", "=", opensteerDesktopClient.clientId)
           .executeTakeFirstOrThrow(),
       ).resolves.toEqual(credentialsBefore);
       const deployments = await server.inject({
@@ -244,7 +245,7 @@ integration("control-plane PostgreSQL boundary", () => {
       expect(deployments.statusCode, deployments.body).toBe(200);
       const refreshed = await refreshNativeClient(
         server,
-        opensteerBetaDesktopClient.clientId,
+        opensteerDesktopClient.clientId,
         credentials.refreshToken,
       );
       expect(refreshed.statusCode, refreshed.body).toBe(200);
@@ -261,7 +262,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
       publicOrigin,
       store,
     });
@@ -276,33 +277,6 @@ integration("control-plane PostgreSQL boundary", () => {
     } finally {
       await server.close();
     }
-  });
-
-  it("reserves managed Deployment identities before fencing its Account", async ({
-    storeFixture,
-  }) => {
-    const { database, store, ownerId } = storeFixture;
-    await withLockOrderMode("enforce", async () => {
-      const request = adoptionRequest();
-      const start = recordedLockOrderEdges.length;
-      await database.transaction().execute((transaction) =>
-        store.provisionManagedDeployment(
-          ownerId,
-          {
-            ...request.authority,
-            canonicalOrigin: managedOrigin(request.authority.deploymentId),
-            name: request.name,
-            reachability: "canonical",
-          },
-          transaction,
-        ),
-      );
-      expect(
-        recordedLockOrderEdges
-          .slice(start)
-          .filter((edge) => /(?:^|:)users$/u.test(edge.from) && edge.to.startsWith("advisory:")),
-      ).toEqual([]);
-    });
   });
 
   it("identifies Account tables separately from the Host schema", async ({ storeFixture }) => {
@@ -339,7 +313,7 @@ integration("control-plane PostgreSQL boundary", () => {
       ),
       adoptionOperationCipher: new AdoptionOperationCipher(config.adoptionOperationKey),
       adoptionProofVerifier: { verify },
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
     });
     await expect(
       adoptionStore.adoptExistingDeployment(ownerId, adoptionRequest()),
@@ -404,7 +378,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
       publicOrigin,
       store,
     });
@@ -481,14 +455,14 @@ integration("control-plane PostgreSQL boundary", () => {
       adoptionCompletionGrantIssuer: completionGrantIssuer,
       adoptionOperationCipher: new AdoptionOperationCipher(config.adoptionOperationKey),
       adoptionProofVerifier: { verify },
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
     });
 
     const server = await createControlPlaneServer({
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
       publicOrigin,
       store: adoptionStore,
     });
@@ -625,7 +599,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
       publicOrigin,
       store: adoptionStore,
     });
@@ -1007,7 +981,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
       publicOrigin,
       store,
     });
@@ -1087,7 +1061,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
       publicOrigin,
       store,
     });
@@ -1184,7 +1158,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
       publicOrigin,
       store,
     });
@@ -1335,7 +1309,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
       publicOrigin,
       store,
     });

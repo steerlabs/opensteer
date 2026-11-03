@@ -27,7 +27,6 @@ import { createControlPlaneDatabase } from "../database/database.js";
 import { migrateControlPlaneToLatest } from "../database/migrations.js";
 import {
   portalCallbackUri,
-  portalHintCookieName,
   portalOAuthClientId,
   portalOAuthScopes,
   portalSignInPath,
@@ -63,7 +62,7 @@ const config: ControlPlaneConfig = {
   googleClientSecret: "test-google-secret",
   listenHost: "127.0.0.1",
   listenPort: 41_142,
-  managedDeploymentDomain,
+  portalOrigin: new URL(`https://${managedDeploymentDomain}`),
   nativeOAuthClients: opensteerAccountNativeOAuthClients,
   publicOrigin,
 };
@@ -73,7 +72,9 @@ integration("Opensteer web portal", () => {
     connectionString: databaseUrl ?? "postgresql://unconfigured",
     maxConnections: 4,
   });
-  const store = new ControlPlaneStore(database, publicOrigin, { managedDeploymentDomain });
+  const store = new ControlPlaneStore(database, publicOrigin, {
+    portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+  });
   const portalSessions = new PortalSessionStore(database);
   const connectLifecycle = new ConnectLifecycleService(database, {
     delete: async () => undefined,
@@ -91,7 +92,7 @@ integration("Opensteer web portal", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
       portalSessions,
       publicOrigin,
       store,
@@ -105,7 +106,7 @@ integration("Opensteer web portal", () => {
     await sql`truncate table users cascade`.execute(database);
     await store.ensureOfficialPortalClient({
       clientId: portalOAuthClientId,
-      redirectUri: portalCallbackUri(publicOrigin, managedDeploymentDomain),
+      redirectUri: portalCallbackUri(new URL(`https://${managedDeploymentDomain}`)),
       scopes: portalOAuthScopes,
     });
     const now = new Date();
@@ -126,6 +127,32 @@ integration("Opensteer web portal", () => {
   afterAll(async () => {
     await server.close();
     await database.destroy();
+  });
+
+  it("updates the official portal callback and presentation on startup", async () => {
+    await database
+      .updateTable("oauthClients")
+      .set({
+        redirectUris: JSON.stringify(["https://old.test/auth/callback"]),
+        uri: "https://old.test",
+      })
+      .where("clientId", "=", portalOAuthClientId)
+      .execute();
+    const store = new ControlPlaneStore(database, publicOrigin, {
+      portalOrigin: config.portalOrigin,
+    });
+    await store.ensureOfficialPortalClient({
+      clientId: portalOAuthClientId,
+      redirectUri: portalCallbackUri(config.portalOrigin),
+      scopes: portalOAuthScopes,
+    });
+    const client = await database
+      .selectFrom("oauthClients")
+      .select(["uri", "redirectUris"])
+      .where("clientId", "=", portalOAuthClientId)
+      .executeTakeFirstOrThrow();
+    expect(client.uri).toBe(config.portalOrigin.origin);
+    expect(client.redirectUris).toEqual([portalCallbackUri(config.portalOrigin)]);
   });
 
   it("renders the signed-out portal immediately, with no redirect and no cookie", async () => {
@@ -170,22 +197,11 @@ integration("Opensteer web portal", () => {
     expect(portalPathOnAccountHost.statusCode).toBe(404);
   });
 
-  it("signs in silently when the hint is present and the Account session is live", async () => {
-    const bounce = await server.inject({
-      headers: portalHeaders({ cookie: `${portalHintCookieName}=1` }),
-      method: "GET",
-      url: "/",
-    });
-    expect(bounce.statusCode).toBe(302);
-    expect(bounce.headers.location).toBe(`${portalSignInPath}?silent=1`);
-
+  it("signs in through the explicit portal OAuth flow", async () => {
     const flow = await runSignInFlow(await signedSessionCookie(accountId));
     expect(location(flow.signIn)).toContain("prompt=none");
     expect(flow.callback.statusCode).toBe(303);
     expect(flow.callback.headers.location).toBe("/");
-    expect(cookieFor(flow.callback, portalHintCookieName)).toContain(
-      `Domain=${managedDeploymentDomain}`,
-    );
     expect(cookieFor(flow.callback, portalFlowCookieName)).toContain("Max-Age=0");
 
     const portal = await server.inject({
@@ -207,31 +223,27 @@ integration("Opensteer web portal", () => {
     expect(Number(tokens.count)).toBe(0);
   });
 
-  it("clears the hint and renders the signed-out portal when no Account session answers", async () => {
+  it("renders the signed-out portal when no Account session answers", async () => {
     const flow = await runSignInFlow();
 
     expect(flow.authorize.statusCode).toBe(302);
     expect(new URL(location(flow.authorize)).searchParams.get("error")).toBe("login_required");
     expect(flow.callback.statusCode).toBe(200);
     expect(flow.callback.body).toContain("Sign in");
-    expect(cookieFor(flow.callback, portalHintCookieName)).toContain("Max-Age=0");
 
     // With the hint gone the next visit renders instead of looping.
     const next = await server.inject({ headers: portalHeaders(), method: "GET", url: "/" });
     expect(next.statusCode).toBe(200);
   });
 
-  it("re-runs the silent flow for a stale portal session with a live hint", async () => {
+  it("renders sign-in for a stale portal session", async () => {
     const response = await server.inject({
-      headers: portalHeaders({
-        cookie: `${portalSessionCookieName}=ops_stale; ${portalHintCookieName}=1`,
-      }),
+      headers: portalHeaders({ cookie: `${portalSessionCookieName}=ops_stale` }),
       method: "GET",
       url: "/",
     });
-
-    expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe(`${portalSignInPath}?silent=1`);
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("Sign in");
     expect(cookieFor(response, portalSessionCookieName)).toContain("Max-Age=0");
   });
 
@@ -343,7 +355,6 @@ integration("Opensteer web portal", () => {
     expect(signedOut.statusCode).toBe(303);
     expect(signedOut.headers.location).toBe("/");
     expect(cookieFor(signedOut, portalSessionCookieName)).toContain("Max-Age=0");
-    expect(cookieFor(signedOut, portalHintCookieName)).toContain("Max-Age=0");
 
     const sessions = await database
       .selectFrom("authSessions")
@@ -361,7 +372,7 @@ integration("Opensteer web portal", () => {
     expect(new URL(location(retry.authorize)).searchParams.get("error")).toBe("login_required");
   });
 
-  it("clears the portal hint when the Account host signs out", async () => {
+  it("keeps Account sign-out cookies host scoped", async () => {
     const response = await server.inject({
       headers: {
         cookie: await signedSessionCookie(accountId),
@@ -373,10 +384,6 @@ integration("Opensteer web portal", () => {
     });
 
     expect(response.statusCode).toBe(303);
-    expect(cookieFor(response, portalHintCookieName)).toContain("Max-Age=0");
-    expect(cookieFor(response, portalHintCookieName)).toContain(
-      `Domain=${managedDeploymentDomain}`,
-    );
   });
 
   async function runSignInFlow(accountCookie?: string, signInUrl = `${portalSignInPath}?silent=1`) {

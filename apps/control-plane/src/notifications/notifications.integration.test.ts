@@ -51,7 +51,7 @@ integration("control-plane notification boundary", () => {
     maxConnections: 4,
   });
   const store = new ControlPlaneStore(database, publicOrigin, {
-    managedDeploymentDomain: "connect.notifications.opensteer.invalid",
+    portalOrigin: new URL("https://connect.notifications.opensteer.invalid"),
   });
   const cipher = new NotificationTokenCipher(authSecret);
   let now = new Date("2026-09-14T12:00:00.000Z");

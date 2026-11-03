@@ -28,7 +28,6 @@ import {
 import { ControlPlaneAccountIdSchema, prefixedIdSchema } from "./account-id.js";
 export * from "./account-id.js";
 export * from "./connect.js";
-export * from "./cloud.js";
 export * from "./notifications.js";
 export * from "./oauth-broker.js";
 
@@ -281,7 +280,7 @@ export type AccountDeploymentDirectoryEntry = z.infer<typeof AccountDeploymentDi
  * An Account directory record for a Personal Host, narrowed to the case where
  * the Account link is present. Whether such a record is reachable right now is
  * not decided here: that rule is `deploymentStatusFromPersonalConnect` in
- * `@opensteer/protocol/deployment-status`, which the Cloud portal and the
+ * `@opensteer/protocol/deployment-status`, which the Account portal and the
  * Desktop directory both answer with, so one computer is never ready in one
  * Directory and offline in the other.
  */
@@ -954,17 +953,10 @@ const ManagedHostProvisioningBundleBaseSchema = z
   })
   .strict();
 
-export const ManagedHostProvisioningBundleSchema = z
-  .discriminatedUnion("provisioningMode", [
-    ManagedHostProvisioningBundleBaseSchema.extend({
-      initialRunnerEnrollmentToken: z.string().min(32).max(4_096),
-      provisioningMode: z.literal("managed"),
-      owner: VerifiedDeploymentOwnerProfileSchema,
-    }).strict(),
-    ManagedHostProvisioningBundleBaseSchema.extend({
-      provisioningMode: z.literal("adoption"),
-    }).strict(),
-  ])
+export const ManagedHostProvisioningBundleSchema = ManagedHostProvisioningBundleBaseSchema.extend({
+  provisioningMode: z.literal("adoption"),
+})
+  .strict()
   .superRefine((value, context) => {
     if (value.oidc.issuer !== value.controlApiOrigin) {
       context.addIssue({
@@ -992,10 +984,7 @@ export type ManagedHostProvisioningBundle = z.infer<typeof ManagedHostProvisioni
 export const AdoptExistingDeploymentResponseSchema = z
   .object({
     proofId: HostAccountAdoptionProofIdSchema,
-    provisioningBundle: ManagedHostProvisioningBundleSchema.refine(
-      (bundle) => bundle.provisioningMode === "adoption",
-      { message: "Existing Host adoption requires an adoption provisioning bundle" },
-    ),
+    provisioningBundle: ManagedHostProvisioningBundleSchema,
     completionGrant: HostAccountAdoptionCompletionGrantSchema,
     resultExpiresAt: IsoDateTimeSchema,
   })

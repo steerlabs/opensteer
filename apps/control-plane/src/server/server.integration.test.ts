@@ -6,9 +6,9 @@ import {
   type ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
 import {
+  opensteerAccountNativeOAuthClients,
   DeploymentIdSchema,
   HostInstanceIdSchema,
-  opensteerAccountNativeOAuthClients,
 } from "@opensteer/core";
 import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -49,7 +49,7 @@ const config: ControlPlaneConfig = {
   googleClientSecret: "test-google-secret",
   listenHost: "127.0.0.1",
   listenPort: 41_142,
-  managedDeploymentDomain,
+  portalOrigin: new URL(`https://${managedDeploymentDomain}`),
   nativeOAuthClients: opensteerAccountNativeOAuthClients,
   publicOrigin,
 };
@@ -59,7 +59,9 @@ integration("Opensteer Account host", () => {
     connectionString: databaseUrl ?? "postgresql://unconfigured",
     maxConnections: 4,
   });
-  const store = new ControlPlaneStore(database, publicOrigin, { managedDeploymentDomain });
+  const store = new ControlPlaneStore(database, publicOrigin, {
+    portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+  });
   const portalSessions = new PortalSessionStore(database);
   const connectLifecycle = new ConnectLifecycleService(database, {
     delete: async () => undefined,
@@ -77,7 +79,7 @@ integration("Opensteer Account host", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
       portalSessions,
       publicOrigin,
       store,
@@ -145,8 +147,7 @@ integration("Opensteer Account host", () => {
     expect(invalidPost.body).toContain("Start authorization again");
   });
 
-  it("authorizes only the public hostname and active canonical origins for edge TLS", async () => {
-    const deployment = await registerDeployment("TLS Cloud", "tls-cloud");
+  it("authorizes only the Account and portal hostnames for edge TLS", async () => {
     const own = await server.inject({
       method: "GET",
       url: "/v1/edge/tls-allow?domain=BETA.FRONT-DOOR.TEST.INVALID.",
@@ -165,9 +166,8 @@ integration("Opensteer Account host", () => {
       method: "GET",
       url: "/v1/edge/tls-allow?domain=tls-cloud.managed.front-door.test.invalid",
     });
-    expect(active.statusCode).toBe(200);
+    expect(active.statusCode).toBe(404);
 
-    await database.deleteFrom("deployments").where("id", "=", deployment).executeTakeFirstOrThrow();
     expect(
       (
         await server.inject({
@@ -248,31 +248,6 @@ integration("Opensteer Account host", () => {
       revoke.mockRestore();
     }
   });
-
-  async function registerDeployment(name: string, slug: string) {
-    const deploymentId = DeploymentIdSchema.parse(`dep_${crypto.randomUUID()}`);
-    const now = new Date();
-    await database
-      .insertInto("deployments")
-      .values({
-        id: deploymentId,
-        ownerAccountId: accountId,
-        canonicalOrigin: `https://${slug}.${managedDeploymentDomain}`,
-        name,
-        activeHostInstanceId: HostInstanceIdSchema.parse(`hst_${crypto.randomUUID()}`),
-        hostKeyFingerprint: `sha256:${"a".repeat(43)}`,
-        reachability: "canonical",
-        lifecycle: "active",
-        oidcClientId: null,
-        authorityEnvelope: null,
-        directoryGeneration: 1,
-        accountLink: null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .executeTakeFirstOrThrow();
-    return deploymentId;
-  }
 });
 
 async function signedSessionCookie(

@@ -305,7 +305,7 @@ describe("control-plane protocol", () => {
     expect("owner" in response).toBe(false);
   });
 
-  it("binds provisioning mode to canonical reachability", () => {
+  it("accepts only adoption provisioning with canonical reachability", () => {
     const canonicalOrigin = "https://host.example";
     const base = {
       controlApiOrigin: "https://accounts.example",
@@ -337,6 +337,13 @@ describe("control-plane protocol", () => {
           email: "owner@example.test",
           displayName: "Owner",
         },
+      }).success,
+    ).toBe(false);
+    expect(
+      ManagedHostProvisioningBundleSchema.safeParse({
+        ...base,
+        deployment: { ...base.deployment, reachability: "canonical" },
+        provisioningMode: "adoption",
       }).success,
     ).toBe(true);
     expect(
