@@ -80,6 +80,26 @@ describe("ContinuationService", () => {
     expect(fixture.errors).toEqual([]);
   });
 
+  it("drains a notification received while the previous drain is still busy", async () => {
+    const fixture = makeService([fulfilledRequest("browser.access")]);
+    const listed =
+      Promise.withResolvers<Awaited<ReturnType<typeof fixture.listPendingContinuations>>>();
+    fixture.listPendingContinuations.mockReturnValueOnce(listed.promise);
+    fixture.service.notify();
+    try {
+      expect(fixture.listPendingContinuations).toHaveBeenCalledOnce();
+      fixture.service.notify();
+      listed.resolve([]);
+      await vi.waitFor(() => expect(fixture.enqueueThreadInput).toHaveBeenCalledOnce(), {
+        timeout: 1_000,
+      });
+      expect(fixture.listPendingContinuations).toHaveBeenCalledTimes(2);
+    } finally {
+      listed.resolve([]);
+      await fixture.service.close();
+    }
+  });
+
   it("settles a Trigger-originated Request without delivering any continuation", async () => {
     const triggerRequest = triggerOriginatedRequest();
     const runRequest = fulfilledRequest("integration.access");
@@ -590,26 +610,33 @@ function makeService(
   const errors: unknown[] = [];
   const enqueueThreadInput = options.enqueueThreadInput ?? vi.fn(async () => delivery("pending"));
   const recordContinuationAttempt = vi.fn(async () => true);
+  const listPendingContinuations = vi.fn(async () =>
+    requests.map((request) => ({
+      attemptedAt: null,
+      reason: null,
+      request,
+      status: "waiting" as const,
+    })),
+  );
   const service = new ContinuationService({
     commands: { enqueueThreadInput } as unknown as Pick<CommandService, "enqueueThreadInput">,
     integrations: inventory(),
     onError: (error) => errors.push(error),
     requests: {
-      listPendingContinuations: vi.fn(async () =>
-        requests.map((request) => ({
-          attemptedAt: null,
-          reason: null,
-          request,
-          status: "waiting" as const,
-        })),
-      ),
+      listPendingContinuations,
       recordContinuationAttempt,
     } as unknown as Pick<
       OpensteerStore["requests"],
       "listPendingContinuations" | "recordContinuationAttempt"
     >,
   });
-  return { enqueueThreadInput, errors, recordContinuationAttempt, service };
+  return {
+    enqueueThreadInput,
+    errors,
+    listPendingContinuations,
+    recordContinuationAttempt,
+    service,
+  };
 }
 
 function delivery(disposition: "cancelled" | "pending" | "run-queued" | "steering") {

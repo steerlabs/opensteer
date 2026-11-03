@@ -1943,7 +1943,7 @@ export async function createHostRuntime(
     });
     let reportContinuationError: (error: unknown) => void = () => undefined;
     const continuations = new ContinuationService({
-      loginRef: (operationId) => passwordSignIns.leaseForOperation(operationId)?.loginRef,
+      passwordSignIn: (operationId) => passwordSignIns.continuationState(operationId),
       commands,
       integrations: {
         computerUseMachines: (ownerUserId) =>

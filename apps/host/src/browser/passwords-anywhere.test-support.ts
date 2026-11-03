@@ -9,11 +9,13 @@ import { BrowserSessionIdSchema, hostApiVersionHeader } from "@opensteer/protoco
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+  acceptCallerRun,
   connectCallerMachine,
   createMachineAccessDatabase,
   dispatchCallerRun,
   startPersonalMachineAccessHost,
   waitForValue,
+  waitForExecute,
 } from "../runtime/machine-access.test-support.js";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
@@ -25,6 +27,10 @@ const command =
 const cases = [
   "sessionless-no-browser",
   "workspace-approval-continuation",
+  "workspace-approval-once-continuation",
+  "workspace-approval-after-read-continuation",
+  "workspace-approval-once-after-read-continuation",
+  "workspace-approval-unready-workspace",
   "same-workspace-reuse",
   "capability-loss",
   "declined",
@@ -176,7 +182,7 @@ export function passwordsAnywhereJourneys() {
               return;
             }
             authority.policy.approval =
-              name === "workspace-approval-continuation" || name === "declined";
+              name.startsWith("workspace-approval-") || name === "declined";
             authority.policy.declined = name === "declined";
             const first = await signIn();
             await evidence.write("tool-result.json", first);
@@ -201,7 +207,7 @@ export function passwordsAnywhereJourneys() {
               await evidence.write("declined-request.json", declined);
               return;
             }
-            if (name === "workspace-approval-continuation") {
+            if (name.startsWith("workspace-approval-")) {
               const pending = z
                 .object({ status: z.literal("pending"), requestId: z.string() })
                 .parse(first.structuredContent);
@@ -222,6 +228,7 @@ export function passwordsAnywhereJourneys() {
               if (!start || start.type !== "login.authorize")
                 throw new Error("Missing authority authorization");
               expect(start.workspaceId).toBe(main.id);
+              if (!name.includes("after-read")) await run.complete();
               const card = await testRpcData(
                 host.origin,
                 "browser.password-sign-in.get",
@@ -232,23 +239,47 @@ export function passwordsAnywhereJourneys() {
               if (card.stage !== "approval") throw new Error("Missing account chooser");
               expect(JSON.stringify(request)).not.toContain(passwordFixture.username);
               const account = card.accounts[0]!;
-              const accepted = await testRpcData(
-                host.origin,
-                "commands.dispatch",
-                {
-                  type: "browser.password-sign-in.respond",
-                  idempotencyKey: "fixture-password-approval",
-                  requestId: request.id,
-                  decision: {
-                    kind: "approve",
-                    loginId: account.id,
-                    revision: account.revision,
-                    remember: true,
-                    permissionVersion: 5,
+              if (name.includes("after-read")) await run.complete();
+              const approve = () =>
+                testRpcData(
+                  host.origin,
+                  "commands.dispatch",
+                  {
+                    type: "browser.password-sign-in.respond",
+                    idempotencyKey: "fixture-password-approval",
+                    requestId: request.id,
+                    decision: {
+                      kind: "approve",
+                      loginId: account.id,
+                      revision: account.revision,
+                      remember: !name.includes("once"),
+                      permissionVersion: 5,
+                    },
                   },
-                },
-                { headers: host.ownerHeaders },
-              );
+                  { headers: host.ownerHeaders },
+                );
+              if (name === "workspace-approval-unready-workspace") {
+                await host.store.database
+                  .updateTable("workspaces")
+                  .set({ status: "unavailable" })
+                  .where("id", "=", main.id)
+                  .execute();
+                await expect(
+                  testRpcData(
+                    host.origin,
+                    "browser.password-sign-in.get",
+                    { requestId: request.id },
+                    { headers: host.ownerHeaders },
+                  ),
+                ).rejects.toThrow("This sign-in no longer has Workspace authority.");
+                await expect(approve()).rejects.toThrow(
+                  "This sign-in no longer has Workspace authority.",
+                );
+                expect(authority.commands.some((c) => c.type === "login.approve")).toBe(false);
+                return;
+              }
+              const executed = waitForExecute(caller.primary.socket);
+              const accepted = await approve();
               expect(accepted.type).toBe("browser.password-sign-in.respond");
               const fulfilled = await waitForValue(async () => {
                 const row = await host.store.requests.get(request.id);
@@ -268,6 +299,22 @@ export function passwordsAnywhereJourneys() {
                 ),
               );
               expect(JSON.stringify(continuation.content)).toContain("sign_in");
+              const resumed = await acceptCallerRun(host, caller, await executed);
+              expect(resumed.threadId).toBe(run.threadId);
+              expect(resumed.runId).not.toBe(run.runId);
+              const continuedClient = await connect(resumed.agentControlToken);
+              expect(
+                (
+                  await continuedClient.callTool({
+                    name: "sign_in",
+                    arguments: {
+                      site: passwordFixture.site,
+                      reason: "Continue the approved sign-in",
+                    },
+                  })
+                ).structuredContent,
+              ).toMatchObject({ status: "ready", loginRef: start.loginRef });
+              await resumed.complete();
               await evidence.write("request.json", fulfilled);
               await evidence.write("continuation.json", continuation);
             } else {

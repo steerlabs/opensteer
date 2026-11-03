@@ -160,7 +160,9 @@ the requester approves or declines through the same Host command from web, deskt
 or mobile. Chooser descriptors are fetched separately after first paint and never
 enter shared Request events, agent projections or persisted client caches. Generic
 request.respond refuses this kind. Names/reasons are display context, never
-authority. The durable Request settlement is the approval commit point. The broker
+authority. Reading or answering a durable sign-in Request depends on its stored
+origin and current Workspace authority, never on the asking Run still running.
+The durable Request settlement is the approval commit point. The broker
 first prepares the pinned choice without granting or releasing anything. Only
 after settlement succeeds does the Host commit the broker transaction and publish a
 lease. If broker commit fails or authority ends before publication, the current
@@ -171,7 +173,8 @@ preparations have no grant to remove, so cleanup cannot erase a newer grant.
 Human settlements retain the winning session and stored
 device label; retries never replace this provenance. Automatic settlements have
 none. Failed settlement cancels the preparation and retries interruption;
-a continuation gets its loginRef only from the live registry, never Request data.
+a continuation is delivered only after publication or interruption is final and
+gets its loginRef only from the live registry, never Request data.
 Settlement does not itself end an authorized lease. After restart, lost modern
 Requests settle interrupted; historical session-bound ones settle session-closed.
 See `packages/protocol/src/password-sign-in.ts` and
