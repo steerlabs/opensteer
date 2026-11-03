@@ -1,3 +1,4 @@
+export * from "./plugin-add-consent.js";
 import {
   PluginTargetSchema,
   type PluginTarget,

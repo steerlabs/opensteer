@@ -1,5 +1,7 @@
 import { PluginAccounts } from "./settings-plugin-accounts.js";
 import {
+  completePluginConsent,
+  type PluginAddConsent,
   pluginGroups,
   pluginState,
   pluginTargetKey,
@@ -81,6 +83,7 @@ function Plugins({
   >(null);
   const [suggestions, setSuggestions] = useState<NonNullable<typeof directory>["catalog"]>([]);
   const [addInstalled, setAddInstalled] = useState(false);
+  const addConsent = useRef<PluginAddConsent | null>(null);
   const [addPlaces, setAddPlaces] = useState<string[]>([]);
   const [addEverywhere, setAddEverywhere] = useState(false);
   const openAdd = (item: NonNullable<typeof add>) =>
@@ -91,6 +94,7 @@ function Plugins({
       setAddEntry(entry);
       setAddPlaces([]);
       setAddEverywhere(host.getSnapshot().deploymentShape?.kind === "personal");
+      addConsent.current = null;
       setAddInstalled(false);
       setAdd(item);
     });
@@ -700,7 +704,19 @@ function Plugins({
                                 personalEverywhere: addEverywhere ? { accounts: [] } : null,
                                 idempotencyKey: mutationIdempotencyKey("plugin-add-placement"),
                               });
-                              if (isCurrent()) setAddInstalled(true);
+                              if (isCurrent()) {
+                                addConsent.current = {
+                                  target: installed.row.target,
+                                  everywhere: addEverywhere,
+                                  places: addPlaces,
+                                  access: "read",
+                                  idempotencyKey: mutationIdempotencyKey(
+                                    "plugin-add-account-placement",
+                                  ),
+                                  command: null,
+                                };
+                                setAddInstalled(true);
+                              }
                             }),
                           ),
                         ],
@@ -714,6 +730,13 @@ function Plugins({
                 hostName={host.getSnapshot().identityConfig?.deployment.name ?? "Opensteer"}
                 definitionId={add.definitionId}
                 render={render}
+                onConnected={async (connectionId) => {
+                  const consent = addConsent.current;
+                  if (!consent || !isCurrent()) throw new Error("Review placement again.");
+                  await completePluginConsent(host, consent, connectionId, (next) => {
+                    addConsent.current = next;
+                  });
+                }}
               />
             ) : (
               render([])

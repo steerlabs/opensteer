@@ -43,6 +43,7 @@ export function PluginAccounts(props: {
   readonly hostName: string;
   readonly definitionId?: string | undefined;
   readonly render?: (sections: NativeSettingsSection[]) => ReactNode;
+  readonly onConnected?: (connectionId: string) => Promise<void>;
 }): ReactNode {
   const userId = useHostSelector(props.hostClient, selectUserId);
   if (userId === null) {
@@ -64,6 +65,7 @@ function ConnectedApps(props: {
   readonly hostName: string;
   readonly definitionId?: string | undefined;
   readonly render?: (sections: NativeSettingsSection[]) => ReactNode;
+  readonly onConnected?: (connectionId: string) => Promise<void>;
 }) {
   const { hostClient, hostName } = props;
   const mobile = useMobileClient();
@@ -89,6 +91,7 @@ function ConnectedApps(props: {
   const [apps, setApps] = useState<readonly ConnectedAppModel[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pendingConnection, setPendingConnection] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   /** The row whose action is under way; every other action waits for it. */
   const [busy, setBusy] = useState<string | null>(null);
@@ -199,6 +202,10 @@ function ConnectedApps(props: {
             `${app.name} reported success, but no connected account is recorded here. Try again.`,
           );
         }
+        setPendingConnection(connection.id);
+        await props.onConnected?.(connection.id);
+        setPendingConnection(null);
+        if (!current()) return null;
         const account = { id: connection.id, title: integrationAccountTitle(connection) };
         return connection.status === "connected"
           ? `${account.title} is connected.`
@@ -243,7 +250,11 @@ function ConnectedApps(props: {
     ]);
 
   if (props.render) {
-    const button = (key: string, label: string, onPress: () => void): Extract<NativeSettingsRow, { kind: "button" }> => ({
+    const button = (
+      key: string,
+      label: string,
+      onPress: () => void,
+    ): Extract<NativeSettingsRow, { kind: "button" }> => ({
       key,
       kind: "button",
       label,
@@ -251,6 +262,14 @@ function ConnectedApps(props: {
       disabled: busy !== null || !online,
     });
     const sections: NativeSettingsSection[] = [];
+    if (busy)
+      sections.push({
+        key: "pending",
+        title: "Connecting",
+        rows: [
+          { key: "pending", kind: "text", label: "Waiting for sign-in and saving placement…" },
+        ],
+      });
     if (error || loadError || done)
       sections.push({
         key: "account-status",
@@ -258,6 +277,23 @@ function ConnectedApps(props: {
         rows: [
           { key: "status", kind: "text", label: error ?? loadError ?? done ?? "" },
           ...(loadError ? [button("retry", "Try again", () => void load())] : []),
+        ],
+      });
+    if (pendingConnection && props.onConnected)
+      sections.push({
+        key: "placement-retry",
+        title: "Finish adding",
+        rows: [
+          button(
+            "retry-placement",
+            "Retry placement",
+            () =>
+              void run("placement", async () => {
+                await props.onConnected?.(pendingConnection);
+                setPendingConnection(null);
+                return "Connected and turned on in your chosen places.";
+              }),
+          ),
         ],
       });
     for (const app of apps ?? []) {

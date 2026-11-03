@@ -8,6 +8,7 @@ import type { HostClient } from "@opensteer/client/host";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
 import { settingsDestinations } from "./settings-home-model.js";
 const state = vi.hoisted(() => ({
+  connected: null as ((id: string) => Promise<void>) | null,
   os: "ios",
   navigate: vi.fn(),
   host: null as HostClient | null,
@@ -50,7 +51,12 @@ vi.mock("../ui/mobile-client-context.js", () => {
   const mobile = { getSnapshot: () => ({ selection: { hostClient: state.host } }) };
   return { useMobileClient: () => mobile };
 });
-vi.mock("./settings-plugin-accounts.js", () => ({ PluginAccounts: () => null }));
+vi.mock("./settings-plugin-accounts.js", () => ({
+  PluginAccounts: (props: { onConnected?: (id: string) => Promise<void> }) => {
+    state.connected = props.onConnected ?? null;
+    return null;
+  },
+}));
 const { SettingsMessagingScreen } = await import("./settings-messaging.js");
 const { SettingsPluginsScreen } = await import("./settings-plugins.js");
 const { pluginGroups, pluginState } = await import("@opensteer/client/settings");
@@ -501,5 +507,33 @@ it.each(["ios", "android"])(
     expect(result.data.row.title).toBe(item.title);
     expect(result.data.installationIds).toHaveLength(1);
     expect(result.data.accounts).toEqual([]);
+    expect(state.connected).toBeTypeOf("function");
+    const gmail = await host.rpc["plugins.detail.get"]({
+      target: { kind: "service", definitionId: "google-gmail" },
+    });
+    if (!gmail.ok) throw new Error("Missing account fixture");
+    const account = gmail.data.accounts[0]!;
+    const rpc = host.rpc;
+    Object.defineProperty(host, "rpc", {
+      value: new Proxy(rpc, {
+        get(target, key, receiver) {
+          if (key === "plugins.detail.get")
+            return async () => ({ ok: true, data: { ...result.data, accounts: [account] } });
+          return Reflect.get(target, key, receiver);
+        },
+      }),
+    });
+    dispatch.mockRejectedValueOnce(new Error("Lost response"));
+    await expect(state.connected!(account.connectionId)).rejects.toThrow("Lost response");
+    const uncertain = dispatch.mock.calls.at(-1)![0];
+    dispatch.mockResolvedValueOnce({
+      type: "settings.plugin.placement.set",
+      placement: result.data.row.placement,
+    });
+    await state.connected!(account.connectionId);
+    expect(dispatch.mock.calls.at(-1)![0]).toEqual(uncertain);
+    expect(uncertain).toMatchObject({ type: "settings.plugin.placement.set" });
+    if (uncertain.type !== "settings.plugin.placement.set") throw new Error("Missing placement");
+    expect(JSON.stringify(uncertain)).toContain(account.connectionId);
   },
 );
