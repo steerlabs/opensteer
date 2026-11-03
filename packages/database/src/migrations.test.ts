@@ -137,6 +137,11 @@ const releasedMigrationNames = [
   "0127_person_show",
   "0128_person_message",
   "0129_apps",
+  "0130_request_settlement_provenance",
+  "0131_owner_session_computer_approvals",
+  "0132_remote_administration",
+  "0133_personal_account_link_sealing",
+  "0134_personal_account_operation",
 ];
 
 describe("migration names", () => {

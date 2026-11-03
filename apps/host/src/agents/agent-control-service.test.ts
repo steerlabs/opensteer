@@ -97,6 +97,51 @@ describe("AgentControlService", () => {
     },
   );
 
+  it("keeps settlement sessions out of the Requests it lists", async () => {
+    const current = thread(currentThreadId, nativeHarnessId, "Main");
+    const pending = {
+      ...pendingRequest(),
+      settlementProvenance: { sessionId: "PRIVATE-SETTLEMENT-SESSION", deviceLabel: "iPhone" },
+    };
+    const visiblePage = vi.fn(async () => ({
+      requests: [pending],
+      window: {
+        byteCount: 1,
+        hasMore: true,
+        itemCount: 1,
+        nextBefore: "next_request_page",
+        totalItems: 2,
+      },
+    }));
+    const { service, claims } = makeService({
+      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+      messages: [],
+      requests: { visiblePage },
+      threads: [current],
+    });
+
+    const response = await service.handle("run-token", {
+      before: "current_request_page",
+      limit: 1,
+      requestId: crypto.randomUUID(),
+      type: "request.list",
+    });
+    expect(JSON.stringify(response)).not.toContain("PRIVATE-SETTLEMENT-SESSION");
+    expect(response).toMatchObject({
+      requests: [
+        { id: pending.id, status: "pending", settlementProvenance: { deviceLabel: "iPhone" } },
+      ],
+      type: "request.list.result",
+      window: { hasMore: true, nextBefore: "next_request_page" },
+    });
+    expect(visiblePage).toHaveBeenCalledWith({
+      before: "current_request_page",
+      limit: 1,
+      originatingThreadId: claims.threadId,
+      targetWorkspaceId: claims.workspaceId,
+    });
+  });
+
   it("derives the exposed tool surface from the Thread's pinned capability profile", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Delegated", null, {
       capabilityProfileId: "delegated",

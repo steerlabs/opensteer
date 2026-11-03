@@ -1,8 +1,8 @@
+import { requestSettlementActor } from "./request-settlement.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
 import {
   IntegrationServerTransportSchema,
-  type ComputerAppApproval,
   type IntegrationInstallationId,
   type IntegrationServerId,
   type IntegrationToolMaterial,
@@ -10,7 +10,6 @@ import {
 } from "@opensteer/integration-core";
 import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 import type { Kysely, Transaction } from "kysely";
-import { assertComputerAppApprovalInTransaction } from "./computer-app-approvals.js";
 import {
   computerAppSetupRequestFromRow,
   insertComputerAppSetupRequestInTransaction,
@@ -49,10 +48,10 @@ const removedSentence =
  * waits on (`docs/computers.md`, "MCP servers on a computer").
  *
  * A server runs only once its computer's owner approved its exact launch on
- * that computer: the approval rides the same signed setup requests every
+ * that computer: the owner answers the same exact setup requests every
  * other approval on a Mac does, as `kind: "server"`, and pins the launch by
- * digest. The Runner holds the same pin and refuses anything else, so this
- * record is what the Host asks for, not what the Mac trusts.
+ * digest. The Host rechecks the current server, target Runner and approved
+ * digest inside admission before relaying a launch to the Runner.
  */
 export class LocalMcpServerStore {
   readonly #database: Kysely<DatabaseSchema>;
@@ -179,19 +178,19 @@ export class LocalMcpServerStore {
 
   /**
    * The computer's owner allowed one server there. The answer counts only
-   * when it is theirs — signed by the desktop key registered for that Mac by
-   * its owner, over this exact request — and while the server still launches
+   * for the current authenticated owner, over this exact request, and while the server still launches
    * as the request showed. Answers with what now may run.
    */
   async approve(input: {
-    readonly approval: ComputerAppApproval;
+    readonly actorUserId: UserId;
+    readonly settlementSessionId?: string | undefined;
     readonly now?: Date;
     readonly runnerId: RunnerId;
     readonly setupRequestId: string;
   }): Promise<{ readonly launchDigest: string; readonly serverId: IntegrationServerId }> {
     const now = input.now ?? new Date();
     return withDatabaseTransaction(this.#database, async (transaction) => {
-      const { request, server } = await answeredRequest(transaction, { ...input, now }, "allow");
+      const { request, server } = await answeredRequest(transaction, { ...input, now });
       await transaction
         .deleteFrom("computerAppSetupRequests")
         .where("id", "=", request.id)
@@ -206,25 +205,28 @@ export class LocalMcpServerStore {
         })
         .where("id", "=", server.id)
         .execute();
+      await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
       return { launchDigest: server.launchDigest, serverId: server.id };
     });
   }
 
   /** The computer's owner declined one server there; it is not asked about again. */
   async decline(input: {
-    readonly approval: ComputerAppApproval;
+    readonly actorUserId: UserId;
+    readonly settlementSessionId?: string | undefined;
     readonly now?: Date;
     readonly runnerId: RunnerId;
     readonly setupRequestId: string;
   }): Promise<void> {
     const now = input.now ?? new Date();
     await withDatabaseTransaction(this.#database, async (transaction) => {
-      const { request, server } = await answeredRequest(transaction, { ...input, now }, "deny");
+      const { request, server } = await answeredRequest(transaction, { ...input, now });
       await transaction
         .deleteFrom("computerAppSetupRequests")
         .where("id", "=", request.id)
         .execute();
       await setStatus(transaction, server.id, "disabled", declinedSentence, now);
+      await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
     });
   }
 
@@ -277,32 +279,6 @@ export class LocalMcpServerStore {
         input.detail.slice(0, 1_000),
         input.now ?? new Date(),
       );
-    });
-  }
-
-  /**
-   * Its computer refused this launch as not approved there — a Runner that
-   * lost what it was told, or a launch it never saw approved — so the Host
-   * stops treating it as approved and asks again.
-   */
-  async forgetApproval(input: {
-    readonly launchDigest: string;
-    readonly now?: Date;
-    readonly serverId: IntegrationServerId;
-  }): Promise<void> {
-    const now = input.now ?? new Date();
-    await withDatabaseTransaction(this.#database, async (transaction) => {
-      if (!(await lockedApproved(transaction, input.serverId, input.launchDigest))) return;
-      await transaction
-        .updateTable("integrationServers")
-        .set({
-          approvedLaunchDigest: null,
-          status: "needs-attention",
-          statusDetail: waitingSentence,
-          updatedAt: now,
-        })
-        .where("id", "=", input.serverId)
-        .execute();
     });
   }
 }
@@ -379,12 +355,12 @@ async function records(
 async function answeredRequest(
   transaction: Transaction<DatabaseSchema>,
   input: {
-    readonly approval: ComputerAppApproval;
+    readonly actorUserId: UserId;
+    readonly settlementSessionId?: string | undefined;
     readonly now: Date;
     readonly runnerId: RunnerId;
     readonly setupRequestId: string;
   },
-  decision: "allow" | "deny",
 ) {
   const named = await transaction
     .selectFrom("computerAppSetupRequests")
@@ -411,15 +387,14 @@ async function answeredRequest(
   if (!row || row.expiresAt <= input.now) {
     throw new OpensteerError({ code: "conflict", message: "This approval is no longer waiting." });
   }
-  const request = await assertComputerAppApprovalInTransaction(transaction, {
-    approval: input.approval,
-    decision,
-    now: input.now,
-    ownerUserId: row.ownerUserId as UserId,
-    refusal: "This answer was not signed on that computer for this approval.",
-    request: computerAppSetupRequestFromRow(row),
-    runnerId: input.runnerId,
-  });
+  const ownership = await machineOwnershipIn(transaction, input.runnerId);
+  if (ownership?.effectiveOwner !== input.actorUserId || row.ownerUserId !== input.actorUserId) {
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Only this computer’s owner can approve its servers.",
+    });
+  }
+  const request = computerAppSetupRequestFromRow(row);
   const server = (
     await records(
       transaction,

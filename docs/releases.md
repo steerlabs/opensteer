@@ -76,6 +76,16 @@ green and include the source on first-parent main. Tim approves only publication
 of the verified draft via the `publish` environment. Matching drafts are reused;
 mismatches and already published stable versions fail closed.
 
+### Personal Account linking release order
+
+Deploy the Account service with sealed Personal link completions before shipping
+the corresponding Host and clients. Linking requires the Host-signed completion
+public key and returns only ciphertext; there is no plaintext compatibility path.
+Older Account services are refused with an update instruction. Old-format desktop
+pending journals require Recover from any attached device. Recover verifies Host
+state before discarding the incompatible journal, then resumes any Host-owned
+activation; if the Host has no link, start linking again.
+
 ### Hosted build and keyless proof
 
 `desktop:build-release --out <outside-checkout-directory>` provisions pinned
@@ -270,6 +280,13 @@ reaches people ahead of the Account it may depend on. A failed rollout blocks th
 insider. Nobody deploys it by hand, and
 [deploy-account.sh](../.github/scripts/deploy-account.sh) never replaces a newer
 live source with an older one.
+
+Deploy Account's additive browser-binding migration, custom/MCP callback-relay reader, browser-bound callback claim and static MCP client-metadata document on every replica before distributing Hosts that require Account callbacks for all new consent. An older or unavailable Account causes an update/unavailable refusal; Hosts never switch linked consent back to loopback. Existing connections continue using and refreshing their grants. In-flight callbacks launched before the browser-binding rollout must restart consent.
+
+Deploy Account's additive operation-refusal reasons and completed-operation results
+on every replica before distributing Hosts that use them to settle their Account
+journals. A reasonless response from an older Account remains retryable and keeps
+the journal; an HTTP status alone never proves that an external effect did not occur.
 
 The workload lives in [deploy/account](../deploy/account); secrets stay in Secret
 Manager and only their names and versions are here. New pods migrate the database

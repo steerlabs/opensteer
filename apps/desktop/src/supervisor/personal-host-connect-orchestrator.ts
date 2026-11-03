@@ -300,6 +300,26 @@ export class PersonalHostConnectOrchestrator {
     });
   }
 
+  rotate(operationId: ConnectOperationId): Promise<PersonalHostConnectStatus> {
+    return this.#execute(async () => {
+      const authority = await this.#requireCurrentRuntime();
+      const current = await this.#store.load(this.#deploymentId, authority);
+      if (
+        current?.pendingOperation?.kind === "rotate" &&
+        current.pendingOperation.operationId === operationId
+      )
+        return this.#reconcileState(current);
+      if (!current?.credential || current.desiredState !== "enabled" || current.pendingOperation)
+        throw new Error("Enable Connect before rotating its credential.");
+      const state = await this.#store.save(this.#deploymentId, {
+        ...current,
+        desiredState: "rotating",
+        pendingOperation: { kind: "rotate", operationId },
+      });
+      return this.#reconcileState(state);
+    });
+  }
+
   /** Stop the local process without changing durable enabled intent. */
   async shutdown(signal?: AbortSignal): Promise<PersonalHostConnectStatus> {
     this.#stopping = true;

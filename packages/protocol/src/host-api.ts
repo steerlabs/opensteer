@@ -1,3 +1,5 @@
+import { PasswordSignInCardViewSchema, PasswordSignInApprovalSchema } from "./password-sign-in.js";
+import { ComputerUseResolvedAppSchema } from "./computer-use.js";
 import {
   ChannelAccessGrantViewSchema,
   ChannelAccessPolicySchema,
@@ -11,6 +13,16 @@ import {
   ChannelRouteSelectorSchema,
   IntegrationConnectionViewSchema,
 } from "@opensteer/channel-core";
+import {
+  PersonalRemoteAdministrationIntentSchema,
+  PersonalRemoteAdministrationOperationSchema,
+  PersonalRemoteAdministrationStatusSchema,
+  IssuePersonalPairingCodeResponseSchema,
+  ApprovePersonalHostAccountLinkRequestSchema,
+  ApprovePersonalHostAccountLinkResponseSchema,
+  ConsumePersonalHostAccountLinkRequestSchema,
+  PersonalRemoteAccessStatusSchema,
+} from "./personal-remote-access.js";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import {
   AssignmentIdSchema,
@@ -86,6 +98,7 @@ import {
   BeginIntegrationAuthorizationSchema,
   BeginMcpAuthorizationSchema,
   ComputerAppSetupRequestViewSchema,
+  ComputerAppSetupReviewRequestViewSchema,
   ComputerUseAppApprovalSchema,
   ConnectIntegrationApiKeySchema,
   CreateIntegrationGrantSchema,
@@ -105,7 +118,6 @@ import {
   IntegrationPlatformDashboardViewSchema,
   IntegrationProviderApplicationViewSchema,
   IntegrationRepositoryAccessViewSchema,
-  RegisterComputerUseApprovalKeySchema,
   RequestComputerAppSetupSchema,
   SaveIntegrationProviderApplicationSchema,
   SetComputerAppConnectionSchema,
@@ -694,6 +706,25 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    intent: PersonalRemoteAdministrationIntentSchema,
+    type: z.literal("personal.remoteAccess.request"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("personal.remoteAccess.pairing.create"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    challenge: ApprovePersonalHostAccountLinkRequestSchema,
+    type: z.literal("personal.accountLink.approve"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    completion: ConsumePersonalHostAccountLinkRequestSchema,
+    type: z.literal("personal.accountLink.complete"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
     sessionId: AuthSessionIdSchema,
     type: z.literal("session.revoke"),
   }),
@@ -762,8 +793,9 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    input: RegisterComputerUseApprovalKeySchema,
-    type: z.literal("integration.computer.approval-key.set"),
+    setupRequestId: z.uuid(),
+    decision: z.enum(["allow", "deny"]),
+    type: z.literal("integration.computer.setup.respond"),
   }),
   z.strictObject({
     attemptId: IntegrationAuthorizationAttemptIdSchema,
@@ -956,13 +988,17 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("browser.sign-in.respond"),
   }),
   /**
-   * Declines a saved-password sign-in from any device. It is settled by the
-   * Mac's answer: a sign-in already handed over is reported as signed in.
+   * Answers saved-login consent as its requester from any authenticated client.
+   * The Host commits the broker only after the Request's durable settlement.
    */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     requestId: RequestIdSchema,
-    type: z.literal("browser.password-sign-in.decline"),
+    type: z.literal("browser.password-sign-in.respond"),
+    decision: z.union([
+      z.strictObject({ kind: z.literal("decline") }),
+      z.strictObject({ kind: z.literal("approve"), ...PasswordSignInApprovalSchema.shape }),
+    ]),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1174,6 +1210,22 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     z.object({ outcome: z.literal("conflict"), type: z.literal("machine.access.update") }),
   ]),
   z.object({ ended: z.boolean(), type: z.literal("machine.access.session.stop") }),
+  z.object({
+    type: z.literal("personal.remoteAccess.request"),
+    operation: PersonalRemoteAdministrationOperationSchema,
+  }),
+  z.object({
+    type: z.literal("personal.remoteAccess.pairing.create"),
+    pairing: z.object(IssuePersonalPairingCodeResponseSchema.shape),
+  }),
+  z.object({
+    type: z.literal("personal.accountLink.approve"),
+    proof: ApprovePersonalHostAccountLinkResponseSchema,
+  }),
+  z.object({
+    type: z.literal("personal.accountLink.complete"),
+    access: PersonalRemoteAccessStatusSchema,
+  }),
   z.object({ type: z.literal("session.revoke") }),
   z.object({
     enrollmentId: z.string().min(1).max(256),
@@ -1215,8 +1267,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("integration.computer.setup.cancel") }),
   z.object({
-    approvalKeyId: z.string().min(1).max(128),
-    type: z.literal("integration.computer.approval-key.set"),
+    type: z.literal("integration.computer.setup.respond"),
   }),
   z.object({ type: z.literal("integration.computer.policy.set"), appApproval: z.literal("ask") }),
   z.object({ type: z.literal("integration.computer.app.block") }),
@@ -1315,8 +1366,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     outcome: BrowserSignInOutcomeSchema.nullable(),
   }),
   z.object({
-    type: z.literal("browser.password-sign-in.decline"),
-    /** How the Request ended; `pending` only if the Mac has not answered yet. */
+    type: z.literal("browser.password-sign-in.respond"),
+    card: PasswordSignInCardViewSchema.optional(),
+    message: z.string().max(200).optional(),
+    /** How the Request ended. */
     status: z.enum(["declined", "fulfilled", "pending", "withdrawn", "cancelled"]),
   }),
   CreateBrowserProfileGrantResponseSchema.extend({ type: z.literal("browser.profile.grant") }),
@@ -1409,6 +1462,11 @@ export const hostApi = defineRpc({
     AttachmentContentSchema,
     true,
   ),
+  "browser.password-sign-in.get": declaration(
+    "POST",
+    z.strictObject({ requestId: RequestIdSchema }),
+    PasswordSignInCardViewSchema,
+  ),
   "browser.sources.get": declaration("GET", emptyInputSchema, BrowserSourcesStateSchema),
   "browser.sources.inspect": declaration(
     "POST",
@@ -1490,6 +1548,11 @@ export const hostApi = defineRpc({
     ChannelConnectionInspectionViewSchema,
   ),
   "channels.get": declaration("GET", emptyInputSchema, ChannelDashboardViewSchema),
+  "personal.remoteAccess.get": declaration(
+    "GET",
+    emptyInputSchema,
+    PersonalRemoteAdministrationStatusSchema,
+  ),
   "commands.dispatch": declaration("POST", commandInputSchema, commandOutputSchema),
   "assignment.get": declaration(
     "GET",
@@ -1561,6 +1624,16 @@ export const hostApi = defineRpc({
     "GET",
     z.strictObject({ runnerId: RunnerIdSchema }),
     z.object({ appApproval: ComputerUseAppApprovalSchema }),
+  ),
+  "integration.computer.setup.review": declaration(
+    "POST",
+    z.strictObject({ setupRequestId: z.uuid() }),
+    z.object({
+      request: ComputerAppSetupReviewRequestViewSchema,
+      app: z
+        .object({ ...ComputerUseResolvedAppSchema.shape, identity: ComputerAppIdentityViewSchema })
+        .nullable(),
+    }),
   ),
   "integration.computer.setup.list": declaration(
     "GET",
@@ -1861,6 +1934,7 @@ export type HostApiClient = RpcClient<typeof hostApi>;
 
 export interface HostApiServerContext {
   readonly binaryBody?: AsyncIterable<Uint8Array>;
+  readonly afterResponse?: (effect: () => void) => void;
   readonly headers: Readonly<Record<string, string | readonly string[] | undefined>>;
   readonly requestId: string;
   readonly requestUrl: string;
@@ -1872,5 +1946,4 @@ export interface HostApiServerContext {
 
 export type HostApiHandlers = RpcHandlers<typeof hostApi, HostApiServerContext>;
 
-export type HostApiScope =
-  "exact-origin" | "exact-origin-session" | "mutation" | "public" | "session";
+export type HostApiScope = "exact-origin" | "mutation" | "public" | "session";

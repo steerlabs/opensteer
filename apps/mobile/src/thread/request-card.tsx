@@ -1,3 +1,6 @@
+import { requestSettlementLabel } from "@opensteer/client/host";
+import { authenticatePasswordApproval } from "./password-approval-auth.js";
+import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { HostClient, SurfaceModel } from "@opensteer/client/host";
 import {
   browserAccessAvailableLabel,
@@ -17,12 +20,19 @@ import {
   HostClientRequestError,
   mutationIdempotencyKey,
   passwordSignInDeclineLabel,
-  passwordSignInDecliningLabel,
   passwordSignInExpiry,
   passwordSignInOutcome,
   passwordSignInPrivacy,
   passwordSignInReasonLabel,
-  passwordSignInWaitingOn,
+  passwordSignInAllowLabel,
+  passwordSignInAllowRemembers,
+  passwordSignInOtherAccounts,
+  type PasswordSignInAccountGroup,
+  passwordSignInOnceLabel,
+  passwordSignInNoAccount,
+  passwordSignInConsent,
+  passwordSignInAccountList,
+  type PasswordSignInAccount,
   type BrowserAccessSelection,
   type ChromeSignInAvailability,
 } from "@opensteer/client/host";
@@ -77,6 +87,7 @@ import {
   Notice,
   PrimaryButton,
   RowGroup,
+  SectionLabel,
   SecondaryButton,
   StatusDot,
 } from "../ui/primitives.js";
@@ -100,7 +111,7 @@ import {
   type RequestSubmission,
 } from "./request-form-model.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
-
+import { useComputerAppApproval } from "../computers/computer-app-approval.js";
 /**
  * Whatever went wrong, the answer may still have landed: a timeout or a lost
  * reply looks the same from here as a refusal that never reached the Host.
@@ -213,8 +224,7 @@ export function RequestCard(props: {
   const signIn = request.payload.kind === "browser.sign-in" ? request.payload : null;
   const passwordSignIn =
     request.payload.kind === "browser.password-sign-in" ? request.payload : null;
-  // Mac grants and saved-password sign-ins happen on that Mac. Phone access
-  // and the other external decisions can be answered here.
+  // External approvals use their owning Host command.
   const externalDeclinable =
     request.status === "pending" &&
     props.surface.denied === null &&
@@ -244,6 +254,26 @@ export function RequestCard(props: {
   const [allowed, setAllowed] = useState<BrowserSignInOutcome | null>(null);
   const heldSignIn = useRef<{ readonly key: string; readonly signature: string } | null>(null);
   const heldPasswordDecline = useRef<string | null>(null);
+  const [passwordCard, setPasswordCard] = useState<PasswordSignInCard | null>(null);
+  const passwordContext = useRef({ client: props.hostClient, requestId: request.id, answerable });
+  passwordContext.current = { client: props.hostClient, requestId: request.id, answerable };
+  useEffect(() => {
+    if (!open || !passwordSignIn || !answerable || !props.canRespond) return;
+    let live = true;
+    props.hostClient.rpc["browser.password-sign-in.get"]({ requestId: request.id })
+      .then((result) => {
+        if (live) {
+          if (result.ok) setPasswordCard(result.data);
+          else setFailure(result.error.message);
+        }
+      })
+      .catch(() => {
+        if (live) setFailure("Opensteer Passwords could not be reached.");
+      });
+    return () => {
+      live = false;
+    };
+  }, [props.hostClient, request.id, passwordSignIn, answerable, props.canRespond, open]);
 
   // Choices and forms both come through here, so a retry is only ever the
   // response the person just chose, never one held from an earlier tap.
@@ -288,10 +318,10 @@ export function RequestCard(props: {
     }
   };
 
+  const computerApproval = useComputerAppApproval(props.hostClient);
   const allowComputerApp = async (): Promise<void> => {
     if (
       request.payload.kind !== "computer.app.access" ||
-      request.payload.definitionId !== "android-phone" ||
       responding.current ||
       !answerable ||
       !props.canRespond ||
@@ -306,6 +336,11 @@ export function RequestCard(props: {
     setFailure(null);
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
+      if (request.payload.kind !== "computer.app.access") return;
+      if (definitionId !== "android-phone") {
+        await computerApproval.ask(request.payload.setupRequestId);
+        return;
+      }
       const result = await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`phone-request:${request.id}`),
         input: { access, app: null, definitionId, kind: "app", runnerId },
@@ -405,9 +440,11 @@ export function RequestCard(props: {
       if (mounted.current) setPendingId(null);
     }
   };
-  // Only that Mac approves a saved-password sign-in; the phone's one answer is
-  // no, through its own command, which the Mac settles.
-  const declinePasswordSignIn = async (): Promise<void> => {
+  // Consent is authenticated on this device; credentials stay on the vault Mac.
+  const declinePasswordSignIn = async (approval?: {
+    account: PasswordSignInAccount;
+    remember: boolean;
+  }): Promise<void> => {
     if (passwordSignIn === null || responding.current || !answerable || !props.canRespond) return;
     if (!props.canStartResponse()) return;
     const gate = props.mutationGate;
@@ -415,23 +452,52 @@ export function RequestCard(props: {
     if (claim === null) return;
     heldPasswordDecline.current ??= mutationIdempotencyKey(`password-sign-in:${request.id}`);
     responding.current = true;
-    setPendingId(passwordSignInDeclineId);
+    setPendingId(
+      approval ? (approval.remember ? "password-allow" : "password-once") : passwordSignInDeclineId,
+    );
     setFailure(null);
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    let authenticated = approval === undefined;
     try {
-      await props.hostClient.dispatch({
+      if (approval && !(await authenticatePasswordApproval())) return;
+      authenticated = true;
+      const current = passwordContext.current;
+      if (
+        !mounted.current ||
+        current.client !== props.hostClient ||
+        current.requestId !== request.id ||
+        !current.answerable
+      )
+        return;
+      const result = await props.hostClient.dispatch({
         idempotencyKey: heldPasswordDecline.current,
         requestId: request.id,
-        type: "browser.password-sign-in.decline",
+        type: "browser.password-sign-in.respond",
+        decision: approval
+          ? {
+              kind: "approve",
+              loginId: approval.account.id,
+              revision: approval.account.revision,
+              remember: approval.remember,
+              permissionVersion: 5,
+            }
+          : { kind: "decline" },
       });
-      if (mounted.current) dismiss();
+      if (mounted.current && result.type === "browser.password-sign-in.respond") {
+        if (result.card) setPasswordCard(result.card);
+        if (result.message) setFailure(result.message);
+        if (result.status !== "pending") dismiss();
+        else heldPasswordDecline.current = null;
+      }
     } catch (error) {
       if (mounted.current) {
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         const detail =
-          error instanceof HostClientRequestError
-            ? operationDetail(error, unconfirmedDetail)
-            : unconfirmedDetail;
+          !authenticated && error instanceof Error
+            ? error.message
+            : error instanceof HostClientRequestError
+              ? operationDetail(error, unconfirmedDetail)
+              : unconfirmedDetail;
         setFailure(detail);
         void AccessibilityInfo.announceForAccessibility(detail);
       }
@@ -456,6 +522,7 @@ export function RequestCard(props: {
   const askedBy = props.subagentTitle ? `Asked by subagent ${props.subagentTitle}` : null;
   return (
     <View style={[styles.card, props.highlighted && styles.cardHighlighted]}>
+      {computerApproval.dialog}
       <View style={styles.body}>
         <Pressable
           accessibilityLabel={`${review} request: ${requestTitleLine(request)}`}
@@ -595,6 +662,10 @@ export function RequestCard(props: {
               )
             }
             onDeclinePasswordSignIn={() => void declinePasswordSignIn()}
+            passwordCard={passwordCard}
+            onApprovePasswordSignIn={(account, remember) =>
+              void declinePasswordSignIn({ account, remember })
+            }
             signIn={{
               allowed,
               chosenSourceId,
@@ -703,6 +774,8 @@ function RequestBody(props: {
   readonly onDeclineComputerApp: () => void;
   readonly onDeclineFullDiskAccess: () => void;
   readonly onDeclinePasswordSignIn: () => void;
+  readonly passwordCard: PasswordSignInCard | null;
+  readonly onApprovePasswordSignIn: (account: PasswordSignInAccount, remember: boolean) => void;
   readonly machines: readonly MachineSummary[];
   readonly pendingId: string | null;
   readonly reason: string | null;
@@ -723,7 +796,10 @@ function RequestBody(props: {
     return (
       <Notice
         detail="It has already been answered or withdrawn."
-        title="This request is no longer waiting"
+        title={
+          (request.kind === "computer.app.access" && requestSettlementLabel(request)) ||
+          "This request is no longer waiting"
+        }
         tone="neutral"
       />
     );
@@ -810,7 +886,6 @@ function RequestBody(props: {
         </View>
       ) : request.kind === "computer.app.access" &&
         request.payload.kind === "computer.app.access" ? (
-        // Mac approval happens there; phone access can be set by its owner here.
         <ComputerAppAccessBody
           access={request.payload.access}
           canRespond={props.canRespond}
@@ -839,7 +914,9 @@ function RequestBody(props: {
         <PasswordSignInBody
           canRespond={props.canRespond}
           failure={props.failure}
-          machines={props.machines}
+          card={props.passwordCard}
+          workspaceName={props.signIn.workspaceName}
+          onApprove={props.onApprovePasswordSignIn}
           onDecline={props.onDeclinePasswordSignIn}
           payload={request.payload}
           pendingId={props.pendingId}
@@ -1270,55 +1347,123 @@ function BrowserSignInResolved(props: {
 /** Often enough that the expiry never lags its deadline by more than a moment. */
 const expiryTickMs = 5_000;
 
-/**
- * An agent asked to sign in with a password saved on a Mac. The approval is
- * the card on that Mac, named — a phone is never it — and Don’t allow is the
- * phone's one control. The reason is the agent's own words, labelled as such.
- */
 function PasswordSignInBody(props: {
   readonly canRespond: boolean;
   readonly failure: string | null;
-  readonly machines: readonly MachineSummary[];
+  readonly card: PasswordSignInCard | null;
+  readonly workspaceName: string;
+  readonly onApprove: (account: PasswordSignInAccount, remember: boolean) => void;
   readonly onDecline: () => void;
   readonly payload: Extract<RequestPayload, { kind: "browser.password-sign-in" }>;
   readonly pendingId: string | null;
   readonly reason: string | null;
 }): ReactNode {
-  const { payload } = props;
   const [now, setNow] = useState(() => new Date());
+  const [query, setQuery] = useState("");
+  const [chosenId, setChosenId] = useState<string | null>(null);
+  const [otherAccountsExpanded, setOtherAccountsExpanded] = useState(false);
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), expiryTickMs);
     return () => clearInterval(timer);
   }, []);
-  const where =
-    props.machines.find((machine) => machine.id === payload.runnerId)?.name ?? payload.computerName;
-  const declining = props.pendingId === passwordSignInDeclineId;
+  const accounts = props.card?.stage === "approval" ? props.card.accounts : [];
+  const chosen = accounts.length === 1 ? accounts[0] : accounts.find(({ id }) => id === chosenId);
+  const groups = passwordSignInAccountList(accounts, query);
+  const disabled =
+    !props.canRespond ||
+    props.pendingId !== null ||
+    Date.parse(props.payload.expiresAt) <= now.getTime();
+  function renderGroups(list: readonly PasswordSignInAccountGroup[]): ReactNode {
+    return list.map((group, index) => (
+      <View key={group.host ?? index}>
+        {group.host === null ? null : <SectionLabel>{group.host}</SectionLabel>}
+        {group.rows.map(({ account, detail }) => (
+          <SecondaryButton
+            key={account.id}
+            label={`${chosen?.id === account.id ? "✓ " : ""}${account.username}${detail ? ` · ${detail}` : ""}`}
+            accessibilityLabel={`Sign in as ${account.username}${group.host ? ` · ${group.host}` : ""}${detail ? ` · ${detail}` : ""}`}
+            disabled={disabled}
+            onPress={() => setChosenId(account.id)}
+          />
+        ))}
+      </View>
+    ));
+  }
   return (
     <View style={styles.choices}>
       <Notice
-        detail={passwordSignInPrivacy(payload.site)}
-        title={passwordSignInWaitingOn(where)}
+        title={`Sign in to ${browserSiteLabel(props.payload.site)}`}
+        detail={
+          chosen
+            ? passwordSignInConsent(props.workspaceName, props.payload.site, chosen.username, 5)
+            : passwordSignInPrivacy(props.payload.site, props.payload.permissionVersion)
+        }
         tone="neutral"
       />
-      <View style={styles.status}>
-        <AppText role="caption" tone="muted">
-          {passwordSignInReasonLabel}
-        </AppText>
-        <AppText role="secondary" selectable tone="soft">
-          {payload.reason}
-        </AppText>
-      </View>
       <AppText role="caption" tone="muted">
-        {passwordSignInExpiry(payload.expiresAt, now)}
+        {passwordSignInReasonLabel}
+      </AppText>
+      <AppText role="secondary" selectable>
+        {props.payload.reason}
+      </AppText>
+      {accounts.length > 8 ? (
+        <TextInput
+          accessibilityLabel="Filter accounts"
+          placeholder="Filter accounts"
+          value={query}
+          onChangeText={setQuery}
+        />
+      ) : null}
+      {renderGroups(groups.primary)}
+      {groups.others.length > 0 ? (
+        <>
+          <SecondaryButton
+            label={passwordSignInOtherAccounts(
+              props.payload.site,
+              groups.others.reduce((count, group) => count + group.rows.length, 0),
+            )}
+            onPress={() => setOtherAccountsExpanded((expanded) => !expanded)}
+          />
+          {otherAccountsExpanded || query.trim() !== "" ? renderGroups(groups.others) : null}
+        </>
+      ) : null}
+      {props.card?.stage === "approval" && accounts.length === 0 ? (
+        <AppText role="secondary">{passwordSignInNoAccount(props.payload.site)}</AppText>
+      ) : null}
+      {props.card?.stage === "gone" ? (
+        <AppText role="secondary">This sign-in is no longer running.</AppText>
+      ) : null}
+      <AppText role="caption" tone="muted">
+        {passwordSignInExpiry(props.payload.expiresAt, now)}
       </AppText>
       <ResponseStatus failure={props.failure} reason={props.reason} />
       <SecondaryButton
-        accessibilityLabel={declining ? passwordSignInDecliningLabel : passwordSignInDeclineLabel}
-        busy={declining}
-        disabled={!props.canRespond || props.pendingId !== null}
         label={passwordSignInDeclineLabel}
+        busy={props.pendingId === passwordSignInDeclineId}
+        accessibilityLabel={passwordSignInDeclineLabel}
+        disabled={disabled}
         onPress={props.onDecline}
       />
+      {chosen && props.card?.stage === "approval" ? (
+        <>
+          <AppText role="secondary" tone="muted">
+            {passwordSignInAllowRemembers(props.workspaceName, chosen.username)}
+          </AppText>
+          <SecondaryButton
+            label={passwordSignInOnceLabel}
+            busy={props.pendingId === "password-once"}
+            accessibilityLabel={passwordSignInOnceLabel}
+            disabled={disabled}
+            onPress={() => props.onApprove(chosen, false)}
+          />
+          <PrimaryButton
+            label={passwordSignInAllowLabel}
+            busy={props.pendingId === "password-allow"}
+            disabled={disabled}
+            onPress={() => props.onApprove(chosen, true)}
+          />
+        </>
+      ) : null}
     </View>
   );
 }
@@ -1371,14 +1516,12 @@ function ComputerAppAccessBody(props: {
         tone="neutral"
       />
       <ResponseStatus failure={props.failure} reason={props.reason} />
-      {props.definitionId === "android-phone" ? (
-        <SecondaryButton
-          busy={props.pendingId === computerAppAllowId}
-          disabled={!props.canRespond || props.pendingId !== null}
-          label="Allow"
-          onPress={props.onAllow}
-        />
-      ) : null}
+      <SecondaryButton
+        busy={props.pendingId === computerAppAllowId}
+        disabled={!props.canRespond || props.pendingId !== null}
+        label="Allow"
+        onPress={props.onAllow}
+      />
       <SecondaryButton
         busy={props.pendingId === computerAppDeclineId}
         disabled={!props.canRespond || props.pendingId !== null}

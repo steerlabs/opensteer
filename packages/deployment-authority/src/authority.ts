@@ -234,7 +234,10 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
 // command. Epoch-48 read fields remain available as display-only projections.
 // Epoch 49 removes portable browser profiles and Guest saving. Native profiles
 // retain their bindings; earlier clients must update before using this Host.
-export const hostApiVersion = 49;
+// Epoch 50 makes device location no authority: saved-login, computer-app and
+// local-server consent use owner Host commands from any signed-in device. An
+// epoch-49 client would offer only decline or wait for an approval on that Mac.
+export const hostApiVersion = 50;
 
 /**
  * Optional features a Host may or may not serve. A capability is never a

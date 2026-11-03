@@ -231,13 +231,7 @@ export function IntegrationConnectSheet(props: {
   const reconnect =
     plan !== null && plan.requestedAccountMissing ? plan.requestedAccountReconnect : null;
   const unavailable = plan !== null && plan.requestedAccountMissing && reconnect === null;
-  // An MCP server's sign-in returns to the Host's own callback, which only a
-  // browser on that computer reaches; the Host refuses to begin one from here.
-  const mcpElsewhere =
-    plan?.requirement.kind === "mcp-oauth" &&
-    loaded?.platform.authorizationSurface === "personal-remote";
   const connectable =
-    !mcpElsewhere &&
     plan !== null &&
     accountConnectable(plan) &&
     (plan.requestedConnectionId === null || reconnect !== null) &&
@@ -912,13 +906,7 @@ export function IntegrationConnectSheet(props: {
             computerAvailable={(computerChoices?.available.length ?? 0) > 0}
             computerUpgrade={computerUpgrade}
             availabilityDetail={
-              mcpElsewhere
-                ? mcpSignInElsewhere
-                : availability !== undefined &&
-                    availability !== null &&
-                    availability.kind !== "ready"
-                  ? availability.detail
-                  : null
+              availability !== null && availability.kind !== "ready" ? availability.detail : null
             }
             agentProposed={props.request.presentation.agentProposed === true}
             onAccount={setAccountId}
@@ -932,18 +920,31 @@ export function IntegrationConnectSheet(props: {
             workspaceName={workspace?.name ?? null}
           />
         ) : step === "apps" ? (
-          <AppsStep
-            choiceLost={choiceLost}
-            chosen={chosen}
-            hostedOutage={
-              loaded !== null && provider !== null && hostedOAuthOutage(loaded.dashboard, provider)
-            }
-            onChoose={setChosen}
-            options={options}
-            unavailable={
-              availability !== null && availability.kind !== "ready" ? availability.detail : null
-            }
-          />
+          <>
+            {chosen?.kind === "deployment-oauth" ? (
+              <>
+                <AppText role="secondary">
+                  Existing connections keep working. Before connecting or reconnecting, register
+                  this exact redirect URI in your provider console.
+                </AppText>
+                <CodeBlock label="Required redirect URI" text={chosen.callbackUrl} />
+              </>
+            ) : null}
+            <AppsStep
+              choiceLost={choiceLost}
+              chosen={chosen}
+              hostedOutage={
+                loaded !== null &&
+                provider !== null &&
+                hostedOAuthOutage(loaded.dashboard, provider)
+              }
+              onChoose={setChosen}
+              options={options}
+              unavailable={
+                availability !== null && availability.kind !== "ready" ? availability.detail : null
+              }
+            />
+          </>
         ) : step === "own-app" && manifest !== null && loaded !== null && provider !== null ? (
           <OwnAppStep
             busy={busy}
@@ -1482,9 +1483,6 @@ function OwnAppStep(props: {
     </>
   );
 }
-
-const mcpSignInElsewhere =
-  "This sign-in returns to the computer running Opensteer, so finish it there.";
 
 function RepositoryAccessStep({
   access,

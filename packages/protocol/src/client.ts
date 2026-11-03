@@ -420,6 +420,10 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     ...clientMessageBase,
     type: z.literal("host.requests-changed"),
   }),
+  z.object({
+    ...clientMessageBase,
+    type: z.literal("host.personal-remote-access-changed"),
+  }),
   // A listed Thread was created or changed what a task list shows of it — its
   // title, status, last reply or failure — somewhere on this Host, or this
   // reader placed a task. It names nothing: every client rereads

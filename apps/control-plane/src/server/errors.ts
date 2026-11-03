@@ -1,4 +1,5 @@
 import type {
+  ConnectOperationCompletion,
   ControlPlaneErrorCode,
   ControlPlaneErrorReason,
 } from "@opensteer/control-plane-protocol";
@@ -20,16 +21,21 @@ export class ControlPlaneError extends Error {
   readonly code: ControlPlaneErrorCode;
   readonly reason: ControlPlaneErrorReason | undefined;
   readonly status: number;
+  readonly completedOperation: ConnectOperationCompletion | undefined;
 
   constructor(
     code: ControlPlaneErrorCode,
     message: string,
-    options?: ErrorOptions & { readonly reason?: ControlPlaneErrorReason },
+    options?: ErrorOptions & {
+      readonly reason?: ControlPlaneErrorReason;
+      readonly completedOperation?: ConnectOperationCompletion;
+    },
   ) {
     super(message, options);
     this.name = "ControlPlaneError";
     this.code = code;
     this.reason = options?.reason;
+    this.completedOperation = options?.completedOperation;
     this.status = statusByCode[code];
   }
 }

@@ -1,5 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
+  IssuePersonalHostAccountLinkChallengeRequestSchema,
+  CompletePersonalHostAccountLinkRequestSchema,
   AccountDeploymentSchema,
   CloudDeploymentOperationIdSchema,
   CreateCloudDeploymentRequestSchema,
@@ -338,6 +340,90 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           throw new ControlPlaneError("not_found", "Route was not found");
         }
       };
+
+      app.get("/personal-host-link", async (request, reply) => {
+        guard(request);
+        const query = z
+          .strictObject({ origin: z.url(), nonce: z.string().uuid() })
+          .parse(request.query);
+        const parent = new URL(query.origin);
+        if (parent.origin !== query.origin || !["http:", "https:"].includes(parent.protocol))
+          throw new ControlPlaneError("bad_request", "Invalid return origin");
+        const session = await readSession(request, reply);
+        if (!session)
+          return reply.redirect(
+            `${portalSignInPath}?return=${encodeURIComponent(request.url)}`,
+            302,
+          );
+        const nonce = randomBytes(18).toString("base64url");
+        const parameters = JSON.stringify(query).replace(/</gu, "\\u003c");
+        return reply
+          .type("text/html; charset=utf-8")
+          .header("cache-control", "no-store")
+          .header("referrer-policy", "no-referrer")
+          .header(
+            "content-security-policy",
+            `default-src 'none'; script-src 'nonce-${nonce}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'`,
+          )
+          .send(`<!doctype html><html><head><title>Link Opensteer Account</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><main><h1>Link Opensteer Account</h1><p>Signed in as ${escapeHtml(session.email)}</p><p id="computer">Waiting for your computer…</p><button id="allow" disabled>Link to my Account</button><p id="status"></p></main><script nonce="${nonce}">
+          const parameters = ${parameters};
+          const parent = window.opener;
+          let challenge = null;
+          let accepted = false;
+          let issuedChallengeId = null;
+          let completed = false;
+          const tell = (kind, result, error) => parent.postMessage({ kind, result, error, nonce: parameters.nonce }, parameters.origin);
+          const post = async (path, input) => {
+            const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input), redirect: 'error' });
+            if (!response.ok) throw new Error('Account linking did not finish.');
+            return response.json();
+          };
+          window.addEventListener('message', async (event) => {
+            if (event.source !== parent || event.origin !== parameters.origin || event.data?.nonce !== parameters.nonce) return;
+            if (event.data.kind === 'challenge' && !accepted && !challenge) {
+              challenge = event.data.input;
+              document.getElementById('computer').textContent = 'Link ' + challenge.name + ' from ' + parameters.origin + '?';
+              document.getElementById('allow').disabled = false;
+            } else if (event.data.kind === 'complete' && accepted && issuedChallengeId && event.data.input?.proof?.document?.challenge?.id === issuedChallengeId) {
+              try { const result = await post('/personal-host-link/complete', event.data.input); completed = true; tell('complete', result); document.getElementById('status').textContent = 'Account linked. You can close this window.'; }
+              catch { tell('complete', null, true); }
+            }
+          });
+          document.getElementById('allow').onclick = async () => {
+            if (!challenge || accepted) return;
+            accepted = true;
+            document.getElementById('allow').disabled = true;
+            try { const result = await post('/personal-host-link/challenge', challenge); issuedChallengeId = result.challengeId; tell('challenge', result); document.getElementById('status').textContent = 'Linking…'; }
+            catch { tell('challenge', null, true); }
+          };
+          window.addEventListener('pagehide', () => { if (parent && !completed) tell('cancelled'); });
+          if (parent) tell('ready');
+        </script></body></html>`);
+      });
+      app.post("/personal-host-link/challenge", async (request, reply) => {
+        guard(request);
+        requireExactOrigin(request, origin.origin);
+        const session = await readSession(request, reply);
+        if (!session || !dependencies.personalRemoteAccount)
+          throw new ControlPlaneError("unauthorized", "Sign in to your Account first");
+        const result = await dependencies.personalRemoteAccount.issueLinkChallenge(
+          ControlPlaneAccountIdSchema.parse(session.accountId),
+          IssuePersonalHostAccountLinkChallengeRequestSchema.parse(request.body),
+        );
+        return reply.header("cache-control", "no-store").send(result);
+      });
+      app.post("/personal-host-link/complete", async (request, reply) => {
+        guard(request);
+        requireExactOrigin(request, origin.origin);
+        const session = await readSession(request, reply);
+        if (!session || !dependencies.personalRemoteAccount)
+          throw new ControlPlaneError("unauthorized", "Sign in to your Account first");
+        const result = await dependencies.personalRemoteAccount.completeLink(
+          ControlPlaneAccountIdSchema.parse(session.accountId),
+          CompletePersonalHostAccountLinkRequestSchema.parse(request.body),
+        );
+        return reply.header("cache-control", "no-store").send(result);
+      });
 
       app.get(portalSignInPath, async (request, reply) => {
         guard(request);

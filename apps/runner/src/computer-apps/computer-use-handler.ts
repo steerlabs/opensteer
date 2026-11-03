@@ -16,17 +16,10 @@ import {
   ComputerUseBindParamsSchema,
   type HostIntegrationsComputerAppWindows,
   ComputerUseDispatchObserveParamsSchema,
-  ComputerUseBridgeApprovalAckSchema,
-  ComputerUseBridgeApprovalKeyProofSchema,
   ComputerUseInstalledAppsParamsSchema,
   ComputerUseResolveAppParamsSchema,
   computerUseHelperResults,
   computerUseRequestMayHaveEffect,
-  type ComputerAppApprovalAnswerFrame,
-  type ComputerAppApprovalKeyChallenge,
-  type ComputerAppApprovalKeyProof,
-  type ComputerAppApprovalList,
-  type ComputerAppApprovalOutcomeFrame,
   type ComputerUseBridgeEvent,
   type ComputerUseBridgeMethod,
   type ComputerUseDataGrants,
@@ -64,7 +57,6 @@ const stoppedByUserSentence = "The person stopped this session.";
 /** Stopped sessions remembered, which is far more than one Mac can produce. */
 const rememberedStoppedSessions = 64;
 /** How long desktop main may take to acknowledge an approval frame it relays. */
-const approvalRelayTimeoutMs = 10_000;
 /**
  * Each bridge method's answer schema. The approval methods are desktop main's
  * own rather than the helper's, so they are the entries the helper's table
@@ -77,9 +69,6 @@ const imessageSendTimeoutMs = 45_000;
 const bridgeResults = {
   ...computerUseHelperResults,
   ...computerUseBridgePasswordsResults,
-  "approvals.list": ComputerUseBridgeApprovalAckSchema,
-  "approvals.outcome": ComputerUseBridgeApprovalAckSchema,
-  "approvals.key-challenge": ComputerUseBridgeApprovalKeyProofSchema,
 } satisfies Readonly<Record<ComputerUseBridgeMethod, z.ZodType>>;
 
 type ComputerUseReadiness = z.infer<(typeof bridgeResults)["permissions.get"]>;
@@ -89,14 +78,6 @@ type ReadinessChange = "readiness-changed" | "readiness-unknown";
 export type ComputerUseSessionEvent = Extract<ComputerUseBridgeEvent, { event: "session.stopped" }>;
 
 /** What desktop main says about approvals, which this Runner relays to its Host. */
-export type ComputerUseApprovalEvent =
-  | {
-      readonly kind: "answer";
-      readonly answer: ComputerAppApprovalAnswerFrame;
-      /** The MCP server and launch the person allowed, from desktop main; null otherwise. */
-      readonly server: { readonly launchDigest: string; readonly serverId: string } | null;
-    }
-  | { readonly kind: "sync" };
 
 /**
  * One Mac's computer use, as the `integrations` module handler sees it.
@@ -135,12 +116,12 @@ export class ComputerUseHandler {
   >();
   readonly #sessions = new Map<ComputerUseSessionId, SessionState>();
   readonly #listeners = new Set<(event: ComputerUseSessionEvent) => void>();
-  readonly #approvalListeners = new Set<(event: ComputerUseApprovalEvent) => void>();
+
   readonly #passwordListeners = new Set<(event: PasswordSignInAuthorityEvent) => void>();
   #loginTextNegotiated = false;
   #passwordsBridgeConfirmed = false;
   #passwordCapabilities: {
-    authority: 1 | null;
+    authority: 2 | null;
     receiver: LoginReceiverKey | null;
   } = { authority: null, receiver: null };
   readonly #grantListeners = new Set<() => void>();
@@ -165,7 +146,6 @@ export class ComputerUseHandler {
       onConnected: () => {
         // The initial probe opens this connection; loss already fenced older replies.
         this.#readiness = undefined;
-        this.#announceApproval({ kind: "sync" });
       },
       ownerInputVersion: () => this.#readiness?.ownerInputVersion,
       videoProfile: () => this.#readiness?.videoProfile,
@@ -614,41 +594,13 @@ export class ComputerUseHandler {
     return () => this.#readinessListeners.delete(listener);
   }
 
-  onApprovalEvent(listener: (event: ComputerUseApprovalEvent) => void): () => void {
-    this.#approvalListeners.add(listener);
-    return () => this.#approvalListeners.delete(listener);
-  }
-
   /**
    * Hands desktop main the Host's whole approval list for this Mac. It never
    * reaches the helper; main shows the panels and answers later, as an event.
    * Connecting for it is what brings the bridge up when nothing else has.
    */
-  async relayApprovals(list: ComputerAppApprovalList): Promise<void> {
-    await this.#request("approvals.list", list, { deadline: this.#now() + approvalRelayTimeoutMs });
-  }
 
   /** Hands desktop main what the Host did with one of its answers. */
-  async relayApprovalOutcome(frame: ComputerAppApprovalOutcomeFrame): Promise<void> {
-    await this.#request("approvals.outcome", frame, {
-      deadline: this.#now() + approvalRelayTimeoutMs,
-    });
-  }
-
-  async proveApprovalKey(
-    challenge: ComputerAppApprovalKeyChallenge,
-  ): Promise<ComputerAppApprovalKeyProof> {
-    const proof = await this.#request("approvals.key-challenge", challenge, {
-      deadline: this.#now() + approvalRelayTimeoutMs,
-    });
-    if (proof.challengeId !== challenge.challengeId) {
-      throw new ComputerUseBridgeError(
-        "failed",
-        "The Mac answered a different approval key challenge.",
-      );
-    }
-    return proof;
-  }
 
   close(): void {
     this.#readinessEpoch += 1;
@@ -822,10 +774,6 @@ export class ComputerUseHandler {
       for (const listener of this.#grantListeners) listener();
       return;
     }
-    if (event.event === "approval.answer") {
-      this.#announceApproval({ answer: event.params, kind: "answer", server: event.server });
-      return;
-    }
     if (event.event === "session.stopped") {
       this.#forgetSession(event.params.sessionId);
       if (event.params.reason === "user") {
@@ -841,10 +789,6 @@ export class ComputerUseHandler {
 
   #announce(event: ComputerUseSessionEvent): void {
     for (const listener of this.#listeners) listener(event);
-  }
-
-  #announceApproval(event: ComputerUseApprovalEvent): void {
-    for (const listener of this.#approvalListeners) listener(event);
   }
 
   #forgetSession(sessionId: ComputerUseSessionId): void {

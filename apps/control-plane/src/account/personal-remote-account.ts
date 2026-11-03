@@ -1,3 +1,4 @@
+import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   AccountLinkGenerationSchema,
@@ -7,6 +8,8 @@ import {
   CancelPersonalHostAccountLinkOperationResponseSchema,
   CompletePersonalHostAccountLinkRequestSchema,
   CompletePersonalHostAccountLinkResponseSchema,
+  PersonalHostAccountLinkCompletionPayloadSchema,
+  personalHostAccountLinkCompletionContext,
   ControlPlaneAccountIdSchema,
   AccountHostSessionGrantClaimsSchema,
   AccountHostSessionGrantSchema,
@@ -118,6 +121,7 @@ export class PersonalRemoteAccountService {
     );
     const challengeCredential = `olc_${randomBytes(32).toString("base64url")}` as const;
     const response = IssuePersonalHostAccountLinkChallengeResponseSchema.parse({
+      completionFormat: "sealed-v1",
       account: { issuer: this.#issuer, subject: ownerAccountId },
       authorityEnvelope,
       challengeCredential,
@@ -278,7 +282,7 @@ export class PersonalRemoteAccountService {
         const authority = PersonalHostAccessAuthoritySchema.parse(
           verifyHostDiscoveryEnvelope(authorityEnvelope),
         );
-        const refreshed = CompletePersonalHostAccountLinkResponseSchema.parse({
+        const refreshed = PersonalHostAccountLinkCompletionPayloadSchema.parse({
           ...stored,
           completionGrant: await this.#issueCompletionGrant(
             ownerAccountId,
@@ -294,7 +298,7 @@ export class PersonalRemoteAccountService {
           .where("challengeId", "=", challengeId)
           .where("state", "=", "reserved")
           .executeTakeFirstOrThrow();
-        return refreshed;
+        return sealCompletion(refreshed, request.proof);
       }
       if (challenge.state !== "pending") {
         throw new ControlPlaneError("conflict", "Account-link challenge is no longer usable");
@@ -342,7 +346,7 @@ export class PersonalRemoteAccountService {
         linkGeneration,
         now,
       );
-      const response = CompletePersonalHostAccountLinkResponseSchema.parse({
+      const response = PersonalHostAccountLinkCompletionPayloadSchema.parse({
         completionGrant,
         hostCredential,
         linkGeneration,
@@ -363,7 +367,7 @@ export class PersonalRemoteAccountService {
         .where("challengeId", "=", challengeId)
         .where("state", "=", "pending")
         .executeTakeFirstOrThrow();
-      return response;
+      return sealCompletion(response, proof);
     });
   }
 
@@ -1052,4 +1056,22 @@ function isUniqueViolation(error: unknown): boolean {
     "code" in error &&
     (error as { readonly code?: unknown }).code === "23505"
   );
+}
+
+function sealCompletion(
+  payload: import("@opensteer/control-plane-protocol").PersonalHostAccountLinkCompletionPayload,
+  proof: import("@opensteer/control-plane-protocol").PersonalHostAccountLinkProofEnvelope,
+): CompletePersonalHostAccountLinkResponse {
+  const { authority, challenge, completionPublicKey } = proof.document;
+  return CompletePersonalHostAccountLinkResponseSchema.parse({
+    challengeId: challenge.id,
+    linkGeneration: payload.linkGeneration,
+    resultExpiresAt: payload.resultExpiresAt,
+    schemaVersion: 2,
+    sealedCompletion: sealOAuthBrokerPayload(
+      payload,
+      completionPublicKey,
+      personalHostAccountLinkCompletionContext(authority, challenge.id, payload.linkGeneration),
+    ),
+  });
 }

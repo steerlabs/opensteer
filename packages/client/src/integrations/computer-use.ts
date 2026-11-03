@@ -1,6 +1,6 @@
 import type {
   ComputerAppIdentity,
-  ComputerAppSetupRequest,
+  ComputerAppSetupSummary as ComputerAppSetupRequest,
   ComputerUseAppApproval,
   IntegrationAccess,
   IntegrationConnectionSummary,
@@ -85,32 +85,6 @@ export function computerUseAppApprovalDetail(
 }
 
 /**
- * The confirmation for turning automatic approval on. It is the whole
- * consequence, said once, on the Mac it applies to: every app, including
- * later ones and the ones that reach everything else.
- */
-export const computerUsePolicyConfirmation = {
-  allow: "Allow any app",
-  body: "Agents acting for you can see and control any app on this Mac when a task needs it, including apps installed later, and including browsers, Finder, Mail and System Settings with what they are signed in to. Password managers, terminals and automation tools stay off limits. Blocked apps stay blocked.",
-  cancel: "Cancel",
-  title: "Allow any app automatically on this Mac?",
-} as const;
-
-/** What the approval panel says when the helper judges an app to reach beyond itself. */
-export const computerUseElevatedNote =
-  "This app can reach your files, signed-in accounts or system settings. Agents can use whatever its interface offers.";
-
-/** The approval panel's question: the task's own name when a task asked. */
-export function computerUseApprovalTitle(input: {
-  readonly appName: string;
-  readonly threadTitle: string | null;
-}): string {
-  return input.threadTitle
-    ? `Let "${input.threadTitle}" use ${input.appName} on this Mac?`
-    : `Let agents use ${input.appName} on this Mac?`;
-}
-
-/**
  * Who is looking at a Mac's computer use: from that Mac itself (the desktop
  * app running there), or from anywhere else — another computer, a browser, or
  * the phone. Every sentence that names a place depends on it.
@@ -125,9 +99,9 @@ export function computerUseWhere(viewer: ComputerUseViewer): string {
   return viewer.here ? "this Mac" : viewer.machineName;
 }
 
-/** Where an approval happens, for a surface that is not that Mac. */
-export function computerUseApproveOn(machineName: string): string {
-  return `Approve on ${machineName}`;
+/** The owner reviews access on their current device. */
+export function computerUseApproveOn(_machineName: string): string {
+  return "Review access";
 }
 
 /** Where the grants are given, for a surface that is not that Mac. */
@@ -144,25 +118,19 @@ export function computerUseSetUpFromSteps(machineName: string): string {
   return `In the Opensteer desktop app there, open Settings → Computers → ${machineName}.`;
 }
 
-/** Automatic approval is confirmed on the Mac it covers, never from elsewhere. */
-export function computerUseTurnOnFrom(machineName: string): string {
-  return `Turn this on from ${machineName}.`;
+/** A blocked app requires another owner approval. */
+export function computerUseUnblockOn(_viewer: ComputerUseViewer): string {
+  return "Unblock";
 }
 
-/** A blocked app returns only through an ordinary approval on that Mac. */
-export function computerUseUnblockOn(viewer: ComputerUseViewer): string {
-  return `Unblock on ${computerUseWhere(viewer)}`;
-}
-
-/** Said while the policy change waits for its native confirmation. */
-export const computerUseConfirmOnThisMac = "Confirm in the Opensteer window on this Mac.";
+/** Said while the policy change waits for its owner. */
+export const computerUseConfirmApproval = "Review the approval to continue.";
 
 /**
- * Adding an app is approving it, and approving happens only on the Mac, in the
- * native panel. A surface that is not the Mac says where instead of offering it.
+ * A remote owner can select an app on the computer and approve its access.
  */
 export function computerUseAddAppsOn(machineName: string): string {
-  return `New apps are approved on ${machineName}: a task asks there when it needs one, or add one from Opensteer on that Mac.`;
+  return `Add an app on ${machineName}, or allow a task’s request here.`;
 }
 
 /** Why each grant is asked for, beside its name. */
@@ -224,8 +192,6 @@ export type ComputerUseState =
   | { readonly kind: "ready" };
 
 export interface ComputerUseView {
-  /** Null means this Mac cannot answer app approvals until its desktop key is registered. */
-  readonly approvalKeyId: string | null;
   readonly appApproval: ComputerUseAppApproval;
   readonly apps: readonly ComputerUseAppRow[];
   readonly definition: IntegrationDefinitionSummaryView;
@@ -329,7 +295,6 @@ export function computerUseView(input: {
   );
   if (!report && apps.length === 0 && pending.length === 0) return null;
   return {
-    approvalKeyId: report?.approvalKeyId ?? null,
     appApproval: report?.appApproval ?? "ask",
     apps,
     definition,
@@ -337,13 +302,6 @@ export function computerUseView(input: {
     sessions,
     state: computerUseState(machine),
   };
-}
-
-/** The approval key is registered from the desktop app on the Mac itself. */
-export function computerUseApprovalKeyStep(viewer: ComputerUseViewer): string {
-  return viewer.here
-    ? "Opensteer is setting up app approvals on this Mac."
-    : `To enable app approvals, open Settings → Computers → ${viewer.machineName} in the Opensteer desktop app on that Mac.`;
 }
 
 export function computerUseState(machine: MachineSummary): ComputerUseState {
@@ -415,7 +373,6 @@ export function computerUseStatusLine(view: ComputerUseView, viewer: ComputerUse
         );
         return `Using ${computerUseAppsPhrase([...held.values()])} now.`;
       }
-      if (view.approvalKeyId === null) return "Needs app approval setup.";
       const approved = view.apps.filter((row) => !row.blocked).length;
       return approved === 0
         ? "Ready. No apps approved yet."
@@ -433,11 +390,7 @@ export type ComputerUseTone = "live" | "ready" | "attention" | "idle";
 export function computerUseTone(view: ComputerUseView): ComputerUseTone {
   switch (view.state.kind) {
     case "ready":
-      return view.sessions.length > 0
-        ? "live"
-        : view.approvalKeyId === null
-          ? "attention"
-          : "ready";
+      return view.sessions.length > 0 ? "live" : "ready";
     case "permission-required":
       return "attention";
     case "offline":
@@ -453,7 +406,6 @@ export function computerUseTone(view: ComputerUseView): ComputerUseTone {
 export function computerUseFirstRun(view: ComputerUseView): boolean {
   return (
     view.state.kind === "ready" &&
-    view.approvalKeyId !== null &&
     view.appApproval === "ask" &&
     view.apps.length === 0 &&
     view.pending.length === 0 &&
@@ -739,8 +691,8 @@ export function computerAppAccessApproval(input: {
   }
   const where = input.onThatMac ? "this Mac" : (name ?? "that Mac");
   return {
-    approveOn: computerUseApproveOn(where),
-    detail: `Opensteer shows the approval on ${where} by itself.`,
+    approveOn: "Allow on this device",
+    detail: `You can give agents access to ${where} here.`,
   };
 }
 

@@ -1,3 +1,5 @@
+import { testRpcData } from "../server/test-host-api-request.js";
+import { RequestIdSchema } from "@opensteer/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -83,9 +85,8 @@ export function passwordsAnywhereJourneys() {
                 : {}),
               integrations: {
                 platform: "darwin",
-                protocolVersion: 5,
-                passwordSignIn: 1,
-                computerAppApprovals: true,
+                protocolVersion: 6,
+                passwordSignIn: 2,
               },
             });
             cleanups.push(() => caller.close());
@@ -221,11 +222,41 @@ export function passwordsAnywhereJourneys() {
               if (!start || start.type !== "login.authorize")
                 throw new Error("Missing authority authorization");
               expect(start.workspaceId).toBe(main.id);
-              authority.authorize(start.operationId);
+              const card = await testRpcData(
+                host.origin,
+                "browser.password-sign-in.get",
+                { requestId: RequestIdSchema.parse(request.id) },
+                { headers: host.ownerHeaders },
+              );
+              expect(card).toMatchObject({ stage: "approval", permissionVersion: 5 });
+              if (card.stage !== "approval") throw new Error("Missing account chooser");
+              expect(JSON.stringify(request)).not.toContain(passwordFixture.username);
+              const account = card.accounts[0]!;
+              const accepted = await testRpcData(
+                host.origin,
+                "commands.dispatch",
+                {
+                  type: "browser.password-sign-in.respond",
+                  idempotencyKey: "fixture-password-approval",
+                  requestId: request.id,
+                  decision: {
+                    kind: "approve",
+                    loginId: account.id,
+                    revision: account.revision,
+                    remember: true,
+                    permissionVersion: 5,
+                  },
+                },
+                { headers: host.ownerHeaders },
+              );
+              expect(accepted.type).toBe("browser.password-sign-in.respond");
               const fulfilled = await waitForValue(async () => {
                 const row = await host.store.requests.get(request.id);
                 return row?.status === "fulfilled" ? row : undefined;
               });
+              expect(fulfilled.settlementProvenance?.sessionId).toBeTruthy();
+              expect(fulfilled.settlementProvenance?.deviceLabel).toBeTruthy();
+              expect(authority.commands.some((c) => c.type === "login.commit")).toBe(true);
               expect(fulfilled.response).toEqual({
                 kind: "external",
                 value: { outcome: "authorized", account: passwordFixture.account },

@@ -105,6 +105,7 @@ type DeliveryInput = {
   /** Create the site's grant on success (an owner's own click), rather than only use it. */
   readonly rememberSite: boolean;
   readonly requestId: RequestId | null;
+  readonly settlementSessionId?: string;
   /** A standing sign-in stops if the site stops being allowed before import. */
   readonly requireGrant: boolean;
   readonly site: string;
@@ -695,12 +696,11 @@ export class BrowserSourceService {
     return ask();
   }
 
-  /** Declining a saved-password sign-in from any device; its Mac settles how it ended. */
-  declinePasswordSignIn(input: {
-    readonly ownerId: UserId;
-    readonly requestId: RequestId;
-  }): Promise<Request["status"]> {
-    return this.#passwords.decline(input);
+  passwordSignInGet(input: Parameters<PasswordSignInService["get"]>[0]) {
+    return this.#passwords.get(input);
+  }
+  passwordSignInRespond(input: Parameters<PasswordSignInService["respond"]>[0]) {
+    return this.#passwords.respond(input);
   }
 
   /**
@@ -710,6 +710,7 @@ export class BrowserSourceService {
    */
   async respond(input: {
     readonly ownerId: UserId;
+    readonly settlementSessionId?: string;
     readonly requestId: RequestId;
     readonly decision: BrowserSignInDecision;
   }): Promise<BrowserSignInOutcome | null> {
@@ -729,6 +730,7 @@ export class BrowserSourceService {
         this.#requests.declineBrowserSignInRequest({
           requestId: input.requestId,
           resolvedBy: input.ownerId,
+          ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
         }),
       );
       for (const event of declined.events) this.#onWorkspaceEvent(event);
@@ -767,7 +769,7 @@ export class BrowserSourceService {
       site,
       workspaceId: request.targetWorkspaceId,
     });
-    const delivered = await this.#deliverRequest(request, source);
+    const delivered = await this.#deliverRequest(request, source, input.settlementSessionId);
     if (delivered.status === "request-closed") {
       throw new OpensteerError({ code: "conflict", message: "The sign-in Request is closed." });
     }
@@ -881,15 +883,20 @@ export class BrowserSourceService {
   }
 
   /** One Request delivers at a time, and never alongside its decline. */
-  #deliverRequest(request: Request, source: BrowserSourceRecord): Promise<RequestDelivery> {
+  #deliverRequest(
+    request: Request,
+    source: BrowserSourceRecord,
+    settlementSessionId?: string,
+  ): Promise<RequestDelivery> {
     return this.#inTurn(`request\0${request.id}`, () =>
-      this.#deliverRequestInTurn(request, source),
+      this.#deliverRequestInTurn(request, source, settlementSessionId),
     );
   }
 
   async #deliverRequestInTurn(
     request: Request,
     source: BrowserSourceRecord,
+    settlementSessionId?: string,
   ): Promise<RequestDelivery> {
     if (request.payload.kind !== "browser.sign-in") throw new Error("Not a sign-in Request");
     const { site } = request.payload;
@@ -911,6 +918,7 @@ export class BrowserSourceService {
     if (!this.#isConnected(source.id)) return problem("chrome-offline", site, source.name);
     const delivered = await this.#deliver({
       actor: "request",
+      ...(settlementSessionId ? { settlementSessionId } : {}),
       invocationId: invocationUuid(`request:${request.id}`),
       ownerId: request.requestedBy,
       rememberSite: false,
@@ -1142,6 +1150,7 @@ export class BrowserSourceService {
     if (applied !== "applied") return problem(applied, site, null);
     const committed = await this.#store.commitSignIn({
       actor: input.actor,
+      ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
       invocationId: input.invocationId,
       ownerId: input.ownerId,
       profileName: current.profileName,
@@ -1561,5 +1570,5 @@ function rejectPending(peer: SourceSocket, error: Error): void {
 
 type PasswordSignInEntry = Pick<
   PasswordSignInService,
-  "join" | "decline" | "probe" | "replayResult" | "request"
+  "join" | "probe" | "replayResult" | "request" | "get" | "respond"
 >;

@@ -180,7 +180,7 @@ async function fixture(
       modules: {
         integrations: {
           platform: mac ? "darwin" : "android",
-          protocolVersion: mac ? 5 : 4,
+          protocolVersion: mac ? 6 : 4,
           ...(!mac && kind.sharedInput !== false ? { sharedInput: 1 } : {}),
           ...(kind.displayProfile ? { displayProfile: 1 } : {}),
           ...(kind.phoneOwnerControl ? { phoneOwnerControl: 1 } : {}),

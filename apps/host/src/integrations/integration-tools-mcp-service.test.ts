@@ -1897,7 +1897,9 @@ describe("computer use discovery", () => {
     );
     expect(answer).toMatchObject({
       guidance: {
-        computers: expect.stringContaining("blocked: only the person can unblock it on that Mac"),
+        computers: expect.stringContaining(
+          "blocked: only the computer owner can unblock it from any Opensteer app",
+        ),
       },
       computer: { runnerId: mac.runnerId, state: "ready", appApproval: "ask" },
       total: 20,

@@ -14,7 +14,6 @@ import {
   type IssuePersonalHostAccountLinkChallengeResponse,
   type PersonalHostAccountLinkChallengeId,
   type PersonalHostAccountLinkChallengeCredential,
-  type PersonalHostAccountLinkCompletionGrant,
   type PersonalHostAccountLinkProofEnvelope,
 } from "@opensteer/control-plane-protocol";
 import type { PersonalRemoteAccessStatus } from "@opensteer/protocol";
@@ -317,23 +316,23 @@ describe("DesktopPersonalAccountLinkCoordinator", () => {
     expect(host.approveCalls).toEqual([{ challenge, runtime }]);
     expect(host.consumeCalls).toEqual([
       {
-        completionGrant: completion.completionGrant,
-        hostCredential: completion.hostCredential,
-        linkGeneration: completion.linkGeneration,
+        ...completion,
         runtime,
       },
       {
-        completionGrant: completion.completionGrant,
-        hostCredential: completion.hostCredential,
-        linkGeneration: completion.linkGeneration,
+        ...completion,
         runtime,
       },
     ]);
 
     const completionPersisted = store.snapshots.find(
-      (state) => state.operation?.completion?.completionGrant === completion.completionGrant,
+      (state) =>
+        state.operation?.completion?.sealedCompletion.ciphertext ===
+        completion.sealedCompletion.ciphertext,
     );
     expect(completionPersisted).toBeDefined();
+    expect(JSON.stringify(store.snapshots)).not.toContain("osc_");
+    expect(JSON.stringify(store.snapshots)).not.toContain("completionGrant");
   });
 
   it("reuses the durable operation ID after an issue response is lost", async () => {
@@ -689,11 +688,7 @@ class RecoveryAccount implements PersonalAccountLinkControlPlane {
 class RecoveryHost {
   linkState: "activating" | "active" = "active";
   resumeCalls = 0;
-  readonly consumeCalls: Array<{
-    readonly completionGrant: PersonalHostAccountLinkCompletionGrant;
-    readonly hostCredential: string;
-    readonly linkGeneration: string;
-  }> = [];
+  readonly consumeCalls: Array<CompletePersonalHostAccountLinkResponse> = [];
   readonly #account: IssuePersonalHostAccountLinkChallengeResponse["account"];
   readonly #completion: CompletePersonalHostAccountLinkResponse;
   readonly #outcome: "accept" | "reject-grant" | "reject-once" | "transient";
@@ -739,11 +734,7 @@ class RecoveryHost {
 
   async consumeAccountLink(
     _runtime: PersonalHostRuntimeRecord,
-    input: {
-      readonly completionGrant: PersonalHostAccountLinkCompletionGrant;
-      readonly hostCredential: string;
-      readonly linkGeneration: string;
-    },
+    input: CompletePersonalHostAccountLinkResponse,
   ): Promise<PersonalRemoteAccessStatus> {
     this.consumeCalls.push(structuredClone(input));
     if (this.#outcome === "transient") throw new Error("Host temporarily unavailable");
@@ -763,16 +754,13 @@ class IdempotentLostResponseHost {
     readonly challenge: IssuePersonalHostAccountLinkChallengeResponse;
     readonly runtime: PersonalHostRuntimeRecord;
   }> = [];
-  readonly consumeCalls: Array<{
-    readonly completionGrant: PersonalHostAccountLinkCompletionGrant;
-    readonly hostCredential: string;
-    readonly linkGeneration: string;
-    readonly runtime: PersonalHostRuntimeRecord;
-  }> = [];
+  readonly consumeCalls: Array<
+    CompletePersonalHostAccountLinkResponse & { readonly runtime: PersonalHostRuntimeRecord }
+  > = [];
   readonly #proof: PersonalHostAccountLinkProofEnvelope;
   readonly #account: IssuePersonalHostAccountLinkChallengeResponse["account"];
   readonly #linkGeneration = AccountLinkGenerationSchema.parse("g".repeat(43));
-  readonly #consumed = new Set<PersonalHostAccountLinkCompletionGrant>();
+  readonly #consumed = new Set<string>();
 
   constructor(proof: PersonalHostAccountLinkProofEnvelope) {
     this.#proof = proof;
@@ -809,15 +797,11 @@ class IdempotentLostResponseHost {
 
   async consumeAccountLink(
     runtime: PersonalHostRuntimeRecord,
-    input: {
-      readonly completionGrant: PersonalHostAccountLinkCompletionGrant;
-      readonly hostCredential: string;
-      readonly linkGeneration: string;
-    },
+    input: CompletePersonalHostAccountLinkResponse,
   ): Promise<PersonalRemoteAccessStatus> {
     this.consumeCalls.push({ ...input, runtime: structuredClone(runtime) });
-    if (!this.#consumed.has(input.completionGrant)) {
-      this.#consumed.add(input.completionGrant);
+    if (!this.#consumed.has(input.sealedCompletion.ciphertext)) {
+      this.#consumed.add(input.sealedCompletion.ciphertext);
       throw new Error("Host consume response was lost");
     }
     return {
@@ -866,6 +850,7 @@ function accountLinkChallenge(
       subject: `acct_${crypto.randomUUID()}`,
     },
     authorityEnvelope: runtime.discoveryEnvelope,
+    completionFormat: "sealed-v1",
     challengeCredential: `olc_${"b".repeat(43)}`,
     challengeId: `phc_${crypto.randomUUID()}`,
     expiresAt: "2026-08-12T12:05:00.000Z",
@@ -883,7 +868,8 @@ function accountLinkProof(
         credentialSha256: "c".repeat(43),
         id: challenge.challengeId,
       },
-      documentVersion: 2,
+      documentVersion: 3,
+      completionPublicKey: "k".repeat(43),
       expiresAt: "2026-08-12T12:04:00.000Z",
       issuedAt: "2026-08-12T12:00:00.000Z",
       purpose: "opensteer-personal-host-account-link",
@@ -895,8 +881,15 @@ function accountLinkProof(
 
 function accountLinkCompletion(): CompletePersonalHostAccountLinkResponse {
   return CompletePersonalHostAccountLinkResponseSchema.parse({
-    completionGrant: jwt("completion"),
-    hostCredential: `osc_${"d".repeat(43)}`,
+    challengeId: `phc_${crypto.randomUUID()}`,
+    schemaVersion: 2,
+    sealedCompletion: {
+      version: 1,
+      ciphertext: "abc",
+      ephemeralPublicKey: "k".repeat(43),
+      nonce: "n".repeat(16),
+      tag: "t".repeat(22),
+    },
     linkGeneration: "g".repeat(43),
     resultExpiresAt: "2026-08-13T12:00:00.000Z",
   });
@@ -931,8 +924,4 @@ async function writeProtectedLinkState(
     `${JSON.stringify({ ciphertext: encrypted.toString("base64"), schemaVersion: 1 })}\n`,
     { mode: 0o600 },
   );
-}
-
-function jwt(seed: string): string {
-  return `${seed.repeat(4)}.${"e".repeat(32)}.${"f".repeat(32)}`;
 }

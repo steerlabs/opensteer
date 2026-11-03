@@ -88,6 +88,28 @@ export const OAuthBrokerCallbackRelayContextSchema = z.strictObject({
   schemaVersion: z.literal(1),
 });
 
+export const OAuthBrokerMcpRelayBindingSchema = z.strictObject({
+  serverId: z.string().regex(/^isv_[0-9a-f-]{36}$/iu),
+  issuer: z.url(),
+  authorizationEndpoint: z.url(),
+  authorizationResponseIssuerParameterSupported: z.boolean(),
+});
+export const OAuthBrokerMcpCallbackRelayContextSchema = z.strictObject({
+  accountSubject: OAuthBrokerAccountSubjectSchema,
+  attemptId: HostedOAuthAttemptIdSchema,
+  authorizationDigest: OAuthBrokerDigestSchema,
+  deploymentAuthorityDigest: OAuthBrokerDigestSchema,
+  expiresAt: IsoDateTimeSchema,
+  clientId: z.string().min(1).max(2_048),
+  mcp: OAuthBrokerMcpRelayBindingSchema,
+  redirectUrl: z.url(),
+  schemaVersion: z.literal(1),
+});
+
+export const OAuthBrokerMcpAuthorizationResponseSchema = z.strictObject({
+  parameters: z.array(z.tuple([z.string().max(256), z.string().max(131_072)])).max(32),
+});
+
 export const OAuthBrokerAuthorizationCodeBundleSchema = z.strictObject({
   code: z.string().min(1).max(131_072),
 });
@@ -144,7 +166,7 @@ export const CreateHostedOAuthAttemptRequestSchema = z.strictObject({
 });
 export type CreateHostedOAuthAttemptRequest = z.infer<typeof CreateHostedOAuthAttemptRequestSchema>;
 
-export const CreateOAuthCallbackRelayRequestSchema = z.strictObject({
+const CreateProviderOAuthCallbackRelayRequestSchema = z.strictObject({
   accountSubject: OAuthBrokerAccountSubjectSchema,
   clientSurface: OAuthBrokerClientSurfaceSchema.default("web"),
   attemptId: HostedOAuthAttemptIdSchema,
@@ -160,6 +182,15 @@ export const CreateOAuthCallbackRelayRequestSchema = z.strictObject({
   providerApplicationRevision: z.number().int().positive(),
   returnPath: OAuthBrokerReturnPathSchema.optional(),
 });
+export const CreateOAuthCallbackRelayRequestSchema = z.union([
+  CreateProviderOAuthCallbackRelayRequestSchema,
+  CreateProviderOAuthCallbackRelayRequestSchema.omit({ providerApplicationId: true })
+    .extend({
+      provider: z.literal("mcp"),
+      mcp: OAuthBrokerMcpRelayBindingSchema,
+    })
+    .strict(),
+]);
 export type CreateOAuthCallbackRelayRequest = z.infer<typeof CreateOAuthCallbackRelayRequestSchema>;
 
 export const CreateHostedOAuthAttemptResponseSchema = z.strictObject({
@@ -273,6 +304,7 @@ export const AcknowledgeHostedOAuthRefreshRequestSchema = z.strictObject({
 export const OAuthBrokerPublicMetadataSchema = z
   .object({
     callbackRelayProviders: z.array(OAuthBrokerProviderSchema).max(32).default([]),
+    mcpCallbackRelay: z.literal(1).optional(),
     encryptionPublicKey: OAuthBrokerPublicKeySchema,
     installationUrls: z.record(OAuthBrokerProviderSchema, z.url()).default({}),
     issuer: z.url(),

@@ -23,6 +23,16 @@ describe("Personal Host proof verification", () => {
     );
   });
 
+  it("rejects a courier substituting its own completion key", () => {
+    const { link } = hostSigningFixture();
+    expect(() =>
+      verifyPersonalHostAccountLinkProof({
+        ...link,
+        document: { ...link.document, completionPublicKey: "b".repeat(43) },
+      }),
+    ).toThrow("invalid");
+  });
+
   it.each(["route signature", "route authority", "link challenge"])(
     "rejects a tampered %s",
     (kind) => {
@@ -108,7 +118,8 @@ function hostSigningFixture() {
       credentialSha256: "a".repeat(43),
       id: PersonalHostAccountLinkChallengeIdSchema.parse(`phc_${crypto.randomUUID()}`),
     },
-    documentVersion: 2,
+    documentVersion: 3,
+    completionPublicKey: "k".repeat(43),
     expiresAt: new Date(issuedAt.getTime() + 120_000).toISOString(),
     issuedAt: issuedAt.toISOString(),
     purpose: "opensteer-personal-host-account-link",

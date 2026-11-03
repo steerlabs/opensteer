@@ -222,7 +222,12 @@ public final class Broker: IPCServerDelegate {
     case .signInRequest:
       let request = try Wire.SignInRequestParams(json: params, protocolVersion: version)
       whenExamined(call) { try self.signInRequest(request, call: call) }
+    case .signInCommit:
+      try commit(try Wire.TransactionParams(json: params), call: call)
     case .signInApprove:
+      guard version == 6 else {
+        throw Wire.Failure.invalid("Update Opensteer to approve this sign-in.")
+      }
       try approve(try Wire.ApproveParams(json: params), call: call)
     case .signInRelease:
       try release(try Wire.ReleaseParams(json: params, protocolVersion: version), call: call)
@@ -393,12 +398,8 @@ public final class Broker: IPCServerDelegate {
 
   // MARK: The person's answers on the card
 
-  /// Allow or Only this time: the broker authenticates the person for this
-  /// login at this revision, reads it again after the wait, and authorizes it
-  /// only if it is unchanged; Allow also grants it, in the same unlock. A
-  /// login that changed meanwhile is offered again with the site's accounts
-  /// as they are now; agent sign-ins off or the vault not ready end the
-  /// sign-in with `unavailable`, as a request's refusal does.
+  /// Prepare the exact offered revision without writing a grant or enabling release.
+  /// The authenticated Host owns consent; only its later commit enables use.
   private func approve(_ params: Wire.ApproveParams, call: HeldCall) throws {
     let transaction = try owned(params.transactionId, by: call.connectionID)
     guard case .choosing(let accounts) = transaction.stage, transaction.pending == nil else {
@@ -412,50 +413,26 @@ public final class Broker: IPCServerDelegate {
     guard account.revision == params.revision else {
       return reply(call, Wire.Decision.approve(accounts, message: Copy.accountChanged).json)
     }
-    let request = transaction.request
-    let username = Display.account(account.username)
-    let reason =
-      params.remember
-      ? Copy.allowReason(
-        workspace: Display.name(request.workspaceName, unnamed: Copy.unnamedWorkspace, limit: 60),
-        site: request.siteHost,
-        username: username, permissionVersion: transaction.permissionVersion)
-      : Copy.onceReason(
-        site: request.siteHost, username: username, permissionVersion: transaction.permissionVersion)
+    guard params.permissionVersion == transaction.permissionVersion else {
+      throw Wire.Failure.invalid("The sign-in consent changed. Read the request again.")
+    }
     hold(transaction, .approve, call) { serial in
       await self.approve(
-        transaction, serial: serial, account: account, remember: params.remember, reason: reason,
-        call: call)
+        transaction, serial: serial, account: account, remember: params.remember, call: call)
     }
   }
 
   private func approve(
-    _ transaction: Transaction, serial: Int, account: Wire.Account, remember: Bool, reason: String,
-    call: HeldCall
+    _ transaction: Transaction, serial: Int, account: Wire.Account, remember: Bool, call: HeldCall
   ) async {
-    let authentication: Authentication
-    do {
-      authentication = try await presence.authenticate(reason: reason)
-    } catch {
-      guard isCurrent(transaction, serial) else { return }
-      transaction.pending = nil
-      return reply(call, failure: .invalid(Self.notice(error)))
-    }
     guard isCurrent(transaction, serial) else { return }
     if let refusal = releaseRefusal { return refuse(transaction, refusal, call) }
     let request = transaction.request
-    let names = Self.grantNames(request)
-    let grant =
-      remember
-      ? GrantChange(
-        key: request.grantKey, login: .saved(id: account.id), deploymentName: names.deployment,
-        workspaceName: names.workspace, permissionVersion: transaction.permissionVersion)
-      : nil
     let approval: Approval?
     do {
       approval = try await vault.approve(
-        withinSite: request.site, loginId: account.id, revision: account.revision, grant: grant,
-        authority: transaction.authority, expiresAt: transaction.expiresAt, authentication)
+        withinSite: request.site, loginId: account.id, revision: account.revision, grant: nil,
+        authority: transaction.authority, expiresAt: transaction.expiresAt)
     } catch {
       guard isCurrent(transaction, serial) else { return }
       if let refusal = releaseRefusal { return refuse(transaction, refusal, call) }
@@ -467,12 +444,60 @@ public final class Broker: IPCServerDelegate {
     switch approval {
     case .approved(let item):
       transaction.pending = nil
-      authorize(item, for: transaction, call: call, remembered: remember, automatic: false)
+      let login = Wire.Login(
+        id: item.id, revision: item.revision,
+        account: String(Display.maskedAccount(item.username).prefix(200)), hasTOTP: item.totp != nil
+      )
+      transaction.stage = .prepared(login: login, remember: remember)
+      reply(call, Wire.Decision.authorized(login).json)
     case .changed(let logins):
       transaction.pending = nil
       offerAccounts(logins, transaction: transaction, call: call, changedID: account.id)
     case .off:
       refuse(transaction, .reason(.passwordsOff), call)
+    }
+  }
+
+  /// The Host sends this only after the Request's durable settlement committed.
+  /// Until then no grant exists and release refuses the prepared transaction.
+  private func commit(_ params: Wire.TransactionParams, call: HeldCall) throws {
+    let transaction = try owned(params.transactionId, by: call.connectionID)
+    if case .authorized = transaction.stage {
+      return reply(call, .object(["committed": .bool(true)]))
+    }
+    guard case .prepared(let login, let remember) = transaction.stage, transaction.pending == nil
+    else {
+      throw Wire.Failure.invalid(Copy.signInMovedOn)
+    }
+    let request = transaction.request
+    let names = Self.grantNames(request)
+    let grant =
+      remember
+      ? GrantChange(
+        key: request.grantKey, login: .saved(id: login.id),
+        deploymentName: names.deployment, workspaceName: names.workspace,
+        permissionVersion: transaction.permissionVersion) : nil
+    hold(transaction, .approve, call) { serial in
+      do {
+        let approval = try await self.vault.approve(
+          withinSite: request.site,
+          loginId: login.id, revision: login.revision, grant: grant,
+          authority: transaction.authority, expiresAt: transaction.expiresAt)
+        guard self.isCurrent(transaction, serial) else { return }
+        transaction.pending = nil
+        guard case .approved = approval else {
+          self.reply(call, .object(["committed": .bool(false)]))
+          return self.end(transaction, outcome: nil, failure: nil)
+        }
+        transaction.stage = .authorized(login: login, remembered: remember)
+        transaction.account = login.account
+        self.reply(call, .object(["committed": .bool(true)]))
+      } catch {
+        guard self.isCurrent(transaction, serial) else { return }
+        transaction.pending = nil
+        self.reply(call, .object(["committed": .bool(false)]))
+        self.end(transaction, outcome: nil, failure: nil)
+      }
     }
   }
 
@@ -532,7 +557,8 @@ public final class Broker: IPCServerDelegate {
       do {
         result = try await self.vault.release(
           params, login: login, site: request.site,
-          grant: remembered ? request.grantKey : nil, permissionVersion: transaction.permissionVersion,
+          grant: remembered ? request.grantKey : nil,
+          permissionVersion: transaction.permissionVersion,
           authority: authority, expiresAt: expiresAt)
       } catch {
         guard self.isCurrent(transaction, serial) else { return }
@@ -625,19 +651,12 @@ public final class Broker: IPCServerDelegate {
     Task { await reload() }
   }
 
-  private static func notice(_ error: Error) -> String {
-    switch error as? PresenceError {
-    case .failed?: return Copy.notConfirmed
-    case .unavailable?: return Copy.cannotAuthenticate
-    case .cancelled?, nil: return Copy.authenticationCancelled
-    }
-  }
-
   // MARK: Ending
 
   private static let ended = Wire.Failure(.unavailable, Copy.signInEnded)
   private var unavailableFailure: Wire.Failure {
-    condition == .updateRequired ? Wire.Failure(.unavailable, Copy.updateRequired) : Self.notUnlocked
+    condition == .updateRequired
+      ? Wire.Failure(.unavailable, Copy.updateRequired) : Self.notUnlocked
   }
 
   private static let notUnlocked = Wire.Failure(.unavailable, Copy.notUnlockedSinceRestart)
@@ -736,7 +755,9 @@ public final class Broker: IPCServerDelegate {
       lastStatus = current
       if let current {
         let event = Wire.statusChanged(current)
-        for state in connections.values where state.protocolVersion != nil { state.connection.send(event) }
+        for state in connections.values where state.protocolVersion != nil {
+          state.connection.send(event)
+        }
       }
     }
     notify(.changed)

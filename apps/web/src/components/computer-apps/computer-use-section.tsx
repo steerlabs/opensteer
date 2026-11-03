@@ -1,3 +1,7 @@
+import { Link } from "react-router";
+import { Dialog } from "../dialog.js";
+import { Icon } from "../icon.js";
+import { useComputerAppApproval } from "./computer-app-approval.js";
 import type {
   ComputerAppIdentity,
   ComputerUseAppApproval,
@@ -12,14 +16,13 @@ import type {
 import {
   askForEachComputerUseApp,
   cancelComputerUseSetup,
-  computerUseApprovalKeyStep,
   computerUseAccessLabel,
   computerUseAppApprovalDetail,
   computerUseAppApprovalLabel,
   computerUseAppApprovalsTitle,
   computerUseApproveOn,
   computerUseAutomaticFootnote,
-  computerUseConfirmOnThisMac,
+  computerUseConfirmApproval,
   computerUseFirstRun,
   computerUseGrantLabel,
   computerUseGrantOrder,
@@ -35,8 +38,6 @@ import {
   computerUseStatusLine,
   computerUseTakeBack,
   computerUseTone,
-  computerUseTurnOnFrom,
-  computerUseUnblockOn,
   computerUseWhere,
   computerUseStops,
   takeBackComputerUseApp,
@@ -50,10 +51,9 @@ import {
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { useComputerUseStop } from "@opensteer/client/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router";
+
 import { actionErrorMessage } from "../../ui-utils.js";
-import { Dialog } from "../dialog.js";
-import { Icon } from "../icon.js";
+
 import { useAppIcon } from "./app-icons.js";
 
 /**
@@ -65,13 +65,6 @@ import { useAppIcon } from "./app-icons.js";
 export interface ComputerUseLocalActions {
   readonly openPermissions: () => Promise<DesktopOpenComputerUsePermissionsPanelResult>;
   /** Shows the native approval for a setup request just created; true when allowed. */
-  readonly reviewSetup: (setupRequestId: string) => Promise<boolean>;
-}
-
-export interface ComputerUseApprovalKeySetup {
-  readonly error: string | null;
-  readonly ready: boolean;
-  readonly retry: () => void;
 }
 
 /** A failed action and the key of what it was acting on, so the error sits there. */
@@ -92,7 +85,6 @@ const pickerSearchDelayMs = 200;
  * state has exactly one next action.
  */
 export function ComputerUseBlock({
-  approvalKeySetup = null,
   hostClient,
   local,
   machine,
@@ -100,7 +92,6 @@ export function ComputerUseBlock({
   owned,
   view,
 }: {
-  readonly approvalKeySetup?: ComputerUseApprovalKeySetup | null;
   readonly hostClient: HostClient;
   readonly local: ComputerUseLocalActions | null;
   readonly machine: MachineSummary;
@@ -108,6 +99,7 @@ export function ComputerUseBlock({
   readonly owned: boolean;
   readonly view: ComputerUseView;
 }) {
+  const approval = useComputerAppApproval(hostClient);
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -131,10 +123,10 @@ export function ComputerUseBlock({
   }
 
   /** One app, one access: the Host issues the request and this Mac asks about it. */
-  async function askOnThisMac(
-    actions: ComputerUseLocalActions,
-    input: { readonly access: IntegrationAccess; readonly app: ComputerAppIdentity },
-  ): Promise<void> {
+  async function askOnThisMac(input: {
+    readonly access: IntegrationAccess;
+    readonly app: ComputerAppIdentity;
+  }): Promise<void> {
     const result = await hostClient.dispatch({
       idempotencyKey: mutationIdempotencyKey(`computer-use:request:${input.app.bundleId}`),
       input: {
@@ -149,7 +141,7 @@ export function ComputerUseBlock({
     if (result.type !== "integration.computer.setup.request") {
       throw new Error("The approval was not requested.");
     }
-    await actions.reviewSetup(result.request.id);
+    await approval.ask(result.request.id);
   }
 
   async function chooseAppApproval(next: ComputerUseAppApproval) {
@@ -159,7 +151,6 @@ export function ComputerUseBlock({
         await askForEachComputerUseApp(hostClient, machine.id);
         return;
       }
-      if (!local) return;
       const result = await hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`computer-use:policy:${machine.id}`),
         input: { appApproval: "automatic", kind: "policy", runnerId: machine.id },
@@ -168,7 +159,7 @@ export function ComputerUseBlock({
       if (result.type !== "integration.computer.setup.request") {
         throw new Error("App approvals did not change.");
       }
-      await local.reviewSetup(result.request.id);
+      await approval.ask(result.request.id);
       // The policy is part of the Mac's summary, which the snapshot carries.
       await hostClient.refresh();
     });
@@ -189,9 +180,8 @@ export function ComputerUseBlock({
   }
 
   async function unblock(row: ComputerUseAppRow) {
-    if (!local) return;
     await run(appKey(row.connectionId), () =>
-      askOnThisMac(local, { access: row.access, app: row.identity }),
+      askOnThisMac({ access: row.access, app: row.identity }),
     );
   }
 
@@ -202,10 +192,8 @@ export function ComputerUseBlock({
   }
 
   const state = view.state;
-  const ready = state.kind === "ready";
+  const ready = state.kind === "ready" || state.kind === "permission-required";
   const automatic = view.appApproval === "automatic";
-  const localApprovalsReady =
-    view.approvalKeyId !== null && (approvalKeySetup === null || approvalKeySetup.ready);
   // Only the desktop app running on this Mac can act for it; a browser open on
   // the same Mac is "elsewhere", like any other device.
   const viewer: ComputerUseViewer = { here: local !== null, machineName: machine.name };
@@ -229,7 +217,7 @@ export function ComputerUseBlock({
             <span>{computerUseStatusLine(view, viewer)}</span>
           </span>
         </span>
-        {owned && ready && local && localApprovalsReady ? (
+        {owned && ready ? (
           <span className="computer-apps__control">
             <button
               className="btn btn--small"
@@ -244,6 +232,7 @@ export function ComputerUseBlock({
         ) : null}
       </div>
 
+      {approval.dialog}
       <div className="computer-use__body">
         {state.kind === "permission-required" || firstRun ? (
           <p className="computer-use__lead">{computerUseIntroduction(viewer)}</p>
@@ -253,33 +242,6 @@ export function ComputerUseBlock({
             the next step is on that Mac. */}
         {state.kind === "unavailable" && !viewer.here ? (
           <p className="computer-use__note">{computerUseInstallOn(machine.name)}</p>
-        ) : null}
-
-        {(state.kind === "ready" || state.kind === "permission-required") &&
-        view.approvalKeyId === null ? (
-          <div
-            className="computer-use__approval-setup"
-            role={approvalKeySetup?.error ? "alert" : "status"}
-          >
-            <strong>App approvals need setup.</strong>{" "}
-            {approvalKeySetup?.error ? null : <span>{computerUseApprovalKeyStep(viewer)}</span>}
-            {approvalKeySetup?.error ? (
-              <>
-                <span className="form-actions__error">{approvalKeySetup.error}</span>
-                <button className="btn btn--small" onClick={approvalKeySetup.retry} type="button">
-                  Retry
-                </button>
-              </>
-            ) : null}
-          </div>
-        ) : state.kind !== "offline" && approvalKeySetup?.error ? (
-          <div className="computer-use__approval-setup" role="alert">
-            <strong>App approvals could not be set up.</strong>{" "}
-            <span className="form-actions__error">{approvalKeySetup.error}</span>
-            <button className="btn btn--small" onClick={approvalKeySetup.retry} type="button">
-              Retry
-            </button>
-          </div>
         ) : null}
 
         {state.kind === "permission-required" ? (
@@ -305,7 +267,7 @@ export function ComputerUseBlock({
             {(["ask", "automatic"] as const).map((choice) => {
               // Automatic is confirmed in a window on the Mac it covers, so
               // elsewhere it can only be turned off, never on.
-              const remoteOnly = choice === "automatic" && !automatic && !local;
+
               return (
                 <label
                   className={`computer-use__option${view.appApproval === choice ? " computer-use__option--on" : ""}`}
@@ -313,7 +275,6 @@ export function ComputerUseBlock({
                 >
                   <input
                     checked={view.appApproval === choice}
-                    disabled={remoteOnly || (choice === "automatic" && !localApprovalsReady)}
                     name={`computer-use-approval-${machine.id}`}
                     onChange={() => void chooseAppApproval(choice)}
                     type="radio"
@@ -326,18 +287,13 @@ export function ComputerUseBlock({
                     <span className="computer-use__option-why">
                       {computerUseAppApprovalDetail(choice, machine.name)}
                     </span>
-                    {remoteOnly ? (
-                      <span className="computer-use__option-note">
-                        {computerUseTurnOnFrom(machine.name)}
-                      </span>
-                    ) : null}
                   </span>
                 </label>
               );
             })}
             {busy === "policy:automatic" ? (
               <p className="computer-use__fine" role="status">
-                {computerUseConfirmOnThisMac}
+                {computerUseConfirmApproval}
               </p>
             ) : automatic ? (
               <p className="computer-use__fine">{computerUseAutomaticFootnote(view)}</p>
@@ -382,20 +338,14 @@ export function ComputerUseBlock({
                   </span>
                   {owned ? (
                     row.blocked ? (
-                      local ? (
-                        <button
-                          className="btn btn--ghost btn--small"
-                          disabled={busy !== null || !localApprovalsReady}
-                          onClick={() => void unblock(row)}
-                          type="button"
-                        >
-                          {computerUseUnblockOn(viewer)}
-                        </button>
-                      ) : (
-                        <span className="computer-use__app-where">
-                          {computerUseUnblockOn(viewer)}
-                        </span>
-                      )
+                      <button
+                        className="btn btn--ghost btn--small"
+                        disabled={busy !== null}
+                        onClick={() => void unblock(row)}
+                        type="button"
+                      >
+                        Unblock
+                      </button>
                     ) : (
                       <button
                         aria-label={`${takeBack.label} ${row.identity.displayName}`}
@@ -425,6 +375,20 @@ export function ComputerUseBlock({
                   key={pending.request.id}
                 >
                   <AppMark identity={pending.identity} />
+                  {owned ? (
+                    <button
+                      className="btn btn--small"
+                      disabled={busy !== null}
+                      onClick={() =>
+                        void run(`allow:${pending.request.id}`, async () => {
+                          await approval.ask(pending.request.id);
+                        })
+                      }
+                      type="button"
+                    >
+                      Review
+                    </button>
+                  ) : null}
                   <span className="card__row-body">
                     <span className="card__row-title">{pending.identity.displayName}</span>
                     <span className="computer-use__app-meta">
@@ -471,12 +435,12 @@ export function ComputerUseBlock({
         ) : null}
       </div>
 
-      {adding && local ? (
+      {adding ? (
         <AddAppDialog
           existing={view.apps}
           hostClient={hostClient}
           machine={machine}
-          onApprove={(input) => askOnThisMac(local, input)}
+          onApprove={(input) => askOnThisMac(input)}
           onClose={() => setAdding(false)}
           onDone={async () => {
             setAdding(false);
@@ -752,7 +716,7 @@ function AddAppDialog({
     >
       <div className="computer-use__picker">
         <p className="computer-use__fine">
-          Pick what agents may do with an app. You confirm it on this Mac next.
+          Pick what agents may do, then review and allow access here.
         </p>
         <label className="computer-use__search">
           <Icon name="search" />

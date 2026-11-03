@@ -1,7 +1,11 @@
 import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { IphoneAppId } from "../platform/iphone-apps.js";
+import type {
+  IphoneAppId,
+  IphoneAppsApproval,
+  IphoneApprovalOutcome,
+} from "../platform/iphone-apps.js";
 import { IphoneAppsController, type IphoneAppsTiming } from "./controller.js";
 import type { ShownApproval, ShownApprovalsFile } from "./shown-approvals-file.js";
 import { createFakeIphoneApps, type FakeIphoneApps } from "./fake-bridge.js";
@@ -322,7 +326,7 @@ describe("approvals on this iPhone", () => {
     const unlisted = await controller.answer({ decision: "allow", setupRequestId: "req-gone" });
 
     expect(unlisted.kind).toBe("unavailable");
-    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^answerApproval/u));
+    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^respondApproval/u));
   });
 
   it("J6: never signs when the listed request differs from what was tapped", async () => {
@@ -342,7 +346,7 @@ describe("approvals on this iPhone", () => {
     expect(
       await controller.allow({ access: "read", app: "apple-calendar", hostClient: host.client }),
     ).toMatchObject({ kind: "not-allowed" });
-    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^answerApproval/u));
+    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^respondApproval/u));
   });
 
   it("J8: asks iOS only after the tap, and signs only after iOS answered", async () => {
@@ -371,19 +375,20 @@ describe("approvals on this iPhone", () => {
     await vi.waitFor(() => expect(fake.device.calls).toContain("requestPermission:apple-calendar"));
     // Going online registered the approval key; nothing about this app was sent.
     expect(host.commands).not.toContain("integration.computer.setup.request");
-    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^answerApproval/u));
+    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^respondApproval/u));
 
     // iOS said no: nothing is requested or signed, and the outcome says iOS stopped it.
     answer.resolve("denied");
     expect(await allowing).toEqual({ kind: "blocked", permission: "denied" });
     expect(host.commands).not.toContain("integration.computer.setup.request");
-    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^answerApproval/u));
+    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^respondApproval/u));
     expect(controller.getState().changes).toEqual({});
   });
 
   it("J8: a task's ask prompts iOS only when Allow is tapped", async () => {
     const { controller, fake } = open();
     fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });
+    controller.attachHost({ deploymentId, hostClient: fakeHost().client });
     fake.device.listApprovals([approval("req-1", "apple-contacts", "read")]);
     expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^requestPermission/u));
 
@@ -395,20 +400,21 @@ describe("approvals on this iPhone", () => {
     await controller.answer({ decision: "allow", setupRequestId: "req-2" });
     expect(fake.device.calls.slice(-2)).toEqual([
       "requestPermission:apple-contacts",
-      "answerApproval:req-2:allow:apple-contacts:read",
+      "respondApproval:req-2:allow:apple-contacts:read",
     ]);
   });
 
   it("C4: a task's ask is not signed after iOS denies it, and keeps waiting", async () => {
     const { controller, fake } = open();
     fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });
+    controller.attachHost({ deploymentId, hostClient: fakeHost().client });
     fake.device.listApprovals([approval("req-1", "apple-reminders", "read")]);
     fake.device.answerPermissionWith("apple-reminders", "denied");
 
     const outcome = await controller.answer({ decision: "allow", setupRequestId: "req-1" });
 
     expect(outcome).toEqual({ kind: "blocked", permission: "denied" });
-    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^answerApproval/u));
+    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^respondApproval/u));
     // Not declined: it can still be allowed after Settings changes, or declined.
     expect(
       controller.getState().snapshot.approvals.map(({ setupRequestId }) => setupRequestId),
@@ -419,13 +425,16 @@ describe("approvals on this iPhone", () => {
     const shown = memoryShownFile();
     const first = open({ shown });
     first.fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });
+    first.controller.attachHost({ deploymentId, hostClient: fakeHost().client });
     await first.controller.load();
     first.fake.device.listApprovals([
       approval("req-new", "apple-calendar", "read", "2026-10-26T12:05:00.000Z"),
       approval("req-old", "apple-reminders", "read", "2026-10-26T12:00:00.000Z"),
     ]);
 
-    expect(first.controller.getState().prompt?.setupRequestId).toBe("req-old");
+    await vi.waitFor(() =>
+      expect(first.controller.getState().prompt?.setupRequestId).toBe("req-old"),
+    );
     first.controller.markShown("req-old");
     expect(first.controller.getState().prompt?.setupRequestId).toBe("req-new");
     first.controller.markShown("req-new");
@@ -441,7 +450,11 @@ describe("approvals on this iPhone", () => {
     relaunched.fake.device.listApprovals([
       approval("req-old", "apple-reminders", "read", "2026-10-26T12:00:00.000Z"),
     ]);
+    relaunched.controller.attachHost({ deploymentId, hostClient: fakeHost().client });
     await relaunched.controller.load();
+    await vi.waitFor(() =>
+      expect(relaunched.controller.getState().snapshot.approvals).toHaveLength(1),
+    );
     expect(relaunched.controller.getState().prompt).toBeNull();
     // It stays answerable on the Computer page.
     expect(relaunched.controller.getState().snapshot.approvals).toHaveLength(1);
@@ -508,7 +521,7 @@ describe("turning an app on from this iPhone", () => {
     });
 
     expect(outcome).toEqual({ kind: "allowed" });
-    expect(fake.device.calls).toEqual(["answerApproval:req-1:allow:apple-contacts:read"]);
+    expect(fake.device.calls).toEqual(["respondApproval:req-1:allow:apple-contacts:read"]);
   });
 
   it("C5: a lost request answer is read back, and the same request is approved once", async () => {
@@ -543,7 +556,7 @@ describe("turning an app on from this iPhone", () => {
     expect(host.reads).toEqual(
       expect.arrayContaining(["integration.computer.setup.list", "integrations.get"]),
     );
-    expect(fake.device.calls).toEqual(["answerApproval:req-landed:allow:apple-reminders:read"]);
+    expect(fake.device.calls).toEqual(["respondApproval:req-landed:allow:apple-reminders:read"]);
   });
 
   it("C12: a lost reply stays busy until read-back and approval both settle", async () => {
@@ -576,7 +589,7 @@ describe("turning an app on from this iPhone", () => {
     expect(
       host.commands.filter((type) => type === "integration.computer.setup.request"),
     ).toHaveLength(1);
-    expect(fake.device.calls).toEqual(["answerApproval:req-read-back:allow:apple-reminders:read"]);
+    expect(fake.device.calls).toEqual(["respondApproval:req-read-back:allow:apple-reminders:read"]);
   });
 
   it("C13: reattaching reads a superseded change without sending or signing again", async () => {
@@ -611,7 +624,7 @@ describe("turning an app on from this iPhone", () => {
     expect(
       host.commands.filter((type) => type === "integration.computer.setup.request"),
     ).toHaveLength(1);
-    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^answerApproval/u));
+    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^respondApproval/u));
   });
 
   it("C6: when nothing can be read back it stays unknown, and checking never asks again", async () => {
@@ -656,7 +669,7 @@ describe("turning an app on from this iPhone", () => {
     expect(
       host.commands.filter((type) => type === "integration.computer.setup.request"),
     ).toHaveLength(1);
-    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^answerApproval/u));
+    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^respondApproval/u));
   });
 
   it("C11: reconnecting reads an unknown change back once, and never signs or asks again", async () => {
@@ -697,7 +710,7 @@ describe("turning an app on from this iPhone", () => {
     expect(
       host.commands.filter((type) => type === "integration.computer.setup.request"),
     ).toHaveLength(1);
-    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^answerApproval/u));
+    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^respondApproval/u));
   });
 
   it("C7: a signed answer whose reply was lost is allowed when the Host holds the access", async () => {
@@ -718,7 +731,7 @@ describe("turning an app on from this iPhone", () => {
       }),
     });
     controller.attachHost({ deploymentId, hostClient: host.client });
-    vi.spyOn(fake.bridge, "answerApproval").mockImplementation(async () => {
+    vi.spyOn(fake.bridge, "respondApproval").mockImplementation(async () => {
       committed = true;
       return { kind: "unavailable", message: "Opensteer did not answer in time." };
     });
@@ -730,7 +743,7 @@ describe("turning an app on from this iPhone", () => {
     });
 
     expect(outcome).toEqual({ kind: "allowed" });
-    expect(fake.bridge.answerApproval).toHaveBeenCalledOnce();
+    expect(fake.bridge.respondApproval).toHaveBeenCalledOnce();
   });
 
   it("C8: an answer that never landed leaves the current access and says it was not allowed", async () => {
@@ -751,7 +764,7 @@ describe("turning an app on from this iPhone", () => {
       }),
     });
     controller.attachHost({ deploymentId, hostClient: host.client });
-    vi.spyOn(fake.bridge, "answerApproval").mockResolvedValue({
+    vi.spyOn(fake.bridge, "respondApproval").mockResolvedValue({
       kind: "unavailable",
       message: "This iPhone is no longer connected.",
     });
@@ -762,8 +775,8 @@ describe("turning an app on from this iPhone", () => {
       hostClient: host.client,
     });
 
-    expect(outcome).toMatchObject({ kind: "not-allowed" });
-    expect(fake.bridge.answerApproval).toHaveBeenCalledOnce();
+    expect(outcome).toMatchObject({ kind: "waiting" });
+    expect(fake.bridge.respondApproval).not.toHaveBeenCalled();
     expect(controller.getState().changes).toEqual({});
   });
 
@@ -796,7 +809,7 @@ describe("turning an app on from this iPhone", () => {
     sent.resolve({ request: { id: "req-late" }, type: "integration.computer.setup.request" });
     expect(await allowing).toEqual({ kind: "superseded" });
     expect(controller.getState().changes).toEqual({});
-    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^answerApproval/u));
+    expect(fake.device.calls).not.toContainEqual(expect.stringMatching(/^respondApproval/u));
   });
 });
 
@@ -892,7 +905,7 @@ describe("the apps chosen with Add", () => {
     expect(fake.device.calls).toEqual([
       "requestPermission:apple-calendar",
       "requestPermission:apple-contacts",
-      "answerApproval:req-1:allow:apple-contacts:read",
+      "respondApproval:req-1:allow:apple-contacts:read",
     ]);
     // The next change for that app starts clean.
     fake.device.setPermission("apple-calendar", "granted");
@@ -936,12 +949,19 @@ describe("apps the Host or this iPhone build may not offer", () => {
         hostClient: host.client,
       });
       fake.device.listApprovals([approval("req-listed", "iphone-photos", "read")]);
+      if (elsewhere) {
+        await expect(
+          controller.answer({ decision: "allow", setupRequestId: "req-listed" }),
+        ).resolves.toMatchObject({ kind: "unavailable" });
+        expect(fake.device.calls).toEqual([]);
+        continue;
+      }
       expect(await controller.answer({ decision: "allow", setupRequestId: "req-listed" })).toEqual({
         kind: "allowed",
       });
       expect(fake.device.calls).toEqual([
         "requestPermission:iphone-photos",
-        "answerApproval:req-listed:allow:iphone-photos:read",
+        "respondApproval:req-listed:allow:iphone-photos:read",
       ]);
       expect(host.reads.filter((read) => read === "integration.platform.get")).toHaveLength(
         elsewhere ? 0 : 1,
@@ -961,7 +981,7 @@ describe("apps the Host or this iPhone build may not offer", () => {
       expect(outcome).toEqual({ by: "host", kind: "not-offered" });
       expect(fake.device.calls).toEqual([]);
       // Registering the approval key on attach is the only command.
-      expect(host.commands).toEqual(["integration.computer.approval-key.set"]);
+      expect(host.commands).toEqual([]);
       expect(controller.getState().changes).toEqual({});
     }
   });
@@ -981,7 +1001,7 @@ describe("apps the Host or this iPhone build may not offer", () => {
     expect(outcome).toMatchObject({ kind: "not-allowed" });
     expect(fake.device.calls).toEqual([]);
     // Registering the approval key on attach is the only command.
-    expect(host.commands).toEqual(["integration.computer.approval-key.set"]);
+    expect(host.commands).toEqual([]);
   });
 
   it("an older build is never prompted, asked or signed for an app it doesn't report", async () => {
@@ -1004,7 +1024,7 @@ describe("apps the Host or this iPhone build may not offer", () => {
 
     expect(fake.device.calls).toEqual([]);
     // Registering the approval key on attach is the only command.
-    expect(host.commands).toEqual(["integration.computer.approval-key.set"]);
+    expect(host.commands).toEqual([]);
   });
 
   it("limited is not Location permission; an approximate Location is usable", async () => {
@@ -1023,12 +1043,12 @@ describe("apps the Host or this iPhone build may not offer", () => {
 
     expect(await controller.allow(input)).toEqual({ kind: "blocked", permission: "limited" });
     // Registering the approval key on attach is the only command.
-    expect(host.commands).toEqual(["integration.computer.approval-key.set"]);
+    expect(host.commands).toEqual([]);
 
     fake.device.setPermission("iphone-location", "granted");
     fake.device.setLocationAccuracy("approximate");
     expect(await controller.allow(input)).toEqual({ kind: "allowed" });
-    expect(fake.device.calls).toEqual(["answerApproval:req-loc:allow:iphone-location:read"]);
+    expect(fake.device.calls).toEqual(["respondApproval:req-loc:allow:iphone-location:read"]);
   });
 
   it("limited Photos is usable; Choose photos runs only then, and closing it is no refusal", async () => {
@@ -1053,7 +1073,7 @@ describe("apps the Host or this iPhone build may not offer", () => {
     fake.device.setPermission("iphone-photos", "granted");
     expect(await controller.choosePhotos()).toBe("granted");
     expect(fake.device.calls).toEqual([
-      "answerApproval:req-photos:allow:iphone-photos:read",
+      "respondApproval:req-photos:allow:iphone-photos:read",
       "choosePhotos",
     ]);
   });
@@ -1064,6 +1084,7 @@ describe("apps the Host or this iPhone build may not offer", () => {
     fake.device.setPermission("iphone-location", "granted");
     // Allow Once ended: iOS reads as never asked again.
     fake.device.setPermission("iphone-location", "not-determined");
+    controller.attachHost({ deploymentId, hostClient: fakeHost().client });
     fake.device.listApprovals([
       approval("req-a", "iphone-location", "read"),
       approval("req-b", "iphone-location", "read", "2026-10-26T12:01:00.000Z"),
@@ -1083,7 +1104,7 @@ describe("apps the Host or this iPhone build may not offer", () => {
     });
     expect(fake.device.calls.slice(1)).toEqual([
       "requestPermission:iphone-location",
-      "answerApproval:req-b:allow:iphone-location:read",
+      "respondApproval:req-b:allow:iphone-location:read",
     ]);
   });
 
@@ -1105,7 +1126,7 @@ describe("apps the Host or this iPhone build may not offer", () => {
       }),
     });
     controller.attachHost({ deploymentId, hostClient: host.client });
-    vi.spyOn(fake.bridge, "answerApproval").mockImplementation(async () => {
+    vi.spyOn(fake.bridge, "respondApproval").mockImplementation(async () => {
       committed = true;
       return { kind: "unavailable", message: "Opensteer did not answer in time." };
     });
@@ -1113,76 +1134,9 @@ describe("apps the Host or this iPhone build may not offer", () => {
     expect(
       await controller.allow({ access: "read", app: "iphone-photos", hostClient: host.client }),
     ).toEqual({ kind: "allowed" });
-    expect(fake.bridge.answerApproval).toHaveBeenCalledOnce();
+    expect(fake.bridge.respondApproval).toHaveBeenCalledOnce();
     expect(host.reads).toEqual(
       expect.arrayContaining(["integration.computer.setup.list", "integrations.get"]),
-    );
-  });
-});
-
-describe("the approval key", () => {
-  it("J7: registers once per connection, only when online and attached to its Deployment", async () => {
-    const { controller, fake } = open();
-    fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone", connection: "connecting" });
-    const other = fakeHost();
-    const host = fakeHost();
-
-    controller.attachHost({ deploymentId: otherDeploymentId, hostClient: other.client });
-    fake.device.connect();
-    controller.attachHost({ deploymentId, hostClient: host.client });
-    await vi.waitFor(() =>
-      expect(host.commands).toContain("integration.computer.approval-key.set"),
-    );
-    expect(other.commands).toEqual([]);
-    expect(
-      host.sent.find(({ type }) => type === "integration.computer.approval-key.set"),
-    ).toMatchObject({
-      input: { publicKey: fake.device.publicKey(), runnerId: fake.device.runnerId() },
-    });
-
-    // More snapshots in the same connection register nothing again.
-    fake.device.listApprovals([approval("req-1", "apple-calendar", "read")]);
-    fake.device.listApprovals([]);
-    await settle();
-    expect(
-      host.commands.filter((type) => type === "integration.computer.approval-key.set"),
-    ).toHaveLength(1);
-
-    // A new connection may try once more.
-    fake.device.reconnect();
-    await vi.waitFor(() =>
-      expect(
-        host.commands.filter((type) => type === "integration.computer.approval-key.set"),
-      ).toHaveLength(2),
-    );
-    fake.device.registerKey();
-    fake.device.reconnect();
-    await settle();
-    expect(
-      host.commands.filter((type) => type === "integration.computer.approval-key.set"),
-    ).toHaveLength(2);
-  });
-
-  it("says when registration failed, and tries again only when tapped", async () => {
-    const { controller, fake } = open();
-    fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone", connection: "connecting" });
-    const host = fakeHost({
-      dispatch: (command) => {
-        if (command.type === "integration.computer.approval-key.set") throw new Error("Refused.");
-        return undefined;
-      },
-    });
-    controller.attachHost({ deploymentId, hostClient: host.client });
-    fake.device.connect();
-    await vi.waitFor(() => expect(controller.getState().approvalKey).toBe("failed"));
-    await settle();
-    expect(host.commands).toEqual(["integration.computer.approval-key.set"]);
-
-    controller.retryApprovalKey();
-    await vi.waitFor(() =>
-      expect(
-        host.commands.filter((type) => type === "integration.computer.approval-key.set"),
-      ).toHaveLength(2),
     );
   });
 });
@@ -1281,6 +1235,18 @@ describe("the iPhone's owner", () => {
   });
 });
 
+type TestApprovalInput = {
+  setupRequestId: string;
+  decision: "allow" | "deny";
+  expected: { definitionId: IphoneAppId; access: "read" | "read-write" };
+};
+let activeDevice: {
+  listed: readonly IphoneAppsApproval[];
+  listeners: Set<() => void>;
+  runnerId: () => string;
+  respond: (input: TestApprovalInput) => Promise<IphoneApprovalOutcome>;
+};
+
 function open(
   options: {
     readonly autoConnect?: boolean;
@@ -1293,13 +1259,38 @@ function open(
     deviceName: "Alex's iPhone",
     ...(options.offers === undefined ? {} : { offers: options.offers }),
   });
+  const state = {
+    listed: [] as readonly IphoneAppsApproval[],
+    listeners: new Set<() => void>(),
+    runnerId: fake.device.runnerId,
+    respond: async (_input: TestApprovalInput): Promise<IphoneApprovalOutcome> => ({
+      kind: "allowed",
+    }),
+  };
+  const respondApproval = async (input: TestApprovalInput): Promise<IphoneApprovalOutcome> => {
+    (fake.device.calls as string[]).push(
+      `respondApproval:${input.setupRequestId}:${input.decision}:${input.expected.definitionId}:${input.expected.access}`,
+    );
+    state.listed = state.listed.filter((item) => item.setupRequestId !== input.setupRequestId);
+    for (const listener of state.listeners) listener();
+    return { kind: input.decision === "allow" ? "allowed" : "declined" };
+  };
+  const bridge = Object.assign(fake.bridge, { respondApproval });
+  const device = Object.assign(fake.device, {
+    listApprovals: (items: readonly IphoneAppsApproval[]) => {
+      state.listed = items;
+      for (const listener of state.listeners) listener();
+    },
+  });
+  state.respond = (input) => bridge.respondApproval(input);
+  activeDevice = state;
   const controller = new IphoneAppsController({
     bridge: fake.bridge,
     shownApprovals: options.shown ?? memoryShownFile(),
     timing: fast,
   });
   controllers.push(controller);
-  return { controller, fake };
+  return { controller, fake: { bridge, device } };
 }
 
 type Sent = HostApiCommandInput & { readonly [key: string]: unknown };
@@ -1331,15 +1322,57 @@ function fakeHost(
   const sent: Sent[] = [];
   const commands: string[] = [];
   const reads: string[] = [];
-  const record = options.record ?? (() => ({ connections: [], requests: [] }));
+  const device = activeDevice;
+  const listedRecords = () =>
+    device?.listed.map((item) => ({
+      ...item,
+      ...hostRequest(item.setupRequestId, device.runnerId(), item.definitionId, item.access),
+    })) ?? [];
+  const record = options.record ?? (() => ({ connections: [], requests: listedRecords() }));
+  let machines: readonly unknown[] = [];
+
   const client = {
+    getSnapshot: () => ({ machines }),
+    subscribe: (listener: () => void) => {
+      const update = () => {
+        machines = [];
+        listener();
+      };
+      device?.listeners.add(update);
+      return () => device?.listeners.delete(update);
+    },
     dispatch: async (command: Sent) => {
       sent.push(command);
       commands.push(command.type);
+      if (command.type === "integration.computer.setup.respond") {
+        const request = [...(await record()).requests, ...listedRecords()].find(
+          (row) => (row as { id: string }).id === command.setupRequestId,
+        ) as { definitionId: IphoneAppId; access: "read" | "read-write" } | undefined;
+        if (!request) throw new Error("No longer waiting");
+        const outcome = await device.respond({
+          setupRequestId: command.setupRequestId,
+          decision: command.decision,
+          expected: request,
+        });
+        if (outcome.kind === "unavailable" || outcome.kind === "refused")
+          throw new Error(outcome.message);
+        return { type: command.type };
+      }
       const answer = await options.dispatch?.(command);
       return answer ?? { type: command.type };
     },
     rpc: {
+      "integration.computer.setup.review": async ({
+        setupRequestId,
+      }: {
+        setupRequestId: string;
+      }) => {
+        const request = [...(await record()).requests, ...listedRecords()].find(
+          (row) => (row as { id: string }).id === setupRequestId,
+        );
+        if (!request) throw new Error("No longer waiting");
+        return { ok: true, data: { request, app: null } };
+      },
       "agentPhone.target.get": async () => {
         reads.push("agentPhone.target.get");
         return { data: options.target ?? pairing, ok: true };

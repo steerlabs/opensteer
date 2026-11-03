@@ -49,7 +49,21 @@ export interface SettingsFormActionHandlers {
   readonly onAgentMuteChange: (workspaceId: string, muted: boolean) => void;
 }
 
+export interface RemoteAdministrationSettings {
+  readonly access: import("@opensteer/protocol").PersonalRemoteAdministrationStatus | null;
+  readonly pairing: import("@opensteer/protocol").IssuePersonalPairingCodeResponse | null;
+  readonly sessions: readonly import("@opensteer/core").AuthSessionSummary[];
+  readonly error: string | null;
+  readonly busy: boolean;
+  readonly onAction: (
+    action: "off" | "connect" | "private" | "rotate" | "unlink" | "recover" | "pair" | "link",
+  ) => void;
+  readonly onRemove: (session: import("@opensteer/core").AuthSessionSummary) => void;
+  readonly onRefresh: () => void;
+}
+
 export interface SettingsFormProps extends SettingsFormActionHandlers {
+  readonly administration?: RemoteAdministrationSettings | undefined;
   /** Null in a build without an Account service. */
   readonly account: AccountSettingsModel | null;
   readonly accountError: string | null;

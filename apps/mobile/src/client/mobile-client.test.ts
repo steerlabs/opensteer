@@ -2294,7 +2294,8 @@ describe("MobileClient per-deployment sign out", () => {
     const before = await attachment?.rpc["sessions.list"]({});
     expect(before?.ok === true && before.data.sessions).toHaveLength(1);
 
-    await client.signOut(serverId);
+    if (!before?.ok) throw new Error("The phone's session was not listed");
+    await client.removeHostSession(before.data.sessions[0]!);
     await settle();
 
     // The Host ended the session this phone was presenting, and the record it

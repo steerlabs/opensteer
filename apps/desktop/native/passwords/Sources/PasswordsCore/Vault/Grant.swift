@@ -35,7 +35,7 @@ public struct GrantKey: Hashable, Sendable {
 }
 
 /// "Agents in this Workspace may sign in to this site as this login", which
-/// the person allowed once with Touch ID or the Mac password. The names are
+/// the requester allowed once through their authenticated Host session. The names are
 /// what the Host called the Workspace and Deployment then, kept for display.
 ///
 /// Current grants add `permissionVersion` (4 for browsers, 5 for websites and apps)

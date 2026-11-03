@@ -3,8 +3,9 @@ import {
   ownTestDatabaseProducer,
   recordTestDatabaseSetup,
 } from "./test-database.test-support.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { pauseAfterLock } from "./lock-race.test-support.js";
-import { createComputerAppApproval } from "@opensteer/runner-auth";
+
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   IntegrationDefinitionSchema,
@@ -1444,10 +1445,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     if (!isComputerAppDefinition(definition))
       throw new Error("Computer definition fixture is invalid");
     const computerDefinition: ComputerAppDefinition = definition;
-    const computerKeys = new Map<
-      string,
-      { privateKey: import("node:crypto").KeyObject; publicKey: import("node:crypto").KeyObject }
-    >();
     const runnerKeys = new Map<string, { privateKey: import("node:crypto").KeyObject }>();
     async function setApprovedComputerConnection(
       input: Omit<
@@ -1460,8 +1457,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const definitionDigest = integrationDefinitionDigest(definition);
       const app = input.app ?? null;
       const ownership = await store.effectiveMachineOwners([input.runnerId]);
-      const key = computerKeys.get(input.runnerId);
-      if (!key || ownership.get(input.runnerId)?.effectiveOwner !== input.actorUserId) {
+      if (ownership.get(input.runnerId)?.effectiveOwner !== input.actorUserId) {
         return platform.setComputerConnection({ ...input, app, definitionDigest });
       }
       const { request } = await platform.requestComputerAppSetup({
@@ -1474,7 +1470,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         ...input,
         app,
         definitionDigest,
-        approval: createComputerAppApproval(key.privateKey, request),
+        setupRequestId: request.id,
       });
     }
     async function fixture(
@@ -1534,8 +1530,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     ) {
       const keys = generateKeyPairSync("ed25519");
       runnerKeys.set(runnerId, keys);
-      const approvalKey = generateKeyPairSync("ed25519");
-      computerKeys.set(runnerId, approvalKey);
       await database
         .insertInto("runners")
         .values({
@@ -1566,12 +1560,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         .executeTakeFirstOrThrow();
       // The owner set computer use up on this Mac, which registered its key.
       if (ownerUserId !== null) {
-        await platform.registerComputerUseApprovalKey({
-          ownerUserId,
-          publicKey: approvalKey.publicKey.export({ format: "pem", type: "spki" }).toString(),
-          requestId: `register-${runnerId}`,
-          runnerId,
-        });
       }
     }
     async function insertLineageThread(
@@ -1725,7 +1713,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       });
       return platform.setComputerConnection({
         ...shaped,
-        approval: createComputerAppApproval(computerKeys.get(shaped.runnerId)!.privateKey, request),
+        setupRequestId: request.id,
       });
     }
     async function allowAutomatic(setup: Awaited<ReturnType<typeof guiFixture>>) {
@@ -1737,22 +1725,19 @@ integration.sequential("PostgreSQL computer app connections", () => {
         definitionDigest: guiDigest,
       });
       expect(request).toMatchObject({ kind: "policy", policyAppApproval: "automatic", app: null });
-      const approval = createComputerAppApproval(
-        computerKeys.get(setup.runnerId)!.privateKey,
-        request,
-      );
+      const approval = request.id;
       const input = {
         runnerId: setup.runnerId,
         ownerUserId: setup.ownerUserId,
         requestId: "policy-on",
         appApproval: "automatic" as const,
         definitionDigest: guiDigest,
-        approval,
+        setupRequestId: approval,
       };
       await expect(
         platform.setComputerUsePolicy({
           ...input,
-          approval: { ...approval, signature: "a".repeat(86) },
+          setupRequestId: "00000000-0000-4000-8000-000000000000",
         }),
       ).rejects.toMatchObject({ code: "forbidden" });
       const policy = await platform.setComputerUsePolicy(input);
@@ -1789,7 +1774,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       platform,
       definition,
       computerDefinition,
-      computerKeys,
       runnerKeys,
       setApprovedComputerConnection,
       fixture,
@@ -1826,10 +1810,10 @@ integration.sequential("PostgreSQL computer app connections", () => {
    * `runnerKeys`, which signs nothing the Host takes as consent.
    */
 
-  it("requires the target key, consumes once, and invalidates approval on remote reductions", async ({
+  it("requires the exact pending request, consumes once, and invalidates approval on remote reductions", async ({
     storeFixture,
   }) => {
-    const { fixture, definition, platform, computerKeys, database } = storeFixture;
+    const { fixture, definition, platform, database } = storeFixture;
     const setup = await fixture("approval");
     const definitionDigest = integrationDefinitionDigest(definition);
     const input = {
@@ -1849,37 +1833,33 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
     const { request } = await platform.requestComputerAppSetup(input);
     expect(await platform.listComputerAppSetupRequests(setup.ownerUserId)).toEqual([request]);
-    const bad = createComputerAppApproval(generateKeyPairSync("ed25519").privateKey, request);
-    await expect(platform.setComputerConnection({ ...input, approval: bad })).rejects.toMatchObject(
-      { code: "forbidden" },
-    );
-    const approval = createComputerAppApproval(
-      computerKeys.get(setup.runnerId)!.privateKey,
-      request,
-    );
-    const connected = await platform.setComputerConnection({ ...input, approval });
+    const bad = "00000000-0000-4000-8000-000000000000";
+    await expect(
+      platform.setComputerConnection({ ...input, setupRequestId: bad }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const approval = request.id;
+    const connected = await platform.setComputerConnection({ ...input, setupRequestId: approval });
     expect(await platform.listComputerAppSetupRequests(setup.ownerUserId)).toEqual([]);
-    await expect(platform.setComputerConnection({ ...input, approval })).rejects.toMatchObject({
+    await expect(
+      platform.setComputerConnection({ ...input, setupRequestId: approval }),
+    ).rejects.toMatchObject({
       code: "forbidden",
     });
     const { request: pending } = await platform.requestComputerAppSetup(input);
-    const stale = createComputerAppApproval(computerKeys.get(setup.runnerId)!.privateKey, pending);
+    const stale = pending.id;
     await platform.setComputerConnection({ ...input, access: "read", tools: setup.tools("read") });
     await expect(
-      platform.setComputerConnection({ ...input, approval: stale }),
+      platform.setComputerConnection({ ...input, setupRequestId: stale }),
     ).rejects.toMatchObject({ code: "forbidden" });
     const { request: afterReduction } = await platform.requestComputerAppSetup(input);
-    const afterReductionProof = createComputerAppApproval(
-      computerKeys.get(setup.runnerId)!.privateKey,
-      afterReduction,
-    );
+    const afterReductionProof = afterReduction.id;
     await platform.revokeComputerConnection({
       connectionId: connected.connection.id,
       ownerUserId: setup.ownerUserId,
       requestId: "off",
     });
     await expect(
-      platform.setComputerConnection({ ...input, approval: afterReductionProof }),
+      platform.setComputerConnection({ ...input, setupRequestId: afterReductionProof }),
     ).rejects.toMatchObject({ code: "forbidden" });
     const { request: afterOff } = await platform.requestComputerAppSetup(input);
     const restarted = new IntegrationPlatformStore(database);
@@ -1891,15 +1871,15 @@ integration.sequential("PostgreSQL computer app connections", () => {
     await expect(
       platform.setComputerConnection({
         ...input,
-        approval: createComputerAppApproval(computerKeys.get(setup.runnerId)!.privateKey, afterOff),
+        setupRequestId: afterOff.id,
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 
-  it("consumes a signed same-access setup request without changing the connection ceiling", async ({
+  it("consumes a owner-confirmed same-access setup request without changing the connection ceiling", async ({
     storeFixture,
   }) => {
-    const { fixture, definition, platform, computerKeys, database } = storeFixture;
+    const { fixture, definition, platform, database } = storeFixture;
     const setup = await fixture("same-access");
     const definitionDigest = integrationDefinitionDigest(definition);
     const input = {
@@ -1916,16 +1896,16 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const { request: first } = await platform.requestComputerAppSetup(input);
     const connected = await platform.setComputerConnection({
       ...input,
-      approval: createComputerAppApproval(computerKeys.get(setup.runnerId)!.privateKey, first),
+      setupRequestId: first.id,
       requestId: "same-access-create",
     });
 
     const { request: pending } = await platform.requestComputerAppSetup(input);
     expect(await platform.listComputerAppSetupRequests(setup.ownerUserId)).toEqual([pending]);
-    const proof = createComputerAppApproval(computerKeys.get(setup.runnerId)!.privateKey, pending);
+    const proof = pending.id;
     const finished = await platform.setComputerConnection({
       ...input,
-      approval: proof,
+      setupRequestId: proof,
       requestId: "same-access-finish",
     });
     expect(finished.created).toBe(false);
@@ -1935,16 +1915,13 @@ integration.sequential("PostgreSQL computer app connections", () => {
     await expect(
       platform.setComputerConnection({
         ...input,
-        approval: proof,
+        setupRequestId: proof,
         requestId: "same-access-replay",
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
 
     const { request: replaced } = await platform.requestComputerAppSetup(input);
-    const staleProof = createComputerAppApproval(
-      computerKeys.get(setup.runnerId)!.privateKey,
-      replaced,
-    );
+    const staleProof = replaced.id;
     const { request: replacement } = await platform.requestComputerAppSetup({
       ...input,
       definitionDigest: "changed-catalog-digest",
@@ -1953,7 +1930,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     await expect(
       platform.setComputerConnection({
         ...input,
-        approval: staleProof,
+        setupRequestId: staleProof,
         requestId: "same-access-replaced",
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
@@ -1967,7 +1944,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     await expect(
       platform.setComputerConnection({
         ...input,
-        approval: createComputerAppApproval(computerKeys.get(setup.runnerId)!.privateKey, current),
+        setupRequestId: current.id,
         requestId: "same-access-expired",
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
@@ -2192,7 +2169,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     for (const reason of rejected) {
       expect(reason).toMatchObject({
         code: "forbidden",
-        message: "Approve this access in Opensteer on the computer that provides the app.",
+        message: "This approval changed or is no longer waiting.",
       });
     }
     const firstId = fulfilled[0]!.connection.id;
@@ -4409,24 +4386,144 @@ integration.sequential("PostgreSQL computer app connections", () => {
     },
   );
 
-  it("requires the signed policy request, consumes it once, and keeps connections when switched off", async ({
+  for (const decision of ["automatic-policy", "policy-off", "mcp-allow", "mcp-deny"] as const) {
+    it(`rejects a ${decision} decision revoked while its transaction is held, without committing authority`, async ({
+      storeFixture,
+    }) => {
+      const { database, guiFixture, guiDigest, platform } = storeFixture;
+      const setup = await guiFixture(`revoked-${decision}`);
+      const sessionId = createId("authSession");
+      const now = new Date();
+      const session = {
+        id: sessionId,
+        userId: setup.ownerUserId,
+        token: randomUUID(),
+        expiresAt: new Date(Date.now() + 60_000),
+        absoluteExpiresAt: new Date(Date.now() + 60_000),
+        ipAddress: null,
+        userAgent: null,
+        deviceLabel: "iPhone",
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await database.insertInto("authSessions").values(session).execute();
+      let setupRequestId: string;
+      if (decision.startsWith("mcp-")) {
+        await database
+          .updateTable("integrationServers")
+          .set({
+            transport: jsonValue({
+              type: "runner",
+              runnerId: setup.runnerId,
+              launch: {
+                type: "stdio",
+                command: "sh",
+                args: ["-c", "true"],
+                cwd: "/tmp",
+                env: {},
+              },
+            }),
+          })
+          .where("id", "=", setup.gui.serverId)
+          .execute();
+        await platform.localMcp.requestApprovals();
+        setupRequestId = (await platform.listComputerAppSetupRequests(setup.ownerUserId))[0]!.id;
+      } else {
+        const pending = await platform.requestComputerAppSetup({
+          kind: "policy",
+          appApproval: "automatic",
+          actorUserId: setup.ownerUserId,
+          runnerId: setup.runnerId,
+          definitionDigest: guiDigest,
+        });
+        setupRequestId = pending.request.id;
+      }
+      const before = await database
+        .selectFrom("integrationServers")
+        .selectAll()
+        .where("id", "=", setup.gui.serverId)
+        .executeTakeFirstOrThrow();
+      const barrier = pauseAfterLock(
+        database,
+        (node) => /"name":"runners"/u.test(node) && node.includes("NoKeyUpdate"),
+      );
+      const held = new IntegrationPlatformStore(barrier.database);
+      const input = {
+        actorUserId: setup.ownerUserId,
+        runnerId: setup.runnerId,
+        setupRequestId,
+        settlementSessionId: sessionId,
+      };
+      const decide = () =>
+        decision === "mcp-allow"
+          ? held.localMcp.approve(input)
+          : decision === "mcp-deny"
+            ? held.localMcp.decline(input)
+            : held.setComputerUsePolicy({
+                ownerUserId: setup.ownerUserId,
+                runnerId: setup.runnerId,
+                requestId: `revoked-${decision}`,
+                settlementSessionId: sessionId,
+                ...(decision === "policy-off"
+                  ? { appApproval: "ask" as const }
+                  : {
+                      appApproval: "automatic" as const,
+                      setupRequestId,
+                      definitionDigest: guiDigest,
+                    }),
+              });
+      const outcome = decide().then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await withTimeout(barrier.reached, 5_000, {
+          timeoutError: () => new Error("Approval never acquired the computer lock"),
+        });
+        await database.deleteFrom("authSessions").where("id", "=", sessionId).execute();
+        barrier.release();
+        expect(await outcome).toMatchObject({ ok: false, error: { code: "unauthorized" } });
+        expect(await platform.getComputerAppSetupRequest({ setupRequestId })).not.toBeNull();
+        expect(
+          await platform.getComputerUsePolicy({
+            runnerId: setup.runnerId,
+            ownerUserId: setup.ownerUserId,
+          }),
+        ).toEqual({ appApproval: "ask", revision: 0 });
+        expect(
+          await database
+            .selectFrom("integrationServers")
+            .selectAll()
+            .where("id", "=", setup.gui.serverId)
+            .executeTakeFirstOrThrow(),
+        ).toEqual(before);
+        expect(
+          await database
+            .selectFrom("integrationConnections")
+            .select("id")
+            .where("runnerId", "=", setup.runnerId)
+            .execute(),
+        ).toEqual([]);
+        await database.insertInto("authSessions").values(session).execute();
+        await decide();
+        expect(await platform.getComputerAppSetupRequest({ setupRequestId })).toBeNull();
+      } finally {
+        barrier.release();
+        await outcome;
+      }
+    });
+  }
+
+  it("requires the pending policy request, consumes it once, and keeps connections when switched off", async ({
     storeFixture,
   }) => {
-    const {
-      guiFixture,
-      platform,
-      approveApp,
-      notes,
-      guiDigest,
-      computerKeys,
-      allowAutomatic,
-      database,
-    } = storeFixture;
+    const { guiFixture, platform, approveApp, notes, guiDigest, allowAutomatic, database } =
+      storeFixture;
     const setup = await guiFixture("policy-consent");
     const owner = { runnerId: setup.runnerId, ownerUserId: setup.ownerUserId };
     expect(await platform.getComputerUsePolicy(owner)).toEqual({
       appApproval: "ask",
-      approvalKeyId: expect.stringMatching(/^sha256:/u),
       revision: 0,
     });
     const connected = await approveApp({
@@ -4452,13 +4549,10 @@ integration.sequential("PostgreSQL computer app connections", () => {
         requestId: "wrong-kind",
         appApproval: "automatic",
         definitionDigest: guiDigest,
-        approval: createComputerAppApproval(
-          computerKeys.get(setup.runnerId)!.privateKey,
-          appRequest.request,
-        ),
+        setupRequestId: appRequest.request.id,
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
-    const { input, policy, request } = await allowAutomatic(setup);
+    const { input, policy } = await allowAutomatic(setup);
     expect(policy).toEqual({ appApproval: "automatic", revision: 1 });
     await expect(platform.setComputerUsePolicy(input)).rejects.toMatchObject({ code: "forbidden" });
     const stored = await database
@@ -4466,19 +4560,10 @@ integration.sequential("PostgreSQL computer app connections", () => {
       .selectAll()
       .where("runnerId", "=", setup.runnerId)
       .executeTakeFirstOrThrow();
-    expect(stored.approval).toEqual({ request, approval: input.approval });
+    expect(stored).not.toHaveProperty("approval");
     await expect(
       platform.setComputerUsePolicy({ ...owner, requestId: "policy-off", appApproval: "ask" }),
     ).resolves.toEqual({ appApproval: "ask", revision: 2 });
-    expect(
-      (
-        await database
-          .selectFrom("computerUsePolicies")
-          .select("approval")
-          .where("runnerId", "=", setup.runnerId)
-          .executeTakeFirstOrThrow()
-      ).approval,
-    ).toBeNull();
     expect(
       (
         await database
@@ -4610,7 +4695,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     ).toEqual(tools);
   });
 
-  it("keeps blocked connections tool-less across reinstall and automatic requests, and unblocks only with a signed approval", async ({
+  it("keeps blocked connections tool-less across reinstall and automatic requests, and unblocks only with owner approval", async ({
     storeFixture,
   }) => {
     const {
@@ -4647,7 +4732,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
     await expect(platform.approveComputerAppAutomatically(input)).rejects.toMatchObject({
       code: "forbidden",
-      message: "Notes is blocked on Mac blocked-automatic. The person can unblock it on that Mac.",
+      message:
+        "Notes is blocked on Mac blocked-automatic. The owner can unblock it from any Opensteer app.",
     });
     await expect(platform.setComputerConnection(input)).rejects.toMatchObject({
       code: "forbidden",
@@ -4769,14 +4855,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
     expect(approved.fulfilledRequestIds).toEqual([pending.request.id]);
     expect(approved.grants).toHaveLength(1);
     expect(
-      (
-        await database
-          .selectFrom("requests")
-          .select("status")
-          .where("id", "=", pending.request.id)
-          .executeTakeFirstOrThrow()
-      ).status,
-    ).toBe("fulfilled");
+      await database
+        .selectFrom("requests")
+        .select(["status", "settlementProvenance"])
+        .where("id", "=", pending.request.id)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ status: "fulfilled", settlementProvenance: null });
     expect(await platform.listComputerAppSetupRequests(run.userId)).toEqual([]);
   });
 
@@ -4950,16 +5034,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
   });
 
   it("consumes one app's approval and leaves another app's pending", async ({ storeFixture }) => {
-    const {
-      guiFixture,
-      platform,
-      guiDigest,
-      guiDefinition,
-      notes,
-      calendar,
-      guiInput,
-      computerKeys,
-    } = storeFixture;
+    const { guiFixture, platform, guiDigest, guiDefinition, notes, calendar, guiInput } =
+      storeFixture;
     const setup = await guiFixture("scoped-approval");
     const ask = async (app: ComputerAppIdentity) =>
       (
@@ -4990,10 +5066,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         runnerId: setup.runnerId,
         tools: setup.gui.tools("read"),
       }),
-      approval: createComputerAppApproval(
-        computerKeys.get(setup.runnerId)!.privateKey,
-        notesRequest,
-      ),
+      setupRequestId: notesRequest.id,
     });
     expect(await platform.listComputerAppSetupRequests(setup.ownerUserId)).toEqual([
       calendarRequest,
@@ -5009,10 +5082,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
           runnerId: setup.runnerId,
           tools: setup.gui.tools("read"),
         }),
-        approval: createComputerAppApproval(
-          computerKeys.get(setup.runnerId)!.privateKey,
-          notesRequest,
-        ),
+        setupRequestId: notesRequest.id,
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
     const calendarConnection = await platform.setComputerConnection({
@@ -5024,28 +5094,17 @@ integration.sequential("PostgreSQL computer app connections", () => {
         runnerId: setup.runnerId,
         tools: setup.gui.tools("read"),
       }),
-      approval: createComputerAppApproval(
-        computerKeys.get(setup.runnerId)!.privateKey,
-        calendarRequest,
-      ),
+      setupRequestId: calendarRequest.id,
     });
     expect(calendarConnection.created).toBe(true);
     expect(await platform.listComputerAppSetupRequests(setup.ownerUserId)).toEqual([]);
   });
 
-  it("refuses to apply a signature to a different full identity with the same app key", async ({
+  it("refuses to apply approval to a different full identity with the same app key", async ({
     storeFixture,
   }) => {
-    const {
-      guiFixture,
-      platform,
-      notes,
-      guiDigest,
-      guiDefinition,
-      computerKeys,
-      guiInput,
-      database,
-    } = storeFixture;
+    const { guiFixture, platform, notes, guiDigest, guiDefinition, guiInput, database } =
+      storeFixture;
     const setup = await guiFixture("exact-signed-identity");
     const { request } = await platform.requestComputerAppSetup({
       access: "read",
@@ -5056,10 +5115,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       requiresApp: true,
       runnerId: setup.runnerId,
     });
-    const approval = createComputerAppApproval(
-      computerKeys.get(setup.runnerId)!.privateKey,
-      request,
-    );
+    const approval = request.id;
     const substituted = { ...notes, displayName: "Impostor Notes", teamId: "ABCDEFGHIJ" };
 
     await expect(
@@ -5072,7 +5128,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
           runnerId: setup.runnerId,
           tools: setup.gui.tools("read"),
         }),
-        approval,
+        setupRequestId: approval,
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
     await expect(
@@ -5097,7 +5153,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       askOnMac,
       platform,
       guiInput,
-      computerKeys,
+      database,
     } = storeFixture;
     const run = await runningRunFixture(store, "computer-use-grant", { kind: "specialized" });
     const setup = await guiFixture("computer-use-grant", run.userId);
@@ -5156,7 +5212,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
     expect(relabelled.request.id).toBe(opened.request.id);
 
-    const consumed = await platform.setComputerConnection({
+    const sessionId = createId("authSession");
+    const approvalInput = {
       ...guiInput({
         access: "read",
         actorUserId: run.userId,
@@ -5165,11 +5222,38 @@ integration.sequential("PostgreSQL computer app connections", () => {
         runnerId: setup.runnerId,
         tools: setup.gui.tools("read"),
       }),
-      approval: createComputerAppApproval(
-        computerKeys.get(setup.runnerId)!.privateKey,
-        opened.setupRequest,
-      ),
-    });
+      setupRequestId: opened.setupRequest.id,
+      settlementSessionId: sessionId,
+    };
+    await expect(platform.setComputerConnection(approvalInput)).rejects.toThrow(
+      "no longer signed in",
+    );
+    expect((await platform.requests.get(opened.request.id))?.status).toBe("pending");
+    expect(
+      await database
+        .selectFrom("integrationConnections")
+        .select("id")
+        .where("runnerId", "=", setup.runnerId)
+        .execute(),
+    ).toEqual([]);
+    const now = new Date();
+    await database
+      .insertInto("authSessions")
+      .values({
+        id: sessionId,
+        userId: run.userId,
+        token: randomUUID(),
+        expiresAt: new Date(Date.now() + 60_000),
+        absoluteExpiresAt: new Date(Date.now() + 60_000),
+        ipAddress: null,
+        userAgent: null,
+        deviceLabel: "iPhone",
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .execute();
+    const consumed = await platform.setComputerConnection(approvalInput);
     expect(consumed.fulfilledRequestIds).toEqual([opened.request.id]);
     expect(consumed.grants).toEqual([
       expect.objectContaining({
@@ -5186,6 +5270,15 @@ integration.sequential("PostgreSQL computer app connections", () => {
     );
     await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
       status: "fulfilled",
+      settlementProvenance: { sessionId, deviceLabel: "iPhone" },
+    });
+    await database.deleteFrom("authSessions").where("id", "=", sessionId).execute();
+    await expect(platform.setComputerConnection(approvalInput)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    expect((await platform.requests.get(opened.request.id))?.settlementProvenance).toEqual({
+      sessionId,
+      deviceLabel: "iPhone",
     });
     // The Thread hears about it through the same continuation an
     // `integration.access` answer produces.
@@ -5198,17 +5291,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
   });
 
   it("grants nothing extra when the asking Workspace is Main", async ({ storeFixture }) => {
-    const {
-      store,
-      guiFixture,
-      askOnMac,
-      calendar,
-      guiDigest,
-      guiDefinition,
-      platform,
-      guiInput,
-      computerKeys,
-    } = storeFixture;
+    const { store, guiFixture, askOnMac, calendar, guiDigest, guiDefinition, platform, guiInput } =
+      storeFixture;
     const run = await runningRunFixture(store, "computer-use-main");
     const setup = await guiFixture("computer-use-main", run.userId);
     const opened = await askOnMac({
@@ -5233,10 +5317,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         runnerId: setup.runnerId,
         tools: setup.gui.tools("read-write"),
       }),
-      approval: createComputerAppApproval(
-        computerKeys.get(setup.runnerId)!.privateKey,
-        opened.setupRequest,
-      ),
+      setupRequestId: opened.setupRequest.id,
     });
     expect(consumed.fulfilledRequestIds).toEqual([opened.request.id]);
     expect(consumed.grants).toEqual([]);
@@ -5373,22 +5454,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
     ]);
   });
 
-  it("takes consent only from the desktop key its owner registered for that Mac", async ({
-    storeFixture,
-  }) => {
-    const {
-      guiFixture,
-      platform,
-      notes,
-      guiDigest,
-      guiDefinition,
-      guiInput,
-      computerKeys,
-      runnerKeys,
-      database,
-      store,
-    } = storeFixture;
-    const setup = await guiFixture("approval-key");
+  it("takes setup approval only from the computer's current owner", async ({ storeFixture }) => {
+    const { guiFixture, platform, notes, guiDigest, guiDefinition, guiInput, store } = storeFixture;
+    const setup = await guiFixture("owner-session");
     const { request } = await platform.requestComputerAppSetup({
       access: "read",
       actorUserId: setup.ownerUserId,
@@ -5398,124 +5466,26 @@ integration.sequential("PostgreSQL computer app connections", () => {
       requiresApp: true,
       runnerId: setup.runnerId,
     });
-    const consume = (privateKey: import("node:crypto").KeyObject) =>
-      platform.setComputerConnection({
-        ...guiInput({
-          access: "read",
-          actorUserId: setup.ownerUserId,
-          app: notes,
-          requestId: "approval-key",
-          runnerId: setup.runnerId,
-          tools: setup.gui.tools("read"),
-        }),
-        approval: createComputerAppApproval(privateKey, request),
-      });
-    const publicKey = computerKeys
-      .get(setup.runnerId)!
-      .publicKey.export({ format: "pem", type: "spki" })
-      .toString();
-    await expect(
-      platform.getComputerUsePolicy({ ownerUserId: setup.ownerUserId, runnerId: setup.runnerId }),
-    ).resolves.toMatchObject({ approvalKeyId: expect.stringMatching(/^sha256:/u) });
-
-    // The Runner's own key — which every process running as the person can
-    // read — signs nothing the Host takes as the person's consent.
-    await expect(consume(runnerKeys.get(setup.runnerId)!.privateKey)).rejects.toMatchObject({
-      code: "forbidden",
-      message: "Approve this access in Opensteer on the computer that provides the app.",
-    });
-
-    // With no key registered nothing is accepted, and the refusal says how to
-    // register one: open this Mac's page on the Mac.
-    await database
-      .deleteFrom("computerUseApprovalKeys")
-      .where("runnerId", "=", setup.runnerId)
-      .execute();
-    await expect(
-      platform.getComputerUsePolicy({ ownerUserId: setup.ownerUserId, runnerId: setup.runnerId }),
-    ).resolves.toMatchObject({ approvalKeyId: null });
-    await expect(consume(computerKeys.get(setup.runnerId)!.privateKey)).rejects.toMatchObject({
-      code: "forbidden",
-      message: expect.stringContaining("Open this Mac's page in Opensteer"),
-    });
-
-    // Only the Mac's owner registers one.
-    const stranger = await store.createUser("Stranger");
-    await expect(
-      platform.registerComputerUseApprovalKey({
-        ownerUserId: stranger,
-        publicKey,
-        requestId: "stranger-key",
+    const stranger = await store.createUser("Other owner");
+    const input = {
+      ...guiInput({
+        access: "read",
+        actorUserId: setup.ownerUserId,
+        app: notes,
+        requestId: "owner-answer",
         runnerId: setup.runnerId,
+        tools: setup.gui.tools("read"),
       }),
+      setupRequestId: request.id,
+    };
+    await expect(
+      platform.setComputerConnection({ ...input, actorUserId: stranger }),
     ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      platform.registerComputerUseApprovalKey({
-        ownerUserId: setup.ownerUserId,
-        publicKey: "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n",
-        requestId: "bad-key",
-        runnerId: setup.runnerId,
-      }),
-    ).rejects.toMatchObject({ code: "bad_request" });
-
-    // Setting computer use up on the Mac again registers it, and then it approves.
-    await expect(
-      platform.registerComputerUseApprovalKey({
-        ownerUserId: setup.ownerUserId,
-        publicKey,
-        requestId: "re-register",
-        runnerId: setup.runnerId,
-      }),
-    ).resolves.toMatchObject({ replaced: false });
-    await expect(consume(computerKeys.get(setup.runnerId)!.privateKey)).resolves.toMatchObject({
-      created: true,
+    expect(await platform.listComputerAppSetupRequests(setup.ownerUserId)).toEqual([request]);
+    await expect(platform.setComputerConnection(input)).resolves.toMatchObject({ created: true });
+    await expect(platform.setComputerConnection(input)).rejects.toMatchObject({
+      code: "forbidden",
     });
-
-    // A new desktop key replaces the old one, which then approves nothing.
-    const rotated = generateKeyPairSync("ed25519");
-    await expect(
-      platform.registerComputerUseApprovalKey({
-        ownerUserId: setup.ownerUserId,
-        publicKey: rotated.publicKey.export({ format: "pem", type: "spki" }).toString(),
-        requestId: "rotate",
-        runnerId: setup.runnerId,
-      }),
-    ).resolves.toMatchObject({ replaced: true });
-    const { request: widen } = await platform.requestComputerAppSetup({
-      access: "read-write",
-      actorUserId: setup.ownerUserId,
-      app: notes,
-      definitionDigest: guiDigest,
-      definitionId: guiDefinition.id,
-      requiresApp: true,
-      runnerId: setup.runnerId,
-    });
-    await expect(
-      platform.setComputerConnection({
-        ...guiInput({
-          access: "read-write",
-          actorUserId: setup.ownerUserId,
-          app: notes,
-          requestId: "rotated-away",
-          runnerId: setup.runnerId,
-          tools: setup.gui.tools("read-write"),
-        }),
-        approval: createComputerAppApproval(computerKeys.get(setup.runnerId)!.privateKey, widen),
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      platform.setComputerConnection({
-        ...guiInput({
-          access: "read-write",
-          actorUserId: setup.ownerUserId,
-          app: notes,
-          requestId: "rotated-key-consumes",
-          runnerId: setup.runnerId,
-          tools: setup.gui.tools("read-write"),
-        }),
-        approval: createComputerAppApproval(rotated.privateKey, widen),
-      }),
-    ).resolves.toMatchObject({ connection: { computer: { access: "read-write" } } });
   });
 
   it("answers an identity-change approval only with that identity, never with an edit that kept the old one", async ({
@@ -5531,7 +5501,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       guiDefinition,
       platform,
       guiInput,
-      computerKeys,
     } = storeFixture;
     const run = await runningRunFixture(store, "identity-change", { kind: "specialized" });
     const mac = await guiFixture("identity-change", run.userId);
@@ -5582,7 +5551,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       expect.objectContaining({ app: resigned, id: opened.setupRequest.id }),
     ]);
 
-    // The signed answer for the new identity is what fulfils it.
+    // The owner decision for the new identity is what fulfils it.
     const approved = await platform.setComputerConnection({
       ...guiInput({
         access: "read",
@@ -5592,10 +5561,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         runnerId: mac.runnerId,
         tools: mac.gui.tools("read"),
       }),
-      approval: createComputerAppApproval(
-        computerKeys.get(mac.runnerId)!.privateKey,
-        opened.setupRequest,
-      ),
+      setupRequestId: opened.setupRequest.id,
     });
     expect(approved.connection.computer?.app).toEqual(resigned);
     expect(approved.fulfilledRequestIds).toEqual([opened.request.id]);
@@ -5604,17 +5570,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
   it("relabels both pending task cards when an app's identity changes before approval", async ({
     storeFixture,
   }) => {
-    const {
-      store,
-      guiFixture,
-      guiDigest,
-      guiDefinition,
-      askOnMac,
-      notes,
-      platform,
-      guiInput,
-      computerKeys,
-    } = storeFixture;
+    const { store, guiFixture, guiDigest, guiDefinition, askOnMac, notes, platform, guiInput } =
+      storeFixture;
     const run = await runningRunFixture(store, "identity-change-pending", { kind: "specialized" });
     const mac = await guiFixture("identity-change-pending", run.userId);
     const ask = {
@@ -5674,10 +5631,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         runnerId: mac.runnerId,
         tools: mac.gui.tools("read-write"),
       }),
-      approval: createComputerAppApproval(
-        computerKeys.get(mac.runnerId)!.privateKey,
-        second.setupRequest,
-      ),
+      setupRequestId: second.setupRequest.id,
     });
     expect(approved.fulfilledRequestIds).toEqual(
       expect.arrayContaining([first.request.id, second.request.id]),
@@ -5807,17 +5761,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
 
   describe("one waiting approval per app, answered only by a person", () => {
     async function setup(storeFixture: StoreFixture, suffix: string) {
-      const {
-        store,
-        guiFixture,
-        notes,
-        guiDigest,
-        guiDefinition,
-        platform,
-        guiInput,
-        computerKeys,
-        database,
-      } = storeFixture;
+      const { store, guiFixture, notes, guiDigest, guiDefinition, platform, guiInput, database } =
+        storeFixture;
       const run = await runningRunFixture(store, suffix, { kind: "specialized" });
       const mac = await guiFixture(suffix, run.userId);
       const ask = (access: "read" | "read-write", app: ComputerAppIdentity = notes) => ({
@@ -5835,7 +5780,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         workspaceId: run.workspaceId,
       });
       const consume = (
-        request: Parameters<typeof createComputerAppApproval>[1],
+        request: import("@opensteer/integration-core").ComputerAppSetupRequest,
         access: "read" | "read-write",
         app: ComputerAppIdentity = notes,
       ) =>
@@ -5848,7 +5793,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
             runnerId: mac.runnerId,
             tools: mac.gui.tools(access),
           }),
-          approval: createComputerAppApproval(computerKeys.get(mac.runnerId)!.privateKey, request),
+          setupRequestId: request.id,
         });
       const grants = () =>
         database
@@ -6067,7 +6012,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     it("keeps a wider approval waiting under a new id when the owner lowers an app's access", async ({
       storeFixture,
     }) => {
-      const { askOnMac, notes, platform, guiInput } = storeFixture;
+      const { askOnMac, notes, platform, guiInput, database } = storeFixture;
       const test = await setup(storeFixture, "reduction-reissues");
       const control = await askOnMac(test.ask("read-write"));
       await test.consume(control.setupRequest, "read-write");
@@ -6076,8 +6021,37 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const renamed = { ...notes, displayName: "Notes (renamed)" };
       const again = await askOnMac(test.ask("read-write", renamed));
 
-      const lowered = await platform.setComputerConnection(
-        guiInput({
+      const look = await askOnMac(test.ask("read", renamed));
+      // Model refreshed connection metadata while the earlier asks still wait.
+      await database
+        .updateTable("integrationConnections")
+        .set({ computerApp: jsonValue(renamed) })
+        .where("runnerId", "=", test.mac.runnerId)
+        .execute();
+      await database
+        .updateTable("integrationGrants")
+        .set({ revokedAt: new Date() })
+        .where("workspaceId", "=", test.run.workspaceId)
+        .execute();
+      expect(await test.grants()).toEqual([]);
+      const sessionId = createId("authSession");
+      const now = new Date();
+      const session = {
+        id: sessionId,
+        userId: test.run.userId,
+        token: randomUUID(),
+        expiresAt: new Date(Date.now() + 60_000),
+        absoluteExpiresAt: new Date(Date.now() + 60_000),
+        ipAddress: null,
+        userAgent: null,
+        deviceLabel: "iPhone",
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await database.insertInto("authSessions").values(session).execute();
+      const input = {
+        ...guiInput({
           access: "read",
           actorUserId: test.run.userId,
           app: notes,
@@ -6085,8 +6059,60 @@ integration.sequential("PostgreSQL computer app connections", () => {
           runnerId: test.mac.runnerId,
           tools: test.mac.gui.tools("read"),
         }),
+        settlementSessionId: sessionId,
+      };
+      const snapshot = async () => ({
+        connections: await database
+          .selectFrom("integrationConnections")
+          .selectAll()
+          .orderBy("id")
+          .execute(),
+        servers: await database
+          .selectFrom("integrationServers")
+          .selectAll()
+          .orderBy("id")
+          .execute(),
+        grants: await database.selectFrom("integrationGrants").selectAll().orderBy("id").execute(),
+        requests: await database.selectFrom("requests").selectAll().orderBy("id").execute(),
+        setupRequests: await database
+          .selectFrom("computerAppSetupRequests")
+          .selectAll()
+          .orderBy("id")
+          .execute(),
+        audit: await database.selectFrom("securityAudit").selectAll().orderBy("id").execute(),
+      });
+      const before = await snapshot();
+      const barrier = pauseAfterLock(
+        database,
+        (node) => /"name":"runners"/u.test(node) && node.includes("NoKeyUpdate"),
       );
+      const held = new IntegrationPlatformStore(barrier.database);
+      const outcome = held.setComputerConnection(input).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await withTimeout(barrier.reached, 5_000, {
+          timeoutError: () => new Error("Reduction never acquired the computer lock"),
+        });
+        await database.deleteFrom("authSessions").where("id", "=", sessionId).execute();
+        barrier.release();
+        expect(await outcome).toMatchObject({ ok: false, error: { code: "unauthorized" } });
+        expect(await snapshot()).toEqual(before);
+      } finally {
+        barrier.release();
+        await outcome;
+      }
+      await database.insertInto("authSessions").values(session).execute();
+      const lowered = await platform.setComputerConnection(input);
+      expect(await platform.requests.get(look.request.id)).toMatchObject({
+        status: "fulfilled",
+        settlementProvenance: null,
+      });
 
+      expect(await test.grants()).toEqual([
+        { access: "read", connectionId: lowered.connection.id },
+      ]);
       expect(lowered.reissuedSetupRequestId).not.toBeNull();
       expect(await test.status(again.request.id)).toEqual({
         setupRequestId: lowered.reissuedSetupRequestId,
@@ -6182,10 +6208,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         })
         .where("id", "=", phoneId)
         .execute();
-      await database
-        .deleteFrom("computerUseApprovalKeys")
-        .where("runnerId", "=", phoneId)
-        .execute();
       const installationId = createIntegrationId("installation");
       const serverId = createIntegrationId("server");
       await platform.install({
@@ -6249,7 +6271,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture: StoreFixture,
       setup: Awaited<ReturnType<typeof phoneFixture>>,
       access: "read" | "read-write",
-      approved: Parameters<typeof createComputerAppApproval>[1],
+      approved: import("@opensteer/integration-core").ComputerAppSetupRequest,
     ) {
       const { platform } = storeFixture;
       return platform.setComputerConnection({
@@ -6402,14 +6424,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
           appApproval: "automatic",
           // However the row got here, nothing about it may stand for a
           // person holding the phone; its contents are never consulted.
-          approval: jsonValue({
-            approval: {
-              expiresAt: new Date(Date.now() + 60_000).toISOString(),
-              requestId: randomUUID(),
-              signature: "a".repeat(86),
-            },
-            request: phoneOpened.setupRequest,
-          }),
           deploymentId: deployment!.id,
           ownerUserId: run.userId,
           revision: 1,
@@ -6490,7 +6504,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     it("refuses signed phone mutations, key nomination and non-owner changes", async ({
       storeFixture,
     }) => {
-      const { store, askOnMac, platform, computerKeys } = storeFixture;
+      const { store, askOnMac, platform } = storeFixture;
       const run = await runningRunFixture(store, "phone-key", { kind: "specialized" });
       const setup = await phoneFixture(storeFixture, "phone-key", run.userId);
       const opened = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
@@ -6508,27 +6522,14 @@ integration.sequential("PostgreSQL computer app connections", () => {
       await expect(
         platform.setComputerConnection({
           ...mutation,
-          approval: createComputerAppApproval(
-            computerKeys.get(setup.phone.phoneId)!.privateKey,
-            opened.setupRequest,
-          ),
+          setupRequestId: opened.setupRequest.id,
         }),
       ).rejects.toMatchObject({ code: "forbidden" });
       const stranger = await store.createUser("Stranger");
       await expect(
         platform.setComputerConnection({ ...mutation, actorUserId: stranger }),
       ).rejects.toMatchObject({ code: "forbidden" });
-      await expect(
-        platform.registerComputerUseApprovalKey({
-          ownerUserId: run.userId,
-          publicKey: computerKeys
-            .get(setup.phone.phoneId)!
-            .publicKey.export({ format: "pem", type: "spki" })
-            .toString(),
-          requestId: "phone-key-refused",
-          runnerId: setup.phone.phoneId,
-        }),
-      ).rejects.toMatchObject({ code: "forbidden" });
+
       await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
         status: "pending",
       });
@@ -6679,7 +6680,14 @@ integration.sequential("PostgreSQL computer app connections", () => {
           .where("id", "=", row.id)
           .execute();
       }
-      await agentPhoneOwnerAccessMigration.up(database);
+      await sql`create table computer_use_approval_keys (runner_id text primary key)`.execute(
+        database,
+      );
+      try {
+        await agentPhoneOwnerAccessMigration.up(database);
+      } finally {
+        await sql`drop table computer_use_approval_keys`.execute(database);
+      }
       const after = await database
         .selectFrom("requests")
         .selectAll()

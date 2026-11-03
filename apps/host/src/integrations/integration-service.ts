@@ -168,7 +168,8 @@ const authorizationChangedDetail =
   "Opensteer changed how this service connects. Reconnect this account to keep using it.";
 const invalidTokenExpiryDetail = "The provider token expiry is invalid; reconnect this account.";
 
-interface HostedOAuthOptions {
+export interface HostedOAuthOptions {
+  readonly kind: "personal" | "server";
   readonly accountSubject: (ownerUserId: UserId) => Promise<IntegrationAccountBinding | null>;
   readonly broker: HostedOAuthBrokerClient;
   readonly deploymentAuthorityDigest: string;
@@ -272,7 +273,6 @@ export class IntegrationService {
       ]);
     const canonicalProviderAuthorizations = this.#resolveProviderAuthorizations({
       applications,
-      callbackRelayProviders: hostedMetadata.callbackRelayProviders,
       hostedProviderRevisions: hostedMetadata.providerRevisions,
       hostedOAuthStatus: hostedMetadata.availability,
       posture,
@@ -286,10 +286,8 @@ export class IntegrationService {
       applications: applications.map((application) =>
         publicApplication(
           application,
-          this.#customApplicationCallbackUrl(
-            application.provider,
-            hostedMetadata.callbackRelayProviders,
-          ) ?? this.callbackUrl(application.provider),
+          this.#customApplicationCallbackUrl(application.provider, posture) ??
+            this.callbackUrl(application.provider),
           this.#providerManifest(application.provider),
           ownerUserId,
           isAdministrator,
@@ -298,10 +296,7 @@ export class IntegrationService {
       authorizationSurface,
       callbackUrls: Object.fromEntries(
         this.#providerManifests.flatMap(({ provider }) => {
-          const callbackUrl = this.#customApplicationCallbackUrl(
-            provider,
-            hostedMetadata.callbackRelayProviders,
-          );
+          const callbackUrl = this.#customApplicationCallbackUrl(provider, posture);
           return callbackUrl ? [[provider, callbackUrl]] : [];
         }),
       ),
@@ -313,7 +308,7 @@ export class IntegrationService {
         ),
       ),
       hostedOAuthDisclosure:
-        "Opensteer briefly brokers managed authorization credentials during connection and refresh. This deployment stores the account tokens, and provider data goes directly between this deployment and the provider. With your own app, this deployment handles token exchange and refresh; some local connections still use Opensteer to receive the authorization callback.",
+        "Opensteer briefly brokers managed authorization credentials during connection and refresh. This deployment stores the account tokens, and provider data goes directly between this deployment and the provider. With your own app, this deployment handles token exchange and refresh; Account-linked deployments use Opensteer to receive every authorization callback. Existing connections keep working; register the displayed callback before connecting or reconnecting your own app.",
       isAdministrator,
       providerAuthorizations,
       providers: this.#providerManifests,
@@ -345,7 +340,6 @@ export class IntegrationService {
     ]);
     return this.#resolveProviderAuthorizations({
       applications,
-      callbackRelayProviders: hostedMetadata.callbackRelayProviders,
       hostedProviderRevisions: hostedMetadata.providerRevisions,
       hostedOAuthStatus: hostedMetadata.availability,
       posture,
@@ -465,7 +459,8 @@ export class IntegrationService {
     });
     return publicApplication(
       saved,
-      this.callbackUrl(saved.provider),
+      this.#customApplicationCallbackUrl(saved.provider, await this.#deploymentPosture()) ??
+        this.callbackUrl(saved.provider),
       this.#providerManifest(saved.provider),
       actor.userId,
       actor.isAdministrator,
@@ -549,17 +544,36 @@ export class IntegrationService {
       });
     }
     const attemptId = createIntegrationId("oauthAttempt");
-    const localCallbackUrl = this.callbackUrl(application.provider).toString();
-    const usesCallbackRelay = applicationSource.callbackUrl !== localCallbackUrl;
+    const posture = await this.#deploymentPosture();
+    const usesCallbackRelay = accountLinkedPosture(posture);
+    const currentCallback = this.#customApplicationCallbackUrl(application.provider, posture);
+    if (applicationSource.callbackUrl !== currentCallback) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "The Account link or callback changed. Reload before starting consent.",
+      });
+    }
     const hosted = usesCallbackRelay ? this.#hostedOAuth : undefined;
     const account = hosted
       ? validateIntegrationAccountBinding(await hosted.accountSubject(input.ownerUserId))
       : null;
-    if (usesCallbackRelay && (!hosted || !account)) {
+    if (
+      usesCallbackRelay &&
+      (!hosted || !account || new URL(account.issuer).origin !== hosted.broker.issuer)
+    ) {
       throw new OpensteerError({
         code: "conflict",
         message: "Link Opensteer Account to use this provider's HTTPS callback",
       });
+    }
+    if (usesCallbackRelay) {
+      const metadata = await hosted!.broker.metadata().catch(() => null);
+      if (!metadata?.callbackRelayProviders.includes(application.provider)) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: `Opensteer Account must be updated or restored before this sign-in can start. Register this exact callback in your OAuth app: ${applicationSource.callbackUrl}`,
+        });
+      }
     }
     const brokerAttemptId = HostedOAuthAttemptIdSchema.parse(
       `hoa_${attemptId.slice("ioa_".length)}`,
@@ -903,7 +917,12 @@ export class IntegrationService {
       id: input.attemptId,
       ownerUserId: input.ownerUserId,
     });
-    if (!claimed) throw invalidProviderAttempt();
+    if (!claimed) {
+      // Completion is single-flight; a spent claim here survived an interrupted
+      // Host. Require new consent rather than trying its authorization code again.
+      await this.#attempts.fail(input.attemptId, "grant-rejected");
+      return;
+    }
     const payload = deserializeProviderAttempt(claimed.payload);
     if (
       payload.applicationSource !== "deployment-oauth" ||
@@ -1008,6 +1027,12 @@ export class IntegrationService {
         connectionSecretContext(connectionId, claimed.ownerUserId, payload.provider),
       );
       connection = await this.#repository.completeOAuthAttempt({
+        accountBinding: {
+          kind: hosted.kind,
+          issuer: relay.accountIssuer,
+          subject: relay.accountSubject,
+          linkGeneration: relay.accountLinkGeneration,
+        },
         attemptId: input.attemptId,
         connection: {
           accountIdentifier: credential.accountIdentifier ?? null,
@@ -1176,6 +1201,12 @@ export class IntegrationService {
         connectionSecretContext(connectionId, claimed.ownerUserId, payload.provider),
       );
       await this.#repository.completeOAuthAttempt({
+        accountBinding: {
+          kind: hosted.kind,
+          issuer: payload.accountIssuer,
+          subject: payload.accountSubject,
+          linkGeneration: payload.accountLinkGeneration,
+        },
         attemptId: input.attemptId,
         connection: {
           accountIdentifier: credential.accountIdentifier ?? null,
@@ -1244,6 +1275,12 @@ export class IntegrationService {
         readonly surface: IntegrationAuthAttemptSurface;
       }
   > {
+    if (accountLinkedPosture(await this.#deploymentPosture())) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This consent must restart through Opensteer Account.",
+      });
+    }
     const attempt = await this.#claimProviderAttempt(input);
     let completed: IntegrationConnectionSummary;
     try {
@@ -1573,7 +1610,8 @@ export class IntegrationService {
     });
     return publicApplication(
       saved,
-      this.callbackUrl(saved.provider),
+      this.#customApplicationCallbackUrl(saved.provider, await this.#deploymentPosture()) ??
+        this.callbackUrl(saved.provider),
       this.#providerManifest(saved.provider),
       actor.userId,
       actor.isAdministrator,
@@ -2271,7 +2309,6 @@ export class IntegrationService {
   /** Resolves the canonical provider authorization table; surface projection happens separately. */
   #resolveProviderAuthorizations(input: {
     readonly applications: readonly IntegrationProviderApplicationRecord[];
-    readonly callbackRelayProviders: readonly string[];
     readonly hostedProviderRevisions: Readonly<Record<string, number>>;
     readonly hostedOAuthStatus: "available" | "temporarily-unavailable" | "unsupported";
     readonly posture: IntegrationDeploymentPosture;
@@ -2296,13 +2333,7 @@ export class IntegrationService {
           (application) =>
             application.provider === manifest.provider && application.status === "active",
         );
-        const requiresRelay =
-          providerRequiresHttpsCallback(manifest.provider) && this.#publicUrl.protocol !== "https:";
-        const callbackUrl = requiresRelay
-          ? this.#hostedOAuth && input.callbackRelayProviders.includes(manifest.provider)
-            ? this.#hostedOAuth.broker.callbackUrl(manifest.provider)
-            : null
-          : this.callbackUrl(manifest.provider).toString();
+        const callbackUrl = this.#customApplicationCallbackUrl(manifest.provider, input.posture);
         const deploymentSources = callbackUrl
           ? applications.map(
               (application) =>
@@ -2349,7 +2380,7 @@ export class IntegrationService {
                   code: "OAUTH_SOURCE_UNAVAILABLE" as const,
                   detail: "Opensteer managed sign-in is not available for this integration yet",
                 }
-              : requiresRelay && callbackUrl === null
+              : callbackUrl === null
                 ? {
                     code: "ACCOUNT_LINK_REQUIRED" as const,
                     detail: this.#hostedOAuth
@@ -2382,14 +2413,19 @@ export class IntegrationService {
 
   #customApplicationCallbackUrl(
     provider: IntegrationProvider,
-    callbackRelayProviders: readonly string[],
+    posture: IntegrationDeploymentPosture,
   ): string | null {
-    if (providerRequiresHttpsCallback(provider) && this.#publicUrl.protocol !== "https:") {
-      if (this.#hostedOAuth && callbackRelayProviders.includes(provider)) {
-        return this.#hostedOAuth.broker.callbackUrl(provider);
-      }
-      return null;
+    if (accountLinkedPosture(posture)) {
+      if (!this.#hostedOAuth)
+        throw new OpensteerError({
+          code: "conflict",
+          message:
+            "The linked Account callback service is unavailable. Restore the Account connection before consent.",
+        });
+      return this.#hostedOAuth.broker.callbackUrl(provider);
     }
+    if (providerRequiresHttpsCallback(provider) && this.#publicUrl.protocol !== "https:")
+      return null;
     return this.callbackUrl(provider).toString();
   }
 
@@ -2747,4 +2783,8 @@ function connectionSecretContext(
 
 function humanizeField(field: string): string {
   return field.replaceAll(/([a-z])([A-Z])/g, "$1 $2").toLocaleLowerCase();
+}
+
+function accountLinkedPosture(posture: IntegrationDeploymentPosture): boolean {
+  return posture === "account-linked-personal" || posture === "account-adopted-self-hosted";
 }

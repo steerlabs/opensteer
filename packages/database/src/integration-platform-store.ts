@@ -32,13 +32,10 @@ export class IntegrationPlatformStore {
   readonly reconcileProviderConnectionTools: IntegrationInstallStore["reconcileProviderConnectionTools"];
   readonly getConnectionKind: IntegrationConnectionAuthStore["getConnectionKind"];
   readonly listComputerAppSetupRequests: IntegrationConnectionAuthStore["listComputerAppSetupRequests"];
-  readonly listComputerAppApprovalsForRunner: IntegrationConnectionAuthStore["listComputerAppApprovalsForRunner"];
   readonly getComputerAppSetupRequest: IntegrationConnectionAuthStore["getComputerAppSetupRequest"];
-  readonly registerComputerUseApprovalKey: IntegrationConnectionAuthStore["registerComputerUseApprovalKey"];
   readonly isAdministrator: IntegrationConnectionAuthStore["isAdministrator"];
   readonly requestComputerAppSetup: IntegrationConnectionAuthStore["requestComputerAppSetup"];
   readonly cancelComputerAppSetup: IntegrationConnectionAuthStore["cancelComputerAppSetup"];
-  readonly declineComputerAppSetupFromMac: IntegrationConnectionAuthStore["declineComputerAppSetupFromMac"];
   readonly expireComputerAppSetupRequests: IntegrationConnectionAuthStore["expireComputerAppSetupRequests"];
   /** A task's ask for one app on one Mac: the Request and its approval, together. */
   readonly requestComputerAppAccess: RequestStore["requestComputerAppAccess"];
@@ -92,20 +89,12 @@ export class IntegrationPlatformStore {
     this.listComputerAppSetupRequests = this.connections.listComputerAppSetupRequests.bind(
       this.connections,
     );
-    this.listComputerAppApprovalsForRunner =
-      this.connections.listComputerAppApprovalsForRunner.bind(this.connections);
     this.getComputerAppSetupRequest = this.connections.getComputerAppSetupRequest.bind(
-      this.connections,
-    );
-    this.registerComputerUseApprovalKey = this.connections.registerComputerUseApprovalKey.bind(
       this.connections,
     );
     this.isAdministrator = this.connections.isAdministrator.bind(this.connections);
     this.requestComputerAppSetup = this.connections.requestComputerAppSetup.bind(this.connections);
     this.cancelComputerAppSetup = this.connections.cancelComputerAppSetup.bind(this.connections);
-    this.declineComputerAppSetupFromMac = this.connections.declineComputerAppSetupFromMac.bind(
-      this.connections,
-    );
     this.expireComputerAppSetupRequests = this.connections.expireComputerAppSetupRequests.bind(
       this.connections,
     );

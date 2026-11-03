@@ -3,7 +3,6 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { DesktopUseComputerViewInput } from "../packages/protocol/src/desktop.js";
 import { DesktopUseComputerViewResultSchema } from "../packages/protocol/src/desktop.js";
-import { ComputerAppApprovalService } from "../apps/desktop/src/computer-app-approval-service.js";
 import { PersonalDeploymentSupervisor } from "../apps/desktop/src/supervisor/personal-deployment-supervisor.js";
 import { handleUseComputerViewOnThisMac } from "../apps/desktop/src/bridge/methods/computer-use.js";
 import type { DesktopBridgeContext } from "../apps/desktop/src/bridge/context.js";
@@ -51,21 +50,14 @@ export async function localActivationJourney(
     },
   } as unknown as ConstructorParameters<typeof PersonalDeploymentSupervisor>[0]);
   const calls: string[] = [];
-  const approvals = new ComputerAppApprovalService({
-    local: {
-      checkComputerUseRunnerTarget: async () => {
-        calls.push("slot");
-        throw new Error("No slot on this Personal Mac");
-      },
-    },
-    personal: {
-      status: { deploymentId },
-      checkComputerUseRunnerTarget: async (deployment: string, runner: string) => {
-        calls.push("personal");
-        return supervisor.checkComputerUseRunnerTarget(deployment, runner);
-      },
-    },
-  } as unknown as ConstructorParameters<typeof ComputerAppApprovalService>[0]);
+  const checkComputerUseRunnerTarget = async (deployment: string, runner: string) => {
+    if (deployment !== deploymentId) {
+      calls.push("slot");
+      throw new Error("No slot on this Personal Mac");
+    }
+    calls.push("personal");
+    return supervisor.checkComputerUseRunnerTarget(deployment, runner);
+  };
   let key = "personal-owner-attachment";
   let selectedDeployment = deploymentId;
   let changeDuringCheck = false;
@@ -91,7 +83,7 @@ export async function localActivationJourney(
           });
         },
         checkLocalComputerViewTarget: async (deployment: string, runner: string) => {
-          const target = await approvals.checkComputerUseRunnerTarget(deployment, runner);
+          const target = await checkComputerUseRunnerTarget(deployment, runner);
           if (changeDuringCheck) key = "replaced-attachment";
           return target;
         },

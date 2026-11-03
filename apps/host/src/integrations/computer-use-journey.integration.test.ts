@@ -1,3 +1,12 @@
+import type {
+  ComputerAppApprovalAnswer,
+  ComputerAppApprovalOutcome,
+} from "../runtime/computer-apps.test-support.js";
+type ComputerAppApprovalList = {
+  readonly approvals: readonly {
+    readonly request: import("@opensteer/integration-core").ComputerAppSetupRequest;
+  }[];
+};
 import { placeList, type HostSnapshot } from "@opensteer/client/host";
 import {
   createId,
@@ -46,9 +55,6 @@ import {
   type BrowserSessionId,
   type BrowserSessionOpenerRecord,
   type BrowserTabOpenBinding,
-  type ComputerAppApprovalAnswer,
-  type ComputerAppApprovalList,
-  type ComputerAppApprovalOutcome,
   type ComputerUseErrorCode,
   type ComputerUseSessionId,
   type ComputerViewNativeResult,
@@ -59,7 +65,7 @@ import {
   type RunnerAuxiliaryFrameFence,
   type RunnerDescriptor,
 } from "@opensteer/protocol";
-import { createComputerAppApproval } from "@opensteer/runner-auth";
+
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { sql } from "kysely";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
@@ -1295,7 +1301,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       ).rejects.toMatchObject({ code: "offline" });
       const old = new FakeMac(world.hub, world.macId);
       await old.attach();
-      await vi.waitFor(() => expect(old.lists.length).toBeGreaterThan(0));
+      expect(world.hub.attached(old.stream.identity.runnerId)).toBe(true);
       await expect(
         world.hub.ownerWindows(world.macId, apps.notes, { timeoutMs: 1000 }),
       ).rejects.toMatchObject({ code: "incompatible-version" });
@@ -1541,7 +1547,9 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         threadId: run.threadId,
         workspaceId: run.workspaceId,
       };
-      const approvalsBefore = world.fakeMac.waiting();
+      const approvalsBefore = (
+        await world.persistence.listComputerAppSetupRequests(world.owner.userId)
+      ).map(({ id }) => id);
       await places.assertUsable({ ...scope, parts: content });
       const store = new OpensteerStore(database);
       const commands = new CommandService({
@@ -1630,7 +1638,11 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       expect(sent.message.content).toEqual(content);
       expect(world.computerUse.sessionsForRunner(world.macId)).toEqual([]);
       expect(world.computerUse.sessionsForRunner(world.phoneId!)).toEqual([]);
-      expect(world.fakeMac.waiting()).toEqual(approvalsBefore);
+      expect(
+        (await world.persistence.listComputerAppSetupRequests(world.owner.userId)).map(
+          ({ id }) => id,
+        ),
+      ).toEqual(approvalsBefore);
       const projected = resolvedInputParts(
         {
           author: sent.message.author,
@@ -1701,7 +1713,11 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         [run.runId],
       );
       expect(world.computerUse.sessionsForRunner(world.macId)).toEqual([]);
-      expect(world.fakeMac.waiting()).toEqual(approvalsBefore);
+      expect(
+        (await world.persistence.listComputerAppSetupRequests(world.owner.userId)).map(
+          ({ id }) => id,
+        ),
+      ).toEqual(approvalsBefore);
       const stranger = await send(
         run.threadId,
         [{ type: "computer-app", machineId: createId("runner"), app: apps.notes, name: mac }],
@@ -2356,7 +2372,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       kind: "computer.app.access",
       status: "pending",
       replayed: false,
-      nextAction: `Approval is pending on ${mac}. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.`,
+      nextAction: `Approval for ${mac} is pending; the owner can allow or decline from any Opensteer app. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.`,
     });
     const [setup] = await world.persistence.listComputerAppSetupRequests(world.owner.userId);
     expect(setup).toMatchObject({
@@ -2597,120 +2613,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     await world.close();
   });
 
-  it("carries approvals on the Mac's own stream: sent again on reconnect, withdrawn when they end, and signed only by the desktop's key", async () => {
-    const world = await createWorld(database);
-    const a = await world.gateway(await world.startRun("Shopping list"));
-    const ask = async (app: string) =>
-      json(
-        await a.call("integration_request", {
-          kind: "computer-app",
-          app,
-          access: "read",
-          reason: `Use ${app}.`,
-        }),
-      );
-    const notesAsk = await ask("Notes");
-    const calendarAsk = await ask("Calendar");
-    const setups = await world.persistence.listComputerAppSetupRequests(world.owner.userId);
-    const notes = setups.find(({ app }) => app?.displayName === "Notes")!;
-    const calendar = setups.find(({ app }) => app?.displayName === "Calendar")!;
-    // Each list carries everything a panel shows and the key answers are taken with.
-    await vi.waitFor(() =>
-      expect(world.fakeMac.lists.at(-1)).toEqual({
-        approvalKeyId: expect.stringMatching(/^sha256:/u),
-        approvals: [
-          { request: expect.objectContaining({ ...notes, workspaceName: expect.any(String) }) },
-          { request: expect.objectContaining({ ...calendar, workspaceName: expect.any(String) }) },
-        ],
-      }),
-    );
-
-    // The Mac's stream drops — a lapsed session, a sleeping Mac, a Host
-    // release; nothing here depends on how the person signed in — and while it
-    // is away Calendar is declined from the phone.
-    world.fakeMac.detach();
-    await world.platform.computerAppApprovals.declineComputerAppAccess({
-      requestId: calendarAsk.requestId,
-      resolvedBy: world.owner.userId,
-      response: { kind: "external", value: { decision: "declined" } },
-    });
-    const sentWhileAway = world.fakeMac.lists.length;
-    await world.fakeMac.attach();
-    // Back: the whole list arrives at once, and Calendar is not in it.
-    await vi.waitFor(() => expect(world.fakeMac.lists.length).toBeGreaterThan(sentWhileAway));
-    expect(world.fakeMac.waiting()).toEqual([notes.id]);
-
-    // A signature by the Runner's own key — which any process running as the
-    // person can read — is refused, and nothing changes.
-    await expect(world.approveWithRunnerKey(notes)).rejects.toThrow(
-      "Approve this access in Opensteer on the computer that provides the app.",
-    );
-    expect((await world.requestById(notesAsk.requestId)).status).toBe("pending");
-    expect(await world.appAccess()).toEqual({});
-    expect(world.fakeMac.waiting()).toEqual([notes.id]);
-
-    // The desktop's key is.
-    await world.approveOnMac(notes);
-    expect((await world.requestById(notesAsk.requestId)).status).toBe("fulfilled");
-    await world.fakeMac.untilWaiting([]);
-    await world.close();
-  });
-
-  it("settles every linked task on a signed Mac refusal and rejects a forged or replayed refusal", async () => {
-    const world = await createWorld(database);
-    const a = await world.gateway(await world.startRun("First note"));
-    const b = await world.gateway(await world.startRun("Second note"));
-    const ask = async (gateway: typeof a, reason: string) =>
-      json(
-        await gateway.call("integration_request", {
-          access: "read",
-          app: "Notes",
-          kind: "computer-app",
-          reason,
-        }),
-      );
-    const first = await ask(a, "Read the first note.");
-    const second = await ask(b, "Read the second note.");
-    expect(first.requestId).not.toBe(second.requestId);
-    const [setup] = await world.persistence.listComputerAppSetupRequests(world.owner.userId);
-    if (!setup) throw new Error("Missing Notes approval");
-    await world.fakeMac.untilWaiting([setup.id]);
-
-    const forged = await world.denyOnMac(setup, generateKeyPairSync("ed25519").privateKey);
-    expect(forged).toMatchObject({ kind: "refused" });
-    const allowPresentedAsDeny = await world.fakeMac.answer(setup.id, {
-      approval: world.signApproval(setup, "allow"),
-      kind: "deny",
-    });
-    expect(allowPresentedAsDeny).toMatchObject({ kind: "refused" });
-    expect((await world.requestById(first.requestId)).status).toBe("pending");
-    expect((await world.requestById(second.requestId)).status).toBe("pending");
-    expect(world.fakeMac.waiting()).toEqual([setup.id]);
-
-    expect(await world.denyOnMac(setup)).toEqual({ kind: "declined" });
-    for (const id of [first.requestId, second.requestId]) {
-      const request = await world.requestById(id);
-      expect(request.status).toBe("declined");
-      expect(await continuationMessage(request, inventorySource(world.platform))).toContain(
-        `Request ${id} was declined by the user.`,
-      );
-    }
-    await world.fakeMac.untilWaiting([]);
-    expect(await world.appAccess()).toEqual({});
-
-    const c = await world.gateway(await world.startRun("Third note"));
-    const third = await ask(c, "Read the third note.");
-    const [replacement] = await world.persistence.listComputerAppSetupRequests(world.owner.userId);
-    if (!replacement) throw new Error("Missing replacement approval");
-    expect(replacement.id).not.toBe(setup.id);
-    expect(await world.denyOnMac(setup)).toMatchObject({ kind: "refused" });
-    expect((await world.requestById(third.requestId)).status).toBe("pending");
-    await world.fakeMac.untilWaiting([replacement.id]);
-    await world.approveOnMac(replacement);
-    expect((await world.requestById(third.requestId)).status).toBe("fulfilled");
-    await world.close();
-  });
-
   it("lets a Main Workspace task use an app it asked for through inherited access", async () => {
     const world = await createWorld(database);
     const main = await world.createWorkspace("Main", "main");
@@ -2809,7 +2711,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(widen).toMatchObject({
       kind: "computer.app.access",
       status: "pending",
-      nextAction: `Approval is pending on ${mac}. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.`,
+      nextAction: `Approval for ${mac} is pending; the owner can allow or decline from any Opensteer app. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.`,
     });
     await vi.waitFor(() => expect(world.fakeMac.reviews).toHaveLength(reviews + 1));
     expect(await world.appAccess()).toMatchObject({ TextEdit: "read" });
@@ -2889,7 +2791,9 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         access: "read",
         reason: "Look at the week.",
       }),
-    ).toEqual(refusal(`Calendar is blocked on ${mac}. The person can unblock it on that Mac.`));
+    ).toEqual(
+      refusal(`Calendar is blocked on ${mac}. The owner can unblock it from any Opensteer app.`),
+    );
     expect(await a.call("computer", { code: 'await app("Calendar")' })).toEqual(
       refusal("app-not-allowed: No approved app matches Calendar. Search integrations for access."),
     );
@@ -3549,7 +3453,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
           kind: row.kind,
           lastSeenAt: null,
           modules: {
-            integrations: { computerAppApprovals: true, platform: "android", protocolVersion: 1 },
+            integrations: { platform: "android", protocolVersion: 1 },
           },
           name: phone,
           ownerKind: "user",
@@ -4240,56 +4144,6 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     await world.close();
   });
 
-  it("refuses phone key nomination and Runner-originated signed answers without mutating access", async () => {
-    const world = await createWorld(database, { phone: true });
-    const { fakePhone, phoneId } = phoneOf(world);
-    const gateway = await world.gateway(await world.startRun("Text the driver"));
-    const asked = json(
-      await gateway.call("integration_request", {
-        access: "read",
-        kind: "computer-app",
-        reason: "Read the delivery text.",
-        runnerId: phoneId,
-      }),
-    );
-    const [setup] = await world.persistence.listComputerAppSetupRequests(world.owner.userId);
-    const keys = generateKeyPairSync("ed25519");
-    await expect(
-      world.platform.computerAppApprovals.registerComputerUseApprovalKey({
-        ownerUserId: world.owner.userId,
-        publicKey: keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
-        requestId: "register-phone-key",
-        runnerId: phoneId,
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    const answer = {
-      kind: "allow" as const,
-      approval: createComputerAppApproval(keys.privateKey, setup!),
-    };
-    // Both the authenticated stream and the shared handler refuse phone answers.
-    await world.hub.handleMessage(fakePhone.peer, fakePhone.stream, {
-      ...fakePhone.stream.fence,
-      answer,
-      module: "integrations",
-      setupRequestId: setup!.id,
-      type: "runner.integrations.computer-app-approval-answer",
-    });
-    await world.platform.computerAppApprovals.answerComputerAppApproval(phoneId, {
-      answer,
-      setupRequestId: setup!.id,
-    });
-    expect((await world.requestById(asked.requestId)).status).toBe("pending");
-    expect(
-      (await world.connections.listConnections(world.owner.userId)).filter(
-        ({ definitionId }) => definitionId === "android-phone",
-      ),
-    ).toEqual([]);
-    expect(fakePhone.lists).toEqual([]);
-    await world.allowPhoneFromClient(setup!);
-    expect((await world.requestById(asked.requestId)).status).toBe("fulfilled");
-    await world.close();
-  });
-
   it("lets the owner turn phone access on, widen and lower it from any client, while automatic approval stays Mac-only", async () => {
     const world = await createWorld(database, { phone: true });
     const { fakePhone, phoneId } = phoneOf(world);
@@ -4372,8 +4226,8 @@ function json(result: ToolResult) {
   ) {
     for (const rule of [
       'integration_request {kind: "computer-app", runnerId, app, access, reason}',
-      "blocked: only the person can unblock it on that Mac",
-      "pending:mac waits on that Mac",
+      "blocked: only the computer owner can unblock it from any Opensteer app",
+      "pending:mac waits for its owner",
       "pending:workspace waits on a Workspace grant",
       "Do not repeat pending requests",
       "Opensteer continues this thread when resolved",
@@ -4411,7 +4265,13 @@ function text(result: ToolResult): string {
 
 /** One Mac as the helper answers through the Runner, with just enough of its rules. */
 class FakeMac {
-  readonly #outcomes = new Map<string, (outcome: ComputerAppApprovalOutcome) => void>();
+  respond: (
+    setupRequestId: string,
+    answer: ComputerAppApprovalAnswer,
+  ) => Promise<ComputerAppApprovalOutcome> = async () => ({
+    kind: "refused",
+    message: "No owner session",
+  });
   readonly #listWaiters: { readonly ids: string; readonly resolve: () => void }[] = [];
   readonly #arrivals = new Set<() => void>();
   /** Every approval list the Host sent this Mac, in order. */
@@ -4472,12 +4332,11 @@ class FakeMac {
       identity: {
         modules: {
           integrations: {
-            computerAppApprovals: true,
             ...(ownerViews ? { ownerViewVersion: 3 } : {}),
             computerUseVersion: 2,
             ...(macWindowVideo ? { macWindowVideoVersion: 1 } : {}),
             platform: "darwin",
-            protocolVersion: 5,
+            protocolVersion: 6,
           },
         },
         name: mac,
@@ -4521,6 +4380,15 @@ class FakeMac {
   }
 
   /** The approvals the Host last said wait on this Mac. */
+  replaceApprovals(
+    requests: readonly import("@opensteer/integration-core").ComputerAppSetupRequest[],
+  ): void {
+    this.lists.push({ approvals: requests.map((request) => ({ request })) });
+    for (const request of requests)
+      if (!this.reviews.includes(request.id)) this.reviews.push(request.id);
+    this.#settleListWaiters();
+  }
+
   waiting(): readonly string[] {
     return this.lists.at(-1)?.approvals.map(({ request }) => request.id) ?? [];
   }
@@ -4556,17 +4424,7 @@ class FakeMac {
     setupRequestId: string,
     answer: ComputerAppApprovalAnswer,
   ): Promise<ComputerAppApprovalOutcome> {
-    const outcome = new Promise<ComputerAppApprovalOutcome>((resolve) =>
-      this.#outcomes.set(setupRequestId, resolve),
-    );
-    await this.#hub.handleMessage(this.peer, this.stream, {
-      ...this.stream.fence,
-      answer,
-      module: "integrations",
-      setupRequestId,
-      type: "runner.integrations.computer-app-approval-answer",
-    });
-    return outcome;
+    return this.respond(setupRequestId, answer);
   }
 
   invalidateSnapshots(): void {
@@ -4597,19 +4455,6 @@ class FakeMac {
   }
 
   async #answer(message: HostIntegrationsOperation): Promise<void> {
-    if (message.type === "host.integrations.computer-app-approvals") {
-      this.lists.push({ approvalKeyId: message.approvalKeyId, approvals: message.approvals });
-      for (const { request } of message.approvals) {
-        if (!this.reviews.includes(request.id)) this.reviews.push(request.id);
-      }
-      this.#settleListWaiters();
-      return;
-    }
-    if (message.type === "host.integrations.computer-app-approval-outcome") {
-      this.#outcomes.get(message.setupRequestId)?.(message.outcome);
-      this.#outcomes.delete(message.setupRequestId);
-      return;
-    }
     if (message.type === "host.integrations.computer-app-windows") {
       await this.#hub.handleMessage(this.peer, this.stream, {
         ...this.stream.fence,
@@ -5033,10 +4878,6 @@ class FakePhone {
       this.stopsRecorded.push({ runId: message.runId, sessionId: message.sessionId });
       return;
     }
-    if (message.type === "host.integrations.computer-app-approvals") {
-      this.lists.push({ approvalKeyId: message.approvalKeyId, approvals: message.approvals });
-      return;
-    }
     if (message.type === "host.integrations.computer-view") {
       const ref = { viewId: message.viewId, generation: message.generation };
       const value = {
@@ -5265,10 +5106,9 @@ async function createWorld(
   const connections = new IntegrationStore(database);
   const owner = await createOwner(store, randomUUID(), options.ownerUserId);
   const workspace = await createWorkspace(store, owner.userId, randomUUID(), "specialized");
-  // The Runner authenticates with its own key; the person's approvals are
-  // signed with the desktop's, which is a different key entirely.
+  // The Runner authenticates its transport; the Host authorizes owner decisions.
   const keys = generateKeyPairSync("ed25519");
-  const approvalKeys = generateKeyPairSync("ed25519");
+
   const insertComputer = async (
     name: string,
     computer: "mac" | "phone",
@@ -5338,25 +5178,14 @@ async function createWorld(
     .where("id", "=", owner.userId)
     .execute();
   // The owner opened this Mac's page on the Mac, which registered its key.
-  await persistence.registerComputerUseApprovalKey({
-    ownerUserId: owner.userId,
-    publicKey: approvalKeys.publicKey.export({ format: "pem", type: "spki" }).toString(),
-    requestId: "register-approval-key",
-    runnerId: macId,
-  });
+
   const definitions = options.phone ? [definition, phoneDefinition] : [definition];
   let computerUse!: ComputerUseService;
-  let approvals: IntegrationPlatformService["computerAppApprovals"] | undefined;
   const hub = new ComputerAppHub({
     knownDefinitionIds: () => new Set(computerAppIntegrations.map(({ id }) => id)),
     onChanged: () => undefined,
     onComputerUseEvent: (runnerId, event) => computerUse.handleHelperEvent(runnerId, event),
     onRunnerDetached: (runnerId) => computerUse.forgetRunner(runnerId),
-    // Exactly as the runtime wires it.
-    onRunnerAttached: (runnerId) => approvals?.pushComputerAppApprovals(runnerId),
-    onComputerAppApprovalsSync: (runnerId) => approvals?.pushComputerAppApprovals(runnerId),
-    onComputerAppApprovalAnswer: (runnerId, answer) =>
-      void approvals?.answerComputerAppApproval(runnerId, answer),
   });
   computerUse = new ComputerUseService({
     hub,
@@ -5450,20 +5279,39 @@ async function createWorld(
     mcpImageContent: async () => imageGate.on,
     mcpOauth: { providerFor: vi.fn() },
     onWorkspaceEvent: () => undefined,
-    onConnectionsChanged: () => undefined,
+    onConnectionsChanged: () => {
+      void persistence
+        .listComputerAppSetupRequests(owner.userId)
+        .then((requests) => fakeMac.replaceApprovals(requests));
+    },
     onRequestsChanged: () => undefined,
     store: persistence,
   });
-  approvals = platform.computerAppApprovals;
+  fakeMac.respond = async (setupRequestId, answer) => {
+    if (setupRequestId !== answer.setupRequestId)
+      return { kind: "refused", message: "This answer names another request." };
+    try {
+      await platform.computerAppApprovals.respondComputerAppSetup({
+        setupRequestId,
+        decision: answer.kind,
+        actorUserId: owner.userId,
+        isAdministrator: true,
+        requestId: randomUUID(),
+        authorize: async () => undefined,
+      });
+      return { kind: answer.kind === "allow" ? "allowed" : "declined" };
+    } catch (error) {
+      return { kind: "refused", message: error instanceof Error ? error.message : "Refused" };
+    }
+  };
   await fakeMac.attach();
   await fakePhone?.attach();
   /** The person on the Mac allows one approval; throws with the Host's refusal. */
   const allowOnMac = async (
-    setup: Parameters<typeof createComputerAppApproval>[1],
-    signingKey = approvalKeys.privateKey,
+    setup: import("@opensteer/integration-core").ComputerAppSetupRequest,
   ) => {
     const outcome = await fakeMac.answer(setup.id, {
-      approval: createComputerAppApproval(signingKey, setup),
+      setupRequestId: setup.id,
       kind: "allow",
     });
     if (outcome.kind !== "allowed") {
@@ -5498,7 +5346,9 @@ async function createWorld(
     /** Another Mac of the same owner, enrolled but not connected. */
     addMac: insertMac,
     /** The owner answers from an Opensteer client. */
-    async allowPhoneFromClient(setup: Parameters<typeof createComputerAppApproval>[1]) {
+    async allowPhoneFromClient(
+      setup: import("@opensteer/integration-core").ComputerAppSetupRequest,
+    ) {
       if (!fakePhone || setup.kind !== "app") throw new Error("Expected phone access Request.");
       await platform.computerAppApprovals.setComputerConnection({
         access: setup.access,
@@ -5544,22 +5394,11 @@ async function createWorld(
       return request;
     },
     approveOnMac: allowOnMac,
-    signApproval: (
-      setup: Parameters<typeof createComputerAppApproval>[1],
-      decision: "allow" | "deny",
-    ) => createComputerAppApproval(approvalKeys.privateKey, setup, Date.now(), decision),
-    denyOnMac: async (
-      setup: Parameters<typeof createComputerAppApproval>[1],
-      signingKey = approvalKeys.privateKey,
-    ) =>
+    denyOnMac: async (setup: import("@opensteer/integration-core").ComputerAppSetupRequest) =>
       fakeMac.answer(setup.id, {
-        approval: createComputerAppApproval(signingKey, setup, Date.now(), "deny"),
+        setupRequestId: setup.id,
         kind: "deny",
       }),
-    /** The same answer, signed with the Runner's own key, which any process can read. */
-    async approveWithRunnerKey(setup: Parameters<typeof createComputerAppApproval>[1]) {
-      return allowOnMac(setup, keys.privateKey);
-    },
     async automaticOnMac() {
       const request = await platform.computerAppApprovals.requestComputerAppSetup({
         kind: "policy",

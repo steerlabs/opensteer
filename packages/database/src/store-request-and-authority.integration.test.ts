@@ -40,6 +40,135 @@ import {
 } from "./store.integration.test-support.js";
 
 describeStore("PostgreSQL store", (it) => {
+  it("records only the winning human Passwords session and refuses revoked sessions", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, store, database } = storeFixture;
+    const fixture = await startRunFixture("password-settlement-provenance");
+    const sessionId = createId("authSession");
+    const now = new Date();
+    await database
+      .insertInto("authSessions")
+      .values({
+        id: sessionId,
+        userId: fixture.userId,
+        token: randomUUID(),
+        expiresAt: new Date(Date.now() + 60_000),
+        absoluteExpiresAt: new Date(Date.now() + 60_000),
+        ipAddress: null,
+        userAgent:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 19_0 like Mac OS X) Version/19.0 Mobile Safari/604.1",
+        deviceLabel: "old unsafe label",
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .execute();
+    const open = async (suffix: string) =>
+      store.requests.openPasswordSignIn({
+        callId: suffix,
+        originatingRunId: fixture.run.id,
+        originatingThreadId: fixture.thread.id,
+        originatingWorkspaceId: fixture.workspace.id,
+        targetWorkspaceId: fixture.workspace.id,
+        requestedBy: fixture.userId,
+        requiredActor: "requester",
+        kind: "browser.password-sign-in",
+        mode: "durable",
+        payload: {
+          kind: "browser.password-sign-in",
+          operationId: randomUUID(),
+          scope: "workspace",
+          permissionVersion: 5,
+          runnerId: fixture.runnerId,
+          computerName: "Test Mac",
+          reason: "Sign in",
+          site: "https://example.com",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+        presentation: {
+          kind: "external",
+          title: "Sign in",
+          subject: { kind: "browser-site", id: "https://example.com" },
+        },
+      });
+    const first = await open("first");
+    const input = {
+      ownerId: fixture.userId,
+      requestId: first.request.id,
+      settlementSessionId: sessionId,
+      settlement: { status: "declined" as const },
+    };
+    const result = await store.requests.settlePasswordSignInRequest(input);
+    expect(result?.request.settlementProvenance).toEqual({
+      sessionId,
+      deviceLabel: "Safari on iPhone",
+    });
+    const approved = await open("approved");
+    const consent = await store.requests.settlePasswordSignInRequest({
+      ...input,
+      requestId: approved.request.id,
+      settlement: { status: "fulfilled", response: { outcome: "authorized", account: "a•••" } },
+    });
+    await database.deleteFrom("authSessions").where("id", "=", sessionId).execute();
+    const interruption = {
+      ownerId: fixture.userId,
+      requestId: approved.request.id,
+      settlement: { status: "fulfilled", response: { outcome: "interrupted" } },
+    } as const;
+    const interrupted = await store.requests.settlePasswordSignInRequest(interruption);
+    expect(interrupted?.request).toMatchObject({
+      status: "fulfilled",
+      response: { kind: "external", value: { outcome: "interrupted" } },
+      settlementProvenance: consent?.request.settlementProvenance,
+      resolvedAt: consent?.request.resolvedAt,
+      resolvedBy: consent?.request.resolvedBy,
+    });
+    expect(consent?.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "request.resolved",
+          data: expect.objectContaining({
+            request: expect.objectContaining({
+              response: { kind: "external", value: { outcome: "authorized", account: "a•••" } },
+              settlementProvenance: { sessionId, deviceLabel: "Safari on iPhone" },
+            }),
+          }),
+        }),
+      ]),
+    );
+    expect(await store.requests.settlePasswordSignInRequest(interruption)).toBeNull();
+    expect(
+      await store.requests.settlePasswordSignInRequest({
+        ...input,
+        requestId: approved.request.id,
+        settlement: { status: "fulfilled", response: { outcome: "authorized", account: "other" } },
+      }),
+    ).toBeNull();
+    expect(
+      await database
+        .selectFrom("requestContinuations")
+        .select("requestId")
+        .where("requestId", "=", approved.request.id)
+        .execute(),
+    ).toHaveLength(1);
+    expect(await store.requests.settlePasswordSignInRequest(input)).toBeNull();
+    expect((await store.requests.get(first.request.id))?.settlementProvenance).toEqual(
+      result?.request.settlementProvenance,
+    );
+    const second = await open("second");
+    await expect(
+      store.requests.settlePasswordSignInRequest({ ...input, requestId: second.request.id }),
+    ).rejects.toThrow("no longer signed in");
+    expect((await store.requests.get(second.request.id))?.status).toBe("pending");
+    const automatic = await store.requests.settlePasswordSignInRequest({
+      ownerId: fixture.userId,
+      requestId: second.request.id,
+      settlement: { status: "fulfilled", response: { outcome: "expired" } },
+    });
+    expect(automatic?.request.settlementProvenance).toBeNull();
+  });
+
   it("keeps Occurrence Request resolution compatible with Trigger inbox admission", async ({
     storeFixture,
   }) => {
@@ -1193,11 +1322,58 @@ describeStore("PostgreSQL store", (it) => {
     });
     await expect(platform.listInstallations()).resolves.toEqual([]);
 
+    await expect(
+      platform.install({
+        ...material,
+        actorUserId: fixture.userId,
+        requestId: "revoked-computer-catalog-install",
+        settlementSessionId: createId("authSession"),
+      }),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+    expect(await platform.listInstallations()).toEqual([]);
+
+    const access = await platform.requests.createIntegrationAccessRequest({
+      access: "read",
+      callId: "revoked-install-access",
+      installationId: null,
+      manifest: approvalManifest,
+      originatingRunId: fixture.run.id,
+      originatingThreadId: fixture.thread.id,
+      originatingWorkspaceId: fixture.workspace.id,
+      reason: "Use the reviewed integration",
+      requestedBy: fixture.userId,
+      requestedServerId: null,
+      targetWorkspaceId: fixture.workspace.id,
+    });
+    await expect(
+      platform.requests.installForIntegrationAccessRequest({
+        preparedFulfillment: { approvalManifest, material },
+        requestId: access.request.id,
+        resolvedBy: fixture.userId,
+        settlementSessionId: createId("authSession"),
+      }),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+    expect(await platform.listInstallations()).toEqual([]);
+    expect((await platform.requests.get(access.request.id))?.payload).toMatchObject({
+      installationId: null,
+    });
+
     const resolved = await platform.requests.resolveIntegrationInstallRequest({
       preparedFulfillment: { approvalManifest, material },
       requestId: opened.request.id,
       resolvedBy: fixture.userId,
       response: { kind: "choice", optionId: "installed" },
+    });
+
+    await expect(
+      platform.requests.tryBindExistingIntegrationAccessInstallation({
+        requestId: access.request.id,
+        resolvedBy: fixture.userId,
+        settlementSessionId: createId("authSession"),
+      }),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+    expect((await platform.requests.get(access.request.id))?.payload).toMatchObject({
+      installationId: null,
     });
 
     expect(resolved).toMatchObject({
@@ -1455,6 +1631,17 @@ describeStore("PostgreSQL store", (it) => {
       callId: "integration-access-specialized-target",
       requestedServerId: null,
       targetWorkspaceId: specialized.id,
+    });
+    await expect(
+      platform.requests.selectIntegrationAccessServer({
+        requestId: specializedRequest.request.id,
+        requestedServerId: serverId,
+        resolvedBy: fixture.userId,
+        settlementSessionId: createId("authSession"),
+      }),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+    expect((await platform.requests.get(specializedRequest.request.id))?.payload).toMatchObject({
+      requestedServerId: null,
     });
     await platform.requests.selectIntegrationAccessServer({
       requestId: specializedRequest.request.id,

@@ -130,7 +130,12 @@ export class HostedOAuthBrokerStore {
       (await this.#database
         .updateTable("hostedOAuthBrokerAttempts as attempt")
         .from("deployments as deployment")
-        .set({ launchTicketHash: null, status: "launched", updatedAt: input.now })
+        .set({
+          launchTicketHash: null,
+          browserBindingHash: input.launchTicketHash,
+          status: "launched",
+          updatedAt: input.now,
+        })
         .whereRef("deployment.id", "=", "attempt.deploymentId")
         .where("attempt.accountSubject", "=", input.accountId as never)
         .where((builder) =>
@@ -166,13 +171,30 @@ export class HostedOAuthBrokerStore {
     );
   }
 
-  async claimCallback(stateHash: string, now: Date) {
+  async claimCallback(input: {
+    readonly stateHash: string;
+    readonly provider: string;
+    readonly browserBindings: readonly { readonly attemptId: string; readonly hash: string }[];
+    readonly now: Date;
+  }) {
+    if (input.browserBindings.length === 0) return null;
     return (
       (await this.#database
         .updateTable("hostedOAuthBrokerAttempts")
-        .set({ status: "exchanging", updatedAt: now })
-        .where("stateHash", "=", stateHash)
-        .where("expiresAt", ">", now)
+        .set({ status: "exchanging", browserBindingHash: null, updatedAt: input.now })
+        .where("stateHash", "=", input.stateHash)
+        .where("provider", "=", input.provider)
+        .where((builder) =>
+          builder.or(
+            input.browserBindings.map((binding) =>
+              builder.and([
+                builder("attemptId", "=", binding.attemptId as HostedOAuthAttemptId),
+                builder("browserBindingHash", "=", binding.hash),
+              ]),
+            ),
+          ),
+        )
+        .where("expiresAt", ">", input.now)
         .where("status", "=", "launched")
         .returningAll()
         .executeTakeFirst()) ?? null
@@ -200,6 +222,7 @@ export class HostedOAuthBrokerStore {
         contextKeyVersion: null,
         encryptedContext: null,
         launchTicketHash: null,
+        browserBindingHash: null,
         sealedCiphertext,
         status: "sealed",
         updatedAt: now,
@@ -222,6 +245,7 @@ export class HostedOAuthBrokerStore {
         encryptedContext: null,
         failureCode,
         launchTicketHash: null,
+        browserBindingHash: null,
         sealedCiphertext: null,
         status,
         updatedAt: now,
@@ -451,6 +475,7 @@ export class HostedOAuthBrokerStore {
           contextKeyVersion: null,
           encryptedContext: null,
           launchTicketHash: null,
+          browserBindingHash: null,
           sealedCiphertext: null,
           status: "expired",
           updatedAt: now,

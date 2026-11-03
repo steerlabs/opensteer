@@ -4698,6 +4698,8 @@ describe("HttpHostClient durable realtime", () => {
         return socket;
       },
     });
+    const invalidated = vi.fn();
+    const detachRemoteAccess = client.subscribePersonalRemoteAccess(invalidated);
     await client.load();
     const first = sockets[0]!;
     first.open();
@@ -4712,6 +4714,9 @@ describe("HttpHostClient durable realtime", () => {
     });
     expect(client.getSnapshot().connection).toBe("connected");
 
+    expect(invalidated).toHaveBeenCalledTimes(1);
+    first.receive({ type: "host.personal-remote-access-changed" });
+    expect(invalidated).toHaveBeenCalledTimes(2);
     first.serverClose();
     expect(client.getSnapshot().connection).toBe("connecting");
     await vi.advanceTimersByTimeAsync(8);
@@ -4723,6 +4728,15 @@ describe("HttpHostClient durable realtime", () => {
       type: "client.subscribe",
       workspaceId: workspace.id,
     });
+    sockets[1]!.receive({
+      sequence: sequence("4"),
+      type: "host.synchronized",
+      workspaceId: workspace.id,
+    });
+    expect(invalidated).toHaveBeenCalledTimes(3);
+    detachRemoteAccess();
+    sockets[1]!.receive({ type: "host.personal-remote-access-changed" });
+    expect(invalidated).toHaveBeenCalledTimes(3);
     client.dispose();
   });
 

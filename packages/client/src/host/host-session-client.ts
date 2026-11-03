@@ -1087,6 +1087,7 @@ export class HttpHostClient {
   #viewerGeneration = 0;
   #savedViewReadiness = emptySavedViewReadiness();
   readonly #notificationListeners = new Set<(notification: NotificationView) => void>();
+  readonly #personalRemoteAccessListeners = new Set<() => void>();
   readonly #personShowListeners = new Set<(message: PersonShowMessage) => void>();
   readonly #lifecycleListeners = new Set<
     (event: "background" | "foreground" | "network") => void
@@ -2532,6 +2533,15 @@ export class HttpHostClient {
       this.#watchLiveness();
     }
     return () => this.#notificationListeners.delete(listener);
+  }
+
+  subscribePersonalRemoteAccess(listener: () => void): () => void {
+    this.#personalRemoteAccessListeners.add(listener);
+    return () => this.#personalRemoteAccessListeners.delete(listener);
+  }
+
+  #invalidatePersonalRemoteAccess(): void {
+    for (const listener of this.#personalRemoteAccessListeners) listener();
   }
 
   subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void {
@@ -4956,6 +4966,10 @@ export class HttpHostClient {
       this.#applyComputerPresence(message.sessions);
       return;
     }
+    if (message.type === "host.personal-remote-access-changed") {
+      this.#invalidatePersonalRemoteAccess();
+      return;
+    }
     if (message.type === "host.requests-changed") {
       this.#rereadWaitingRequests();
       return;
@@ -4995,6 +5009,7 @@ export class HttpHostClient {
     const reconnected = channel.reconnectAttempt > 0;
     channel.synchronized = true;
     channel.reconnectAttempt = 0;
+    this.#invalidatePersonalRemoteAccess();
     if (reconnected) this.#reread("reconnect");
     this.#sendAck(channel);
     this.#recomputeConnection();

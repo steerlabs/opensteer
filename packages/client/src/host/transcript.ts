@@ -1,3 +1,4 @@
+import { requestSettlementLabel } from "./request-settlement.js";
 import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-sources";
 import { browserSiteLabel } from "./browser-sign-in.js";
 import { passwordSignInOutcome, passwordSignInReceipt } from "./passwords.js";
@@ -1121,6 +1122,10 @@ function requestOutcome(request: Request): string {
   if (request.status === "withdrawn") return "Withdrawn";
   if (request.kind === "browser.sign-in") return browserSignInReceipt(request);
   if (request.kind === "browser.password-sign-in") return passwordSignInReceipt(request);
+  if (request.kind === "computer.app.access") {
+    const settlement = requestSettlementLabel(request);
+    if (settlement) return settlement;
+  }
   const prefix = request.status === "declined" ? "Declined" : "Fulfilled";
   if (request.response.kind === "choice" && request.presentation.kind === "choice") {
     const { options } = request.presentation;

@@ -146,7 +146,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           localDirectory: true,
           runnerKind: "main",
           token: host.mainRunnerEnrollmentToken,
-          integrations: { platform: "darwin", protocolVersion: 5, passwordSignIn: 1 },
+          integrations: { platform: "darwin", protocolVersion: 5, passwordSignIn: 2 },
         });
         caller.primary.socket.on("close", (code: number, reason: Buffer) =>
           callerDiagnostics.push({ type: "socket.closed", code, reason: reason.toString("utf8") }),
@@ -715,7 +715,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
               cleanupErrors.push(String(error));
             }
         for (const command of authority.commands.slice(authorityCommandsBefore))
-          if (command.type === "login.authorize") authority.end(command.operationId);
+          if (command.type === "login.authorize") await authority.end(command.operationId);
         await evidence.write("tool-results.json", results);
         await evidence.write("fixture-auth-assertions.json", await readReceipts(device));
         await evidence.write("platform-traffic.json", wire);

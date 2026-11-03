@@ -71,11 +71,7 @@ import { color, space } from "./theme.js";
 import { IphoneApprovalPrompt } from "./iphone-apps/approval-prompt.js";
 import { IphoneAppsProvider, useIphoneAppsState } from "./iphone-apps/context.js";
 import { IphoneAppsController } from "./iphone-apps/controller.js";
-import {
-  createFakeIphoneApps,
-  observeMockHostCommand,
-  type FakeIphoneApps,
-} from "./iphone-apps/fake-bridge.js";
+import { createFakeIphoneApps, type FakeIphoneApps } from "./iphone-apps/fake-bridge.js";
 import { iphoneNotTold, opensteerOn } from "./iphone-apps/model.js";
 import { createShownApprovalsFile } from "./iphone-apps/shown-approvals-file.js";
 import { iphoneApps } from "./platform/iphone-apps.js";
@@ -229,9 +225,6 @@ function mobileClient(): MobileRoot {
       ? createMockHostPort({
           hosts: mockHosts,
           initialHome: configuration.mockHome,
-          onCommand: (command) => {
-            if (fakeIphone !== null) void observeMockHostCommand(fakeIphone, command);
-          },
         })
       : createNetworkHostPort({
           browserPreferencesStorage: createBrowsingChoiceStorage(

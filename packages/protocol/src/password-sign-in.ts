@@ -1,5 +1,9 @@
 import { BrowserSiteSchema, RunIdSchema, RunnerIdSchema, WorkspaceIdSchema } from "@opensteer/core";
 import { z } from "zod";
+import {
+  PasswordsBrokerAccountsSchema,
+  PasswordsBrokerAccountSchema,
+} from "./password-sign-in-accounts.js";
 import { ComputerUseSessionIdSchema } from "./computer-use-id.js";
 
 /** One deadline covers approval and the authorized login lease. */
@@ -260,9 +264,42 @@ export function validateSealedLoginActionBindings(
   }
 }
 
+/** Person-only, transient chooser metadata. Never include it in Request events. */
+export const PasswordSignInCardSchema = z.discriminatedUnion("stage", [
+  z.strictObject({
+    stage: z.literal("approval"),
+    accounts: PasswordsBrokerAccountsSchema,
+    permissionVersion: z.literal(5),
+  }),
+  z.strictObject({ stage: z.literal("authorized") }),
+  z.strictObject({ stage: z.literal("gone") }),
+]);
+export type PasswordSignInCard = z.infer<typeof PasswordSignInCardSchema>;
+export const PasswordSignInCardViewSchema = z.discriminatedUnion("stage", [
+  z.object({
+    ...PasswordSignInCardSchema.options[0].shape,
+    accounts: z.array(z.object(PasswordsBrokerAccountSchema.shape)).max(100),
+  }),
+  z.object(PasswordSignInCardSchema.options[1].shape),
+  z.object(PasswordSignInCardSchema.options[2].shape),
+]);
+
+export const PasswordSignInApprovalSchema = z.strictObject({
+  loginId: z.uuid(),
+  revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  remember: z.boolean(),
+  permissionVersion: z.literal(5),
+});
 /** Session-independent Host commands, carried by the Personal Runner/desktop bridge. */
 export const PasswordSignInAuthorityCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("signin.probe"), site: BrowserSiteSchema }),
+  z.strictObject({ type: z.literal("login.get"), operationId: z.uuid() }),
+  z.strictObject({
+    type: z.literal("login.approve"),
+    operationId: z.uuid(),
+    ...PasswordSignInApprovalSchema.shape,
+  }),
+  z.strictObject({ type: z.literal("login.commit"), operationId: z.uuid() }),
   z.strictObject({
     type: z.literal("login.authorize"),
     operationId: z.uuid(),
@@ -303,6 +340,19 @@ export const PasswordSignInAuthorityResultSchema = z.union([
     type: z.literal("signin.probe.result"),
     passwords: PasswordSignInAvailabilitySchema,
   }),
+  z.strictObject({ type: z.literal("login.get.result"), card: PasswordSignInCardSchema }),
+  z.strictObject({
+    type: z.literal("login.approve.result"),
+    result: z.discriminatedUnion("ok", [
+      z.strictObject({ ok: z.literal(true) }),
+      z.strictObject({
+        ok: z.literal(false),
+        message: z.string().min(1).max(200),
+        card: PasswordSignInCardSchema,
+      }),
+    ]),
+  }),
+  z.strictObject({ type: z.literal("login.committed"), committed: z.boolean() }),
   z.strictObject({ type: z.literal("login.authorize.started") }),
   z.strictObject({ type: z.literal("login.cancelled") }),
   LoginSealResultSchema,

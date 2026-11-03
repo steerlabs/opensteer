@@ -139,15 +139,32 @@ describe("HostedOAuthBrokerService authorization session", () => {
         ) {
           return null;
         }
-        row = { ...row, launchTicketHash: null, status: "launched" };
+        row = { ...row, status: "launched" };
         return row;
       },
     );
-    const claimCallback = vi.fn(async (stateHash: string) => {
-      if (!row || row.status !== "launched" || row.stateHash !== stateHash) return null;
-      row = { ...row, status: "exchanging" };
-      return row;
-    });
+    const claimCallback = vi.fn(
+      async (input: {
+        stateHash: string;
+        provider: string;
+        browserBindings: readonly { attemptId: string; hash: string }[];
+      }) => {
+        const stateHash = input.stateHash;
+        if (
+          !row ||
+          row.status !== "launched" ||
+          row.stateHash !== stateHash ||
+          row.provider !== input.provider ||
+          !input.browserBindings.some(
+            (binding) =>
+              binding.attemptId === row!.attemptId && binding.hash === row!.launchTicketHash,
+          )
+        )
+          return null;
+        row = { ...row, status: "exchanging" };
+        return row;
+      },
+    );
     const sealAttempt = vi.fn(
       async (_attemptId: typeof attemptId, sealedCiphertext: OAuthBrokerSealedEnvelope) => {
         if (!row) throw new Error("Attempt is unavailable");
@@ -239,6 +256,7 @@ describe("HostedOAuthBrokerService authorization session", () => {
     expect(state).not.toContain("hbs1");
 
     const completed = await broker.completeAuthorization({
+      cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${launchTicket}`,
       parameters: new URLSearchParams({
         authuser: "0",
         code: "google-authorization-code",
@@ -274,6 +292,7 @@ describe("HostedOAuthBrokerService authorization session", () => {
     );
     binding.activeHostInstanceId = createId("hostInstance");
     const rejected = await broker.completeAuthorization({
+      cookieHeader: `__Secure-opensteer.oauth.${changedAttemptId}=${changedLaunchTicket}`,
       parameters: new URLSearchParams({
         code: "must-not-be-exchanged",
         iss: "https://accounts.google.com",
@@ -351,11 +370,28 @@ describe("HostedOAuthBrokerService Microsoft authorization", () => {
     };
     const failAttempt = vi.fn(async () => undefined);
     const store = {
-      claimCallback: vi.fn(async (stateHash: string) => {
-        if (!row || row.status !== "launched" || row.stateHash !== stateHash) return null;
-        row = { ...row, status: "exchanging" };
-        return row;
-      }),
+      claimCallback: vi.fn(
+        async (input: {
+          stateHash: string;
+          provider: string;
+          browserBindings: readonly { attemptId: string; hash: string }[];
+        }) => {
+          const stateHash = input.stateHash;
+          if (
+            !row ||
+            row.status !== "launched" ||
+            row.stateHash !== stateHash ||
+            row.provider !== input.provider ||
+            !input.browserBindings.some(
+              (binding) =>
+                binding.attemptId === row!.attemptId && binding.hash === row!.launchTicketHash,
+            )
+          )
+            return null;
+          row = { ...row, status: "exchanging" };
+          return row;
+        },
+      ),
       createAttempt: vi.fn(
         async (input: HostedOAuthAttemptDurableInput, createdAt: Date): Promise<AttemptRow> => {
           row ??= {
@@ -388,7 +424,7 @@ describe("HostedOAuthBrokerService Microsoft authorization", () => {
           ) {
             return null;
           }
-          row = { ...row, launchTicketHash: null, status: "launched" };
+          row = { ...row, status: "launched" };
           return row;
         },
       ),
@@ -490,6 +526,7 @@ describe("HostedOAuthBrokerService Microsoft authorization", () => {
 
     await expect(
       broker.completeAuthorization({
+        cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${launchTicket}`,
         parameters: new URLSearchParams({
           client_info: "tenant-specific-extension",
           code: "microsoft-authorization-code",
@@ -1051,11 +1088,28 @@ describe("HostedOAuthBrokerService GitHub user tokens", () => {
       issuer: new URL("https://accounts.opensteer.test"),
       now: () => now,
       store: {
-        claimCallback: vi.fn(async (stateHash: string) => {
-          if (!row || row.status !== "launched" || row.stateHash !== stateHash) return null;
-          row = { ...row, status: "exchanging" };
-          return row;
-        }),
+        claimCallback: vi.fn(
+          async (input: {
+            stateHash: string;
+            provider: string;
+            browserBindings: readonly { attemptId: string; hash: string }[];
+          }) => {
+            const stateHash = input.stateHash;
+            if (
+              !row ||
+              row.status !== "launched" ||
+              row.stateHash !== stateHash ||
+              row.provider !== input.provider ||
+              !input.browserBindings.some(
+                (binding) =>
+                  binding.attemptId === row!.attemptId && binding.hash === row!.launchTicketHash,
+              )
+            )
+              return null;
+            row = { ...row, status: "exchanging" };
+            return row;
+          },
+        ),
         createAttempt: vi.fn(
           async (input: HostedOAuthAttemptDurableInput, createdAt: Date): Promise<AttemptRow> => {
             row ??= {
@@ -1088,7 +1142,7 @@ describe("HostedOAuthBrokerService GitHub user tokens", () => {
             ) {
               return null;
             }
-            row = { ...row, launchTicketHash: null, status: "launched" };
+            row = { ...row, status: "launched" };
             return row;
           },
         ),
@@ -1287,6 +1341,7 @@ describe("HostedOAuthBrokerService GitHub user tokens", () => {
 
     await expect(
       test.broker.completeAuthorization({
+        cookieHeader: `__Secure-opensteer.oauth.${test.attemptId}=${launchTicket}`,
         parameters: new URLSearchParams({ code: "github-code", state }),
         provider: "github",
       }),
@@ -1507,12 +1562,29 @@ describe("HostedOAuthBrokerService Discord tokens", () => {
       issuer: new URL("https://accounts.opensteer.test"),
       now: () => now,
       store: {
-        claimCallback: vi.fn(async (stateHash: string) => {
-          if (!attemptRow || attemptRow.status !== "launched" || attemptRow.stateHash !== stateHash)
-            return null;
-          attemptRow = { ...attemptRow, status: "exchanging" };
-          return attemptRow;
-        }),
+        claimCallback: vi.fn(
+          async (input: {
+            stateHash: string;
+            provider: string;
+            browserBindings: readonly { attemptId: string; hash: string }[];
+          }) => {
+            const stateHash = input.stateHash;
+            if (
+              !attemptRow ||
+              attemptRow.status !== "launched" ||
+              attemptRow.stateHash !== stateHash ||
+              attemptRow.provider !== input.provider ||
+              !input.browserBindings.some(
+                (binding) =>
+                  binding.attemptId === attemptRow!.attemptId &&
+                  binding.hash === attemptRow!.launchTicketHash,
+              )
+            )
+              return null;
+            attemptRow = { ...attemptRow, status: "exchanging" };
+            return attemptRow;
+          },
+        ),
         claimRefresh: vi.fn(async () => ({ claimed: true as const, row: refreshRow })),
         createAttempt: vi.fn(
           async (input: HostedOAuthAttemptDurableInput, createdAt: Date): Promise<AttemptRow> => {
@@ -1546,7 +1618,7 @@ describe("HostedOAuthBrokerService Discord tokens", () => {
               input.launchTicketHash !== attemptRow.launchTicketHash
             )
               return null;
-            attemptRow = { ...attemptRow, launchTicketHash: null, status: "launched" };
+            attemptRow = { ...attemptRow, status: "launched" };
             return attemptRow;
           },
         ),
@@ -1600,6 +1672,7 @@ describe("HostedOAuthBrokerService Discord tokens", () => {
     const state = authorizationUrl.searchParams.get("state")!;
     await expect(
       broker.completeAuthorization({
+        cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${launchTicket}`,
         parameters: new URLSearchParams({ code: "discord-code", state }),
         provider: "discord",
       }),

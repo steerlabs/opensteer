@@ -205,7 +205,12 @@ export class AccountDeploymentDirectoryService {
         method: "POST",
       },
     );
-    return CompletePersonalHostAccountLinkResponseSchema.parse(response);
+    const completion = CompletePersonalHostAccountLinkResponseSchema.safeParse(response);
+    if (!completion.success)
+      throw new Error(
+        "The Opensteer Account service must be updated before this Host can be linked. Update the Account service, then try linking again.",
+      );
+    return completion.data;
   }
 
   async cancelPersonalHostAccountLinkOperation(

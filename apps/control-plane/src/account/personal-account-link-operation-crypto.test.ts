@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  CompletePersonalHostAccountLinkResponseSchema,
+  PersonalHostAccountLinkCompletionPayloadSchema,
   PersonalHostAccountLinkChallengeIdSchema,
 } from "@opensteer/control-plane-protocol";
 import { PersonalAccountLinkOperationCipher } from "./personal-account-link-operation-crypto.js";
@@ -37,7 +37,7 @@ describe("Personal Account-link operation encryption", () => {
 });
 
 function fixture() {
-  return CompletePersonalHostAccountLinkResponseSchema.parse({
+  return PersonalHostAccountLinkCompletionPayloadSchema.parse({
     completionGrant: `${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`,
     hostCredential: `osc_${"d".repeat(43)}`,
     linkGeneration: "g".repeat(43),

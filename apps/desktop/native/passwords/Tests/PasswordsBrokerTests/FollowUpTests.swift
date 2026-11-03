@@ -13,8 +13,7 @@ final class FollowUpTests: BrokerTestCase {
     let account = try unwrap(
       try await client.call("signin.request", Fixtures.request(id, session: session)).result?[
         "accounts"]?[0])
-    let answer = try await client.call(
-      "signin.approve", Fixtures.approve(id, account, remember: remember))
+    let answer = try await client.allow(Fixtures.approve(id, account, remember: remember))
     same(answer.result?["decision"], .string("authorized"))
     XCTAssertNil(answer.result?["item"])
     XCTAssertNil(answer.result?["login"]?["password"])
@@ -28,7 +27,10 @@ final class FollowUpTests: BrokerTestCase {
   ) async throws -> JSONValue? {
     try await client.call(
       "signin.release",
-      .object(["transactionId": .string(id), "field": .string(field), "origin": .string(origin)])
+      .object([
+        "transactionId": .string(id), "field": .string(field), "kind": .string("browser"),
+        "origin": .string(origin),
+      ])
     ).result
   }
 

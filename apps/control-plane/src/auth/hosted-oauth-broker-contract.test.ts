@@ -93,14 +93,31 @@ async function scenario(response: object, surface: "desktop" | "web" | "native" 
       launchAttempt: vi.fn(async (input: { launchTicketHash: string }) => {
         if (current().status !== "pending" || current().launchTicketHash !== input.launchTicketHash)
           return null;
-        row = { ...current(), status: "launched", launchTicketHash: null };
+        row = { ...current(), status: "launched" };
         return row;
       }),
-      claimCallback: vi.fn(async (stateHash: string) => {
-        if (current().status !== "launched" || current().stateHash !== stateHash) return null;
-        row = { ...current(), status: "exchanging" };
-        return row;
-      }),
+      claimCallback: vi.fn(
+        async (input: {
+          stateHash: string;
+          provider: string;
+          browserBindings: readonly { attemptId: string; hash: string }[];
+        }) => {
+          const stateHash = input.stateHash;
+          if (
+            current().status !== "launched" ||
+            current().stateHash !== stateHash ||
+            current().provider !== input.provider ||
+            !input.browserBindings.some(
+              (binding) =>
+                binding.attemptId === current().attemptId &&
+                binding.hash === current().launchTicketHash,
+            )
+          )
+            return null;
+          row = { ...current(), status: "exchanging" };
+          return row;
+        },
+      ),
       sealAttempt: vi.fn(async (_id: string, sealedCiphertext: OAuthBrokerSealedEnvelope) => {
         row = {
           ...current(),
@@ -148,7 +165,11 @@ async function scenario(response: object, surface: "desktop" | "web" | "native" 
   const state = launched.searchParams.get("state")!;
   expect(current().stateHash).toBe(createHash("sha256").update(state).digest("base64url"));
   const complete = (parameters = new URLSearchParams({ state, code: "synthetic-code" })) =>
-    broker.completeAuthorization({ parameters, provider: "slack" });
+    broker.completeAuthorization({
+      parameters,
+      provider: "slack",
+      cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${new URL(created.launchUrl).searchParams.get("ticket")!}`,
+    });
   return { attemptId, request, recipient, current, fetch, complete, state, deploymentId };
 }
 

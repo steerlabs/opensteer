@@ -1,4 +1,3 @@
-import { generateKeyPairSync } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +9,7 @@ import {
   type ComputerUseDataGrants,
   type ComputerUseDataInvokeParams,
 } from "@opensteer/protocol";
-import { createComputerAppApproval } from "@opensteer/runner-auth";
+
 import {
   ComputerUseBridgeError,
   createHelperAppProvider,
@@ -22,7 +21,7 @@ import { computerAppIntegrations } from "@opensteer/integration-catalog";
 import { isComputerAppDefinition } from "@opensteer/integration-core";
 import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
 import type { IntegrationAccess } from "@opensteer/integration-core";
-import { testRpcData } from "../server/test-host-api-request.js";
+import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import {
   connectComputerAppMachine,
   integrationGateway,
@@ -85,8 +84,7 @@ integration("computer apps", () => {
     let observed: unknown = null;
     try {
       const computer = await connectComputerAppMachine(host, fakeMessagesProvider(), {
-        integrations: { computerAppApprovals: true, platform: "darwin" },
-        registerApprovalKey: false,
+        integrations: { platform: "darwin", protocolVersion: 5 },
       });
       closers.unshift(() => computer.close());
       await computer.heartbeat();
@@ -186,35 +184,51 @@ integration("computer apps", () => {
       ),
     ).rejects.toThrow(/HTTP 403.*forbidden/u);
     const setup = await requestComputerAppSetup(host, computer.runnerId, "read", "messages-read");
-    // Only the desktop's registered approval key signs consent: not another
-    // key, and not the Runner's own, which any process of the person can read.
-    await expect(
-      setComputerApp(
-        host,
-        computer,
-        setup,
-        createComputerAppApproval(generateKeyPairSync("ed25519").privateKey, setup),
-      ),
-    ).rejects.toThrow(/refused.*Approve this access/u);
-    await expect(
-      setComputerApp(
-        host,
-        computer,
-        setup,
-        createComputerAppApproval(computer.primary.privateKey, setup),
-      ),
-    ).rejects.toThrow(/refused.*Approve this access/u);
-    const enabled = await setComputerApp(
-      host,
-      computer,
-      setup,
-      createComputerAppApproval(computer.approvalKey.privateKey, setup),
-    );
-
     const second = await signUpUser(host, {
       email: "second@example.test",
       password: "second-user-password",
     });
+    const respond = (setupRequestId: string, headers: Record<string, string>) =>
+      testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "integration.computer.setup.respond",
+          idempotencyKey: createId("request"),
+          setupRequestId,
+          decision: "allow",
+        },
+        { headers },
+      );
+    await expect(respond(setup.id, second.headers)).rejects.toThrow("no longer waiting for you");
+    const signedIn = await testRpcRequest(
+      host.origin,
+      "auth.password.signIn",
+      { email: "alex@example.com", password: "machine-access-owner-password" },
+      { headers: { origin: host.origin, "user-agent": "Owner's iPhone" } },
+    );
+    expect(signedIn.status).toBe(200);
+    const otherOwnerSession = {
+      origin: host.origin,
+      cookie: signedIn.headers
+        .getSetCookie()
+        .map((cookie) => cookie.split(";", 1)[0])
+        .join("; "),
+    };
+    expect(otherOwnerSession.cookie.length).toBeGreaterThan(0);
+    expect(otherOwnerSession.cookie === host.ownerHeaders.cookie).toBe(false);
+    await respond(setup.id, otherOwnerSession);
+    const enabled = {
+      connection: await host.store.database
+        .selectFrom("integrationConnections")
+        .select("id")
+        .where("runnerId", "=", computer.runnerId)
+        .where("integrationDefinitionId", "=", "apple-messages")
+        .where("status", "=", "connected")
+        .executeTakeFirstOrThrow(),
+    };
+    await expect(respond(setup.id, host.ownerHeaders)).rejects.toThrow("no longer waiting");
+
     const secondDashboard = await testRpcData(
       host.origin,
       "integrations.get",
@@ -308,12 +322,7 @@ integration("computer apps", () => {
       "read-write",
       "messages-read-write",
     );
-    await setComputerApp(
-      host,
-      computer,
-      writeSetup,
-      createComputerAppApproval(computer.approvalKey.privateKey, writeSetup),
-    );
+    await setComputerApp(host, computer, writeSetup, writeSetup.id);
     await gateway.call("integration_request", {
       access: "read-write",
       integration: "apple-messages",
@@ -383,12 +392,7 @@ integration("computer apps", () => {
       "read-write",
       "messages-widen-again",
     );
-    await setComputerApp(
-      host,
-      computer,
-      widenSetup,
-      createComputerAppApproval(computer.approvalKey.privateKey, widenSetup),
-    );
+    await setComputerApp(host, computer, widenSetup, widenSetup.id);
     const currentSend = operation(
       await gateway.call("integration_search", { query: "Messages" }),
       "send_message",
@@ -528,12 +532,7 @@ integration("computer apps", () => {
     const computer = await connectComputerAppMachine(host, fakeMessagesProvider());
     closers.unshift(() => computer.close());
     const setup = await requestComputerAppSetup(host, computer.runnerId, "read", "admin-boundary");
-    const enabled = await setComputerApp(
-      host,
-      computer,
-      setup,
-      createComputerAppApproval(computer.approvalKey.privateKey, setup),
-    );
+    const enabled = await setComputerApp(host, computer, setup, setup.id);
     const administrator = await signUpUser(host, {
       email: "administrator@example.test",
       password: "administrator-password",
@@ -563,6 +562,39 @@ integration("computer apps", () => {
     expect(
       administratorMachines.machines.find(({ id }) => id === computer.runnerId)?.apps ?? null,
     ).toBeNull();
+    const pending = await requestComputerAppSetup(
+      host,
+      computer.runnerId,
+      "read-write",
+      "owner-only-approval",
+    );
+    await expect(
+      testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "integration.computer.setup.respond",
+          idempotencyKey: "administrator-cannot-approve",
+          setupRequestId: pending.id,
+          decision: "allow",
+        },
+        { headers: administrator.headers },
+      ),
+    ).rejects.toThrow("no longer waiting for you");
+    expect(
+      await host.store.database
+        .selectFrom("computerAppSetupRequests")
+        .select("id")
+        .where("id", "=", pending.id)
+        .executeTakeFirst(),
+    ).toEqual({ id: pending.id });
+    expect(
+      await host.store.database
+        .selectFrom("integrationConnections")
+        .select("computerAccess")
+        .where("id", "=", enabled.connection.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ computerAccess: "read" });
     const requests = await testRpcData(
       host.origin,
       "integration.computer.setup.list",
@@ -643,12 +675,7 @@ integration("computer apps", () => {
       "read",
       "personal-messages-read",
     );
-    const enabled = await setComputerApp(
-      host,
-      computer,
-      personalSetup,
-      createComputerAppApproval(computer.approvalKey.privateKey, personalSetup),
-    );
+    const enabled = await setComputerApp(host, computer, personalSetup, personalSetup.id);
     const run = await dispatchCallerRun(host, caller, {
       key: "personal-computer-app-run",
       title: "Read Messages",
@@ -755,12 +782,7 @@ integration("computer apps", () => {
         "calendar-read",
         "apple-calendar",
       );
-      const calendar = await setComputerApp(
-        host,
-        computer,
-        calendarSetup,
-        createComputerAppApproval(computer.approvalKey.privateKey, calendarSetup),
-      );
+      const calendar = await setComputerApp(host, computer, calendarSetup, calendarSetup.id);
       const remindersSetup = await requestComputerAppSetup(
         host,
         computer.runnerId,
@@ -768,12 +790,7 @@ integration("computer apps", () => {
         "reminders-write",
         "apple-reminders",
       );
-      const reminders = await setComputerApp(
-        host,
-        computer,
-        remindersSetup,
-        createComputerAppApproval(computer.approvalKey.privateKey, remindersSetup),
-      );
+      const reminders = await setComputerApp(host, computer, remindersSetup, remindersSetup.id);
 
       const run = await dispatchCallerRun(host, caller, {
         key: "helper-apps-run",

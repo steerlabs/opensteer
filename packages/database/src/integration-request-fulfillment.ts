@@ -1,5 +1,10 @@
 import { lockRequestWorkspaces } from "./request-workspace-locks.js";
-import { RequestResponseSchema, type AgentEvent, type UserId } from "@opensteer/core";
+import {
+  RequestResponseSchema,
+  type AgentEvent,
+  type RequestSettlementProvenance,
+  type UserId,
+} from "@opensteer/core";
 import type {
   IntegrationAccess,
   IntegrationConnectionId,
@@ -25,6 +30,7 @@ export async function fulfillPendingMainIntegrationAccessRequestsInTransaction(
     readonly access: IntegrationAccess;
     readonly connectionId: IntegrationConnectionId;
     readonly displayName: string;
+    readonly settlementActor?: RequestSettlementProvenance | null;
     readonly installationId: IntegrationInstallationId;
     readonly ownerUserId: UserId;
     readonly serverId: IntegrationServerId;
@@ -53,6 +59,7 @@ export async function fulfillPendingMainIntegrationAccessRequestsInTransaction(
     const resolvedRow = await transaction
       .updateTable("requests")
       .set({
+        settlementProvenance: input.settlementActor ? jsonValue(input.settlementActor) : null,
         resolvedAt: now,
         resolvedBy: input.ownerUserId,
         response: jsonValue(response),

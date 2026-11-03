@@ -60,17 +60,11 @@ export interface IphoneAppsSnapshot {
   readonly retryAt: string | null;
   readonly issue: IphoneAppsIssue | null;
   readonly issueMessage: string | null;
-  readonly approvalKey: {
-    readonly keyId: string;
-    readonly publicKey: string;
-    readonly registered: boolean;
-  } | null;
   readonly permissions: Readonly<
     Record<IphoneBaseAppId, IphonePermission> & Partial<Record<IphoneAddedAppId, IphonePermission>>
   >;
   /** Whether iPhone Settings gives Location precisely; null unless it is granted. Older builds omit it. */
   readonly locationAccuracy?: "approximate" | "precise" | null;
-  readonly approvals: readonly IphoneAppsApproval[];
   readonly working: number;
 }
 export type IphoneApprovalOutcome =
@@ -107,14 +101,6 @@ export interface IphoneAppsBridge {
   chooseContacts(): Promise<IphonePermission>;
   /** Apple's limited-library picker, from a tap; what comes back is iOS's answer read afresh. */
   choosePhotos(): Promise<IphonePermission>;
-  answerApproval(input: {
-    readonly setupRequestId: string;
-    readonly decision: "allow" | "deny";
-    readonly expected: {
-      readonly definitionId: IphoneAppId;
-      readonly access: "read" | "read-write";
-    };
-  }): Promise<IphoneApprovalOutcome>;
 }
 
 interface NativeIphoneApps extends Omit<IphoneAppsBridge, "choosePhotos" | "subscribe"> {
@@ -144,14 +130,12 @@ const unsupportedSnapshot: IphoneAppsSnapshot = {
   retryAt: null,
   issue: null,
   issueMessage: null,
-  approvalKey: null,
   permissions: {
     "apple-calendar": "not-determined",
     "apple-contacts": "not-determined",
     "apple-reminders": "not-determined",
   },
   locationAccuracy: null,
-  approvals: [],
   working: 0,
 };
 
@@ -180,9 +164,6 @@ const unsupported: IphoneAppsBridge = {
   choosePhotos: async () => {
     throw unsupportedError();
   },
-  answerApproval: async () => {
-    throw unsupportedError();
-  },
 };
 
 const native =
@@ -208,5 +189,4 @@ export const iphoneApps: IphoneAppsBridge =
           if (native.choosePhotos === undefined) throw unsupportedError();
           return native.choosePhotos();
         },
-        answerApproval: (input) => native.answerApproval(input),
       };

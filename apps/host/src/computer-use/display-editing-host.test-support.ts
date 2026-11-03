@@ -56,7 +56,7 @@ export async function displayEditingHost(options: {
       modules: {
         integrations: {
           platform: options.mac ? "darwin" : "android",
-          protocolVersion: options.mac ? 5 : 4,
+          protocolVersion: options.mac ? 6 : 4,
           ...(!options.mac && options.editing ? { sharedInput: 1 } : {}),
           ...(options.editing ? { editing: 1 } : {}),
           ...(options.mac

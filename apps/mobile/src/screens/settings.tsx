@@ -4,6 +4,7 @@ import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opens
 import { harnessDriverLabel } from "@opensteer/core";
 import { mutationIdempotencyKey } from "@opensteer/client/host";
 import {
+  useEffect,
   useCallback,
   useMemo,
   useRef,
@@ -11,13 +12,16 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { Alert, Linking, StyleSheet, View } from "react-native";
+import { Alert, Linking, StyleSheet, View, TextInput } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
 import type { NotificationPreferences } from "../notifications/push-registration.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { useMobileNotifications, usePushRegistration } from "../ui/notifications-context.js";
 import { space } from "../theme.js";
+import { usePersonalRemoteAccess } from "@opensteer/client/react";
+import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
+import { SecondaryButton } from "../ui/primitives.js";
 import { AppText } from "../ui/primitives.js";
 import { Sheet } from "../ui/sheet.js";
 import { SettingsForm } from "./settings-form.js";
@@ -58,6 +62,91 @@ export function SettingsScreen(): ReactNode {
   const notificationInFlight = useRef(false);
 
   const snapshot = useSettingsHost(selection.hostClient);
+  const remote = usePersonalRemoteAccess(
+    snapshot?.deploymentShape?.kind === "personal" &&
+      selection.hostClient?.getSnapshot().user?.instanceRole === "administrator"
+      ? selection.hostClient
+      : null,
+  );
+  const [sessions, setSessions] = useState<readonly import("@opensteer/core").AuthSessionSummary[]>(
+    [],
+  );
+  const [administrationError, setAdministrationError] = useState<string | null>(null);
+  const [administrationBusy, setAdministrationBusy] = useState(false);
+  const [privateShown, setPrivateShown] = useState(false);
+  const [privateAddress, setPrivateAddress] = useState("");
+  const refreshSessions = useCallback(() => {
+    const host = selection.hostClient;
+    if (!host) return;
+    void host.rpc["sessions.list"]({})
+      .then((result) => {
+        if (client.getSnapshot().selection.hostClient !== host) return;
+        if (result.ok) setSessions(result.data.sessions);
+        else setAdministrationError(result.error.message);
+      })
+      .catch(() => setAdministrationError("Devices could not be loaded."));
+  }, [client, selection.hostClient]);
+  useEffect(() => {
+    setSessions([]);
+    refreshSessions();
+  }, [refreshSessions]);
+  const administration = selection.hostClient
+    ? {
+        access: remote.status,
+        pairing: remote.pairing,
+        sessions,
+        error: administrationError ?? remote.error,
+        busy: administrationBusy || remote.working,
+        onRefresh: refreshSessions,
+        onRemove: (session: import("@opensteer/core").AuthSessionSummary) => {
+          if (administrationBusy) return;
+          setAdministrationBusy(true);
+          setAdministrationError(null);
+          void client
+            .removeHostSession(session)
+            .then(() => setSessions((current) => current.filter((row) => row.id !== session.id)))
+            .catch((error: unknown) =>
+              setAdministrationError(operationDetail(error, "Device removal failed.")),
+            )
+            .finally(() => setAdministrationBusy(false));
+        },
+        onAction: (
+          action: "off" | "connect" | "private" | "rotate" | "unlink" | "recover" | "pair" | "link",
+        ) => {
+          if (action === "private") {
+            setPrivateShown(true);
+            return;
+          }
+          if (action === "pair") {
+            void remote.pair?.();
+            return;
+          }
+          if (action === "link") {
+            setAdministrationBusy(true);
+            setAdministrationError(null);
+            void client
+              .linkSelectedPersonalAccount()
+              .catch((error: unknown) =>
+                setAdministrationError(operationDetail(error, "Account linking failed.")),
+              )
+              .finally(() => setAdministrationBusy(false));
+            return;
+          }
+          const apply = () =>
+            void remote.request?.(
+              action === "off" || action === "connect"
+                ? { action: "configure", mode: action, privateOrigin: null }
+                : { action },
+            );
+          if (action === "unlink" || action === "off" || action === "connect")
+            Alert.alert("Change remote access?", remoteAccessDisconnectWarning, [
+              { text: "Cancel", style: "cancel" },
+              { text: "Continue", style: "destructive", onPress: apply },
+            ]);
+          else apply();
+        },
+      }
+    : undefined;
   const apps = useComputerUseData(selection.hostClient, snapshot?.machineRevision ?? 0);
   const selectedRow = rows.find((row) => row.deploymentId === selection.deploymentId) ?? null;
   const iphoneApps = useIphoneAppsState(useIphoneApps());
@@ -254,6 +343,7 @@ export function SettingsScreen(): ReactNode {
   return (
     <>
       <SettingsForm
+        administration={administration}
         account={accountModel}
         accountError={accountError}
         agents={agents}
@@ -317,6 +407,30 @@ export function SettingsScreen(): ReactNode {
         storageError={storageFailure ?? savedViewFailure}
         version={Constants.expoConfig?.version ?? "unknown"}
       />
+      <Sheet open={privateShown} onClose={() => setPrivateShown(false)} title="Private network">
+        <View style={{ padding: 20, gap: 16 }}>
+          <AppText>{remoteAccessDisconnectWarning}</AppText>
+          <TextInput
+            accessibilityLabel="Private HTTPS address"
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="https://your-computer.example"
+            value={privateAddress}
+            onChangeText={setPrivateAddress}
+          />
+          <SecondaryButton
+            label="Apply private address"
+            onPress={() => {
+              setPrivateShown(false);
+              void remote.request?.({
+                action: "configure",
+                mode: "private",
+                privateOrigin: privateAddress.trim(),
+              });
+            }}
+          />
+        </View>
+      </Sheet>
       {passwords === null ? null : (
         <Sheet
           onClose={() => setPasswordsShown(false)}

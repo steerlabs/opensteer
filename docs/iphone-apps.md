@@ -4,7 +4,7 @@ Opensteer on an iPhone can serve Calendar, Contacts, Reminders, current Location
 
 ## Enrollment and secrets
 
-The owner starts **Add this iPhone** in the mobile app. JS uses the owner session to mint a single iPhone enrollment and approve app access. The native module creates two independent Ed25519 keys and a durable prepared record before the first mint request. It holds the enrollment token only in the device Keychain. The JS bridge receives the Runner ID and a stable mint idempotency key, but never a private key, token after `enroll`, stream ticket or signature. Native connects directly to the Host target from the pairing result. Discovery must name the same Deployment and Host instance before it sends the token or a proof. Redirects are refused.
+The owner starts **Add this iPhone** in the mobile app. JS uses the owner session to mint a single iPhone enrollment and approve app access. The native module creates a Runner Ed25519 key and a durable prepared record before the first mint request. It holds the enrollment token only in the device Keychain. The JS bridge receives the Runner ID and a stable mint idempotency key, but never a private key, token after `enroll`, stream ticket or signature. Native connects directly to the Host target from the pairing result. Discovery must name the same Deployment and Host instance before it sends the token or a proof. Redirects are refused.
 
 ## Admission and backgrounding
 
@@ -12,11 +12,11 @@ The native executor is created by an Expo app delegate subscriber, before JS loa
 
 ## Local identity
 
-The identity marker is `Application Support/iphone-apps/enrollment.json`, excluded from backup and protected until first user authentication. The Runner key, approval key and pending enrollment token use Keychain service `com.opensteer.mobile.iphone-apps`, `WhenUnlockedThisDeviceOnly`, with synchronization disabled. An absent or malformed marker wipes those items; a present marker with a missing key is wiped. A temporarily unavailable protected Keychain read defers this judgment until unlock. Removing the phone clears the marker first so an unavailable Keychain deletion cannot restore sharing on restart.
+The identity marker is `Application Support/iphone-apps/enrollment.json`, excluded from backup and protected until first user authentication. The Runner key and pending enrollment token use Keychain service `com.opensteer.mobile.iphone-apps`, `WhenUnlockedThisDeviceOnly`, with synchronization disabled. An absent or malformed marker wipes those items; a present marker with a missing key is wiped. A temporarily unavailable protected Keychain read defers this judgment until unlock. Removing the phone clears the marker first so an unavailable Keychain deletion cannot restore sharing on restart.
 
 ## OS consent
 
-Permission prompts happen only after a person taps the mobile UI action. Invocations never prompt. The answer is read back before anything is requested or signed, and a refusal stops new access there ([mobile lifecycle](mobile.md#this-iphones-apps)). Calendar requires full event access, Reminders full reminder access, and Contacts either full or limited access. Limited Contacts exposes only the OS-selected contacts; iOS 18's system picker can expand that selection. The generated Info.plist strings live in `apps/mobile/app.config.ts`.
+Permission prompts happen only after a person taps the mobile UI action. Invocations never prompt. The answer is read back before agent access is requested, and a refusal stops new access there ([mobile lifecycle](mobile.md#this-iphones-apps)). Calendar requires full event access, Reminders full reminder access, and Contacts either full or limited access. Limited Contacts exposes only the OS-selected contacts; iOS 18's system picker can expand that selection. The generated Info.plist strings live in `apps/mobile/app.config.ts`.
 
 ## Read-only providers
 
@@ -24,7 +24,7 @@ Location is a foreground-only, read-only coordinate fix, labelled precise or app
 
 Photos offers read-only asset and regular-album metadata. It returns no image bytes, filenames, EXIF or coordinates and never requests an iCloud download. PhotoKit’s permission API uses the broader read/write label, but Opensteer’s provider has no write operations. Limited access returns only selected assets, including a successful empty selection. The limited-library picker is person-initiated; the automatic selection alert is disabled. Paging binds cursors to the query and order but does not promise a library snapshot.
 
-A new device approval requires an authenticated iPhone status that reports its definition. Offline, connecting and older app versions receive distinct refusals before any request is saved. Lowering and revocation keep working offline. Before starting new setup, the mobile controller also requires the installed build to report the app's permission and the Host's catalog to list its definition ([mobile lifecycle](mobile.md#this-iphones-apps)).
+New access can be approved by the iPhone owner from any signed-in device. Enrollment and iOS permission prompts require the data-holding iPhone. A new device approval requires an authenticated iPhone status that reports its definition. Offline, connecting and older app versions receive distinct refusals before any request is saved. Lowering and revocation keep working offline. Before starting new setup, the mobile controller also requires the installed build to report the app's permission and the Host's catalog to list its definition ([mobile lifecycle](mobile.md#this-iphones-apps)).
 
 ## Native packaging
 

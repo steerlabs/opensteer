@@ -1,4 +1,10 @@
 import {
+  IssuePersonalHostAccountLinkChallengeRequestSchema,
+  IssuePersonalHostAccountLinkChallengeResponseSchema,
+  CompletePersonalHostAccountLinkRequestSchema,
+  CompletePersonalHostAccountLinkResponseSchema,
+} from "@opensteer/control-plane-protocol";
+import {
   type DesktopAgentPhoneAdbBridge,
   DesktopAgentPhoneAdbOpenSchema,
   DesktopAgentPhoneAdbOpenResultSchema,
@@ -41,20 +47,13 @@ import type {
   DesktopAgentPhoneArtifact,
   DesktopChooseUsbDeviceInput,
   DesktopUsbDeviceChoice,
-  DesktopComputerUseApprovalKeyResult,
-  DesktopReviewComputerAppSetupInput,
-  DesktopReviewComputerAppSetupResult,
   DesktopComputerAppSetupStatus,
   DesktopComputerAppSetupTarget,
   DesktopOpenComputerAppSetupInput,
   DesktopOpenComputerAppSetupResult,
   DesktopAddDirectRouteInput,
   DesktopCloseHostWebSocketInput,
-  DesktopComputerUseApprovalInput,
-  DesktopComputerUseApprovalPresentation,
-  DesktopComputerUseApprovalRespondInput,
   DesktopComputerUsePermissionsResult,
-  DesktopConfigurePersonalRemoteAccessInput,
   DesktopConnectPrivateDeploymentInput,
   DesktopFullDiskAccessStatus,
   DesktopOpenComputerUsePermissionsPanelResult,
@@ -78,17 +77,12 @@ import type {
   DesktopOpenIntegrationAuthorizationInput,
   DesktopOpenIntegrationAuthorizationResult,
   DesktopPickFolderResult,
-  DesktopPersonalPairingCode,
-  DesktopPersonalRemoteAccessStatus,
   DesktopRequestFullDiskAccessResult,
   DesktopRemoveAccountDeploymentInput,
   DesktopBadgeCountInput,
   DesktopNotificationResult,
   DesktopNotificationSupport,
   DesktopNotificationTarget,
-  DesktopPasswordsSignInCardInput,
-  DesktopPasswordsSignInCardState,
-  DesktopPasswordsSignInApproveInput,
   DesktopPasswordsStatus,
   DesktopSelectDeploymentInput,
   DesktopStartLocalRunnerInput,
@@ -108,9 +102,6 @@ import {
   DesktopChooseUsbDeviceInputSchema,
   DesktopReadAgentPhoneArtifactResultSchema,
   DesktopUsbDeviceChoiceSchema,
-  DesktopComputerUseApprovalKeyResultSchema,
-  DesktopReviewComputerAppSetupInputSchema,
-  DesktopReviewComputerAppSetupResultSchema,
   DesktopComputerAppSetupStatusSchema,
   DesktopComputerAppSetupTargetSchema,
   DesktopOpenComputerAppSetupInputSchema,
@@ -119,13 +110,9 @@ import {
   DesktopCloseHostWebSocketInputSchema,
   DesktopUseComputerViewInputSchema,
   DesktopUseComputerViewResultSchema,
-  DesktopComputerUseApprovalInputSchema,
-  DesktopComputerUseApprovalPresentationSchema,
-  DesktopComputerUseApprovalRespondInputSchema,
   DesktopComputerUsePermissionsResultSchema,
   DesktopOpenComputerUsePermissionsPanelResultSchema,
   DesktopOpenComputerUseSettingsInputSchema,
-  DesktopConfigurePersonalRemoteAccessInputSchema,
   DesktopCloudDeploymentOperationInputSchema,
   DesktopDeleteCloudDeploymentInputSchema,
   DesktopConnectPrivateDeploymentInputSchema,
@@ -149,19 +136,12 @@ import {
   DesktopOpenHostWebSocketResultSchema,
   DesktopOpenIntegrationAuthorizationInputSchema,
   DesktopOpenIntegrationAuthorizationResultSchema,
-  DesktopPersonalPairingCodeSchema,
-  DesktopPersonalRemoteAccessStatusSchema,
   DesktopRequestFullDiskAccessResultSchema,
   DesktopRemoveAccountDeploymentInputSchema,
   DesktopBadgeCountInputSchema,
   DesktopNotificationResultSchema,
   DesktopNotificationSupportSchema,
   DesktopNotificationTargetSchema,
-  DesktopPasswordsSignInCardInputSchema,
-  DesktopPasswordsSignInCardStateSchema,
-  DesktopPasswordsSignInCardChangedSchema,
-  DesktopPasswordsSignInApproveInputSchema,
-  DesktopPasswordsSignInApproveResultSchema,
   DesktopPasswordsStatusSchema,
   DesktopSelectDeploymentInputSchema,
   DesktopStartLocalRunnerInputSchema,
@@ -478,32 +458,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     return () => ipcRenderer.removeListener(desktopBridgeChannels.passwordsStatusChanged, receive);
   },
   passwordsOpen: () => invokePasswords<void>(desktopBridgeChannels.openPasswords),
-  passwordsSignInGet: async (input: DesktopPasswordsSignInCardInput) =>
-    DesktopPasswordsSignInCardStateSchema.parse(
-      await invokePasswords<DesktopPasswordsSignInCardState>(
-        desktopBridgeChannels.getPasswordsSignIn,
-        DesktopPasswordsSignInCardInputSchema.parse(input),
-      ),
-    ),
-  onPasswordsSignInChanged: (
-    input: DesktopPasswordsSignInCardInput,
-    listener: (state: DesktopPasswordsSignInCardState) => void,
-  ) => {
-    const { operationId } = DesktopPasswordsSignInCardInputSchema.parse(input);
-    const receive = (_event: unknown, value: unknown): void => {
-      const change = DesktopPasswordsSignInCardChangedSchema.parse(value);
-      if (change.operationId === operationId) listener(change.state);
-    };
-    ipcRenderer.on(desktopBridgeChannels.passwordsSignInChanged, receive);
-    return () => ipcRenderer.removeListener(desktopBridgeChannels.passwordsSignInChanged, receive);
-  },
-  passwordsSignInApprove: async (input: DesktopPasswordsSignInApproveInput) =>
-    DesktopPasswordsSignInApproveResultSchema.parse(
-      await invokePasswords(
-        desktopBridgeChannels.approvePasswordsSignIn,
-        DesktopPasswordsSignInApproveInputSchema.parse(input),
-      ),
-    ),
   useComputerViewOnThisMac: async (input: unknown) =>
     DesktopUseComputerViewResultSchema.parse(
       await invoke(
@@ -511,19 +465,7 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
         DesktopUseComputerViewInputSchema.parse(input),
       ),
     ),
-  computerUseApprovalKey: async () =>
-    DesktopComputerUseApprovalKeyResultSchema.parse(
-      await invoke<DesktopComputerUseApprovalKeyResult>(
-        desktopBridgeChannels.computerUseApprovalKey,
-      ),
-    ),
-  reviewComputerAppSetup: async (input: DesktopReviewComputerAppSetupInput) =>
-    DesktopReviewComputerAppSetupResultSchema.parse(
-      await invoke<DesktopReviewComputerAppSetupResult>(
-        desktopBridgeChannels.reviewComputerAppSetup,
-        DesktopReviewComputerAppSetupInputSchema.parse(input),
-      ),
-    ),
+
   openComputerAppSetup: async (input: DesktopOpenComputerAppSetupInput) =>
     DesktopOpenComputerAppSetupResultSchema.parse(
       await invoke<DesktopOpenComputerAppSetupResult>(
@@ -547,18 +489,7 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       desktopBridgeChannels.closeComputerAppSetup,
       DesktopComputerAppSetupTargetSchema.parse(input),
     ),
-  computerUseApprovalGet: async (input: DesktopComputerUseApprovalInput) =>
-    DesktopComputerUseApprovalPresentationSchema.parse(
-      await invoke<DesktopComputerUseApprovalPresentation>(
-        desktopBridgeChannels.getComputerUseApproval,
-        DesktopComputerUseApprovalInputSchema.parse(input),
-      ),
-    ),
-  computerUseApprovalRespond: (input: DesktopComputerUseApprovalRespondInput) =>
-    invoke<void>(
-      desktopBridgeChannels.respondComputerUseApproval,
-      DesktopComputerUseApprovalRespondInputSchema.parse(input),
-    ),
+
   computerUseOpenSystemSettings: (input: DesktopOpenComputerUseSettingsInput) =>
     invoke<void>(
       desktopBridgeChannels.openComputerUseSystemSettings,
@@ -603,11 +534,22 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       desktopBridgeChannels.closeHostWebSocket,
       DesktopCloseHostWebSocketInputSchema.parse(input),
     ),
-  configurePersonalRemoteAccess: async (input: DesktopConfigurePersonalRemoteAccessInput) =>
-    DesktopPersonalRemoteAccessStatusSchema.parse(
-      await invoke<DesktopPersonalRemoteAccessStatus>(
-        desktopBridgeChannels.configurePersonalRemoteAccess,
-        DesktopConfigurePersonalRemoteAccessInputSchema.parse(input),
+  issuePersonalAccountLinkChallenge: async (
+    input: import("@opensteer/control-plane-protocol").IssuePersonalHostAccountLinkChallengeRequest,
+  ) =>
+    IssuePersonalHostAccountLinkChallengeResponseSchema.parse(
+      await invoke(
+        desktopBridgeChannels.issuePersonalAccountLinkChallenge,
+        IssuePersonalHostAccountLinkChallengeRequestSchema.parse(input),
+      ),
+    ),
+  completePersonalAccountLink: async (
+    input: import("@opensteer/control-plane-protocol").CompletePersonalHostAccountLinkRequest,
+  ) =>
+    CompletePersonalHostAccountLinkResponseSchema.parse(
+      await invoke(
+        desktopBridgeChannels.completePersonalAccountLink,
+        CompletePersonalHostAccountLinkRequestSchema.parse(input),
       ),
     ),
   connectPrivate: (input: DesktopConnectPrivateDeploymentInput) =>
@@ -642,12 +584,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
   listCloudDeployments: async () =>
     ListCloudDeploymentsResponseSchema.parse(
       await invoke<ListCloudDeploymentsResponse>(desktopBridgeChannels.listCloudDeployments),
-    ),
-  getPersonalRemoteAccessStatus: async () =>
-    DesktopPersonalRemoteAccessStatusSchema.parse(
-      await invoke<DesktopPersonalRemoteAccessStatus>(
-        desktopBridgeChannels.getPersonalRemoteAccessStatus,
-      ),
     ),
   hostRequest: async (input: DesktopHostHttpRequest) =>
     DesktopHostHttpResultSchema.parse(
@@ -696,10 +632,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       desktopBridgeChannels.installPortableFs,
       DesktopLocalExecutionInputSchema.parse(input),
     ),
-  issuePersonalPairingCode: async () =>
-    DesktopPersonalPairingCodeSchema.parse(
-      await invoke<DesktopPersonalPairingCode>(desktopBridgeChannels.issuePersonalPairingCode),
-    ),
   onDeploymentAccessSnapshotChanged: (listener: (snapshot: DeploymentAccessSnapshot) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) => {
       listener(DeploymentAccessSnapshotSchema.parse(value));
@@ -722,16 +654,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     ipcRenderer.on(desktopBridgeChannels.localExecutionStatusChanged, receive);
     return () =>
       ipcRenderer.removeListener(desktopBridgeChannels.localExecutionStatusChanged, receive);
-  },
-  onPersonalRemoteAccessStatusChanged: (
-    listener: (status: DesktopPersonalRemoteAccessStatus) => void,
-  ) => {
-    const receive = (_event: Electron.IpcRendererEvent, value: unknown) => {
-      listener(DesktopPersonalRemoteAccessStatusSchema.parse(value));
-    };
-    ipcRenderer.on(desktopBridgeChannels.personalRemoteAccessStatusChanged, receive);
-    return () =>
-      ipcRenderer.removeListener(desktopBridgeChannels.personalRemoteAccessStatusChanged, receive);
   },
   onNotificationActivated: (listener: (target: DesktopNotificationTarget) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) => {

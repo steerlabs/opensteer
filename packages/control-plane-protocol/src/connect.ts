@@ -93,3 +93,11 @@ export const RevokeConnectResponseSchema = z.object({
   revoked: z.literal(true),
 });
 export type RevokeConnectResponse = z.infer<typeof RevokeConnectResponseSchema>;
+
+/** Historical effect only; this does not assert the resource is still in that state. */
+export const ConnectOperationCompletionSchema = z.object({
+  operationId: ConnectOperationIdSchema,
+  operationKind: z.enum(["provision", "rotate", "revoke"]),
+  generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+});
+export type ConnectOperationCompletion = z.infer<typeof ConnectOperationCompletionSchema>;

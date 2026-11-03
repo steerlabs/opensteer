@@ -422,65 +422,6 @@ describe("ComputerUseBridgeServer", () => {
     expect(harness.calls).toHaveLength(0);
   });
 
-  it("takes the Runner's approval lists and outcomes itself, never to the helper", async () => {
-    const harness = await bridgeHarness();
-    const socket = await harness.connect(harness.token);
-
-    const list = { approvalKeyId: null, approvals: [] };
-    const outcome = {
-      outcome: { kind: "declined" },
-      setupRequestId: "7c1a2b4c-5d6e-4f80-9a1b-2c3d4e5f6071",
-    };
-    expect(await socket.call(4, "approvals.list", list)).toEqual({
-      id: 4,
-      kind: "response",
-      result: {},
-    });
-    expect(await socket.call(5, "approvals.outcome", outcome)).toEqual({
-      id: 5,
-      kind: "response",
-      result: {},
-    });
-    expect(harness.approvals.list).toHaveBeenCalledWith(list);
-    expect(harness.approvals.outcome).toHaveBeenCalledWith(outcome);
-    // Desktop main answers them; the helper holds no approvals.
-    expect(harness.calls).toHaveLength(0);
-    expect(socket.events).toEqual([]);
-  });
-
-  it("refuses an unreadable approval list without taking it", async () => {
-    const harness = await bridgeHarness();
-    const socket = await harness.connect(harness.token);
-
-    const response = await socket.call(5, "approvals.list", { approvals: "nope" });
-
-    expect(response).toMatchObject({ error: { code: "failed" }, id: 5, kind: "response" });
-    expect(harness.approvals.list).not.toHaveBeenCalled();
-  });
-
-  it("sends the person's answer to the connected Runner, and says when none is connected", async () => {
-    const harness = await bridgeHarness();
-    const answer = {
-      answer: {
-        approval: {
-          expiresAt: "2026-09-22T00:00:00.000Z",
-          requestId: "7c1a2b4c-5d6e-4f80-9a1b-2c3d4e5f6071",
-          signature: "s".repeat(86),
-        },
-        kind: "deny" as const,
-      },
-      setupRequestId: "7c1a2b4c-5d6e-4f80-9a1b-2c3d4e5f6071",
-    };
-    expect(harness.server.sendApprovalAnswer(answer, null)).toBe(false);
-    const socket = await harness.connect(harness.token);
-    expect(harness.server.sendApprovalAnswer(answer, null)).toBe(true);
-    await vi.waitFor(() =>
-      expect(socket.events).toEqual([
-        { event: "approval.answer", kind: "event", params: answer, server: null },
-      ]),
-    );
-  });
-
   it("answers a malformed request rather than forwarding it", async () => {
     const harness = await bridgeHarness();
     const socket = await harness.connect(harness.token);
@@ -934,14 +875,12 @@ describe("ComputerUseBridgeServer shutdown", () => {
       connections: connections.map((connection) => connection.report()),
       helperCalls: harness.calls.map(([method]) => method),
       sessionClosedOnHelper: sessionClosed,
-      approvalsToldDisconnected: harness.approvals.disconnected.mock.calls.length,
       listenerRefused,
     });
 
     expect(closed.settled).toBe("closed");
     expect(everyConnectionClosed).toBe(true);
     expect(sessionClosed).toBe(true);
-    expect(harness.approvals.disconnected).toHaveBeenCalledTimes(1);
     expect(listenerRefused).toBe(true);
   }, 30_000);
 
@@ -1066,15 +1005,7 @@ async function bridgeHarness(
   const readinessOptions: ComputerUseHelperRequestOptions[] = [];
   // Desktop main's clock, still unless a test moves it, so deadlines are exact.
   const clock = { at: 1_000 };
-  const approvals = {
-    disconnected: vi.fn(),
-    list: vi.fn(),
-    outcome: vi.fn(),
-    proveKeyChallenge: vi.fn(async (challenge: { challengeId: string }) => ({
-      challengeId: challenge.challengeId,
-      signature: "s".repeat(86),
-    })),
-  };
+
   const helper: ComputerUseBridgeHelperPort = {
     ...(options.ownerInputVersion === 2 ? { ownerInputVersion: () => 2 as const } : {}),
     videoProfile: () => options.videoProfile,
@@ -1123,7 +1054,6 @@ async function bridgeHarness(
       now: () => clock.at,
       onDataPermissionRequired: permissionRequired,
       ownership,
-      approvals,
     });
     servers.push(server);
     return server;
@@ -1232,7 +1162,7 @@ async function bridgeHarness(
     readinessOptions: () => [...readinessOptions],
     readinessProbes: () => readinessProbes,
     reply: (method: string, handler: (params: unknown) => unknown) => handlers.set(method, handler),
-    approvals,
+
     server: firstBridge.server,
     startBridge: async () => {
       const bridge = await startBridge();

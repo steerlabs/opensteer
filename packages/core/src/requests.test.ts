@@ -45,6 +45,16 @@ function pendingApproval() {
 }
 
 describe("Request contracts", () => {
+  it("keeps the settlement session server-side while projecting its device label", () => {
+    const request = {
+      ...pendingApproval(),
+      settlementProvenance: { sessionId: "session", deviceLabel: "iPhone" },
+    };
+    expect(RequestSchema.parse(request).settlementProvenance).toEqual(request.settlementProvenance);
+    expect(RequestViewSchema.parse(request).settlementProvenance).toEqual({
+      deviceLabel: "iPhone",
+    });
+  });
   it("uses one Request identity and enforces the kind's lifecycle mode", () => {
     const request = pendingApproval();
     expect(PendingRequestSchema.parse(request)).toEqual(request);
