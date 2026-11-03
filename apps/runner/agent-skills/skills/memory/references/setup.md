@@ -80,13 +80,14 @@ export default async function ({ event, opensteer }) {
   }
   await opensteer.callTool("thread_message", {
     delivery: "queue",
-    message: `Light pass due (${event.source.scheduledFor ?? event.receivedAt}). Load opensteer:memory and follow its light-pass reference.`,
+    message: `Light pass due (${event.source.scheduledFor ?? event.receivedAt}). Load opensteer:memory and follow its light-pass reference. Write no text at any point in this Run; reach Chat only with a queued thread_message.`,
     threadId,
   });
 }
 ```
 
-For the nightly pass, say `Nightly pass due` and name the nightly-pass reference.
+For the nightly pass, say `Nightly pass due` and name the nightly-pass reference. Keep the last
+sentence: an engine can announce a step before the skill loads, and any text is a reply.
 
 ## Light-pass template
 
