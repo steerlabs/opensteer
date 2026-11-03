@@ -1,10 +1,10 @@
 import { createId, PendingRequestSchema } from "@opensteer/core";
 import type { ReachableMachineRecord } from "@opensteer/database";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentControlRunScope } from "../agents/agent-control-service.js";
+import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import { MachineFullDiskAccessService } from "./machine-full-disk-access-service.js";
 
-const claims: AgentControlRunScope = {
+const claims: RunToolScope = {
   aud: "opensteer-agent-control",
   bindingGeneration: 1,
   environmentId: createId("environment"),

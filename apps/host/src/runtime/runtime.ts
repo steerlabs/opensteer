@@ -103,7 +103,7 @@ import { HostedOAuthBrokerClient } from "../access/hosted-oauth-broker-client.js
 import { RemotePersonalAccountGrantVerifier } from "../access/personal-account-grant-verifier.js";
 import { PersonalRemoteAccessService } from "../access/personal-remote-access-service.js";
 import type { AgentPhoneUpdateRelease } from "../agent-phone/update-release.js";
-import { AgentControlTokenService } from "../agents/agent-control-service.js";
+import { RunToolTokenService } from "../agents/run-tool-tokens.js";
 import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import { AgentCallerResolver } from "../mcp/agent-caller.js";
 import { ProductToolHandlers } from "../mcp/handlers/product.js";
@@ -1814,7 +1814,7 @@ export async function createHostRuntime(
     const runCapabilityLifetime = options.runCapabilityLifetimeSeconds
       ? { lifetimeSeconds: options.runCapabilityLifetimeSeconds }
       : {};
-    const agentControlTokens = new AgentControlTokenService({
+    const agentControlTokens = new RunToolTokenService({
       authorizer: store,
       tokens: runCapabilityTokens,
       ...runCapabilityLifetime,

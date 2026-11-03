@@ -1,7 +1,9 @@
+import type { AgentWorkspaceMountService } from "./agent-workspace-mount-service.js";
+import type { AgentTriggerManager } from "../mcp/handlers/triggers.js";
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
 import { fingerprint } from "../mcp/operations.js";
-import { AgentControlRequestSchema } from "../mcp/control.test-support.js";
-import { ProductToolsTestClient } from "../mcp/control.test-support.js";
+import { ProductToolRequestSchema } from "../mcp/product-tools.test-support.js";
+import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { SpecialistStore } from "@opensteer/database";
 import {
   createId,
@@ -28,11 +30,7 @@ import {
 
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserService } from "../browser/browser-service.js";
-import {
-  type AgentControlTokenService,
-  type AgentTriggerManager,
-  type AgentWorkspaceMountService,
-} from "./agent-control-service.js";
+import { type RunToolTokenService } from "./run-tool-tokens.js";
 
 const now = "2026-08-09T09:00:00.000Z";
 const ownerId = createId("user");
@@ -53,7 +51,7 @@ const testModelSelection = ModelSelectionSchema.parse({
   providerId: "openai",
 });
 
-describe("AgentControlService", () => {
+describe("Product tool handlers", () => {
   it("refuses pending specialists with their binding reasons", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main");
     const { service } = makeService({
@@ -389,7 +387,7 @@ describe("AgentControlService", () => {
     ).resolves.toMatchObject({ messages: [targetMessage], thread: target });
 
     const delegateId = crypto.randomUUID();
-    const delegateRequest = AgentControlRequestSchema.parse({
+    const delegateRequest = ProductToolRequestSchema.parse({
       requestId: delegateId,
       task: "Research the provider contract",
       title: child.title,
@@ -1860,7 +1858,7 @@ function makeService(options: {
       .sort((left, right) => left.id.localeCompare(right.id))
       .slice(0, input.limit ?? 65);
   });
-  const tokens = { authenticate } as unknown as AgentControlTokenService;
+  const tokens = { authenticate } as unknown as RunToolTokenService;
   const unexpectedBrowserRequest = async () => {
     throw new Error("Unexpected browser request");
   };

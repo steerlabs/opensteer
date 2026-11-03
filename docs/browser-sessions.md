@@ -62,7 +62,7 @@ Source: `apps/host/src/browser/browser-service.ts`,
 
 ## Addressing and input authority
 
-Agent connections bind to one named session for life. Every command rechecks
+A Run’s CDP connection binds to one named session for life. Every command rechecks
 Workspace/session access and profile grants, including after asynchronous
 admission. Run end releases attachments and relay connections, not the session.
 The browser runtime must use the current wire contract; older runtimes receive
@@ -466,9 +466,12 @@ Profile listing, opening, CDP and tab reach follow the shared
 [Run resource authority rule](agent-orchestration.md#run-tool-authority).
 Browser grants use `read` or `read-write`; driving a browser requires `read-write`.
 
-Profiles are durable identities, not account names. Main and the person create
-empty profiles; a Project needs an atomic creation-and-grant
-browser-access Request. Delegated and trigger work creates none. Choose the
+Profiles are durable identities, not account names. Runs and programs can create
+empty profiles; creation grants no access to an existing profile or website
+account. Projects still need a browser-access Request for a profile grant.
+Delegated work keeps its root's consent reach; delegation alone neither removes
+Main inheritance nor grants it. Connected agents use managed Runs for browser
+sessions and new profile creation, and cannot approve browser access. Choose the
 profile before signing in: Guest state is ephemeral and cannot be promoted.
 The profile list provides identities and grants, never proof of a website login.
 Inspect the website only when the task actually needs that sign-in.

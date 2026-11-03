@@ -4,7 +4,7 @@ import type { AgentTool } from "@opensteer/agent-tools";
 import type { z } from "zod";
 import type { AgentCaller } from "../agent-caller.js";
 import type { AppService } from "../../apps/app-service.js";
-import type { AgentControlRunScope } from "../../agents/agent-control-service.js";
+import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import { requireRun } from "../operations.js";
 import type { ProductToolHandlers } from "./product.js";
 import type { IntegrationToolHandlers } from "./integrations.js";
@@ -32,7 +32,7 @@ export function agentToolHandlers(options: {
   readonly triggers: TriggerToolHandlers;
   readonly apps: Pick<AppService, "publish" | "list" | "fetch">;
   readonly pluginInstall: (
-    scope: AgentControlRunScope,
+    scope: RunToolScope,
     directory: string,
   ) => Promise<Record<string, unknown>>;
 }): AgentToolHandlers {

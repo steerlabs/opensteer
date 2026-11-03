@@ -1,4 +1,4 @@
-import type { AgentControlRunScope } from "../agents/agent-control-service.js";
+import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -29,7 +29,7 @@ import {
   type AppHttpResponse,
 } from "./app-proxy.js";
 import { appFrameHeaders } from "@opensteer/shared/appFrame";
-import type { AgentControlTokenService } from "../agents/agent-control-service.js";
+import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type { WorkspaceFilesService } from "../workspace/files/workspace-files-service.js";
 import type { z } from "zod";
 
@@ -41,7 +41,7 @@ interface AppServiceOptions {
   readonly apps: AppStore;
   readonly store: Pick<OpensteerStore, "admitWorkspaceFiles">;
   readonly files: Pick<WorkspaceFilesService, "list" | "download">;
-  readonly tokens: Pick<AgentControlTokenService, "authenticate" | "reauthorize">;
+  readonly tokens: Pick<RunToolTokenService, "authenticate" | "reauthorize">;
   readonly publishEvent: (event: AgentEvent) => void;
 }
 
@@ -57,7 +57,7 @@ export class AppService {
   }
 
   async publish(
-    scope: AgentControlRunScope,
+    scope: RunToolScope,
     publishKey: string,
     input: z.infer<typeof AppPublishInputSchema>,
   ) {
@@ -313,11 +313,11 @@ export class AppService {
     }
   }
 
-  async list(scope: AgentControlRunScope) {
+  async list(scope: RunToolScope) {
     return { apps: await this.#options.apps.list({ ...scope, userId: scope.requestedBy }) };
   }
 
-  async fetch(scope: AgentControlRunScope, input: z.infer<typeof AppFetchInputSchema>) {
+  async fetch(scope: RunToolScope, input: z.infer<typeof AppFetchInputSchema>) {
     input = AppFetchInputSchema.parse(input);
     await this.#options.apps.authorize({
       ...scope,

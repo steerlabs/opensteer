@@ -1,8 +1,8 @@
 import { TriggerOutputSchema } from "@opensteer/agent-tools/outputs";
-import { type AgentControlResponse } from "../mcp/control.test-support.js";
-import { AgentControlResponseSchema } from "../mcp/control.test-support.js";
-import { TriggerToolsTestClient } from "../mcp/control.test-support.js";
-import { ProductToolsTestClient } from "../mcp/control.test-support.js";
+import { type ProductToolResult } from "../mcp/product-tools.test-support.js";
+import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
+import { TriggerToolsTestClient } from "../mcp/product-tools.test-support.js";
+import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -53,10 +53,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import {
-  type AgentControlRunScope,
-  type AgentControlTokenService,
-} from "../agents/agent-control-service.js";
+import { type RunToolScope, type RunToolTokenService } from "../agents/run-tool-tokens.js";
 import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import { AgentCallerResolver } from "../mcp/agent-caller.js";
 import { AgentOperationReceipts } from "@opensteer/database";
@@ -69,7 +66,7 @@ import {
 import { createTriggerRpcHandlers, handleTriggerCommand } from "./trigger-routes.js";
 import { TriggerService } from "./trigger-service.js";
 import type { WatchControlScope, WatchControlTokenService } from "./watch-capability.js";
-import { WatchToolsTestClient } from "../mcp/control.test-support.js";
+import { WatchToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { WatchService, type WatchServiceOptions } from "./watch-service.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -115,7 +112,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
   });
   const store = new OpensteerStore(database);
   const triggerStore = new TriggerStore(database);
-  const runClaims = new Map<string, AgentControlRunScope>();
+  const runClaims = new Map<string, RunToolScope>();
   const occurrenceClaims = new Map<string, TriggerControlScope>();
   const watchClaims = new Map<string, WatchControlScope>();
   const workspaceAccess = new WorkspaceExecutionAccessService({
@@ -139,7 +136,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
   });
   const tokens = {
     authenticate: async (token: string) => claimsFor(runClaims, token),
-  } as unknown as AgentControlTokenService;
+  } as unknown as RunToolTokenService;
   const triggerTokens = {
     authenticate: async (token: string) => {
       const claims = claimsFor(occurrenceClaims, token);
@@ -2186,7 +2183,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         expect(TriggerSchema.parse(oldTrigger).createdByThreadId).toBeNull();
         expect(TriggerRevisionSchema.parse(oldRevision).createdByThreadId).toBeNull();
         expect(
-          AgentControlResponseSchema.parse({
+          ProductToolResultSchema.parse({
             type: "trigger.control.result",
             requestId: randomUUID(),
             result: parsed,
@@ -2530,7 +2527,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     return controlTrigger(programs, token, input);
   }
   async function controlTrigger(
-    control: { handle(token: string, input: unknown): Promise<AgentControlResponse> },
+    control: { handle(token: string, input: unknown): Promise<ProductToolResult> },
     token: string,
     input: unknown,
   ) {

@@ -10,11 +10,10 @@ export const RequestCreationResultSchema = z.strictObject({
 });
 export type RequestCreationResult = z.infer<typeof RequestCreationResultSchema>;
 
-export const RunAgentControlPlanSchema = z.strictObject({
+export const RunToolTokenPlanSchema = z.strictObject({
   token: z.string().min(1).max(4_096),
   url: z.url(),
 });
-export type RunAgentControlPlan = z.infer<typeof RunAgentControlPlanSchema>;
 
 export const RunBrowserCdpPlanSchema = z.strictObject({
   token: z.string().min(1).max(4_096),

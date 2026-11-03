@@ -1,4 +1,4 @@
-import { AgentControlResponseSchema } from "../mcp/control.test-support.js";
+import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { randomUUID } from "node:crypto";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
@@ -601,7 +601,7 @@ integration("Runs that outlive their connection", () => {
           },
         });
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
-        return AgentControlResponseSchema.parse({
+        return ProductToolResultSchema.parse({
           requestId: randomUUID(),
           type: "thread.delegate.result",
           result: result.structuredContent,

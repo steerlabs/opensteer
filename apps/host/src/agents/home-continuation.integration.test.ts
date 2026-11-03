@@ -1,4 +1,4 @@
-import { ProductToolsTestClient } from "../mcp/control.test-support.js";
+import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   AgentEventSchema,
@@ -29,10 +29,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { testRpcRequest } from "../server/test-host-api-request.js";
-import {
-  type AgentControlRunScope,
-  type AgentControlTokenService,
-} from "./agent-control-service.js";
+import { type RunToolScope, type RunToolTokenService } from "./run-tool-tokens.js";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -948,7 +945,7 @@ integration("durable Thread changes native continuation", () => {
       workspaceId: foreignWorkspace.id,
     });
 
-    let claims: AgentControlRunScope | null = null;
+    let claims: RunToolScope | null = null;
     const unexpected = async (): Promise<never> => {
       throw new Error("Unexpected agent-control dependency");
     };
@@ -985,7 +982,7 @@ integration("durable Thread changes native continuation", () => {
           if (!claims) throw new Error("Child Run has no claim");
           return claims;
         },
-      } as unknown as AgentControlTokenService,
+      } as unknown as RunToolTokenService,
       workspaceMounts: { mount: unexpected },
       workspaces: { create: unexpected },
     });
@@ -1134,7 +1131,7 @@ integration("durable Thread changes native continuation", () => {
       title: "Chat",
       workspaceId: stack.mainWorkspaceId,
     });
-    let claims: AgentControlRunScope | null = null;
+    let claims: RunToolScope | null = null;
     const unexpected = async (): Promise<never> => {
       throw new Error("Unexpected agent-control dependency");
     };
@@ -1173,7 +1170,7 @@ integration("durable Thread changes native continuation", () => {
           if (!claims) throw new Error("Home Run has no claim");
           return claims;
         },
-      } as unknown as AgentControlTokenService,
+      } as unknown as RunToolTokenService,
       workspaceMounts: { mount: unexpected },
       workspaces: { create: unexpected },
     });

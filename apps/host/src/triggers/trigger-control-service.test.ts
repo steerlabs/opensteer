@@ -1,5 +1,5 @@
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
-import { TriggerToolsTestClient } from "../mcp/control.test-support.js";
+import { TriggerToolsTestClient } from "../mcp/product-tools.test-support.js";
 import {
   createId,
   ModelSelectionSchema,

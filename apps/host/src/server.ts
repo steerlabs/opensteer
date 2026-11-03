@@ -354,7 +354,7 @@ export interface HostServerDependencies {
   /** Present when account attachment uses adoption. */
   readonly accountAdoption?:
     { readonly acknowledge: (proofId: string) => Promise<void> } | undefined;
-  readonly agentControlTokens: import("./agents/agent-control-service.js").AgentControlTokenService;
+  readonly agentControlTokens: import("./agents/run-tool-tokens.js").RunToolTokenService;
   readonly agentTools: OpensteerMcpService;
   readonly authenticator: HostAuthenticator;
   readonly machineFullDiskAccess: MachineFullDiskAccessService;

@@ -1,4 +1,4 @@
-import { ProductToolsTestClient } from "../mcp/control.test-support.js";
+import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import type {
   ComputerAppApprovalAnswer,

@@ -1,14 +1,21 @@
-import { OpensteerError } from "@opensteer/core";
+import { OpensteerError, type UserId, type ThreadId } from "@opensteer/core";
 import {
   requiredTriggerToolField,
   triggerSourceFromInput,
   type TriggerControlInput,
   type TriggerWriteInput,
 } from "@opensteer/triggers";
-import type { AgentTriggerManager } from "../../agents/agent-control-service.js";
 import { callerThread } from "../agent-caller.js";
 import { idempotencyKey, operationId } from "../operations.js";
 import type { ToolCall } from "./index.js";
+export interface AgentTriggerManager {
+  manage(
+    ownerId: UserId,
+    input: TriggerControlInput,
+    actorThreadId: ThreadId | null,
+  ): Promise<unknown>;
+}
+
 export class TriggerToolHandlers {
   readonly triggers: AgentTriggerManager;
   constructor(triggers: AgentTriggerManager) {

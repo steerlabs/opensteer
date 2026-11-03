@@ -15,10 +15,8 @@ describe("development Web boundary", () => {
 
   it("proxies every authenticated runtime capability carried in a Run plan", () => {
     expect(localHostProxyRoutes).toMatchObject({
-      "/internal/v1/agent-control": {},
       "/internal/v1/browser-cdp": { ws: true },
       "/internal/v1/computer-use/display": { ws: true },
-      "/internal/v1/integration-mcp": {},
       "/internal/v1/computer-plugin-packages": {},
       "/internal/v1/plugin-cache": {},
       "/internal/v1/mcp": {},
@@ -26,12 +24,28 @@ describe("development Web boundary", () => {
       "/internal/v1/trigger-cdp": { ws: true },
     });
     expect(localHostProxyRoutes["/v1"]).toMatchObject({ ws: true });
+    expect(localHostProxyRoutes).not.toHaveProperty("/internal/v1/agent-control");
+    expect(localHostProxyRoutes).not.toHaveProperty("/internal/v1/integration-mcp");
+    expect(localHostProxyRoutes).not.toHaveProperty("/internal/v1/mount-grants/exchange");
     expect(localHostProxyRoutes).not.toHaveProperty("/internal/v1/channel-runtime");
     expect(localHostProxyRoutes).not.toHaveProperty("/internal/v1/devices/connect");
   });
 
   it("serves Host discovery from the canonical origin a native client is given", () => {
     expect(localHostProxyRoutes).toMatchObject({ "/.well-known/opensteer": {} });
+  });
+
+  it("routes MCP OAuth and discovery to the same Host as the MCP resource", () => {
+    for (const path of [
+      "/oauth/mcp",
+      "/.well-known/oauth-protected-resource",
+      "/.well-known/oauth-authorization-server",
+    ]) {
+      expect(localHostProxyRoutes).toHaveProperty(
+        path,
+        expect.objectContaining({ target: localHostProxyRoutes["/internal/v1/mcp"].target }),
+      );
+    }
   });
 
   it("does not publish the supervisor-only bootstrap document", () => {
