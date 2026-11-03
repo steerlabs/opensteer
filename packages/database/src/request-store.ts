@@ -2399,8 +2399,41 @@ export class RequestStore {
     return row ? requestFromRow(row) : null;
   }
 
+  /** Current requester authority over a stored durable sign-in, independent of its Run's status. */
+  async hasDurablePasswordSignInRequestAuthority(input: {
+    readonly ownerId: UserId;
+    readonly requestId: RequestId;
+  }): Promise<boolean> {
+    return withRequestWorkspaceLocks(
+      this.#database,
+      (transaction) => discoverRequestWorkspaces(transaction, { requestId: input.requestId }),
+      async (transaction) => {
+        const row = await transaction
+          .selectFrom("requests")
+          .selectAll()
+          .where("id", "=", input.requestId)
+          .executeTakeFirst();
+        if (
+          !row ||
+          row.kind !== "browser.password-sign-in" ||
+          row.status !== "pending" ||
+          row.requestedBy !== input.ownerId ||
+          row.requiredActor !== "requester"
+        )
+          return false;
+        try {
+          await lockActiveDurableRequestAuthority(transaction, requestFromRow(row));
+          return true;
+        } catch (error) {
+          if (error instanceof OpensteerError) return false;
+          throw error;
+        }
+      },
+    );
+  }
+
   /** Live authority for an unattended Passwords operation, without creating a Request. */
-  async hasPasswordSignInAuthority(input: {
+  async hasActiveRunPasswordSignInAuthority(input: {
     readonly originatingRunId: RunId;
     readonly originatingThreadId: ThreadId;
     readonly originatingWorkspaceId: WorkspaceId;
