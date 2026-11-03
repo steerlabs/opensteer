@@ -1114,7 +1114,13 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     const execution = this.#runAccountOperation(link, afterResponse).catch(
       async (error: unknown) => {
         const accountError = error instanceof OpensteerError ? error.cause : error;
-        if (accountError instanceof AccountRequestError && accountError.definitiveRejection) {
+        const operation = link.accountOperation;
+        if (
+          operation &&
+          accountError instanceof AccountRequestError &&
+          accountError.refuses(operation.kind) &&
+          (operation.kind !== "projection" || operation.projection.state === "disabled")
+        ) {
           // A refusal cannot be recovered by replaying it. Retire only that exact
           // step, keeping the link credential for prerequisites such as revocation.
           const retired = await this.#database.transaction().execute(async (transaction) => {

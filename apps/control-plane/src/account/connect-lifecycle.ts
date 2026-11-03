@@ -795,7 +795,9 @@ async function lockedOperation(
     .forNoKeyUpdate()
     .executeTakeFirst();
   if (!operation || operation.operationKind !== operationKind) {
-    throw new ControlPlaneError("conflict", "Connect operation was superseded");
+    throw new ControlPlaneError("conflict", "Connect operation was superseded", {
+      reason: "connect-operation-superseded",
+    });
   }
   if (operation.state === "completed") {
     return { completed: true, generation: storedOperationGeneration(operation) };
@@ -806,7 +808,9 @@ async function lockedOperation(
     row.operationKind !== operationKind ||
     (operation.state !== "running" && operation.state !== "failed")
   ) {
-    throw new ControlPlaneError("conflict", "Connect operation was superseded");
+    throw new ControlPlaneError("conflict", "Connect operation was superseded", {
+      reason: "connect-operation-superseded",
+    });
   }
   return { completed: false, row };
 }
@@ -844,7 +848,10 @@ async function claimConnectOperation(
             resource.lastCompletedOperationKind !== operationKind ||
             resource.operationId !== null))
       ) {
-        throw new ControlPlaneError("conflict", "Connect operation was superseded");
+        throw new ControlPlaneError("conflict", "Completed Connect operation was superseded", {
+          reason: "connect-operation-completed-superseded",
+          completedOperation: { operationId, operationKind, generation },
+        });
       }
       return { generation, replay: true };
     }
@@ -853,7 +860,9 @@ async function claimConnectOperation(
       resource.operationId !== operationId ||
       resource.operationKind !== operationKind
     ) {
-      throw new ControlPlaneError("conflict", "Connect operation was superseded");
+      throw new ControlPlaneError("conflict", "Connect operation was superseded", {
+        reason: "connect-operation-superseded",
+      });
     }
     if (existing.state === "running") return { replay: false };
     await transaction
@@ -893,7 +902,10 @@ async function completeConnectOperation(
     .where("operationId", "=", operationId)
     .returning("operationId")
     .executeTakeFirst();
-  if (!completed) throw new ControlPlaneError("conflict", "Connect operation was superseded");
+  if (!completed)
+    throw new ControlPlaneError("conflict", "Connect operation was superseded", {
+      reason: "connect-operation-superseded",
+    });
 }
 
 function assertOperationAvailable(

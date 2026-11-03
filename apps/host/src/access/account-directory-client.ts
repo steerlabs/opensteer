@@ -1,6 +1,10 @@
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { isDeepStrictEqual } from "node:util";
 import {
+  AccountOperationRefusalReasonSchema,
+  type AccountOperationRefusalReason,
+  type ConnectOperationCompletion,
+  type ControlPlaneErrorReason,
   ConnectCredentialResponseSchema,
   ProvisionConnectRequestSchema,
   RotateConnectCredentialRequestSchema,
@@ -120,12 +124,11 @@ export class AccountDirectoryClient {
       "POST",
       request,
       "Personal Account-link activation",
-      async (failed) => {
-        const reason = await controlPlaneErrorReason(failed);
-        if (failed.status === 404 && reason === "personal-account-link-not-found") {
+      (status, reason) => {
+        if (status === 404 && reason === "personal-account-link-not-found") {
           throw new PersonalAccountLinkNotFoundError();
         }
-        if (failed.status === 409) {
+        if (status === 409) {
           if (reason === "personal-account-link-reservation-expired") {
             throw new PersonalAccountLinkActivationExpiredError();
           }
@@ -206,13 +209,26 @@ export class AccountDirectoryClient {
     if (request.hostInstanceId !== this.#deployment.activeHostInstanceId) {
       throw new Error("Personal Connect revoke authority does not match this Host");
     }
-    const response = await this.#request(
-      "/v1/host/connect",
-      "DELETE",
-      request,
-      "Personal Connect revoke",
-    );
-    return RevokeConnectResponseSchema.parse(await readBoundedJson(response, boundedJsonOptions));
+    try {
+      const response = await this.#request(
+        "/v1/host/connect",
+        "DELETE",
+        request,
+        "Personal Connect revoke",
+      );
+      return RevokeConnectResponseSchema.parse(await readBoundedJson(response, boundedJsonOptions));
+    } catch (error) {
+      if (
+        error instanceof AccountRequestError &&
+        error.completedOperation?.operationKind === "revoke" &&
+        error.completedOperation.operationId === request.operationId
+      ) {
+        // The effect committed, even though a later operation changed the resource.
+        // Return its historical result so the journal's conditional finalizer runs.
+        return { generation: error.completedOperation.generation, revoked: true };
+      }
+      throw error;
+    }
   }
 
   async unlinkPersonalHost(input: UnlinkPersonalHostRequest): Promise<void> {
@@ -222,11 +238,8 @@ export class AccountDirectoryClient {
       "DELETE",
       request,
       "Personal Account unlink",
-      async (failed) => {
-        if (
-          failed.status === 404 &&
-          (await controlPlaneErrorReason(failed)) === "personal-account-link-not-found"
-        ) {
+      (status, reason) => {
+        if (status === 404 && reason === "personal-account-link-not-found") {
           throw new PersonalAccountLinkNotFoundError();
         }
       },
@@ -244,7 +257,7 @@ export class AccountDirectoryClient {
     method: "DELETE" | "POST" | "PUT",
     body: unknown,
     label: string,
-    handleFailure?: (response: Response) => Promise<void>,
+    handleFailure?: (status: number, reason: ControlPlaneErrorReason | null) => void,
     timeoutMs = 15_000,
   ): Promise<Response> {
     let response: Response;
@@ -264,14 +277,21 @@ export class AccountDirectoryClient {
       throw new Error(`${label} API request failed`, { cause: error });
     }
     if (!response.ok) {
+      let accountError;
       try {
-        await handleFailure?.(response.clone());
+        accountError = await controlPlaneError(response);
+        handleFailure?.(response.status, accountError?.reason ?? null);
       } finally {
         await response.body?.cancel();
       }
       throw new AccountRequestError({
         message: `${label} API returned HTTP ${response.status}`,
         status: response.status,
+        refusalReason: AccountOperationRefusalReasonSchema.safeParse(accountError?.reason).data,
+        completedOperation:
+          accountError?.reason === "connect-operation-completed-superseded"
+            ? accountError.completedOperation
+            : undefined,
       });
     }
     return response;
@@ -280,15 +300,37 @@ export class AccountDirectoryClient {
 
 export class AccountRequestError extends Error {
   readonly status: number;
-  readonly definitiveRejection: boolean;
+  readonly refusalReason: AccountOperationRefusalReason | null;
+  readonly completedOperation: ConnectOperationCompletion | undefined;
 
-  constructor(options: { readonly message: string; readonly status: number }) {
+  constructor(options: {
+    readonly message: string;
+    readonly status: number;
+    readonly refusalReason?: AccountOperationRefusalReason | undefined;
+    readonly completedOperation?: ConnectOperationCompletion | undefined;
+  }) {
     super(options.message);
     this.name = "AccountRequestError";
     this.status = options.status;
-    // Timeouts, early requests and throttling do not settle the external step.
-    this.definitiveRejection =
-      options.status >= 400 && options.status < 500 && ![408, 425, 429].includes(options.status);
+    this.refusalReason = options.refusalReason ?? null;
+    this.completedOperation = options.completedOperation;
+  }
+
+  refuses(operation: "activate" | "unlink" | "projection" | "revoke"): boolean {
+    switch (operation) {
+      case "activate":
+        return (
+          this.refusalReason === "personal-account-link-reservation-expired" ||
+          this.refusalReason === "personal-account-link-cancelled" ||
+          this.refusalReason === "personal-account-link-not-found"
+        );
+      case "unlink":
+        return this.refusalReason === "connect-resource-active";
+      case "projection":
+        return this.refusalReason === "connect-revocation-required";
+      case "revoke":
+        return false;
+    }
   }
 }
 
@@ -296,7 +338,11 @@ export class PersonalAccountLinkActivationExpiredError extends AccountRequestErr
   readonly code = "personal-account-link-activation-expired";
 
   constructor() {
-    super({ message: "The Personal Account-link activation result has expired.", status: 409 });
+    super({
+      message: "The Personal Account-link activation result has expired.",
+      status: 409,
+      refusalReason: "personal-account-link-reservation-expired",
+    });
     this.name = "PersonalAccountLinkActivationExpiredError";
   }
 }
@@ -305,7 +351,11 @@ export class PersonalAccountLinkCancelledError extends AccountRequestError {
   readonly code = "personal-account-link-cancelled";
 
   constructor() {
-    super({ message: "The Personal Account-link reservation was cancelled.", status: 409 });
+    super({
+      message: "The Personal Account-link reservation was cancelled.",
+      status: 409,
+      refusalReason: "personal-account-link-cancelled",
+    });
     this.name = "PersonalAccountLinkCancelledError";
   }
 }
@@ -317,12 +367,13 @@ export class PersonalAccountLinkNotFoundError extends AccountRequestError {
     super({
       message: "Opensteer Account holds no Personal Host link for this credential.",
       status: 404,
+      refusalReason: "personal-account-link-not-found",
     });
     this.name = "PersonalAccountLinkNotFoundError";
   }
 }
 
-async function controlPlaneErrorReason(response: Response): Promise<string | null> {
+async function controlPlaneError(response: Response) {
   let body: unknown;
   try {
     body = await readBoundedJson(response, boundedJsonOptions);
@@ -330,7 +381,12 @@ async function controlPlaneErrorReason(response: Response): Promise<string | nul
     return null;
   }
   const parsed = ControlPlaneErrorResponseSchema.safeParse(body);
-  return parsed.success ? (parsed.data.error.reason ?? null) : null;
+  if (!parsed.success) return null;
+  const error = parsed.data.error;
+  // A typed reason on an inconsistent status/code is not an acknowledgement.
+  const expectedStatus = error.reason === "personal-account-link-not-found" ? 404 : 409;
+  const expectedCode = expectedStatus === 404 ? "not_found" : "conflict";
+  return response.status === expectedStatus && error.code === expectedCode ? error : null;
 }
 
 function exactOrigin(input: URL): URL {

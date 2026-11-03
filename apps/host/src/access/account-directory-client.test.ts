@@ -1,12 +1,16 @@
 import {
   AccountLinkGenerationSchema,
+  ConnectOperationIdSchema,
   PersonalHostAccountLinkChallengeIdSchema,
   PersonalHostAccessRouteEnvelopeSchema,
 } from "@opensteer/control-plane-protocol";
 import { HostDiscoveryEnvelopeSchema } from "@opensteer/deployment-authority";
 import { createId } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
-import { AccountDirectoryClient as NativeAccountDirectoryClient } from "./account-directory-client.js";
+import {
+  AccountDirectoryClient as NativeAccountDirectoryClient,
+  AccountRequestError,
+} from "./account-directory-client.js";
 
 const deployment = {
   activeHostInstanceId: createId("hostInstance"),
@@ -74,35 +78,137 @@ const personalAccessRoute = PersonalHostAccessRouteEnvelopeSchema.parse({
 
 describe("AccountDirectoryClient", () => {
   it.each([
-    [400, true],
-    [401, true],
-    [404, true],
-    [409, true],
-    [422, true],
-    [408, false],
-    [425, false],
-    [429, false],
-    [500, false],
-    [503, false],
+    [400, null, false],
+    [401, null, false],
+    [404, null, false],
+    [409, null, false],
+    [422, null, false],
+    [408, null, false],
+    [425, null, false],
+    [429, null, false],
+    [500, null, false],
+    [503, null, false],
+    [
+      409,
+      {
+        error: { code: "conflict", message: "Revoke first", reason: "connect-revocation-required" },
+      },
+      true,
+    ],
+    [409, { error: { code: "conflict", message: "Unknown", reason: "unknown" } }, false],
+    [409, { error: { reason: "connect-revocation-required" } }, false],
+    [
+      409,
+      {
+        error: { code: "conflict", message: "Superseded", reason: "connect-operation-superseded" },
+      },
+      false,
+    ],
+    [
+      409,
+      {
+        error: {
+          code: "conflict",
+          message: "Completed",
+          reason: "connect-operation-completed-superseded",
+        },
+      },
+      false,
+    ],
+    [
+      409,
+      { error: { code: "conflict", message: "Unlink refused", reason: "connect-resource-active" } },
+      false,
+    ],
+    [
+      503,
+      {
+        error: { code: "conflict", message: "Revoke first", reason: "connect-revocation-required" },
+      },
+      false,
+    ],
+    [
+      404,
+      {
+        error: {
+          code: "not_found",
+          message: "Revoke first",
+          reason: "connect-revocation-required",
+        },
+      },
+      false,
+    ],
+    [
+      409,
+      {
+        error: {
+          code: "not_found",
+          message: "Revoke first",
+          reason: "connect-revocation-required",
+        },
+      },
+      false,
+    ],
   ] as const)(
-    "classifies Account HTTP %s without exposing its response body",
-    async (status, definitiveRejection) => {
+    "retires only an explicit projection refusal at HTTP %s (%j)",
+    async (status, body, refused) => {
       const credential = `osc_${"b".repeat(43)}`;
       const client = new AccountDirectoryClient({
         controlApiOrigin: new URL("https://control.opensteer.test"),
         deployment,
-        fetch: async () => new Response(credential, { status }),
+        fetch: async () =>
+          body ? Response.json(body, { status }) : new Response(credential, { status }),
         hostCredential: credential,
       });
       const error: unknown = await client
-        .publishPersonalConnect({
-          accessRoute: null,
-          generation: 1,
-          state: "disabled",
-        })
+        .publishPersonalConnect({ accessRoute: null, generation: 1, state: "disabled" })
         .catch((failure: unknown) => failure);
-      expect(error).toMatchObject({ status, definitiveRejection });
+      expect(error).toBeInstanceOf(AccountRequestError);
+      expect((error as AccountRequestError).refuses("projection")).toBe(refused);
+      expect((error as AccountRequestError).refuses("revoke")).toBe(false);
       expect(String(error)).not.toContain(credential);
+    },
+  );
+
+  it.each(["matching", "other-operation", "other-kind", "missing-result", "malformed-result"])(
+    "reconciles only a matching completed revocation: %s",
+    async (outcome) => {
+      const operationId = ConnectOperationIdSchema.parse(`cop_${crypto.randomUUID()}`);
+      const client = new AccountDirectoryClient({
+        controlApiOrigin: new URL("https://control.opensteer.test"),
+        deployment,
+        fetch: async () =>
+          Response.json(
+            {
+              error: {
+                code: "conflict",
+                message: "Completed operation was superseded",
+                reason: "connect-operation-completed-superseded",
+                ...(outcome === "missing-result"
+                  ? {}
+                  : {
+                      completedOperation: {
+                        operationId:
+                          outcome === "other-operation"
+                            ? `cop_${crypto.randomUUID()}`
+                            : operationId,
+                        operationKind: outcome === "other-kind" ? "rotate" : "revoke",
+                        generation: outcome === "malformed-result" ? "7" : 7,
+                      },
+                    }),
+              },
+            },
+            { status: 409 },
+          ),
+        hostCredential: `osc_${"a".repeat(43)}`,
+      });
+      const request = client.revokePersonalConnect({
+        hostInstanceId: deployment.activeHostInstanceId,
+        operationId,
+      });
+      if (outcome === "matching")
+        await expect(request).resolves.toEqual({ generation: 7, revoked: true });
+      else await expect(request).rejects.toMatchObject({ status: 409 });
     },
   );
 

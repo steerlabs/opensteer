@@ -215,7 +215,7 @@ describe("PersonalRemoteAccessService", () => {
 
     await expect(service.removeAccountLink(ownerSession())).rejects.toThrow(/HTTP 401/);
     expect(fixture.deleteLink).not.toHaveBeenCalled();
-    expect(link.accountOperation).toBeNull();
+    expect(link.accountOperation).toMatchObject({ kind: "unlink" });
     expect(link.hostCredential).toBe(`osc_${"h".repeat(43)}`);
     await expect(service.removeAccountLink(ownerSession())).resolves.toBeUndefined();
     expect(fixture.deleteLink).toHaveBeenCalledOnce();

@@ -21,6 +21,7 @@ import {
 } from "@opensteer/deployment-authority/authority";
 import { PersonalHostAccessRouteEnvelopeSchema } from "@opensteer/deployment-authority/personal-access-route";
 import {
+  ConnectOperationCompletionSchema,
   PersonalHostAccessAuthoritySchema,
   PersonalHostAccessRouteDocumentSchema,
 } from "./connect.js";
@@ -1051,19 +1052,27 @@ export const ControlPlaneErrorCodeSchema = z.enum([
 export type ControlPlaneErrorCode = z.infer<typeof ControlPlaneErrorCodeSchema>;
 
 /**
- * Machine-readable discriminators for the conflicts a client must react to
- * differently than a generic failure. The HTTP code says what happened; the
- * reason says which recovery the client owns.
+ * Emit these only when the requested step was refused before its effect.
+ * Hosts must also check that the reason applies to the journaled operation;
+ * a bare HTTP status never proves a refusal.
  */
-export const ControlPlaneErrorReasonSchema = z.enum([
-  "personal-account-link-challenge-expired",
+export const AccountOperationRefusalReasonSchema = z.enum([
   "personal-account-link-reservation-expired",
   "personal-account-link-cancelled",
   "personal-account-link-not-found",
+  "connect-resource-active",
+  "connect-revocation-required",
+]);
+export type AccountOperationRefusalReason = z.infer<typeof AccountOperationRefusalReasonSchema>;
+
+export const ControlPlaneErrorReasonSchema = z.enum([
+  "personal-account-link-challenge-expired",
+  ...AccountOperationRefusalReasonSchema.options,
   "personal-account-link-already-active",
   "personal-host-already-linked",
   "account-deployment-quota-exceeded",
-  "connect-resource-active",
+  "connect-operation-completed-superseded",
+  "connect-operation-superseded",
   "push-not-configured",
   "device-limit",
 ]);
@@ -1074,6 +1083,7 @@ export const ControlPlaneErrorResponseSchema = z.object({
     code: ControlPlaneErrorCodeSchema,
     message: z.string().min(1).max(500),
     reason: ControlPlaneErrorReasonSchema.optional(),
+    completedOperation: ConnectOperationCompletionSchema.optional(),
   }),
 });
 

@@ -285,6 +285,11 @@ live source with an older one.
 
 Deploy Account's additive browser-binding migration, custom/MCP callback-relay reader, browser-bound callback claim and static MCP client-metadata document on every replica before distributing Hosts that require Account callbacks for all new consent. An older or unavailable Account causes an update/unavailable refusal; Hosts never switch linked consent back to loopback. Existing connections continue using and refreshing their grants. In-flight callbacks launched before the browser-binding rollout must restart consent.
 
+Deploy Account's additive operation-refusal reasons and completed-operation results
+on every replica before distributing Hosts that use them to settle their Account
+journals. A reasonless response from an older Account remains retryable and keeps
+the journal; an HTTP status alone never proves that an external effect did not occur.
+
 The workload lives in [deploy/account](../deploy/account); secrets stay in Secret
 Manager and only their names and versions are here. New pods migrate the database
 at startup while the previous release keeps serving, so every migration must work

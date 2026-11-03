@@ -573,11 +573,107 @@ describe("Personal remote administration intents", () => {
     },
   );
 
+  it.each(["none", "operation", "link"] as const)(
+    "reconciles a completed, superseded revocation after restart against the exact journal (%s replacement)",
+    async (replacement) => {
+      const fixture = await sealedLinkCompletion();
+      await fixture.access.consumeAccountLink({ session }, fixture.completion);
+      const originalFetch = fixture.fetch.getMockImplementation()!;
+      const operationId = `cop_${crypto.randomUUID()}`;
+      let attempts = 0;
+      let expected: Selectable<DatabaseSchema["personalRemoteAccountLink"]> | undefined;
+      fixture.fetch.mockImplementation(async (input, init) => {
+        if (!input.toString().endsWith("/connect") || init?.method !== "DELETE")
+          return originalFetch(input, init);
+        expect(JSON.parse(String(init.body)).operationId).toBe(operationId);
+        attempts += 1;
+        if (attempts === 1) throw new Error("Revocation committed but response lost");
+        if (replacement !== "none") {
+          const stored = await database
+            .selectFrom("personalRemoteAccountLink")
+            .selectAll()
+            .executeTakeFirstOrThrow();
+          expected = await database
+            .updateTable("personalRemoteAccountLink")
+            .set(
+              replacement === "link"
+                ? { linkGeneration: "r".repeat(43) }
+                : { accountOperation: { ...stored.accountOperation!, id: crypto.randomUUID() } },
+            )
+            .returningAll()
+            .executeTakeFirstOrThrow();
+        }
+        return Response.json(
+          {
+            error: {
+              code: "conflict",
+              message: "Completed revocation superseded",
+              reason: "connect-operation-completed-superseded",
+              completedOperation: { operationId, operationKind: "revoke", generation: 7 },
+            },
+          },
+          { status: 409 },
+        );
+      });
+      await expect(
+        fixture.access.revokeConnectResource(
+          { session },
+          {
+            hostInstanceId: authority.hostInstanceId,
+            operationId,
+          },
+        ),
+      ).rejects.toThrow(/request failed/);
+      expect(
+        await database
+          .selectFrom("personalRemoteAccountLink")
+          .selectAll()
+          .executeTakeFirstOrThrow(),
+      ).toMatchObject({ accountOperation: { kind: "revoke" } });
+      const restarted = service({ fetch: fixture.fetch });
+      if (replacement === "none") {
+        await expect(restarted.publishAccountAuthority()).resolves.toBe("published");
+        expect(
+          await database
+            .selectFrom("personalRemoteAccountLink")
+            .selectAll()
+            .executeTakeFirstOrThrow(),
+        ).toMatchObject({
+          accountOperation: null,
+          state: "active",
+          hostCredential: fixture.hostCredential,
+        });
+      } else {
+        await expect(restarted.publishAccountAuthority()).rejects.toMatchObject({
+          code: "conflict",
+        });
+        expect(
+          await database
+            .selectFrom("personalRemoteAccountLink")
+            .selectAll()
+            .executeTakeFirstOrThrow(),
+        ).toEqual(expected);
+      }
+      expect(attempts).toBe(2);
+    },
+  );
+
   it("retires a refused disabled projection across restart so Connect can be revoked and the Account unlinked", async () => {
     const fixture = await sealedLinkCompletion();
     await fixture.access.consumeAccountLink({ session }, fixture.completion);
     const originalFetch = fixture.fetch.getMockImplementation()!;
-    const projection = vi.fn(() => new Response(null, { status: 409 }));
+    const projection = vi.fn(() =>
+      Response.json(
+        {
+          error: {
+            code: "conflict",
+            message: "Revoke first",
+            reason: "connect-revocation-required",
+          },
+        },
+        { status: 409 },
+      ),
+    );
     fixture.fetch.mockImplementation(async (input, init) => {
       if (input.toString().endsWith("/connect"))
         return init?.method === "PUT"
@@ -619,8 +715,8 @@ describe("Personal remote administration intents", () => {
     );
   });
 
-  it.each([408, 425, 429, 500, 503])(
-    "keeps a projection journal for retry after temporary Account HTTP %s",
+  it.each([400, 401, 404, 409, 422, 408, 425, 429, 500, 503])(
+    "keeps a projection journal without an explicit refusal after Account HTTP %s",
     async (status) => {
       const fixture = await sealedLinkCompletion();
       await fixture.access.consumeAccountLink({ session }, fixture.completion);
@@ -665,7 +761,16 @@ describe("Personal remote administration intents", () => {
         await withTimeout(held, 5000, {
           timeoutError: () => new Error("Account rejection was never released"),
         });
-        return new Response(null, { status: 409 });
+        return Response.json(
+          {
+            error: {
+              code: "conflict",
+              message: "Revoke first",
+              reason: "connect-revocation-required",
+            },
+          },
+          { status: 409 },
+        );
       });
       const pending = fixture.access
         .publishConnectProjection(
@@ -709,7 +814,14 @@ describe("Personal remote administration intents", () => {
     },
   );
 
-  it.each(["network", "HTTP 503"])(
+  it.each([
+    "network",
+    "HTTP 503",
+    "older 409",
+    "unknown 409",
+    "malformed 409",
+    "wrong-operation 409",
+  ])(
     "fails Account recovery visibly after %s while keeping its journal and the executor connected for Recover and Unlink",
     async (failure) => {
       const fixture = await sealedLinkCompletion();
@@ -717,9 +829,24 @@ describe("Personal remote administration intents", () => {
       if (failure === "network")
         fixture.fetch.mockRejectedValue(new Error(`network failure ${fixture.hostCredential}`));
       else
-        fixture.fetch.mockImplementation(
-          async () => new Response(fixture.hostCredential, { status: 503 }),
-        );
+        fixture.fetch.mockImplementation(async () => {
+          if (failure === "HTTP 503") return new Response(fixture.hostCredential, { status: 503 });
+          if (failure === "malformed 409") return new Response("{", { status: 409 });
+          return Response.json(
+            {
+              error: {
+                code: "conflict",
+                message: fixture.hostCredential,
+                ...(failure === "older 409"
+                  ? {}
+                  : {
+                      reason: failure === "unknown 409" ? "unknown" : "connect-resource-active",
+                    }),
+              },
+            },
+            { status: 409 },
+          );
+        });
       await expect(
         fixture.access.publishConnectProjection(
           { session },
@@ -729,7 +856,9 @@ describe("Personal remote administration intents", () => {
             schemaVersion: 2,
           },
         ),
-      ).rejects.toThrow(failure === "network" ? /request failed/ : /HTTP 503/);
+      ).rejects.toThrow(
+        failure === "network" ? /request failed/ : failure === "HTTP 503" ? /HTTP 503/ : /HTTP 409/,
+      );
       const journal = await database
         .selectFrom("personalRemoteAccountLink")
         .selectAll()

@@ -46,8 +46,10 @@ under the shared session fence and journaled on the exact link before network I/
 No Account request holds a Host transaction or session lock. Restart and executor
 recovery replay the idempotent step, then conditionally finalize that link;
 unlink retains its credential until the Account acknowledges removal. A definitive
-Account refusal retires only the rejected step, preserving the credential for
-prerequisite changes or unlink. Ambiguous and temporary failures stay journaled;
+Account refusal with a validated reason for that operation retires only the
+rejected step, preserving the credential for prerequisite changes or unlink.
+A completed operation whose result was superseded is finalized against the exact
+link and journal identity. Unknown, malformed, reasonless and temporary failures stay journaled;
 a failed recovery is visible and leaves the executor connected for the next action.
 
 A request persists before acknowledgement. Execution that can remove the current

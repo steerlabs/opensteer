@@ -311,6 +311,16 @@ integration("Opensteer Connect lifecycle PostgreSQL boundary", () => {
         ...request,
         accessRoute: null,
         origin: null,
+        state: "disabled",
+        generation: 8,
+      }),
+    ).rejects.toMatchObject({ code: "conflict", reason: "connect-revocation-required" });
+
+    await expect(
+      store.projectConnect(authority, {
+        ...request,
+        accessRoute: null,
+        origin: null,
         state: "provisioning",
       }),
     ).rejects.toMatchObject({
@@ -365,7 +375,11 @@ integration("Opensteer Connect lifecycle PostgreSQL boundary", () => {
         hostInstanceId: fixture.hostInstanceId,
         operationId,
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+      reason: "connect-operation-completed-superseded",
+      completedOperation: { operationId, operationKind: "rotate", generation: 2 },
+    });
     expect(provider.rotateCalls).toBe(callsAfterSecondRotation);
   });
 
@@ -397,9 +411,49 @@ integration("Opensteer Connect lifecycle PostgreSQL boundary", () => {
         hostInstanceId: fixture.hostInstanceId,
         operationId: olderOperationId,
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+      reason: "connect-operation-completed-superseded",
+      completedOperation: { operationId: olderOperationId, operationKind: "rotate", generation: 2 },
+    });
     expect(provider.readCalls).toBe(readsBeforeStaleRetry);
     expect(provider.rotateCalls).toBe(rotationsBeforeStaleRetry);
+  });
+
+  it("reports a committed revocation after a later operation supersedes its result", async () => {
+    const fixture = await personalLoopbackFixture(database, ownerAccountId);
+    const authority = await store.authenticateHostCredential(`Bearer ${fixture.hostCredential}`);
+    await lifecycle.provision(
+      authority,
+      fixture.deploymentId,
+      provisionRequest(fixture, connectOperationId()),
+    );
+    const request = revokeRequest(fixture);
+    const result = await lifecycle.revokeForHost(authority, request);
+    // The caller lost result; another device provisions a new resource before recovery.
+    await lifecycle.provision(
+      authority,
+      fixture.deploymentId,
+      provisionRequest(fixture, connectOperationId()),
+    );
+    const deletes = provider.deleteCalls;
+    await expect(lifecycle.revokeForHost(authority, request)).rejects.toMatchObject({
+      code: "conflict",
+      reason: "connect-operation-completed-superseded",
+      completedOperation: {
+        operationId: request.operationId,
+        operationKind: "revoke",
+        generation: result.generation,
+      },
+    });
+    expect(provider.deleteCalls).toBe(deletes);
+    expect(
+      await database
+        .selectFrom("deploymentConnectResources")
+        .selectAll()
+        .where("deploymentId", "=", fixture.deploymentId)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "ready" });
   });
 
   it("immediately resumes the same internal revocation after a lost cleanup response", async () => {
