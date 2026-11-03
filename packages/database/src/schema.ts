@@ -1295,7 +1295,7 @@ export interface AgentControlRequestTable {
     | "thread.delegate"
     | "thread.list"
     | "thread.message"
-    | "person.notify"
+    | "person.message"
     | "person.show"
     | "thread.read"
     | "thread.write"

@@ -4677,11 +4677,12 @@ export function migrationProvider() {
         "0125_run_place_events": runPlaceEventsMigration,
         "0126_run_visibility": runVisibilityMigration,
         "0127_person_show": personShowMigration,
-        "0128_request_settlement_provenance": requestSettlementProvenanceMigration,
-        "0129_owner_session_computer_approvals": ownerSessionComputerApprovalsMigration,
-        "0130_remote_administration": remoteAdministrationMigration,
-        "0131_personal_account_link_sealing": personalAccountLinkSealingMigration,
-        "0132_personal_account_operation": personalAccountOperationMigration,
+        "0128_person_message": personMessageMigration,
+        "0129_request_settlement_provenance": requestSettlementProvenanceMigration,
+        "0130_owner_session_computer_approvals": ownerSessionComputerApprovalsMigration,
+        "0131_remote_administration": remoteAdministrationMigration,
+        "0132_personal_account_link_sealing": personalAccountLinkSealingMigration,
+        "0133_personal_account_operation": personalAccountOperationMigration,
       };
     },
   };
@@ -6672,5 +6673,30 @@ const personalAccountOperationMigration: Migration = {
       update personal_remote_account_link
       set account_operation = jsonb_build_object('id', grant_id, 'kind', 'activate')
       where state = 'activating';`.execute(database);
+  },
+};
+
+const personMessageMigration: Migration = {
+  async up(database) {
+    const constraints = await sql<{ name: string; definition: string }>`
+      select conname as name, pg_get_constraintdef(oid) as definition
+      from pg_constraint where conrelid = 'public.agent_control_requests'::regclass
+      and conname in ('agent_control_requests_action_check', 'agent_control_requests_action_mapping_check')
+    `.execute(database);
+    for (const constraint of constraints.rows) {
+      await sql`alter table agent_control_requests drop constraint ${sql.id(constraint.name)}`.execute(
+        database,
+      );
+    }
+    await sql`update agent_control_requests set action = 'person.message' where action = 'person.notify'`.execute(
+      database,
+    );
+    for (const constraint of constraints.rows) {
+      await sql
+        .raw(
+          `alter table agent_control_requests add constraint "${constraint.name}" ${constraint.definition.replaceAll("'person.notify'", "'person.message'")}`,
+        )
+        .execute(database);
+    }
   },
 };

@@ -51,7 +51,53 @@ const testModelSelection = ModelSelectionSchema.parse({
 });
 
 describe("AgentControlService", () => {
-  it("lists exactly the Requests visible to the current Thread and Workspace", async () => {
+  it.each(["main", "workspace", "delegated"] as const)(
+    "lists the Requests visible to the %s Thread",
+    async (capabilityProfileId) => {
+      const current = thread(currentThreadId, nativeHarnessId, "Main", null, {
+        capabilityProfileId,
+      });
+      const pending = pendingRequest();
+      const visiblePage = vi.fn(async () => ({
+        requests: [pending],
+        window: {
+          byteCount: 1,
+          hasMore: true,
+          itemCount: 1,
+          nextBefore: "next_request_page",
+          totalItems: 2,
+        },
+      }));
+      const { service, claims } = makeService({
+        commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+        messages: [],
+        capabilityProfileId,
+        requests: { visiblePage },
+        threads: [current],
+      });
+
+      await expect(
+        service.handle("run-token", {
+          before: "current_request_page",
+          limit: 1,
+          requestId: crypto.randomUUID(),
+          type: "request.list",
+        }),
+      ).resolves.toMatchObject({
+        requests: [{ id: pending.id, status: "pending" }],
+        type: "request.list.result",
+        window: { hasMore: true, nextBefore: "next_request_page" },
+      });
+      expect(visiblePage).toHaveBeenCalledWith({
+        before: "current_request_page",
+        limit: 1,
+        originatingThreadId: claims.threadId,
+        targetWorkspaceId: claims.workspaceId,
+      });
+    },
+  );
+
+  it("keeps settlement sessions out of the Requests it lists", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main");
     const pending = {
       ...pendingRequest(),
@@ -118,7 +164,9 @@ describe("AgentControlService", () => {
   it.each(["browser.sign-in", "sign-in"] as const)(
     "keeps %s Browser Session requests admitted through the single sign-in permission",
     async (type) => {
-      const current = thread(currentThreadId, nativeHarnessId, "Main");
+      const current = thread(currentThreadId, nativeHarnessId, "Worker", null, {
+        capabilityProfileId: "delegated",
+      });
       const result = {
         status: "unavailable",
         site: "https://example.com",
@@ -126,6 +174,7 @@ describe("AgentControlService", () => {
       } as const;
       const agentSignIn = vi.fn(async () => result);
       const { service, admitAgentControlRequest } = makeService({
+        capabilityProfileId: "delegated",
         browserSources: { agentSignIn },
         commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
         messages: [],
@@ -1533,6 +1582,7 @@ describe("AgentControlService", () => {
 });
 
 function makeService(options: {
+  personShow?: ConstructorParameters<typeof AgentControlService>[0]["personShow"];
   browserSources?: ConstructorParameters<typeof AgentControlService>[0]["browserSources"];
   machineFullDiskAccess?: ConstructorParameters<
     typeof AgentControlService
@@ -1550,9 +1600,10 @@ function makeService(options: {
     >
   >;
   capabilityProfileId?: Thread["capabilityProfileId"];
+  runAssignment?: { readonly assignerThreadId: Thread["id"]; readonly open: boolean };
   runnerCapabilities?: readonly string[];
   commands: {
-    publishPersonNotification?: ReturnType<typeof vi.fn>;
+    publishPersonMessage?: ReturnType<typeof vi.fn>;
     delegateThread: ReturnType<typeof vi.fn>;
     enqueueThreadInput: ReturnType<typeof vi.fn>;
   };
@@ -1716,6 +1767,7 @@ function makeService(options: {
       window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
     }),
     admitAgentControlRequest,
+    runAssignment: vi.fn(async () => options.runAssignment ?? null),
     agentThreadLineage: vi.fn(async (threadId: Thread["id"]) => lineageIds(threadId)),
     agentThreadPageForOwner,
     runnerCapabilities: async () => options.runnerCapabilities ?? [],
@@ -1901,7 +1953,7 @@ function makeService(options: {
   };
   const wakeWorkspace = vi.fn(async () => undefined);
   const commands = {
-    publishPersonNotification: options.commands.publishPersonNotification,
+    publishPersonMessage: options.commands.publishPersonMessage,
     withInputAdmission: async <T>(_owner: string, _key: string, operation: () => Promise<T>) =>
       operation(),
     delegateAdmittedThread: async (
@@ -1933,6 +1985,7 @@ function makeService(options: {
     listEnvironmentsForUser,
     wakeWorkspace,
     service: new AgentControlService({
+      ...(options.personShow ? { personShow: options.personShow } : {}),
       browserSources: options.browserSources ?? { agentSignIn: unexpectedBrowserRequest },
       machineFullDiskAccess: options.machineFullDiskAccess ?? { request: vi.fn() },
       browser: {
@@ -2194,35 +2247,38 @@ function inboxInput(
   };
 }
 
-it("uses authenticated admission for a person notification without waking work", async () => {
-  const messageId = createId("message");
-  const publishPersonNotification = vi.fn(async () => ({
-    message: { id: messageId },
-    events: [],
-    wasDuplicate: false,
-  }));
-  const fixture = makeService({
-    runnerCapabilities: ["person-notify-v1"],
-    commands: { publishPersonNotification, delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
-    messages: [],
-    threads: [thread(currentThreadId, nativeHarnessId, "Main")],
-  });
-  const requestId = crypto.randomUUID();
-  await expect(
-    fixture.service.handle("run-token", { type: "person.notify", requestId, message: "Ready." }),
-  ).resolves.toEqual({ type: "person.notify.result", requestId, messageId });
-  expect(publishPersonNotification).toHaveBeenCalledWith({
-    message: "Ready.",
-    admission: expect.objectContaining({
-      action: "person.notify",
-      requestedBy: fixture.claims.requestedBy,
-      sourceThreadId: fixture.claims.threadId,
-      runId: fixture.claims.runId,
-      requestId,
-    }),
-  });
-  expect(fixture.wakeWorkspace).not.toHaveBeenCalled();
-});
+it.each(["main", "workspace"] as const)(
+  "uses authenticated admission for a %s person message without waking work",
+  async (capabilityProfileId) => {
+    const messageId = createId("message");
+    const publishPersonMessage = vi.fn(async () => ({
+      message: { id: messageId },
+      events: [],
+      wasDuplicate: false,
+    }));
+    const fixture = makeService({
+      capabilityProfileId,
+      commands: { publishPersonMessage, delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+      messages: [],
+      threads: [thread(currentThreadId, nativeHarnessId, "Main", null, { capabilityProfileId })],
+    });
+    const requestId = crypto.randomUUID();
+    await expect(
+      fixture.service.handle("run-token", { type: "person.message", requestId, message: "Ready." }),
+    ).resolves.toEqual({ type: "person.message.result", requestId, messageId });
+    expect(publishPersonMessage).toHaveBeenCalledWith({
+      message: "Ready.",
+      admission: expect.objectContaining({
+        action: "person.message",
+        requestedBy: fixture.claims.requestedBy,
+        sourceThreadId: fixture.claims.threadId,
+        runId: fixture.claims.runId,
+        requestId,
+      }),
+    });
+    expect(fixture.wakeWorkspace).not.toHaveBeenCalled();
+  },
+);
 
 it("omits client-only addressing from agent thread history", async () => {
   const current = thread(currentThreadId, nativeHarnessId, "Main");
@@ -2242,3 +2298,100 @@ it("omits client-only addressing from agent thread history", async () => {
   if (response.type !== "thread.read.result") throw new Error("Wrong response");
   expect(response.messages[0]).not.toHaveProperty("addressedToUserId");
 });
+
+it.each([
+  ["person.message", "delegated", null],
+  ["person.show", "delegated", null],
+  // A Thread the person started, reused as a task, answers its assigner.
+  ["person.message", "workspace", { assignerThreadId: targetThreadId, open: true }],
+  ["person.show", "main", { assignerThreadId: targetThreadId, open: true }],
+] as const)(
+  "refuses %s from a %s Run with assignment %o before side effects",
+  async (type, capabilityProfileId, runAssignment) => {
+    const publishPersonMessage = vi.fn();
+    const personShow = vi.fn(async () => 1);
+    const fixture = makeService({
+      capabilityProfileId,
+      personShow,
+      ...(runAssignment ? { runAssignment } : {}),
+      commands: { publishPersonMessage, delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+      messages: [],
+      threads: [thread(currentThreadId, nativeHarnessId, "Worker", null, { capabilityProfileId })],
+    });
+    await expect(
+      fixture.service.handle("run-token", {
+        type,
+        requestId: crypto.randomUUID(),
+        ...(type === "person.message" ? { message: "Hello" } : { target: { current: true } }),
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(publishPersonMessage).not.toHaveBeenCalled();
+    expect(personShow).not.toHaveBeenCalled();
+    expect(fixture.admitAgentControlRequest).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["report", "queue", "steer"] as const)(
+  "lets a reused worker %s to its current assigner outside its lineage",
+  async (delivery) => {
+    const parent = thread(createId("thread"), nativeHarnessId, "Original parent");
+    const assigner = thread(targetThreadId, nativeHarnessId, "Current assigner");
+    const child = thread(currentThreadId, nativeHarnessId, "Worker", parent.id, {
+      capabilityProfileId: "delegated",
+    });
+    const forwarded = message(assigner.id, null, "Update");
+    const enqueueThreadInput = vi.fn(async () => ({
+      disposition: "pending" as const,
+      input: inboxInput(forwarded, null, delivery),
+      message: forwarded,
+      run: null,
+      wasDuplicate: false,
+    }));
+    const fixture = makeService({
+      capabilityProfileId: "delegated",
+      runAssignment: { assignerThreadId: assigner.id, open: true },
+      commands: { delegateThread: vi.fn(), enqueueThreadInput },
+      messages: [],
+      threads: [parent, child, assigner],
+    });
+    await expect(
+      fixture.service.handle("run-token", {
+        type: "thread.message",
+        requestId: crypto.randomUUID(),
+        threadId: assigner.id,
+        delivery,
+        content: [{ type: "text", text: "Update" }],
+      }),
+    ).resolves.toMatchObject({ type: "thread.message.result" });
+    expect(enqueueThreadInput).toHaveBeenCalled();
+  },
+);
+
+it.each(["main", "workspace"] as const)(
+  "allows %s to show its Thread to the person",
+  async (capabilityProfileId) => {
+    const personShow = vi.fn(async () => 1);
+    const fixture = makeService({
+      capabilityProfileId,
+      personShow,
+      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+      messages: [],
+      threads: [thread(currentThreadId, nativeHarnessId, "Current", null, { capabilityProfileId })],
+    });
+    await expect(
+      fixture.service.handle("run-token", {
+        type: "person.show",
+        requestId: crypto.randomUUID(),
+        target: { threadId: currentThreadId },
+      }),
+    ).resolves.toMatchObject({
+      type: "person.show.result",
+      status: "sent-unconfirmed",
+      connectedDevices: 1,
+    });
+    expect(personShow).toHaveBeenCalledWith(
+      ownerId,
+      expect.objectContaining({ target: { threadId: currentThreadId } }),
+    );
+  },
+);
