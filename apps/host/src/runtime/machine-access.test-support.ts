@@ -36,6 +36,7 @@ import {
   type RunnerBootId,
   type RunnerConnectionFence,
   type RunnerDescriptor,
+  type RunnerLocalStorageInventory,
   type RunnerModuleName,
   type RunnerProof,
 } from "@opensteer/protocol";
@@ -1013,6 +1014,7 @@ async function attachShellStream(
 }
 
 export interface CallerMachine {
+  readonly localStorage: RunnerLocalStorageInventory | undefined;
   readonly environmentId: EnvironmentId;
   readonly harnessInstanceId: string;
   readonly primary: PrimaryConnection;
@@ -1050,13 +1052,23 @@ export async function connectCallerMachine(
     readonly rendersImages?: boolean;
     readonly computerTool?: 1;
     readonly runnerKind?: "local" | "main";
-    readonly token: string;
-  },
+  } & (
+    | { readonly token: string; readonly previous?: undefined }
+    /** Reattach the same computer and disk after its Host restarts. */
+    | { readonly previous: CallerMachine; readonly token?: undefined }
+  ),
 ): Promise<CallerMachine> {
-  const runnerId = createId("runner");
-  const environmentId = input.environmentId ?? createId("environment");
+  const runnerId = input.previous?.runnerId ?? createId("runner");
+  const environmentId =
+    input.previous?.environmentId ?? input.environmentId ?? createId("environment");
   const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/internal/v1/runners`);
-  const disk = input.localDirectory !== false ? attachLocalWorkspaceDisk(socket) : undefined;
+  const disk =
+    input.localDirectory !== false
+      ? attachLocalWorkspaceDisk(
+          socket,
+          input.previous?.localStorage ? { inventory: input.previous.localStorage } : {},
+        )
+      : undefined;
   const descriptor = RunnerDescriptorSchema.parse({
     bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
     capabilities: [
@@ -1107,7 +1119,10 @@ export async function connectCallerMachine(
     runnerKind: input.runnerKind ?? "local",
     runtimeVersion: "integration",
   });
-  const primary = await connectPrimary(host.hostPort, descriptor, { token: input.token }, socket);
+  const credentials = input.previous
+    ? { privateKey: input.previous.primary.privateKey }
+    : { token: input.token };
+  const primary = await connectPrimary(host.hostPort, descriptor, credentials, socket);
   // Every dispatched command is acknowledged, including the ones this Runner
   // has nothing to do about: a command the Host waits on and never hears back
   // ejects the whole connection fifteen seconds later.
@@ -1189,6 +1204,7 @@ export async function connectCallerMachine(
     },
     environmentId,
     harnessInstanceId,
+    localStorage: disk?.inventory,
     primary,
     runnerId,
   };
