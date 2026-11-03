@@ -101,11 +101,11 @@ public enum ContactsSearch {
 
   private static let phoneCharacters = CharacterSet(charactersIn: "0123456789+-(). ")
 
-  private static func isPhoneQuery(_ query: String) -> Bool {
+  public static func isPhoneQuery(_ query: String) -> Bool {
     query.unicodeScalars.allSatisfy(phoneCharacters.contains) && onlyDigits(query).count >= 3
   }
 
-  private static func onlyDigits(_ text: String) -> String {
+  public static func onlyDigits(_ text: String) -> String {
     String(text.unicodeScalars.filter { CharacterSet.decimalDigits.contains($0) })
   }
 

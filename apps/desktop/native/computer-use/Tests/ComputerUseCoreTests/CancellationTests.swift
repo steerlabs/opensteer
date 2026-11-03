@@ -184,8 +184,8 @@ final class CancellationTests: XCTestCase {
       dataPlane: DataPlane(
         contracts: ["slow-app": ["look": read], "quick-app": ["look": read]],
         grants: [
-          "slow-app": DataAppGrants(read: .contacts, write: .contacts),
-          "quick-app": DataAppGrants(read: .calendars, write: .calendars),
+          "slow-app": DataAppGrants(read: [.contacts], write: [.contacts]),
+          "quick-app": DataAppGrants(read: [.calendars], write: [.calendars]),
         ],
         providers: ["slow-app": slow, "quick-app": quick],
         grantReader: FakeGrants([

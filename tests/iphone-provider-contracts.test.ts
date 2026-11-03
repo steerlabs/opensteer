@@ -8,12 +8,12 @@ import { computerAppOperationContract } from "../packages/integration-core/src/c
 import { integrationDefinitionDigest } from "../packages/integration-core/src/digest.js";
 import { generateAppleDataContracts } from "../scripts/generate-apple-data-contracts.js";
 
-// Pinned at base 597e2e384; do not update these to accommodate new providers.
+// Existing providers stay stable when adding iPhone providers. Messages includes Contacts names.
 const baseDigests = {
   "apple-calendar": "Scd8aWIGu4M4WNeYlBfY2VmmKu3BDlEmtsubztyO78E",
   "apple-contacts": "S3UUcFG_nYQxmmuZ7V_KB3ksmR3zVEKsTBRy-FajfTY",
   "apple-reminders": "UziktIs5w2hTEcjUM-8FQLBL1PCmz7qMDZP4jJ5XAx4",
-  "apple-messages": "8QjvDNYTOrV6CBeNoa2kvaDCo-35S6dn98ixH3h4uDA",
+  "apple-messages": "0VTNGaBL4wT6t03zxz3MWtnQYdJyQS3YXT7oCe67Q-4",
 };
 const newIds = ["iphone-location", "iphone-photos"] as const;
 
@@ -43,7 +43,7 @@ describe("iPhone-only provider contracts", () => {
     );
     expect(shared).toEqual(checkedIn);
     expect(createHash("sha256").update(shared).digest("hex")).toBe(
-      "76a94294995d172645009f98a6f36be80841bbe7bbf95095b9fa0b1102e5f6d4",
+      "6393060169224c980e25694596bf251f0538d35d42f80621a9c4276f25bcafd6",
     );
     const iphone = await readFile(
       new URL(

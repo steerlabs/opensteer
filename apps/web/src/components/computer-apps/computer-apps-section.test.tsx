@@ -414,6 +414,40 @@ describe("ComputerAppsSection", () => {
     });
   });
 
+  it("finishes enabled Messages setup through the Contacts remedy", async () => {
+    const reviewPermission = vi.fn(async () => undefined);
+    const status = readPermissionRequired();
+    const { container } = await mount({
+      connections: [connection("read")],
+      localApproval: localApproval({ reviewPermission }),
+      machine: machine({
+        apps: [
+          {
+            ...status,
+            operations: status.operations.map((operation) =>
+              operation.state === "permission-required"
+                ? {
+                    ...operation,
+                    remedy: "contacts",
+                    detail:
+                      "Reading Contacts needs macOS access to Contacts for Opensteer Computer Use.",
+                  }
+                : operation,
+            ),
+          },
+        ],
+      }),
+    });
+    expect(rowStatus(container)).toBe("Setup unfinished");
+    await click(button(container, "Finish setup"));
+    await click(button(container, "Set up"));
+    expect(reviewPermission).toHaveBeenCalledWith({
+      access: "read",
+      definitionId: "apple-messages",
+      remedy: "contacts",
+    });
+  });
+
   it("asks macOS for an app's own grant at the Contacts permission step", async () => {
     const reviewPermission = vi.fn(async () => undefined);
     const { container } = await mount({

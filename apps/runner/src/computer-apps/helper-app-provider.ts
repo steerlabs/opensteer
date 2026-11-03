@@ -79,8 +79,10 @@ export function createHelperAppProvider(
         });
       }
       return operations.map(({ effect, name }) => {
-        const grant = grants[effect];
-        return states[grant] === "granted" || states[grant] === "unknown"
+        const grant = grants[effect].find(
+          (grant) => states[grant] !== "granted" && states[grant] !== "unknown",
+        );
+        return grant === undefined
           ? {
               detail: effect === "read" ? "Ready to read" : "Ready",
               operation: name,
@@ -115,9 +117,19 @@ export function createHelperAppProvider(
       } catch (error) {
         if (!(error instanceof ComputerUseBridgeError)) throw error;
         if (error.code === "permission-required") {
+          // Asked again because the refusal does not say which grant it was;
+          // when that cannot be learned, the helper's own sentence stands.
+          const required = grants[invocation.effect];
+          const states = await helper.dataGrants().catch(() => null);
+          const missing =
+            required.length === 1
+              ? required[0]
+              : required.find(
+                  (grant) => states && states[grant] !== "granted" && states[grant] !== "unknown",
+                );
           throw new ComputerAppError(
             "permission-required",
-            grantSentences[grants[invocation.effect]],
+            missing ? grantSentences[missing] : error.message,
           );
         }
         throw new ComputerAppError(computerAppCode(error.code), error.message);

@@ -17,7 +17,8 @@ state. Do not infer consent from a request returning or from `unknown`.
 
 For Messages reads, enable the helper under Full Disk Access. Drag its row from
 the setup guide into Settings if absent; main supplies the installed helper path.
-Allow the idle helper to restart after the grant. For Messages sending, answer
+Allow the idle helper to restart after the grant, then answer the Contacts question
+so Messages reads can resolve names. For Messages sending, answer
 the Automation question for Messages. Calendar and Reminders require full access,
 not add-only. Keep a pending macOS question open even if an RPC times out; asking
 again joins it. Use **Not now** to dismiss setup.

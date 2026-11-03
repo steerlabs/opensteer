@@ -516,7 +516,7 @@ export function missingSteps(
   grants: ComputerUseDataGrants,
 ): readonly { readonly grant: ComputerUseDataGrant; readonly kind: Step["kind"] }[] {
   const app = computerUseDataApps[definitionId];
-  return [...new Set(access === "read-write" ? [app.read, app.write] : [app.read])]
+  return [...new Set(access === "read-write" ? [...app.read, ...app.write] : app.read)]
     .filter((grant) => grants[grant] !== "granted")
     .map((grant) => ({
       grant,

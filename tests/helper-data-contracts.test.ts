@@ -54,6 +54,23 @@ function operation(definitionId: string, name: string) {
 }
 
 describe("the helper's data contracts", () => {
+  it("compiles the ordered grants each effect requires", () => {
+    const compiled = JSON.parse(
+      readFileSync(
+        path.resolve(
+          import.meta.dirname,
+          "../packages/apple-data/Sources/OpensteerAppleData/Resources/contracts.json",
+        ),
+        "utf8",
+      ),
+    ) as { grants: unknown };
+    expect(compiled.grants).toEqual(computerUseDataApps);
+    expect(computerUseDataApps["apple-messages"]).toEqual({
+      read: ["full-disk-access", "contacts"],
+      write: ["automation"],
+    });
+  });
+
   it("serves only computer apps the catalog defines", () => {
     for (const definitionId of Object.keys(computerUseDataApps)) {
       const definition = getIntegrationDefinition(definitionId);

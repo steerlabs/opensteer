@@ -40,6 +40,113 @@ final class MessagesReaderTests: XCTestCase {
     }
   }
 
+  func testContactNamesAndFormattedPhonesFindConversationsAndDescribeSenders() throws {
+    let records = [ContactRecord(id: "mayank", name: "Mayank Patel", organization: nil,
+      emails: [], phones: [LabeledText(label: nil, value: "(555) 123-4567")], birthday: nil)]
+    var subject = reader()
+    subject.contacts = MessagesContacts(records)
+    for query in ["mayank", "555-123-4567"] {
+      let page = try subject.listConversations(arguments(ListConversationsArguments.self,
+        #"{"query":"\#(query)"}"#))
+      XCTAssertTrue(page.conversations.contains { $0.conversationId == MessagesFixture.Chat.direct })
+      XCTAssertEqual(page.conversations.first?.participants.first?.name, "Mayank Patel")
+    }
+    let page = try subject.readMessages(arguments(ReadMessagesArguments.self,
+      #"{"conversationId":"\#(MessagesFixture.Chat.direct)"}"#), timeLeft: { 60 })
+    XCTAssertEqual(page.messages.first { !$0.isFromMe }?.senderName, "Mayank Patel")
+    XCTAssertTrue(page.messages.filter(\.isFromMe).allSatisfy { $0.senderName == nil })
+  }
+
+  func testContactNamesAreBoundedLikeConversationNamesButMatchInFull() throws {
+    let long = String(repeating: "a", count: MessagesReader.maxTextBytes) + " Mayank"
+    var subject = reader()
+    subject.contacts = MessagesContacts([ContactRecord(id: "long", name: long, organization: nil,
+      emails: [], phones: [LabeledText(label: nil, value: "(555) 123-4567")], birthday: nil)])
+    let found = try subject.listConversations(arguments(ListConversationsArguments.self,
+      #"{"query":"mayank"}"#)).conversations
+    let name = try XCTUnwrap(found.first?.participants.first?.name)
+    XCTAssertEqual(name.utf8.count, MessagesReader.maxTextBytes)
+    let page = try subject.readMessages(arguments(ReadMessagesArguments.self,
+      #"{"conversationId":"\#(MessagesFixture.Chat.direct)"}"#), timeLeft: { 60 })
+    XCTAssertEqual(page.messages.first { !$0.isFromMe }?.senderName?.utf8.count, MessagesReader.maxTextBytes)
+  }
+
+  func testAmbiguousContactKeysNeverGuessEmailsIgnoreCaseAndBusinessesUseTheirCompany() {
+    let records = [
+      ContactRecord(id: "one", name: "One", organization: nil,
+        emails: [LabeledText(label: nil, value: "WORK@example.com")],
+        phones: [LabeledText(label: nil, value: "5551234567")], birthday: nil),
+      ContactRecord(id: "two", name: "Two", organization: nil,
+        emails: [], phones: [LabeledText(label: nil, value: "+15551234567")], birthday: nil),
+      ContactRecord(id: "shop", name: nil, organization: "Local Business",
+        emails: [], phones: [LabeledText(label: nil, value: "555 000 1111")], birthday: nil),
+    ]
+    let names = MessagesContacts(records)
+    XCTAssertNil(names.name(for: "+15551234567"))
+    // Messages shows a business contact by its company name.
+    XCTAssertEqual(names.name(for: "+15550001111"), "Local Business")
+    // A contact with no name is still someone else sharing the number.
+    let shared = MessagesContacts([
+      ContactRecord(id: "mayank", name: "Mayank Patel", organization: nil, emails: [],
+        phones: [LabeledText(label: nil, value: "+15551234567")], birthday: nil),
+      ContactRecord(id: "unnamed", name: nil, organization: nil, emails: [],
+        phones: [LabeledText(label: nil, value: "+445551234567")], birthday: nil),
+    ])
+    XCTAssertNil(shared.name(for: "+445551234567"))
+    // The same person saved twice, say in iCloud and Google, is still one name.
+    let duplicated = MessagesContacts(["icloud", "google"].map {
+      ContactRecord(id: $0, name: "Mayank Patel", organization: nil, emails: [],
+        phones: [LabeledText(label: nil, value: "(555) 123-4567")], birthday: nil)
+    })
+    XCTAssertEqual(duplicated.name(for: "+15551234567"), "Mayank Patel")
+    XCTAssertEqual(names.name(for: "work@EXAMPLE.com"), "One")
+    XCTAssertNil(names.name(for: "not a handle"))
+  }
+
+  func testContactMatchingFoldsAccentsAndAmbiguityIsVisibleInResults() throws {
+    let url = try MessagesFixture.create()
+    defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+    try MessagesFixture.write(url, "UPDATE chat SET display_name = 'Café' WHERE ROWID = 2")
+    var subject = reader(url)
+    subject.contacts = MessagesContacts([
+      ContactRecord(id: "one", name: "José", organization: nil,
+        emails: [LabeledText(label: nil, value: "WORK@EXAMPLE.COM")],
+        phones: [LabeledText(label: nil, value: "5551234567")], birthday: nil),
+      ContactRecord(id: "two", name: "Other", organization: nil, emails: [],
+        phones: [LabeledText(label: nil, value: "+15551234567")], birthday: nil),
+    ])
+    let byName = try subject.listConversations(arguments(ListConversationsArguments.self,
+      #"{"query":"JOSE"}"#))
+    XCTAssertEqual(byName.conversations.map(\.conversationId), [MessagesFixture.Chat.group, MessagesFixture.Chat.quiet])
+    let group = try subject.listConversations(arguments(ListConversationsArguments.self,
+      #"{"query":"CAFE"}"#)).conversations
+    XCTAssertEqual(group.first?.displayName, "Café")
+    XCTAssertNil(group.first?.participants.first?.name)
+    let messages = try subject.readMessages(arguments(ReadMessagesArguments.self, "{}"), timeLeft: { 60 })
+    XCTAssertNil(messages.messages.first { $0.id == "msg-lunch" }?.senderName)
+    XCTAssertEqual(messages.messages.first { $0.id == "msg-emoji" }?.senderName, "José")
+    XCTAssertTrue(try subject.listConversations(arguments(ListConversationsArguments.self,
+      #"{"query":"Lunch at one"}"#)).conversations.isEmpty)
+  }
+
+  func testProviderLoadsInjectedContactsOncePerReadCall() async throws {
+    final class Source: @unchecked Sendable {
+      let lock = NSLock()
+      var count = 0
+      func load(_ budget: WorkBudget) throws -> [ContactRecord] {
+        try budget.check()
+        lock.withLock { count += 1 }
+        return []
+      }
+    }
+    let source = Source()
+    let provider = MessagesProvider(databasePath: Self.shared.path, contacts: { try source.load($0) })
+    for operation in ["list_conversations", "read_messages"] {
+      _ = try await provider.invoke(operation: operation, arguments: [:], budget: .unlimited)
+    }
+    XCTAssertEqual(source.lock.withLock { source.count }, 2)
+  }
+
   // MARK: - Conversations
 
   func testTheMostRecentlyActiveConversationComesFirstAndEachIsDescribed() throws {
@@ -55,14 +162,14 @@ final class MessagesReaderTests: XCTestCase {
     XCTAssertNil(direct.displayName)
     XCTAssertFalse(direct.isGroup)
     XCTAssertEqual(direct.lastMessageAt, "2024-03-04T12:00:00Z")
-    XCTAssertEqual(direct.participants, [MessagesFixture.Handle.friend])
+    XCTAssertEqual(direct.participants.map(\.handle), [MessagesFixture.Handle.friend])
     XCTAssertEqual(direct.service, "iMessage")
     XCTAssertEqual(group.displayName, "Weekend Trip")
     XCTAssertTrue(group.isGroup)
     // The rename at 08:30 is not a message, so it is not the last one.
     XCTAssertEqual(group.lastMessageAt, "2024-03-03T08:00:00Z")
     XCTAssertEqual(
-      group.participants,
+      group.participants.map(\.handle),
       [MessagesFixture.Handle.friend, MessagesFixture.Handle.neighbour,
        MessagesFixture.Handle.colleague])
     // Whole seconds and nanoseconds read as the same kind of instant.

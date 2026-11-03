@@ -100,6 +100,63 @@ describe("an app the helper serves", () => {
     });
   });
 
+  it("requires Contacts for Messages reads and reports the first missing grant", async () => {
+    for (const contacts of ["requestable", "denied"] as const) {
+      const helper = port({ contacts });
+      const provider = createHelperAppProvider("apple-messages", helper);
+      expect((await provider.inspect()).slice(0, 2)).toEqual(
+        ["list_conversations", "read_messages"].map((operation) => ({
+          detail: "Reading Contacts needs macOS access to Contacts for Opensteer Computer Use.",
+          operation,
+          remedy: "contacts",
+          state: "permission-required",
+        })),
+      );
+      vi.mocked(helper.dataInvoke).mockRejectedValue(
+        new ComputerUseBridgeError("permission-required", "Contacts denied"),
+      );
+      await expect(
+        provider.invoke("list_conversations", {}, new AbortController().signal, invocation),
+      ).rejects.toEqual(
+        new ComputerAppError(
+          "permission-required",
+          "Reading Contacts needs macOS access to Contacts for Opensteer Computer Use.",
+        ),
+      );
+    }
+    const provider = createHelperAppProvider(
+      "apple-messages",
+      port({ contacts: "denied", "full-disk-access": "denied" }),
+    );
+    expect((await provider.inspect())[0]?.remedy).toBe("full-disk-access");
+  });
+
+  it("keeps the helper's own refusal when the grants cannot be read again", async () => {
+    const helper = port({ contacts: "denied" });
+    vi.mocked(helper.dataGrants).mockRejectedValue(
+      new ComputerUseBridgeError("failed", "The Opensteer desktop app is not running on this Mac."),
+    );
+    vi.mocked(helper.dataInvoke).mockRejectedValue(
+      new ComputerUseBridgeError(
+        "permission-required",
+        "Reading Contacts needs macOS access to Contacts for Opensteer Computer Use.",
+      ),
+    );
+    await expect(
+      createHelperAppProvider("apple-messages", helper).invoke(
+        "list_conversations",
+        {},
+        new AbortController().signal,
+        invocation,
+      ),
+    ).rejects.toEqual(
+      new ComputerAppError(
+        "permission-required",
+        "Reading Contacts needs macOS access to Contacts for Opensteer Computer Use.",
+      ),
+    );
+  });
+
   it("reads a grant macOS cannot report yet as ready, since the helper settles it before acting", async () => {
     // Automation is reported only while Messages runs; a send checks it first.
     const provider = createHelperAppProvider("apple-messages", port({ automation: "unknown" }));

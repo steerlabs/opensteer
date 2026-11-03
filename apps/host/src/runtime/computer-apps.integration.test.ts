@@ -982,7 +982,7 @@ function fakeMessagesProvider() {
               displayName: "Friend",
               isGroup: false,
               lastMessageAt: null,
-              participants: ["friend@example.test"],
+              participants: [{ handle: "friend@example.test", name: "Friend" }],
               service: "iMessage",
             },
           ],

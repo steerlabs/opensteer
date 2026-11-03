@@ -18,12 +18,17 @@ public struct ReadMessagesArguments: Decodable, Sendable {
   public let until: String?
 }
 
+public struct ConversationParticipant: Encodable, Sendable, Equatable {
+  public let handle: String
+  @Nullable public var name: String?
+}
+
 public struct ConversationView: Encodable, Sendable, Equatable {
   public let conversationId: String
   @Nullable public var displayName: String?
   public let isGroup: Bool
   @Nullable public var lastMessageAt: String?
-  public let participants: [String]
+  public let participants: [ConversationParticipant]
   public let service: String
 }
 
@@ -33,6 +38,7 @@ public struct MessageView: Encodable, Sendable, Equatable {
   public let id: String
   public let isFromMe: Bool
   public let sender: String
+  @Nullable public var senderName: String?
   public let sentAt: String
   public let service: String
   @Nullable public var text: String?
@@ -79,6 +85,7 @@ struct MessagesReader {
 
   let path: String
   let clock: DataClock
+  var contacts = MessagesContacts([])
   var byteBudget = Paging.byteBudget
 
   // MARK: - Opening
@@ -116,12 +123,23 @@ struct MessagesReader {
     var conditions: [String] = []
     var values: [MessagesDatabase.Value] = []
     if let query {
-      let pattern = Self.likePattern(query)
+      let needle = DataText.folded(query)
+      let phoneDigits = ContactsSearch.isPhoneQuery(query) ? ContactsSearch.onlyDigits(query) : nil
+      let handles = try connection.rows("SELECT ROWID, id FROM handle", []).filter { row in
+        let handle = row.text(1) ?? ""
+        return DataText.folded(handle).contains(needle)
+          || contacts.name(for: handle).map { DataText.folded($0).contains(needle) } == true
+          || phoneDigits.map { ContactsSearch.onlyDigits(handle).contains($0) } == true
+      }.map { $0.integer(0) }
+      let chats = try connection.rows("SELECT ROWID, display_name FROM chat", []).filter {
+        DataText.folded($0.text(1) ?? "").contains(needle)
+      }.map { $0.integer(0) }
+      // These IDs came from SQLite integers, so even large address books need no bind-variable expansion.
+      let handleIDs = handles.map(String.init).joined(separator: ",")
+      let chatIDs = chats.map(String.init).joined(separator: ",")
       conditions.append(
-        "(LOWER(COALESCE(c.display_name, '')) LIKE ? ESCAPE '\\'"
-          + " OR EXISTS (SELECT 1 FROM chat_handle_join chj JOIN handle h ON h.ROWID = chj.handle_id"
-          + " WHERE chj.chat_id = c.ROWID AND LOWER(h.id) LIKE ? ESCAPE '\\'))")
-      values += [.text(pattern), .text(pattern)]
+        "(c.ROWID IN (\(chatIDs)) OR EXISTS (SELECT 1 FROM chat_handle_join chj"
+          + " WHERE chj.chat_id = c.ROWID AND chj.handle_id IN (\(handleIDs))))")
     }
     var having = ""
     if let after {
@@ -150,7 +168,9 @@ struct MessagesReader {
           displayName: DataText.present(name).map { Self.bounded($0).text },
           isGroup: row.integer(4) == 43 || handles.count > 1,
           lastMessageAt: lastDate > 0 ? clock.text(Self.instant(lastDate)) : nil,
-          participants: handles,
+          participants: handles.map {
+            ConversationParticipant(handle: $0, name: contacts.name(for: $0).map { Self.bounded($0).text })
+          },
           service: row.text(3) ?? "unknown"),
         Key(date: lastDate, rowId: chat)
       )
@@ -317,12 +337,14 @@ struct MessagesReader {
     }
     let bounded = whole.map(Self.bounded)
     let isFromMe = row.integer(4) != 0
+    let sender = isFromMe ? "me" : DataText.present(row.text(7)) ?? row.text(9) ?? "unknown"
     return MessageView(
       conversationId: row.text(8) ?? "",
       hasAttachments: row.integer(10) != 0,
       id: row.text(1) ?? "",
       isFromMe: isFromMe,
-      sender: isFromMe ? "me" : DataText.present(row.text(7)) ?? row.text(9) ?? "unknown",
+      sender: sender,
+      senderName: isFromMe ? nil : contacts.name(for: sender).map { Self.bounded($0).text },
       sentAt: clock.text(Self.instant(row.integer(6))),
       service: DataText.present(row.text(5)) ?? "unknown",
       text: bounded?.text,
@@ -434,16 +456,5 @@ struct MessagesReader {
       end = text.utf8.index(before: end)
     }
     return (String(text[..<end]), true)
-  }
-
-  /// SQLite's `LOWER` folds ASCII only, the alphabet handles and chat names
-  /// are matched in; message text is matched here, whatever its alphabet.
-  private static func likePattern(_ value: String) -> String {
-    let escaped =
-      value.lowercased()
-      .replacingOccurrences(of: "\\", with: "\\\\")
-      .replacingOccurrences(of: "%", with: "\\%")
-      .replacingOccurrences(of: "_", with: "\\_")
-    return "%\(escaped)%"
   }
 }

@@ -259,9 +259,9 @@ export const mockMessagesDefinition = IntegrationDefinitionSummarySchema.parse({
       { name: "send_message", effect: "write" },
     ],
     accessSummaries: {
-      read: "Allows searching and reading conversations. Sending is off.",
+      read: "Allows searching and reading conversations with names from Contacts; reading also needs Contacts access. Sending is off.",
       readWrite:
-        "Allows searching and reading conversations, and sending messages as you. Sending may ask for macOS Automation permission on this Mac.",
+        "Allows searching and reading conversations with names from Contacts, and sending messages as you. Reading also needs Contacts access. Sending may ask for macOS Automation permission on this Mac.",
     },
     platforms: ["darwin"],
   },
@@ -1012,7 +1012,8 @@ export const mockIntegrationDefinitions: readonly IntegrationDefinitionSummary[]
 /** The operations the preview materialises per connection, by effect. */
 const mockMessagesOperations: readonly (MockToolSeed & { readonly effect: "read" | "write" })[] = [
   {
-    description: "List recent Messages conversations.",
+    description:
+      "List recent Messages conversations by conversation name, participant handle or name from Contacts.",
     effect: "read",
     name: "list_conversations",
     title: "List conversations",

@@ -1,6 +1,7 @@
 /** One catalog-derived contract table compiled by the Mac helper and iPhone pod. */
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { format } from "prettier";
 import { fileURLToPath } from "node:url";
 import { getIntegrationDefinition } from "../packages/integration-catalog/src/index.js";
 import { isComputerAppDefinition } from "../packages/integration-core/src/computer-app.js";
@@ -44,21 +45,24 @@ export async function generateAppleDataContracts(): Promise<void> {
   await mkdir(path.dirname(output), { recursive: true });
   await writeFile(
     output,
-    JSON.stringify(
-      {
-        grants: Object.fromEntries(apps.map(({ definitionId, grant }) => [definitionId, grant])),
-        operations: Object.fromEntries(
-          apps.map(({ definitionId, operations }) => [
-            definitionId,
-            Object.fromEntries(
-              operations.map(({ name, contract, effect }) => [name, { contract, effect }]),
-            ),
-          ]),
-        ),
-      },
-      null,
-      2,
-    ) + "\n",
+    await format(
+      JSON.stringify(
+        {
+          grants: Object.fromEntries(apps.map(({ definitionId, grant }) => [definitionId, grant])),
+          operations: Object.fromEntries(
+            apps.map(({ definitionId, operations }) => [
+              definitionId,
+              Object.fromEntries(
+                operations.map(({ name, contract, effect }) => [name, { contract, effect }]),
+              ),
+            ]),
+          ),
+        },
+        null,
+        2,
+      ),
+      { parser: "json" },
+    ),
   );
   const iphoneOperations = iphoneDataAppIds
     .map((id) => {

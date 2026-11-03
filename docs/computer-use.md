@@ -202,7 +202,8 @@ not confinement under an approved app's name; no AppleScript/text-command escape
 
 Bounded Messages, Contacts, Calendar and Reminders APIs run only through the helper
 that holds their grants, never by a Runner fallback. GUI approval does not authorize
-these APIs. Messages reads require helper Full Disk Access and sends require Automation;
+these APIs. Messages reads require helper Full Disk Access and Contacts: chat.db holds only handles,
+so names come from Contacts. Sends require Automation;
 Calendar/Reminders require full access, not add-only. Contracts/effects generated from
 the catalog are checked before touching an app; writes require write access. A lost or
 unexpected write answer is `outcome-unknown`. See native `Data/DataPlane.swift`,

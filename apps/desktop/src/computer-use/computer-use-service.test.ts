@@ -304,8 +304,21 @@ describe.skipIf(!onMac)("an app the helper serves, from the Host to the Mac and 
     harness.helper.state.dataGrants = {
       ...harness.helper.state.dataGrants,
       "full-disk-access": "granted",
+      contacts: "requestable",
     };
 
+    harness.computerUse.announceGrantsChanged();
+
+    await vi.waitFor(
+      () =>
+        expect(
+          appStatus(harness.hostStream, "apple-messages")?.find(
+            ({ operation }) => operation === "read_messages",
+          ),
+        ).toMatchObject({ remedy: "contacts", state: "permission-required" }),
+      { interval: 10, timeout: 2_000 },
+    );
+    harness.helper.state.dataGrants = { ...harness.helper.state.dataGrants, contacts: "granted" };
     harness.computerUse.announceGrantsChanged();
 
     await vi.waitFor(
