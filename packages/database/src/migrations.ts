@@ -4699,6 +4699,7 @@ export function migrationProvider() {
         "0145_specialist_lifecycle": specialistLifecycleMigration,
         "0146_every_turn_shows": everyTurnShowsMigration,
         "0147_quiet_assignment_results": quietAssignmentResultsMigration,
+        "0148_workspace_skill_inventory": workspaceSkillInventoryMigration,
       };
     },
   };
@@ -7085,5 +7086,21 @@ export const quietAssignmentResultsMigration: Migration = {
           or (result_status = 'undeliverable' and completed_at is not null
             and result_message_id is null and result_reason is not null));
     `.execute(database);
+  },
+};
+
+export const workspaceSkillInventoryMigration: Migration = {
+  async up(database) {
+    await sql`create table workspace_skill_inventory (
+      workspace_id text primary key references workspaces(id) on delete cascade,
+      binding_id text not null, binding_generation bigint not null,
+      storage_authority_id text not null, owner_runner_id text not null,
+      metadata_owner_runner_id text,
+      boot_id text not null, connection_generation bigint not null,
+      connection_id text not null, connection_lease_id text not null,
+      scan_sequence bigint not null, scanned_at timestamptz not null,
+      scan_status text not null check (scan_status in ('complete','failed')),
+      metadata jsonb not null check (jsonb_typeof(metadata) = 'array')
+    )`.execute(database);
   },
 };

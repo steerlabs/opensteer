@@ -1,3 +1,4 @@
+import * as workspaceSkillInventoryStore from "./workspace-skill-inventory-store.js";
 import { resolveResourceAccess, type ResourceAccessInput } from "./resource-access.js";
 import { type BrowserProfileAccess } from "@opensteer/browser-profile/grant";
 import { type ChannelTransportKind, type IntegrationConnectionId } from "@opensteer/channel-core";
@@ -220,6 +221,25 @@ export class OpensteerStore {
     this.requests = new RequestStore(database);
     this.notificationState = new NotificationStateStore(database);
     this.browserHistory = new BrowserHistoryStore(database);
+  }
+
+  reportWorkspaceSkills(
+    authenticated: import("@opensteer/protocol").WorkspaceStorageFence,
+    report: import("@opensteer/protocol").RunnerSkillMetadataReport,
+  ) {
+    return workspaceSkillInventoryStore.reportWorkspaceSkills(
+      this.#database,
+      authenticated,
+      report,
+    );
+  }
+
+  listWorkspaceSkillInventory(viewerId: UserId, workspaceIds: readonly WorkspaceId[]) {
+    return workspaceSkillInventoryStore.listWorkspaceSkillInventory(
+      this.#database,
+      viewerId,
+      workspaceIds,
+    );
   }
 
   get database(): Kysely<DatabaseSchema> {

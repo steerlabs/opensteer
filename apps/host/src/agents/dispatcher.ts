@@ -120,6 +120,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   ) => Promise<import("@opensteer/protocol").RunPluginsPlan["versions"]>;
   readonly #pluginsTokens: PluginPackagesTokenService;
   readonly #pluginsUrl: string;
+  readonly #workspaceSkillPolicy: (
+    workspaceId: WorkspaceId,
+  ) => Promise<import("@opensteer/protocol").RunPluginsPlan["workspaceSkillPolicy"]>;
+
   readonly #integrationToolsTokens: IntegrationToolsTokenService;
   readonly #browser: Pick<BrowserService, "hasBrowserProfileAccess">;
   readonly #browserCdpUrl: string;
@@ -147,6 +151,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly pluginVersions: (
       workspaceId: WorkspaceId,
     ) => Promise<import("@opensteer/protocol").RunPluginsPlan["versions"]>;
+    /** Returns the current shared Workspace loose-skill overrides, including their revision.
+     * The Settings domain owner supplies this adapter; undefined means no override exists. */
+    readonly workspaceSkillPolicy?: (
+      workspaceId: WorkspaceId,
+    ) => Promise<import("@opensteer/protocol").RunPluginsPlan["workspaceSkillPolicy"]>;
     readonly pluginsTokens: PluginPackagesTokenService;
     readonly integrationToolsTokens: IntegrationToolsTokenService;
     readonly egress: EgressService;
@@ -173,6 +182,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       options.publicUrl,
     ).toString();
     this.#pluginVersions = options.pluginVersions;
+    this.#workspaceSkillPolicy = options.workspaceSkillPolicy ?? (async () => undefined);
     this.#pluginsTokens = options.pluginsTokens;
     this.#pluginsUrl = new URL("/internal/v1/plugin-cache", options.publicUrl).toString();
     this.#integrationToolsTokens = options.integrationToolsTokens;
@@ -504,6 +514,13 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       : null;
     if (context.thread.specialistId && !specialist)
       throw new Error("Specialist registration was removed");
+    const workspaceSkillPolicy = await this.#workspaceSkillPolicy(context.workspace.id);
+    if (workspaceSkillPolicy && !identity.capabilities.includes("settings-plugin-policy-v1")) {
+      throw new CommandDispatchError(
+        "Update this Runner to enforce Workspace skill settings.",
+        "failed",
+      );
+    }
     const pinnedPlugins = specialist
       ? [specialist]
       : await this.#pluginVersions(context.workspace.id);
@@ -595,6 +612,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         },
         ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
         plugins: {
+          ...(workspaceSkillPolicy ? { workspaceSkillPolicy } : {}),
           versions: pinnedPlugins,
           token: pluginsToken,
           url: this.#pluginsUrl,
