@@ -581,7 +581,12 @@ export class McpOAuthService {
         flow: "mcp-oauth",
         state,
       });
-      if (!claimed) return;
+      if (!claimed) {
+        // The in-process flight owns completion. A spent claim with no flight
+        // belongs to an interrupted Host, and its code must never be exchanged again.
+        await this.#attempts.fail(input.attemptId, "grant-rejected");
+        return;
+      }
       const context = await this.#claimedContext(claimed);
       if (context.relay?.context.attemptId !== relay.context.attemptId)
         throw new Error("MCP consent changed");

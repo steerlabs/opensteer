@@ -1304,14 +1304,31 @@ describe("IntegrationService hosted OAuth failures", () => {
     },
   );
 
-  it.each(["canonical", "personal-remote"] as const)(
-    "honors the saved custom app through the Account relay on %s",
-    async (requestSurface) => {
+  it.each([
+    { requestSurface: "canonical", abandonedClaim: false },
+    { requestSurface: "personal-remote", abandonedClaim: false },
+    { requestSurface: "personal-remote", abandonedClaim: true },
+  ] as const)(
+    "honors the saved custom app through the Account relay (%j)",
+    async ({ requestSurface, abandonedClaim }) => {
       const ownerUserId = createId("user");
       const applicationId = createIntegrationId("providerApplication");
       const attemptId = createIntegrationId("oauthAttempt");
       let attemptPayload: Readonly<Record<string, string>> = {};
+      let failureCode: string | null = null;
+      const expiresAt = new Date("2026-08-20T12:10:00.000Z");
       const attempts = {
+        inspect: vi.fn(async () => attemptPayload),
+        status: vi.fn(async () => ({
+          connectionId: null,
+          expiresAt,
+          failureCode,
+          status: failureCode ? ("failed" as const) : ("launched" as const),
+        })),
+        claimHosted: vi.fn(async () => null),
+        fail: vi.fn(async (_id: string, reason: string) => {
+          failureCode = reason;
+        }),
         begin: vi.fn(async (input) => {
           attemptPayload = (await input.payload("oauth-state")).payload;
           return {
@@ -1322,23 +1339,29 @@ describe("IntegrationService hosted OAuth failures", () => {
         }),
       };
       const createAttempt = vi.fn();
+      const pull = vi.fn();
+      const fetch = vi.fn();
+      const binding = {
+        issuer: "https://account.example.test",
+        linkGeneration: "G".repeat(43),
+        subject: `acct_${crypto.randomUUID()}`,
+      };
       const service = new IntegrationService({
         onConnectionConnected: vi.fn(async () => undefined),
         attempts: attempts as never,
         definitions: [refreshDefinition()],
+        fetch,
         deploymentPosture: async () => "account-linked-personal" as const,
         hostedOAuth: {
           kind: "personal",
-          accountSubject: vi.fn(async () => ({
-            issuer: "https://account.example.test",
-            linkGeneration: "G".repeat(43),
-            subject: `acct_${crypto.randomUUID()}`,
-          })) as never,
+          accountSubject: vi.fn(async () => binding) as never,
           broker: {
             callbackUrl: (provider: string) =>
               `https://account.example.test/v1/oauth-broker/callback/${provider}`,
 
             createAttempt,
+            status: vi.fn(async () => ({ status: "sealed" })),
+            pull,
             createCallbackRelay: vi.fn(async (input: { attemptId: string; expiresAt: string }) => ({
               ...input,
               launchUrl: "https://account.example.test/launch",
@@ -1401,6 +1424,17 @@ describe("IntegrationService hosted OAuth failures", () => {
         providerApplicationId: applicationId,
       });
       expect(createAttempt).not.toHaveBeenCalled();
+      if (abandonedClaim) {
+        await expect(
+          service.authorizationStatus({ attemptId, ownerUserId }),
+        ).resolves.toMatchObject({
+          status: "failed",
+          failureCode: "grant-rejected",
+        });
+        expect(attempts.fail).toHaveBeenCalledWith(attemptId, "grant-rejected");
+        expect(pull).not.toHaveBeenCalled();
+        expect(fetch).not.toHaveBeenCalled();
+      }
     },
   );
 

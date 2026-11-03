@@ -917,7 +917,12 @@ export class IntegrationService {
       id: input.attemptId,
       ownerUserId: input.ownerUserId,
     });
-    if (!claimed) throw invalidProviderAttempt();
+    if (!claimed) {
+      // Completion is single-flight; a spent claim here survived an interrupted
+      // Host. Require new consent rather than trying its authorization code again.
+      await this.#attempts.fail(input.attemptId, "grant-rejected");
+      return;
+    }
     const payload = deserializeProviderAttempt(claimed.payload);
     if (
       payload.applicationSource !== "deployment-oauth" ||

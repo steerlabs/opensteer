@@ -81,7 +81,10 @@ vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
 
 import { McpOAuthService } from "./mcp-oauth-service.js";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("McpOAuthService", () => {
   it("requires reconnect before exposing legacy OAuth credentials without an issuer", async () => {
@@ -429,7 +432,9 @@ describe("McpOAuthService", () => {
     { reconnect: false, relay: true },
     { reconnect: true, relay: true },
     { reconnect: false, relay: true, badIssuer: true },
-  ])("authorizes a new or existing MCP account (%j)", async ({ reconnect, relay, badIssuer }) => {
+    { reconnect: false, relay: true, abandonedClaim: true },
+  ])("authorizes a new or existing MCP account (%j)", async (scenario) => {
+    const { reconnect, relay, badIssuer, abandonedClaim } = scenario;
     const ownerUserId = createId("user");
     const requestId = createId("request");
     const installationId = createIntegrationId("installation");
@@ -470,6 +475,7 @@ describe("McpOAuthService", () => {
     let attemptAuthorizationUrl = "";
     const attemptState = "s".repeat(43);
     let status = "launched";
+    let failureCode: string | null = null;
     let resultConnectionId: string | null = null;
     const attempts = {
       begin: vi.fn(
@@ -498,14 +504,15 @@ describe("McpOAuthService", () => {
         payload: attemptPayload,
         surface: "desktop",
       })),
-      fail: vi.fn(async () => {
+      fail: vi.fn(async (_id: string, reason: string) => {
         status = "failed";
+        failureCode = reason === "exchange-failed" ? null : reason;
       }),
       status: vi.fn(async () => ({
-        status,
+        status: status === "claimed" ? "launched" : status,
         connectionId: resultConnectionId,
         expiresAt: new Date(),
-        failureCode: null,
+        failureCode,
       })),
       inspect: vi.fn(async () => attemptPayload),
       claimHosted: vi.fn(async () => {
@@ -518,6 +525,13 @@ describe("McpOAuthService", () => {
       status = "completed";
       resultConnectionId = input.connectionId;
     });
+    const completionGate = Promise.withResolvers<void>();
+    if (relay && !badIssuer && !abandonedClaim)
+      complete.mockImplementationOnce(async (input) => {
+        await completionGate.promise;
+        status = "completed";
+        resultConnectionId = input.connectionId;
+      });
     const store = {
       completeMcpOAuthAttempt: complete,
       getMcpOAuthServer: vi.fn(async () => ({
@@ -654,13 +668,23 @@ describe("McpOAuthService", () => {
     expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
 
     const state = new URL(attemptAuthorizationUrl).searchParams.get("state")!;
+    if (abandonedClaim) status = "claimed";
+    const finishAuth = vi.spyOn(sdk.Transport.prototype, "finishAuth");
+    const firstPoll = relay
+      ? service.authorizationStatus({ attemptId: attemptId!, ownerUserId })
+      : null;
+    if (relay && !badIssuer && !abandonedClaim) {
+      await vi.waitFor(() =>
+        expect(complete, "MCP completion did not reach persistence").toHaveBeenCalledOnce(),
+      );
+      expect(status).toBe("claimed");
+    }
+    const secondPoll = relay
+      ? service.authorizationStatus({ attemptId: attemptId!, ownerUserId })
+      : null;
+    completionGate.resolve();
     const completed = relay
-      ? (
-          await Promise.all([
-            service.authorizationStatus({ attemptId: attemptId!, ownerUserId }),
-            service.authorizationStatus({ attemptId: attemptId!, ownerUserId }),
-          ])
-        )[0]!
+      ? (await Promise.all([firstPoll!, secondPoll!]))[0]!
       : await service.handleAuthorizationCallback({
           attemptId: attemptId!,
           browserBinding: "b".repeat(43),
@@ -672,6 +696,21 @@ describe("McpOAuthService", () => {
           }),
           state,
         });
+    if (abandonedClaim) {
+      expect(completed).toMatchObject({ status: "failed", failureCode: "grant-rejected" });
+      expect(attempts.fail).toHaveBeenCalledWith(attemptId, "grant-rejected");
+      expect(complete).not.toHaveBeenCalled();
+      expect(finishAuth).not.toHaveBeenCalled();
+      expect(onConnectionConnected).not.toHaveBeenCalled();
+      expect(
+        await service.authorizationStatus({ attemptId: attemptId!, ownerUserId }),
+      ).toMatchObject({
+        status: "failed",
+        failureCode: "grant-rejected",
+      });
+      expect(attempts.claimHosted).toHaveBeenCalledOnce();
+      return;
+    }
     if (badIssuer) {
       expect(completed.status).toBe("failed");
       expect(complete).not.toHaveBeenCalled();

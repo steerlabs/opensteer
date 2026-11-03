@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  createId,
   RunnerIdSchema,
   RunIdSchema,
   ThreadIdSchema,
@@ -314,19 +315,42 @@ function harness() {
     listPendingPasswordSignIns: vi.fn(async () => []),
     openPasswordSignIn: vi.fn<PasswordSignInServiceOptions["requests"]["openPasswordSignIn"]>(
       async (input) => {
-        request ??= {
-          ...input,
-          id: "req_00000000-0000-4000-8000-000000000001",
-          status: "pending",
-        } as unknown as Request;
+        if (!request || request.status !== "pending")
+          request = {
+            ...input,
+            id: createId("request"),
+            status: "pending",
+          } as unknown as Request;
         return { request, events: [], replayed: false };
       },
     ),
     settlePasswordSignInRequest: vi.fn<
       PasswordSignInServiceOptions["requests"]["settlePasswordSignInRequest"]
     >(async (input) => {
-      if (!request || request.status !== "pending") return null;
-      request = { ...request, ...input.settlement } as unknown as Request;
+      if (!request) return null;
+      const correction =
+        request.status === "fulfilled" &&
+        request.response.kind === "external" &&
+        request.response.value?.outcome === "authorized" &&
+        input.settlement.status === "fulfilled" &&
+        input.settlement.response.outcome === "interrupted";
+      if (request.status !== "pending" && !correction) return null;
+      request = {
+        ...request,
+        status: input.settlement.status,
+        response: {
+          kind: "external",
+          value:
+            input.settlement.status === "declined"
+              ? { decision: "declined" }
+              : input.settlement.response,
+        },
+        settlementProvenance: correction
+          ? request.settlementProvenance
+          : input.settlementSessionId
+            ? { sessionId: input.settlementSessionId, deviceLabel: "Test phone" }
+            : null,
+      } as unknown as Request;
       return { request, events: [], replayed: false };
     }),
   } satisfies PasswordSignInServiceOptions["requests"];
@@ -535,6 +559,47 @@ describe("human Passwords settlement", () => {
       expect.objectContaining({ settlementSessionId: "test-session" }),
     );
   });
+  it.each(["refused", "lost-response", "ended", "expired"] as const)(
+    "records an interrupted outcome after broker commit %s, preserving the approval",
+    async (failure) => {
+      const h = await pending();
+      replies(h);
+      const original = h.hub.sendPasswordSignIn.getMockImplementation()!;
+      h.hub.sendPasswordSignIn.mockImplementation(async (runner, command) => {
+        if (command.type !== "login.commit") return original(runner, command);
+        if (failure === "lost-response") throw new Error("Lost commit response");
+        if (failure === "ended") h.end();
+        if (failure === "expired") vi.setSystemTime(Date.now() + 60 * 60_000);
+        return { type: "login.committed", committed: failure !== "refused" };
+      });
+      const requestId = h.request().id;
+      await answer(h);
+      expect(h.service.leaseForOperation(h.operationId())).toBeNull();
+      expect(h.request()).toMatchObject({
+        response: { kind: "external", value: { outcome: "interrupted" } },
+        settlementProvenance: { sessionId: "test-session", deviceLabel: "Test phone" },
+      });
+      expect(h.requests.settlePasswordSignInRequest.mock.calls[0]?.[0]).toMatchObject({
+        settlement: { status: "fulfilled", response: { outcome: "authorized" } },
+        settlementSessionId: "test-session",
+      });
+      expect(h.hub.sendPasswordSignIn).toHaveBeenCalledWith(
+        h.target.computer.runnerId,
+        expect.objectContaining({ type: "login.cancel" }),
+      );
+      const next = h.service.request({
+        ...h.call,
+        callId: "try-again",
+        canRequest: true,
+        site: h.site,
+        admitStart: () => true,
+      });
+      await vi.advanceTimersByTimeAsync(1);
+      h.event({ kind: "needs", need: "approval" });
+      expect(await next).toMatchObject({ status: "pending" });
+      expect(h.request().id).not.toBe(requestId);
+    },
+  );
   for (const failure of ["lost", "failed"] as const)
     it(`never commits a grant when durable settlement ${failure}`, async () => {
       const h = await pending();
@@ -554,6 +619,37 @@ describe("human Passwords settlement", () => {
         expect.objectContaining({ type: "login.cancel" }),
       );
     });
+  it.each(["interruption-write", "announcement"] as const)(
+    "retries interruption after %s fails, preserving provenance",
+    async (failure) => {
+      const h = await pending();
+      replies(h);
+      const send = h.hub.sendPasswordSignIn.getMockImplementation()!;
+      h.hub.sendPasswordSignIn.mockImplementation(async (runner, command) =>
+        command.type === "login.commit"
+          ? { type: "login.committed", committed: failure === "announcement" }
+          : send(runner, command),
+      );
+      const settle = h.requests.settlePasswordSignInRequest.getMockImplementation()!;
+      if (failure === "interruption-write")
+        h.requests.settlePasswordSignInRequest
+          .mockImplementationOnce(settle)
+          .mockRejectedValueOnce(new Error("Interruption write failed"));
+      else
+        h.resolved.mockImplementationOnce(() => {
+          throw new Error("Announcement failed after broker commit");
+        });
+      await answer(h);
+      expect(h.service.leaseForOperation(h.operationId())).toBeNull();
+      expect(h.resolved).toHaveBeenCalledTimes(failure === "announcement" ? 1 : 0);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(h.request()).toMatchObject({
+        response: { kind: "external", value: { outcome: "interrupted" } },
+        settlementProvenance: { sessionId: "test-session", deviceLabel: "Test phone" },
+      });
+      expect(h.resolved).toHaveBeenCalledTimes(failure === "announcement" ? 2 : 1);
+    },
+  );
   it("refuses another user's chooser and answer", async () => {
     const h = await pending();
     const ownerId = UserIdSchema.parse("usr_00000000-0000-4000-8000-000000000099");

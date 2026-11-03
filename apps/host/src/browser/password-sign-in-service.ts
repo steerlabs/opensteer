@@ -896,7 +896,7 @@ export class PasswordSignInService {
     }
     operation.settling = (async (): Promise<Finish> => {
       try {
-        const result = await this.#requests.settlePasswordSignInRequest({
+        let result = await this.#requests.settlePasswordSignInRequest({
           ownerId: operation.starter.ownerId,
           requestId: operation.requestId!,
           settlement: operation.settlement!,
@@ -907,21 +907,26 @@ export class PasswordSignInService {
             ? { settlementSessionId: operation.settlementSessionId }
             : {}),
         });
-        operation.settled = true;
         if (!result) {
+          operation.settled = true;
           await this.#cancel(operation, "authority-lost");
           return "ended-elsewhere";
         }
         if (operation.pendingLease && !operation.cancelSent && !operation.authorityEnded) {
-          const committed = operation.settlementSessionId
-            ? await this.#authority.sendPasswordSignIn(operation.target.runnerId, {
+          let committed = !operation.settlementSessionId;
+          if (operation.settlementSessionId) {
+            try {
+              const answer = await this.#authority.sendPasswordSignIn(operation.target.runnerId, {
                 type: "login.commit",
                 operationId: operation.id,
-              })
-            : { type: "login.committed" as const, committed: true };
+              });
+              committed = answer.type === "login.committed" && answer.committed;
+            } catch (error) {
+              this.#onError(error);
+            }
+          }
           if (
-            committed.type === "login.committed" &&
-            committed.committed &&
+            committed &&
             !operation.cancelSent &&
             !operation.authorityEnded &&
             this.#now() < operation.expiresAt
@@ -929,8 +934,24 @@ export class PasswordSignInService {
             this.#leases.set(operation.loginRef, operation.pendingLease);
           else await this.#cancel(operation, "authority-lost");
         }
-        this.#announce(result);
+        if (
+          operation.settlement?.status === "fulfilled" &&
+          operation.settlement.response.outcome === "authorized" &&
+          !this.leaseForOperation(operation.id)
+        ) {
+          operation.settlement = interrupted();
+          await this.#cancel(operation, "authority-lost");
+          // The approval remains in durable history with its original provenance;
+          // the current Request must describe the unusable authorization instead.
+          result = await this.#requests.settlePasswordSignInRequest({
+            ownerId: operation.starter.ownerId,
+            requestId: operation.requestId!,
+            settlement: operation.settlement,
+          });
+        }
+        if (result) this.#announce(result);
         this.#notify(operation);
+        operation.settled = true;
         return mine ? "settled" : "ended-elsewhere";
       } catch (error) {
         this.#onError(error);

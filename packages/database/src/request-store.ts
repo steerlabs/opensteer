@@ -2561,7 +2561,9 @@ export class RequestStore {
    * Settles a pending password sign-in with what its runtime reported, or with
    * what the Host knows when the runtime cannot answer. Returns null when the
    * Request is no longer pending, or its originating authority is gone and it
-   * is being cancelled through that path instead.
+   * is being cancelled through that path instead. A broker commit failure may
+   * replace an authorized outcome with interruption without changing the saved
+   * human decision's provenance or its durable event.
    */
   async settlePasswordSignInRequest(input: {
     readonly ownerId: UserId;
@@ -2575,21 +2577,28 @@ export class RequestStore {
       this.#database,
       (transaction) => discoverRequestWorkspaces(transaction, { requestId: input.requestId }),
       async (transaction) => {
-        const pending = (row: RequestRow | undefined): row is RequestRow =>
+        const eligible = (row: RequestRow | undefined): row is RequestRow =>
           row?.kind === "browser.password-sign-in" &&
-          row.status === "pending" &&
-          row.requestedBy === input.ownerId;
+          row.requestedBy === input.ownerId &&
+          (row.status === "pending" ||
+            (input.settlement.status === "fulfilled" &&
+              input.settlement.response.outcome === "interrupted" &&
+              row.status === "fulfilled" &&
+              row.response?.kind === "external" &&
+              row.response.value?.outcome === "authorized"));
         const observed = await transaction
           .selectFrom("requests")
           .selectAll()
           .where("id", "=", input.requestId)
           .executeTakeFirst();
-        if (!pending(observed)) return null;
-        try {
-          await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
-        } catch (error) {
-          if (error instanceof OpensteerError) return null;
-          throw error;
+        if (!eligible(observed)) return null;
+        if (observed.status === "pending") {
+          try {
+            await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
+          } catch (error) {
+            if (error instanceof OpensteerError) return null;
+            throw error;
+          }
         }
         const row = await transaction
           .selectFrom("requests")
@@ -2597,7 +2606,7 @@ export class RequestStore {
           .where("id", "=", input.requestId)
           .forNoKeyUpdate()
           .executeTakeFirst();
-        if (!pending(row)) return null;
+        if (!eligible(row)) return null;
         if (
           input.settlement.status === "fulfilled" &&
           input.settlement.response.outcome === "authorized" &&
@@ -2617,17 +2626,21 @@ export class RequestStore {
           .updateTable("requests")
           .set({
             status: input.settlement.status,
-            resolvedAt: now,
-            resolvedBy: input.ownerId,
-            settlementProvenance: await requestSettlementProvenance(
-              transaction,
-              input.ownerId,
-              input.settlementSessionId,
-            ),
+            ...(row.status === "pending"
+              ? {
+                  resolvedAt: now,
+                  resolvedBy: input.ownerId,
+                  settlementProvenance: await requestSettlementProvenance(
+                    transaction,
+                    input.ownerId,
+                    input.settlementSessionId,
+                  ),
+                }
+              : {}),
             response: jsonValue(response),
           })
           .where("id", "=", input.requestId)
-          .where("status", "=", "pending")
+          .where("status", "=", row.status)
           .returningAll()
           .executeTakeFirstOrThrow();
         const resolved = requestFromRow(resolvedRow);

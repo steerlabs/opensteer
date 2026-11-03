@@ -159,12 +159,16 @@ Modern Workspace-scoped Requests retain their durable kind and consent version;
 the requester approves or declines through the same Host command from web, desktop
 or mobile. Chooser descriptors are fetched separately after first paint and never
 enter shared Request events, agent projections or persisted client caches. Generic
-request.respond refuses this kind. Names/reasons are display
-context, never authority. The durable Request settlement is the approval commit
-point. The broker first prepares the pinned choice without granting or releasing anything. Only after
-settlement succeeds does the Host commit the broker transaction and publish a
-lease. Losing/cancelled preparations have no grant to remove, so cleanup cannot
-erase a newer grant. Human settlements retain the winning session and stored
+request.respond refuses this kind. Names/reasons are display context, never
+authority. The durable Request settlement is the approval commit point. The broker
+first prepares the pinned choice without granting or releasing anything. Only
+after settlement succeeds does the Host commit the broker transaction and publish a
+lease. If broker commit fails or authority ends before publication, the current
+Request outcome becomes interrupted while durable history retains the consent
+decision and its original provenance. A lost commit response may leave only the
+exact pinned remembered grant, never a live Host lease. Losing/cancelled
+preparations have no grant to remove, so cleanup cannot erase a newer grant.
+Human settlements retain the winning session and stored
 device label; retries never replace this provenance. Automatic settlements have
 none. Failed settlement cancels the preparation and retries interruption;
 a continuation gets its loginRef only from the live registry, never Request data.

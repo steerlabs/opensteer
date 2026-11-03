@@ -104,7 +104,54 @@ describeStore("PostgreSQL store", (it) => {
       sessionId,
       deviceLabel: "Safari on iPhone",
     });
+    const approved = await open("approved");
+    const consent = await store.requests.settlePasswordSignInRequest({
+      ...input,
+      requestId: approved.request.id,
+      settlement: { status: "fulfilled", response: { outcome: "authorized", account: "a•••" } },
+    });
     await database.deleteFrom("authSessions").where("id", "=", sessionId).execute();
+    const interruption = {
+      ownerId: fixture.userId,
+      requestId: approved.request.id,
+      settlement: { status: "fulfilled", response: { outcome: "interrupted" } },
+    } as const;
+    const interrupted = await store.requests.settlePasswordSignInRequest(interruption);
+    expect(interrupted?.request).toMatchObject({
+      status: "fulfilled",
+      response: { kind: "external", value: { outcome: "interrupted" } },
+      settlementProvenance: consent?.request.settlementProvenance,
+      resolvedAt: consent?.request.resolvedAt,
+      resolvedBy: consent?.request.resolvedBy,
+    });
+    expect(consent?.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "request.resolved",
+          data: expect.objectContaining({
+            request: expect.objectContaining({
+              response: { kind: "external", value: { outcome: "authorized", account: "a•••" } },
+              settlementProvenance: { sessionId, deviceLabel: "Safari on iPhone" },
+            }),
+          }),
+        }),
+      ]),
+    );
+    expect(await store.requests.settlePasswordSignInRequest(interruption)).toBeNull();
+    expect(
+      await store.requests.settlePasswordSignInRequest({
+        ...input,
+        requestId: approved.request.id,
+        settlement: { status: "fulfilled", response: { outcome: "authorized", account: "other" } },
+      }),
+    ).toBeNull();
+    expect(
+      await database
+        .selectFrom("requestContinuations")
+        .select("requestId")
+        .where("requestId", "=", approved.request.id)
+        .execute(),
+    ).toHaveLength(1);
     expect(await store.requests.settlePasswordSignInRequest(input)).toBeNull();
     expect((await store.requests.get(first.request.id))?.settlementProvenance).toEqual(
       result?.request.settlementProvenance,
