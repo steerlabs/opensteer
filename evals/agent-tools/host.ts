@@ -14,7 +14,7 @@ import { createId, ThreadSchema } from "@opensteer/core";
 import { agentTools } from "@opensteer/agent-tools";
 import { OpensteerMcpService } from "../../apps/host/src/mcp/opensteer-mcp-service.js";
 import type { AgentToolHandlers } from "../../apps/host/src/mcp/handlers/index.js";
-import { AgentControlTokenService } from "../../apps/host/src/agents/agent-control-service.js";
+import { RunToolTokenService } from "../../apps/host/src/agents/run-tool-tokens.js";
 import { SignedTokenService } from "../../apps/host/src/identity/host-keys.js";
 
 import { caseReach, type EvalCase } from "./cases.js";
@@ -55,7 +55,7 @@ export async function startFakeHost(testCase: EvalCase) {
     hostInstanceId: createId("hostInstance"),
   });
   const authorizer = { assertActiveGrant: async () => {} };
-  const agentTokens = new AgentControlTokenService({ tokens: signed, authorizer });
+  const agentTokens = new RunToolTokenService({ tokens: signed, authorizer });
   const agentToken = agentTokens.issue(scope);
   const http = createServer();
   http.listen(0, "127.0.0.1");
