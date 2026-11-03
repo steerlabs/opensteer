@@ -71,7 +71,7 @@ export interface PiExtensionToolDefinition {
   /** The Host's advertised JSON Schema, passed unchanged to Pi. */
   readonly inputSchema: unknown;
   readonly name: string;
-  /** `opensteer` or `opensteer_integrations`; echoed back so the driver knows where to call. */
+  /** The MCP server's name, `opensteer`; echoed back so the driver knows where to call. */
   readonly server: string;
 }
 

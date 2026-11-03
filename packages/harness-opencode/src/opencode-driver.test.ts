@@ -12,7 +12,6 @@ import {
   type HarnessInstanceId,
   type Message,
 } from "@opensteer/core";
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import {
   isolatedServiceHarnessRuntimeBoundary,
   nativeUserHarnessRuntimeBoundary,
@@ -141,12 +140,11 @@ describe("OpenCode tool identity", () => {
         namespace: "opensteer",
       });
     }
-    for (const name of integrationGatewayToolNames) {
-      expect(opencodeToolIdentity(`opensteer_integrations_${name}`)).toEqual({
-        name,
-        namespace: "opensteer.integrations",
-      });
-    }
+    // A historical transcript's integration call still reads as an Opensteer tool.
+    expect(opencodeToolIdentity("opensteer_integrations_integration_call")).toEqual({
+      name: "integration_call",
+      namespace: "opensteer.integrations",
+    });
   });
 });
 
@@ -787,9 +785,6 @@ describe("OpenCode sessions", () => {
     const permission = config.permission as Record<string, string>;
     expect(permission.opensteer_host_only_tool).toBe("allow");
     for (const { name } of agentTools.filter((tool) => tool.callers.includes("run"))) {
-      expect(permission[`opensteer_${name}`]).toBe("allow");
-    }
-    for (const name of integrationGatewayToolNames) {
       expect(permission[`opensteer_${name}`]).toBe("allow");
     }
   });

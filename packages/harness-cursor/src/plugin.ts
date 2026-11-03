@@ -15,6 +15,7 @@ import { cursorHookProgramFileName, cursorHookProgramSource } from "./hook-progr
 export const cursorPluginDirectoryName = "opensteer";
 
 export const cursorAgentToolsServerName = "opensteer";
+/** The retired integrations server, kept so historical tool calls keep their identity. */
 export const cursorIntegrationToolsServerName = "opensteer_integrations";
 
 /** What `beforeMCPExecution` calls our server. */
