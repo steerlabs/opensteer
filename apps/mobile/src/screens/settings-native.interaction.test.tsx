@@ -168,7 +168,8 @@ it("searches by identity without promoting Waiting to Needs you", async () => {
   ).toBe("Turned off");
   expect(Object.values(pluginGroups([first], first.title.toUpperCase())).flat()).toEqual([first]);
 });
-it("offers native Messaging setup on Android, secure transient credentials and linking", async () => {
+it.each(["ios", "android"])("offers secure Messaging setup and linking on %s", async (os) => {
+  state.os = os;
   await open("messaging");
   expect(rows().some((row) => row.label === "iMessage")).toBe(true);
   await press("Slack");
@@ -287,11 +288,13 @@ it.each(["ios", "android"])(
         },
       ],
     });
+    const check = vi.fn(async () => ({ ok: true, data: { ready: true, capabilities: [], identity: null, issues: [] } }));
     const rpc = host.rpc;
     Object.defineProperty(host, "rpc", {
       value: new Proxy(rpc, {
         get(target, key, receiver) {
-          if (key === "channels.get") return async () => ({ ok: true, data });
+          if (key === "channel.connection.check") return check;
+          if (key === "channels.get") return async () => ({ ok: true, data: { ...data, accounts: [...data.accounts] } });
           return Reflect.get(target, key, receiver);
         },
       }),
@@ -302,12 +305,18 @@ it.each(["ios", "android"])(
       commands.push(command);
       throw new Error("Keep the current state");
     });
+    await press("Check connection");
+    expect(check).toHaveBeenCalledWith({ connectionId });
     await press("Pause");
     expect(commands.at(-1)).toMatchObject({
       type: "channel.connection.status.set",
       connectionId,
       status: "paused",
     });
+    data.accounts[0]!.status = "paused";
+    await press("Refresh");
+    await press("Resume");
+    expect(commands.at(-1)).toMatchObject({ type: "channel.connection.status.set", status: "connected", connectionId });
     await input("Conversation ID", "support");
     await press("Add route");
     expect(commands.at(-1)).toMatchObject({
@@ -433,4 +442,16 @@ it("withholds folder install from non-administrators", async () => {
   }));
   await press("Add plugins");
   expect(rows().some((row) => row.label === "Folder on your computer")).toBe(false);
+});
+
+it.each(["ios", "android"])("fences retained Messaging actions and late checks on %s", async (os) => {
+  state.os = os;
+  await open("messaging");
+  await input("Link code", "ABCDEFGH");
+  const retained = row("Link account");
+  const dispatch = vi.spyOn(host, "dispatch");
+  state.host = null;
+  if (retained.kind !== "button") throw new Error("Missing link action");
+  await act(async () => retained.onPress());
+  expect(dispatch).not.toHaveBeenCalled();
 });
