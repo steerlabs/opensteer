@@ -1,6 +1,7 @@
 import { AdministrationService } from "../administration/administration-service.js";
 import { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
 import { HarnessCatalogReconciliationOwner } from "../agents/harness-catalogs.js";
+import { ThreadService } from "../threads/thread-service.js";
 import { ConnectionOAuth } from "../mcp/connections/index.js";
 import { AgentConnectionStore } from "@opensteer/database";
 import { requestSpecialistRequirements } from "../integrations/specialist-access-requests.js";
@@ -2034,7 +2035,10 @@ export async function createHostRuntime(
       publish: (workspaceId, ownerIds) =>
         realtime.publishBrowserSessionsChanged(workspaceId, ownerIds, "browser.groups"),
     });
+    const threadService = new ThreadService({ store, commands, runners, placeContext, browser });
     const productHandlers = new ProductToolHandlers({
+      threads: threadService,
+      realtime,
       computerUse,
       personShow: (userId, message) => realtime.showToPerson(userId, message),
       browserTabs,

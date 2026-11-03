@@ -1,3 +1,4 @@
+import { ThreadService, assertAccessModeEnforceable } from "./threads/thread-service.js";
 import {
   AdministrationService,
   isAdministrationCommand,
@@ -71,28 +72,21 @@ import {
 import {
   AttachmentIdSchema,
   BrowserProfileIdSchema,
-  CHAT_THREAD_TITLE,
   CommandIdSchema,
-  DEFAULT_THREAD_ACCESS_MODE,
   EnvironmentIdSchema,
   HarnessInstanceIdSchema,
   OpensteerError,
   TriggerRevisionIdSchema,
   WorkspaceIdSchema,
   deploymentSupportsSharing,
-  harnessDriverLabel,
-  isPlaceContentPart,
   unsupportedVersionReason,
   type AgentEvent,
   type AuthenticatedSession,
   type DeploymentDisplayKind,
   type EnvironmentId,
-  type HarnessId,
   type HarnessInstanceId,
   type HarnessInstanceStateKind,
-  type ModelSelection,
   type RunnerId,
-  type ThreadAccessMode,
   type WorkspaceId,
 } from "@opensteer/core";
 import {
@@ -111,7 +105,6 @@ import {
   type HostCapability,
   type HostDiscoveryEnvelope,
 } from "@opensteer/deployment-authority";
-import { isRetryableHarnessCatalogStatus } from "@opensteer/harness";
 import {
   interactiveRunnerRequestTimeoutMs,
   runnerIdentityRevokedCloseCode,
@@ -162,8 +155,6 @@ import {
   type AgentPhoneHostTarget,
   type ComputerUseSessionSummary,
   type HarnessAuthenticationState,
-  type HarnessInstanceCatalog,
-  type HarnessModelDescriptor,
   type HarnessSourceDescriptor,
   type HostApiHandlers,
   type HostApiServerContext,
@@ -227,11 +218,6 @@ import {
   harnessInspectionDefinition,
   inspectAndRecordHarnessCatalogs,
 } from "./agents/harness-catalogs.js";
-import {
-  matchModelSelection,
-  modelOptionUnavailableMessage,
-  storedModelSelection,
-} from "./agents/model-selection.js";
 import type { RunnerAuthenticator } from "./agents/runner-authenticator.js";
 import type { SecurityEffectService } from "./agents/security-effect-service.js";
 import type { AttachmentService } from "./attachments/attachment-service.js";
@@ -440,6 +426,7 @@ export async function createHostServer(
   dependencies: HostServerDependencies,
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
 ): Promise<FastifyInstance> {
+  const threadService = new ThreadService(dependencies);
   const publishWorkspaceEvent =
     dependencies.publishWorkspaceEvent ??
     ((event: AgentEvent) => dependencies.realtime.publish(event));
@@ -1786,94 +1773,9 @@ export async function createHostServer(
           type: command.type,
         };
       }
-      case "thread.create": {
-        const parent = command.parentThreadId
-          ? await dependencies.store.getThreadForOwner(command.parentThreadId, userId)
-          : null;
-        if (command.parentThreadId && !parent) {
-          throw new OpensteerError({ code: "not_found", message: "Parent thread not found" });
-        }
-        const input = {
-          accessMode: command.accessMode ?? parent?.accessMode ?? DEFAULT_THREAD_ACCESS_MODE,
-          createdBy: userId,
-          environmentId: command.environmentId,
-          harnessInstanceId: command.harnessInstanceId,
-          idempotencyKey: command.idempotencyKey,
-          modelSelection: command.modelSelection,
-          ...(command.parentThreadId ? { parentThreadId: command.parentThreadId } : {}),
-          ...(command.home ? { home: true } : {}),
-          ...(command.generateTitle ? { generateTitle: true as const } : {}),
-          title: command.home ? CHAT_THREAD_TITLE : command.title,
-          workspaceId: command.workspaceId,
-        } as const;
-        const workspace = await dependencies.store.getWorkspaceForOwner(
-          command.workspaceId,
-          userId,
-        );
-        if (!workspace) {
-          throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
-        }
-        if (command.home) {
-          if (workspace.createdBy !== userId || command.parentThreadId)
-            throw new OpensteerError({
-              code: "bad_request",
-              message: "Chat must be an owner’s root conversation",
-            });
-          if (workspace.homeThreadId) {
-            const existingHome = await dependencies.commands.createThread(input);
-            return { ...existingHome, type: command.type };
-          }
-        }
-        const existing = await dependencies.store.findThreadCreationByIdempotency(input);
-        if (existing) return { ...existing, type: command.type };
-        const harness = await dependencies.store.getHarnessInstance(command.harnessInstanceId);
-        if (!harness?.enabled || harness.environmentId !== command.environmentId) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "The selected AI engine is not available",
-          });
-        }
-        const environment = await dependencies.store.getEnvironment(command.environmentId);
-        if (!environment) {
-          throw new OpensteerError({
-            code: "not_found",
-            message: "The selected place to run this work no longer exists",
-          });
-        }
-        if (!dependencies.runners.isAvailable(command.environmentId)) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "The selected place to run this work is not connected",
-            retryable: true,
-          });
-        }
-        if (!dependencies.runners.canRunHarness(command.environmentId, harness.driverKind)) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "The selected AI engine is not available where this work will run",
-          });
-        }
-        assertAccessModeEnforceable(
-          dependencies.runners,
-          command.environmentId,
-          harness.driverKind,
-          input.accessMode,
-        );
-        const available = assertModelSelectionAvailable(
-          (await dependencies.store.getHarnessCatalog(environment.id, harness.id)) ?? undefined,
-          command.modelSelection,
-        );
-        const created = await dependencies.commands.createThread({
-          ...input,
-          modelSelection: storedModelSelection(command.modelSelection, available.model),
-        });
-        return {
-          asOfSequence: created.asOfSequence,
-          thread: created.thread,
-          type: command.type,
-          wasDuplicate: created.wasDuplicate,
-        };
-      }
+      case "thread.create":
+        return threadService.create({ kind: "person", userId }, command);
+
       case "assignment.cancel": {
         const result = await dependencies.commands.cancelAssignment({
           assignmentId: command.assignmentId,
@@ -1886,135 +1788,36 @@ export async function createHostServer(
           wasDuplicate: result.wasDuplicate,
         };
       }
-      case "thread.sendMessage": {
-        return dependencies.commands.withInputAdmission(
-          userId,
-          command.idempotencyKey,
-          async () => {
-            if (
-              command.content.some(isPlaceContentPart) &&
-              !(await dependencies.store.hasAcceptedThreadInput(userId, command.idempotencyKey))
-            ) {
-              const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
-              if (!thread)
-                throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-              await dependencies.placeContext.assertIncludable({
-                ownerId: userId,
-                parts: command.content,
-                threadId: thread.id,
-                workspaceId: thread.workspaceId,
-              });
-            }
-            const result = await dependencies.commands.enqueueThreadInput({
-              ...(command.quotedMessageId ? { quotedMessageId: command.quotedMessageId } : {}),
-              content: command.content,
-              idempotencyKey: command.idempotencyKey,
-              policy: command.delivery ?? "queue",
-              requestedBy: userId,
-              source: { kind: "human" },
-              threadId: command.threadId,
-              validateNewAttachmentInput: (selection) => {
-                const failure = dependencies.runners.attachmentInputFailure({
-                  content: command.content,
-                  ...selection,
-                });
-                if (failure) throw new OpensteerError({ code: "conflict", message: failure });
-              },
-            });
-            // The message's transaction credited its pages to the conversation.
-            if (result.browserUsage) dependencies.browser.announceUsage(result.browserUsage);
-            return {
-              input: result.input,
-              message: result.message,
-              run: result.run,
-              type: command.type,
-              wasDuplicate: result.wasDuplicate,
-            };
-          },
-        );
-      }
-      case "thread.inputQueue.resume": {
-        const result = await dependencies.commands.resumeThreadInputQueue({
-          idempotencyKey: command.idempotencyKey,
-          requestedBy: userId,
-          threadId: command.threadId,
-        });
-        return { type: command.type, thread: result.thread, asOfSequence: result.asOfSequence };
-      }
-      case "thread.input.steer": {
-        const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
-        if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-        const result = await dependencies.commands.steerThreadInput({
-          threadId: command.threadId,
-          messageId: command.messageId,
-          expectedRunId: command.expectedRunId,
-          idempotencyKey: command.idempotencyKey,
-          requestedBy: userId,
-        });
-        return { type: command.type, input: result.input };
-      }
-      case "thread.input.cancel": {
-        const result = await dependencies.commands.cancelThreadInput({
-          idempotencyKey: command.idempotencyKey,
-          messageId: command.messageId,
-          requestedBy: userId,
-          threadId: command.threadId,
-        });
-        return { type: command.type, input: result.input };
-      }
-      case "thread.input.move":
-        await dependencies.commands.moveThreadInput({
-          beforeMessageId: command.beforeMessageId,
-          idempotencyKey: command.idempotencyKey,
-          messageId: command.messageId,
-          requestedBy: userId,
-          threadId: command.threadId,
-        });
-        return { type: command.type };
-      case "thread.execution.update": {
-        const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
-        if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-        if (
-          command.continuation &&
-          !dependencies.runners
-            .identityForEnvironment(thread.environmentId)
-            ?.capabilities.includes("native-session-continuation-v1")
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Connect an updated Runner before changing this conversation's AI engine",
-          });
-        }
-        const harness = await dependencies.store.getHarnessInstance(command.harnessInstanceId);
-        if (!harness?.enabled || harness.environmentId !== thread.environmentId) {
-          throw new OpensteerError({ code: "conflict", message: "AI engine is unavailable" });
-        }
-        // The Thread keeps its access mode across an engine change, so the
-        // engine it lands on must be one that can keep that promise.
-        assertAccessModeEnforceable(
-          dependencies.runners,
-          thread.environmentId,
-          harness.driverKind,
-          thread.accessMode,
-        );
-        const available = assertModelSelectionAvailable(
-          (await dependencies.store.getHarnessCatalog(thread.environmentId, harness.id)) ??
-            undefined,
-          command.modelSelection,
-        );
+      case "thread.sendMessage":
+        return threadService.sendMessage({ kind: "person", userId }, command);
+
+      case "thread.inputQueue.resume":
         return {
-          ...(await dependencies.commands.updateThreadExecutionSelection({
-            ...(command.continuation ? { continuation: command.continuation } : {}),
-            idempotencyKey: command.idempotencyKey,
-            continuationIdentity: available.catalog.continuationIdentity,
-            harnessInstanceId: command.harnessInstanceId,
-            modelSelection: storedModelSelection(command.modelSelection, available.model),
-            requestedBy: userId,
-            threadId: command.threadId,
-          })),
+          ...(await threadService.resume({ kind: "person", userId }, command)),
           type: command.type,
         };
-      }
+
+      case "thread.input.steer":
+        return {
+          ...(await threadService.steer({ kind: "person", userId }, command)),
+          type: command.type,
+        };
+
+      case "thread.input.cancel":
+        return {
+          ...(await threadService.cancel({ kind: "person", userId }, command)),
+          type: command.type,
+        };
+
+      case "thread.input.move":
+        return {
+          ...(await threadService.move({ kind: "person", userId }, command)),
+          type: command.type,
+        };
+
+      case "thread.execution.update":
+        return threadService.configure({ kind: "person", userId }, command);
+
       case "thread.rename": {
         const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
         if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
@@ -2062,16 +1865,12 @@ export async function createHostServer(
           type: command.type,
         };
       }
-      case "run.interrupt": {
-        const result = await dependencies.commands.sendControl({
-          idempotencyKey: command.idempotencyKey,
-          requestedBy: userId,
-          runId: command.runId,
-          threadId: command.threadId,
-          type: "run.interrupt",
-        });
-        return { type: command.type, wasDuplicate: result.wasDuplicate };
-      }
+      case "run.interrupt":
+        return {
+          ...(await threadService.interrupt({ kind: "person", userId }, command)),
+          type: command.type,
+        };
+
       case "request.respond": {
         const pending = await dependencies.store.requests.get(command.requestId);
         if (!pending || pending.status !== "pending") {
@@ -4338,71 +4137,6 @@ async function assertLogoutAvailable(
       message: "This AI engine did not report an available remote authentication action",
     });
   }
-}
-
-interface AvailableModelSelection {
-  readonly catalog: Extract<HarnessInstanceCatalog, { readonly status: "ready" }>;
-  readonly model: HarnessModelDescriptor;
-}
-
-/**
- * A Thread's access mode is a promise about what its Runs may do without
- * asking, and only the engine can keep it. The driver's own declaration — the
- * same advertisement `harness.create` validates a source against — is the
- * authority; the Host carries no list of its own and never quietly substitutes
- * a mode the engine does support. Silence (an away work location, a driver that
- * cannot run) is not a declaration, so nothing is refused on it: that Thread is
- * already blocked from running by the checks that care about reachability.
- */
-function assertAccessModeEnforceable(
-  runners: RunnerRegistry,
-  environmentId: EnvironmentId,
-  driverKind: HarnessId,
-  accessMode: ThreadAccessMode,
-): void {
-  const advertised = runners.harnessAccessModes(environmentId, driverKind);
-  if (!advertised || advertised.includes(accessMode)) return;
-  throw new OpensteerError({
-    code: "bad_request",
-    message: `${harnessDriverLabel(driverKind)} cannot enforce the ${accessMode} access mode`,
-  });
-}
-
-/**
- * Proves a selection is one this account can actually run, and hands back the
- * catalog descriptor it matched — the only place that knows the native id the
- * account's endpoint answers to.
- */
-function assertModelSelectionAvailable(
-  catalog: HarnessInstanceCatalog | undefined,
-  selection: ModelSelection,
-): AvailableModelSelection {
-  if (!catalog) {
-    throw new OpensteerError({
-      code: "conflict",
-      message: "The selected AI engine has not reported its available models",
-      retryable: true,
-    });
-  }
-  if (catalog.status !== "ready") {
-    throw new OpensteerError({
-      code: "conflict",
-      message: catalog.detail,
-      retryable: isRetryableHarnessCatalogStatus(catalog.status),
-    });
-  }
-  const match = matchModelSelection(catalog.models, selection, "refuse");
-  if (match.kind === "model-unavailable") {
-    throw new OpensteerError({
-      code: "conflict",
-      message:
-        match.reason ?? "The selected model is not available in this AI engine on this Runner",
-    });
-  }
-  if (match.kind === "option-unavailable") {
-    throw new OpensteerError({ code: "conflict", message: modelOptionUnavailableMessage(match) });
-  }
-  return { catalog, model: match.model };
 }
 
 function serializeInvitation(invitation: WorkspaceInvitationRecord) {

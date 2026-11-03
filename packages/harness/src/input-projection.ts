@@ -184,6 +184,8 @@ export function harnessInputAuthorLabel(input: HarnessInput): string {
       return `the user ${headerText(author.displayName)}`;
     case "agent":
       return `agent ${headerText(author.displayName)} (Opensteer Thread ${author.threadId}; not the user)`;
+    case "connection":
+      return `connected agent ${headerText(author.displayName)} (connection ${author.connectionId}; not the user)`;
     case "trigger":
       return `Trigger ${headerText(author.displayName)} (occurrence ${author.occurrenceId}; not the user)`;
     case "watch":

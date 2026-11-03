@@ -578,6 +578,14 @@ function liveFrameBytes(frame: LiveFrame): number {
 }
 
 export class RealtimeHub {
+  readonly #observers = new Set<(change: AgentEvent | HostToClientMessage) => void>();
+  observe(listener: (change: AgentEvent | HostToClientMessage) => void): () => void {
+    this.#observers.add(listener);
+    return () => {
+      this.#observers.delete(listener);
+    };
+  }
+
   readonly bootstrapDiagnostics = new BootstrapNoticeDiagnostics();
   readonly #store: OpensteerStore;
   readonly #gapFillDelayMs: number;
@@ -841,6 +849,7 @@ export class RealtimeHub {
     message: HostToClientMessage,
     source: BootstrapNoticeSource = "unspecified",
   ): void {
+    for (const observer of this.#observers) observer(message);
     this.bootstrapDiagnostics.record(message.type, source);
     for (const userId of userIds) {
       for (const sink of this.#connections.get(userId) ?? []) {
@@ -858,6 +867,7 @@ export class RealtimeHub {
    * `sendToUsers` with the people entitled to it.
    */
   broadcast(message: HostToClientMessage, source: BootstrapNoticeSource = "unspecified"): void {
+    for (const observer of this.#observers) observer(message);
     this.bootstrapDiagnostics.record(message.type, source);
     for (const sinks of this.#connections.values()) {
       for (const sink of sinks) void sink.send(message).catch(() => undefined);
@@ -865,6 +875,7 @@ export class RealtimeHub {
   }
 
   publish(event: AgentEvent): void {
+    for (const observer of this.#observers) observer(event);
     for (const subscriber of this.#subscribers.get(event.workspaceId) ?? []) {
       subscriber.offer(event);
       if (changesReadState(event.type))
@@ -1017,6 +1028,7 @@ export class RealtimeHub {
   }
 
   #publishWorkspaceNotice(notice: WorkspaceNotice): void {
+    for (const observer of this.#observers) observer(notice);
     for (const subscriber of this.#subscribers.get(notice.workspaceId) ?? []) {
       subscriber.enqueueMessage(notice);
     }

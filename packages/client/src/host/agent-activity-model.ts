@@ -1818,6 +1818,7 @@ const tabActions: Record<BrowserTabWriteInput["action"], StepWords> = {
 };
 
 const taskActions: Record<ThreadWriteInput["action"], StepWords> = {
+  interrupt: ["Stopping a task", "Stopped a task"],
   done: ["Marking a task done", "Marked a task done"],
   rename: ["Renaming a task", "Renamed a task"],
   reopen: ["Reopening a task", "Reopened a task"],

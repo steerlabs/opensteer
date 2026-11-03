@@ -164,7 +164,7 @@ describe("Opensteer MCP spine", () => {
     const client = await connect(f.url, "run");
     try {
       const names = (await client.listTools(undefined, { timeout: 5000 })).tools.map((t) => t.name);
-      expect(names).toHaveLength(44);
+      expect(names).toHaveLength(46);
       expect(names).toContain("integration_call");
       expect(names).toContain("thread_delegate");
       expect(client.getServerVersion()?.name).toBe("opensteer");

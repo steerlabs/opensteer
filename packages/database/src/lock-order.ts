@@ -52,6 +52,7 @@ export const databaseLockOrder = [
   "advisory:lane",
   "advisory:command-idempotency",
   // Run admission and control precede Occurrences and browser execution state.
+  "agent_connections",
   "runs",
   "agent_control_requests",
   "trigger_control_requests",

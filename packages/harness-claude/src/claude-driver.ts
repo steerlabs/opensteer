@@ -3209,6 +3209,8 @@ function claudeMessageOrigin(input: HarnessInput, body: string): SDKMessageOrigi
       return { kind: "human" };
     case "agent":
       return { body, from: author.threadId, kind: "peer", name: author.displayName };
+    case "connection":
+      return { body, from: author.connectionId, kind: "peer", name: author.displayName };
     case "trigger":
       return author.source === "schedule"
         ? { kind: "task-notification", subkind: "scheduled-trigger" }

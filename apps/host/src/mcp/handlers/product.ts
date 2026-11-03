@@ -1,8 +1,20 @@
+import { ThreadService } from "../../threads/thread-service.js";
+import { ThreadWaitService } from "../../threads/thread-wait.js";
+import {
+  readThreadWaitSnapshot,
+  AgentOperationReceipts,
+  AgentConnectionStore,
+} from "@opensteer/database";
+import { withDatabaseTransaction } from "@opensteer/database";
+import { assertThreadCaller } from "@opensteer/database";
+import { thread_write as threadWriteSpec } from "@opensteer/agent-tools/tools";
+import type { RealtimeHub } from "@opensteer/orchestration";
 import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import { SpecialistStore } from "@opensteer/database";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import {
   isPlaceContentPart,
+  zeroSequence,
   OpensteerError,
   placeContentLabel,
   provisionalThreadTitle,
@@ -25,7 +37,10 @@ import type { PlaceContextService } from "../../computer-use/place-context-servi
 import type { ComputerUseService } from "../../computer-use/computer-use-service.js";
 
 import type { MachineFullDiskAccessService } from "../../shell/machine-full-disk-access-service.js";
-import { specialistPlacement } from "../../agents/specialist-placement.js";
+import {
+  specialistPlacement,
+  resolveDelegationSpecialist,
+} from "../../agents/specialist-placement.js";
 import { delegationPlacement } from "../../agents/delegation-placement.js";
 import { environmentDiscovery } from "../../agents/environment-discovery.js";
 
@@ -50,9 +65,12 @@ import {
   operationId,
   requireRun,
   runAdmission,
+  threadCallerAuthority,
 } from "../operations.js";
 
 export class ProductToolHandlers {
+  readonly #threads: ThreadService;
+  readonly #realtime: Pick<RealtimeHub, "observe">;
   readonly #computerUse:
     Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay"> | undefined;
   readonly #personShow:
@@ -87,6 +105,8 @@ export class ProductToolHandlers {
   readonly #workspaces: AgentWorkspaceCreator;
 
   constructor(options: {
+    readonly threads: ThreadService;
+    readonly realtime: Pick<RealtimeHub, "observe">;
     readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay">;
     readonly personShow?: (
       userId: AgentControlRunScope["requestedBy"],
@@ -120,6 +140,8 @@ export class ProductToolHandlers {
     readonly workspaceMounts: AgentWorkspaceMountService;
     readonly workspaces: AgentWorkspaceCreator;
   }) {
+    this.#threads = options.threads;
+    this.#realtime = options.realtime;
     this.#computerUse = options.computerUse;
     this.#personShow = options.personShow;
     this.#supportsLoginFill = options.supportsLoginFill ?? (() => false);
@@ -434,6 +456,48 @@ export class ProductToolHandlers {
   }
 
   async thread_write({ caller, input, operationKey }: ToolCall<"thread_write">) {
+    if (input.action === "interrupt") {
+      if (caller.kind === "connection" && !input.threadId)
+        throw badRequest("Connected agents must name threadId");
+      const threadId = input.threadId ?? callerThread(caller).id;
+      const target = await this.#threads.assertTarget(caller, threadId);
+      const active = await this.#store.database
+        .selectFrom("runs")
+        .select("id")
+        .where("threadId", "=", threadId)
+        .where("status", "in", ["queued", "starting", "running", "waiting"])
+        .orderBy("runOrdinal", "asc")
+        .limit(1)
+        .executeTakeFirst();
+      const result = threadWriteSpec.output.parse({
+        thread: await this.#writtenThreadSummary(target, caller.userId),
+        doneWhenRunEnds: false,
+        ...(active ? { interruptedRunId: active.id } : {}),
+      });
+      if (active)
+        await this.#threads.interrupt(
+          caller,
+          {
+            type: "run.interrupt",
+            threadId,
+            runId: active.id,
+            idempotencyKey: idempotencyKey(
+              caller,
+              operationId(caller, operationKey, "thread_write"),
+              "interrupt",
+            ),
+          },
+          (tx) =>
+            AgentOperationReceipts.completeInTransaction(tx, {
+              callerKey: caller.key,
+              operationKey,
+              tool: "thread_write",
+              fingerprint: fingerprint(input),
+              result,
+            }),
+        );
+      return result;
+    }
     const claims = requireRun(caller).claims;
     const requestId = operationId(caller, operationKey, "thread_write");
 
@@ -548,43 +612,13 @@ export class ProductToolHandlers {
     if (caller.reach.kind !== "user" && workspace.id !== currentThread.workspaceId) {
       throw forbidden("Caller can delegate only inside its Workspace");
     }
-    const registrations =
-      input.specialist || existingThread?.specialistId
-        ? await new SpecialistStore(this.#store.database).list(workspace.id, claims.requestedBy)
-        : [];
-    const specialist = existingThread?.specialistId
-      ? registrations.find((r) => r.id === existingThread.specialistId)
-      : (registrations.find((r) => r.id === input.specialist) ??
-        registrations.find(
-          (r) => r.plugin === input.specialist && r.ownerUserId === claims.requestedBy,
-        ) ??
-        registrations.find((r) => r.plugin === input.specialist));
-    if ((input.specialist || existingThread?.specialistId) && !specialist)
-      throw badRequest("Specialist is not registered in this Workspace");
-    if (
-      existingThread &&
-      input.specialist &&
-      input.specialist !== specialist?.id &&
-      input.specialist !== specialist?.plugin
-    )
-      throw badRequest("An existing Thread keeps its specialist binding");
-    if (specialist && specialist.ownerUserId !== claims.requestedBy)
-      throw forbidden(
-        `${specialist.plugin} uses ${specialist.ownerName ?? specialist.ownerUserId}'s accounts; add it for yourself to use your own`,
-      );
-    if (specialist?.status === "pending")
-      throw badRequest(
-        `Specialist is pending: ${specialist.access
-          .filter((a) => a.state !== "bound")
-          .map((a) => `${a.type}: ${a.state} (${a.reason})`)
-          .join("; ")}`,
-      );
-    if (specialist)
-      await new SpecialistStore(this.#store.database).assertRunnable(
-        specialist.id,
-        workspace.id,
-        claims.requestedBy,
-      );
+    const specialist = await resolveDelegationSpecialist(
+      this.#store,
+      claims.requestedBy,
+      workspace.id,
+      input.specialist,
+      existingThread,
+    );
     if (specialist && (input.model || input.harnessInstanceId || input.environmentId))
       throw badRequest("Specialist execution is selected by its registration");
     const chosenEnvironmentId = input.environmentId;
@@ -630,7 +664,55 @@ export class ProductToolHandlers {
 
     return { existingThread, workspace, specialist, environment, placement, chosenEnvironmentId };
   }
+  async authorizeDelegation(call: ToolCall<"thread_delegate">) {
+    if (call.caller.kind === "connection")
+      await this.#prepareConnectionDelegation(call.caller, call.input);
+    else await this.prepareDelegation(call);
+  }
   async thread_delegate({ caller, input, operationKey }: ToolCall<"thread_delegate">) {
+    if (caller.kind === "connection") {
+      const { existing, workspace, environmentId, harnessInstanceId, modelSelection, specialist } =
+        await this.#prepareConnectionDelegation(caller, input);
+      const requestId = operationId(caller, operationKey, "thread_delegate");
+      const created =
+        existing ??
+        (
+          await this.#threads.create(
+            caller,
+            {
+              type: "thread.create",
+              workspaceId: workspace.id,
+              environmentId,
+              harnessInstanceId,
+              modelSelection,
+              accessMode: caller.accessMode,
+              title: input.title ?? provisionalThreadTitle(input.task),
+              ...(!input.title ? { generateTitle: true } : {}),
+              idempotencyKey: idempotencyKey(caller, requestId, "create"),
+            },
+            {
+              ...(specialist ? { specialistId: specialist.id } : {}),
+              ...(input.icon ? { icon: input.icon } : {}),
+            },
+          )
+        ).thread;
+      const delivered = await this.#threads.sendInput(caller, {
+        threadId: created.id,
+        requestedBy: caller.userId,
+        content: [{ type: "text", text: input.task }],
+        policy: "queue",
+        requireUnassigned: true,
+        source: messageSource(caller, requestId),
+        idempotencyKey: idempotencyKey(caller, requestId, "message"),
+      });
+      return {
+        assignmentId: null,
+        thread: created,
+        input: delivered.input,
+        message: delivered.message,
+        run: delivered.run,
+      };
+    }
     const currentThread = callerThread(caller);
     const claims = callerContext(caller);
     if (input.places)
@@ -931,7 +1013,7 @@ export class ProductToolHandlers {
   }
 
   async thread_message({ caller, input, operationKey }: ToolCall<"thread_message">) {
-    const anchor = callerThread(caller);
+    const anchor = caller.kind === "connection" ? null : callerThread(caller);
     const requestId = operationId(
       caller,
       mutationOperationKey(caller, input, operationKey),
@@ -943,7 +1025,7 @@ export class ProductToolHandlers {
         ? (await this.#store.findMainWorkspaceForOwner(caller.userId))?.homeThreadId
         : ThreadIdSchema.parse(input.threadId);
     if (!destination) throw badRequest("Chat has not been started yet");
-    if (destination === anchor.id && caller.kind === "run")
+    if (destination === anchor?.id && caller.kind === "run")
       throw badRequest("An agent cannot message its own active Thread");
     const thread = await this.#store.getThreadForOwner(destination, caller.userId);
     if (!thread) throw forbidden("Thread is unavailable to this user");
@@ -954,9 +1036,9 @@ export class ProductToolHandlers {
         thread.workspaceId,
         caller.userId,
       );
-    const delivered = await this.#commands.enqueueAdmittedThreadInput({
-      admission: mutationAdmission(caller, "thread_message", input, requestId, [thread.id]),
-      input: {
+    const delivered = await this.#threads.sendInput(
+      caller,
+      {
         content: [{ type: "text", text: input.message }],
         idempotencyKey: idempotencyKey(caller, requestId, "message"),
         policy: input.delivery,
@@ -964,7 +1046,10 @@ export class ProductToolHandlers {
         source: messageSource(caller, observationId),
         threadId: thread.id,
       },
-    });
+      caller.kind === "connection"
+        ? undefined
+        : mutationAdmission(caller, "thread_message", input, requestId, [thread.id]),
+    );
     return {
       assignmentId: delivered.input.assignmentId,
       disposition: delivered.disposition,
@@ -973,6 +1058,248 @@ export class ProductToolHandlers {
       run: delivered.run,
       thread,
     };
+  }
+  async #prepareConnectionDelegation(
+    caller: Extract<AgentCaller, { kind: "connection" }>,
+    input: ToolCall<"thread_delegate">["input"],
+  ) {
+    if (!input.workspaceId && !input.threadId)
+      throw badRequest("A connected agent must name workspaceId or threadId");
+    if (input.places?.length) throw badRequest("Connected agents cannot forward place references");
+    const existing = input.threadId
+      ? await this.#threads.assertTarget(caller, input.threadId)
+      : null;
+    if (existing && existing.role !== "work") throw badRequest("Choose a work Thread");
+    const workspaceId = existing?.workspaceId ?? input.workspaceId!;
+    if (
+      caller.reach.kind !== "user" &&
+      (caller.reach.kind !== "workspace" || caller.reach.workspaceId !== workspaceId)
+    )
+      throw forbidden("Target Thread is outside the caller's reach");
+    const workspace = await this.#store.getWorkspaceForOwner(workspaceId, caller.userId);
+    if (!workspace) throw forbidden("Target Workspace is unavailable to this user");
+    const specialist = await resolveDelegationSpecialist(
+      this.#store,
+      caller.userId,
+      workspace.id,
+      input.specialist,
+      existing,
+    );
+    if (specialist && (input.model || input.harnessInstanceId || input.environmentId))
+      throw badRequest("Specialist execution is selected by its registration");
+    if (existing) {
+      const assignment = await this.#store.database
+        .selectFrom("delegations")
+        .select("id")
+        .where("childThreadId", "=", existing.id)
+        .where("status", "=", "open")
+        .executeTakeFirst();
+      if (assignment) throw conflict("Thread already has an open Assignment");
+    }
+    const preferences = await this.#store.getExecutionPreferences(caller.userId);
+    const environmentId =
+      existing?.environmentId ??
+      input.environmentId ??
+      (workspace.backing.kind === "local-directory"
+        ? workspace.backing.ownerEnvironmentId
+        : preferences.history[0]?.environmentId);
+    if (!environmentId) throw badRequest("Choose an execution environment");
+    if (specialist && !existing) {
+      const environment = await this.#store.getEnvironment(environmentId);
+      if (!environment) throw badRequest("Selected execution environment does not exist");
+      const placement = await specialistPlacement(this.#store, {
+        environment,
+        specialist,
+        canRun: (engine) => this.#canRunHarness(environmentId, engine),
+      });
+      return { existing, workspace, environmentId, ...placement, specialist };
+    }
+    const preferred = preferences.history.find((entry) => entry.environmentId === environmentId);
+    const harnessInstanceId =
+      existing?.harnessInstanceId ??
+      input.harnessInstanceId ??
+      preferred?.harnessInstanceId ??
+      (await this.#store.listHarnessInstances({ environmentIds: [environmentId] })).find(
+        (h) => h.enabled && h.isDefault,
+      )?.id;
+    if (!harnessInstanceId) throw badRequest("Choose harnessInstanceId for the new task");
+    const catalog = await this.#store.getHarnessCatalog(environmentId, harnessInstanceId);
+    const defaultModel =
+      catalog?.status === "ready" ? catalog.models.find((model) => model.isDefault) : undefined;
+    const modelSelection =
+      existing?.modelSelection ??
+      input.model ??
+      (preferred?.harnessInstanceId === harnessInstanceId ? preferred.modelSelection : undefined) ??
+      (defaultModel
+        ? { modelId: defaultModel.modelId, providerId: defaultModel.providerId, options: {} }
+        : undefined);
+    if (!modelSelection) throw badRequest("Choose a model for the new task");
+    return { existing, workspace, environmentId, harnessInstanceId, modelSelection, specialist };
+  }
+  async thread_configure({ caller, input, operationKey }: ToolCall<"thread_configure">) {
+    const target = await this.#threads.assertTarget(caller, input.threadId);
+    const thread =
+      input.action === "read"
+        ? target
+        : (
+            await this.#threads.configure(caller, {
+              type: "thread.execution.update",
+              threadId: target.id,
+              harnessInstanceId: input.harnessInstanceId ?? target.harnessInstanceId,
+              modelSelection: input.modelSelection ?? target.modelSelection,
+              ...(input.continuation ? { continuation: input.continuation } : {}),
+              idempotencyKey: idempotencyKey(
+                caller,
+                operationId(caller, operationKey, "thread_configure"),
+                "configure",
+              ),
+            })
+          ).thread;
+    return {
+      threadId: thread.id,
+      environmentId: thread.environmentId,
+      harnessInstanceId: thread.harnessInstanceId,
+      modelSelection: thread.modelSelection,
+    };
+  }
+  async thread_queue({ caller, input, operationKey }: ToolCall<"thread_queue">) {
+    await this.#threads.assertTarget(caller, input.threadId);
+    const command = {
+      threadId: input.threadId,
+      idempotencyKey: idempotencyKey(
+        caller,
+        operationId(caller, operationKey, "thread_queue"),
+        "queue",
+      ),
+    };
+    let changed;
+    switch (input.action) {
+      case "cancel":
+        changed = await this.#threads.cancel(caller, {
+          ...command,
+          type: "thread.input.cancel",
+          messageId: input.messageId!,
+        });
+        break;
+      case "move":
+        await this.#threads.move(caller, {
+          ...command,
+          type: "thread.input.move",
+          messageId: input.messageId!,
+          beforeMessageId: input.beforeMessageId!,
+        });
+        break;
+      case "steer":
+        changed = await this.#threads.steer(caller, {
+          ...command,
+          type: "thread.input.steer",
+          messageId: input.messageId!,
+          expectedRunId: input.expectedRunId!,
+        });
+        break;
+      case "resume":
+        await this.#threads.resume(caller, { ...command, type: "thread.inputQueue.resume" });
+        break;
+      case "list":
+        break;
+    }
+    const queue = await this.#store.getThreadInputQueue({
+      threadId: input.threadId,
+      requestedBy: caller.userId,
+      authority: threadCallerAuthority(caller),
+    });
+    const messages = await this.#readableMessages(
+      caller,
+      queue.items.map(({ message }) => message),
+    );
+    return {
+      paused: queue.paused,
+      items: queue.items.map((item, index) => {
+        const message = messages[index]!;
+        const text = message.content
+          .map((part) => (part.type === "text" ? part.text : `[${part.type}]`))
+          .join("\n");
+        return {
+          ...item,
+          message: {
+            id: message.id,
+            author: message.author,
+            preview: text.slice(0, 500),
+            truncated: text.length > 500,
+          },
+        };
+      }),
+      ...(changed ? { input: changed.input } : {}),
+    };
+  }
+  async thread_wait(call: ToolCall<"thread_wait">) {
+    const { caller, input } = call;
+    const revoked = new AbortController();
+    let runId: import("@opensteer/core").RunId | undefined;
+    let afterSequence: import("@opensteer/core").Sequence | undefined;
+    const wait = new ThreadWaitService({
+      subscribe: (wake) => {
+        const anchorId = caller.kind === "connection" ? undefined : callerThread(caller).id;
+        const detach = this.#realtime.observe((change) => {
+          if (
+            ("threadId" in change &&
+              (change.threadId === input.threadId || change.threadId === anchorId)) ||
+            change.type === "host.machines.changed" ||
+            (caller.kind === "program" && change.type === "host.triggers-changed")
+          )
+            wake();
+        });
+        const detachMembership = this.#store.onWorkspaceMembershipChanged((membership) => {
+          if (membership.userId === caller.userId) wake();
+        });
+        const detachConnection = new AgentConnectionStore(this.#store.database).onRevoked((id) => {
+          if (caller.kind === "connection" && id === caller.connectionId)
+            revoked.abort(forbidden("The connected agent credential is invalid or expired."));
+        });
+        return () => {
+          detach();
+          detachMembership();
+          detachConnection();
+        };
+      },
+      read: async () => {
+        await call.checkLive?.();
+        const thread = await this.#store.getThreadForOwner(input.threadId, caller.userId);
+        if (!thread) throw forbidden("Thread is unavailable");
+        assertTarget(caller, thread);
+        await withDatabaseTransaction(this.#store.database, (tx) =>
+          assertThreadCaller(tx, threadCallerAuthority(caller)),
+        );
+        const snapshot = await readThreadWaitSnapshot(this.#store.database, {
+          threadId: thread.id,
+          userId: caller.userId,
+          ...(runId ? { runId } : {}),
+          ...(input.afterMessageId ? { afterMessageId: input.afterMessageId } : {}),
+          ...(afterSequence ? { afterSequence } : {}),
+        });
+        runId ??= snapshot.run?.id;
+        afterSequence ??= snapshot.lastSequence ?? zeroSequence;
+        const connection =
+          caller.kind === "connection"
+            ? await this.#store.database
+                .selectFrom("agentConnections")
+                .select("expiresAt")
+                .where("id", "=", caller.connectionId)
+                .executeTakeFirst()
+            : undefined;
+        await call.checkLive?.();
+        return {
+          ...snapshot,
+          ...(connection ? { authorityExpiresAt: connection.expiresAt.getTime() } : {}),
+          connected: this.#isEnvironmentConnected(thread.environmentId),
+          messages: await this.#readableMessages(caller, snapshot.messages),
+        };
+      },
+    });
+    return wait.wait({
+      timeoutMs: input.timeoutMs,
+      signal: call.signal ? AbortSignal.any([call.signal, revoked.signal]) : revoked.signal,
+    });
   }
   async #writtenThreadSummary(thread: Thread, requestedBy: AgentControlRunScope["requestedBy"]) {
     const workspace = await this.#store.getWorkspaceForOwner(thread.workspaceId, requestedBy);

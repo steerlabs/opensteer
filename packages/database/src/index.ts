@@ -38,3 +38,7 @@ export { requestSettlementActor } from "./request-settlement.js";
 
 export * from "./agent-connection-store.js";
 export { AgentOperationReceipts } from "./agent-control-admission-receipts.js";
+
+export * from "./thread-caller.js";
+
+export { readThreadWaitSnapshot } from "./thread-wait.js";
