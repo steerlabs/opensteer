@@ -154,6 +154,7 @@ const releasedMigrationNames = [
   "0144_project_chats",
   "0145_specialist_lifecycle",
   "0146_consent_scope",
+  "0147_agent_connections",
 ];
 
 describe("migration names", () => {

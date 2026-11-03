@@ -2007,7 +2007,23 @@ export interface AppVersionTable {
   createdAt: Timestamp;
 }
 
+export interface AgentConnectionTable {
+  id: string;
+  userId: UserId;
+  label: string;
+  clientName: string;
+  accessMode: ThreadAccessMode;
+  workspaceId: WorkspaceId | null;
+  resource: string;
+  tokenHash: string | null;
+  createdAt: Timestamp;
+  lastUsedAt: NullableTimestamp;
+  expiresAt: Timestamp;
+  revokedAt: NullableTimestamp;
+}
+
 export interface DatabaseSchema {
+  agentConnections: AgentConnectionTable;
   apps: AppTable;
   appVersions: AppVersionTable;
   attachments: AttachmentTable;

@@ -1,4 +1,8 @@
 import {
+  AgentConnectionAuthorizationTargetSchema,
+  type AgentConnectionAuthorizationTarget,
+} from "@opensteer/protocol";
+import {
   IssuePersonalHostAccountLinkChallengeRequestSchema,
   IssuePersonalHostAccountLinkChallengeResponseSchema,
   CompletePersonalHostAccountLinkRequestSchema,
@@ -283,6 +287,15 @@ const browserPresentation: DesktopBrowserPresentationBridge =
     },
   });
 
+let pendingMcpAuthorization: AgentConnectionAuthorizationTarget | null = null;
+const mcpAuthorizationListeners = new Set<(target: AgentConnectionAuthorizationTarget) => void>();
+ipcRenderer.on(desktopBridgeChannels.mcpAuthorization, (_event, value: unknown) => {
+  const target = AgentConnectionAuthorizationTargetSchema.safeParse(value);
+  if (!target.success) return;
+  pendingMcpAuthorization = target.data;
+  for (const listener of mcpAuthorizationListeners) listener(target.data);
+});
+
 const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
   writeViewerClipboard: (items: Parameters<ViewerClipboardBridge["writeViewerClipboard"]>[0]) =>
     invoke<void>(desktopBridgeChannels.writeViewerClipboard, items),
@@ -295,6 +308,23 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       DesktopWebLinkDeliverySchema.parse(input),
     );
     return result === null ? null : DesktopWebLinkSchema.parse(result);
+  },
+  dismissMcpAuthorization: async (requestId: string) => {
+    await invoke<void>(
+      desktopBridgeChannels.dismissMcpAuthorization,
+      z
+        .string()
+        .regex(/^[A-Za-z0-9_-]{43}$/)
+        .parse(requestId),
+    );
+    if (pendingMcpAuthorization?.requestId === requestId) pendingMcpAuthorization = null;
+  },
+  onMcpAuthorization: (listener: (target: AgentConnectionAuthorizationTarget) => void) => {
+    mcpAuthorizationListeners.add(listener);
+    if (pendingMcpAuthorization) listener(pendingMcpAuthorization);
+    return () => {
+      mcpAuthorizationListeners.delete(listener);
+    };
   },
   onWorkspaceTabCommand: (listener: (command: DesktopWorkspaceTabCommand) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) =>

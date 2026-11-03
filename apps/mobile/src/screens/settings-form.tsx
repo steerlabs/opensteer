@@ -1,3 +1,4 @@
+import { connectionAccessLabel, connectionReachLabel } from "@opensteer/client/host";
 import type { ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { color, radius, space, touchTarget } from "../theme.js";
@@ -284,6 +285,50 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
+        {props.connectedAgents ? (
+          <Section label="Connected agents">
+            <RowGroup>
+              {props.connectedAgents.connections?.map((connection) => (
+                <View key={connection.id} style={styles.text}>
+                  <AppText role="body">{connection.label}</AppText>
+                  <AppText role="secondary" tone="muted">
+                    {connection.clientName} · {connectionAccessLabel(connection.accessMode)} ·{" "}
+                    {connectionReachLabel(connection, props.connectedAgents?.workspaces ?? [])}
+                  </AppText>
+                  <AppText role="secondary" tone="muted">
+                    {connection.lastUsedAt
+                      ? `Last used ${new Date(connection.lastUsedAt).toLocaleDateString()}`
+                      : "Never used"}{" "}
+                    · Expires {new Date(connection.expiresAt).toLocaleDateString()}
+                  </AppText>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Revoke ${connection.label}`}
+                    disabled={props.connectedAgents?.pending !== null}
+                    onPress={() => props.connectedAgents?.onRevoke(connection.id)}
+                  >
+                    <AppText role="body">
+                      {props.connectedAgents?.pending === connection.id
+                        ? "Revoking…"
+                        : `Revoke ${connection.label}`}
+                    </AppText>
+                  </Pressable>
+                </View>
+              )) ?? []}
+            </RowGroup>
+            <AppText role="secondary" tone="muted">
+              {props.connectedAgents.connections === null
+                ? "Loading connected agents…"
+                : props.connectedAgents.connections.length === 0
+                  ? "No connected agents."
+                  : "Revoking stops the agent’s next request, including in an open session."}
+            </AppText>
+            <ErrorText detail={props.connectedAgents.error} />
+            <Pressable accessibilityRole="button" onPress={props.connectedAgents.onRefresh}>
+              <AppText role="body">Refresh connected agents</AppText>
+            </Pressable>
+          </Section>
+        ) : null}
         <Section label="About">
           <RowGroup>
             {[

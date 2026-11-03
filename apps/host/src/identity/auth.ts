@@ -94,6 +94,7 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
     // answered by whatever the user agent attached to the request.
     const authorization = parseAuthorization(headers.authorization);
     if (authorization?.scheme === "Bearer") {
+      if (authorization.credential.startsWith("ost_mcp_")) throw invalidAuthorization();
       const claims = await this.#identity.authenticateNativeAccessToken(authorization.credential);
       const user = await this.#identity.userSessionProfile(claims.subject);
       return {

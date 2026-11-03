@@ -1,3 +1,9 @@
+import {
+  registerConnectionRoutes,
+  createConnectionRpcHandlers,
+  handleConnectionCommand,
+  type ConnectionOAuth,
+} from "./mcp/connections/index.js";
 import { afterResponse } from "./server/after-response.js";
 import type { AppService } from "./apps/app-service.js";
 import { createAppHandlers, registerAppRoutes } from "./apps/app-routes.js";
@@ -354,6 +360,7 @@ const WorkspaceFileContentQuerySchema = z.strictObject({ file: WorkspaceFileKeyS
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  readonly connections?: ConnectionOAuth;
   readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
   readonly passkeys?: boolean;
   readonly fetch?: typeof globalThis.fetch;
@@ -498,6 +505,15 @@ export async function createHostServer(
       : {}),
     workspaceSharingAvailable,
   });
+  if (dependencies.connections)
+    registerConnectionRoutes(app, {
+      oauth: dependencies.connections,
+      canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
+      personal: dependencies.discovery.document.deploymentShape.kind === "personal",
+      remoteOrigin: async () =>
+        (await dependencies.personalRemoteAccess?.service.status())?.route?.document.route.origin ??
+        null,
+    });
   registerSessionExchangeRoute(app, {
     personalRemoteAccess: dependencies.personalRemoteAccess?.service,
   });
@@ -1596,6 +1612,14 @@ export async function createHostServer(
   >;
 
   const executeCoreCommand = async (command: CoreCommand, context: HostApiServerContext) => {
+    if (command.type === "connection.authorize" || command.type === "connection.revoke") {
+      if (!dependencies.connections)
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Agent connections are unavailable.",
+        });
+      return handleConnectionCommand(dependencies.connections, command, context);
+    }
     const session = requireRpcSession(context);
     const userId = session.user.id;
     switch (command.type) {
@@ -2943,6 +2967,22 @@ export async function createHostServer(
       handleCoreCommand,
       dependencies.computerViews,
     ),
+    ...(dependencies.connections
+      ? createConnectionRpcHandlers(dependencies.connections)
+      : {
+          "connections.list": async () => {
+            throw new OpensteerError({
+              code: "not_found",
+              message: "Agent connections are unavailable.",
+            });
+          },
+          "connections.authorization.get": async () => {
+            throw new OpensteerError({
+              code: "not_found",
+              message: "Agent connections are unavailable.",
+            });
+          },
+        }),
     "personal.remoteAccess.get": async (_input, context) => {
       const service = dependencies.personalRemoteAccess?.service;
       if (!service)

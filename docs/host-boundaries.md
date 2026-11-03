@@ -82,6 +82,27 @@ First-party native client identities come from
 registrations converge on that registry. Add a signed build there and match its
 release identity; do not create per-Deployment client allowlists.
 
+External agents use a separate MCP OAuth issuer, under `/oauth/mcp`, rather than
+Host-native OAuth. This audience is available on Personal loopback without an
+Account; native OAuth remains server-only. Discovery is pinned to the configured
+Host origin or its current signed Personal access route, preserving the route's
+exact issuer and MCP resource through registration, consent and code exchange.
+Route headers select that origin and never prove who is approving.
+
+Only a signed-in owner can approve a connection in the web client. A Personal
+browser without a session hands a request ID and Deployment ID to the signed-in
+desktop client; the link grants no authority. Completion returns through the
+original route to the registered callback after approval, without copying a Host
+session into the browser. PKCE binds the code to the requesting agent. Consent selects
+an access ceiling and either everything the person can access or one Workspace
+they own. MCP credentials are opaque, hashed in a separate durable record, and
+cannot become Host sessions or authenticate Runners, Runs or programs. The live
+connection authenticator rechecks expiry and revocation on every call; transport
+sessions do not retain connection authority. Workspace consent loses authority when ownership ends.
+Revoking a login does not revoke independently approved connections: remove those
+in Settings → Devices → Connected agents (Connected agents on mobile). Connections
+expire after 30 days and require new consent; no refresh grant can extend them.
+
 ## API boundaries
 
 Use [hostApi](../packages/protocol/src/host-api.ts) and

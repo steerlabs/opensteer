@@ -1,3 +1,4 @@
+import { connectionAccessLabel, connectionReachLabel } from "@opensteer/client/host";
 import {
   Button,
   Form,
@@ -61,6 +62,51 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
   return (
     <Host colorScheme="dark" seedColor={color.ember} style={styles.host} useViewportSizeMeasurement>
       <Form modifiers={[listStyle("insetGrouped")]}>
+        {props.connectedAgents ? (
+          <Section
+            title="Connected agents"
+            footer={
+              <Footer text="Revoking stops the agent’s next request, including in an open session." />
+            }
+          >
+            {props.connectedAgents.connections?.map((connection) => (
+              <VStack key={connection.id} alignment="leading" spacing={4}>
+                <Text>{connection.label}</Text>
+                <Text modifiers={[secondary, footnote]}>
+                  {connection.clientName} · {connectionAccessLabel(connection.accessMode)} ·{" "}
+                  {connectionReachLabel(connection, props.connectedAgents?.workspaces ?? [])}
+                </Text>
+                <Text modifiers={[secondary, footnote]}>
+                  {connection.lastUsedAt
+                    ? `Last used ${new Date(connection.lastUsedAt).toLocaleDateString()}`
+                    : "Never used"}{" "}
+                  · Expires {new Date(connection.expiresAt).toLocaleDateString()}
+                </Text>
+                <Button
+                  modifiers={[disabled(props.connectedAgents?.pending !== null)]}
+                  onPress={() => props.connectedAgents?.onRevoke(connection.id)}
+                >
+                  <Text>
+                    {props.connectedAgents?.pending === connection.id
+                      ? "Revoking…"
+                      : `Revoke ${connection.label}`}
+                  </Text>
+                </Button>
+              </VStack>
+            ))}
+            {props.connectedAgents.connections === null ? (
+              <Text>Loading connected agents…</Text>
+            ) : props.connectedAgents.connections.length === 0 ? (
+              <Text>No connected agents.</Text>
+            ) : null}
+            {props.connectedAgents.error ? (
+              <Text modifiers={[error]}>{props.connectedAgents.error}</Text>
+            ) : null}
+            <Button onPress={props.connectedAgents.onRefresh}>
+              <Text>Refresh connected agents</Text>
+            </Button>
+          </Section>
+        ) : null}
         <Section title="Deployment">
           <Button
             modifiers={[
