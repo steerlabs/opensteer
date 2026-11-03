@@ -1,5 +1,4 @@
 import { conversationUnreadPredicate } from "./message-visibility.js";
-import { quietRunPredicate } from "./run-visibility.js";
 import {
   ContentPartSchema,
   harnessDriverLabel,
@@ -4678,11 +4677,12 @@ export function migrationProvider() {
         "0126_run_visibility": runVisibilityMigration,
         "0127_person_show": personShowMigration,
         "0128_person_message": personMessageMigration,
-        "0129_request_settlement_provenance": requestSettlementProvenanceMigration,
-        "0130_owner_session_computer_approvals": ownerSessionComputerApprovalsMigration,
-        "0131_remote_administration": remoteAdministrationMigration,
-        "0132_personal_account_link_sealing": personalAccountLinkSealingMigration,
-        "0133_personal_account_operation": personalAccountOperationMigration,
+        "0129_apps": appsMigration,
+        "0130_request_settlement_provenance": requestSettlementProvenanceMigration,
+        "0131_owner_session_computer_approvals": ownerSessionComputerApprovalsMigration,
+        "0132_remote_administration": remoteAdministrationMigration,
+        "0133_personal_account_link_sealing": personalAccountLinkSealingMigration,
+        "0134_personal_account_operation": personalAccountOperationMigration,
       };
     },
   };
@@ -6590,7 +6590,16 @@ export const runVisibilityMigration: Migration = {
             'run.completed', 'run.failed', 'run.interrupted')
           and event.data @> '{"personWaiting":true}'::jsonb and event.run_id is not null
       ) update runs set person_waited = true from waited where waited.id = runs.id;
-      update runs set quiet = ${quietRunPredicate}
+      -- This historical backfill precedes app_versions; finalization uses the current predicate.
+      update runs set quiet = (
+        exists (select 1 from messages seed where seed.id = runs.seed_input_id
+          and seed.author->>'kind' <> 'human')
+        and not runs.person_waited
+        and not exists (select 1 from messages reply where reply.run_id = runs.id
+          and reply.kind in ('assistant', 'run-result'))
+        and not exists (select 1 from delegations child where child.parent_run_id = runs.id)
+        and not exists (select 1 from requests request where request.originating_run_id = runs.id)
+      )
         where status in ('completed', 'failed', 'interrupted');
     `.execute(database);
   },
@@ -6698,5 +6707,35 @@ const personMessageMigration: Migration = {
         )
         .execute(database);
     }
+  },
+};
+
+const appsMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table apps (
+        id text primary key check (id ~ '^app_[0-9a-f-]{36}$'),
+        workspace_id text not null references workspaces(id) on delete cascade,
+        thread_id text not null references threads(id) on delete cascade,
+        run_id text not null references runs(id) on delete cascade,
+        title text not null check (length(title) between 1 and 160),
+        latest_version integer not null check (latest_version > 0),
+        created_at timestamptz not null, updated_at timestamptz not null
+      );
+      create index apps_workspace on apps(workspace_id);
+      create table app_versions (
+        app_id text not null references apps(id) on delete cascade,
+        version integer not null check (version > 0),
+        sha256 text check (sha256 ~ '^[0-9a-f]{64}$'),
+        size_bytes integer check (size_bytes between 1 and 5242880),
+        server jsonb,
+        check ((server is null and sha256 is not null and size_bytes is not null)
+          or (server is not null and sha256 is null and size_bytes is null)),
+        created_by_run text references runs(id) on delete set null,
+        publish_key text not null,
+        created_at timestamptz not null,
+        primary key (app_id, version), unique (created_by_run, publish_key)
+      );
+    `.execute(database);
   },
 };

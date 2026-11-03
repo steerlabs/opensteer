@@ -55,6 +55,30 @@ function fold(events: readonly AgentEvent[], initial: TranscriptEntry[] = []): T
   return events.reduce(foldTranscriptEvent, initial);
 }
 
+it("keeps one app card at its latest publication, including across history pages", () => {
+  const appId = "app_11111111-1111-4111-8111-111111111111";
+  const publish = (version: number) =>
+    event("app.published", { appId, version, title: `Budget ${version}` });
+  const first = publish(1);
+  const between = event("place.entered", {
+    place: {
+      kind: "browser",
+      sessionId: BrowserSessionIdSchema.parse("bsn_11111111-1111-4111-8111-111111111111"),
+      surfaceId: BrowserSurfaceIdSchema.parse("tab-between"),
+    },
+    title: "Between",
+    site: "https://example.com",
+  });
+  const second = publish(2);
+  const third = publish(3);
+  const entries = fold([first, between, second, third]);
+  expect(entries.map((entry) => entry.kind)).toEqual(["place", "app"]);
+  expect(entries[1]).toMatchObject({ id: `app:${appId}`, appId, version: 3, title: "Budget 3" });
+  expect(mergeTranscriptSegments(fold([first, between]), fold([second, third]))).toEqual(entries);
+  expect(foldTranscriptEvent(entries, first)).toEqual(entries);
+  expect(foldTranscriptEvent(entries, third)).toEqual(entries);
+});
+
 type LiveText =
   | { readonly stream: "assistant"; readonly text: string }
   | { readonly blockId: string; readonly stream: "reasoning"; readonly text: string }

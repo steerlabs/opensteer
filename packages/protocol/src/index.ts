@@ -37,3 +37,5 @@ export * from "./mac-window-video.js";
 
 export * from "./iphone-apps.js";
 export * from "./voice.js";
+
+export * from "./apps.js";

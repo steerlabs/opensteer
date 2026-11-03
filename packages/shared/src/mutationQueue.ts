@@ -26,3 +26,19 @@ export class MutationQueue {
     return result;
   }
 }
+
+/** Independent keys serialize only their own operations, and leave no idle entries. */
+export class KeyedMutationQueue {
+  readonly #entries = new Map<string, { queue: MutationQueue; users: number }>();
+  run<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const entry = this.#entries.get(key) ?? { queue: new MutationQueue(), users: 0 };
+    this.#entries.set(key, entry);
+    entry.users++;
+    return entry.queue.run(operation).finally(() => {
+      if (--entry.users === 0) this.#entries.delete(key);
+    });
+  }
+  keys(): readonly string[] {
+    return [...this.#entries.keys()];
+  }
+}

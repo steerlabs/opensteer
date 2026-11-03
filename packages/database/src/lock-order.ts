@@ -133,6 +133,8 @@ export const databaseLockOrder = [
   "harness_catalogs",
   "causal_chains",
   "attachments",
+  "apps",
+  "app_versions",
   "channel_deliveries",
   "channel_link_codes",
   // Computer approvals and integration Grants precede Request settlement.

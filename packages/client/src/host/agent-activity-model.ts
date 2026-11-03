@@ -10,6 +10,7 @@ import type { TriggerWriteInput } from "@opensteer/triggers";
 import { readComputerUseResultHeadline, readComputerStepHeadline } from "@opensteer/protocol";
 import { isRecord } from "@opensteer/shared/isRecord";
 import type {
+  AppEntry,
   AssignmentEntry,
   DelegationEntry,
   MessageEntry,
@@ -83,6 +84,7 @@ export type ActivityFeedEntry = Exclude<
   TranscriptEntry,
   {
     kind:
+      | "app"
       | "assignment"
       | "assignment-return"
       | "delivery"
@@ -139,6 +141,7 @@ export interface Turn {
 }
 
 export type TranscriptGroup =
+  | { readonly key: string; readonly kind: "app"; readonly entry: AppEntry }
   | { readonly key: string; readonly kind: "assignment"; readonly entry: AssignmentEntry }
   | { readonly key: string; readonly kind: "delegation"; readonly entry: DelegationEntry }
   | {
@@ -191,6 +194,11 @@ export function groupTranscriptEntries(
   for (const entry of entries) {
     // The composer shows the current AI choice; its retained history is state, not conversation.
     if (entry.kind === "selection") continue;
+    if (entry.kind === "app") {
+      open = null;
+      slots.push({ kind: "group", group: { kind: "app", entry, key: entry.id } });
+      continue;
+    }
     if (entry.kind === "delegation") {
       // Another Thread's result arriving is news, not this Run's work: it can
       // land long after the Run that asked for it has replied.
@@ -356,7 +364,10 @@ function turnFrom(
   );
   const all = entries.filter(
     (entry): entry is WorkEntry =>
-      entry.kind !== "run" && entry.kind !== "delegation" && entry.kind !== "assignment",
+      entry.kind !== "app" &&
+      entry.kind !== "run" &&
+      entry.kind !== "delegation" &&
+      entry.kind !== "assignment",
   );
   const spawnCalls = new Set(
     all.flatMap((entry) =>
@@ -1882,6 +1893,9 @@ const opensteerSteps = new Map<string, OpensteerStep>([
         label: "Started a task",
       }),
   ],
+  ["app_list", said(["Listing apps", "Listed apps"], "share")],
+  ["app_fetch", said(["Calling an app", "Called an app"], "share")],
+  ["app_publish", said(["Publishing an app", "Published an app"], "share")],
   ["person_message", said(["Sending a message", "Sent a message"], "share")],
   ["person_show", said(["Sending to your screen", "Sent to your screen"], "share")],
   ["thread_list", said(["Looking up conversations", "Looked up conversations"], "list")],

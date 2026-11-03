@@ -40,6 +40,7 @@ import { appear, exit } from "../ui/motion.js";
 import { AppText, StatusDot, TypingDots, monoFontFamily } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { AssignmentLines, DelegationLine, ThreadMark } from "./task-line.js";
+import { AppCard } from "./app-card.js";
 import { MessageAttachments } from "./attachment-views.js";
 import { ComputerUseLine, KeptComputerStopLine, useComputerLine } from "./computer-use-line.js";
 import { MessageMenu } from "./message-menu.js";
@@ -103,7 +104,9 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   return (
     <View style={{ marginTop: props.spacingTop }}>
       {props.unreadBoundary === true && props.conversation !== true ? <UnreadDivider /> : null}
-      {group.kind === "turn" ? (
+      {group.kind === "app" ? (
+        <AppCard entry={group.entry} />
+      ) : group.kind === "turn" ? (
         props.conversation === true ? (
           <ConversationTurn
             activityKey={props.activityKey ?? null}

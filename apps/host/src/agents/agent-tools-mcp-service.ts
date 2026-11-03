@@ -1,3 +1,5 @@
+import { AppPublishInputSchema, AppFetchInputSchema } from "@opensteer/core";
+import type { AppService } from "../apps/app-service.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -110,6 +112,7 @@ function toolDescription(name: string, current: string, version: 1 | 2 | 3 | nul
 }
 
 export class AgentToolsMcpService {
+  readonly #apps: Pick<AppService, "publish" | "list" | "fetch">;
   readonly #agentControl: Pick<AgentControlService, "handle">;
   readonly #allowedHost: string;
   readonly #allowedOrigin: string;
@@ -125,6 +128,7 @@ export class AgentToolsMcpService {
   #sessionsBeingCreated = 0;
 
   constructor(options: {
+    readonly apps: Pick<AppService, "publish" | "list" | "fetch">;
     readonly agentControl: Pick<AgentControlService, "handle">;
     readonly publicUrl: URL;
     /**
@@ -139,6 +143,7 @@ export class AgentToolsMcpService {
     readonly watchControl?: Pick<WatchControlService, "handle">;
     readonly watchTokens?: WatchControlTokenService;
   }) {
+    this.#apps = options.apps;
     this.#agentControl = options.agentControl;
     this.#allowedHost = options.publicUrl.host;
     this.#allowedOrigin = options.publicUrl.origin;
@@ -361,6 +366,8 @@ export class AgentToolsMcpService {
         : []),
     ].filter(
       (definition) =>
+        (!["app_publish", "app_list", "app_fetch"].includes(definition.name) ||
+          input.scope === "run") &&
         (definition.name !== "thread_write" || !lacks("task-done-v1")) &&
         (definition.name !== "person_show" ||
           (input.scope === "run" && !lacks("person-show-v1"))) &&
@@ -521,6 +528,13 @@ export class AgentToolsMcpService {
         });
         if (response.type !== "workspace.create.result") throw unexpectedToolResponse();
         return { workspace: response.workspace };
+      }
+      case "app_list":
+        return this.#apps.list(token);
+      case "app_fetch":
+        return this.#apps.fetch(token, AppFetchInputSchema.parse(input));
+      case "app_publish": {
+        return this.#apps.publish(token, requestId, AppPublishInputSchema.parse(input));
       }
       case "workspace_mount": {
         const response = await control.handle(token, {

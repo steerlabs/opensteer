@@ -135,6 +135,7 @@ import {
 } from "@opensteer/triggers";
 import { WorkspaceStorageChoiceSchema } from "@opensteer/workspace";
 import { z } from "zod";
+import { AppIdSchema, AppSchema } from "@opensteer/core";
 import { AgentPhoneHostTargetViewSchema } from "./android-phone.js";
 import { AttachmentContentSchema, AttachmentReferenceInputSchema } from "./attachments.js";
 import { HostBootstrapSchema, IdentityConfigViewSchema } from "./bootstrap.js";
@@ -1437,6 +1438,19 @@ export const hostApi = defineRpc({
    * `personal-remote-access-off`.
    */
   "agentPhone.target.get": declaration("GET", emptyInputSchema, AgentPhoneHostTargetViewSchema),
+  "apps.get": declaration("GET", z.strictObject({ appId: AppIdSchema }), AppSchema),
+  "apps.view": declaration(
+    "POST",
+    z.strictObject({ appId: AppIdSchema, theme: z.enum(["light", "dark"]) }),
+    z.object({
+      app: AppSchema,
+      path: z
+        .string()
+        .regex(
+          /^\/v1\/apps\/app_[0-9a-f-]{36}\/content\?token=[A-Za-z0-9_-]{43}&theme=(light|dark)$/u,
+        ),
+    }),
+  ),
   "attachment.get": declaration("GET", AttachmentReferenceInputSchema, AttachmentSchema),
   "attachment.upload": {
     ...declaration("POST", AttachmentReferenceInputSchema, AttachmentSchema),

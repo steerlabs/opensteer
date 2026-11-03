@@ -10,7 +10,7 @@
 	# authenticated Runners. Keep this allowlist shared by the public site and
 	# the private-CA listener so a Deployment can use one callback origin that
 	# every enrolled Runner can actually reach.
-	@runtime_callbacks path /internal/v1/agent-control /internal/v1/browser-cdp /internal/v1/browser-cdp/* /internal/v1/browser-sources/pair /internal/v1/browser-sources/pair/challenge /internal/v1/browser-sources/connect /internal/v1/computer-use/display /internal/v1/egress /internal/v1/integration-mcp /internal/v1/integration-skills /internal/v1/mcp /internal/v1/mount-grants/exchange /internal/v1/runners /internal/v1/runners/agent-phone-update /internal/v1/runners/auxiliary/* /internal/v1/shell/connect /internal/v1/shell/data /internal/v1/trigger-cdp /internal/v1/triggers/revisions/*/program /internal/v1/watch-cdp
+	@runtime_callbacks path /internal/v1/apps/tunnel /internal/v1/agent-control /internal/v1/browser-cdp /internal/v1/browser-cdp/* /internal/v1/browser-sources/pair /internal/v1/browser-sources/pair/challenge /internal/v1/browser-sources/connect /internal/v1/computer-use/display /internal/v1/egress /internal/v1/integration-mcp /internal/v1/integration-skills /internal/v1/mcp /internal/v1/mount-grants/exchange /internal/v1/runners /internal/v1/runners/agent-phone-update /internal/v1/runners/auxiliary/* /internal/v1/shell/connect /internal/v1/shell/data /internal/v1/trigger-cdp /internal/v1/triggers/revisions/*/program /internal/v1/watch-cdp
 	handle @runtime_callbacks {
 		# Caddy preserves the incoming Host header by default. That is a
 		# security contract here: MCP validates the exact origin host, including
@@ -20,9 +20,10 @@
 }
 
 {$OPENSTEER_SITE_ADDRESS::80} {
-	encode zstd gzip
+	@outside_apps not path /v1/apps/*
+	encode @outside_apps zstd gzip
 
-	header {
+	header @outside_apps {
 		-Server
 		# Ignored by browsers on plain-HTTP transports (RFC 6797 §8.1), so this
 		# is inert for local serving and effective once the edge terminates TLS.

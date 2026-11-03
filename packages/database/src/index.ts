@@ -1,6 +1,7 @@
 export * from "./account-directory-store.js";
 export * from "./agent-control-admission.js";
 export * from "./attachment-store.js";
+export * from "./app-store.js";
 export * from "./automation-failure-store.js";
 export * from "./browser-source-store.js";
 export * from "./channel-store.js";
