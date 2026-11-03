@@ -1,3 +1,4 @@
+import { ThreadService } from "../threads/thread-service.js";
 import {
   OpensteerError,
   AssignmentIdSchema,
@@ -660,7 +661,30 @@ export class ProductToolsTestClient {
       withInputAdmission: async <T>(_owner: unknown, _key: unknown, invoke: () => Promise<T>) =>
         invoke(),
     };
+    const commands = options.commands?.withInputAdmission
+      ? options.commands
+      : (new Proxy(options.commands ?? {}, {
+          get: (target, key) => {
+            if (key === "withInputAdmission") return defaultCommands.withInputAdmission;
+            const value = Reflect.get(target, key);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        }) as ProductOptions["commands"]);
     const product = new ProductToolHandlers({
+      threads: new ThreadService({
+        store: options.store,
+        commands,
+        runners: {
+          canRunHarness: () => true,
+          isAvailable: () => true,
+          harnessAccessModes: () => undefined,
+          identityForEnvironment: () => undefined,
+          attachmentInputFailure: () => null,
+        },
+        placeContext: unavailableDefaults as never,
+        browser: unavailableDefaults as never,
+      }),
+      realtime: { observe: () => () => {} },
       browser: unavailableDefaults as never,
       browserSources: unavailableDefaults as never,
       machineFullDiskAccess: unavailableDefaults as never,
@@ -671,15 +695,7 @@ export class ProductToolsTestClient {
       onWorkspaceEvent: () => {},
       workspaceMounts: unavailableDefaults as never,
       ...options,
-      commands: options.commands?.withInputAdmission
-        ? options.commands
-        : (new Proxy(options.commands ?? {}, {
-            get: (target, key) => {
-              if (key === "withInputAdmission") return defaultCommands.withInputAdmission;
-              const value = Reflect.get(target, key);
-              return typeof value === "function" ? value.bind(target) : value;
-            },
-          }) as ProductOptions["commands"]),
+      commands,
       workspaces: {
         create: async (input) => {
           if (!options.workspaces) throw new Error("Unexpected create");

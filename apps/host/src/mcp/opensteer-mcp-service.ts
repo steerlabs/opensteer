@@ -100,11 +100,15 @@ export class OpensteerMcpService {
       return;
     }
     await this.#sweep();
+    const disconnected = new AbortController();
+    const onClose = () => disconnected.abort(new Error("MCP client disconnected"));
+    response.once("close", onClose);
     // The SDK hands this to each tool call as its `authInfo`.
     (request as IncomingMessage & { auth?: AuthInfo }).auth = {
       clientId: authorization.key,
       scopes: [],
       token,
+      extra: { disconnected: disconnected.signal },
     };
     const sessionId = singleHeader(request.headers["mcp-session-id"]);
     let session: McpSession;
@@ -295,7 +299,10 @@ export class OpensteerMcpService {
               extra.requestId,
               tool.name,
             ),
-            signal: extra.signal,
+            signal:
+              extra.authInfo?.extra?.disconnected instanceof AbortSignal
+                ? AbortSignal.any([extra.signal, extra.authInfo.extra.disconnected])
+                : extra.signal,
           });
           const media = Array.isArray(result.content)
             ? result.content.flatMap((item: unknown) => {
@@ -339,7 +346,7 @@ export class OpensteerMcpService {
     if (!found) throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
     const tool = found;
     const input = tool.input.parse(value);
-    const caller = await this.options.callers.authenticate(bearer);
+    let caller = await this.options.callers.authenticate(bearer);
     let key =
       "operationKey" in input && typeof input.operationKey === "string"
         ? input.operationKey
@@ -371,6 +378,10 @@ export class OpensteerMcpService {
       key = `observation:${input.observationId}`;
     const invoke = async (recover = false) => {
       const call: ToolCall<typeof tool.name> = {
+        checkLive: async () => {
+          caller = await this.options.callers.authenticate(bearer);
+          await check();
+        },
         caller,
         input,
         operationKey: key,

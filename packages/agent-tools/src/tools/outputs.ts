@@ -160,7 +160,7 @@ export const ThreadListOutputSchema = z.object({
   window: WindowSchema,
 });
 export const ThreadDelegateOutputSchema = z.object({
-  assignmentId: AssignmentIdSchema,
+  assignmentId: AssignmentIdSchema.nullable(),
   input: z.object(ThreadInputSchema.shape),
   message: MessageOutputSchema,
   run: z.object(RunSchema.shape).nullable(),
@@ -173,6 +173,7 @@ export const ThreadMessageOutputSchema = ThreadDelegateOutputSchema.extend({
 export const ThreadWriteOutputSchema = z.object({
   thread: ThreadSummarySchema,
   doneWhenRunEnds: z.boolean(),
+  interruptedRunId: RunSchema.shape.id.optional(),
 });
 export const AssignmentCancelOutputSchema = z.object({ assignment: AssignmentSummarySchema });
 export const ProjectSummarySchema = z.object({
@@ -376,3 +377,39 @@ export const TriggerOutputSchema = z.object({
 });
 
 export { AgentMediaContentSchema } from "./integration-outputs.js";
+
+export const ThreadWaitOutputSchema = z.object({
+  status: z.enum(["running", "settled", "offline", "timed_out"]),
+  run: z.object({ id: RunSchema.shape.id, status: RunSchema.shape.status }).optional(),
+  messages: z.array(MessageOutputSchema).max(100),
+});
+export const ThreadConfigureOutputSchema = z.object({
+  threadId: ThreadIdSchema,
+  environmentId: EnvironmentIdSchema,
+  harnessInstanceId: HarnessInstanceIdSchema,
+  modelSelection: z.object({
+    modelId: ModelIdSchema,
+    providerId: ModelProviderIdSchema,
+    options: ModelSelectionSchema.shape.options,
+  }),
+});
+export const ThreadQueueOutputSchema = z.object({
+  paused: z.boolean(),
+  items: z
+    .array(
+      z.object({
+        input: z.object(ThreadInputSchema.shape),
+        message: z.object({
+          id: MessageIdSchema,
+          author: MessageOutputSchema.shape.author,
+          preview: z.string().max(500),
+          truncated: z.boolean(),
+        }),
+        canCancel: z.boolean(),
+        canMove: z.boolean(),
+        canSteer: z.boolean(),
+      }),
+    )
+    .max(100),
+  input: z.object(ThreadInputSchema.shape).optional(),
+});

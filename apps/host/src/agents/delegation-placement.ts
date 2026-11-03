@@ -42,7 +42,7 @@ export interface DelegationPlacementRequest {
   readonly harnessInstanceId?: HarnessInstanceId | undefined;
   readonly model?: DelegationModelChoice | undefined;
   /** The Thread, or a Trigger's anchor Thread, the work is delegated from. */
-  readonly parent: Thread;
+  readonly parent?: Thread;
 }
 
 type PlacementStore = Pick<
@@ -84,6 +84,22 @@ export async function delegationPlacement(
       harnessInstanceId: existingThread.harnessInstanceId,
       modelSelection: existingThread.modelSelection,
     };
+  }
+  if (!parent) {
+    if (!request.harnessInstanceId || !request.model)
+      throw badRequest("Choose an engine and model for independent work");
+    const harness = await store.getHarnessInstance(request.harnessInstanceId);
+    if (!harness?.enabled || harness.environmentId !== environment.id)
+      throw badRequest("Selected harness is disabled or unavailable");
+    const wanted: Wanted = { selection: request.model, unlisted: "refuse" };
+    const catalog = await store.getHarnessCatalog(environment.id, harness.id);
+    const match =
+      catalog?.status === "ready"
+        ? matchModelSelection(catalog.models, wanted.selection, "refuse")
+        : undefined;
+    if (match?.kind !== "offered")
+      throw placementFailure(environment, wanted, harness.name, catalog);
+    return placement(wanted, { harness, model: match.model });
   }
   if (
     request.harnessInstanceId === undefined &&

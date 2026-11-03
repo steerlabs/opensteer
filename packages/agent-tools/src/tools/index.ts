@@ -9,6 +9,9 @@ import {
   assignment_cancel,
   thread_message,
   thread_write,
+  thread_wait,
+  thread_configure,
+  thread_queue,
 } from "./threads.js";
 import { person_message, person_show } from "./person.js";
 import {
@@ -43,6 +46,9 @@ export const agentTools = [
   person_show,
   thread_message,
   thread_write,
+  thread_wait,
+  thread_configure,
+  thread_queue,
   browser_profile_list,
   sign_in,
   browser_access_request,

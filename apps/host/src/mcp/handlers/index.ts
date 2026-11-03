@@ -16,6 +16,7 @@ export type ToolCall<Name extends AgentTool["name"]> = {
   readonly input: ToolInput<Name>;
   readonly operationKey: string;
   readonly signal?: AbortSignal;
+  readonly checkLive?: () => Promise<void>;
 };
 export type AgentToolHandlers = {
   [T in AgentTool as T["name"]]: ((call: ToolCall<T["name"]>) => Promise<z.input<T["output"]>>) & {
@@ -59,10 +60,13 @@ export function agentToolHandlers(options: {
         specs.thread_delegate.output.parse(await p.thread_delegate(c)),
       {
         authorize: async (c: ToolCall<"thread_delegate">) => {
-          await p.prepareDelegation(c);
+          await p.authorizeDelegation(c);
         },
       },
     ),
+    thread_wait: async (c) => specs.thread_wait.output.parse(await p.thread_wait(c)),
+    thread_configure: async (c) => specs.thread_configure.output.parse(await p.thread_configure(c)),
+    thread_queue: async (c) => specs.thread_queue.output.parse(await p.thread_queue(c)),
     thread_message: async (c) => specs.thread_message.output.parse(await p.thread_message(c)),
     thread_write: async (c) => specs.thread_write.output.parse(await p.thread_write(c)),
     assignment_cancel: async (c) =>
@@ -126,6 +130,8 @@ export function agentToolHandlers(options: {
     handlers.thread_delegate,
     handlers.thread_message,
     handlers.thread_write,
+    handlers.thread_configure,
+    handlers.thread_queue,
     handlers.assignment_cancel,
     handlers.project_create,
   ]) {
