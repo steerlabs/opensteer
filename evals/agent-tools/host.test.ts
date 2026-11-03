@@ -146,4 +146,4 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
       }
     }
   }
-}, 30_000);
+});
