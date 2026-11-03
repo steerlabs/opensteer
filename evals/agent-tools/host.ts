@@ -17,7 +17,7 @@ import type { AgentToolHandlers } from "../../apps/host/src/mcp/handlers/index.j
 import { AgentControlTokenService } from "../../apps/host/src/agents/agent-control-service.js";
 import { SignedTokenService } from "../../apps/host/src/identity/host-keys.js";
 
-import type { EvalCase } from "./cases.js";
+import { caseReach, type EvalCase } from "./cases.js";
 import type { RecordedCall } from "./grader.js";
 
 // These are test doubles, never a real Host store, grant, credential or integration.
@@ -71,7 +71,7 @@ export async function startFakeHost(testCase: EvalCase) {
     createdAt: new Date().toISOString(),
     createdBy: scope.requestedBy,
     harnessInstanceId: createId("harnessInstance"),
-    inheritsMain: testCase.profile === "main",
+    inheritsMain: caseReach(testCase) === "user",
     lineageRootThreadId: scope.threadId,
     inputQueuePaused: false,
     listed: true,
@@ -136,15 +136,33 @@ export async function startFakeHost(testCase: EvalCase) {
     publicUrl: url,
     handlers,
     callers: {
-      authenticate: async (token: string) => ({
-        kind: "run",
-        key: `run:${scope.runId}`,
-        userId: scope.requestedBy,
-        accessMode: thread.accessMode,
-        reach: { kind: "user" },
-        thread,
-        claims: await agentTokens.authenticate(token),
-      }),
+      authenticate: async (token: string) => {
+        const claims = await agentTokens.authenticate(token);
+        const common = {
+          userId: scope.requestedBy,
+          accessMode: thread.accessMode,
+          reach:
+            caseReach(testCase) === "user"
+              ? { kind: "user" as const }
+              : caseReach(testCase) === "lineage"
+                ? { kind: "lineage" as const, lineageRootThreadId: thread.id }
+                : { kind: "workspace" as const, workspaceId: thread.workspaceId },
+        };
+        if (testCase.caller === "connection")
+          return {
+            ...common,
+            kind: "connection" as const,
+            key: "connection:eval",
+            connectionId: "eval",
+          };
+        return {
+          ...common,
+          kind: "run" as const,
+          key: `run:${scope.runId}`,
+          thread,
+          claims,
+        };
+      },
     },
     store: {
       getThreadForOwner: async (id) => ({ ...thread, id }),
@@ -174,9 +192,14 @@ export async function startFakeHost(testCase: EvalCase) {
     string,
     (req: IncomingMessage, res: ServerResponse, body: unknown) => Promise<void>
   >();
-  routes.set("/production/agent", (req, res, body) => agent.handle(req, res, body, agentToken));
-  routes.set("/production/integrations", (req, res, body) =>
-    agent.handle(req, res, body, agentToken),
+  routes.set("/production/agent", (req, res, body) =>
+    agent.handle(
+      req,
+      res,
+      body,
+      agentToken,
+      testCase.caller === "connection" ? url.origin : undefined,
+    ),
   );
   http.on("request", (req, res) => {
     void (async () => {
@@ -215,7 +238,7 @@ export async function startFakeHost(testCase: EvalCase) {
       );
   }
   try {
-    for (const name of ["agent", "integrations"]) {
+    for (const name of ["agent"]) {
       const client = new Client({ name: "opensteer-eval", version: "1" });
       clients.push(client);
       await client.connect(
@@ -232,7 +255,7 @@ export async function startFakeHost(testCase: EvalCase) {
         );
         if (!session) {
           const server = new Server(
-            { name: name === "agent" ? "opensteer" : "opensteer-integrations", version: "1.0.0" },
+            { name: "opensteer", version: "1.0.0" },
             { capabilities: { tools: {} }, instructions },
           );
           const transport = new StreamableHTTPServerTransport({
@@ -246,15 +269,10 @@ export async function startFakeHost(testCase: EvalCase) {
             const index = activeCalls.get(`${extra.sessionId}:${String(extra.requestId)}`);
             if (index === undefined) throw new Error("MCP call was not recorded at ingress");
             const original = await client.callTool({ name, arguments: args });
-            const text = JSON.stringify(original);
             const definition = agentTools
-              .filter((tool) => tool.callers.some((kind) => kind === "run"))
+              .filter((tool) => tool.callers.some((kind) => kind === testCase.caller))
               .find((tool) => tool.name === name);
-            const valid = definition
-              ? definition.input.safeParse(args).success
-              : !text.includes("invalid_arguments:") &&
-                !text.includes("Unknown tool") &&
-                !text.includes("not available to this execution");
+            const valid = !!definition && definition.input.safeParse(args).success;
             calls[index] = { tool: name, args, valid };
             if (!valid) return original;
             let result = Object.hasOwn(testCase.mocks, name)
