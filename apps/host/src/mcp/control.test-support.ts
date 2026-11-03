@@ -1,4 +1,5 @@
 import {
+  OpensteerError,
   AssignmentIdSchema,
   AssignmentSummarySchema,
   BrowserAccessSuggestionSchema,
@@ -741,9 +742,11 @@ export class ProductToolsTestClient {
     if (request.type === "request.withdraw") input = { requestId: request.targetRequestId };
     if (request.type === "thread.message") {
       if (request.content.some((p) => p.type !== "text"))
-        throw new Error(
-          "A message from an agent cannot include a place reference. Forward selected references with thread_delegate places",
-        );
+        throw new OpensteerError({
+          code: "bad_request",
+          message:
+            "A message from an agent cannot include a place reference. Forward selected references with thread_delegate places",
+        });
       input = {
         ...rest,
         message: request.content.map((p) => (p.type === "text" ? p.text : "")).join("\n"),
