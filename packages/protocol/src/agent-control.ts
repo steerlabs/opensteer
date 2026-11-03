@@ -167,6 +167,7 @@ const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
     title: z.string().trim().min(1).max(240).optional(),
     /** A new task Thread's symbol; an existing Thread keeps its own. */
     icon: WorkspaceIconNameSchema.optional(),
+    specialist: z.string().trim().min(1).max(256).optional(),
     type: z.literal("thread.delegate"),
     threadId: ThreadIdSchema.optional(),
     workspaceId: WorkspaceIdSchema.optional(),
@@ -297,7 +298,9 @@ export const AgentControlRequestSchema = AgentControlRequestUnionSchema.refine(
   .refine(
     (request) =>
       request.type !== "thread.delegate" ||
-      ((request.threadId !== undefined) !== (request.workspaceId !== undefined) &&
+      ((request.threadId !== undefined
+        ? request.workspaceId === undefined
+        : request.workspaceId !== undefined || request.specialist !== undefined) &&
         (request.threadId === undefined ||
           (request.environmentId === undefined &&
             request.harnessInstanceId === undefined &&

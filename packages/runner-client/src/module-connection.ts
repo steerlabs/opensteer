@@ -432,6 +432,7 @@ function modulePrimaryMessageFence(message: PostAuthenticationHostMessage): Runn
     case "host.workspace.local.provision":
     case "host.workspace.local.relocate":
     case "host.workspace.local.inspect":
+    case "host.workspace.local.specialist.remove":
     case "host.workspace.local.destroy":
     case "host.workspace.local.files.list":
     case "host.workspace.local.files.read":

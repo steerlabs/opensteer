@@ -367,6 +367,7 @@ async function startAgentsRunner(input: {
               inventory: () => localWorkspace.authority.inventory(signal),
               service: new LocalWorkspaceService({
                 relocate: (workspaceId, move) => runtime.relocateWorkspace(workspaceId, move),
+                removeSpecialist: (id, remove) => runtime.removeSpecialist(id, remove),
                 authority: localWorkspace.authority,
                 filesystem: localWorkspace.filesystem,
               }),

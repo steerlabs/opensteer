@@ -86,7 +86,7 @@ export async function resolveResourceAccess(
     ? await database
         .selectFrom("threads as asking")
         .innerJoin("threads as root", "root.id", "asking.lineageRootThreadId")
-        .select(["root.capabilityProfileId", "asking.workspaceId"])
+        .select(["root.capabilityProfileId", "asking.workspaceId", "asking.specialistId"])
         .where("asking.id", "=", threadId)
         .executeTakeFirst()
     : undefined;
@@ -97,7 +97,8 @@ export async function resolveResourceAccess(
       ? root.workspaceId === input.workspaceId && root.capabilityProfileId === "main"
       : !input.threadId && !input.agentBindingId);
   let specialistAccess = input.specialistAccess;
-  if (input.specialistId) {
+  const specialistId = root?.specialistId ?? input.specialistId;
+  if (specialistId) {
     const registration = await database
       .selectFrom("specialists")
       .innerJoin("pluginVersions", "pluginVersions.id", "specialists.pluginVersionId")
@@ -107,7 +108,8 @@ export async function resolveResourceAccess(
         "specialists.workspaceId",
       )
       .select(["specialists.status", "specialists.bindings", "pluginVersions.specialistManifest"])
-      .where("specialists.id", "=", input.specialistId)
+      .where("specialists.removedAt", "is", null)
+      .where("specialists.id", "=", specialistId)
       .where("specialists.workspaceId", "=", input.workspaceId)
       .where("specialists.ownerUserId", "=", input.ownerUserId)
       .where("workspaceMemberships.userId", "=", input.ownerUserId)
@@ -208,6 +210,7 @@ export async function resolveResourceAccess(
   );
   return {
     access,
+    specialistId,
     inheritsMain,
     mainAccess: main ? (inheritsMain ? ("inherited" as const) : ("withheld" as const)) : null,
   };

@@ -273,6 +273,7 @@ export interface MovedThreadInput {
 }
 
 export interface DelegateThreadRequest {
+  readonly specialistId?: string;
   readonly callerIntent?: Pick<AgentControlAdmissionInput, "requestId" | "requestFingerprint">;
   readonly accessMode: ThreadAccessMode;
   readonly createdBy: UserId;

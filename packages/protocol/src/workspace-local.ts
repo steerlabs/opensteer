@@ -122,6 +122,11 @@ export const HostWorkspaceLocalRequestSchema = z.discriminatedUnion("type", [
     createdBy: UserIdSchema,
     adopt: z.boolean(),
   }),
+  z.strictObject({
+    ...workspaceLocalRequestBase,
+    type: z.literal("host.workspace.local.specialist.remove"),
+    specialistId: z.string().regex(/^[a-zA-Z0-9-]+$/u),
+  }),
   ProvisionLocalWorkspaceSchema,
   InspectLocalWorkspaceSchema,
   DestroyLocalWorkspaceSchema,
@@ -138,6 +143,10 @@ const workspaceLocalResultBase = {
 } as const;
 
 export const RunnerWorkspaceLocalResultSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    ...workspaceLocalResultBase,
+    type: z.literal("runner.workspace.local.specialist.removed"),
+  }),
   z.strictObject({
     ...workspaceLocalResultBase,
     type: z.literal("runner.workspace.local.relocated"),

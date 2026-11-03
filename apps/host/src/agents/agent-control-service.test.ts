@@ -1,3 +1,4 @@
+import { SpecialistStore } from "@opensteer/database";
 import {
   createId,
   HarnessIdSchema,
@@ -51,6 +52,59 @@ const testModelSelection = ModelSelectionSchema.parse({
 });
 
 describe("AgentControlService", () => {
+  it("refuses pending specialists with their binding reasons", async () => {
+    const current = thread(currentThreadId, nativeHarnessId, "Main");
+    const { service } = makeService({
+      threads: [current],
+      messages: [],
+      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+    });
+    const listing = vi.spyOn(SpecialistStore.prototype, "list").mockResolvedValue([
+      {
+        id: "pending-specialist",
+        workspaceId,
+        pluginId: "plugin",
+        pluginVersionId: "version",
+        ownerUserId: ownerId,
+        plugin: "invoices",
+        version: "a".repeat(64),
+        status: "pending",
+        models: [],
+        fallback: "none",
+        access: [
+          {
+            type: "browser-profile",
+            level: "read",
+            reason: "Read invoices",
+            binding: null,
+            state: "needs-access",
+            candidates: [],
+          },
+          {
+            type: "phone",
+            level: "read",
+            reason: "Choose phone",
+            binding: null,
+            state: "choose",
+            candidates: [],
+          },
+        ],
+      },
+    ]);
+    try {
+      await expect(
+        service.handle("run-token", {
+          type: "thread.delegate",
+          requestId: crypto.randomUUID(),
+          specialist: "invoices",
+          task: "Read invoices",
+        }),
+      ).rejects.toThrow(/browser-profile: needs-access.*phone: choose/);
+    } finally {
+      listing.mockRestore();
+    }
+  });
+
   it("lists exactly the Requests visible to the current Thread and Workspace", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main");
     const pending = pendingRequest();

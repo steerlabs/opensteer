@@ -36,6 +36,25 @@ const expectedTools = {
     "trigger_read",
     "trigger_write",
   ],
+  specialist: [
+    "request_list",
+    "request_withdraw",
+    "environment_list",
+    "thread_read",
+    "thread_list",
+    "assignment_cancel",
+    "person_notify",
+    "person_show",
+    "thread_message",
+    "thread_write",
+    "browser_profile_list",
+    "sign_in",
+    "browser_tab_read",
+    "browser_tab_write",
+    "browser_session_list",
+    "browser_session_open",
+    "trigger_read",
+  ],
   main: [
     "request_list",
     "request_withdraw",
@@ -353,4 +372,17 @@ it("validates person notifications and limits them to Run profiles", () => {
   for (const profile of ["main", "workspace", "delegated"] as const)
     expect(capabilityProfileAllowsTool(profile, "person.notify")).toBe(true);
   expect(capabilityProfileAllowsTool("trigger", "person.notify")).toBe(false);
+});
+
+it("specialists cannot delegate, install plugins, author triggers or request access", () => {
+  for (const tool of [
+    "thread.delegate",
+    "plugin.install",
+    "trigger.write",
+    "browser.profile.create",
+    "browser.access.request",
+    "machine.full-disk-access.request",
+  ] as const) {
+    expect(capabilityProfileAllowsTool("specialist", tool)).toBe(false);
+  }
 });

@@ -3474,14 +3474,23 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it("resolves the bundled, integration, and Workspace Agent Skill layers into one plan", async () => {
+  it.each([false, true])("resolves skill layers with specialist=%s", async (specialist) => {
     const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-skill-layer-test-"));
     const workspacePath = join(temporaryRoot, "workspace");
     const stateRoot = join(temporaryRoot, "private", "harness-state");
     await writeWorkspaceSkill(workspacePath, "release-notes");
     await writeWorkspaceSkill(workspacePath, "research");
     await writeWorkspaceSkill(workspacePath, "opensteer:threads");
-    const driver = new FakeHarnessDriver();
+    const pluginRoot = join(stateRoot, "plugins", "a".repeat(64));
+    await mkdir(pluginRoot, { recursive: true });
+    await writeFile(
+      join(pluginRoot, "INSTRUCTIONS.md"),
+      "Plugin instructions ${PLUGIN_ROOT} ${PLUGIN_DATA}",
+    );
+    let hold = false;
+    const driver = new FakeHarnessDriver("test-driver", () =>
+      hold ? new HeldHarnessSession() : new FakeHarnessSession(),
+    );
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
     const environmentId = createId("environment");
@@ -3525,7 +3534,7 @@ describe("RunnerRuntime", () => {
       workspaceManager: {
         writableRoots: () => ["/runner/workspaces"],
         prepare: async () => ({
-          instructions: undefined,
+          instructions: "Workspace instructions",
           path: workspacePath,
         }),
       },
@@ -3533,12 +3542,58 @@ describe("RunnerRuntime", () => {
     const sink: RunnerMessageSink = { send: async () => undefined };
     try {
       const command = executeCommand(environmentId);
+      if (specialist) {
+        command.context.specialistId = "registration-1";
+        command.context.agentTools.capabilityProfileId = "specialist";
+        command.context.plugins.versions = [
+          { pluginId: "example", name: "example", digest: "a".repeat(64) },
+        ];
+      }
       await reconcile(registry, command);
       await expect(runtime.handleCommand(command, sink)).resolves.toEqual({
         status: "accepted",
       });
       await waitUntil(() => runtime.activeRunIds().length === 0);
 
+      if (specialist) {
+        const cwd = join(workspacePath, ".specialists", "registration-1");
+        expect(driver.context?.workspacePath).toBe(cwd);
+        expect(driver.context?.writableRoots).toEqual([cwd]);
+        expect(driver.context?.instructions).toContain(
+          `Workspace instructions\n\nPlugin instructions ${pluginRoot} ${cwd}`,
+        );
+        expect(driver.context?.environment).toMatchObject({
+          PLUGIN_ROOT: pluginRoot,
+          PLUGIN_DATA: cwd,
+        });
+        expect(driver.context?.skills?.skills.some((skill) => skill.plugin === null)).toBe(false);
+        expect(
+          driver.context?.skills?.skills
+            .filter((skill) => skill.plugin === "example")
+            .map((skill) => skill.fullName),
+        ).toEqual(["example:research", "example:helper"]);
+        hold = true;
+        const running = executeCommand(environmentId);
+        running.context.specialistId = "registration-1";
+        running.context.agentTools.capabilityProfileId = "specialist";
+        running.context.plugins.versions = command.context.plugins.versions;
+        await reconcile(registry, running);
+        await runtime.handleCommand(running, sink);
+        await vi.waitFor(() => expect(driver.contexts).toHaveLength(2), { timeout: 5_000 });
+        let removed = false;
+        await runtime.removeSpecialist("registration-1", async () => {
+          expect(runtime.activeRunIds()).toEqual([]);
+          removed = true;
+        });
+        expect(removed).toBe(true);
+        const stale = executeCommand(environmentId);
+        stale.context.specialistId = "registration-1";
+        await expect(runtime.handleCommand(stale, sink)).resolves.toMatchObject({
+          status: "rejected",
+          error: { code: "forbidden" },
+        });
+        return;
+      }
       expect(driver.context?.providerState.privateStateRoot).toBe(dirname(stateRoot));
       expect(driver.context?.skills?.skills).toEqual([
         {

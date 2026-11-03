@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createId, type EnvironmentId, type StorageAuthorityId } from "@opensteer/core";
@@ -29,6 +29,31 @@ afterEach(async () => {
 });
 
 describe("LocalWorkspaceService", () => {
+  it("removes only the named specialist folder on the bound storage", async () => {
+    const machine = await fixture();
+    const provision = await machine.provisionRequest();
+    await machine.handle(provision);
+    const read = await machine.authority.resolveReadAuthority(provision.binding);
+    const folder = join(read.root, ".specialists", "registration-1");
+    const sibling = join(read.root, ".specialists", "registration-2");
+    await mkdir(folder, { recursive: true });
+    await mkdir(sibling, { recursive: true });
+    const request = {
+      ...provision,
+      type: "host.workspace.local.specialist.remove",
+      specialistId: "registration-1",
+    } as const;
+    const { fingerprint: _fingerprint, ...remove } = request;
+    expect(await machine.handle(remove)).toMatchObject({
+      type: "runner.workspace.local.specialist.removed",
+    });
+    await expect(access(folder)).rejects.toThrow();
+    await expect(access(sibling)).resolves.toBeUndefined();
+    expect(await machine.handle(remove)).toMatchObject({
+      type: "runner.workspace.local.specialist.removed",
+    });
+  });
+
   it("provisions once and replays the same operation without creating a second directory", async () => {
     const machine = await fixture();
     const request = await machine.provisionRequest();

@@ -83,6 +83,90 @@ describeStore("specialist registration", (test) => {
     });
     const ready = (await platform.specialists.list(workspace.id, run.userId))[0]!;
     expect(ready.status).toBe("ready");
+    const delegate = (threadId?: import("@opensteer/core").ThreadId) =>
+      fixture.store.delegateThread({
+        accessMode: run.thread.accessMode,
+        createdBy: run.userId,
+        environmentId: run.environmentId,
+        harnessInstanceId: run.harnessInstance.id,
+        idempotencyKey: randomUUID(),
+        modelSelection: run.thread.modelSelection,
+        specialistId: ready.id,
+        origin: { kind: "run", parentRunId: run.run.id, parentThreadId: run.thread.id },
+        task: [{ type: "text", text: "Read invoices" }],
+        title: "Invoices",
+        workspaceId: workspace.id,
+        ...(threadId ? { threadId } : {}),
+      });
+    const child = await delegate();
+    expect(child.thread).toMatchObject({
+      specialistId: ready.id,
+      capabilityProfileId: "specialist",
+      lineageRootThreadId: run.thread.lineageRootThreadId,
+    });
+    const guarded = await resolveResourceAccess(fixture.database, {
+      workspaceId: workspace.id,
+      ownerUserId: run.userId,
+      threadId: child.thread.id,
+      explicitAccess: "read-write",
+      resource,
+    });
+    expect(guarded.access).toBe("read");
+    await fixture.store.cancelAssignment({
+      assignmentId: child.assignment.id,
+      requestedBy: run.userId,
+      idempotencyKey: randomUUID(),
+    });
+    const again = await delegate(child.thread.id);
+    expect(again.thread.specialistId).toBe(ready.id);
+    const mainRegistration = await platform.specialists.add({
+      workspaceId: run.workspace.id,
+      pluginId,
+      actorUserId: run.userId,
+    });
+    const channelId = createId("thread");
+    const root = await fixture.database
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", run.thread.id)
+      .executeTakeFirstOrThrow();
+    await fixture.database
+      .insertInto("threads")
+      .values({
+        ...root,
+        id: channelId,
+        lineageRootThreadId: channelId,
+        capabilityProfileId: "workspace",
+      })
+      .execute();
+    const specialistThreadId = createId("thread");
+    const bound = await fixture.database
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", child.thread.id)
+      .executeTakeFirstOrThrow();
+    await fixture.database
+      .insertInto("threads")
+      .values({
+        ...bound,
+        id: specialistThreadId,
+        workspaceId: run.workspace.id,
+        lineageRootThreadId: channelId,
+        parentThreadId: channelId,
+        specialistId: mainRegistration.id,
+      })
+      .execute();
+    expect(
+      (
+        await resolveResourceAccess(fixture.database, {
+          workspaceId: run.workspace.id,
+          ownerUserId: run.userId,
+          threadId: specialistThreadId,
+          resource,
+        })
+      ).access,
+    ).toBeNull();
+
     expect(ready.access[0]?.binding).toMatchObject({ resourceId: profile.id, level: "read" });
     expect((await check(profile.id)).access).toBe("read");
     expect((await check("unbound")).access).toBeNull();
@@ -119,6 +203,7 @@ describeStore("specialist registration", (test) => {
     // A stale ready row cannot preserve withdrawn Workspace consent.
     expect((await check(profile.id)).access).toBeNull();
     expect((await platform.specialists.refresh(pending.id)).status).toBe("pending");
+    platform.specialists.setRemovalHandler(async () => undefined);
     await platform.specialists.remove({
       workspaceId: workspace.id,
       specialistId: pending.id,

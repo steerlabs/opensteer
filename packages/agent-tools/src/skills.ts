@@ -25,6 +25,7 @@ export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Ob
       AgentCapabilityProfileIdSchema.parse("main"),
       AgentCapabilityProfileIdSchema.parse("workspace"),
       AgentCapabilityProfileIdSchema.parse("delegated"),
+      AgentCapabilityProfileIdSchema.parse("specialist"),
     ]),
   }),
   Object.freeze({
@@ -33,6 +34,7 @@ export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Ob
       AgentCapabilityProfileIdSchema.parse("main"),
       AgentCapabilityProfileIdSchema.parse("workspace"),
       AgentCapabilityProfileIdSchema.parse("delegated"),
+      AgentCapabilityProfileIdSchema.parse("specialist"),
     ]),
   }),
   Object.freeze({
@@ -41,6 +43,7 @@ export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Ob
       AgentCapabilityProfileIdSchema.parse("main"),
       AgentCapabilityProfileIdSchema.parse("workspace"),
       AgentCapabilityProfileIdSchema.parse("delegated"),
+      AgentCapabilityProfileIdSchema.parse("specialist"),
     ]),
   }),
   Object.freeze({
@@ -49,6 +52,7 @@ export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Ob
       AgentCapabilityProfileIdSchema.parse("main"),
       AgentCapabilityProfileIdSchema.parse("workspace"),
       AgentCapabilityProfileIdSchema.parse("delegated"),
+      AgentCapabilityProfileIdSchema.parse("specialist"),
     ]),
   }),
   Object.freeze({
@@ -57,6 +61,7 @@ export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Ob
       AgentCapabilityProfileIdSchema.parse("main"),
       AgentCapabilityProfileIdSchema.parse("workspace"),
       AgentCapabilityProfileIdSchema.parse("delegated"),
+      AgentCapabilityProfileIdSchema.parse("specialist"),
     ]),
   }),
   Object.freeze({
@@ -69,6 +74,7 @@ export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Ob
       AgentCapabilityProfileIdSchema.parse("main"),
       AgentCapabilityProfileIdSchema.parse("workspace"),
       AgentCapabilityProfileIdSchema.parse("delegated"),
+      AgentCapabilityProfileIdSchema.parse("specialist"),
     ]),
   }),
   Object.freeze({

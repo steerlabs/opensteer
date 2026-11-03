@@ -167,6 +167,8 @@ export class SpecialistStore {
       .select(["pluginVersions.specialistManifest", "plugins.name", "pluginVersions.digest"])
       .where("specialists.id", "=", id)
       .executeTakeFirstOrThrow();
+    if (row.removedAt)
+      throw new OpensteerError({ code: "conflict", message: "Specialist is being removed" });
     const manifest = SpecialistManifestSchema.parse(row.specialistManifest);
     const bindings: SpecialistBinding[] = [];
     const states = [];
@@ -231,20 +233,46 @@ export class SpecialistStore {
       .selectFrom("specialists")
       .select("id")
       .where("workspaceId", "=", workspaceId)
+      .where("removedAt", "is", null)
       .orderBy("createdAt")
       .execute();
     return Promise.all(rows.map(({ id }) => this.refresh(id)));
   }
 
+  private removalHandler?: (input: {
+    workspaceId: WorkspaceId;
+    specialistId: string;
+    actorUserId: UserId;
+  }) => Promise<void>;
+
+  setRemovalHandler(handler: NonNullable<SpecialistStore["removalHandler"]>) {
+    this.removalHandler = handler;
+  }
+
   async remove(input: { workspaceId: WorkspaceId; specialistId: string; actorUserId: UserId }) {
     await this.authorize(input.workspaceId, input.actorUserId);
+    if (!this.removalHandler)
+      throw new OpensteerError({ code: "conflict", message: "Specialist removal is unavailable" });
+    const removed = await this.database
+      .updateTable("specialists")
+      .set({ removedAt: new Date() })
+      .where("id", "=", input.specialistId)
+      .where("workspaceId", "=", input.workspaceId)
+      .where("ownerUserId", "=", input.actorUserId)
+      .returning("id")
+      .executeTakeFirst();
+    if (!removed)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Only the consent owner may remove this specialist",
+      });
+    await this.removalHandler(input);
     await this.database
       .deleteFrom("specialists")
       .where("id", "=", input.specialistId)
       .where("workspaceId", "=", input.workspaceId)
       .where("ownerUserId", "=", input.actorUserId)
       .execute();
-    // Invocation lifecycle attaches cancellation and .specialists/<id> cleanup here.
   }
 
   private async candidates(

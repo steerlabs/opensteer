@@ -3705,6 +3705,7 @@ function canonicalDelegateThreadRequest(
     ...(input.titleSource && input.titleSource !== "chosen"
       ? { titleSource: input.titleSource }
       : {}),
+    ...(input.specialistId ? { specialistId: input.specialistId } : {}),
     type: "thread.delegate",
     workspaceId: input.workspaceId,
   };
@@ -4301,7 +4302,8 @@ export async function delegateThreadInTransaction(
       : reusedRow
     : await insertThread({
         accessMode: ThreadAccessModeSchema.parse(input.accessMode),
-        capabilityProfileId: "delegated",
+        capabilityProfileId: input.specialistId ? "specialist" : "delegated",
+        specialistId: input.specialistId ?? null,
         role: "work",
         createdByPrincipalId: actorPrincipalId,
         id: threadId,

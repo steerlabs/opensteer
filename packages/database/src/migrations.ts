@@ -4688,6 +4688,7 @@ export function migrationProvider() {
         "0133_resource_access_levels": resourceAccessLevelsMigration,
         "0134_plugins": pluginsMigration,
         "0135_specialists": specialistsMigration,
+        "0136_specialist_threads": specialistThreadsMigration,
       };
     },
   };
@@ -6876,5 +6877,32 @@ export const specialistsMigration: Migration = {
       UNIQUE(workspace_id,plugin_id),
       FOREIGN KEY(plugin_id,plugin_version_id) REFERENCES plugin_versions(plugin_id,id) ON DELETE CASCADE
     )`.execute(database);
+  },
+};
+
+export const specialistThreadsMigration: Migration = {
+  async up(database) {
+    await sql`ALTER TABLE threads ADD COLUMN specialist_id text; ALTER TABLE threads DROP CONSTRAINT threads_capability_profile_check; ALTER TABLE threads ADD CONSTRAINT threads_capability_profile_check CHECK (capability_profile_id IN ('main','workspace','delegated','specialist')); ALTER TABLE specialists ADD COLUMN removed_at timestamptz`.execute(
+      database,
+    );
+    await sql`DO $$ DECLARE definition text; BEGIN
+      SELECT pg_get_functiondef('public.opensteer_enforce_thread_capability_profile()'::regprocedure) INTO definition;
+      definition := replace(definition, 'if new.capability_profile_id is distinct from ''delegated'' then',
+        'if new.capability_profile_id not in (''delegated'', ''specialist'') then');
+      EXECUTE definition;
+    END $$`.execute(database);
+    await sql`CREATE FUNCTION opensteer_enforce_specialist_binding() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+      IF TG_OP = 'UPDATE' AND new.specialist_id IS DISTINCT FROM old.specialist_id THEN
+        RAISE EXCEPTION 'specialist binding is immutable';
+      END IF;
+      IF TG_OP = 'INSERT' AND (new.capability_profile_id = 'specialist' OR new.specialist_id IS NOT NULL) THEN
+        IF new.capability_profile_id <> 'specialist' OR new.parent_thread_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM specialists WHERE id = new.specialist_id AND workspace_id = new.workspace_id AND status = 'ready' AND removed_at IS NULL FOR SHARE
+        ) THEN RAISE EXCEPTION 'invalid specialist binding'; END IF;
+      END IF;
+      RETURN new;
+    END $$;
+    CREATE TRIGGER threads_specialist_binding BEFORE INSERT OR UPDATE ON threads
+      FOR EACH ROW EXECUTE FUNCTION opensteer_enforce_specialist_binding()`.execute(database);
   },
 };

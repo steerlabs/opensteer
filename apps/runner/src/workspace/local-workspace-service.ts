@@ -1,3 +1,5 @@
+import { lstat, rm } from "node:fs/promises";
+import { join } from "node:path";
 import {
   OpensteerError,
   type EnvironmentId,
@@ -44,6 +46,8 @@ export class LocalWorkspaceService {
         move: () => Promise<void>,
       ) => Promise<void>)
     | undefined;
+  readonly #removeSpecialist:
+    ((id: string, remove: () => Promise<void>) => Promise<void>) | undefined;
   readonly #authority: LocalWorkspaceAuthority;
   readonly #filesystem: NativeWorkspaceFilesAuthority;
 
@@ -52,10 +56,12 @@ export class LocalWorkspaceService {
       workspaceId: HostWorkspaceLocalRequest["binding"]["workspaceId"],
       move: () => Promise<void>,
     ) => Promise<void>;
+    readonly removeSpecialist?: (id: string, remove: () => Promise<void>) => Promise<void>;
     readonly authority: LocalWorkspaceAuthority;
     readonly filesystem: NativeWorkspaceFilesAuthority;
   }) {
     this.#relocate = options.relocate;
+    this.#removeSpecialist = options.removeSpecialist;
     this.#authority = options.authority;
     this.#filesystem = options.filesystem;
   }
@@ -120,6 +126,22 @@ export class LocalWorkspaceService {
                 : { issue: health.issue, status: health.status },
             type: "runner.workspace.local.inspected",
           };
+        }
+        case "host.workspace.local.specialist.remove": {
+          const read = await this.#authority.resolveReadAuthority(binding, signal);
+          const parent = join(read.root, ".specialists");
+          const stat = await lstat(parent).catch((error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return null;
+            throw error;
+          });
+          if (stat?.isSymbolicLink()) throw new Error("Specialist directory cannot be a symlink");
+          const remove = async () => {
+            if (stat)
+              await rm(join(parent, request.specialistId), { recursive: true, force: true });
+          };
+          if (this.#removeSpecialist) await this.#removeSpecialist(request.specialistId, remove);
+          else await remove();
+          return { ...echo, type: "runner.workspace.local.specialist.removed" };
         }
         case "host.workspace.local.destroy": {
           const receipt = await this.#authority.destroy(binding, signal);

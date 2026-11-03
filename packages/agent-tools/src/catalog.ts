@@ -293,7 +293,7 @@ const definitions = [
       title: "Delegate Work",
     },
     description:
-      "To start a task, pass workspaceId; to continue a finished task with its context, pass threadId. Work runs independently and its final reply returns here; do not wait or poll. For work in progress, use thread_message or assignment_cancel. A new task inherits this Thread's environment, engine and model. To choose environmentId, harnessInstanceId or model and its options, call environment_list first. A reused Thread keeps its selection. Forward relevant included pages, apps or phones in places by copying their structured content parts, omitting auto and documentId. Forwarding grants no access or session. Returns threadId and assignmentId.",
+      "For matching work, call a ready specialist with specialist (registration id or plugin name); workspaceId defaults to this Workspace. To start an ordinary task, pass workspaceId; to continue a finished task with its context, pass threadId. Work runs independently and its final reply returns here; do not wait or poll. For work in progress, use thread_message or assignment_cancel. A new task inherits this Thread's environment, engine and model. To choose environmentId, harnessInstanceId or model and its options, call environment_list first. A reused Thread keeps its selection. Forward relevant included pages, apps or phones in places by copying their structured content parts, omitting auto and documentId. Forwarding grants no access or session. Returns threadId and assignmentId.",
     id: "thread.delegate",
     inputSchema: z
       .strictObject({
@@ -319,11 +319,14 @@ const definitions = [
         icon: WorkspaceIconNameSchema.optional().describe(
           "For a new Thread: choose a symbol matching the task; otherwise the engine chooses.",
         ),
+        specialist: z.string().trim().min(1).max(256).optional(),
         workspaceId: WorkspaceIdSchema.optional(),
         threadId: ThreadIdSchema.optional(),
       })
       .superRefine((input, context) => {
-        if (Boolean(input.workspaceId) === Boolean(input.threadId)) {
+        if (
+          input.threadId ? input.workspaceId !== undefined : !input.workspaceId && !input.specialist
+        ) {
           context.addIssue({
             code: "custom",
             message: "Choose workspaceId for a new task or threadId to reuse a task",
@@ -792,6 +795,30 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
     `Stay within this Workspace and delegation lineage. For Triggers, load opensteer:triggers; authoring requires full access and a delegated anchor here in this lineage. Read lineage, message reachable Threads and delegate bounded work here. ${browserGuidance} ${computerUseGuidance} Use existing grants. If profile access is missing, end with the access needed; the assigner resolves it and continues the task. You cannot request authority, create/mount Workspaces, create profiles or close sessions.`,
   ),
   profile(
+    AgentCapabilityProfileIdSchema.parse("specialist"),
+    "A specialist executing a bounded assignment",
+    [
+      "thread.read",
+      "thread.list",
+      "environment.list",
+      "thread.message",
+      "person.notify",
+      "person.show",
+      "thread.write",
+      "assignment.cancel",
+      "request.list",
+      "request.withdraw",
+      "browser.profile.list",
+      "sign-in",
+      "browser.tab.read",
+      "browser.tab.write",
+      "browser.session.list",
+      "browser.session.open",
+      "trigger.read",
+    ],
+    `Complete the assigned work using your plugin instructions and existing grants. ${browserGuidance} ${computerUseGuidance} Report results and missing access in your final reply. Name outputs per task in PLUGIN_DATA; other tasks share this registration folder. Do not delegate or request new access.`,
+  ),
+  profile(
     AgentCapabilityProfileIdSchema.parse("trigger"),
     "Opensteer product access for a running Trigger program",
     [
@@ -834,7 +861,7 @@ export function platformGuideForCapabilityProfile(id: AgentCapabilityProfileId):
 
 const conversationRoleGuide = `Keep this conversation responsive. Follow-ups refine the same exchange unless the person changes or withdraws the objective; resume interrupted work and answer all outstanding requests. Put the complete answer in your final reply; earlier steps are expandable.
 That reply is also what notifies them, including turns started by a Trigger or task completion. A report left here only informs your next turn.
-Handle conversation, explanations and quick lookups yourself. For sustained research, implementation or investigation, use thread_delegate; decide from the work and intent, not elapsed time or tool count. Give the outcome, constraints, context and completion criteria; let the task choose its approach. Delegate within this Workspace unless an existing Project owns the work; reuse helpful task context. Projects may be shared: members can read the task and everything forwarded to it. Main is personal.
+Handle conversation, explanations and quick lookups yourself. Call an existing ready specialist with thread_delegate specialist when its purpose matches the work. For sustained research, implementation or investigation, use thread_delegate; decide from the work and intent, not elapsed time or tool count. Give the outcome, constraints, context and completion criteria; let the task choose its approach. Delegate within this Workspace unless an existing Project owns the work; reuse helpful task context. Projects may be shared: members can read the task and everything forwarded to it. Main is personal.
 After delegation, say what started (Opensteer shows its status card), handle other requests, then end your turn. Do not wait or poll. On completion, check the result against the request and answer here with the outcome, tradeoffs, sources and deliverables; keep execution detail in the task. Identify the task if several are outstanding or the conversation moved on. For a task's question, answer or ask the person, then continue it with thread_delegate and threadId.
 When wanted ongoing work fails or stops: for a stopped task, call thread_delegate with threadId; it retains its context, so do not read its history just to restart it. Otherwise fix what you can within authorization and delegate remaining repair. Reuse any repair already in progress. An agent's self-imposed repair budget cannot delay recovery; the person or site can. If the same failure recurs without new evidence, change approach or arrange a later retry. After verified recovery, resume Triggers paused for this failure, including automatic pauses; preserve pauses requested by the person. Explain what broke and the repair; ask only for required decisions or access.
 For active-task changes use thread_message; to stop use assignment_cancel and confirm its status.

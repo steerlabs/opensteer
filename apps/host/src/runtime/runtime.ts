@@ -1939,6 +1939,29 @@ export async function createHostRuntime(
       onWorkspaceEvent: publishWorkspaceEvent,
       store,
     });
+    integrationPlatformStore.specialists.setRemovalHandler(async (input) => {
+      const workspace = await store.getWorkspaceForOwner(input.workspaceId, input.actorUserId);
+      if (!workspace || workspace.backing.kind !== "local-directory")
+        throw new Error("Specialist storage is unavailable");
+      const active = await database
+        .selectFrom("runs")
+        .innerJoin("threads", "threads.id", "runs.threadId")
+        .select(["runs.assignmentId", "runs.requestedBy"])
+        .where("threads.specialistId", "=", input.specialistId)
+        .where("runs.status", "in", ["queued", "starting", "running", "waiting"])
+        .execute();
+      for (const run of active)
+        if (run.assignmentId)
+          await commands.cancelAssignment({
+            assignmentId: run.assignmentId,
+            requestedBy: run.requestedBy,
+            idempotencyKey: `specialist-remove:${input.specialistId}:${run.assignmentId}`,
+          });
+      await localWorkspaceDriver.removeSpecialist(
+        { ...workspace, backing: workspace.backing },
+        input.specialistId,
+      );
+    });
     let reportContinuationError: (error: unknown) => void = () => undefined;
     const continuations = new ContinuationService({
       loginRef: (operationId) => passwordSignIns.leaseForOperation(operationId)?.loginRef,

@@ -188,7 +188,13 @@ export type WorkspaceBacking = z.infer<typeof WorkspaceBackingSchema>;
 
 export type LocalWorkspaceBacking = Extract<WorkspaceBacking, { readonly kind: "local-directory" }>;
 
-export const AgentCapabilityProfileIdSchema = z.enum(["main", "workspace", "delegated", "trigger"]);
+export const AgentCapabilityProfileIdSchema = z.enum([
+  "main",
+  "workspace",
+  "delegated",
+  "specialist",
+  "trigger",
+]);
 export type AgentCapabilityProfileId = z.infer<typeof AgentCapabilityProfileIdSchema>;
 
 export const WorkspaceSchema = z.object({
@@ -419,6 +425,7 @@ export const DEFAULT_THREAD_ACCESS_MODE: ThreadAccessMode = "full-access";
 export const CHAT_THREAD_TITLE = "Chat";
 
 export const ThreadSchema = z.object({
+  specialistId: z.string().nullable().optional(),
   accessMode: ThreadAccessModeSchema,
   /**
    * When a person last asked this Thread for work: their newest message that

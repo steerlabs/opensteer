@@ -13,6 +13,7 @@ import type { CachedRunPlugins } from "../skills/plugin-cache.js";
  * scope, and the skills directory it reads.
  */
 export interface WarmEngine {
+  readonly specialistId?: string;
   /** The Run whose authority the proxy and relay carry; none while idle. */
   readonly authority: { credentials: RunCredentials | undefined };
   readonly browserCdpRelay: BrowserCdpRelay;

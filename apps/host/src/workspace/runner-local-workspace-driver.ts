@@ -214,6 +214,20 @@ export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriv
     return { ...bindingRef(input.workspace.backing, input.workspace.id), kind: "local-directory" };
   }
 
+  async removeSpecialist(workspace: LocalWorkspace, specialistId: string): Promise<void> {
+    await this.#request(
+      workspace.backing,
+      {
+        binding: bindingRef(workspace.backing, workspace.id),
+        operationId: `workspace:${workspace.id}:specialist.remove:v1`,
+        requestId: randomUUID(),
+        specialistId,
+        type: "host.workspace.local.specialist.remove",
+      },
+      "runner.workspace.local.specialist.removed",
+    );
+  }
+
   issueFromError(error: unknown): NonNullable<Workspace["storageIssue"]> {
     if (error instanceof WorkspaceStorageAuthorityMissingError) {
       return this.#issue({ code: "authority-mismatch", message: error.message, retryable: false });

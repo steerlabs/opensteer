@@ -56,3 +56,13 @@ When repeated work needs skills, scripts or MCP servers together, package it as 
 `plugin_install` with the folder's path relative to this Workspace. Symlinks are refused. Its skills
 turn on here; connections still need grants, and local MCP servers need the computer owner's launch
 approval.
+
+## Turn repeated work into a specialist
+
+For repeated, well-understood work, add `specialist.json` and `INSTRUCTIONS.md` to the plugin.
+List cheaper models in preference order (`engine`, `model`, optional `options`), declare the
+access needs and reasons, and use `fallback: "caller"` only when that cost is intended (the
+default is `"none"`). Test representative inputs and check the outputs before `plugin_install`.
+Resolve the registration's access or binding choices, then call `thread_delegate` with
+`specialist` set to its registration id or plugin name. Continue it with `threadId` to retain
+context. Instructions should name per-task outputs in `PLUGIN_DATA`, shared by this registration.

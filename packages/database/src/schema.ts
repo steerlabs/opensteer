@@ -124,7 +124,7 @@ export type NullableTimestamp = ColumnType<
 export type JsonColumn<T> = ColumnType<T, T, T>;
 
 /** Threads never hold the Trigger profile, which belongs to Trigger occurrences. */
-export type ThreadCapabilityProfileId = "main" | "workspace" | "delegated";
+export type ThreadCapabilityProfileId = "main" | "workspace" | "delegated" | "specialist";
 
 export interface DeploymentTable {
   id: DeploymentId;
@@ -777,6 +777,7 @@ export interface ThreadTable {
   inputQueuePaused: Generated<boolean>;
   inputQueuePausedBy: Generated<UserId | null>;
   accessMode: Generated<ThreadAccessMode>;
+  specialistId: Generated<string | null>;
   capabilityProfileId: ThreadCapabilityProfileId;
   role: Generated<ThreadRole>;
   id: ThreadId;
@@ -2143,6 +2144,7 @@ export interface DatabaseSchema {
     updatedAt: Timestamp;
   };
   specialists: {
+    removedAt: Generated<Date | null>;
     id: string;
     workspaceId: WorkspaceId;
     pluginId: string;

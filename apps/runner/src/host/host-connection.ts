@@ -1306,6 +1306,7 @@ class AgentsWorkSession implements RunnerWorkSession {
       case "host.workspace.local.provision":
       case "host.workspace.local.relocate":
       case "host.workspace.local.inspect":
+      case "host.workspace.local.specialist.remove":
       case "host.workspace.local.destroy":
       case "host.workspace.local.files.list":
       case "host.workspace.local.files.read":
@@ -1568,6 +1569,7 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
         case "host.workspace.local.provision":
         case "host.workspace.local.relocate":
         case "host.workspace.local.inspect":
+        case "host.workspace.local.specialist.remove":
         case "host.workspace.local.destroy":
         case "host.workspace.local.files.list":
         case "host.workspace.local.files.read":
@@ -1913,6 +1915,7 @@ function hostMessageFence(message: PostAuthenticationHostMessage): RunnerConnect
     case "host.workspace.local.provision":
     case "host.workspace.local.relocate":
     case "host.workspace.local.inspect":
+    case "host.workspace.local.specialist.remove":
     case "host.workspace.local.destroy":
     case "host.workspace.local.files.list":
     case "host.workspace.local.files.read":

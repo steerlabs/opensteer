@@ -1886,7 +1886,22 @@ export async function listActiveBrowserProfileGrantsForWorkspace(
   ownerId: UserId,
   agentBindingId?: string,
 ): Promise<readonly ActiveBrowserProfileGrantRecord[]> {
-  const { inheritsMain } = await resolveResourceAccess(database, {
+  const narrow = async (grants: readonly ActiveBrowserProfileGrantRecord[]) => {
+    if (!specialistId) return grants;
+    const result: ActiveBrowserProfileGrantRecord[] = [];
+    for (const grant of grants) {
+      const decision = await resolveResourceAccess(database, {
+        workspaceId,
+        ownerUserId: ownerId,
+        ...(agentBindingId ? { agentBindingId } : {}),
+        explicitAccess: grant.access,
+        resource: { type: "browser-profile", id: grant.profileId },
+      });
+      if (decision.access) result.push({ ...grant, access: decision.access });
+    }
+    return result;
+  };
+  const { inheritsMain, specialistId } = await resolveResourceAccess(database, {
     workspaceId,
     ownerUserId: ownerId,
     ...(agentBindingId ? { agentBindingId } : {}),
@@ -1901,13 +1916,15 @@ export async function listActiveBrowserProfileGrantsForWorkspace(
       .orderBy("id", "asc")
       .limit(129)
       .execute(databaseOperationOptions());
-    return profiles.map((profile) => ({
-      access: "read-write" as const,
-      createdAt: profile.createdAt,
-      grantId: inheritedMainBrowserGrantId(ownerId, workspaceId, profile.id),
-      profileId: profile.id,
-      workspaceId,
-    }));
+    return narrow(
+      profiles.map((profile) => ({
+        access: "read-write" as const,
+        createdAt: profile.createdAt,
+        grantId: inheritedMainBrowserGrantId(ownerId, workspaceId, profile.id),
+        profileId: profile.id,
+        workspaceId,
+      })),
+    );
   }
   const rows = await database
     .selectFrom("browserProfileGrants")
@@ -1931,13 +1948,15 @@ export async function listActiveBrowserProfileGrantsForWorkspace(
     .orderBy("browserProfileGrants.createdAt", "asc")
     .limit(129)
     .execute(databaseOperationOptions());
-  return rows.map((row) => ({
-    access: BrowserProfileAccessSchema.parse(row.access),
-    createdAt: row.createdAt,
-    grantId: row.grantId,
-    profileId: row.profileId,
-    workspaceId: row.workspaceId,
-  }));
+  return narrow(
+    rows.map((row) => ({
+      access: BrowserProfileAccessSchema.parse(row.access),
+      createdAt: row.createdAt,
+      grantId: row.grantId,
+      profileId: row.profileId,
+      workspaceId: row.workspaceId,
+    })),
+  );
 }
 
 export async function listActiveBrowserProfileGrants(

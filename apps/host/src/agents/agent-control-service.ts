@@ -1,3 +1,4 @@
+import { SpecialistStore } from "@opensteer/database";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import {
   AgentToolIdSchema,
@@ -43,6 +44,7 @@ import type { PlaceContextService } from "../computer-use/place-context-service.
 import type { ComputerUseService } from "../computer-use/computer-use-service.js";
 import type { SignedTokenService } from "../identity/host-keys.js";
 import type { MachineFullDiskAccessService } from "../shell/machine-full-disk-access-service.js";
+import { specialistPlacement } from "./specialist-placement.js";
 import { delegationPlacement } from "./delegation-placement.js";
 import { environmentDiscovery } from "./environment-discovery.js";
 import {
@@ -599,7 +601,10 @@ export class AgentControlService {
               throw badRequest("Choose another work Thread for the assignment");
             }
           }
-          const targetWorkspaceId = existingThread?.workspaceId ?? request.workspaceId;
+          const targetWorkspaceId =
+            existingThread?.workspaceId ??
+            request.workspaceId ??
+            (request.specialist ? currentThread.workspaceId : undefined);
           if (!targetWorkspaceId) throw badRequest("Choose a target Workspace or work Thread");
           const workspace = await this.#store.getWorkspaceForOwner(
             targetWorkspaceId,
@@ -609,9 +614,43 @@ export class AgentControlService {
           if (!isMainProfile && workspace.id !== currentThread.workspaceId) {
             throw forbidden("This capability profile can delegate only inside its Workspace");
           }
+          const registrations =
+            request.specialist || existingThread?.specialistId
+              ? await new SpecialistStore(this.#store.database).list(
+                  workspace.id,
+                  claims.requestedBy,
+                )
+              : [];
+          const specialist = registrations.find((r) =>
+            existingThread?.specialistId
+              ? r.id === existingThread.specialistId
+              : r.id === request.specialist || r.plugin === request.specialist,
+          );
+          if ((request.specialist || existingThread?.specialistId) && !specialist)
+            throw badRequest("Specialist is not registered in this Workspace");
+          if (
+            existingThread &&
+            request.specialist &&
+            request.specialist !== specialist?.id &&
+            request.specialist !== specialist?.plugin
+          )
+            throw badRequest("An existing Thread keeps its specialist binding");
+          if (specialist?.status === "pending")
+            throw badRequest(
+              `Specialist is pending: ${specialist.access
+                .filter((a) => a.state !== "bound")
+                .map((a) => `${a.type}: ${a.state} (${a.reason})`)
+                .join("; ")}`,
+            );
+          if (specialist && (request.model || request.harnessInstanceId || request.environmentId))
+            throw badRequest("Specialist execution is selected by its registration");
           const chosenEnvironmentId = request.environmentId;
           const environmentId =
-            existingThread?.environmentId ?? chosenEnvironmentId ?? currentThread.environmentId;
+            existingThread?.environmentId ??
+            chosenEnvironmentId ??
+            (specialist && workspace.backing.kind === "local-directory"
+              ? workspace.backing.ownerEnvironmentId
+              : currentThread.environmentId);
           const environment = await this.#store.getEnvironment(environmentId);
           if (!environment) throw badRequest("Selected execution environment does not exist");
           if (
@@ -630,14 +669,23 @@ export class AgentControlService {
           ) {
             throw badRequest("A local-directory Workspace can run only in its owning environment");
           }
-          const placement = await delegationPlacement(this.#store, {
-            environment,
-            existingThread,
-            harnessInstanceId: request.harnessInstanceId,
-            model: request.model,
-            parent: currentThread,
-          });
+          const placement =
+            specialist && !existingThread
+              ? await specialistPlacement(this.#store, {
+                  environment,
+                  parent: currentThread,
+                  specialist,
+                  canRun: (engine) => this.#canRunHarness(environment.id, engine),
+                })
+              : await delegationPlacement(this.#store, {
+                  environment,
+                  existingThread,
+                  harnessInstanceId: request.harnessInstanceId,
+                  model: request.model,
+                  parent: currentThread,
+                });
           const delegateInput = {
+            ...(specialist ? { specialistId: specialist.id } : {}),
             callerIntent: {
               requestId: request.requestId,
               requestFingerprint: this.#admissionRequest(claims, request).requestFingerprint,
@@ -1061,6 +1109,7 @@ function threadListScope(current: Thread): AgentThreadListScope {
       return { kind: "user" };
     case "workspace":
       return { kind: "workspace", workspaceId: current.workspaceId };
+    case "specialist":
     case "delegated":
     case "trigger":
       return { kind: "lineage", threadId: current.id };

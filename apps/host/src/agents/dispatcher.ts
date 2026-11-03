@@ -451,6 +451,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const agentControlToken = this.#agentControlTokens.issue({
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
+      ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
       capabilityProfileId: context.thread.capabilityProfileId,
       environmentId: context.run.environmentId,
       membershipGeneration: context.membershipGeneration,
@@ -464,6 +465,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const integrationToolsToken = this.#integrationToolsTokens.issue({
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
+      ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
       capabilityProfileId: context.thread.capabilityProfileId,
       environmentId: context.run.environmentId,
       membershipGeneration: context.membershipGeneration,
@@ -474,11 +476,27 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       threadId: context.thread.id,
       workspaceId: context.workspace.id,
     });
-    const pinnedPlugins = await this.#pluginVersions(context.workspace.id);
+    const specialist = context.thread.specialistId
+      ? await this.#store.database
+          .selectFrom("specialists")
+          .innerJoin("pluginVersions", "pluginVersions.id", "specialists.pluginVersionId")
+          .innerJoin("plugins", "plugins.id", "specialists.pluginId")
+          .select(["plugins.id as pluginId", "plugins.name", "pluginVersions.digest"])
+          .where("specialists.removedAt", "is", null)
+          .where("specialists.id", "=", context.thread.specialistId)
+          .where("specialists.workspaceId", "=", context.workspace.id)
+          .executeTakeFirst()
+      : null;
+    if (context.thread.specialistId && !specialist)
+      throw new Error("Specialist registration was removed");
+    const pinnedPlugins = specialist
+      ? [specialist]
+      : await this.#pluginVersions(context.workspace.id);
     const pluginsToken = this.#pluginsTokens.issue({
       pluginDigests: pinnedPlugins.map((plugin) => plugin.digest),
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
+      ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
       capabilityProfileId: context.thread.capabilityProfileId,
       environmentId: context.run.environmentId,
       membershipGeneration: context.membershipGeneration,
@@ -494,6 +512,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           token: this.#attachmentRunTokens.issue({
             bindingGeneration: binding.bindingGeneration,
             grantId: binding.grantId,
+            ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
             capabilityProfileId: context.thread.capabilityProfileId,
             environmentId: context.run.environmentId,
             membershipGeneration: context.membershipGeneration,
@@ -546,6 +565,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           url: this.#agentControlUrl,
         },
         agentTools: {
+          ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
           capabilityProfileId: context.thread.capabilityProfileId,
           token: agentControlToken,
           url: this.#agentToolsUrl,
@@ -558,6 +578,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           token: integrationToolsToken,
           url: this.#integrationToolsUrl,
         },
+        ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
         plugins: {
           versions: pinnedPlugins,
           token: pluginsToken,

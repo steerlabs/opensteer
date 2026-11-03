@@ -5,7 +5,7 @@ import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, lstat } from "node:fs/promises";
 import { platform } from "node:os";
 import { join, resolve } from "node:path";
 import { platformGuideForRun } from "@opensteer/agent-tools";
@@ -376,6 +376,7 @@ export class RunnerRuntime {
   readonly #containment: ExecutionContainment;
   /** Engines kept running between a Thread's Runs. */
   readonly #relocating = new Set<WorkspaceId>();
+  readonly #removedSpecialists = new Set<string>();
   readonly #warm: WarmEnginePool;
   /**
    * Threads whose last execution left processes the Runner could not prove
@@ -531,6 +532,21 @@ export class RunnerRuntime {
     } finally {
       this.#relocating.delete(workspaceId);
     }
+  }
+
+  async removeSpecialist(specialistId: string, remove: () => Promise<void>): Promise<void> {
+    this.#removedSpecialists.add(specialistId);
+    const active = [...this.#runs.values()].filter(
+      (run) => run.command.context.specialistId === specialistId,
+    );
+    this.revokeRuns(
+      active.map((run) => ({ runId: run.command.context.runId, reason: "Specialist removed" })),
+    );
+    await withTimeout(Promise.all(active.map((run) => run.task)), runtimeTaskStopWaitMs, {
+      timeoutError: () => new Error("Specialist Runs did not stop before folder removal"),
+    });
+    await this.#warm.evict((engine) => engine.specialistId === specialistId);
+    await remove();
   }
 
   activeRunIds(): readonly RunId[] {
@@ -1329,6 +1345,11 @@ export class RunnerRuntime {
       }
       switch (command.type) {
         case "run.execute":
+          if (
+            command.context.specialistId &&
+            this.#removedSpecialists.has(command.context.specialistId)
+          )
+            return reject("forbidden", "Specialist was removed", false);
           return this.#admitExecution(command, sink);
         case "trigger.execute":
           return this.#admitTriggerProgram(command, sink);
@@ -2257,7 +2278,7 @@ export class RunnerRuntime {
         attachmentRoot && attachmentDirectory ? { attachmentDirectory, attachmentRoot } : {};
       this.#requireInputAttachments(command.inputs, attachments);
       this.#requireInputAttachments(command.reports.messages, attachments);
-      const writableRoots = this.#workspaceManager.writableRoots({
+      let writableRoots = this.#workspaceManager.writableRoots({
         plan: context.workspaceAccess,
         requestedBy: context.requestedBy,
         workspaceKind: context.workspaceKind,
@@ -2282,6 +2303,35 @@ export class RunnerRuntime {
         threadId: context.threadId,
       });
       plugins = runSkills;
+      if (context.specialistId) {
+        const plugin = context.plugins.versions[0];
+        if (!plugin || context.plugins.versions.length !== 1)
+          throw new Error("Specialist requires exactly one pinned plugin");
+        const pluginRoot = join(this.#privateStateDirectory, "plugins", plugin.digest);
+        const parent = join(workspace.path, ".specialists");
+        await mkdir(parent, { recursive: true });
+        if ((await lstat(parent)).isSymbolicLink())
+          throw new Error("Specialist directory cannot be a symlink");
+        const cwd = join(parent, context.specialistId);
+        await mkdir(cwd, { recursive: true });
+        if ((await lstat(cwd)).isSymbolicLink())
+          throw new Error("Specialist directory cannot be a symlink");
+        const pluginInstructions = (await readFile(join(pluginRoot, "INSTRUCTIONS.md"), "utf8"))
+          .replaceAll("${PLUGIN_ROOT}", pluginRoot)
+          .replaceAll("${PLUGIN_DATA}", cwd);
+        workspace = {
+          ...workspace,
+          path: cwd,
+          instructions: [
+            workspace.instructions,
+            pluginInstructions,
+            `PLUGIN_ROOT=${pluginRoot}\nPLUGIN_DATA=${cwd}\nName outputs per task; this folder is shared by this registration's tasks.`,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+        };
+        writableRoots = [cwd];
+      }
       const workspaceSkills = await discoverWorkspaceSkills(workspace.path);
       for (const warning of workspaceSkills.warnings) {
         this.#logger?.info(warning, {
@@ -2292,7 +2342,7 @@ export class RunnerRuntime {
       const skills = resolveSkillPlan({
         bundled: planAgentSkills(this.#agentSkills, context.agentTools.capabilityProfileId),
         integration: runSkills.skills,
-        workspace: workspaceSkills.skills,
+        workspace: context.specialistId ? [] : workspaceSkills.skills,
       });
       // An engine that outlives its Run serves the Thread's next one only when
       // everything it was started with is the same, the launch directory it
@@ -2480,6 +2530,16 @@ export class RunnerRuntime {
       );
       const environment = Object.freeze({
         ...(launch?.environment ?? baseEnvironment),
+        ...(context.specialistId
+          ? {
+              PLUGIN_ROOT: join(
+                this.#privateStateDirectory,
+                "plugins",
+                context.plugins.versions[0]!.digest,
+              ),
+              PLUGIN_DATA: workspace.path,
+            }
+          : {}),
         OPENSTEER_AGENT_WORKSPACE: workspace.path,
         OPENSTEER_BROWSER_CDP_WS: browserCdpUrl,
         OPENSTEER_BROWSER_HARNESS: this.#browserHarnessExecutable,
@@ -2561,6 +2621,7 @@ export class RunnerRuntime {
             credentialProxy,
             harnessInstanceId: context.harnessInstanceId,
             plugins: runSkills,
+            ...(context.specialistId ? { specialistId: context.specialistId } : {}),
             // The next Run continues the conversation this session now holds.
             // A launch that failed its probe matches no Run's plan, so the
             // next Run with routes tries again on an engine of its own.
@@ -3429,6 +3490,7 @@ export function warmEngineKey(input: {
         input.instructions,
         context.accessMode,
         input.writableRoots,
+        context.specialistId ?? null,
         context.agentTools.capabilityProfileId,
         context.threadRole,
         context.modelSelection,

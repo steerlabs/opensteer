@@ -204,6 +204,10 @@ export const RunExecutionContextSchema = z.strictObject({
   agentTools: RunAgentToolsPlanSchema,
   browserCdp: RunBrowserCdpPlanSchema,
   integrationTools: RunIntegrationToolsPlanSchema,
+  specialistId: z
+    .string()
+    .regex(/^[a-zA-Z0-9-]+$/u)
+    .optional(),
   plugins: RunPluginsPlanSchema,
   bindingGeneration: z.number().int().positive(),
   membershipGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),

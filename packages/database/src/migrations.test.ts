@@ -143,6 +143,7 @@ const releasedMigrationNames = [
   "0133_resource_access_levels",
   "0134_plugins",
   "0135_specialists",
+  "0136_specialist_threads",
 ];
 
 describe("migration names", () => {
