@@ -12,7 +12,6 @@ import {
 import { actionErrorMessage } from "../../../ui-utils.js";
 import { useShell } from "../../app-shell.js";
 import { computerIcon } from "../../computers/device-art.js";
-import { HerePin } from "../../computers/here-pin.js";
 import type { IconName } from "../../icon.js";
 import { LoadingRows } from "../../loading-rows.js";
 import { useToast } from "../../toast.js";
@@ -38,13 +37,13 @@ export function DevicesSettings({ view }: { readonly view: SettingsView }) {
 }
 
 export function DevicesHeader({
-  lead,
+  lead: _lead,
   view: _view,
 }: {
   readonly lead: string;
   readonly view: SettingsView;
 }) {
-  return <SectionHeader lead={lead} title="Where you’re signed in" />;
+  return <SectionHeader title="Where you’re signed in" />;
 }
 
 /** Every device you are signed in from, this one first. */
@@ -168,7 +167,7 @@ function ThisDeviceGroup({
   current,
   detail,
   loading,
-  name,
+  name: _name,
 }: {
   readonly current: AuthSessionSummary | null;
   readonly detail: string | null;
@@ -193,22 +192,21 @@ function ThisDeviceGroup({
   }
 
   return (
-    <SettingsGroup
-      heading="This device"
-      headingId="settings-this-device-heading"
-      note={`Disconnecting ends this device’s access to ${name}. Nothing on ${name} changes, and you can connect again anytime.`}
-    >
+    <SettingsGroup heading="This device" headingId="settings-this-device-heading">
       {current ? (
         <SettingsRow
           action={
-            <button
-              className="btn btn--small"
-              disabled={pending}
-              onClick={disconnect}
-              type="button"
-            >
-              {pending ? "Removing…" : "Remove"}
-            </button>
+            <details className="settings-row-menu">
+              <summary aria-label="Session actions">•••</summary>
+              <button
+                className="btn btn--ghost btn--small"
+                disabled={pending}
+                onClick={disconnect}
+                type="button"
+              >
+                {pending ? "Signing out…" : "Sign out"}
+              </button>
+            </details>
           }
           detail={detail}
           icon={sessionIcon(current)}
@@ -217,7 +215,7 @@ function ThisDeviceGroup({
               <Link to={`/settings/account/sessions/${encodeURIComponent(current.id)}`}>
                 {current.deviceLabel}
               </Link>
-              <HerePin />
+              <span className="chip">This device</span>
             </>
           }
         />
@@ -245,15 +243,18 @@ export function OtherDevicesGroup({
       {others.map((session) => (
         <SettingsRow
           action={
-            <button
-              aria-label={`Remove ${session.deviceLabel}`}
-              className="btn btn--small"
-              disabled={sessions.pending !== null}
-              onClick={() => sessions.remove(session)}
-              type="button"
-            >
-              {sessions.pending === session.id ? "Removing…" : "Remove"}
-            </button>
+            <details className="settings-row-menu">
+              <summary aria-label={`Actions for ${session.deviceLabel}`}>•••</summary>
+              <button
+                aria-label={`Remove ${session.deviceLabel}`}
+                className="btn btn--small"
+                disabled={sessions.pending !== null}
+                onClick={() => sessions.remove(session)}
+                type="button"
+              >
+                {sessions.pending === session.id ? "Signing out…" : "Sign out"}
+              </button>
+            </details>
           }
           detail={sessionActivity(session.lastSeenAt)}
           icon={sessionIcon(session)}

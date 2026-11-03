@@ -1,3 +1,5 @@
+import { Link } from "react-router";
+import { Icon } from "../../icon.js";
 import { useState } from "react";
 import { usePersonalRemoteAccess } from "@opensteer/client/react";
 import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
@@ -7,7 +9,13 @@ import { useShell } from "../../app-shell.js";
 import { SettingsError, SettingsGroup, SettingsRow, type SettingsView } from "../primitives.js";
 import { linkAccountFromWeb } from "../link-personal-account.js";
 
-export function RemoteAccessSection({ view }: { readonly view: SettingsView }) {
+export function RemoteAccessSection({
+  view,
+  compact = false,
+}: {
+  readonly view: SettingsView;
+  readonly compact?: boolean;
+}) {
   const shell = useShell();
   const remote = usePersonalRemoteAccess(shell.hostClient);
   const [choosingMode, setChoosingMode] = useState(false);
@@ -35,11 +43,23 @@ export function RemoteAccessSection({ view }: { readonly view: SettingsView }) {
     <SettingsGroup
       heading="Open Opensteer from anywhere"
       headingId="settings-remote-access-heading"
-      note={remoteAccessDisconnectWarning}
     >
       <SettingsRow
         icon="globe"
-        title="Open Opensteer from anywhere"
+        title={
+          compact ? (
+            <Link to="/settings/account/remote-access">Open Opensteer from anywhere</Link>
+          ) : (
+            "Open Opensteer from anywhere"
+          )
+        }
+        detail={
+          access?.mode === "private"
+            ? "Private network"
+            : access?.mode === "connect"
+              ? "Connect · ready"
+              : "Off"
+        }
         action={
           <input
             type="checkbox"
@@ -57,9 +77,11 @@ export function RemoteAccessSection({ view }: { readonly view: SettingsView }) {
           />
         }
       />
-      <button className="btn" type="button" onClick={() => setChoosingMode(true)}>
-        Connection options
-      </button>
+      {compact ? null : (
+        <button className="btn btn--ghost" type="button" onClick={() => setChoosingMode(true)}>
+          Connection options <Icon name="chevron-right" />
+        </button>
+      )}
       {choosingMode ? (
         <Dialog
           labelledBy="remote-mode-title"
@@ -77,21 +99,31 @@ export function RemoteAccessSection({ view }: { readonly view: SettingsView }) {
               });
             }}
           >
-            <label>
-              Access{" "}
-              <select
-                aria-label="Remote access"
-                value={mode}
-                onChange={(event) => setDraft(event.target.value as PersonalRemoteAccessMode)}
-                disabled={busy}
-              >
-                <option value="off">Off</option>
-                {remote.status?.accountIssuer ? (
-                  <option value="connect">Opensteer Connect</option>
-                ) : null}
-                <option value="private">Private network</option>
-              </select>
-            </label>
+            <div className="settings-plugin-filters" role="group" aria-label="Remote access">
+              {(
+                [
+                  "off",
+                  ...(remote.status?.accountIssuer ? ["connect" as const] : []),
+                  "private",
+                ] as const
+              ).map((value) => (
+                <button
+                  className="btn"
+                  aria-pressed={mode === value}
+                  type="button"
+                  disabled={busy}
+                  key={value}
+                  onClick={() => setDraft(value)}
+                >
+                  {value === "off"
+                    ? "Off"
+                    : value === "connect"
+                      ? "Opensteer Connect"
+                      : "Private network"}
+                </button>
+              ))}
+            </div>
+            <p className="settings-footnote">{remoteAccessDisconnectWarning}</p>
             {mode === "private" ? (
               <label>
                 Private HTTPS address

@@ -71,11 +71,11 @@ describe("Device settings placement", () => {
     const html = renderSettings(placementFixtures()["personal-remote"], "/settings/account");
 
     expect(html).toContain('href="/settings/account/remote-access"');
-    expect(html).toContain("Disconnecting ends this device’s access to Mac mini.");
-    expect(html).toContain("Nothing on Mac mini changes");
+    expect(html).toContain("This device");
+    expect(html).toContain("Session actions");
     expect(
       renderSettings(placementFixtures()["personal-remote"], "/settings/account/remote-access"),
-    ).toContain("Changing remote access");
+    ).toContain("Connection options");
     expect(html).toContain("Where you’re signed in");
   });
 
@@ -85,7 +85,7 @@ describe("Device settings placement", () => {
 
     expect(html).toContain('aria-label="Open Opensteer from anywhere"');
     expect(html).toContain("Connection options");
-    expect(html).toContain("Changing remote access");
+    expect(html).toContain("Connection options");
   });
 
   it("shows administration to a Personal remote browser", () => {
@@ -96,7 +96,7 @@ describe("Device settings placement", () => {
     const html = renderSettings(context, "/settings/account");
 
     expect(html).toContain('href="/settings/account/remote-access"');
-    expect(html).toContain("Disconnecting ends this device’s access to Mac mini.");
+    expect(html).toContain("This device");
     expect(html).not.toContain("turn on remote access in the Opensteer app");
   });
 });
@@ -148,7 +148,7 @@ describe("Settings identity honesty", () => {
     expect(html).not.toContain(placeholderEmail);
     expect(html).not.toContain("Signed in to this deployment");
     expect(html).not.toContain("Remove from Account list");
-    expect(renderSettings(context, "/settings/general")).toContain("Runs on this computer");
+    expect(renderSettings(context, "/settings/general")).toContain("Running here");
   });
 });
 

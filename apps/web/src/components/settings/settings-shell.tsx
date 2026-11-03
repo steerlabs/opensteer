@@ -279,11 +279,7 @@ export function SettingsSectionRoute({
         <>
           <AccountSection />
           {view.kind === "personal" && view.administrator ? (
-            <Link className="card card__row" to="/settings/account/remote-access">
-              <Icon name="globe" />
-              <span className="card__row-body">Open Opensteer from anywhere</span>
-              <Icon name="chevron-right" />
-            </Link>
+            <RemoteAccessSection view={view} compact />
           ) : null}
           <SignedInDevicesSection view={view} />
         </>
