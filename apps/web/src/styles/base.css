@@ -1037,7 +1037,7 @@ svg.icon {
     .surface-chip,
     .voice-island,
     .place-card,
-    .project-card,
+    .projects-list,
     .automation-time,
     .automations-list,
     .computers-list,
@@ -1095,7 +1095,6 @@ svg.icon {
 
 :is(
     .intg-card,
-    .project-card,
     .hero__suggestion,
     .chat-btn,
     .surface-chip,

@@ -55,7 +55,58 @@ describe("NewWorkspaceDialog", () => {
           .querySelector("form")!
           .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
       );
-      expect(onCreate).toHaveBeenCalledWith({ icon: null, name: "Research" });
+      expect(onCreate).toHaveBeenCalledWith({ color: null, icon: null, name: "Research" });
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
+  it("offers a colour only to a Host that keeps one, and submits the one chosen", async () => {
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const onCreate = vi.fn();
+    const render = (colors: boolean) =>
+      act(async () =>
+        root.render(
+          <MemoryRouter>
+            <NewWorkspaceDialog
+              colors={colors}
+              creating={false}
+              error={null}
+              onClose={noOp}
+              onCreate={onCreate}
+            />
+          </MemoryRouter>,
+        ),
+      );
+    const openPicker = () =>
+      act(async () => container.querySelector<HTMLButtonElement>(".new-workspace-icon")!.click());
+    try {
+      await render(false);
+      await openPicker();
+      expect(container.querySelector('[aria-label="Colour"]')).toBeNull();
+      await openPicker();
+      await render(true);
+      await openPicker();
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>('[aria-label="Green"]')!.click(),
+      );
+      const input = container.querySelector<HTMLInputElement>(".new-project__name input")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+          input,
+          "Launch",
+        );
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () =>
+        container
+          .querySelector("form")!
+          .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+      );
+      expect(onCreate).toHaveBeenCalledWith({ color: "green", icon: null, name: "Launch" });
     } finally {
       await act(async () => root.unmount());
       container.remove();

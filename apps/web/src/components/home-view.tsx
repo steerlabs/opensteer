@@ -12,6 +12,7 @@ import {
   mainWorkspace,
   mutationIdempotencyKey,
   preparingPlacement,
+  relocationPaths,
   threadPlacementOptions,
   unwrapRpcResult,
   taskTime,
@@ -29,7 +30,6 @@ import { Composer, type ComposerSubmission } from "./composer.js";
 import { HomeIntro } from "./home-intro.js";
 import { ThreadSurface } from "./thread-view.js";
 import { UsageNotice } from "./usage-notice.js";
-import { WorkspaceNotificationMute } from "./workspace-notification-mute.js";
 import {
   discardStagedHomeMessage,
   pendingScopeUnavailable,
@@ -47,6 +47,7 @@ import {
 } from "./execution-review.js";
 import { Icon } from "./icon.js";
 import { PageTopbar } from "./page-header.js";
+import { AreaLink } from "./workspace/area-link.js";
 import { AreaHeader, NewTaskMark } from "./workspace/conversation-header.js";
 import { useWorkspace } from "./workspace/workspace-context.js";
 import { useComposerContext } from "./workspace/composer-context.js";
@@ -339,7 +340,6 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
     hostClient,
     openHarnessAuthentication,
     refreshHarnessCatalog,
-    openSharing,
     placements,
     rememberExecution,
     snapshot,
@@ -453,6 +453,13 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
                 <h1>{workspace.name}</h1>
                 {workspace.description ? <p>{workspace.description}</p> : null}
               </div>
+              <AreaLink
+                aria-label={`${workspace.name} settings`}
+                className="btn btn--small btn--ghost hero__workspace-settings"
+                to={`/workspaces/${encodeURIComponent(workspace.id)}/settings`}
+              >
+                <Icon name="settings" /> Settings
+              </AreaLink>
             </div>
           )}
           {home ? (
@@ -464,6 +471,7 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
           {health ? (
             <>
               <p className="hero__subtitle">{health.body}</p>
+              {health.detail}
               {health.action}
             </>
           ) : null}
@@ -538,21 +546,6 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
               </div>
             </>
           )}
-          {!home && workspace.status === "ready" ? (
-            <WorkspaceNotificationMute workspace={workspace} />
-          ) : null}
-          {!home && workspace.status === "ready" && snapshot.workspaceSharingAvailable ? (
-            <button
-              className="btn btn--ghost btn--small"
-              onClick={() => openSharing(workspace.id)}
-              type="button"
-            >
-              <Icon name="share" /> Share this project
-            </button>
-          ) : null}
-          {!home && workspace.status === "ready" ? (
-            <WorkspaceDeletionAction action="workspace.delete" workspaceId={workspace.id} />
-          ) : null}
         </div>
       </div>
     </div>
@@ -687,10 +680,19 @@ export function workLocationState(
   return environments.some((environment) => environment.connected) ? "connected" : "none";
 }
 
+export interface WorkspaceHealth {
+  readonly action: React.ReactNode;
+  readonly blocking: boolean;
+  readonly body: string;
+  /** Anything the body needs beside it to be acted on: the folders a move names. */
+  readonly detail?: React.ReactNode;
+  readonly heading: string;
+}
+
 export function workspaceHealth(
   workspace: WorkspaceSummary,
   snapshot: Pick<HostSnapshot, "environments" | "harnesses">,
-): { action: React.ReactNode; blocking: boolean; body: string; heading: string } | null {
+): WorkspaceHealth | null {
   const workLocation = workLocationState(snapshot.environments);
   const placements = threadPlacementOptions(snapshot.environments, snapshot.harnesses);
   const readyAiEngine = placements.some((placement) => placement.available);
@@ -702,14 +704,44 @@ export function workspaceHealth(
       heading: "Preparing your Workspace…",
     };
   }
+  if (workspace.storageIssue?.code === "relocation-required") {
+    const paths = relocationPaths(workspace.storageIssue.message);
+    return {
+      action: <RetryStorage workspaceId={workspace.id} adopt />,
+      blocking: true,
+      body: paths
+        ? `Opensteer keeps every project inside your Main folder. Move this one from ${paths.from} to ${paths.to}, then confirm here.`
+        : workspace.storageIssue.message,
+      detail: paths ? (
+        <dl className="relocation-paths">
+          <div>
+            <dt>From</dt>
+            <dd>
+              <code>{paths.from}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>To</dt>
+            <dd>
+              <code>{paths.to}</code>
+            </dd>
+          </div>
+        </dl>
+      ) : null,
+      heading: "Move this project’s folder into Main",
+    };
+  }
+  if (workspace.storageIssue?.code === "local-authority-unavailable") {
+    return {
+      action: null,
+      blocking: true,
+      body: `${workspace.machineName ?? "The computer that holds its folder"} isn’t connected. This project comes back as soon as it is.`,
+      heading: "Its computer is offline",
+    };
+  }
   if (workspace.status === "failed" || workspace.storageIssue) {
     return {
-      action: (
-        <RetryStorage
-          workspaceId={workspace.id}
-          adopt={workspace.storageIssue?.code === "relocation-required"}
-        />
-      ),
+      action: <RetryStorage workspaceId={workspace.id} />,
       blocking: true,
       body:
         workspace.storageIssue?.message ??
@@ -772,7 +804,7 @@ export function workspaceHealth(
  * its icon, so the picker appears once the reader's membership says so; the
  * read is the one the sharing dialog uses.
  */
-function WorkspaceIcon({ workspace }: { workspace: WorkspaceSummary }) {
+export function WorkspaceIcon({ workspace }: { workspace: WorkspaceSummary }) {
   const { hostClient, reportActionError, snapshot } = useShell();
   const [pending, setPending] = useState(false);
   const [owner, setOwner] = useState(false);

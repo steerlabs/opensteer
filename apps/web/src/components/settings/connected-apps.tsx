@@ -16,16 +16,16 @@ export function ConnectedAppsLayout() {
 
   return (
     <div className="page connected-apps">
-      <PageTopbar onOpenNavigation={shell.openMobileNavigation} title="Connected apps" />
+      <PageTopbar onOpenNavigation={shell.openMobileNavigation} title="Connections" />
       <div className="connected-apps__inner">
         <header className="connected-apps__header">
-          <h1 className="connected-apps__title">Connected apps</h1>
+          <h1 className="connected-apps__title">Connections</h1>
           <p className="connected-apps__description">
             Connect the apps your agents work in, and the places people message them. Each keeps its
             own permissions and access.
           </p>
         </header>
-        <nav aria-label="Connected apps" className="connected-apps-tabs">
+        <nav aria-label="Connections" className="connected-apps-tabs">
           <NavLink
             className={({ isActive }) =>
               isActive ? "connected-apps-tabs__item is-active" : "connected-apps-tabs__item"

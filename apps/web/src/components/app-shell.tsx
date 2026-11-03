@@ -30,6 +30,7 @@ import {
 } from "@opensteer/protocol/desktop";
 import {
   type ExecutionPreferences,
+  type MarkColor,
   type ThreadAccessMode,
   type WorkspaceIconName,
 } from "@opensteer/core";
@@ -606,7 +607,11 @@ export function AppShell({
     setNewWorkspaceOpen(true);
   }, []);
   const createWorkspace = useCallback(
-    async (input: { readonly icon: WorkspaceIconName | null; readonly name: string }) => {
+    async (input: {
+      readonly color: MarkColor | null;
+      readonly icon: WorkspaceIconName | null;
+      readonly name: string;
+    }) => {
       setCreatingWorkspace(true);
       setNewWorkspaceError(null);
       try {
@@ -618,13 +623,25 @@ export function AppShell({
         });
         if (result.type !== "workspace.create") throw new Error("Workspace command mismatch.");
         setNewWorkspaceOpen(false);
+        // The Project exists either way; a colour the Host refused is the
+        // person's to pick again on its page, not a reason to stay here.
+        if (input.color)
+          void hostClient
+            .dispatch({
+              color: input.color,
+              idempotencyKey: mutationIdempotencyKey(`workspace-color:${result.workspace.id}`),
+              type: "workspace.color.set",
+              workspaceId: result.workspace.id,
+            })
+            .catch(reportActionError);
+        openConversation(`/workspaces/${encodeURIComponent(result.workspace.id)}`);
       } catch (error) {
         setNewWorkspaceError(actionErrorMessage(error));
       } finally {
         setCreatingWorkspace(false);
       }
     },
-    [hostClient],
+    [hostClient, openConversation, reportActionError],
   );
   const openSharing = useCallback(
     (workspaceId: string) => {
@@ -1087,6 +1104,7 @@ export function AppShell({
                       throw error;
                     }
                   }}
+                  onNewProject={openNewWorkspace}
                   onSetTaskDone={setTaskDone}
                   onToggleCollapsed={toggleSidebar}
                 />
@@ -1158,6 +1176,7 @@ export function AppShell({
               ) : null}
               {newWorkspaceOpen ? (
                 <NewWorkspaceDialog
+                  colors={snapshot.taskMarksAvailable}
                   creating={creatingWorkspace}
                   error={newWorkspaceError}
                   onClose={() => {

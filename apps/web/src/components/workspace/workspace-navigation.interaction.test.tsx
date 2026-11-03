@@ -3,7 +3,13 @@ import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { placeList, taskAttention, taskList, type HostSnapshot } from "@opensteer/client/host";
+import {
+  groupTasksByProject,
+  placeList,
+  taskAttention,
+  taskList,
+  type HostSnapshot,
+} from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { createBrowserSessionId, type WorkspaceTabLineage } from "@opensteer/protocol";
 
@@ -557,9 +563,14 @@ describe("native places", () => {
 });
 
 describe("sidebar Done shelf", () => {
+  // The shelf is Main's: a Project's Done work stays on that Project's page.
+  const mainTasks = () => {
+    const snapshot = client.getSnapshot();
+    return groupTasksByProject(snapshot, taskList(snapshot)).main;
+  };
   async function mountWithDone() {
     await mount("/");
-    const task = taskList(client.getSnapshot()).ready.find((item) => item.canBeDone)!;
+    const task = mainTasks().ready.find((item) => item.canBeDone)!;
     expect(task).toBeDefined();
     const read = client.getSnapshot().threadReadStates[task.threadId];
     if (read?.unreadSequence)
@@ -572,7 +583,7 @@ describe("sidebar Done shelf", () => {
 
   it("defaults closed, shows Done rows on toggle and remembers the choice across remount", async () => {
     await mountWithDone();
-    const done = taskList(client.getSnapshot()).done;
+    const done = mainTasks().done;
     expect(done.length).toBeGreaterThan(0);
     expect(shelf().getAttribute("aria-expanded")).toBe("false");
     expect(shelf().getAttribute("aria-label")).toBe(
@@ -595,18 +606,23 @@ describe("sidebar Done shelf", () => {
 
   it("opens even when the preference cannot be saved", async () => {
     await mountWithDone();
-    const done = taskList(client.getSnapshot()).done[0]!;
-    vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+    const done = mainTasks().done[0]!;
+    const save = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
       throw new DOMException("Quota exceeded", "QuotaExceededError");
     });
-    await click(shelf());
-    expect(shelf().getAttribute("aria-expanded")).toBe("true");
-    expect(row(done.threadId)).not.toBeNull();
+    // happy-dom's Storage outlives `restoreAllMocks`; a refusing setItem must not reach later cases.
+    try {
+      await click(shelf());
+      expect(shelf().getAttribute("aria-expanded")).toBe("true");
+      expect(row(done.threadId)).not.toBeNull();
+    } finally {
+      save.mockRestore();
+    }
   });
 
   it("hides the shelf when no Done tasks exist", async () => {
     await mountWithDone();
-    for (const done of taskList(client.getSnapshot()).done)
+    for (const done of mainTasks().done)
       await act(async () => client.setTaskDone(done.threadId, false));
     expect(document.querySelector(".side-done")).toBeNull();
     expect(element("#sidebar-tasks").textContent).toBe("Tasks");
@@ -617,11 +633,13 @@ describe("sidebar Done shelf", () => {
     async (hasDone) => {
       await mount((source) => {
         const snapshot = source.getSnapshot();
-        const task = taskList(snapshot).ready[0]!;
+        const task = groupTasksByProject(snapshot, taskList(snapshot)).main.ready[0]!;
         const entry = snapshot.tasks!.entries.find(({ thread }) => thread.id === task.threadId)!;
         vi.spyOn(source, "getSnapshot").mockReturnValue({
           ...snapshot,
           activeTasks: [],
+          // Main's own list: a Project's folder would hold the section open by itself.
+          workspaces: snapshot.workspaces.filter(({ kind }) => kind === "main"),
           tasks: {
             ...snapshot.tasks!,
             entries: hasDone
@@ -647,7 +665,7 @@ describe("sidebar Done shelf", () => {
   it("moves a Ready row through Mark Done and Reopen using its context menu", async () => {
     await mountWithDone();
     await click(shelf());
-    const task = taskList(client.getSnapshot()).ready.find((item) => item.canBeDone)!;
+    const task = mainTasks().ready.find((item) => item.canBeDone)!;
     expect(task).toBeDefined();
     if (task.unread) {
       const read = client.getSnapshot().threadReadStates[task.threadId]!;
@@ -673,14 +691,10 @@ describe("sidebar Done shelf", () => {
       element(".side-done").compareDocumentPosition(row(task.threadId)!) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    expect(
-      taskList(client.getSnapshot()).done.some((item) => item.threadId === task.threadId),
-    ).toBe(true);
+    expect(mainTasks().done.some((item) => item.threadId === task.threadId)).toBe(true);
     await choose("Reopen");
     expect(row(task.threadId)).toBe(before);
-    expect(
-      taskList(client.getSnapshot()).ready.some((item) => item.threadId === task.threadId),
-    ).toBe(true);
+    expect(mainTasks().ready.some((item) => item.threadId === task.threadId)).toBe(true);
     expect(
       row(task.threadId)!.compareDocumentPosition(element(".side-done")) &
         Node.DOCUMENT_POSITION_FOLLOWING,
@@ -742,5 +756,64 @@ describe("sidebar Done shelf", () => {
     await click(more);
     expect(load).toHaveBeenCalledTimes(2);
     expect(more.disabled).toBe(false);
+  });
+});
+
+describe("sidebar Project folders", () => {
+  const folders = () => {
+    const snapshot = client.getSnapshot();
+    return groupTasksByProject(snapshot, taskList(snapshot));
+  };
+  const header = (id: string) => element(`.side-folder[data-workspace-id="${id}"]`);
+
+  it("holds each Project's work under its folder, and folded still says it needs you", async () => {
+    await mount("/");
+    const grouping = folders();
+    const asking = grouping.folders.find(({ signal }) => signal === "needs-you")!;
+    const id = asking.workspace.id;
+    const task = asking.rows[0]!;
+    const nested = element(`.side-task[data-thread-id="${task.threadId}"]`);
+    expect(nested.classList.contains("side-task--nested")).toBe(true);
+    expect(
+      header(id).compareDocumentPosition(nested) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const mine = grouping.main.working[0] ?? grouping.main.ready[0]!;
+    expect(
+      element(`.side-task[data-thread-id="${mine.threadId}"]`).classList.contains(
+        "side-task--nested",
+      ),
+    ).toBe(false);
+    // Open, the row says it needs you; the folder does not repeat it.
+    expect(header(id).querySelector(".side-folder__needs")).toBeNull();
+
+    await click(element(".side-folder__toggle", header(id)));
+    expect(element(".side-folder__toggle", header(id)).getAttribute("aria-expanded")).toBe("false");
+    expect(document.querySelector(`.side-task[data-thread-id="${task.threadId}"]`)).toBeNull();
+    expect(element(".side-folder__needs", header(id)).textContent).toBe(`!${asking.needsYou}`);
+    expect(element(".side-folder__main", header(id)).getAttribute("aria-label")).toMatch(
+      /needs? you/u,
+    );
+
+    // Folded stays folded on this device.
+    act(() => root?.unmount());
+    setRoot(null);
+    client.dispose();
+    resetHistory();
+    document.body.replaceChildren();
+    await mount("/");
+    expect(element(".side-folder__toggle", header(id)).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("starts a task in a Project from its folder, keeping the place in the middle", async () => {
+    await mount((source) => `/${tabSearch(pageTab(source))}`);
+    const place = pageTab();
+    const project = folders().folders[0]!.workspace;
+    await click(element(".side-folder__new", header(project.id)));
+    expect(history.at(-1)!.path).toBe(`/workspaces/${project.id}`);
+    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
+    expect(element(".side-folder__main", header(project.id)).getAttribute("aria-current")).toBe(
+      "page",
+    );
+    expect(document.querySelector("[data-composer-input]")).not.toBeNull();
   });
 });

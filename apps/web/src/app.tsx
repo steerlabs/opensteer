@@ -11,6 +11,7 @@ import { AppShell } from "./components/app-shell.js";
 import { HomeRoute, NewTaskRoute, WorkspaceHomeRoute } from "./components/home-view.js";
 import { LiveRedirect } from "./components/workspace/live-redirect.js";
 import { ProjectsPage } from "./components/projects-page.js";
+import { ProjectSettingsRoute } from "./components/project-settings.js";
 import { ThreadRoute } from "./components/thread-view.js";
 import { InviteRoute } from "./components/invitation-onboarding.js";
 import { IntegrationsPage } from "./components/integrations/integrations-page.js";
@@ -446,6 +447,7 @@ export function App({
             <Route path="live" element={<LiveRedirect />} />
             <Route path="projects" element={<ProjectsPage />} />
             <Route path="workspaces/:workspaceId" element={<WorkspaceHomeRoute />} />
+            <Route path="workspaces/:workspaceId/settings" element={<ProjectSettingsRoute />} />
             <Route
               path="channels"
               element={<SettingsRedirect from="/channels" to="/settings/apps/messaging" />}
@@ -481,6 +483,7 @@ export function App({
                 element={<SettingsSectionRoute section="browser-profiles" />}
               />
               <Route path="passwords" element={<SettingsSectionRoute section="passwords" />} />
+              <Route path="plugins" element={<SettingsSectionRoute section="plugins" />} />
               <Route
                 path="remote-access"
                 element={<SettingsRedirect from="/settings/remote-access" to="/settings/devices" />}

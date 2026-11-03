@@ -160,8 +160,9 @@ function ServiceCard({
 
 /**
  * Everything installed that has no definition for the services above to
- * manage: Agent Plugins and remote MCP servers. An administrator can remove any
- * of them, which is the only exit an installation that materialized badly has.
+ * manage: remote and agent-proposed MCP servers. An administrator can remove
+ * any of them, which is the only exit an installation that materialized badly
+ * has. Plugins are Settings → Plugins'.
  */
 export function PluginsAndMcpSection({
   entries,
@@ -252,7 +253,7 @@ export function PluginsAndMcpSection({
       ) : null}
       {isAdministrator ? (
         <button className="btn" onClick={onInstall} type="button">
-          <Icon name="plus" /> Add Agent Plugin or MCP
+          <Icon name="plus" /> Add MCP server
         </button>
       ) : null}
     </section>

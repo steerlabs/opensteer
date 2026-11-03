@@ -198,7 +198,7 @@ describe("the review's findings", () => {
     await mount((source) => `/projects${tabSearch(pageTab(source))}`);
     const place = pageTab();
     const middle = element(".place");
-    await click(element(".project-card"));
+    await click(element(".project-row"));
     expect(history.at(-1)!.path).toMatch(/^\/workspaces\//u);
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
     expect(element(".place")).toBe(middle);

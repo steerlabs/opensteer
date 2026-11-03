@@ -1,0 +1,716 @@
+/* Projects: folders in the sidebar, the directory, a Project's settings, and
+   the plugins installed for agents. Every surface here reuses the sidebar's
+   rows and Settings' cards; what is new is how a Project holds its work. */
+
+/* ---- Sidebar: Projects as folders ----
+   "Projects" heads the folders inside the Tasks list, so the split between
+   Tasks and Tabs is unchanged and one scroll holds all the reader's work. */
+.side-subhead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-height: var(--side-head);
+  padding: var(--space-10) var(--space-4) var(--space-4) var(--space-10);
+}
+
+.side-subhead__title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-strong);
+  letter-spacing: 0.005em;
+}
+
+.side-subhead__link {
+  color: var(--muted);
+}
+
+.side-subhead__link:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+/* A folder is a row: its mark and name open the Project, + starts a task in
+   it, and the chevron at its end folds what it holds. */
+.side-folder {
+  --ring-bg: var(--ground);
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.side-folder:hover {
+  --ring-bg: var(--cutout-quiet);
+  background-color: var(--fill-quiet);
+}
+
+.side-folder.is-filled {
+  --ring-bg: var(--cutout-selected);
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
+}
+
+/* Folded over the conversation on screen, it says where that conversation is. */
+.side-folder.holds-open {
+  --ring-bg: var(--cutout-quiet);
+  border-color: var(--rim-selected);
+}
+
+.side-folder__main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-10);
+  min-width: 0;
+  min-height: var(--control-height);
+  padding: var(--space-6) var(--space-4) var(--space-6) var(--space-8);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+}
+
+.side-folder__main:hover {
+  text-decoration: none;
+}
+
+.side-folder__main:focus-visible {
+  outline-offset: -2px;
+}
+
+/* The orb sits in the marks' 20px column, so a folder's name starts on the
+   same line as every task's. */
+.side-folder__main > .workspace-orb {
+  margin-inline: 2px;
+}
+
+.side-folder__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+  line-height: 1.32;
+  white-space: nowrap;
+  mask-image: linear-gradient(to right, var(--mask-ink) calc(100% - var(--space-24)), transparent);
+}
+
+.side-folder.is-unready .side-folder__title {
+  color: var(--muted);
+}
+
+.side-folder__needs {
+  padding-inline: calc(var(--space-4) - 1px) var(--space-6);
+}
+
+.side-folder:is(:hover, :focus-within) .side-row-action {
+  width: var(--row-action-size);
+  margin-right: 0;
+  opacity: 1;
+}
+
+.side-folder__toggle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: var(--control-height-sm);
+  height: var(--control-height-sm);
+  margin-right: var(--space-4);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+}
+
+.side-folder__toggle:hover {
+  color: var(--text);
+  background-color: var(--fill-quiet);
+}
+
+.side-folder__toggle svg {
+  width: 13px;
+  height: 13px;
+}
+
+.side-folder__toggle--empty {
+  pointer-events: none;
+}
+
+.side-folder__count {
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A Project's rows hang from its folder on one hairline, the only mark of
+   belonging: the rows themselves are the sidebar's own. */
+.side-task--nested {
+  margin-left: var(--space-20);
+}
+
+.side-task--nested::before,
+.side-folder-more::before {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  /* Under the folder's orb, which centres 18px in. */
+  left: -3px;
+  width: 1px;
+  background: var(--line);
+  content: "";
+}
+
+.side-folder-more {
+  position: relative;
+  margin-left: var(--space-20);
+}
+
+.side-folder-more__main {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-height-sm);
+  padding: var(--space-4) var(--space-8) var(--space-4) calc(var(--space-8) + 30px);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.side-folder-more__main:hover {
+  color: var(--text);
+  background-color: var(--fill-quiet);
+  text-decoration: none;
+}
+
+/* ---- The Projects directory ---- */
+.projects-page__filter {
+  position: relative;
+  display: flex;
+  align-items: center;
+  max-width: 22rem;
+}
+
+.projects-page__filter > .icon {
+  position: absolute;
+  left: var(--space-10);
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.projects-page__filter > .text-input {
+  width: 100%;
+  padding-left: var(--space-32);
+}
+
+.projects-page__more {
+  align-self: flex-start;
+}
+
+.projects-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-md);
+  background: var(--sheen) var(--fill-plate);
+  overflow: hidden;
+  box-shadow: var(--edge-plate);
+}
+
+.projects-list > li + li {
+  border-top: 1px solid var(--line);
+}
+
+.project-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-14);
+  padding: var(--space-12) var(--space-16);
+  color: inherit;
+  text-decoration: none;
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.project-row:hover {
+  background-color: var(--fill-quiet);
+  text-decoration: none;
+}
+
+.project-row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--ember-line);
+}
+
+.project-row__body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.project-row__name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-row__line {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-row__state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+}
+
+.project-row__state > .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.project-row__state--needs-you {
+  color: var(--amber-text);
+}
+
+.project-row__state--working {
+  color: var(--text-soft);
+}
+
+.project-row__state--failed,
+.project-row__state--problem {
+  color: var(--red-text);
+}
+
+.project-row__chevron {
+  width: 14px;
+  height: 14px;
+  color: var(--muted-dim);
+}
+
+/* An empty directory is the first step: what a Project is for, and the way in. */
+.projects-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-10);
+  padding: var(--space-28) var(--space-24);
+  border: 1px dashed var(--rim-plate);
+  border-radius: var(--radius-md);
+}
+
+.projects-empty__mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-sm);
+  background: var(--sheen) var(--fill-plate);
+  color: var(--text-soft);
+  box-shadow: var(--edge-plate);
+}
+
+.projects-empty__mark > .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.projects-empty__title {
+  margin: 0;
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+}
+
+.projects-empty__body {
+  max-width: 48ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-lg);
+  line-height: 1.5;
+}
+
+@media (max-width: 680px) {
+  .project-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .project-row__chevron {
+    display: none;
+  }
+}
+
+/* ---- New project ---- */
+.new-project__identity {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-14);
+}
+
+.new-project__name {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---- A Project's page and settings ---- */
+.hero--project .hero__workspace-copy {
+  flex: 1;
+}
+
+.hero__workspace-settings {
+  flex: none;
+  align-self: center;
+}
+
+.project-settings__head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+}
+
+.project-settings__identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-16);
+}
+
+.project-settings__identity-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.project-settings__identity-copy .page__title {
+  overflow-wrap: anywhere;
+}
+
+.project-settings__avatar {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-heavy);
+}
+
+.project-settings__role {
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.project-settings__storage p {
+  margin: var(--space-2) 0 0;
+}
+
+.project-settings__storage-action {
+  margin-top: var(--space-10);
+}
+
+/* The two folders a move names, one above the other so a long path wraps
+   where it can be read and copied whole. */
+.relocation-paths {
+  display: grid;
+  gap: var(--space-6);
+  width: 100%;
+  margin: var(--space-8) 0 0;
+  text-align: left;
+}
+
+.relocation-paths > div {
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-8);
+}
+
+.relocation-paths dt {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-strong);
+}
+
+.relocation-paths dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.relocation-paths code {
+  display: block;
+  padding: var(--space-6) var(--space-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface-code);
+  color: var(--text);
+  font: var(--text-md) / 1.45 var(--font-mono);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.hero .relocation-paths {
+  max-width: 34rem;
+}
+
+.project-plugin,
+.workspace-mute {
+  cursor: pointer;
+}
+
+/* A specialist: what it is and runs on, then each thing it asks to use, why,
+   and what is left to decide about it. */
+.specialist + .specialist {
+  margin-top: var(--space-10);
+}
+
+.specialist__access {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+
+.specialist-access {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-12);
+  padding: var(--space-10) var(--space-16) var(--space-10) var(--space-22);
+}
+
+.specialist-access + .specialist-access {
+  border-top: 1px solid var(--line);
+}
+
+.specialist-access__glyph {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--muted);
+}
+
+.specialist-access__glyph > .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.specialist-access--needs-access .specialist-access__glyph,
+.specialist-access--choose .specialist-access__glyph {
+  color: var(--amber-text);
+}
+
+.specialist-access__body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.specialist-access__name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-8);
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+}
+
+.specialist-access__level {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-normal);
+}
+
+.specialist-access__reason {
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.specialist-access__state {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.specialist-access__bound {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+}
+
+.specialist-access__bound > .icon {
+  width: 13px;
+  height: 13px;
+  color: var(--green);
+}
+
+.specialist-access__choose {
+  display: flex;
+  gap: var(--space-6);
+}
+
+.specialist-access__choose .select-input {
+  max-width: 12rem;
+}
+
+.specialist-access__waiting {
+  color: var(--amber-text);
+  font-size: var(--text-md);
+}
+
+.specialist__none,
+.specialist__footnote {
+  margin: 0;
+  padding: var(--space-10) var(--space-16) var(--space-12);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.specialist__error {
+  margin: 0 var(--space-12) var(--space-12);
+}
+
+@media (max-width: 680px) {
+  .specialist-access {
+    grid-template-columns: auto minmax(0, 1fr);
+    padding-left: var(--space-16);
+  }
+
+  .specialist-access__state {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+}
+
+/* ---- Settings → Plugins ---- */
+.plugin-install {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-12);
+}
+
+.plugin-install__folder {
+  flex: 2 1 18rem;
+}
+
+.plugin-install__runs-on {
+  flex: 1 1 10rem;
+}
+
+.plugin-install__skipped {
+  margin: var(--space-4) 0 0;
+  padding-left: var(--space-16);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+}
+
+.plugin-row + .plugin-row {
+  border-top: 1px solid var(--line);
+}
+
+/* Where it is on: one line under the plugin, opening to a switch per place. */
+.plugin-row__where {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  width: 100%;
+  min-width: 0;
+  margin-top: calc(var(--space-8) * -1);
+  padding: 0 var(--space-16) var(--space-12) calc(var(--space-16) + 34px + var(--space-12));
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  text-align: left;
+}
+
+.plugin-row__where:hover {
+  color: var(--text);
+}
+
+.plugin-row__where > .icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+}
+
+.plugin-row__source {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--muted-dim);
+  font: var(--text-sm) / 1.4 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+}
+
+.plugin-row__places {
+  margin: 0 var(--space-16) var(--space-12) calc(var(--space-16) + 34px + var(--space-12));
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.plugin-row__places > li + li {
+  border-top: 1px solid var(--line);
+}
+
+.plugin-row__place {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-8) var(--space-12);
+  cursor: pointer;
+}
+
+.plugin-row__place-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-row__error {
+  padding: 0 var(--space-16) var(--space-12);
+}
+
+@media (max-width: 680px) {
+  .plugin-row__where,
+  .plugin-row__places {
+    padding-left: var(--space-16);
+    margin-left: var(--space-16);
+  }
+
+  .plugin-row__where {
+    margin-left: 0;
+  }
+
+  .plugin-row__source {
+    display: none;
+  }
+}

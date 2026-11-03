@@ -31,6 +31,12 @@ it("shows relocation paths and explicit confirmation, and reports a refused adop
   const root = createRoot(element);
   shell.dispatch.mockRejectedValueOnce(new Error("Target missing"));
   try {
+    // Both folders stand on their own lines, whole, to be read and copied.
+    await act(async () => root.render(notice.detail));
+    expect([...element.querySelectorAll("code")].map((code) => code.textContent)).toEqual([
+      "/old/project",
+      "/main/Projects/research",
+    ]);
     await act(async () => root.render(notice.action));
     expect(element.textContent).toBe("I moved it");
     await act(async () => element.querySelector("button")!.click());
