@@ -2116,7 +2116,14 @@ it("keeps an automatic message that joined a person's Run, and lets an automatic
   const joined = input({
     id: "joined",
     runId: "run-a",
-    author: { kind: "agent", runId: "run-b", threadId: "thr-b" },
+    author: {
+      displayName: "Research",
+      kind: "agent",
+      runId: createId("run"),
+      threadId: createId("thread"),
+      workspaceId: createId("workspace"),
+      workspaceName: "Main",
+    },
   });
   const personRun = run({ id: "run-a", status: "running" });
   expect(
