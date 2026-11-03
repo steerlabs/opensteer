@@ -1,3 +1,4 @@
+import { Modal } from "react-native";
 import { FlatList, TextInput, View, ScrollView, Pressable, Alert } from "react-native";
 import { AppText, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
@@ -11,14 +12,16 @@ export function NativeSettingsPage(props: NativeSettingsPageProps) {
       ? section.rows.map((row) => ({ ...row, key: `${section.key}:${row.key}` }))
       : []),
   ]);
-  return (
+  const content = (
     <Screen>
       <FlatList
         data={rows}
         keyExtractor={(item) => item.key}
         keyboardShouldPersistTaps="handled"
         ListHeaderComponent={
-          props.search ? (
+          props.sheet ? (
+            <SecondaryButton label={`Close ${props.sheet.title}`} onPress={props.sheet.onClose} />
+          ) : props.search ? (
             <TextInput
               accessibilityLabel="Search plugins"
               placeholder="Search plugins"
@@ -53,6 +56,13 @@ export function NativeSettingsPage(props: NativeSettingsPageProps) {
         )}
       />
     </Screen>
+  );
+  return props.sheet ? (
+    <Modal visible presentationStyle="pageSheet" onRequestClose={props.sheet.onClose}>
+      {content}
+    </Modal>
+  ) : (
+    content
   );
 }
 function Row({ row }: { readonly row: NativeSettingsRow }) {

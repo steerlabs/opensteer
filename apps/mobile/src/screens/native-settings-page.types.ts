@@ -44,6 +44,7 @@ export interface NativeSettingsSection {
   readonly collapsed?: boolean;
 }
 export interface NativeSettingsPageProps {
+  readonly sheet?: { readonly title: string; readonly onClose: () => void };
   readonly sections: readonly NativeSettingsSection[];
   readonly search?: { readonly value: string; readonly onChange: (value: string) => void };
 }

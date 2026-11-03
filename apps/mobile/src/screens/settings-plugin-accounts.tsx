@@ -1,3 +1,4 @@
+import type { NativeSettingsSection, NativeSettingsRow } from "./native-settings-page.types.js";
 import {
   canRespondToRequests,
   mutationIdempotencyKey,
@@ -41,6 +42,7 @@ export function PluginAccounts(props: {
   readonly hostClient: HostClient;
   readonly hostName: string;
   readonly definitionId?: string | undefined;
+  readonly render?: (sections: NativeSettingsSection[]) => ReactNode;
 }): ReactNode {
   const userId = useHostSelector(props.hostClient, selectUserId);
   if (userId === null) {
@@ -61,6 +63,7 @@ function ConnectedApps(props: {
   readonly hostClient: HostClient;
   readonly hostName: string;
   readonly definitionId?: string | undefined;
+  readonly render?: (sections: NativeSettingsSection[]) => ReactNode;
 }) {
   const { hostClient, hostName } = props;
   const mobile = useMobileClient();
@@ -239,6 +242,64 @@ function ConnectedApps(props: {
       { style: "cancel", text: "Cancel" },
     ]);
 
+  if (props.render) {
+    const button = (key: string, label: string, onPress: () => void): Extract<NativeSettingsRow, { kind: "button" }> => ({
+      key,
+      kind: "button",
+      label,
+      onPress,
+      disabled: busy !== null || !online,
+    });
+    const sections: NativeSettingsSection[] = [];
+    if (error || loadError || done)
+      sections.push({
+        key: "account-status",
+        title: error || loadError ? "Needs you" : "Sign-in",
+        rows: [
+          { key: "status", kind: "text", label: error ?? loadError ?? done ?? "" },
+          ...(loadError ? [button("retry", "Try again", () => void load())] : []),
+        ],
+      });
+    for (const app of apps ?? []) {
+      if (props.definitionId && app.definitionId !== props.definitionId) continue;
+      const rows: NativeSettingsRow[] = [];
+      for (const account of app.accounts) {
+        rows.push({
+          key: account.id,
+          kind: "text",
+          label: `${account.title} · ${account.status.text}`,
+        });
+        if (account.repair === "sign-in")
+          rows.push(button(`${account.id}:repair`, "Reconnect", () => signIn(app, account.id)));
+        if (account.repair === "choose-repositories")
+          rows.push(
+            button(`${account.id}:repos`, "Choose repositories", () => chooseRepositories(account)),
+          );
+        rows.push({
+          ...button(`${account.id}:remove`, `Disconnect ${account.title}`, () =>
+            disconnect(account),
+          ),
+          destructive: true,
+        });
+      }
+      if (app.signIn?.kind === "direct" || app.signIn?.kind === "choose")
+        rows.push(
+          button(
+            `add:${app.definitionId}`,
+            app.accounts.length ? "Add another account" : `Connect your ${app.name} account`,
+            () => signIn(app, `add:${app.definitionId}`),
+          ),
+        );
+      else if (app.signIn?.kind === "elsewhere" || app.signIn?.kind === "unavailable")
+        rows.push({
+          key: "unavailable",
+          kind: "text",
+          label: app.signIn.kind === "elsewhere" ? app.signIn.note : app.signIn.detail,
+        });
+      sections.push({ key: `accounts:${app.definitionId}`, title: "Sign in", rows });
+    }
+    return props.render(sections);
+  }
   return (
     <Screen edgeToEdge>
       <ScrollView

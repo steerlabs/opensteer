@@ -468,7 +468,7 @@ it.each(["ios", "android"])(
 );
 
 it.each(["ios", "android"])(
-  "requires explicit catalog consent before installing on %s",
+  "reviews placement before Add consent and reads real installed detail on %s",
   async (os) => {
     state.os = os;
     await open("plugins");
@@ -476,57 +476,30 @@ it.each(["ios", "android"])(
     const directory = await host.rpc["plugins.directory.get"]({});
     if (!directory.ok) throw new Error("Missing directory");
     const item = directory.data.catalog.find((item) => !item.added)!;
-    expect(item).toBeDefined();
     const dispatch = vi.spyOn(host, "dispatch");
     await press(`${item.title} · Add`);
-    const add = row("Add and continue to sign-in");
-    expect(add.kind === "button" && add.disabled).toBe(true);
     expect(dispatch).not.toHaveBeenCalled();
-    const consent = row(`Allow ${item.title} to request this access`);
-    if (consent.kind !== "toggle") throw new Error("Missing consent");
-    await act(async () => consent.onChange(true));
+    expect(rows().some((row) => row.label.startsWith("Allow "))).toBe(false);
+    expect(rows().some((row) => row.kind === "toggle")).toBe(true);
     expect(row("Add and continue to sign-in")).toMatchObject({ disabled: false });
     await press("Add and continue to sign-in");
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "integration.catalog.install",
-        input: expect.objectContaining({ definitionId: item.definitionId }),
-      }),
-    );
-    expect(rows().some((row) => row.label === "Choose where it’s on")).toBe(true);
+    expect(dispatch.mock.calls.map(([command]) => command.type)).toEqual([
+      "integration.catalog.install",
+      "settings.plugin.placement.set",
+    ]);
     const overview = await host.rpc["plugins.overview.get"]({});
     if (!overview.ok) throw new Error("Missing overview");
-    const template = await host.rpc["plugins.detail.get"]({
-      target: overview.data.rows[0]!.target,
-    });
-    if (!template.ok) throw new Error("Missing detail template");
-    const rpc = host.rpc;
-    Object.defineProperty(host, "rpc", {
-      value: new Proxy(rpc, {
-        get(target, key, receiver) {
-          if (key === "plugins.detail.get")
-            return async () => ({
-              ok: true,
-              data: {
-                ...template.data,
-                row: {
-                  ...template.data.row,
-                  target: { kind: "service", definitionId: item.definitionId },
-                  title: item.title,
-                },
-              },
-            });
-          return Reflect.get(target, key, receiver);
-        },
-      }),
-    });
-    await press("Choose where it’s on");
-    await press("Done");
-    expect(
-      [...state.pages.values()].some((page) =>
-        page.sections.some((section) => section.key === "hero"),
-      ),
-    ).toBe(false);
-    expect(rows().some((row) => row.label === "Add plugins")).toBe(true);
+    const installed = overview.data.rows.find(
+      (row) =>
+        (row.target.kind === "service" || row.target.kind === "device-app") &&
+        row.target.definitionId === item.definitionId,
+    );
+    expect(installed).toBeDefined();
+    const result = await host.rpc["plugins.detail.get"]({ target: installed!.target });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Installed detail missing");
+    expect(result.data.row.title).toBe(item.title);
+    expect(result.data.installationIds).toHaveLength(1);
+    expect(result.data.accounts).toEqual([]);
   },
 );

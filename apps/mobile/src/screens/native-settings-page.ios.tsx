@@ -1,4 +1,5 @@
 import {
+  BottomSheet,
   Button,
   ContextMenu,
   SwipeActions,
@@ -55,7 +56,25 @@ export function NativeSettingsPage(props: NativeSettingsPageProps) {
   );
   return (
     <Host style={{ flex: 1 }} useViewportSizeMeasurement>
-      {props.search ? (
+      {props.sheet ? (
+        <BottomSheet
+          isPresented
+          onIsPresentedChange={(open) => {
+            if (!open) props.sheet?.onClose();
+          }}
+        >
+          <NavigationStack>
+            <Toolbar modifiers={[navigationTitle(props.sheet.title)]}>
+              {content}
+              <Toolbar.Content>
+                <ToolbarItem placement="topBarTrailing">
+                  <Button label="Close" onPress={props.sheet.onClose} />
+                </ToolbarItem>
+              </Toolbar.Content>
+            </Toolbar>
+          </NavigationStack>
+        </BottomSheet>
+      ) : props.search ? (
         <NavigationStack>
           <Toolbar modifiers={[navigationTitle("Plugins")]}>
             {content}
