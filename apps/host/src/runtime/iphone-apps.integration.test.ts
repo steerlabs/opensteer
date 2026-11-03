@@ -339,7 +339,11 @@ integration.sequential("iPhone integrations Host contract", () => {
             environmentIds: [createId("environment")],
             maxConcurrentRuns: 1,
             harnessDrivers: [],
-            localStorage: null,
+            localStorage: {
+              storageAuthorityId: createId("storageAuthority"),
+              bindings: [],
+              truncated: false,
+            },
             providerStateModes: ["isolated"],
             workspaceBackings: ["local-directory"],
           },

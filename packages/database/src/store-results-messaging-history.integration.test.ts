@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
   EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
@@ -986,7 +987,7 @@ describeStore("PostgreSQL store", (it) => {
       runnerId,
       tokenSuffix: "channel-ingress-delivery",
     });
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -1315,7 +1316,7 @@ describeStore("PostgreSQL store", (it) => {
       status: "sent",
     });
 
-    const secondWorkspace = await store.createWorkspace({
+    const secondWorkspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -3239,7 +3240,7 @@ describeStore("PostgreSQL store", (it) => {
 
   it("serializes live Request projection against Workspace deletion", async ({ storeFixture }) => {
     const { startRunFixture, store, openLiveRequest, database } = storeFixture;
-    const deletionFixture = await startRunFixture("live-request-deletion-race");
+    const deletionFixture = await startRunFixture("live-request-deletion-race", "project");
     const deletionRequestId = createId("request");
     const [deletion, deletionOpen] = await Promise.allSettled([
       store.requestWorkspaceDeletion({

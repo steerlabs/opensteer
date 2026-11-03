@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
   EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
@@ -51,7 +52,7 @@ integration.sequential("browser sign-in authority", () => {
         deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
         hostInstanceId,
       });
-      const workspace = await store.createWorkspace({
+      const workspace = await createTestWorkspace(store, {
         backing: {
           kind: "local-directory",
           generation: 1,

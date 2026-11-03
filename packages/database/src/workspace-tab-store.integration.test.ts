@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
   EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
@@ -87,7 +88,7 @@ integration.sequential("durable workspace tabs", () => {
         deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
         hostInstanceId: createId("hostInstance"),
       });
-      const workspace = await store.createWorkspace({
+      const workspace = await createTestWorkspace(store, {
         backing: {
           kind: "local-directory",
           bindingId: createStorageFixtureId("workspaceBinding"),
@@ -101,6 +102,7 @@ integration.sequential("durable workspace tabs", () => {
         createdBy: ownerId,
         idempotencyKey: randomUUID(),
         name: "Tabs",
+        kind: "project",
         status: "ready",
       });
       const runnerId = createId("runner");

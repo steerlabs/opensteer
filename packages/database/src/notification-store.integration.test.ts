@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
   EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
@@ -183,7 +184,7 @@ integration("notification decision boundary", () => {
       const ownerId = await store.createUser(`Owner ${suffix}`);
       const environmentId = createId("environment");
       const runnerId = await enrollMainRunner({ environmentId, suffix });
-      const workspace = await store.createWorkspace({
+      const workspace = await createTestWorkspace(store, {
         backing: {
           generation: 1,
           kind: "local-directory",
@@ -634,7 +635,7 @@ integration("notification decision boundary", () => {
       await sql`
       update public.deployments
       set deployment_shape = jsonb_build_object(
-        'defaultWorkspaceBacking', 'storage', 'kind', 'personal'
+        'defaultWorkspaceBacking', 'local-directory', 'kind', 'personal'
       )
       where singleton_key = 'primary'
     `.execute(database);
@@ -1516,7 +1517,7 @@ integration("notification decision boundary", () => {
         observedViews,
       } = storeFixture;
       const fixture = await createFixture("mute-elsewhere", true);
-      const other = await store.createWorkspace({
+      const other = await createTestWorkspace(store, {
         backing: {
           generation: 1,
           kind: "local-directory",
@@ -1676,7 +1677,7 @@ integration("notification decision boundary", () => {
       } = storeFixture;
       const chat = await createFixture("title-chat", true);
       const work = await addThread(chat, { suffix: "title-work" });
-      const project = await store.createWorkspace({
+      const project = await createTestWorkspace(store, {
         backing: {
           generation: 1,
           kind: "local-directory",
@@ -2262,7 +2263,7 @@ integration("notification decision boundary", () => {
       });
       expect(muted).toMatchObject({ muted: true, revision: "1" });
       expect(unmuted).toMatchObject({ muted: false, revision: "2" });
-      const otherWorkspace = await store.createWorkspace({
+      const otherWorkspace = await createTestWorkspace(store, {
         backing: {
           generation: 1,
           kind: "local-directory",
@@ -2389,7 +2390,7 @@ integration("notification decision boundary", () => {
       suffix: string,
     ): Promise<WorkspaceId> {
       const { store } = storeFixture;
-      const workspace = await store.createWorkspace({
+      const workspace = await createTestWorkspace(store, {
         backing: {
           generation: 1,
           kind: "local-directory",
@@ -2419,7 +2420,7 @@ integration("notification decision boundary", () => {
     ): Promise<{ readonly threadId: ThreadId; readonly userId: UserId }> {
       const { store } = storeFixture;
       const userId = await store.createUser(`Stranger ${suffix}`);
-      const workspace = await store.createWorkspace({
+      const workspace = await createTestWorkspace(store, {
         backing: {
           generation: 1,
           kind: "local-directory",

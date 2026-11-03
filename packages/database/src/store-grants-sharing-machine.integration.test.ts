@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
   EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
@@ -940,7 +941,7 @@ describeStore("PostgreSQL store", (it) => {
       runnerId: mainRunnerId,
       tokenSuffix: "workspace-sharing-main",
     });
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -1192,7 +1193,7 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { createRunFixture, store, database } = storeFixture;
     const fixture = await createRunFixture("integration-skill-lifecycle");
-    const project = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -1349,7 +1350,7 @@ describeStore("PostgreSQL store", (it) => {
         stagedRequestRace,
       } = storeFixture;
       const fixture = await startRunFixture("integration-access-widening");
-      const project = await store.createWorkspace({
+      const project = await createTestWorkspace(store, {
         backing: {
           generation: 1,
           kind: "local-directory",
@@ -1527,7 +1528,7 @@ describeStore("PostgreSQL store", (it) => {
     const { startRunFixture, store, database, createProjectWorkspace, enqueueHumanTrigger } =
       storeFixture;
     const fixture = await startRunFixture("integration-access-widening");
-    const project = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -1772,7 +1773,7 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { startRunFixture, store, database } = storeFixture;
     const fixture = await startRunFixture("integration-access-widening");
-    const project = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -1917,7 +1918,7 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { createRunFixture, store, database } = storeFixture;
     const fixture = await createRunFixture("integration-main-inheritance");
-    const project = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",

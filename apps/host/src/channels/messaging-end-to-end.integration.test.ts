@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 /**
  * The whole messaging path with every real component except Slack itself.
  *
@@ -161,7 +162,7 @@ integration("messaging end to end", () => {
     agentsRunnerId = createId("runner");
     await enrollAgentsRunner();
     await enrollMessagingRunner();
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         kind: "local-directory",
         generation: 1,

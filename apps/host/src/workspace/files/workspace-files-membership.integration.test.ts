@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { createId, type Workspace } from "@opensteer/core";
 import { createDatabase, migrateToLatest, OpensteerStore } from "@opensteer/database";
 import { sql } from "kysely";
@@ -42,7 +43,7 @@ integration("Workspace Files membership generation", () => {
         kind: "local",
         name: "Files membership laptop",
       });
-      const workspace = await store.createWorkspace({
+      const workspace = await createTestWorkspace(store, {
         backing:
           backingKind === "local-directory"
             ? {

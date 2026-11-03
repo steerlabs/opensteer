@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
@@ -137,7 +138,7 @@ integration("agent-to-agent messaging round trip", () => {
     },
     workspaces: {
       create: async (input) =>
-        store.createWorkspace({
+        createTestWorkspace(store, {
           ...input,
           backing: {
             kind: "local-directory",
@@ -191,7 +192,7 @@ integration("agent-to-agent messaging round trip", () => {
   it("authorizes person_show against saved-tab ownership and Thread visibility", async () => {
     const f = await createMessagingFixture();
     const strangerId = await store.createUser("Other person");
-    const otherWorkspace = await store.createWorkspace({
+    const otherWorkspace = await createTestWorkspace(store, {
       createdBy: strangerId,
       idempotencyKey: randomUUID(),
       name: "Private",
@@ -963,7 +964,7 @@ integration("agent-to-agent messaging round trip", () => {
     "republishes completed cross-Workspace assignment titles after %s",
     async (mode) => {
       const fixture = await createMessagingFixture();
-      const workspace = await store.createWorkspace({
+      const workspace = await createTestWorkspace(store, {
         backing: {
           kind: "local-directory",
           generation: 1,
@@ -1304,7 +1305,7 @@ integration("agent-to-agent messaging round trip", () => {
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     await enrollTestRunner({ createdBy: userId, environmentId, runnerId });
-    const mainWorkspace = await store.createWorkspace({
+    const mainWorkspace = await createTestWorkspace(store, {
       backing: {
         kind: "local-directory",
         generation: 1,

@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { placeList, type HostSnapshot } from "@opensteer/client/host";
 import {
   createId,
@@ -5689,7 +5690,7 @@ async function createWorkspace(
   kind: "main" | "project",
   name = `Workspace ${suffix}`,
 ) {
-  return store.createWorkspace({
+  return createTestWorkspace(store, {
     backing: {
       kind: "local-directory",
       generation: 1,

@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { createId, type UserId, type WorkspaceId } from "@opensteer/core";
 import {
   AttachmentStore,
@@ -56,7 +57,7 @@ integration.sequential("Host attachment originals", () => {
       hostInstanceId: createId("hostInstance"),
     });
     const userId = await store.createUser(`Attachment uploader ${suffix}`);
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         kind: "local-directory",
         generation: 1,
@@ -114,7 +115,7 @@ integration.sequential("Host attachment originals", () => {
 
   it("returns a conflict when concurrent workspaces reuse one uploader's upload key", async () => {
     const first = await fixture("cross-workspace-key");
-    const second = await store.createWorkspace({
+    const second = await createTestWorkspace(store, {
       backing: {
         kind: "local-directory",
         generation: 1,

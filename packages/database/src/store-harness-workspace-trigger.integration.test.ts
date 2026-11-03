@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
   EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
@@ -44,7 +45,7 @@ describeStore("PostgreSQL store", (it) => {
     const { store, database } = storeFixture;
     const owner = await store.createUser("Project slug owner");
     const create = (name: string, key: string) =>
-      store.createWorkspace({
+      createTestWorkspace(store, {
         backing: {
           kind: "local-directory",
           bindingId: createStorageFixtureId("workspaceBinding"),
@@ -90,7 +91,7 @@ describeStore("PostgreSQL store", (it) => {
   it("refuses Main deletion without changing its status", async ({ storeFixture }) => {
     const { store } = storeFixture;
     const owner = await store.createUser("Main owner");
-    const main = await store.createWorkspace({
+    const main = await createTestWorkspace(store, {
       backing: {
         kind: "local-directory",
         bindingId: createStorageFixtureId("workspaceBinding"),
@@ -1238,7 +1239,7 @@ describeStore("PostgreSQL store", (it) => {
     expect(await store.environmentIsAvailableToUser(environmentId, ownerId)).toBe(true);
     expect(await store.environmentIsAvailableToUser(environmentId, otherId)).toBe(false);
 
-    const main = await store.createWorkspace({
+    const main = await createTestWorkspace(store, {
       backing: {
         bindingId: createId("workspaceBinding"),
         generation: 1,
@@ -1252,7 +1253,7 @@ describeStore("PostgreSQL store", (it) => {
       name: "Main",
       status: "ready",
     });
-    const project = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         bindingId: createId("workspaceBinding"),
         generation: 1,
@@ -1356,7 +1357,7 @@ describeStore("PostgreSQL store", (it) => {
     const mine = await store.createEnvironment({ kind: "local", name: "This computer" });
     const theirs = await store.createEnvironment({ kind: "local", name: "Another computer" });
     const localWorkspace = (environmentId: EnvironmentId, key: string) =>
-      store.createWorkspace({
+      createTestWorkspace(store, {
         backing: {
           bindingId: createId("workspaceBinding"),
           generation: 1,
@@ -1373,7 +1374,7 @@ describeStore("PostgreSQL store", (it) => {
       });
     const here = await localWorkspace(mine, "local-listing-here");
     const away = await localWorkspace(theirs, "local-listing-away");
-    const shared = await store.createWorkspace({
+    const shared = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",

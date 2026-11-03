@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   AgentEventSchema,
   createId,
@@ -922,7 +923,7 @@ integration("durable Thread changes native continuation", () => {
 
     const foreignUserId = await stack.host.store.createUser("Other owner");
     const foreignPlacement = await createForeignPlacement(stack, foreignUserId);
-    const foreignWorkspace = await stack.host.store.createWorkspace({
+    const foreignWorkspace = await createTestWorkspace(stack.host.store, {
       backing: {
         kind: "local-directory",
         generation: 1,

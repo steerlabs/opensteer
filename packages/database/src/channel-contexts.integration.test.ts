@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
   EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
@@ -198,7 +199,7 @@ integration("channel conversation authority contexts", () => {
 
   async function createFixture(suffix: string, policy: ChannelAccessPolicy) {
     const ownerId = await store.createUser(`${suffix} owner`);
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",

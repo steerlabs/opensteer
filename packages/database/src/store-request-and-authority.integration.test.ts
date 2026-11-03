@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
   EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
@@ -1228,7 +1229,7 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { startRunFixture, store, database } = storeFixture;
     const fixture = await startRunFixture("integration-access-target-authority");
-    const project = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -2434,7 +2435,7 @@ describeStore("PostgreSQL store", (it) => {
     // Offering somebody else's managed Runner first and letting the Thread
     // authority trigger reject the insert is a retry loop that never ends.
     const fixture = await createCloudBindingFixture("channel-placement");
-    const bobWorkspace = await store.createWorkspace({
+    const bobWorkspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",

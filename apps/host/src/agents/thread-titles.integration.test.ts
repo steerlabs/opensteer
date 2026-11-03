@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   AgentEventSchema,
   createId,
@@ -192,7 +193,7 @@ integration.sequential("Thread title lifecycle", () => {
         .digest("base64url")}`,
       publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
     });
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         kind: "local-directory",
         generation: 1,
@@ -799,7 +800,7 @@ integration.sequential("Thread title lifecycle", () => {
           workspaces: {
             projectPath: async (workspace) => `/Main/Projects/${workspace.slug}`,
             create: async (input) =>
-              store.createWorkspace({
+              createTestWorkspace(store, {
                 ...input,
                 backing: {
                   kind: "local-directory",
@@ -985,7 +986,7 @@ integration.sequential("Thread title lifecycle", () => {
     const created = [home];
     for (let index = 0; index < 8; index++) {
       created.push(await f.create());
-      await store.createWorkspace({
+      await createTestWorkspace(store, {
         createdBy: f.userId,
         idempotencyKey: randomUUID(),
         kind: "project",
@@ -1234,7 +1235,7 @@ integration.sequential("Thread title lifecycle", () => {
     const created = [f.workspace];
     for (let index = 0; index < 6; index++)
       created.push(
-        await store.createWorkspace({
+        await createTestWorkspace(store, {
           ...input,
           backing: { ...input.backing, bindingId: createId("workspaceBinding") },
           idempotencyKey: randomUUID(),
@@ -1246,8 +1247,8 @@ integration.sequential("Thread title lifecycle", () => {
       backing: { ...input.backing, bindingId: createId("workspaceBinding") },
       idempotencyKey: randomUUID(),
     };
-    const allocated = await store.createWorkspace(allocatedInput);
-    expect((await store.createWorkspace(allocatedInput)).color).toBe(allocated.color);
+    const allocated = await createTestWorkspace(store, allocatedInput);
+    expect((await createTestWorkspace(store, allocatedInput)).color).toBe(allocated.color);
     const receipt = await database
       .selectFrom("commands")
       .select("payload")
@@ -1255,7 +1256,7 @@ integration.sequential("Thread title lifecycle", () => {
       .executeTakeFirstOrThrow();
     expect(receipt.payload).toHaveProperty("request");
     expect(receipt.payload).not.toHaveProperty("request.color");
-    const workspace = await store.createWorkspace({ ...input, color: "teal" });
+    const workspace = await createTestWorkspace(store, { ...input, color: "teal" });
     expect(workspace.color).toBe("teal");
     const edit = {
       requestedBy: f.userId,
@@ -1276,8 +1277,8 @@ integration.sequential("Thread title lifecycle", () => {
     expect((await row(task.thread.id)).color).toBe(task.thread.color);
     await store.setWorkspaceColor({ ...edit, color: "purple", idempotencyKey: randomUUID() });
     expect((await store.setWorkspaceColor(edit)).color).toBe("purple");
-    expect((await store.createWorkspace({ ...input, color: "teal" })).color).toBe("purple");
-    await expect(store.createWorkspace({ ...input, color: "sky" })).rejects.toMatchObject({
+    expect((await createTestWorkspace(store, { ...input, color: "teal" })).color).toBe("purple");
+    await expect(createTestWorkspace(store, { ...input, color: "sky" })).rejects.toMatchObject({
       code: "conflict",
     });
     await expect(store.setWorkspaceColor({ ...edit, color: "lime" })).rejects.toMatchObject({

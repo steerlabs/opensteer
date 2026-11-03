@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
   EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
@@ -1129,7 +1130,7 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { createRunFixture, store } = storeFixture;
     const fixture = await createRunFixture("owner-coordination");
-    const secondWorkspace = await store.createWorkspace({
+    const secondWorkspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -1156,7 +1157,7 @@ describeStore("PostgreSQL store", (it) => {
       workspaceId: secondWorkspace.id,
     });
     const foreignOwnerId = await store.createUser("Foreign owner");
-    const foreignWorkspace = await store.createWorkspace({
+    const foreignWorkspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -1223,7 +1224,7 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { createRunFixture, store } = storeFixture;
     const fixture = await createRunFixture("agent-thread-list");
-    const project = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -1278,7 +1279,7 @@ describeStore("PostgreSQL store", (it) => {
     const unrelated = await makeThread("unrelated", "Report_2026 100% done", fixture.workspace.id);
     const projectThread = await makeThread("project", "Client onboarding", project.id);
     const foreignOwnerId = await store.createUser("Foreign listing owner");
-    const foreignWorkspace = await store.createWorkspace({
+    const foreignWorkspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -1465,7 +1466,7 @@ describeStore("PostgreSQL store", (it) => {
       name: "Other placement",
       runnerId,
     });
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -1483,14 +1484,9 @@ describeStore("PostgreSQL store", (it) => {
     });
     expect(workspace.kind).toBe("main");
     const materializedBacking = {
-      generation: 1,
-      kind: "local-directory",
-      bindingId: createStorageFixtureId("workspaceBinding"),
-      ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-        "env_00000000-0000-4000-8000-000000000001",
-      ),
-      storageAuthorityId: createStorageFixtureId("storageAuthority"),
-    } as const;
+      ...workspace.backing,
+      storageAuthorityId: createId("storageAuthority"),
+    };
     await store.setWorkspaceProvisioningResult({
       backing: materializedBacking,
       expectedBacking: workspace.backing,
@@ -1498,16 +1494,8 @@ describeStore("PostgreSQL store", (it) => {
       workspaceId: workspace.id,
     });
     await expect(
-      store.createWorkspace({
-        backing: {
-          generation: 1,
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
+      createTestWorkspace(store, {
+        backing: workspace.backing,
 
         createdBy: userId,
         idempotencyKey: "workspace-immutable",
@@ -1520,16 +1508,8 @@ describeStore("PostgreSQL store", (it) => {
       name: "Workspace",
     });
     await expect(
-      store.createWorkspace({
-        backing: {
-          generation: 1,
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
+      createTestWorkspace(store, {
+        backing: workspace.backing,
 
         createdBy: userId,
         idempotencyKey: "workspace-immutable",
@@ -1538,16 +1518,8 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toMatchObject({ code: "conflict" });
     await expect(
-      store.createWorkspace({
-        backing: {
-          generation: 1,
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
+      createTestWorkspace(store, {
+        backing: workspace.backing,
 
         createdBy: userId,
         idempotencyKey: "workspace-second-main",
@@ -1653,16 +1625,8 @@ describeStore("PostgreSQL store", (it) => {
       store.createThread({ ...childInput, title: "Changed retry title" }),
     ).rejects.toMatchObject({ code: "conflict" });
 
-    const otherWorkspace = await store.createWorkspace({
-      backing: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-      },
+    const otherWorkspace = await createTestWorkspace(store, {
+      backing: workspace.backing,
 
       createdBy: userId,
       name: "Other workspace",
@@ -1691,16 +1655,8 @@ describeStore("PostgreSQL store", (it) => {
     });
 
     const foreignUserId = await store.createUser("Other owner");
-    const foreignWorkspace = await store.createWorkspace({
-      backing: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-      },
+    const foreignWorkspace = await createTestWorkspace(store, {
+      backing: workspace.backing,
 
       createdBy: foreignUserId,
       name: "Foreign workspace",
@@ -3722,7 +3678,7 @@ describeStore("PostgreSQL store", (it) => {
     const { store, database, enrollBrowserRunner } = storeFixture;
     const ownerId = await store.createUser("Robin");
     const outsiderId = await store.createUser("Sam");
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -3738,7 +3694,7 @@ describeStore("PostgreSQL store", (it) => {
       name: "Main",
       status: "ready",
     });
-    const specialist = await store.createWorkspace({
+    const specialist = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -3882,7 +3838,7 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { store, database, enrollBrowserRunner } = storeFixture;
     const ownerId = await store.createUser("Alex");
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -3928,7 +3884,7 @@ describeStore("PostgreSQL store", (it) => {
         ({ grantId }) => grantId,
       ),
     ).toEqual(inheritedMainGrants.map(({ grantId }) => grantId));
-    const project = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",

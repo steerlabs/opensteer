@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
   EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
@@ -2885,7 +2886,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     } = storeFixture;
     const run = await runningRunFixture(store, "computer-request-authority");
     const setup = await fixture("request-authority", run.userId);
-    const project = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -6850,7 +6851,7 @@ async function createWorkspace(
   suffix: string,
   kind?: "main" | "project",
 ) {
-  return store.createWorkspace({
+  return createTestWorkspace(store, {
     backing: {
       generation: 1,
       kind: "local-directory",

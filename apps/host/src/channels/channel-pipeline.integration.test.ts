@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 /**
  * The messaging pipeline, end to end, through the Host's real ChannelService,
  * real MessagingRelayHub and a real PostgreSQL-backed ChannelStore and
@@ -705,7 +706,7 @@ integration("messaging pipeline", () => {
       threadId: null,
     });
 
-    const roomWorkspace = await store.createWorkspace({
+    const roomWorkspace = await createTestWorkspace(store, {
       backing: {
         kind: "local-directory",
         generation: 1,
@@ -1179,7 +1180,7 @@ integration("messaging pipeline", () => {
       .where("kind", "=", "main")
       .executeTakeFirst();
     if (existing) return existing.id;
-    const created = await store.createWorkspace({
+    const created = await createTestWorkspace(store, {
       backing: {
         kind: "local-directory",
         generation: 1,
@@ -1236,7 +1237,7 @@ integration("messaging pipeline", () => {
     hub.attach(peer, stream());
     const workspace = input.workspaceId
       ? { id: input.workspaceId }
-      : await store.createWorkspace({
+      : await createTestWorkspace(store, {
           backing: {
             kind: "local-directory",
             generation: 1,

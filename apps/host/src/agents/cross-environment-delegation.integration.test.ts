@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -272,6 +273,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         throw new Error("Target is now blocked");
       });
     const request = {
+      environmentId: fixture.lentEnvironmentId,
       type: "thread.delegate",
       requestId: randomUUID(),
       workspaceId: fixture.workspaceId,
@@ -613,7 +615,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         try {
           discovery = await mcp.client.callTool({
             name: "environment_list",
-            arguments: { query: "sol OPENAI", harnessInstanceId: fixture.mainHarnessInstanceId },
+            arguments: { query: "sol OPENAI", harnessInstanceId: fixture.lentHarnessInstanceId },
           });
           expect(workspacePages).not.toHaveBeenCalled();
           expect(threadPages).not.toHaveBeenCalled();
@@ -2514,13 +2516,13 @@ integration("cross-environment delegation reaches the Runner", () => {
       runnerId: lentRunnerId,
       runnerKind: "local",
     });
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       kind: options.project ? "project" : "main",
       backing: {
         kind: "local-directory",
         generation: 1,
         bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
+        ownerEnvironmentId: lentEnvironmentId,
         storageAuthorityId: createId("storageAuthority"),
       },
 
@@ -3043,13 +3045,16 @@ integration("cross-environment delegation reaches the Runner", () => {
     expect(errors).toEqual([]);
   }
 
-  function createWorkspace(userId: UserId, name: string, id?: WorkspaceId) {
-    return store.createWorkspace({
+  async function createWorkspace(userId: UserId, name: string, id?: WorkspaceId) {
+    const main = await store.findMainWorkspaceForOwner(userId);
+    if (!main) throw new Error("Owner Main is missing");
+    return createTestWorkspace(store, {
+      kind: "project",
       backing: {
         kind: "local-directory",
         generation: 1,
         bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
+        ownerEnvironmentId: main.backing.ownerEnvironmentId,
         storageAuthorityId: createId("storageAuthority"),
       },
 

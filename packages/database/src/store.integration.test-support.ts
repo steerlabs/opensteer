@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
   EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
@@ -351,9 +352,6 @@ export async function createStoreFixture() {
     return { database, close: () => database.destroy() };
   });
 
-  await sql`insert into execution_environments(id, name, kind, runner_id, capabilities)
-    values ('env_00000000-0000-4000-8000-000000000001', 'Fixture computer', 'main', null, '[]'::jsonb)
-    on conflict (id) do nothing`.execute(database);
   const store = new OpensteerStore(database);
 
   const triggers = new TriggerStore(database);
@@ -566,7 +564,7 @@ export async function createStoreFixture() {
       runnerId,
       tokenSuffix: suffix,
     });
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         bindingId: createId("workspaceBinding"),
         generation: 1,
@@ -902,7 +900,7 @@ export async function createStoreFixture() {
   }
 
   function createProjectWorkspace(ownerId: UserId, suffix: string, id?: Workspace["id"]) {
-    return store.createWorkspace({
+    return createTestWorkspace(store, {
       ...(id ? { id } : {}),
       backing: {
         generation: 1,
@@ -974,7 +972,7 @@ export async function createStoreFixture() {
       runnerKind: "managed",
       tokenSuffix: `${suffix}-alice-cloud`,
     });
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",

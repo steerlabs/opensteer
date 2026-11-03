@@ -300,6 +300,16 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       sources: () => testRpcData(hostOrigin, "browser.sources.get", {}, { headers }),
     };
 
+    const agentComputer = await connectCallerMachine(machineHost, {
+      name: "Agent computer",
+      token: await enrollmentToken(machineHost, {
+        allowedModules: ["agents"],
+        idempotencyKey: `agent-computer-${randomUUID()}`,
+        name: "Agent computer",
+      }),
+    });
+    cleanups.push(() => agentComputer.close());
+    await testRpcData(hostOrigin, "bootstrap.get", {}, { headers });
     const workspace = await rpc.command({ name: "Research", type: "workspace.create" });
     const workspaceId = (workspace as unknown as { workspace: { id: string } }).workspace.id;
 
@@ -507,15 +517,6 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     });
 
     // ---- 4. Agents: Request, standing grant, delegated capability ----
-    const agentComputer = await connectCallerMachine(machineHost, {
-      name: "Agent computer",
-      token: await enrollmentToken(machineHost, {
-        allowedModules: ["agents"],
-        idempotencyKey: `agent-computer-${randomUUID()}`,
-        name: "Agent computer",
-      }),
-    });
-    cleanups.push(() => agentComputer.close());
     const thread = await rpc.command({
       environmentId: agentComputer.environmentId,
       harnessInstanceId: agentComputer.harnessInstanceId,

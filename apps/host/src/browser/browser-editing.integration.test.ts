@@ -1,3 +1,9 @@
+import {
+  connectCallerMachine,
+  enrollmentToken,
+  type CallerMachine,
+  type MachineAccessHost,
+} from "../runtime/machine-access.test-support.js";
 import type { HostConfig } from "@opensteer/config";
 import { createId } from "@opensteer/core";
 import { createDatabase, migrateToLatest } from "@opensteer/database";
@@ -34,6 +40,7 @@ const accessToken = "browser-access-".padEnd(40, "a");
 integration("Host and Chromium editing contract", () => {
   let browserRuntime: Awaited<ReturnType<typeof startBrowserRuntime>> | undefined;
   let dataDirectory: string | undefined;
+  let caller: CallerMachine | undefined;
   let runtime: HostRuntime | undefined;
   const sockets: WebSocket[] = [];
   let engineProcess: ChildProcess | undefined;
@@ -82,6 +89,7 @@ integration("Host and Chromium editing contract", () => {
           if (engineProcess?.connected) engineProcess.send("stop");
         }),
       () => browserRuntime?.close(),
+      () => caller?.close(),
       () => runtime?.close(),
       async () => {
         fixture?.closeAllConnections();
@@ -230,6 +238,27 @@ integration("Host and Chromium editing contract", () => {
         editing: true,
         runtimeUrl: engineAddress.url,
       });
+      const owner = await runtime.store.firstUser();
+      if (!owner) throw new Error("Owner was not created");
+      const machineHost: MachineAccessHost = {
+        close: async () => undefined,
+        config,
+        hostPort,
+        origin,
+        ownerHeaders: sessionHeaders,
+        ownerId: owner.id,
+        runtime,
+        store: runtime.store,
+      };
+      caller = await connectCallerMachine(machineHost, {
+        name: "Storage computer",
+        token: await enrollmentToken(machineHost, {
+          allowedModules: ["agents"],
+          idempotencyKey: "storage-computer",
+          name: "Storage computer",
+        }),
+      });
+      await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
       const workspace = await testRpcData(
         origin,
         "commands.dispatch",

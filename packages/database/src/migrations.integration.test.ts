@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
   EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
@@ -3884,7 +3885,7 @@ integration("notification outbox migration", () => {
     await sql`insert into execution_environments(id, name, kind, runner_id, capabilities)
       values ('env_00000000-0000-4000-8000-000000000001', 'Fixture computer', 'main', null, '[]'::jsonb)
       on conflict (id) do nothing`.execute(scratch);
-    const created = await store.createWorkspace({
+    const created = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -7515,7 +7516,7 @@ describeStore("Project kind conversion", (it) => {
   }) => {
     const { database, store } = storeFixture;
     const owner = await store.createUser("Project owner");
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         kind: "local-directory",
         generation: 1,

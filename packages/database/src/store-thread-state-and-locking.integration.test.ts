@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
   EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
@@ -34,7 +35,7 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { createRunFixture, store, database } = storeFixture;
     const fixture = await createRunFixture("active-tasks");
-    const otherWorkspace = await store.createWorkspace({
+    const otherWorkspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",

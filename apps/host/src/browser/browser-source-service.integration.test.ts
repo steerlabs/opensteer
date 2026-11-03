@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import websocket from "@fastify/websocket";
 import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import { browserSiteDomain } from "@opensteer/browser-profile/source-state";
@@ -730,7 +731,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
       hostInstanceId: createId("hostInstance"),
     });
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       kind: "project",
       backing: {
         kind: "local-directory",

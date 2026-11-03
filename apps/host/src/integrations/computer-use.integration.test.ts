@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId,
   HarnessIdSchema,
@@ -605,7 +606,7 @@ async function createWorkspace(
   suffix: string,
   kind?: "main" | "project",
 ) {
-  return store.createWorkspace({
+  return createTestWorkspace(store, {
     backing: {
       kind: "local-directory",
       generation: 1,

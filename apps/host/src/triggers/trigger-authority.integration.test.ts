@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -2173,17 +2174,24 @@ integration.sequential("Trigger authority through real Host services and Postgre
 
   async function createWorkspace(input: {
     readonly createdBy: UserId;
+    readonly environmentId?: Workspace["backing"]["ownerEnvironmentId"];
     readonly idempotencyKey: string;
     readonly name: string;
     readonly kind?: "main" | "project";
   }) {
-    return store.createWorkspace({
-      ...input,
+    return createTestWorkspace(store, {
+      createdBy: input.createdBy,
+      idempotencyKey: input.idempotencyKey,
+      name: input.name,
+      ...(input.kind ? { kind: input.kind } : {}),
       backing: {
         kind: "local-directory",
         generation: 1,
         bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
+        ownerEnvironmentId:
+          input.environmentId ??
+          (await store.findMainWorkspaceForOwner(input.createdBy))?.backing.ownerEnvironmentId ??
+          createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
 
@@ -2266,12 +2274,14 @@ integration.sequential("Trigger authority through real Host services and Postgre
       publicKeyPem,
     });
     const main = await createWorkspace({
+      environmentId,
       createdBy: ownerId,
       idempotencyKey: randomUUID(),
       name: "Main Workspace",
       kind: "main",
     });
     const project = await createWorkspace({
+      environmentId,
       createdBy: ownerId,
       idempotencyKey: randomUUID(),
       name: "Project Workspace",

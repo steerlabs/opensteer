@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { mkdtemp, rm, mkdir, symlink, writeFile, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -141,7 +142,7 @@ describeStore("Project creation on Main storage", (it) => {
           );
         }
         const legacyId = createId("workspace");
-        const legacy = await store.createWorkspace({
+        const legacy = await createTestWorkspace(store, {
           id: legacyId,
           name: "Converted",
           kind: "project",

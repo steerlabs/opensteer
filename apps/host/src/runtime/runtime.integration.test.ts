@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { describe } from "vitest";
 import { slackChannelProviderManifest } from "@opensteer/channel-core";
 import type { HostConfig } from "@opensteer/config";
@@ -1833,7 +1834,7 @@ integration("Host vertical slice", () => {
       runnerConnection.challenge,
     );
     const ownerId = await administratorId(runtime.store);
-    const workspace = await runtime.store.createWorkspace({
+    const workspace = await createTestWorkspace(runtime.store, {
       backing: {
         kind: "local-directory",
         generation: 1,
@@ -2308,7 +2309,7 @@ integration("Host vertical slice", () => {
 
     try {
       const ownerId = await administratorId(runtime.store);
-      const workspace = await runtime.store.createWorkspace({
+      const workspace = await createTestWorkspace(runtime.store, {
         backing: {
           kind: "local-directory",
           generation: 1,
@@ -2522,7 +2523,7 @@ integration("Host vertical slice", () => {
     const stopCatalogResponder = respondToHarnessInspections(runnerSocket, readyCodexCatalog);
 
     const ownerId = await administratorId(runtime.store);
-    const workspace = await runtime.store.createWorkspace({
+    const workspace = await createTestWorkspace(runtime.store, {
       backing: {
         kind: "local-directory",
         generation: 1,
@@ -2755,7 +2756,7 @@ integration("Host vertical slice", () => {
       publicKeyFingerprint: runnerPublicKeyFingerprint(seedKeys.publicKey),
       publicKeyPem: canonicalRunnerPublicKeyPem(seedKeys.publicKey),
     });
-    const workspace = await seedStore.createWorkspace({
+    const workspace = await createTestWorkspace(seedStore, {
       backing: {
         kind: "local-directory",
         generation: 1,
@@ -3012,7 +3013,7 @@ integration("Host vertical slice", () => {
       publicKeyFingerprint: runnerPublicKeyFingerprint(runnerKeys.publicKey),
       publicKeyPem: canonicalRunnerPublicKeyPem(runnerKeys.publicKey),
     });
-    const workspace = await seedStore.createWorkspace({
+    const workspace = await createTestWorkspace(seedStore, {
       backing: {
         kind: "local-directory",
         generation: 1,

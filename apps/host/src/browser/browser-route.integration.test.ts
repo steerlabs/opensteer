@@ -1,3 +1,9 @@
+import {
+  connectCallerMachine,
+  enrollmentToken,
+  type CallerMachine,
+  type MachineAccessHost,
+} from "../runtime/machine-access.test-support.js";
 import type { HostConfig } from "@opensteer/config";
 import { createId } from "@opensteer/core";
 import { createDatabase, migrateToLatest } from "@opensteer/database";
@@ -25,6 +31,7 @@ const accessToken = "browser-access-".padEnd(40, "a");
 integration("Host browser broker vertical", () => {
   let browserRuntime: Awaited<ReturnType<typeof startBrowserRuntime>> | undefined;
   let dataDirectory: string | undefined;
+  let caller: CallerMachine | undefined;
   let runtime: HostRuntime | undefined;
   let uiSocket: WebSocket | undefined;
 
@@ -63,6 +70,7 @@ integration("Host browser broker vertical", () => {
 
   afterEach(async () => {
     uiSocket?.terminate();
+    await caller?.close();
     await runtime?.close();
     await Promise.allSettled([browserRuntime?.close()]);
     if (dataDirectory) await rm(dataDirectory, { force: true, recursive: true });
@@ -130,6 +138,27 @@ integration("Host browser broker vertical", () => {
       navigation: true,
     });
 
+    const owner = await runtime.store.firstUser();
+    if (!owner) throw new Error("Owner was not created");
+    const machineHost: MachineAccessHost = {
+      close: async () => undefined,
+      config,
+      hostPort,
+      origin,
+      ownerHeaders: sessionHeaders,
+      ownerId: owner.id,
+      runtime,
+      store: runtime.store,
+    };
+    caller = await connectCallerMachine(machineHost, {
+      name: "Storage computer",
+      token: await enrollmentToken(machineHost, {
+        allowedModules: ["agents"],
+        idempotencyKey: "storage-computer",
+        name: "Storage computer",
+      }),
+    });
+    await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
     const created = await testRpcData(
       origin,
       "commands.dispatch",

@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
   EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
@@ -191,7 +192,7 @@ describeStore("PostgreSQL store", (it) => {
     };
     const workspaces = await Promise.all(
       Array.from({ length: 8 }, (_, index) =>
-        (index % 2 === 0 ? store : secondHostStore).createWorkspace(workspaceInput),
+        createTestWorkspace(index % 2 === 0 ? store : secondHostStore, workspaceInput),
       ),
     );
     expect(new Set(workspaces.map(({ id }) => id)).size).toBe(1);
@@ -280,7 +281,7 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { store } = storeFixture;
     const userId = await store.createUser("Workspace storage owner");
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -383,7 +384,7 @@ describeStore("PostgreSQL store", (it) => {
     const { store, database } = storeFixture;
     const ownerId = await store.createUser("Workspace deletion owner");
     const collaboratorId = await store.createUser("Workspace deletion collaborator");
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
         kind: "local-directory",
@@ -397,6 +398,7 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: ownerId,
       idempotencyKey: "workspace-deletion-lifecycle",
       name: "Deletion lifecycle",
+      kind: "project",
       status: "ready",
     });
     await database
