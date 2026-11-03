@@ -618,8 +618,17 @@ integration.sequential("Trigger authority through real Host services and Postgre
       ["Trigger", programs, triggerToken],
       ["Watch", watches, watchToken],
     ] as const) {
+      const projects = await control.handle(token, {
+        type: "project.list",
+        requestId: randomUUID(),
+      });
+      expect(projects).toMatchObject({
+        type: "project.list.result",
+        workspaces: [{ id: f.project.id }],
+      });
+      if (projects.type !== "project.list.result") throw new Error("Expected scoped Projects");
+      expect(projects.workspaces).toHaveLength(1);
       for (const request of [
-        { type: "project.list" },
         { type: "project.create", name: "Unauthorized Workspace" },
         { type: "thread.delegate", workspaceId: f.main.id, task: "Cross Workspace" },
         { type: "thread.delegate", threadId: f.unrelated.id, task: "Outside lineage" },
@@ -651,25 +660,19 @@ integration.sequential("Trigger authority through real Host services and Postgre
           () => control.handle(token, { ...request, requestId: randomUUID() }),
         );
       }
-      await check(
-        `A5 ${kind} report home`,
+      await denied(
+        `A5 ${kind} report home stays within reach`,
         f.isolatedChild.id,
         "thread_message report home",
-        "pending report",
-        async () => {
-          const response = await control.handle(token, {
+        "forbidden",
+        () =>
+          control.handle(token, {
             type: "thread.message",
             threadId: "home",
             delivery: "report",
             content: [{ type: "text", text: `${kind} report` }],
             requestId: randomUUID(),
-          });
-          if (response.type !== "thread.message.result") throw new Error("Expected report result");
-          expect(response.result.thread.id).toBe(f.chat.id);
-          expect(response.result.run).toBeNull();
-          expect(response.result.input.policy).toBe("report");
-          return response.result;
-        },
+          }),
       );
       await check(
         `A5 ${kind} delegates locally`,
