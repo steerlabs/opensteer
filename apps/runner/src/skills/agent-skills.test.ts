@@ -2,7 +2,11 @@ import { cp, lstat, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { agentTools, opensteerAgentSkillNames, type OpensteerAgentSkillName } from "@opensteer/agent-tools";
+import {
+  agentTools,
+  opensteerAgentSkillNames,
+  type OpensteerAgentSkillName,
+} from "@opensteer/agent-tools";
 import { parseHarnessSkillMetadata, renderHarnessSkillCatalog } from "@opensteer/harness";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadAgentSkillBundle, planAgentSkills } from "./agent-skills.js";
@@ -83,10 +87,7 @@ describe("Runner Agent Skills", () => {
       expect(Array.from(metadata.description).length).toBeLessThanOrEqual(1_024);
     }
     const catalog = await renderHarnessSkillCatalog({
-      skills: planAgentSkills(
-        bundle,
-        opensteerAgentSkillNames,
-      ),
+      skills: planAgentSkills(bundle, opensteerAgentSkillNames),
     });
     for (const metadata of [computerMetadata, computerUseMetadata, integrationMetadata]) {
       expect(catalog).toContain(metadata.description);
