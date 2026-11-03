@@ -73,7 +73,7 @@ describeStore("published app HTML", (it) => {
       });
       expect(first).toMatchObject({
         version: 1,
-        message: expect.stringContaining("already shown"),
+        message: expect.stringContaining("shown inline in this Thread"),
       });
       expect(files.download).toHaveBeenCalledWith(
         expect.objectContaining({ workspace: expect.objectContaining({ id: f.workspace.id }) }),
