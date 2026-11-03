@@ -1,3 +1,4 @@
+import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import { useNavigation } from "@react-navigation/native";
@@ -92,6 +93,9 @@ export function DevicesSettingsController(): ReactNode {
         />
       </SettingsPageLayout>
       <Sheet open={adding} title="Add device" onClose={() => setAdding(false)}>
+        {adding && selection.hostClient && selection.hostClient.getSnapshot().user?.instanceRole === "administrator" ? (
+          <SettingsComputerEnrollment host={selection.hostClient} />
+        ) : null}
         <NativeSettingsPage
           sections={[
             {
@@ -101,8 +105,7 @@ export function DevicesSettingsController(): ReactNode {
                 {
                   key: "instructions",
                   kind: "text",
-                  label:
-                    "Open this Opensteer on the computer you want to add, then choose Devices → Add computer.",
+                  label: "Create a command above, then run it on the computer you want to add.",
                 },
               ],
             },

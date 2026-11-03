@@ -34,6 +34,7 @@ vi.mock("@expo/ui/swift-ui", () => {
     }),
     SwipeActions: Object.assign(view("SwipeActions"), { Actions: view("SwipeActions.Actions") }),
     Host: view("Host"),
+    BottomSheet: view("BottomSheet"),
     List: view("List"),
     NavigationStack: view("NavigationStack"),
     Section: view("Section"),
@@ -133,6 +134,26 @@ it("uses labeled native secondary actions and disables full-swipe execution", as
         .click(),
     );
     expect(remove).toHaveBeenCalledOnce();
+  } finally {
+    act(() => root.unmount());
+  }
+});
+
+it("presents plugin review in a SwiftUI sheet with one native list", async () => {
+  const close = vi.fn();
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () =>
+      root.render(
+        <NativeSettingsPage sheet={{ title: "Add plugin", onClose: close }} sections={[]} />,
+      ),
+    );
+    expect(container.querySelectorAll('[data-native="Host"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-native="BottomSheet"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-native="List"]')).toHaveLength(1);
+    await act(async () => container.querySelector("button")!.click());
+    expect(close).toHaveBeenCalledOnce();
   } finally {
     act(() => root.unmount());
   }

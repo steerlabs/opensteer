@@ -25,6 +25,7 @@ export function SettingsDeviceCapabilities({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [folder, setFolder] = useState("");
+  const [folderWritable, setFolderWritable] = useState(false);
   async function run(operation: () => Promise<unknown>) {
     if (busy.current || !current()) return;
     busy.current = true;
@@ -103,18 +104,35 @@ export function SettingsDeviceCapabilities({
               }
             />
           ))}
-          <SwitchRow
-            label="Terminal"
-            value={machine.access.policy.commands}
-            disabled={pending}
-            onChange={(commands) => change({ ...machine.access!.policy, commands })}
-          />
+          {machine.allowedModules.includes("shell") ? (
+            <SwitchRow
+              label="Terminal"
+              value={machine.access.policy.commands}
+              disabled={pending}
+              onChange={(commands) => change({ ...machine.access!.policy, commands })}
+            />
+          ) : null}
           <AppText>Folders</AppText>
           {machine.access.policy.shares.map((share) => (
             <View key={share.path}>
               <AppText>
                 {share.path} · {share.mode === "read" ? "Read only" : "Read and write"}
               </AppText>
+              <SwitchRow
+                label={`Allow changes to ${share.path}`}
+                value={share.mode === "read-write"}
+                disabled={pending}
+                onChange={(writable) =>
+                  change({
+                    ...machine.access!.policy,
+                    shares: machine.access!.policy.shares.map((item) =>
+                      item.path === share.path
+                        ? { ...item, mode: writable ? "read-write" : "read" }
+                        : item,
+                    ),
+                  })
+                }
+              />
               <SecondaryButton
                 label={`Stop sharing ${share.path}`}
                 disabled={pending}
@@ -138,13 +156,22 @@ export function SettingsDeviceCapabilities({
             autoCorrect={false}
             style={{ minHeight: 48 }}
           />
+          <SwitchRow
+            label="Allow changes in new folder"
+            value={folderWritable}
+            disabled={pending}
+            onChange={setFolderWritable}
+          />
           <SecondaryButton
-            label="Share folder read only"
+            label={folderWritable ? "Share folder read and write" : "Share folder read only"}
             disabled={pending || !folder.trim()}
             onPress={() =>
               change({
                 ...machine.access!.policy,
-                shares: [...machine.access!.policy.shares, { path: folder.trim(), mode: "read" }],
+                shares: [
+                  ...machine.access!.policy.shares,
+                  { path: folder.trim(), mode: folderWritable ? "read-write" : "read" },
+                ],
               })
             }
           />

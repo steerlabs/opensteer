@@ -16,13 +16,29 @@ import { remoteAdministrationActions, remoteAdministrationActionLabels } from ".
 import { accountSettingsModel, signOutAccountInOrder } from "./settings-model.js";
 
 import { useSettingsHost } from "./use-settings-host.js";
-export function AccountSettingsController({
+type AccountDetailProps = {
+  readonly detail?: "remote" | "session" | undefined;
+  readonly sessionId?: string | undefined;
+};
+export function AccountSettingsController(props: AccountDetailProps = {}): ReactNode {
+  const [revision, setRevision] = useState(0);
+  return (
+    <AccountSettingsContent
+      key={revision}
+      {...props}
+      onRetry={() => setRevision((value) => value + 1)}
+    />
+  );
+}
+function AccountSettingsContent({
+  onRetry,
   detail,
   sessionId,
 }: {
+  readonly onRetry: () => void;
   readonly detail?: "remote" | "session" | undefined;
   readonly sessionId?: string | undefined;
-} = {}): ReactNode {
+}): ReactNode {
   const navigation = useNavigation();
   const page = "account";
   const client = useMobileClient();
@@ -216,7 +232,31 @@ export function AccountSettingsController({
         key: "remote",
         title: "Open Opensteer from anywhere",
         rows: [
-          text("mode", `Mode: ${remote.status.access.mode}`),
+          text(
+            "mode",
+            `Current: ${remote.status.access.mode === "connect" ? "Connect" : remote.status.access.mode === "private" ? "Private network" : "Off"}`,
+          ),
+          ...(remote.status.operation?.intent.action === "configure"
+            ? [
+                text(
+                  "desired",
+                  `Requested: ${remote.status.operation.intent.mode === "connect" ? "Connect" : remote.status.operation.intent.mode === "private" ? "Private network" : "Off"}`,
+                ),
+              ]
+            : []),
+          text(
+            "readiness",
+            remote.status.access.mode === "off"
+              ? "Remote access is off"
+              : remote.status.operation?.state === "pending" ||
+                  remote.status.operation?.state === "running"
+                ? "Applying changes…"
+                : remote.status.operation?.state === "failed"
+                  ? "Change failed · current access retained"
+                  : remote.status.executorConnected
+                    ? "Route configured · connection readiness is not reported"
+                    : "Waiting for your computer",
+          ),
           text(
             "executor",
             remote.status.executorConnected ? "Computer connected" : "Waiting for your computer",
@@ -240,10 +280,32 @@ export function AccountSettingsController({
               action === "unlink" || action === "rotate",
             ),
           ),
-          ...(remote.pairing ? [text("pairing", `Pairing code: ${remote.pairing.code}`)] : []),
+          ...(remote.pairing && Date.parse(remote.pairing.expiresAt) > Date.now()
+            ? [
+                text("pairing", `Pairing code: ${remote.pairing.code}`),
+                text("expires", `Expires ${remote.pairing.expiresAt}`),
+              ]
+            : []),
+          ...(remote.status.operation?.state === "failed"
+            ? [
+                button("retry-operation", "Retry change", () => {
+                  if (isCurrent() && remote.status?.operation)
+                    void remote.request?.(remote.status.operation.intent);
+                }),
+              ]
+            : []),
+          button("refresh-remote", "Refresh status", onRetry),
         ],
       });
-    }
+    } else
+      sections.push({
+        key: "loading",
+        title: "Remote access",
+        rows: [
+          text("loading", remote.error ? "Couldn’t load remote access" : "Loading…"),
+          button("retry", "Try again", onRetry),
+        ],
+      });
   } else if (detail === "session") {
     const session = sessions.find((session) => session.id === sessionId);
     sections.push({

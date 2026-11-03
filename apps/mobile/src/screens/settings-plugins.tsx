@@ -79,19 +79,19 @@ function Plugins({
   const [addEntry, setAddEntry] = useState<
     SettingsRpcData<"integration.platform.get">["catalog"][number] | null
   >(null);
-  const [placingAdd, setPlacingAdd] = useState(false);
   const [suggestions, setSuggestions] = useState<NonNullable<typeof directory>["catalog"]>([]);
   const [addInstalled, setAddInstalled] = useState(false);
-  const [consented, setConsented] = useState(false);
+  const [addPlaces, setAddPlaces] = useState<string[]>([]);
+  const [addEverywhere, setAddEverywhere] = useState(false);
   const openAdd = (item: NonNullable<typeof add>) =>
     run("review", async () => {
       const platform = unwrapRpcResult(await host.rpc["integration.platform.get"]({}));
       const entry = platform.catalog.find((entry) => entry.definition.id === item.definitionId);
       if (!entry || !isCurrent()) throw new Error("Catalog changed");
       setAddEntry(entry);
-      setConsented(false);
+      setAddPlaces([]);
+      setAddEverywhere(host.getSnapshot().deploymentShape?.kind === "personal");
       setAddInstalled(false);
-      setPlacingAdd(false);
       setAdd(item);
     });
   const [accountDefinition, setAccountDefinition] = useState<string | null>(null);
@@ -579,124 +579,152 @@ function Plugins({
           />
         ) : null}
       </Sheet>
-      <Sheet
-        open={add !== null}
-        title={add?.title ?? "Add plugin"}
-        onClose={() => {
-          setAdd(null);
-          setAddEntry(null);
-          if (placingAdd) setDetail(null);
-          void overview.reload();
-        }}
-      >
-        {add && addEntry ? (
-          <>
-            <NativeSettingsPage
-              sections={
-                placingAdd
-                  ? [
-                      ...sections.filter((section) =>
-                        ["contents", "places", "error"].includes(section.key),
-                      ),
-                      {
-                        key: "done",
-                        title: "Finish",
-                        rows: [
-                          button("done", "Done", () => {
-                            setAdd(null);
-                            setDirectory(null);
-                            setDetail(null);
-                          }),
-                        ],
-                      },
-                    ]
-                  : [
-                      {
-                        key: "description",
-                        title: "What it does",
-                        rows: [text("description", add.description)],
-                      },
-                      {
-                        key: "access",
-                        title: "What it will access",
-                        rows: [
-                          ...addEntry.definition.authMethods.flatMap((method) =>
-                            method.kind === "oauth"
-                              ? method.oauth.scopes.map((scope) =>
-                                  text(`${method.id}:${scope}`, scope),
-                                )
-                              : [text(method.id, method.label)],
-                          ),
-                          {
-                            key: "consent",
-                            kind: "toggle",
-                            label: `Allow ${add.title} to request this access`,
-                            value: consented,
-                            disabled: pending !== null || addInstalled,
-                            onChange: setConsented,
-                          },
-                        ],
-                      },
-                      {
-                        key: "install",
-                        title: "Add plugin",
-                        rows: addInstalled
-                          ? [
-                              text(
-                                "installed",
-                                "Added. Connect your account below, then choose where it’s on.",
-                              ),
-                              button("placement", "Choose where it’s on", () =>
-                                run("placement", async () => {
-                                  const result = unwrapRpcResult(
-                                    await host.rpc["plugins.detail.get"]({
-                                      target: {
-                                        kind: addEntry.definition.computerApp
-                                          ? "device-app"
-                                          : "service",
-                                        definitionId: add.definitionId,
-                                      },
-                                    }),
-                                  );
-                                  if (!isCurrent()) return;
-                                  setDetail(result);
-                                  setPlacingAdd(true);
+      {add && addEntry
+        ? (() => {
+            const close = () => {
+              setAdd(null);
+              setAddEntry(null);
+              setDirectory(null);
+              setDetail(null);
+              void overview.reload();
+            };
+            const review: NativeSettingsSection[] = [
+              {
+                key: "description",
+                title: "What it does",
+                rows: [text("description", add.description)],
+              },
+              {
+                key: "contents",
+                title: "Comes with",
+                rows: [
+                  text(
+                    "contents",
+                    "This catalog does not provide a pre-install contents inventory.",
+                  ),
+                ],
+              },
+              {
+                key: "access",
+                title: "What it will access",
+                rows: addEntry.definition.authMethods.flatMap((method) =>
+                  method.kind === "oauth"
+                    ? method.oauth.scopes.map((scope) => text(`${method.id}:${scope}`, scope))
+                    : [text(method.id, method.label)],
+                ),
+              },
+              {
+                key: "places",
+                title: "Where it’s on",
+                rows: [
+                  ...(host.getSnapshot().deploymentShape?.kind === "personal"
+                    ? [
+                        {
+                          key: "everywhere",
+                          kind: "toggle" as const,
+                          label: "Everywhere, including new Projects",
+                          value: addEverywhere,
+                          disabled: addInstalled || pending !== null,
+                          onChange: setAddEverywhere,
+                        },
+                      ]
+                    : []),
+                  ...(!addEverywhere
+                    ? host
+                        .getSnapshot()
+                        .workspaces.map((place) => ({
+                          key: place.id,
+                          kind: "toggle" as const,
+                          label: place.name,
+                          value: addPlaces.includes(place.id),
+                          disabled: addInstalled || pending !== null,
+                          onChange: (selected: boolean) =>
+                            setAddPlaces((places) =>
+                              selected
+                                ? [...places, place.id]
+                                : places.filter((id) => id !== place.id),
+                            ),
+                        }))
+                    : []),
+                ],
+              },
+              ...(error
+                ? [{ key: "error", title: "Needs you", rows: [text("error", error)] }]
+                : []),
+            ];
+            const render = (accounts: NativeSettingsSection[]) => (
+              <NativeSettingsPage
+                sheet={{ title: add.title, onClose: close }}
+                sections={[
+                  ...review,
+                  ...accounts,
+                  {
+                    key: "install",
+                    title: addInstalled ? "Finish" : "Add plugin",
+                    rows: addInstalled
+                      ? [button("done", "Done", close)]
+                      : [
+                          button("add", "Add and continue to sign-in", () =>
+                            run("catalog", async () => {
+                              await host.dispatch({
+                                type: "integration.catalog.install",
+                                input: { definitionId: add.definitionId, digest: addEntry.digest },
+                                idempotencyKey: mutationIdempotencyKey("plugin-catalog-install"),
+                              });
+                              if (!isCurrent()) return;
+                              const installed = unwrapRpcResult(
+                                await host.rpc["plugins.detail.get"]({
+                                  target: {
+                                    kind: addEntry.definition.computerApp
+                                      ? "device-app"
+                                      : "service",
+                                    definitionId: add.definitionId,
+                                  },
                                 }),
-                              ),
-                            ]
-                          : [
-                              {
-                                ...button("add", "Add and continue to sign-in", () =>
-                                  run("catalog", async () => {
-                                    await host.dispatch({
-                                      type: "integration.catalog.install",
-                                      input: {
-                                        definitionId: add.definitionId,
-                                        digest: addEntry.digest,
-                                      },
-                                      idempotencyKey:
-                                        mutationIdempotencyKey("plugin-catalog-install"),
-                                    });
-                                    if (isCurrent()) setAddInstalled(true);
-                                  }),
-                                ),
-                                disabled: !consented || pending !== null,
-                              },
-                            ],
-                      },
-                    ]
-              }
-            />
-            {addInstalled && !placingAdd ? (
+                              );
+                              if (!isCurrent()) return;
+                              await host.dispatch({
+                                type: "settings.plugin.placement.set",
+                                target: installed.row.target,
+                                expectedRevision: installed.row.placement.revision,
+                                mainIncluded:
+                                  addEverywhere ||
+                                  installed.places.some(
+                                    (p) => p.kind === "main" && addPlaces.includes(p.workspaceId),
+                                  ),
+                                projects: installed.places
+                                  .filter(
+                                    (p) =>
+                                      p.kind === "project" &&
+                                      (addEverywhere || addPlaces.includes(p.workspaceId)),
+                                  )
+                                  .map((p) => ({
+                                    workspaceId: p.workspaceId,
+                                    accounts: p.accounts,
+                                  })),
+                                personalEverywhere: addEverywhere ? { accounts: [] } : null,
+                                idempotencyKey: mutationIdempotencyKey("plugin-add-placement"),
+                              });
+                              if (isCurrent()) setAddInstalled(true);
+                            }),
+                          ),
+                        ],
+                  },
+                ]}
+              />
+            );
+            return addInstalled ? (
               <PluginAccounts
                 hostClient={host}
                 hostName={host.getSnapshot().identityConfig?.deployment.name ?? "Opensteer"}
                 definitionId={add.definitionId}
+                render={render}
               />
-            ) : null}
-          </>
-        ) : null}
-      </Sheet>
+            ) : (
+              render([])
+            );
+          })()
+        : null}
     </>
   );
 }

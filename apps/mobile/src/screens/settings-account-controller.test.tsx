@@ -6,6 +6,7 @@ import { MockHostClient } from "@opensteer/client/mock";
 import type { NativeSettingsPageProps } from "./native-settings-page.types.js";
 const state = vi.hoisted(() => ({
   page: null as NativeSettingsPageProps | null,
+  remote: null as import("@opensteer/protocol").PersonalRemoteAdministrationStatus | null,
   navigate: vi.fn(),
   remove: vi.fn(async () => undefined),
   host: null as MockHostClient | null,
@@ -19,7 +20,12 @@ vi.mock("@react-navigation/native", () => ({
   useNavigation: () => ({ navigate: state.navigate }),
 }));
 vi.mock("@opensteer/client/react", () => ({
-  usePersonalRemoteAccess: () => ({ status: null, pairing: null, error: null, working: false }),
+  usePersonalRemoteAccess: () => ({
+    status: state.remote,
+    pairing: null,
+    error: null,
+    working: false,
+  }),
 }));
 vi.mock("../client/mobile-client.js", () => ({ operationDetail: () => "Failed" }));
 const mobile = {
@@ -78,5 +84,39 @@ it("pushes session identity only, then reviews sign-out effects in its detail", 
     act(() => root.unmount());
     host.dispose();
     state.host = null;
+  }
+});
+
+it("keeps failed requested mode separate from committed access and exposes retry", async () => {
+  const host = new MockHostClient({ latencyMs: 0 });
+  await host.load();
+  state.host = host;
+  const result = await host.rpc["personal.remoteAccess.get"]({});
+  if (!result.ok) throw new Error("Remote fixture missing");
+  state.remote = {
+    ...result.data,
+    operation: {
+      id: "00000000-0000-4000-8000-000000000001",
+      executionId: "00000000-0000-4000-8000-000000000002",
+      intent: { action: "configure", mode: "private", privateOrigin: "https://private.example" },
+      state: "failed",
+      detail: "Computer unavailable",
+    },
+  };
+  const root = createRoot(document.createElement("div"));
+  try {
+    await act(async () => root.render(<AccountSettingsController detail="remote" />));
+    const labels = state.page!.sections.flatMap((section) => section.rows.map((row) => row.label));
+    expect(labels).toContain(
+      `Current: ${result.data.access.mode === "off" ? "Off" : result.data.access.mode === "connect" ? "Connect" : "Private network"}`,
+    );
+    expect(labels).toContain("Requested: Private network");
+    expect(labels).toContain("Retry change");
+    expect(labels).toContain("Refresh status");
+  } finally {
+    act(() => root.unmount());
+    host.dispose();
+    state.host = null;
+    state.remote = null;
   }
 });
