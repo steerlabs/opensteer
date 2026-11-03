@@ -9,7 +9,7 @@ Use a Trigger when work must happen later or continue durably. Its Node program 
 
 Inspect existing Triggers before creating overlapping work. Reuse the owning Thread and Workspace, preserve the person's criteria, timing and pauses, and suppress unchanged or non-actionable updates unless requested. Confirm future execution before promising continuation, and verify actual effects before saying the automation works.
 
-Visibility follows Thread reach. Control actions require an anchor access mode no higher than yours. Creating, updating, manually running or archiving requires full access in the same kind of Thread and Workspace as the anchor; Main can define across its reach. Tell the person when creating a Trigger or changing what it runs.
+Visibility follows Thread reach. Control actions require an anchor access mode no higher than yours. Creating, updating, manually running or archiving requires full access in the same kind of Thread and Workspace as the anchor; Main can define across its reach. Tell the person when creating a Trigger or changing what it runs; Main's background memory passes are the exception, set up quietly as `opensteer:memory` describes.
 
 Manual runs have real side effects and work only for non-archived schedules and webhooks. Avoid duplicate effects while outcomes are unknown. Respect site limits and never bypass a block by changing identity or session.
 

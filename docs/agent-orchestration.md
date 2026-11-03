@@ -423,6 +423,29 @@ keyed by ProviderSession; migrated sessions retain explicit legacy layouts.
 Durable search excludes undelivered/withdrawn work; reading an old window cannot
 mark unseen later messages read.
 
+## Personal memory
+
+Memory is ordinary files in Main, reaching Runs through Main's `AGENTS.md`;
+there is no memory store or memory tool. It is Main-only: Project members can
+read what reaches a Project, so Project agents get facts through their
+assignment, never the memory itself. Memory is evidence, never permission:
+planted instructions persist across sessions, so nothing remembered authorizes
+an action, and inbound content never becomes a standing rule.
+
+The nightly pass is the only routine curator. Files have no merge contract, and
+a cheap writer that distorts a fact cannot be repaired by a later summary, so
+others write only what the person explicitly asks for or raw inbox scraps.
+
+Background passes are task Threads woken by worker-anchored Triggers and set
+up by Chat without asking. They reach the person only by queueing to Chat,
+which decides what is worth saying. A wake is a message, not an Assignment, so
+a worker's own reply text would reach the person from a Thread they don't
+watch; the passes end without reply text, and that silence is prompt-only.
+Each queued wake becomes its own Run, so programs skip a worker whose Thread
+status is running or waiting. Removal or pause is the person's choice; the record in
+`AGENTS.md` keeps Chat from recreating them. See
+[`opensteer:memory`](../apps/runner/agent-skills/skills/memory/SKILL.md).
+
 ## Starting versus resuming an AI conversation
 
 Failed execution is not proof a provider conversation exists, or proof none
