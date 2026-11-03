@@ -2,7 +2,7 @@ import {
   ComputerAppSetupRequestViewSchema,
   McpOAuthAttemptIdSchema,
 } from "@opensteer/integration-core";
-import { OpensteerError, WorkspaceIdSchema, type DeploymentId } from "@opensteer/core";
+import { OpensteerError, WorkspaceIdSchema, type DeploymentId, type UserId } from "@opensteer/core";
 import {
   hostApi,
   rpcSuccess,
@@ -25,6 +25,7 @@ export interface IntegrationPlatformRpcOptions {
   readonly dashboard: Pick<IntegrationDashboardService, "platformDashboard">;
   readonly platform: IntegrationPlatformService;
   readonly mcpOauth: McpOAuthService;
+  readonly pluginsChanged?: (viewers: readonly UserId[]) => void;
 }
 
 export function createIntegrationPlatformRpcHandlers(
@@ -144,6 +145,32 @@ export type IntegrationPlatformCommand = Extract<
 >;
 
 export async function handleIntegrationPlatformCommand(
+  options: IntegrationPlatformRpcOptions,
+  command: IntegrationPlatformCommand,
+  context: HostApiServerContext,
+): Promise<HostApiCommandOutput> {
+  const owner = requireSession(context).user.id;
+  if (command.type === "plugin.list" || command.type === "specialist.list")
+    return executeIntegrationPlatformCommand(options, command, context);
+  const viewers = options.pluginsChanged
+    ? await options.platform.store.settings.affectedViewers({
+        ...((command.type.startsWith("plugin.") || command.type.startsWith("specialist.")) &&
+        "workspaceId" in command &&
+        command.workspaceId !== undefined
+          ? { workspaceId: command.workspaceId }
+          : {}),
+        ...(command.type === "integration.uninstall"
+          ? { installationId: command.installationId }
+          : {}),
+        ...(command.type === "plugin.remove" ? { pluginId: command.pluginId } : {}),
+      })
+    : [];
+  const result = await executeIntegrationPlatformCommand(options, command, context);
+  options.pluginsChanged?.([...new Set([owner, ...viewers])]);
+  return result;
+}
+
+async function executeIntegrationPlatformCommand(
   options: IntegrationPlatformRpcOptions,
   command: IntegrationPlatformCommand,
   context: HostApiServerContext,

@@ -76,6 +76,8 @@ describeStore("Workspace skill inventory", (it) => {
     expect(await store.reportWorkspaceSkills(fence, report)).toBe(true);
     expect(await store.reportWorkspaceSkills(fence, report)).toBe(false);
     const settings = new PluginSettingsStore(database);
+    expect(await settings.affectedViewers({ workspaceId: workspace.id })).toEqual([viewer]);
+    expect(await settings.affectedViewers({ runnerId })).toEqual([viewer]);
     expect(await settings.workspaceSkillPolicy(workspace.id, viewer)).toBeUndefined();
     const target = { kind: "skill" as const, workspaceId: workspace.id, fullName: "release" };
     expect((await settings.overview(stranger)).rows).toEqual([]);

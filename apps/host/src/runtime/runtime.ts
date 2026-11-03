@@ -1581,6 +1581,12 @@ export async function createHostRuntime(
           // row is already offline, and a repeated "reread the list" costs a
           // reader nothing.
           notifyMachinesChanged(realtime, "runner.disconnect");
+          realtime.sendToUsers(
+            await integrationPlatformStore.settings.affectedViewers({
+              runnerId: identity.runnerId,
+            }),
+            { type: "host.plugins-changed" },
+          );
           // A lost connection costs a Run nothing: it keeps executing on its
           // lease and reattaches. A revoked Runner can never come back, so its
           // Runs end now; a replaced boot's are settled by the new boot's attach.
@@ -1679,6 +1685,12 @@ export async function createHostRuntime(
             // A computer is online the moment it registers, whatever its
             // inventory reconciliation goes on to do.
             notifyMachinesChanged(realtime, "runner.registered");
+            realtime.sendToUsers(
+              await integrationPlatformStore.settings.affectedViewers({
+                runnerId: identity.runnerId,
+              }),
+              { type: "host.plugins-changed" },
+            );
             // macOS applies a Full Disk Access grant only once the app has quit
             // and reopened, so the grant usually arrives as a fresh registration
             // whose descriptor already says so — never as a change message.
@@ -1996,7 +2008,10 @@ export async function createHostRuntime(
     integrationConnectionConnected = integrationConnectionReaction({
       notify: () => continuations.notify(),
       report: (error, connectionId) => reportIntegrationConnectionError(error, connectionId),
-      settle: (input) => integrationPlatform.connectionConnected(input),
+      settle: (input) => {
+        realtime.sendToUsers([input.ownerUserId], { type: "host.plugins-changed" });
+        return integrationPlatform.connectionConnected(input);
+      },
     });
     const triggers = new TriggerService({
       runnerStore: store,
