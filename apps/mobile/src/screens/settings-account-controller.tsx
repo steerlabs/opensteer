@@ -16,7 +16,13 @@ import { remoteAdministrationActions, remoteAdministrationActionLabels } from ".
 import { accountSettingsModel, signOutAccountInOrder } from "./settings-model.js";
 
 import { useSettingsHost } from "./use-settings-host.js";
-export function AccountSettingsController({ detail, sessionId }: { readonly detail?: "remote" | "session" | undefined; readonly sessionId?: string | undefined } = {}): ReactNode {
+export function AccountSettingsController({
+  detail,
+  sessionId,
+}: {
+  readonly detail?: "remote" | "session" | undefined;
+  readonly sessionId?: string | undefined;
+} = {}): ReactNode {
   const navigation = useNavigation();
   const page = "account";
   const client = useMobileClient();
@@ -94,6 +100,7 @@ export function AccountSettingsController({ detail, sessionId }: { readonly deta
             | "link"
             | "mode",
         ) => {
+          if (!isCurrent()) return;
           if (action === "mode") {
             setModeShown(true);
             return;
@@ -123,7 +130,12 @@ export function AccountSettingsController({ detail, sessionId }: { readonly deta
                 ? { action: "configure", mode: action, privateOrigin: null }
                 : { action },
             );
-          if (action === "unlink" || action === "off" || action === "connect")
+          if (
+            action === "unlink" ||
+            action === "off" ||
+            action === "connect" ||
+            action === "rotate"
+          )
             Alert.alert("Change remote access?", remoteAccessDisconnectWarning, [
               { text: "Cancel", style: "cancel" },
               { text: "Continue", style: "destructive", onPress: apply },
@@ -184,43 +196,143 @@ export function AccountSettingsController({ detail, sessionId }: { readonly deta
     );
   }, [accountModel?.action, client, runAccount, signOut]);
   const text = (key: string, label: string): NativeSettingsRow => ({ key, kind: "text", label });
-  const button = (key: string, label: string, onPress: () => void, destructive = false): NativeSettingsRow => ({ key, kind: "button", label, onPress, destructive, disabled: administration?.busy ?? false });
+  const button = (
+    key: string,
+    label: string,
+    onPress: () => void,
+    destructive = false,
+  ): NativeSettingsRow => ({
+    key,
+    kind: "button",
+    label,
+    onPress,
+    destructive,
+    disabled: administration?.busy ?? false,
+  });
   const sections: NativeSettingsSection[] = [];
   if (detail === "remote") {
     if (remote.status) {
-      sections.push({ key: "remote", title: "Open Opensteer from anywhere", rows: [
-        text("mode", `Mode: ${remote.status.access.mode}`),
-        text("executor", remote.status.executorConnected ? "Computer connected" : "Waiting for your computer"),
-        ...(remote.status.operation ? [text("operation", `${remote.status.operation.state}${remote.status.operation.detail ? ` · ${remote.status.operation.detail}` : ""}`)] : []),
-        ...(!remote.status.access.accountLink ? [text("prerequisite", "Link your Opensteer Account to use Connect.")] : []),
-        ...remoteAdministrationActions(remote.status).map(action => button(action, remoteAdministrationActionLabels[action], () => administration?.onAction(action), action === "unlink" || action === "rotate")),
-        ...(remote.pairing ? [text("pairing", `Pairing code: ${remote.pairing.code}`)] : []),
-      ] });
+      sections.push({
+        key: "remote",
+        title: "Open Opensteer from anywhere",
+        rows: [
+          text("mode", `Mode: ${remote.status.access.mode}`),
+          text(
+            "executor",
+            remote.status.executorConnected ? "Computer connected" : "Waiting for your computer",
+          ),
+          ...(remote.status.operation
+            ? [
+                text(
+                  "operation",
+                  `${remote.status.operation.state}${remote.status.operation.detail ? ` · ${remote.status.operation.detail}` : ""}`,
+                ),
+              ]
+            : []),
+          ...(!remote.status.access.accountLink
+            ? [text("prerequisite", "Link your Opensteer Account to use Connect.")]
+            : []),
+          ...remoteAdministrationActions(remote.status).map((action) =>
+            button(
+              action,
+              remoteAdministrationActionLabels[action],
+              () => administration?.onAction(action),
+              action === "unlink" || action === "rotate",
+            ),
+          ),
+          ...(remote.pairing ? [text("pairing", `Pairing code: ${remote.pairing.code}`)] : []),
+        ],
+      });
     }
   } else if (detail === "session") {
-    const session = sessions.find(session => session.id === sessionId);
-    sections.push({ key: "session", title: session?.deviceLabel ?? "Signed-in session", rows: session ? [
-      ...(session.current ? [text("current", "This device")] : []),
-      button("sign-out", "Sign out", () => Alert.alert("Sign out of this session?", "This ends this login. Device access and other signed-in sessions stay as they are.", [
-        { text: "Cancel", style: "cancel" },
-        { text: "Sign out", style: "destructive", onPress: () => administration?.onRemove(session) },
-      ]), true),
-    ] : [text("missing", "This session is no longer signed in.")] });
+    const session = sessions.find((session) => session.id === sessionId);
+    sections.push({
+      key: "session",
+      title: session?.deviceLabel ?? "Signed-in session",
+      rows: session
+        ? [
+            ...(session.current ? [text("current", "This device")] : []),
+            button(
+              "sign-out",
+              "Sign out",
+              () =>
+                Alert.alert(
+                  "Sign out of this session?",
+                  "This ends this login. Device access and other signed-in sessions stay as they are.",
+                  [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                      text: "Sign out",
+                      style: "destructive",
+                      onPress: () => administration?.onRemove(session),
+                    },
+                  ],
+                ),
+              true,
+            ),
+          ]
+        : [text("missing", "This session is no longer signed in.")],
+    });
   } else {
-    if (accountModel) sections.push({ key: "account", title: "Opensteer Account", rows: [
-      text("identity", accountModel.title),
-      ...(accountModel.subtitle ? [text("subtitle", accountModel.subtitle)] : []),
-      ...(accountModel.action ? [button("account-action", accountModel.action.label, onAccountAction)] : []),
-    ] });
+    if (accountModel)
+      sections.push({
+        key: "account",
+        title: "Opensteer Account",
+        rows: [
+          text("identity", accountModel.title),
+          ...(accountModel.subtitle ? [text("subtitle", accountModel.subtitle)] : []),
+          ...(accountModel.action
+            ? [button("account-action", accountModel.action.label, onAccountAction)]
+            : []),
+        ],
+      });
     if (administration) {
-      if (remote.status) sections.push({ key: "remote", title: "Remote access", rows: [
-        { key: "enabled", kind: "toggle", label: "Open Opensteer from anywhere", value: remote.status.access.mode !== "off", disabled: administration.busy, onChange: enabled => administration.onAction(enabled ? "mode" : "off") },
-        button("remote-detail", "Connection details", () => { if (selection.deploymentId) navigation.navigate("SettingsRemoteAccess", { deploymentId: selection.deploymentId }); }),
-      ] });
-      sections.push({ key: "sessions", title: "Where you’re signed in", rows: sessions.map(session => button(session.id, `${session.deviceLabel}${session.current ? " · This device" : ""}`, () => { if (selection.deploymentId) navigation.navigate("SettingsSessionDetail", { deploymentId: selection.deploymentId, sessionId: session.id }); })) });
+      if (remote.status)
+        sections.push({
+          key: "remote",
+          title: "Remote access",
+          rows: [
+            {
+              key: "enabled",
+              kind: "toggle",
+              label: "Open Opensteer from anywhere",
+              value: remote.status.access.mode !== "off",
+              disabled: administration.busy,
+              onChange: (enabled) => administration.onAction(enabled ? "mode" : "off"),
+            },
+            button("remote-detail", "Connection details", () => {
+              if (selection.deploymentId)
+                navigation.navigate("SettingsRemoteAccess", {
+                  deploymentId: selection.deploymentId,
+                });
+            }),
+          ],
+        });
+      sections.push({
+        key: "sessions",
+        title: "Where you’re signed in",
+        rows: sessions.map((session) =>
+          button(
+            session.id,
+            `${session.deviceLabel}${session.current ? " · This device" : ""}`,
+            () => {
+              if (selection.deploymentId)
+                navigation.navigate("SettingsSessionDetail", {
+                  deploymentId: selection.deploymentId,
+                  sessionId: session.id,
+                });
+            },
+          ),
+        ),
+      });
     }
   }
-  if (accountError || administration?.error) sections.push({ key: "error", title: "Needs you", rows: [text("error", accountError ?? administration?.error ?? "")] });
+  if (accountError || administration?.error)
+    sections.push({
+      key: "error",
+      title: "Needs you",
+      rows: [text("error", accountError ?? administration?.error ?? "")],
+    });
   return (
     <>
       <NativeSettingsPage sections={sections} />

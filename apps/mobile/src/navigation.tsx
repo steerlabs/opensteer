@@ -287,8 +287,14 @@ const RootStack = createNativeStackNavigator({
     // on dragging it back down.
     SettingsGeneral: { screen: SettingsGeneralScreen, options: { title: "General" } },
     SettingsAccount: { screen: SettingsAccountScreen, options: { title: "Account" } },
-    SettingsRemoteAccess: { screen: SettingsRemoteAccessScreen, options: { title: "Remote access" } },
-    SettingsSessionDetail: { screen: SettingsSessionDetailScreen, options: { title: "Signed-in session" } },
+    SettingsRemoteAccess: {
+      screen: SettingsRemoteAccessScreen,
+      options: { title: "Remote access" },
+    },
+    SettingsSessionDetail: {
+      screen: SettingsSessionDetailScreen,
+      options: { title: "Signed-in session" },
+    },
     SettingsDevices: { screen: SettingsDevicesScreen, options: { title: "Devices" } },
     SettingsMessaging: { screen: SettingsMessagingScreen, options: { title: "Messaging" } },
     SettingsAI: { screen: SettingsAIScreen, options: { title: "AI" } },
