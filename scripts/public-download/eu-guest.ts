@@ -20,8 +20,6 @@ assert(existsSync(share), "Run only through pnpm test:vm -- --inputs DIR");
 const metadata = journeyMetadata.parse(JSON.parse(process.argv[4]!));
 const githubChannel = z.enum(["stable", "beta"]).parse(process.argv[3]);
 const product = "Opensteer";
-// Electron keeps the durable runtime name used by existing profiles.
-const runtimeName = "Opensteer";
 const bundleId = "com.opensteer.opensteer";
 process.env.OPENSTEER_JOURNEY_BUNDLE_ID = bundleId;
 const scenario = z.enum(["eu-menu", "eu-tray", "eu-quit"]).parse(process.argv[2]);
@@ -64,7 +62,7 @@ const sh = (s: string) => run("/bin/bash", ["-c", s]);
 const script = (s: string) => run("/usr/bin/osascript", ["-e", s]);
 
 const app = `/Applications/${product}.app`;
-const data = path.join(homedir(), `Library/Application Support/${runtimeName}`);
+const data = path.join(homedir(), `Library/Application Support/${product}`);
 const appLog = path.join(data, "logs/desktop.log");
 const readLog = () => (existsSync(appLog) ? readFileSync(appLog, "utf8") : "");
 const wait = async (name: string, predicate: () => boolean, seconds = 120) => {
@@ -157,10 +155,11 @@ const verify = async (version: string, target = app) => {
 const about = (version: string) => {
   script(`tell application "${product}" to activate`);
   script(
-    `tell application "System Events" to tell process "${product}" to click menu item "About ${runtimeName}" of menu 1 of menu bar item "${product}" of menu bar 1`,
+    `tell application "System Events" to tell process "${product}" to click menu item "About ${product}" of menu 1 of menu bar item "${product}" of menu bar 1`,
   );
   const content = run(path.join(out, "ax-driver"), ["dump"]).output;
-  assert(content.includes(githubChannel === "beta" ? version : `${version} (Alpha)`), content);
+  // Both channels install the same build, so About shows the same version.
+  assert(content.includes(version), content);
   screenshot(`about-${version}`);
   script(
     `tell application "System Events" to tell process "${product}" to keystroke "w" using command down`,
