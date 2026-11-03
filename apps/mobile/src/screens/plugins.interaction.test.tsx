@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
+import type { LocalMcpSecretServer } from "@opensteer/client/integrations";
 import { MockHostClient } from "@opensteer/client/mock";
 import { native } from "../../test-support/settings-screens.js";
 
@@ -11,7 +12,14 @@ import { native } from "../../test-support/settings-screens.js";
 // place that never changes, a removal without confirmation, or install
 // controls shown to someone the Host will refuse.
 
-const harness = vi.hoisted(() => ({ client: null as HostClient | null }));
+const harness = vi.hoisted(() => ({
+  client: null as HostClient | null,
+  secretServers: [] as readonly LocalMcpSecretServer[],
+}));
+vi.mock("@opensteer/client/integrations", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opensteer/client/integrations")>()),
+  localMcpSecretServers: async () => [...harness.secretServers],
+}));
 vi.mock(
   "react-native",
   async () => (await import("../../test-support/settings-screens.js")).reactNative,
@@ -57,10 +65,17 @@ async function shows(check: () => void): Promise<void> {
   await vi.waitFor(check, { timeout: 2_000 });
 }
 
-async function open(options: { readonly administrator?: boolean } = {}) {
+async function open(
+  options: {
+    readonly administrator?: boolean;
+    readonly secretServers?: readonly LocalMcpSecretServer[];
+  } = {},
+) {
   const host = new MockHostClient({ automations: "absent", latencyMs: 0 });
   clients.push(host);
   await host.load();
+  // The mock runs no server on a computer; this person may own one that takes secrets.
+  harness.secretServers = options.secretServers ?? [];
   if (options.administrator === false) {
     const read = host.getSnapshot.bind(host);
     const held = new WeakMap<HostSnapshot, HostSnapshot>();
@@ -139,5 +154,54 @@ describe("Settings → Plugins on the phone", () => {
     const { container } = await open({ administrator: false });
     expect(container.textContent).toContain("An administrator manages plugins");
     expect(container.querySelector('input[aria-label="Folder"]')).toBeNull();
+    expect(container.textContent).not.toContain("Secrets on your computers");
+  });
+
+  it("lets a computer's owner who isn't an administrator change its plugin's secrets", async () => {
+    const serverId = "isv_00000000-0000-4000-8000-000000000009" as LocalMcpSecretServer["id"];
+    const { container, host } = await open({
+      administrator: false,
+      secretServers: [
+        {
+          computer: "Studio Mac",
+          id: serverId,
+          name: "camera",
+          plugin: "Tapo",
+          secrets: [{ name: "CAMERA_PASSWORD", title: "Camera password" }],
+        },
+      ],
+    });
+    const dispatch = vi
+      .spyOn(host, "dispatch")
+      .mockResolvedValue({ type: "integration.server.secrets.set" } as never);
+    await shows(() =>
+      expect(container.textContent, "its secrets were never listed").toContain(
+        "Secrets on your computers",
+      ),
+    );
+    expect(container.textContent).toContain("camera · Studio Mac · Camera password");
+    await press(button(container, "Change"));
+    await press(button(container, "Save"));
+    expect(container.textContent).toContain("Enter a new value to change.");
+    const field = container.querySelector<HTMLInputElement>('input[aria-label="Camera password"]')!;
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setValue.call(field, "swordfish");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await press(button(container, "Save"));
+    await shows(() =>
+      expect(container.textContent, "the change was never confirmed").toContain(
+        "Tapo’s secrets changed",
+      ),
+    );
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        secrets: { CAMERA_PASSWORD: "swordfish" },
+        serverId,
+        type: "integration.server.secrets.set",
+      }),
+    );
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
 });

@@ -1278,6 +1278,9 @@ importers:
       '@opensteer/core':
         specifier: workspace:*
         version: link:../core
+      '@opensteer/integration-core':
+        specifier: workspace:*
+        version: link:../integration-core
       '@opensteer/shared':
         specifier: workspace:*
         version: link:../shared

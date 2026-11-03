@@ -4699,6 +4699,7 @@ export function migrationProvider() {
         "0145_specialist_lifecycle": specialistLifecycleMigration,
         "0146_every_turn_shows": everyTurnShowsMigration,
         "0147_quiet_assignment_results": quietAssignmentResultsMigration,
+        "0148_local_mcp_server_secrets": localMcpServerSecretsMigration,
       };
     },
   };
@@ -7084,6 +7085,28 @@ export const quietAssignmentResultsMigration: Migration = {
             and (result_message_id is not null or result_text is not distinct from '') and result_reason is null)
           or (result_status = 'undeliverable' and completed_at is not null
             and result_message_id is null and result_reason is not null));
+    `.execute(database);
+  },
+};
+
+/**
+ * What the owner of the computer that runs an MCP server entered for the
+ * secrets its launch declares, sealed as one envelope. A table of its own, so
+ * no listing of servers carries it, and it goes with its server. It is for
+ * the computer it was entered for: one the server moves to is asked again.
+ */
+export const localMcpServerSecretsMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table public.integration_server_secrets (
+        server_id text primary key
+          references public.integration_servers(id) on delete cascade,
+        runner_id text not null references public.runners(id) on delete cascade,
+        encrypted_payload bytea not null check (
+          octet_length(encrypted_payload) between 1 and 1048576
+        ),
+        updated_at timestamptz not null default now()
+      );
     `.execute(database);
   },
 };

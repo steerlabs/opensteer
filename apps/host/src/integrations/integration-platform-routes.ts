@@ -1,6 +1,7 @@
 import {
   ComputerAppSetupRequestViewSchema,
   McpOAuthAttemptIdSchema,
+  localMcpLaunchSecrets,
 } from "@opensteer/integration-core";
 import { OpensteerError, WorkspaceIdSchema, type DeploymentId } from "@opensteer/core";
 import {
@@ -40,6 +41,7 @@ export function createIntegrationPlatformRpcHandlers(
   | "integration.computer.setup.review"
   | "integration.computer.setup.list"
   | "integration.computer.policy.get"
+  | "integration.server.secrets.list"
 > {
   return {
     "specialist.list": async (input, context) =>
@@ -87,6 +89,18 @@ export function createIntegrationPlatformRpcHandlers(
           ownerUserId: requireSession(context).user.id,
         }),
       ),
+    "integration.server.secrets.list": async (_input, context) =>
+      rpcSuccess({
+        servers: (
+          await options.platform.store.localMcp.withSecretsOwnedBy(requireSession(context).user.id)
+        ).map((server) => ({
+          computer: server.runnerName,
+          id: server.id,
+          name: server.name,
+          plugin: server.installationTitle,
+          secrets: [...localMcpLaunchSecrets(server.launch)],
+        })),
+      }),
     "integration.computer.setup.list": async (_input, context) =>
       rpcSuccess({
         requests: (
@@ -139,6 +153,7 @@ export type IntegrationPlatformCommand = Extract<
       | "integration.mcp.authorization.begin"
       | "integration.mcp.disconnect"
       | "integration.remoteMcp.install"
+      | "integration.server.secrets.set"
       | "integration.uninstall";
   }
 >;
@@ -189,6 +204,7 @@ export async function handleIntegrationPlatformCommand(
         settlementSessionId: session.id,
         setupRequestId: command.setupRequestId,
         decision: command.decision,
+        secrets: command.secrets,
         actorUserId: session.user.id,
         isAdministrator: session.user.instanceRole === "administrator",
         requestId: context.requestId,
@@ -206,6 +222,13 @@ export async function handleIntegrationPlatformCommand(
               message: "Your session changed. Review this approval again.",
             });
         },
+      });
+      return { type: command.type };
+    case "integration.server.secrets.set":
+      await options.platform.setServerSecrets({
+        actorUserId: session.user.id,
+        secrets: command.secrets,
+        serverId: command.serverId,
       });
       return { type: command.type };
     case "integration.computer.setup.set": {

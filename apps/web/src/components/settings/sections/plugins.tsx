@@ -11,6 +11,13 @@ import {
   type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { WorkspaceIdSchema } from "@opensteer/core";
+import {
+  localMcpSecretServers,
+  localMcpSecretsToSend,
+  setLocalMcpServerSecrets,
+  type LocalMcpSecretServer,
+} from "@opensteer/client/integrations";
+import { LocalMcpSecretFields } from "../../computer-apps/local-mcp-secret-fields.js";
 import { actionErrorMessage } from "../../../ui-utils.js";
 import { useShell } from "../../app-shell.js";
 import { Dialog } from "../../dialog.js";
@@ -98,7 +105,64 @@ export function PluginsSection({ view }: { readonly view: SettingsView }) {
           </div>
         </div>
       )}
+      <YourSecrets connected={connected} />
     </>
+  );
+}
+
+/**
+ * Whoever owns the computer a plugin's server runs on entered its secrets
+ * there, and changes them here, whether or not they manage plugins.
+ */
+function YourSecrets({ connected }: { readonly connected: boolean }) {
+  const { hostClient } = useShell();
+  const toast = useToast();
+  const servers = useHostRead(() => localMcpSecretServers(hostClient), "plugin-secrets");
+  const [changing, setChanging] = useState<LocalMcpSecretServer | null>(null);
+  if (!servers.data?.length) return null;
+  return (
+    <section aria-labelledby="plugins-secrets" className="settings-group">
+      <h2 className="settings-group__title" id="plugins-secrets">
+        Secrets on your computers
+      </h2>
+      <div className="card">
+        {servers.data.map((server) => (
+          <div className="card__row" key={server.id}>
+            <span className="card__row-glyph">
+              <Icon name="shield" />
+            </span>
+            <span className="card__row-body">
+              <span className="card__row-title">{server.plugin}</span>
+              <span className="card__row-detail">
+                {[server.name, server.computer, server.secrets.map(({ title }) => title).join(", ")]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            </span>
+            <span className="card__row-actions">
+              <button
+                className="btn btn--small btn--ghost"
+                disabled={!connected}
+                onClick={() => setChanging(server)}
+                type="button"
+              >
+                Change
+              </button>
+            </span>
+          </div>
+        ))}
+      </div>
+      {changing ? (
+        <ChangeSecrets
+          onClose={() => setChanging(null)}
+          onSaved={() => {
+            setChanging(null);
+            toast.success(`${changing.plugin}’s secrets changed`);
+          }}
+          server={changing}
+        />
+      ) : null}
+    </section>
   );
 }
 
@@ -443,4 +507,58 @@ function PluginRow({
 
 function workspaceName(workspace: Pick<WorkspaceSummary, "kind" | "name">): string {
   return workspace.kind === "main" ? "Main" : workspace.name;
+}
+
+/** New values for the secrets a server's computer's owner entered when approving it. */
+function ChangeSecrets(props: {
+  readonly onClose: () => void;
+  readonly onSaved: () => void;
+  readonly server: LocalMcpSecretServer;
+}) {
+  const { hostClient } = useShell();
+  const fields = props.server.secrets.map((secret) => ({ ...secret, saved: true }));
+  const [values, setValues] = useState<Readonly<Record<string, string>>>({});
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = () => {
+    const entered = localMcpSecretsToSend(fields, values);
+    if (!entered.ok || Object.keys(entered.secrets).length === 0) {
+      setError(entered.ok ? "Enter a new value to change." : entered.message);
+      return;
+    }
+    setPending(true);
+    setError(null);
+    void setLocalMcpServerSecrets(hostClient, props.server.id, entered.secrets)
+      .then(props.onSaved)
+      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+      .finally(() => setPending(false));
+  };
+  return (
+    <Dialog
+      labelledBy="plugin-secrets-title"
+      onClose={() => {
+        if (!pending) props.onClose();
+      }}
+      title={`${props.server.plugin}’s secrets`}
+    >
+      <p className="section__hint">
+        Enter only what changed. {props.server.name} restarts with the new values.
+      </p>
+      <LocalMcpSecretFields
+        disabled={pending}
+        fields={fields}
+        onChange={(name, value) => setValues((current) => ({ ...current, [name]: value }))}
+        values={values}
+      />
+      <div className="form-actions">
+        <button className="btn" disabled={pending} onClick={props.onClose} type="button">
+          Cancel
+        </button>
+        <button className="btn btn--primary" disabled={pending} onClick={save} type="button">
+          {pending ? "Saving…" : "Save"}
+        </button>
+      </div>
+      {error ? <SettingsError message={error} /> : null}
+    </Dialog>
+  );
 }

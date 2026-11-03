@@ -1,5 +1,7 @@
+import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { sql } from "kysely";
+import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { createIntegrationId, McpOAuthAttemptIdSchema } from "@opensteer/integration-core";
 import { IntegrationPlatformStore } from "@opensteer/database";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -234,6 +236,9 @@ integration("MCP OAuth reconnect", () => {
       });
       platform = new IntegrationPlatformService({
         store,
+        secretVault: new AesGcmSecretVault(
+          new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
+        ),
         mcpOauth: oauth,
         adapters: [],
         definitions: [],
