@@ -639,16 +639,6 @@ html.electron-shell .settings-navigation__header :is(a, button) {
   flex-wrap: wrap;
   gap: var(--space-8);
 }
-.settings-plugin-filters .btn {
-  min-height: 44px;
-}
-.settings-plugin-filters [aria-pressed="true"] {
-  color: var(--ember);
-  border-color: currentColor;
-}
-.settings-plugin-attention {
-  border-color: var(--ember);
-}
 .settings-device-list {
   padding: 0;
   list-style: none;
@@ -677,12 +667,6 @@ html.electron-shell .settings-navigation__header :is(a, button) {
 }
 .settings-content__inner .btn {
   min-height: 44px;
-}
-.settings-content__inner .card__row {
-  flex-wrap: wrap;
-}
-.settings-content__inner .card__row-body {
-  flex: 1 1 160px;
 }
 
 .settings-plugin-overview {
@@ -754,9 +738,6 @@ html.electron-shell .settings-navigation__header :is(a, button) {
   .settings-plugin-overview .card__row {
     gap: var(--space-8);
     padding: var(--space-12);
-  }
-  .settings-plugin-overview .card__row-glyph {
-    display: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -929,23 +910,6 @@ html.electron-shell .settings-navigation__header :is(a, button) {
 #plugin-placement .card__row {
   justify-content: space-between;
 }
-.settings-row-menu {
-  position: relative;
-}
-.settings-row-menu summary {
-  list-style: none;
-}
-.settings-row-menu summary::-webkit-details-marker {
-  display: none;
-}
-.settings-row-menu[open] > .btn {
-  position: absolute;
-  z-index: var(--layer-drawer);
-  inset-inline-end: 0;
-  background: var(--surface-elevated);
-  box-shadow: var(--lift-float);
-  white-space: nowrap;
-}
 .settings-item .icon-btn:has(svg) {
   transition: opacity var(--duration-fast) var(--ease-out);
 }
@@ -972,10 +936,6 @@ html.electron-shell .settings-navigation__header :is(a, button) {
 .intg-icon--device svg {
   width: 60%;
   height: 60%;
-}
-.intg-icon--apple-calendar {
-  background: var(--red-text);
-  color: var(--ground);
 }
 .settings-content__inner .intg-hero {
   padding-inline: 0;
