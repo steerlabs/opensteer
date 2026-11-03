@@ -1689,7 +1689,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         publicUrl: new URL("https://host.test"),
         onWorkspaceEvent: vi.fn(),
         requestResponseVault: {} as never,
-        agentControlTokens: {} as never,
+        runToolTokens: {} as never,
         attachmentRunTokens: {} as never,
         attachments: { listForRun: async () => [] },
         browser: { hasBrowserProfileAccess: async () => false },
@@ -2480,7 +2480,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const token = `run-${randomUUID()}`;
     runClaims.set(token, {
       ...signedClaims(),
-      aud: "opensteer-agent-control",
+      aud: "opensteer-run-tools",
       bindingGeneration: binding.bindingGeneration,
       environmentId: f.environmentId,
       membershipGeneration: 1,

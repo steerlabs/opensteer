@@ -1772,7 +1772,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         store,
         placeContext: places,
         tokens: {
-          authenticate: async () => ({ ...run.claims, aud: "opensteer-agent-control" }),
+          authenticate: async () => ({ ...run.claims, aud: "opensteer-run-tools" }),
         } as never,
         workspaceMounts: {} as never,
         workspaces: {} as never,

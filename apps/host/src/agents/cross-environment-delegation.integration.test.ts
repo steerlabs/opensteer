@@ -2618,7 +2618,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     });
     const token = `token-${randomUUID()}`;
     claimsByToken.set(token, {
-      aud: "opensteer-agent-control",
+      aud: "opensteer-run-tools",
       bindingGeneration: binding.bindingGeneration,
       environmentId: mainEnvironmentId,
       exp: Math.floor(Date.now() / 1_000) + 60,
@@ -2776,7 +2776,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     });
     const token = `assignment-run-${randomUUID()}`;
     claimsByToken.set(token, {
-      aud: "opensteer-agent-control",
+      aud: "opensteer-run-tools",
       bindingGeneration: binding.bindingGeneration,
       environmentId: target.environmentId,
       exp: Math.floor(Date.now() / 1_000) + 60,
@@ -3110,7 +3110,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       executionLeaseMs: 90_000,
       attachmentRunTokens: { issue } as never,
       attachments: { listForRun: async () => [] },
-      agentControlTokens: { issue } as never,
+      runToolTokens: { issue } as never,
       browser: {} as never,
       egress: { issue: () => ({ allowedHosts: [], token: "test-egress" }) } as never,
       pluginVersions: async () => [],

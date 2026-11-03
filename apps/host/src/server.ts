@@ -356,7 +356,7 @@ export interface HostServerDependencies {
   /** Present when account attachment uses adoption. */
   readonly accountAdoption?:
     { readonly acknowledge: (proofId: string) => Promise<void> } | undefined;
-  readonly agentControlTokens: import("./agents/run-tool-tokens.js").RunToolTokenService;
+  readonly runToolTokens: import("./agents/run-tool-tokens.js").RunToolTokenService;
   readonly agentTools: OpensteerMcpService;
   readonly authenticator: HostAuthenticator;
   readonly machineFullDiskAccess: MachineFullDiskAccessService;
@@ -509,7 +509,7 @@ export async function createHostServer(
   registerSessionExchangeRoute(app, {
     personalRemoteAccess: dependencies.personalRemoteAccess?.service,
   });
-  registerAgentCdpBridge(app, dependencies.browser, dependencies.agentControlTokens);
+  registerAgentCdpBridge(app, dependencies.browser, dependencies.runToolTokens);
   registerBrowserSourceWire(
     app,
     dependencies.browserSources,

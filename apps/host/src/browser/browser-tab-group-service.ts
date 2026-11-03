@@ -248,7 +248,7 @@ export class BrowserTabGroupService {
         usedByOtherTask: occupants.some((o) => o.threadId !== actor.threadId),
       };
       const addedBytes = Buffer.byteLength(JSON.stringify(tab), "utf8") + 1;
-      // Reserve the cursor and agent-control envelope within the shared tool response budget.
+      // Reserve the cursor and tool result envelope within the shared tool response budget.
       if (bytes + addedBytes > agentToolPayloadMaxSerializedBytes - 1024) break;
       tabs.push(tab);
       bytes += addedBytes;

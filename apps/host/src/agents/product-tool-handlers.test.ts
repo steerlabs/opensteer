@@ -1561,7 +1561,7 @@ function makeService(options: {
   workspaces?: readonly Workspace[];
 }) {
   const claims = {
-    aud: "opensteer-agent-control" as const,
+    aud: "opensteer-run-tools" as const,
     bindingGeneration: 1,
     environmentId,
     exp: Math.floor(Date.now() / 1_000) + 60,

@@ -1551,7 +1551,7 @@ function testClaims(input: {
   readonly workspaceId: Thread["workspaceId"];
 }): RunToolScope {
   return {
-    aud: "opensteer-agent-control",
+    aud: "opensteer-run-tools",
     bindingGeneration: 1,
     exp: Math.floor(Date.now() / 1_000) + 60,
     iat: Math.floor(Date.now() / 1_000),

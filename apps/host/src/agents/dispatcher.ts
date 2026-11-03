@@ -108,7 +108,7 @@ const supportedCommandTypes = new Set([
 export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
   readonly #attachments: Pick<AttachmentStore, "listForRun">;
-  readonly #agentControlTokens: RunToolTokenService;
+  readonly #runToolTokens: RunToolTokenService;
   readonly #requestResponseVault: RequestResponseVault;
   readonly #agentToolsUrl: string;
   readonly #agentBrowserCdpUrl: string;
@@ -135,7 +135,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
     readonly attachments: Pick<AttachmentStore, "listForRun">;
     readonly requestResponseVault: RequestResponseVault;
-    readonly agentControlTokens: RunToolTokenService;
+    readonly runToolTokens: RunToolTokenService;
     readonly browser: Pick<BrowserService, "hasBrowserProfileAccess">;
     readonly onWorkspaceEvent: (event: AgentEvent) => void;
     readonly onTriggerChanged?: (workspaceId: WorkspaceId) => void;
@@ -157,7 +157,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#attachmentRunTokens = options.attachmentRunTokens;
     this.#attachments = options.attachments;
     this.#requestResponseVault = options.requestResponseVault;
-    this.#agentControlTokens = options.agentControlTokens;
+    this.#runToolTokens = options.runToolTokens;
     this.#agentToolsUrl = new URL("/internal/v1/mcp", options.publicUrl).toString();
     this.#agentBrowserCdpUrl = new URL("/internal/v1/browser-cdp", options.publicUrl).toString();
     this.#pluginVersions = options.pluginVersions;
@@ -451,7 +451,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       workspace: context.workspace,
     });
 
-    const toolsToken = this.#agentControlTokens.issue({
+    const toolsToken = this.#runToolTokens.issue({
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
       ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
@@ -561,7 +561,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         },
         bindingGeneration: binding.bindingGeneration,
         // Half a token's life leaves the Runner room to retry before any expires.
-        credentialRefreshAfterMs: (this.#agentControlTokens.lifetimeSeconds * 1_000) / 2,
+        credentialRefreshAfterMs: (this.#runToolTokens.lifetimeSeconds * 1_000) / 2,
         executionLeaseMs: this.#executionLeaseMs,
         firstOrdinal: context.firstOrdinal,
         membershipGeneration: context.membershipGeneration,

@@ -947,7 +947,7 @@ integration("durable Thread changes native continuation", () => {
 
     let claims: RunToolScope | null = null;
     const unexpected = async (): Promise<never> => {
-      throw new Error("Unexpected agent-control dependency");
+      throw new Error("Unexpected Run tool dependency");
     };
     const service = new ProductToolsTestClient({
       browserSources: { agentSignIn: unexpected },
@@ -1009,7 +1009,7 @@ integration("durable Thread changes native continuation", () => {
         if (!source || !session.runnerId || !session.runnerBootId)
           throw new Error("Specialist binding is incomplete");
         claims = {
-          aud: "opensteer-agent-control",
+          aud: "opensteer-run-tools",
           bindingGeneration: session.bindingGeneration,
           environmentId: stack!.environmentId,
           exp: Math.floor(Date.now() / 1_000) + 60,
@@ -1133,7 +1133,7 @@ integration("durable Thread changes native continuation", () => {
     });
     let claims: RunToolScope | null = null;
     const unexpected = async (): Promise<never> => {
-      throw new Error("Unexpected agent-control dependency");
+      throw new Error("Unexpected Run tool dependency");
     };
     // The Host's own dispatcher, Runner and event reactions run the task; this
     // service only stands in for the MCP endpoint Home's engine would call.
@@ -1214,7 +1214,7 @@ integration("durable Thread changes native continuation", () => {
         if (!session.runnerId || !session.runnerBootId)
           throw new Error("Home binding is incomplete");
         claims = {
-          aud: "opensteer-agent-control",
+          aud: "opensteer-run-tools",
           bindingGeneration: session.bindingGeneration,
           environmentId: stack!.environmentId,
           exp: Math.floor(Date.now() / 1_000) + 60,

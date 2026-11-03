@@ -16,7 +16,7 @@ export function hostServerTestDependencies(
   return {
     apps: inert(),
     attachments: inert(),
-    agentControlTokens: inert(),
+    runToolTokens: inert(),
     agentTools: inert(),
     authenticator: inert(),
     browser: inert(),

@@ -27,7 +27,7 @@ describe("MCP connection audience", () => {
       "browser-cookie",
       "osp_" + "a".repeat(43),
       "PersonalRemote credential",
-      tokens.issue({ aud: "opensteer-agent-control" }, 60),
+      tokens.issue({ aud: "opensteer-run-tools" }, 60),
       tokens.issue({ aud: "opensteer-trigger-control" }, 60),
       tokens.issue({ aud: "opensteer-watch-control" }, 60),
       tokens.issue({ aud: "native-oauth" }, 60),
@@ -65,7 +65,7 @@ describe("MCP connection audience", () => {
       hostInstanceId: createId("hostInstance"),
     });
     const run = new RunCapabilityTokenService({
-      audience: "opensteer-agent-control",
+      audience: "opensteer-run-tools",
       tokens,
       authorizer: { assertActiveGrant: vi.fn() },
     });

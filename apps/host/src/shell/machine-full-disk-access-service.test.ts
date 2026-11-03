@@ -5,7 +5,7 @@ import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import { MachineFullDiskAccessService } from "./machine-full-disk-access-service.js";
 
 const claims: RunToolScope = {
-  aud: "opensteer-agent-control",
+  aud: "opensteer-run-tools",
   bindingGeneration: 1,
   environmentId: createId("environment"),
   exp: 2000000000,

@@ -1492,7 +1492,7 @@ export async function createHostRuntime(
           }
           return {
             credentials: {
-              agentTools: agentControlTokens.issue(scope),
+              agentTools: runToolTokens.issue(scope),
               attachments: attachmentRunTokens.issue(scope),
             },
             status: "issued",
@@ -1814,14 +1814,14 @@ export async function createHostRuntime(
     const runCapabilityLifetime = options.runCapabilityLifetimeSeconds
       ? { lifetimeSeconds: options.runCapabilityLifetimeSeconds }
       : {};
-    const agentControlTokens = new RunToolTokenService({
+    const runToolTokens = new RunToolTokenService({
       authorizer: store,
       tokens: runCapabilityTokens,
       ...runCapabilityLifetime,
     });
     shellHub = new ShellHub({
       authenticator: runnerAuthenticator,
-      callerTokens: agentControlTokens,
+      callerTokens: runToolTokens,
       notifier: machineAccessNotifier({
         onError: (error) => reportShellError(error),
         realtime,
@@ -1876,7 +1876,7 @@ export async function createHostRuntime(
     const dispatcher = new HostCommandDispatcher({
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
       requestResponseVault: integrationVault,
-      agentControlTokens,
+      runToolTokens,
       browser,
       egress,
       executionLeaseMs: config.executionLeaseMs,
@@ -2073,7 +2073,7 @@ export async function createHostRuntime(
       apps: new AppStore(database),
       store,
       files,
-      tokens: agentControlTokens,
+      tokens: runToolTokens,
       publishEvent: publishWorkspaceEvent,
     });
     await apps.collectGarbage();
@@ -2195,7 +2195,7 @@ export async function createHostRuntime(
       publicUrl: config.runtimeOrigin,
       callers: new AgentCallerResolver({
         store,
-        runs: agentControlTokens,
+        runs: runToolTokens,
         triggers: triggerControlTokens,
         watches: watchControlTokens,
         connections: connections.authenticator,
@@ -2270,7 +2270,7 @@ export async function createHostRuntime(
         liveRuns,
         machineFullDiskAccess,
         requestResponseVault: integrationVault,
-        agentControlTokens,
+        runToolTokens,
         agentTools,
         authenticator,
         browser,

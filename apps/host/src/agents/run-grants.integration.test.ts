@@ -240,7 +240,7 @@ integration("Run tool authority", () => {
     return { sessionId: response.headers.get("mcp-session-id"), status: response.status };
   }
 
-  async function agentControl(active: VerticalStack, token: string): Promise<number> {
+  async function toolsStatus(active: VerticalStack, token: string): Promise<number> {
     const response = await fetch(new URL("/internal/v1/mcp", active.hostOrigin), {
       body: JSON.stringify({
         jsonrpc: "2.0",
@@ -340,7 +340,7 @@ integration("Run tool authority", () => {
       .toBe(true);
     const engine = heldRunCapture(captured, marker);
     expect(engine).toBeDefined();
-    expect(await agentControl(active, engine!.token)).toBe(401);
+    expect(await toolsStatus(active, engine!.token)).toBe(401);
     expect(await engineToolCall(engine!)).toBe(200);
     await release();
     expect(["completed", "interrupted"]).toContain(await runEnds(active, queued.runId));
@@ -350,7 +350,7 @@ integration("Run tool authority", () => {
     const { active, captureFile, release } = await start();
     const workspace = await active.createWorkspace("Stopped work");
     const held = await heldRun(active, workspace.id, captureFile);
-    const hostRefusesEngineToken = (await agentControl(active, held.token)) === 401;
+    const hostRefusesEngineToken = (await toolsStatus(active, held.token)) === 401;
     expect(hostRefusesEngineToken).toBe(true);
     const before = await engineToolCall(held);
     expect(before).toBe(200);
@@ -407,7 +407,7 @@ integration("Run tool authority", () => {
       event: `stop after outliving ${lifetimeSeconds}s tokens (still ${afterExpiry} past expiry)`,
       capabilityTime,
       grant: await grantOf(active, held.runId),
-      hostRefusesEngineToken: (await agentControl(active, held.token)) === 401,
+      hostRefusesEngineToken: (await toolsStatus(active, held.token)) === 401,
       latencyMs,
       runEnded,
     });
@@ -457,7 +457,7 @@ integration("Run tool authority", () => {
       capabilityTime,
       grant: await grantOf(active, held.runId),
       heldSessionAfterRefresh: listed.status,
-      hostRefusesEngineToken: (await agentControl(active, held.token)) === 401,
+      hostRefusesEngineToken: (await toolsStatus(active, held.token)) === 401,
       latencyMs: 0,
       runEnded: await runEnds(active, held.runId),
     });
@@ -517,7 +517,7 @@ integration("Run tool authority", () => {
         detachedChildEnded: !alive(),
         event: `stop of an engine that ignores the interrupt and left ${child}`,
         grant: await grantOf(active, held.runId),
-        hostRefusesEngineToken: (await agentControl(active, held.token)) === 401,
+        hostRefusesEngineToken: (await toolsStatus(active, held.token)) === 401,
         latencyMs,
         runEnded,
       });
@@ -529,7 +529,7 @@ integration("Run tool authority", () => {
     const { active, captureFile, release } = await start();
     const workspace = await active.createWorkspace("Deleted work");
     const held = await heldRun(active, workspace.id, captureFile);
-    const hostRefusesEngineToken = (await agentControl(active, held.token)) === 401;
+    const hostRefusesEngineToken = (await toolsStatus(active, held.token)) === 401;
     expect(hostRefusesEngineToken).toBe(true);
     const before = await engineToolCall(held);
     expect(before).toBe(200);

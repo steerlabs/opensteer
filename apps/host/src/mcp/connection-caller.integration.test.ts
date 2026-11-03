@@ -726,7 +726,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const f = await storeFixture.startRunFixture("self-interrupt");
     const url = await serveMcp(storeFixture.store, {
       runScope: {
-        aud: "opensteer-agent-control",
+        aud: "opensteer-run-tools",
         exp: Math.floor(Date.now() / 1000) + 60,
         iat: Math.floor(Date.now() / 1000),
         iss: "opensteer-host",

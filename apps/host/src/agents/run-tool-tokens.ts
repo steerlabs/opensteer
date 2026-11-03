@@ -6,14 +6,14 @@ import {
   type RunCapabilityClaims,
 } from "./run-capability.js";
 
-export type RunToolScope = RunCapabilityClaims<"opensteer-agent-control">;
+export type RunToolScope = RunCapabilityClaims<"opensteer-run-tools">;
 
-export class RunToolTokenService extends RunCapabilityTokenService<"opensteer-agent-control"> {
+export class RunToolTokenService extends RunCapabilityTokenService<"opensteer-run-tools"> {
   constructor(options: {
     readonly authorizer: RunCapabilityBindingAuthorizer;
     readonly lifetimeSeconds?: number;
     readonly tokens: SignedTokenService;
   }) {
-    super({ ...options, audience: "opensteer-agent-control" });
+    super({ ...options, audience: "opensteer-run-tools" });
   }
 }
