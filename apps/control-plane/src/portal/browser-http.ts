@@ -4,22 +4,9 @@ import { ControlPlaneError } from "../server/errors.js";
 /**
  * Shared browser-facing primitives for the two vhosts this process serves: the
  * Account authorization host and the apex portal. Everything here is about the
- * mechanics of an HTML request — cookies, form bodies, exact-origin proof, and
- * escaping — never about what either vhost decides.
+ * mechanics of an HTML request — cookies, form bodies and exact-origin proof —
+ * never about what either vhost decides.
  */
-
-export function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/gu, (character) => {
-    const entities: Readonly<Record<string, string>> = {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    };
-    return entities[character] ?? character;
-  });
-}
 
 export function parseForm(body: unknown): Record<string, string> {
   const text = Buffer.isBuffer(body) ? body.toString("utf8") : typeof body === "string" ? body : "";

@@ -1,18 +1,27 @@
+import type { BrowserPageIcon } from "@opensteer/shared/browserPage";
+
 export const maximumOAuthQueryLength = 32_768;
 
-interface AccountConsentPresentation {
-  readonly permissions: readonly string[];
+/** One thing an app will be able to do, as the consent page draws it. */
+export interface ConsentGrant {
+  readonly danger?: boolean;
+  readonly icon: BrowserPageIcon;
+  readonly text: string;
 }
 
-const permissionByScope: Readonly<Record<string, string>> = {
-  "account:delete": "Delete your Opensteer Account",
-  email: "Use your account email address",
-  offline_access: "Stay signed in until you sign out",
-  openid: "Use your Opensteer account identity",
-  profile: "Use your Opensteer account profile",
-  "deployments:read": "View your Opensteer deployments",
-  "deployments:write": "Create and manage your Opensteer deployments",
+interface AccountConsentPresentation {
+  readonly clientId: string;
+  readonly grants: readonly ConsentGrant[];
+}
+
+/** In the order a person reads them: who you are, then what it may do. */
+const grantByScope: Readonly<Record<string, ConsentGrant>> = {
+  offline_access: { icon: "key", text: "Stay signed in until you sign out" },
+  "deployments:read": { icon: "stack", text: "See your Opensteers" },
+  "deployments:write": { icon: "plus", text: "Add and change your Opensteers" },
+  "account:delete": { danger: true, icon: "trash", text: "Delete your Account" },
 };
+const identityScopes = new Set(["email", "openid", "profile"]);
 
 const requiredSingleValueParameters = [
   "ba_iat",
@@ -77,10 +86,32 @@ export function accountConsentPresentation(
   if (scopes.length === 0 || scopes.some((scope) => !/^[\w:.-]{1,128}$/u.test(scope))) {
     return null;
   }
-  const permissions = [
-    ...new Set(
-      scopes.map((scope) => permissionByScope[scope] ?? "Use additional Opensteer permissions"),
-    ),
-  ];
-  return permissions.length > 0 ? { permissions } : null;
+  const requested = new Set(scopes);
+  const grants: ConsentGrant[] = [];
+  // The identity scopes are one fact to a person — who they are — so they
+  // read as one line naming exactly the parts the app asked for.
+  if (scopes.some((scope) => identityScopes.has(scope))) {
+    const email = requested.has("email");
+    const name = requested.has("profile");
+    grants.push({
+      icon: "person",
+      text:
+        email && name
+          ? "Your name and email"
+          : email
+            ? "Your email address"
+            : name
+              ? "Your name"
+              : "Who you are",
+    });
+  }
+  for (const [scope, grant] of Object.entries(grantByScope)) {
+    if (requested.has(scope)) grants.push(grant);
+  }
+  // A scope this page has no words for is never echoed: its name is the
+  // requester's to choose.
+  if (scopes.some((scope) => !identityScopes.has(scope) && !(scope in grantByScope))) {
+    grants.push({ icon: "shield", text: "Other Opensteer permissions" });
+  }
+  return { clientId: values.get("client_id") ?? "", grants };
 }

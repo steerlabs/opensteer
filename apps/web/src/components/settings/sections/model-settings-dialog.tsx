@@ -144,7 +144,7 @@ export function ModelSettingsDialog({
       wide
     >
       {waiting ? (
-        <p className="form-hint">
+        <p className="field__hint">
           Your server doesn’t report the context size for some models. Enter the size it runs each
           one with to start using it.
         </p>

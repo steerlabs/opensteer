@@ -180,8 +180,8 @@ describe("integration authorization transaction routes", () => {
   });
 
   it.each([
-    { status: "completed" as const, statusCode: 200, title: "Connection complete" },
-    { status: "denied" as const, statusCode: 400, title: "Connection not completed" },
+    { status: "completed" as const, statusCode: 200, title: "Connected" },
+    { status: "denied" as const, statusCode: 400, title: "Not connected" },
   ])(
     "keeps desktop $status completion on the callback page",
     async ({ status, statusCode, title }) => {
