@@ -42,7 +42,11 @@ import {
  * Platform files own presentation only, so authentication and notification
  * behavior cannot drift between them.
  */
-export function SettingsScreen(): ReactNode {
+export function SettingsPageScreen({
+  page,
+}: {
+  readonly page: import("./settings-form.types.js").SettingsPage;
+}): ReactNode {
   const navigation = useNavigation();
   const client = useMobileClient();
   const notifications = useMobileNotifications();
@@ -63,7 +67,8 @@ export function SettingsScreen(): ReactNode {
 
   const snapshot = useSettingsHost(selection.hostClient);
   const remote = usePersonalRemoteAccess(
-    snapshot?.deploymentShape?.kind === "personal" &&
+    page === "account" &&
+      snapshot?.deploymentShape?.kind === "personal" &&
       selection.hostClient?.getSnapshot().user?.instanceRole === "administrator"
       ? selection.hostClient
       : null,
@@ -73,6 +78,7 @@ export function SettingsScreen(): ReactNode {
   );
   const [administrationError, setAdministrationError] = useState<string | null>(null);
   const [administrationBusy, setAdministrationBusy] = useState(false);
+  const [modeShown, setModeShown] = useState(false);
   const [privateShown, setPrivateShown] = useState(false);
   const [privateAddress, setPrivateAddress] = useState("");
   const refreshSessions = useCallback(() => {
@@ -88,8 +94,8 @@ export function SettingsScreen(): ReactNode {
   }, [client, selection.hostClient]);
   useEffect(() => {
     setSessions([]);
-    refreshSessions();
-  }, [refreshSessions]);
+    if (page === "account") refreshSessions();
+  }, [refreshSessions, page]);
   const administration = selection.hostClient
     ? {
         access: remote.status,
@@ -111,8 +117,21 @@ export function SettingsScreen(): ReactNode {
             .finally(() => setAdministrationBusy(false));
         },
         onAction: (
-          action: "off" | "connect" | "private" | "rotate" | "unlink" | "recover" | "pair" | "link",
+          action:
+            | "off"
+            | "connect"
+            | "private"
+            | "rotate"
+            | "unlink"
+            | "recover"
+            | "pair"
+            | "link"
+            | "mode",
         ) => {
+          if (action === "mode") {
+            setModeShown(true);
+            return;
+          }
           if (action === "private") {
             setPrivateShown(true);
             return;
@@ -147,7 +166,10 @@ export function SettingsScreen(): ReactNode {
         },
       }
     : undefined;
-  const apps = useComputerUseData(selection.hostClient, snapshot?.machineRevision ?? 0);
+  const apps = useComputerUseData(
+    page === "devices" ? selection.hostClient : null,
+    snapshot?.machineRevision ?? 0,
+  );
   const selectedRow = rows.find((row) => row.deploymentId === selection.deploymentId) ?? null;
   const iphoneApps = useIphoneAppsState(useIphoneApps());
   const computers = useMemo(() => {
@@ -343,11 +365,23 @@ export function SettingsScreen(): ReactNode {
   return (
     <>
       <SettingsForm
+        page={page}
         administration={administration}
         account={accountModel}
         accountError={accountError}
         agents={agents}
-        computers={computers}
+        computers={
+          page === "devices"
+            ? computers
+                .filter((row) => row.opens !== null)
+                .map((row) => ({
+                  ...row,
+                  detail: row.detail
+                    .replace("You’re here", "This device")
+                    .replace("You're here", "This device"),
+                }))
+            : computers
+        }
         deployment={deploymentModel}
         engineUpdates={engineUpdates}
         notificationError={notificationError}
@@ -407,6 +441,28 @@ export function SettingsScreen(): ReactNode {
         storageError={storageFailure ?? savedViewFailure}
         version={Constants.expoConfig?.version ?? "unknown"}
       />
+      <Sheet
+        open={modeShown}
+        onClose={() => setModeShown(false)}
+        title="Open Opensteer from anywhere"
+      >
+        <View style={{ padding: 20, gap: 16 }}>
+          <SecondaryButton
+            label="Connect"
+            onPress={() => {
+              setModeShown(false);
+              administration?.onAction("connect");
+            }}
+          />
+          <SecondaryButton
+            label="Private network"
+            onPress={() => {
+              setModeShown(false);
+              administration?.onAction("private");
+            }}
+          />
+        </View>
+      </Sheet>
       <Sheet open={privateShown} onClose={() => setPrivateShown(false)} title="Private network">
         <View style={{ padding: 20, gap: 16 }}>
           <AppText>{remoteAccessDisconnectWarning}</AppText>

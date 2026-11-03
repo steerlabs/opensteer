@@ -26,42 +26,54 @@ import type { SettingsFormProps } from "./settings-form.types.js";
 export function SettingsForm(props: SettingsFormProps): ReactNode {
   const column = useReadingColumn();
   const listInsets = useListContentInsets(space[32]);
+  const shows = (page: import("./settings-form.types.js").SettingsPage) =>
+    props.page === undefined || props.page === page;
   const notifications = props.notifications;
   const preferences = notifications?.preferences ?? null;
   const engineUpdates = props.engineUpdates ?? [];
   return (
     <Screen edgeToEdge>
       <ScrollView contentContainerStyle={[styles.content, column, listInsets]}>
-        <Section label="Deployment">
-          <RowGroup>
-            {[
-              <LinkRow
-                accessibilityLabel={`${props.deployment.title}, ${props.deployment.status}. ${props.deployment.action.label}`}
-                detail={props.deployment.status}
-                key="deployment"
-                lead={
-                  props.deployment.mark === null ? null : (
-                    <DeploymentMarkView mark={props.deployment.mark} />
-                  )
-                }
-                onPress={props.onDeploymentAction}
-                title={props.deployment.title}
-                trailing={props.deployment.action.label}
-              />,
-            ]}
-          </RowGroup>
-        </Section>
+        {shows("general") ? (
+          <Section label="Deployment">
+            <RowGroup>
+              {[
+                <LinkRow
+                  accessibilityLabel={`${props.deployment.title}, ${props.deployment.status}. ${props.deployment.action.label}`}
+                  detail={props.deployment.status}
+                  key="deployment"
+                  lead={
+                    props.deployment.mark === null ? null : (
+                      <DeploymentMarkView mark={props.deployment.mark} />
+                    )
+                  }
+                  onPress={props.onDeploymentAction}
+                  title={props.deployment.title}
+                  trailing={props.deployment.action.label}
+                />,
+              ]}
+            </RowGroup>
+          </Section>
+        ) : null}
 
-        {props.administration ? (
+        {shows("account") && props.administration ? (
           <>
             {props.administration.access ? (
               <Section
-                label="Remote access"
+                label="Open Opensteer from anywhere"
                 footer={
                   props.administration.access.operation?.detail ??
                   "Changes can disconnect this device and other devices."
                 }
               >
+                {props.page === "account" ? (
+                  <SwitchRow
+                    label="Open Opensteer from anywhere"
+                    value={props.administration.access.access.mode !== "off"}
+                    disabled={props.administration.busy}
+                    onChange={(enabled) => props.administration?.onAction(enabled ? "mode" : "off")}
+                  />
+                ) : null}
                 <AppText>{props.administration.access.access.mode}</AppText>
                 {props.administration.access.access.accountLink ? (
                   <AppText>
@@ -69,21 +81,26 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
                     {props.administration.access.access.accountLink.subject}
                   </AppText>
                 ) : null}
-                {remoteAdministrationActions(props.administration.access).map((action) => (
-                  <SecondaryButton
-                    key={action}
-                    compact
-                    disabled={props.administration?.busy ?? false}
-                    label={remoteAdministrationActionLabels[action]}
-                    onPress={() => props.administration?.onAction(action)}
-                  />
-                ))}
+                {remoteAdministrationActions(props.administration.access)
+                  .filter(
+                    (action) =>
+                      props.page !== "account" || !["off", "connect", "private"].includes(action),
+                  )
+                  .map((action) => (
+                    <SecondaryButton
+                      key={action}
+                      compact
+                      disabled={props.administration?.busy ?? false}
+                      label={remoteAdministrationActionLabels[action]}
+                      onPress={() => props.administration?.onAction(action)}
+                    />
+                  ))}
                 {props.administration.pairing ? (
                   <AppText>{props.administration.pairing.code}</AppText>
                 ) : null}
               </Section>
             ) : null}
-            <Section label="Signed-in devices">
+            <Section label="Where you’re signed in">
               {props.administration.sessions.map((session) => (
                 <View key={session.id}>
                   <AppText>
@@ -93,14 +110,14 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
                   <SecondaryButton
                     compact
                     disabled={props.administration?.busy ?? false}
-                    label="Remove"
+                    label={props.page === "account" ? "Sign out" : "Remove"}
                     onPress={() => props.administration?.onRemove(session)}
                   />
                 </View>
               ))}
               <SecondaryButton
                 compact
-                label="Refresh devices"
+                label="Refresh sessions"
                 onPress={props.administration.onRefresh}
               />
               {props.administration.error ? <AppText>{props.administration.error}</AppText> : null}
@@ -108,7 +125,7 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </>
         ) : null}
 
-        {props.computers.length === 0 ? null : (
+        {!shows("devices") || props.computers.length === 0 ? null : (
           <Section footer={computersSettingsFooter} label="Computers">
             <RowGroup>
               {props.computers.map((computer) => {
@@ -127,8 +144,8 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
-        {engineUpdates.length === 0 ? null : (
-          <Section label="AI services">
+        {!shows("ai") || engineUpdates.length === 0 ? null : (
+          <Section label="AI">
             <RowGroup>
               {engineUpdates.map((engine) => (
                 <View key={engine.key} style={styles.rowInline}>
@@ -155,24 +172,28 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
-        {props.signIns === null ? null : (
+        {!shows("sign-ins") || props.signIns === null ? null : (
           <Section label={agentAccessSectionTitle}>
             <RowGroup>
               {[
-                <LinkRow
-                  detail={connectedAppsSettingsRow.detail}
-                  key="connected-apps"
-                  lead={<Tile symbol="powerplug" />}
-                  onPress={props.signIns.onConnectedApps}
-                  title={connectedAppsSettingsRow.title}
-                />,
-                <LinkRow
-                  detail={pluginsSettingsRow.detail}
-                  key="plugins"
-                  lead={<Tile symbol="puzzlepiece.extension" />}
-                  onPress={props.signIns.onPlugins}
-                  title={pluginsSettingsRow.title}
-                />,
+                props.page === undefined ? (
+                  <>
+                    <LinkRow
+                      detail={connectedAppsSettingsRow.detail}
+                      key="connected-apps"
+                      lead={<Tile symbol="powerplug" />}
+                      onPress={props.signIns.onConnectedApps}
+                      title={connectedAppsSettingsRow.title}
+                    />
+                    <LinkRow
+                      detail={pluginsSettingsRow.detail}
+                      key="plugins"
+                      lead={<Tile symbol="puzzlepiece.extension" />}
+                      onPress={props.signIns.onPlugins}
+                      title={pluginsSettingsRow.title}
+                    />
+                  </>
+                ) : null,
                 <LinkRow
                   detail={chromeSettingsRow.detail}
                   key="chrome"
@@ -201,7 +222,7 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
-        {notifications === null ? null : (
+        {!shows("general") || notifications === null ? null : (
           <Section footer={notifications.footer} label="Notifications">
             <RowGroup>
               {[
@@ -238,7 +259,7 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
         )}
 
         {/* Mutes are kept by the Host, so they don't wait on this phone's registration. */}
-        {notifications === null || props.agents.length === 0 ? null : (
+        {!shows("general") || notifications === null || props.agents.length === 0 ? null : (
           <Section footer={projectNotificationsFooter} label="Notifications from projects">
             <RowGroup>
               {props.agents.map((agent) => (
@@ -253,7 +274,7 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
-        {props.account === null ? null : (
+        {!shows("account") || props.account === null ? null : (
           <Section label="Opensteer Account">
             <RowGroup>
               {[
@@ -284,25 +305,27 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
-        <Section label="About">
-          <RowGroup>
-            {[
-              <View key="version" style={styles.rowInline}>
-                <AppText role="body">Version</AppText>
-                <AppText role="body" tone="muted">
-                  {props.version}
-                </AppText>
-              </View>,
-            ]}
-          </RowGroup>
-          <ErrorText
-            detail={
-              props.storageError === null
-                ? null
-                : `This phone could not save a setting. ${props.storageError}`
-            }
-          />
-        </Section>
+        {shows("general") ? (
+          <Section label="About">
+            <RowGroup>
+              {[
+                <View key="version" style={styles.rowInline}>
+                  <AppText role="body">Version</AppText>
+                  <AppText role="body" tone="muted">
+                    {props.version}
+                  </AppText>
+                </View>,
+              ]}
+            </RowGroup>
+            <ErrorText
+              detail={
+                props.storageError === null
+                  ? null
+                  : `This phone could not save a setting. ${props.storageError}`
+              }
+            />
+          </Section>
+        ) : null}
       </ScrollView>
     </Screen>
   );

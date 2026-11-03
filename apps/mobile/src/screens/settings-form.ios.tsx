@@ -55,38 +55,46 @@ const tileShape = shapes.roundedRectangle({ cornerRadius: 7, roundedCornerStyle:
  * reach, to this phone's own notifications and account.
  */
 export function SettingsForm(props: SettingsFormProps): ReactNode {
+  const shows = (page: import("./settings-form.types.js").SettingsPage) =>
+    props.page === undefined || props.page === page;
   const notifications = props.notifications;
   const preferences = notifications?.preferences ?? null;
   const engineUpdates = props.engineUpdates ?? [];
   return (
     <Host colorScheme="dark" seedColor={color.ember} style={styles.host} useViewportSizeMeasurement>
       <Form modifiers={[listStyle("insetGrouped")]}>
-        <Section title="Deployment">
-          <Button
-            modifiers={[
-              accessibilityLabel(
-                `${props.deployment.title}, ${props.deployment.status}. ${props.deployment.action.label}`,
-              ),
-            ]}
-            onPress={props.onDeploymentAction}
-          >
-            <HStack alignment="center" modifiers={[contentShape(shapes.rectangle())]} spacing={12}>
-              <IdentityMark mark={props.deployment.mark} />
-              <Lines detail={props.deployment.status} title={props.deployment.title} />
-              <Spacer />
-              <Text modifiers={[secondary, font({ textStyle: "subheadline" })]}>
-                {props.deployment.action.label}
-              </Text>
-              <Chevron />
-            </HStack>
-          </Button>
-        </Section>
+        {shows("general") ? (
+          <Section title="Deployment">
+            <Button
+              modifiers={[
+                accessibilityLabel(
+                  `${props.deployment.title}, ${props.deployment.status}. ${props.deployment.action.label}`,
+                ),
+              ]}
+              onPress={props.onDeploymentAction}
+            >
+              <HStack
+                alignment="center"
+                modifiers={[contentShape(shapes.rectangle())]}
+                spacing={12}
+              >
+                <IdentityMark mark={props.deployment.mark} />
+                <Lines detail={props.deployment.status} title={props.deployment.title} />
+                <Spacer />
+                <Text modifiers={[secondary, font({ textStyle: "subheadline" })]}>
+                  {props.deployment.action.label}
+                </Text>
+                <Chevron />
+              </HStack>
+            </Button>
+          </Section>
+        ) : null}
 
-        {props.administration ? (
+        {shows("account") && props.administration ? (
           <>
             {props.administration.access ? (
               <Section
-                title="Remote access"
+                title="Open Opensteer from anywhere"
                 footer={
                   <Footer
                     text={
@@ -96,6 +104,16 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
                   />
                 }
               >
+                {props.page === "account" ? (
+                  <Toggle
+                    label="Open Opensteer from anywhere"
+                    isOn={props.administration.access.access.mode !== "off"}
+                    modifiers={[disabled(props.administration.busy)]}
+                    onIsOnChange={(enabled) =>
+                      props.administration?.onAction(enabled ? "mode" : "off")
+                    }
+                  />
+                ) : null}
                 <Text>{props.administration.access.access.mode}</Text>
                 {props.administration.access.access.accountLink ? (
                   <Text>
@@ -103,21 +121,26 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
                     {props.administration.access.access.accountLink.subject}
                   </Text>
                 ) : null}
-                {remoteAdministrationActions(props.administration.access).map((action) => (
-                  <Button
-                    key={action}
-                    modifiers={[disabled(props.administration?.busy ?? false)]}
-                    onPress={() => props.administration?.onAction(action)}
-                  >
-                    <Text>{remoteAdministrationActionLabels[action]}</Text>
-                  </Button>
-                ))}
+                {remoteAdministrationActions(props.administration.access)
+                  .filter(
+                    (action) =>
+                      props.page !== "account" || !["off", "connect", "private"].includes(action),
+                  )
+                  .map((action) => (
+                    <Button
+                      key={action}
+                      modifiers={[disabled(props.administration?.busy ?? false)]}
+                      onPress={() => props.administration?.onAction(action)}
+                    >
+                      <Text>{remoteAdministrationActionLabels[action]}</Text>
+                    </Button>
+                  ))}
                 {props.administration.pairing ? (
                   <Text>{props.administration.pairing.code}</Text>
                 ) : null}
               </Section>
             ) : null}
-            <Section title="Signed-in devices">
+            <Section title="Where you’re signed in">
               {props.administration.sessions.map((session) => (
                 <HStack key={session.id}>
                   <Text>
@@ -129,7 +152,7 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
                     modifiers={[disabled(props.administration?.busy ?? false)]}
                     onPress={() => props.administration?.onRemove(session)}
                   >
-                    <Text>Remove</Text>
+                    <Text>{props.page === "account" ? "Sign out" : "Remove"}</Text>
                   </Button>
                 </HStack>
               ))}
@@ -143,7 +166,7 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </>
         ) : null}
 
-        {props.computers.length === 0 ? null : (
+        {!shows("devices") || props.computers.length === 0 ? null : (
           <Section footer={<Footer text={computersSettingsFooter} />} title="Computers">
             {props.computers.map((computer) => {
               const opens = computer.opens;
@@ -177,8 +200,8 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
-        {engineUpdates.length === 0 ? null : (
-          <Section title="AI services">
+        {!shows("ai") || engineUpdates.length === 0 ? null : (
+          <Section title="AI">
             {engineUpdates.map((engine) => (
               <HStack key={engine.key} alignment="center" spacing={12}>
                 <VStack alignment="leading" spacing={2}>
@@ -200,20 +223,24 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
-        {props.signIns === null ? null : (
+        {!shows("sign-ins") || props.signIns === null ? null : (
           <Section title={agentAccessSectionTitle}>
-            <LinkRow
-              detail={connectedAppsSettingsRow.detail}
-              onPress={props.signIns.onConnectedApps}
-              symbol="powerplug"
-              title={connectedAppsSettingsRow.title}
-            />
-            <LinkRow
-              detail={pluginsSettingsRow.detail}
-              onPress={props.signIns.onPlugins}
-              symbol="puzzlepiece.extension"
-              title={pluginsSettingsRow.title}
-            />
+            {props.page === undefined ? (
+              <>
+                <LinkRow
+                  detail={connectedAppsSettingsRow.detail}
+                  onPress={props.signIns.onConnectedApps}
+                  symbol="powerplug"
+                  title={connectedAppsSettingsRow.title}
+                />
+                <LinkRow
+                  detail={pluginsSettingsRow.detail}
+                  onPress={props.signIns.onPlugins}
+                  symbol="puzzlepiece.extension"
+                  title={pluginsSettingsRow.title}
+                />
+              </>
+            ) : null}
             <LinkRow
               detail={chromeSettingsRow.detail}
               onPress={props.signIns.onChrome}
@@ -237,7 +264,7 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
-        {notifications === null ? null : (
+        {!shows("general") || notifications === null ? null : (
           <Section footer={<Footer text={notifications.footer} />} title="Notifications">
             {notifications.detail === null ? null : (
               <Text modifiers={[secondary, footnote]}>{notifications.detail}</Text>
@@ -264,7 +291,7 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
         )}
 
         {/* Mutes are kept by the Host, so they don't wait on this phone's registration. */}
-        {notifications === null || props.agents.length === 0 ? null : (
+        {!shows("general") || notifications === null || props.agents.length === 0 ? null : (
           <Section
             footer={<Footer text={projectNotificationsFooter} />}
             title="Notifications from projects"
@@ -280,7 +307,7 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
-        {props.account === null ? null : (
+        {!shows("account") || props.account === null ? null : (
           <Section title="Opensteer Account">
             <HStack alignment="center" spacing={12}>
               {props.account.initial === null ? null : (
@@ -296,18 +323,20 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
           </Section>
         )}
 
-        <Section title="About">
-          <LabeledContent label="Version">
-            <Text modifiers={[secondary]}>{props.version}</Text>
-          </LabeledContent>
-          <ErrorText
-            detail={
-              props.storageError === null
-                ? null
-                : `This phone could not save a setting. ${props.storageError}`
-            }
-          />
-        </Section>
+        {shows("general") ? (
+          <Section title="About">
+            <LabeledContent label="Version">
+              <Text modifiers={[secondary]}>{props.version}</Text>
+            </LabeledContent>
+            <ErrorText
+              detail={
+                props.storageError === null
+                  ? null
+                  : `This phone could not save a setting. ${props.storageError}`
+              }
+            />
+          </Section>
+        ) : null}
       </Form>
     </Host>
   );

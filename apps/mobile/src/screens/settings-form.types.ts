@@ -57,13 +57,17 @@ export interface RemoteAdministrationSettings {
   readonly error: string | null;
   readonly busy: boolean;
   readonly onAction: (
-    action: "off" | "connect" | "private" | "rotate" | "unlink" | "recover" | "pair" | "link",
+    action:
+      "off" | "connect" | "private" | "rotate" | "unlink" | "recover" | "pair" | "link" | "mode",
   ) => void;
   readonly onRemove: (session: import("@opensteer/core").AuthSessionSummary) => void;
   readonly onRefresh: () => void;
 }
 
+export type SettingsPage = "general" | "account" | "devices" | "ai" | "sign-ins";
+
 export interface SettingsFormProps extends SettingsFormActionHandlers {
+  readonly page?: SettingsPage;
   readonly administration?: RemoteAdministrationSettings | undefined;
   /** Null in a build without an Account service. */
   readonly account: AccountSettingsModel | null;

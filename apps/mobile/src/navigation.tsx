@@ -1,3 +1,4 @@
+import { Platform } from "react-native";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { createStaticNavigation, DarkTheme, type Theme } from "@react-navigation/native";
@@ -29,7 +30,16 @@ import { NewTaskScreen } from "./screens/new-task.js";
 import { OpenAppScreen } from "./screens/open-app.js";
 import { ScheduleScreen, type ScheduleDestination } from "./screens/schedule.js";
 import { SchedulesScreen } from "./screens/schedules.js";
-import { SettingsScreen } from "./screens/settings.js";
+import {
+  SettingsScreen,
+  SettingsGeneralScreen,
+  SettingsAccountScreen,
+  SettingsDevicesScreen,
+  SettingsAIScreen,
+  SettingsSignInsScreen,
+} from "./screens/settings-home.js";
+import { SettingsMessagingScreen } from "./screens/settings-messaging.js";
+import { SettingsPluginsScreen } from "./screens/settings-plugins.js";
 import { PluginsScreen, type PluginsDestination } from "./screens/plugins.js";
 import { ProjectScreen } from "./screens/project.js";
 import { ProjectSettingsScreen } from "./screens/project-settings.js";
@@ -275,6 +285,16 @@ const RootStack = createNativeStackNavigator({
     // A long list opens full height like the pages it leads to: a half-height
     // detent would spend the first scroll on growing the sheet, and the next
     // on dragging it back down.
+    SettingsGeneral: { screen: SettingsGeneralScreen, options: { title: "General" } },
+    SettingsAccount: { screen: SettingsAccountScreen, options: { title: "Account" } },
+    SettingsDevices: { screen: SettingsDevicesScreen, options: { title: "Devices" } },
+    SettingsMessaging: { screen: SettingsMessagingScreen, options: { title: "Messaging" } },
+    SettingsAI: { screen: SettingsAIScreen, options: { title: "AI" } },
+    SettingsPlugins: {
+      screen: SettingsPluginsScreen,
+      options: { title: "Plugins", headerShown: Platform.OS !== "ios" },
+    },
+    SettingsSignIns: { screen: SettingsSignInsScreen, options: { title: "Sign-ins" } },
     Settings: {
       screen: SettingsScreen,
       options: ({ navigation }) => ({
@@ -463,6 +483,13 @@ type OpensteerRootParamList = {
   readonly OpenApp: { readonly deploymentId: string };
   readonly Schedule: ScheduleDestination;
   readonly Schedules: { readonly deploymentId: string };
+  readonly SettingsGeneral: { readonly deploymentId: string };
+  readonly SettingsAccount: { readonly deploymentId: string };
+  readonly SettingsDevices: { readonly deploymentId: string };
+  readonly SettingsMessaging: { readonly deploymentId: string };
+  readonly SettingsAI: { readonly deploymentId: string };
+  readonly SettingsPlugins: { readonly deploymentId: string };
+  readonly SettingsSignIns: { readonly deploymentId: string };
   readonly Settings: undefined;
   readonly Plugins: PluginsDestination;
   readonly Project: { readonly deploymentId: string; readonly workspaceId: string };
