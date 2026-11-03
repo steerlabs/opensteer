@@ -311,8 +311,13 @@ describe("IntegrationPlatformService definition reconciliation", () => {
       else installations[index] = installation;
       return { installation, requestEvents: [] };
     });
+    const settingsChanged = vi.fn(
+      async (_input: { installationId?: string; ownerUserId?: import("@opensteer/core").UserId }) =>
+        undefined,
+    );
     const service = platform({
       adapters: [testAdapter, createOpenApiAdapter(openApiFetch)],
+      onSettingsChanged: settingsChanged,
       definitions: [healthyDefinition, failingDefinition],
       store: {
         install,
@@ -362,6 +367,11 @@ describe("IntegrationPlatformService definition reconciliation", () => {
     const current = await service.ensureBuiltIns({ actorUserId: null, requestId: "startup-again" });
     expect(current).toEqual(reconciled);
     expect(install).toHaveBeenCalledTimes(3);
+    expect(settingsChanged.mock.calls).toEqual([
+      [{ installationId: healthy.id }],
+      [{ installationId: failing.id }],
+      [{ installationId: failing.id }],
+    ]);
     expect(openApiFetch).toHaveBeenCalledTimes(2);
   });
 });
@@ -4446,6 +4456,9 @@ function platform(input: {
   readonly materializeForAdapter?: IntegrationAdapterCredentialMaterializer["materializeForAdapter"];
   readonly onWorkspaceEvent?: (event: AgentEvent) => void;
   readonly onConnectionsChanged?: () => void;
+  readonly onSettingsChanged?: ConstructorParameters<
+    typeof IntegrationPlatformService
+  >[0]["onSettingsChanged"];
   readonly onRequestsChanged?: () => void;
   readonly store?: Partial<IntegrationPlatformStore>;
 }): IntegrationPlatformService {
@@ -4491,6 +4504,7 @@ function platform(input: {
     },
     onWorkspaceEvent: input.onWorkspaceEvent ?? vi.fn(),
     onConnectionsChanged: input.onConnectionsChanged ?? vi.fn(),
+    onSettingsChanged: input.onSettingsChanged ?? vi.fn(async () => undefined),
     onRequestsChanged: input.onRequestsChanged ?? vi.fn(),
     store: (input.store
       ? { computerAppRunner: vi.fn(async () => null), ...input.store }

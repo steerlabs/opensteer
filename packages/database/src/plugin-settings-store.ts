@@ -81,8 +81,9 @@ export class PluginSettingsStore {
       where m.state = 'active' and (
         w.id = ${input.workspaceId ?? null}
         or e.runner_id = ${input.runnerId ?? null}
-        or exists(select 1 from plugin_activations a where a.workspace_id = w.id and a.plugin_id = ${input.pluginId ?? null})
-        or exists(select 1 from specialists s where s.workspace_id = w.id and s.plugin_id = ${input.pluginId ?? null}))
+        or exists(select 1 from plugin_activations a where a.workspace_id = w.id and a.plugin_id = coalesce(${input.pluginId ?? null}, (select i.plugin_id from integration_installations i where i.id = ${input.installationId ?? null})))
+        or exists(select 1 from specialists s where s.workspace_id = w.id and s.plugin_id = coalesce(${input.pluginId ?? null}, (select i.plugin_id from integration_installations i where i.id = ${input.installationId ?? null}))))
+      union select p.installed_by from plugins p where p.scope = 'deployment' and p.id = coalesce(${input.pluginId ?? null}, (select i.plugin_id from integration_installations i where i.id = ${input.installationId ?? null}))
       union select c.owner_user_id from integration_connections c where c.runner_id = ${input.runnerId ?? null}
         or exists(select 1 from integration_installations i where i.id = ${input.installationId ?? null} and coalesce(i.manifest->'definition'->>'id',i.name) = c.integration_definition_id)
       union select m.user_id from requests q
@@ -184,6 +185,7 @@ export class PluginSettingsStore {
           "description",
           "version",
           "sourceKind",
+          "status",
           "manifest",
           "pluginId",
         ])
@@ -299,13 +301,20 @@ export class PluginSettingsStore {
           ownGrants.map((g) => g.workspaceId),
         ),
         accountCount: accounts.length,
-        issues:
-          accounts.some((c) => c.status === "needs-attention") ||
+        issues: [
+          ...(accounts.some((c) => c.status === "needs-attention") ||
           saved?.personalEverywhereAccounts?.some(
             (a) => !accounts.some((c) => c.id === a.connectionId),
           )
-            ? ["needs-sign-in"]
-            : [],
+            ? ["needs-sign-in" as const]
+            : []),
+          ...(installation.status !== "active" ? ["invalid-installation" as const] : []),
+          ...(device &&
+          availableRunnerIds !== undefined &&
+          accounts.some((c) => c.runnerId && !availableRunnerIds.has(c.runnerId))
+            ? ["waiting-device" as const]
+            : []),
+        ],
         contents: {
           skills: 0,
           tools: tools.filter((t) => t.installationId === installation.id).length,
