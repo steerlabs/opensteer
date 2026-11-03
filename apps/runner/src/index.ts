@@ -26,3 +26,5 @@ export * from "./computer-apps/prepare.js";
 export * from "./messaging/prepare.js";
 export * from "./computer-apps/local-mcp-servers.js";
 export { ExecutionContainment, executionScopeVariable } from "./runtime/execution-containment.js";
+
+export { LocalWorkspaceService } from "./workspace/local-workspace-service.js";

@@ -189,6 +189,7 @@ export class IntegrationService {
   readonly #installedDefinition: InstalledIntegrationDefinitionLookup | undefined;
   readonly #now: () => Date;
   readonly #onConnectionConnected: IntegrationConnectionConnected;
+  readonly #onConnectionChanged: (owner: UserId) => void;
   readonly #providerManifests: readonly IntegrationProviderManifest[];
   readonly #publicUrl: URL;
   readonly #repository: IntegrationRepository;
@@ -208,6 +209,7 @@ export class IntegrationService {
     readonly installedDefinition?: InstalledIntegrationDefinitionLookup;
     readonly now?: () => Date;
     readonly onConnectionConnected: IntegrationConnectionConnected;
+    readonly onConnectionChanged?: (owner: UserId) => void;
     readonly publicUrl: URL;
     readonly repository: IntegrationRepository;
     readonly vault: IntegrationSecretVault;
@@ -222,6 +224,7 @@ export class IntegrationService {
     this.#installedDefinition = options.installedDefinition;
     this.#now = options.now ?? (() => new Date());
     this.#onConnectionConnected = options.onConnectionConnected;
+    this.#onConnectionChanged = options.onConnectionChanged ?? (() => undefined);
     this.#providerManifests = IntegrationProviderManifestSchema.array()
       .max(32)
       .parse(integrationDefinitionsToProviderManifests(this.#definitions));
@@ -1759,6 +1762,7 @@ export class IntegrationService {
       connectionSecretContext(record.connection.id, input.ownerUserId, record.connection.provider),
     );
     await this.#repository.revokeConnection({ ...input, credential });
+    this.#onConnectionChanged(input.ownerUserId);
     return outcome;
   }
 
@@ -1966,13 +1970,20 @@ export class IntegrationService {
     return this.#materializeForAdapter(input);
   }
 
+  async #markConnectionNeedsAttention(
+    input: Parameters<IntegrationRepository["markConnectionNeedsAttention"]>[0],
+  ): Promise<void> {
+    await this.#repository.markConnectionNeedsAttention(input);
+    this.#onConnectionChanged(input.ownerUserId);
+  }
+
   async markAdapterAuthorizationRequired(input: {
     readonly connectionId: IntegrationConnectionId;
     readonly expectedGeneration: number;
     readonly ownerUserId: UserId;
     readonly statusDetail: string;
   }): Promise<void> {
-    await this.#repository.markConnectionNeedsAttention(input);
+    await this.#markConnectionNeedsAttention(input);
   }
 
   async #materializeForAdapter(input: {
@@ -2006,7 +2017,7 @@ export class IntegrationService {
         record.connection.provider
       ];
       if (!integrationApplicationSourcePinnedAndAvailable({ applicationSource, authorization })) {
-        await this.#repository.markConnectionNeedsAttention({
+        await this.#markConnectionNeedsAttention({
           connectionId: input.connectionId,
           expectedGeneration: record.credentialGeneration,
           ownerUserId: input.ownerUserId,
@@ -2027,7 +2038,7 @@ export class IntegrationService {
     if (record.connection.connectionMethod === "managed-oauth") {
       const expiresAt = secrets.expiresAt ? Number(secrets.expiresAt) : null;
       if (expiresAt !== null && !Number.isFinite(expiresAt)) {
-        await this.#repository.markConnectionNeedsAttention({
+        await this.#markConnectionNeedsAttention({
           connectionId: input.connectionId,
           expectedGeneration: record.credentialGeneration,
           ownerUserId: input.ownerUserId,
@@ -2037,7 +2048,7 @@ export class IntegrationService {
       }
       if (input.forceRefresh || shouldRefreshToken({ expiresAt, now: this.#now().getTime() })) {
         if (!secrets.refreshToken) {
-          await this.#repository.markConnectionNeedsAttention({
+          await this.#markConnectionNeedsAttention({
             connectionId: input.connectionId,
             expectedGeneration: record.credentialGeneration,
             ownerUserId: input.ownerUserId,
@@ -2089,7 +2100,7 @@ export class IntegrationService {
     ownerUserId: UserId,
     statusDetail: string,
   ): Promise<never> {
-    await this.#repository.markConnectionNeedsAttention({
+    await this.#markConnectionNeedsAttention({
       connectionId: record.connection.id,
       expectedGeneration: record.credentialGeneration,
       ownerUserId,
@@ -2181,7 +2192,7 @@ export class IntegrationService {
       });
       if (withheld.length > 0) {
         const statusDetail = missingOAuthScopesDetail(withheld, "reconnect");
-        await this.#repository.markConnectionNeedsAttention({
+        await this.#markConnectionNeedsAttention({
           connectionId: record.connection.id,
           expectedGeneration: record.credentialGeneration,
           ownerUserId,
@@ -2236,7 +2247,7 @@ export class IntegrationService {
       });
       if (withheld.length > 0) {
         const statusDetail = missingOAuthScopesDetail(withheld, "reconnect");
-        await this.#repository.markConnectionNeedsAttention({
+        await this.#markConnectionNeedsAttention({
           connectionId: record.connection.id,
           expectedGeneration: record.credentialGeneration,
           ownerUserId,
@@ -2282,7 +2293,7 @@ export class IntegrationService {
   ): Promise<never> {
     const reported = providerError ? ` (${providerError})` : "";
     if (failureCode === "grant-rejected" || failureCode === "scope-escalation") {
-      await this.#repository.markConnectionNeedsAttention({
+      await this.#markConnectionNeedsAttention({
         connectionId: record.connection.id,
         expectedGeneration: record.credentialGeneration,
         ownerUserId,

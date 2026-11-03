@@ -35,6 +35,7 @@ import {
   databaseShutdownDetails,
   IntegrationAuthAttemptStore,
   IntegrationPlatformStore,
+  PluginSettingsStore,
   IntegrationStore,
   isTransactionConflict,
   migrateToLatest,
@@ -632,7 +633,13 @@ export async function createHostRuntime(
       knownDefinitionIds: () => computerAppDefinitionIds,
       onPhoneDisplayCapability: (status) =>
         app.log.info(status, "Phone display capability changed"),
-      onChanged: () => notifyMachinesChanged(realtime, "computer-apps.status"),
+      onChanged: (runnerId) => {
+        notifyMachinesChanged(realtime, "computer-apps.status");
+        void new PluginSettingsStore(database)
+          .affectedViewers({ runnerId })
+          .then((viewers) => realtime.sendToUsers(viewers, { type: "host.plugins-changed" }))
+          .catch((error: unknown) => reportComputerUseSweepError(error));
+      },
       onComputerUseEvent: (runnerId, event) => computerUse?.handleHelperEvent(runnerId, event),
       onRunnerDetached: (runnerId, reason) => {
         computerViews?.disconnect(runnerId);
@@ -816,6 +823,7 @@ export async function createHostRuntime(
       targetResolver: runnerBrowsers,
     });
     unsubscribePlaceMembership = store.onWorkspaceMembershipChanged((membership) => {
+      realtime.sendToUsers([membership.userId], { type: "host.plugins-changed" });
       if (membership.state !== "active")
         browser.revokePlaceReader(membership.userId, membership.workspaceId);
       browser.invalidatePlaceAuthority(membership.workspaceId);
@@ -1001,6 +1009,8 @@ export async function createHostRuntime(
         integrationPlatformStore.installations.findInstalledDefinition(definitionId, options),
       onConnectionConnected: (input) => integrationConnectionConnected(input),
       publicUrl: config.canonicalOrigin,
+      onConnectionChanged: (owner) =>
+        realtime.sendToUsers([owner], { type: "host.plugins-changed" }),
       repository: integrationStore,
       vault: integrationVault,
     });
@@ -1276,6 +1286,17 @@ export async function createHostRuntime(
       // Request publishers run after commit. Coalescing still schedules another
       // pass if a Request arrives while the current candidate set is draining.
       if (event.type.startsWith("request.")) {
+        const requestId =
+          "request" in event.data
+            ? event.data.request.id
+            : "requestId" in event.data
+              ? event.data.requestId
+              : undefined;
+        if (requestId)
+          void integrationPlatformStore.settings
+            .affectedViewers({ requestId })
+            .then((viewers) => realtime.sendToUsers(viewers, { type: "host.plugins-changed" }))
+            .catch((error: unknown) => reportComputerUseSweepError(error));
         void drainThreadStates().catch((error: unknown) =>
           console.warn("Thread state drain failed", error),
         );
@@ -1338,6 +1359,14 @@ export async function createHostRuntime(
           .catch((error: unknown) => reportComputerUseSweepError(error));
         notifyMachinesChanged(realtime, "integration.connections");
         void channelService?.syncRuntimes();
+      },
+      onSettingsChanged: async ({ installationId, ownerUserId }) => {
+        const viewers = ownerUserId
+          ? [ownerUserId]
+          : await integrationPlatformStore.settings.affectedViewers(
+              installationId ? { installationId } : {},
+            );
+        realtime.sendToUsers(viewers, { type: "host.plugins-changed" });
       },
       onRequestsChanged: () => notifyIntegrationContinuations(),
       onWorkspaceEvent: publishWorkspaceEvent,

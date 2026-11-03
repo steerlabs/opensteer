@@ -249,7 +249,11 @@ revoke files it can read. Loose-skill changes participate in Run planning and
 warm-engine reuse, and require a Runner advertising the Settings policy
 capability. Settings reads use membership-authorized cached skill metadata;
 refreshing Settings does not scan a computer's disk. Offline and failed scans
-retain the last complete inventory.
+retain the last complete inventory. Detail identifies that inventory’s source
+Workspace and metadata-owning computer; a failed replacement scan does not
+relabel old metadata as coming from the new owner. Offline inventory reports
+Waiting for device; failed scans report setup attention. These are freshness
+hints, never evidence of execution authority.
 A caller cannot reuse, queue work to, or steer a Thread with Main lineage unless
 its own lineage has Main authority; start a new task instead. Cross-Workspace
 delegation still requires the caller's `main` profile. A specialist may send only

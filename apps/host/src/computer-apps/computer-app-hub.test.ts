@@ -160,17 +160,20 @@ function lastRequestId(peer: ReturnType<typeof controlPeer>): RunnerAuxiliaryReq
 describe("ComputerAppHub", () => {
   let hub: ComputerAppHub;
   let changed: number;
+  let changedRunners: RunnerId[];
   let known: Set<string>;
   let runnerId: RunnerId;
 
   beforeEach(() => {
     vi.useFakeTimers();
     changed = 0;
+    changedRunners = [];
     known = new Set([messages]);
     runnerId = createId("runner");
     hub = new ComputerAppHub({
       knownDefinitionIds: () => known,
-      onChanged: () => {
+      onChanged: (id) => {
+        changedRunners.push(id);
         changed += 1;
       },
     });
@@ -207,6 +210,7 @@ describe("ComputerAppHub", () => {
       },
     } as RunnerAuxiliaryStream;
     hub.attach(peer, stream);
+    expect(changedRunners).toEqual([runnerId]);
     expect(hub.loginReceiver(runnerId)).toBeNull();
     expect(hub.passwordSignInSupported(runnerId)).toBe(false);
     const key = {
