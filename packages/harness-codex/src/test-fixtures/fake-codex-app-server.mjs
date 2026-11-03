@@ -383,6 +383,27 @@ function handleClientMethod(message) {
         break;
       }
       modelListRequests += 1;
+      if (scenario === "thread-name") {
+        send({
+          id: message.id,
+          result: {
+            data: [
+              {
+                id: "gpt-6-luna",
+                displayName: "Luna",
+                isDefault: false,
+                defaultReasoningEffort: "high",
+                supportedReasoningEfforts: [
+                  { reasoningEffort: "low" },
+                  { reasoningEffort: "high" },
+                ],
+              },
+            ],
+            nextCursor: null,
+          },
+        });
+        break;
+      }
       // `endless-models` never finishes paging.
       if (scenario === "endless-models") {
         send({ id: message.id, result: { data: [], nextCursor: "again" } });

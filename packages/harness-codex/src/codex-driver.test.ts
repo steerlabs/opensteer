@@ -3099,6 +3099,19 @@ function processExists(pid: number): boolean {
 type JsonRecord = Record<string, unknown>;
 
 describe("Codex Thread naming", () => {
+  it("does not name with the task model when no light model is listed", async () => {
+    const fixture = await setup("vertical");
+    const session = await fixture.adapter.startSession(fixture.context);
+    try {
+      expect(
+        await session.generateTitle!({ prompt: "Name it", signal: AbortSignal.timeout(2_000) }),
+      ).toBe("");
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
   it("returns both lines with tools, MCP, skills and files disabled", async () => {
     const fixture = await setup("thread-name");
     const session = await fixture.adapter.startSession(fixture.context);
@@ -3112,6 +3125,7 @@ describe("Codex Thread naming", () => {
       const captured = await fixture.capture();
       const naming = captured.findLast((entry) => entry.method === "thread/start");
       expect(naming?.params).toMatchObject({
+        model: "gpt-6-luna",
         ephemeral: true,
         sandbox: "read-only",
         dynamicTools: [],
@@ -3126,6 +3140,9 @@ describe("Codex Thread naming", () => {
           features: { shell_tool: false },
           web_search: "disabled",
         },
+      });
+      expect(captured.findLast((entry) => entry.method === "turn/start")?.params).toMatchObject({
+        effort: "low",
       });
       expect(
         (await readdir(fixture.context.threadStateDirectory)).filter((name) =>

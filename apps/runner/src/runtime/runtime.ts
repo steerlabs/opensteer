@@ -805,6 +805,7 @@ export class RunnerRuntime {
             driverKind: definition.driverKind,
             harnessInstanceId: definition.id,
             models: result.models,
+            lightModel: result.lightModel,
             setupMethods: result.setupMethods ?? [],
             status: "ready",
             steering: this.#harnesses.driverCapabilities(definition.driverKind)?.steering ?? false,

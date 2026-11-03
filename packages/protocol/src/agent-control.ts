@@ -333,6 +333,7 @@ const AgentModelSummarySchema = z.strictObject({
 export type AgentModelSummary = z.infer<typeof AgentModelSummarySchema>;
 
 const HarnessSummarySchema = z.strictObject({
+  lightModel: DelegationModelChoiceSchema.optional(),
   driverKind: HarnessIdSchema,
   enabled: z.boolean(),
   environmentId: EnvironmentIdSchema,

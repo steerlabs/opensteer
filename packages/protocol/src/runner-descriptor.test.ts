@@ -2,6 +2,8 @@ import { slackChannelProviderManifest } from "@opensteer/channel-core";
 import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
+  HarnessInstanceCatalogSchema,
+  HarnessInstanceCatalogViewSchema,
   RunnerCommandSchema,
   RunnerDescriptorSchema,
   RunnerHarnessDriverSchema,
@@ -387,4 +389,35 @@ it("preserves supported passkey module readiness and ignores future versions", (
     });
   expect(withVersion(1).modules.browser).toHaveProperty("passkeys", 1);
   expect(withVersion(9).modules.browser).not.toHaveProperty("passkeys", 9);
+});
+
+it("carries a delegation-shaped light selection only on ready catalogs", () => {
+  const lightModel = { modelId: "gpt-6-luna", providerId: "openai", options: { effort: "low" } };
+  const catalog = {
+    status: "ready",
+    driverKind: "codex",
+    harnessInstanceId: createId("harnessInstance"),
+    continuationIdentity: {
+      driverKind: "codex",
+      continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
+    },
+    lightModel,
+    models: [{ ...lightModel, displayName: "Luna", isDefault: false, options: [] }],
+  };
+  const stored = JSON.parse(JSON.stringify(HarnessInstanceCatalogSchema.parse(catalog)));
+  expect(HarnessInstanceCatalogViewSchema.parse(stored)).toMatchObject({ lightModel });
+  expect(
+    HarnessInstanceCatalogSchema.safeParse({
+      ...catalog,
+      lightModel: { ...lightModel, nativeModelId: "untrusted" },
+    }).success,
+  ).toBe(false);
+  expect(
+    HarnessInstanceCatalogSchema.safeParse({
+      ...catalog,
+      status: "unavailable",
+      models: [],
+      detail: "Offline",
+    }).success,
+  ).toBe(false);
 });

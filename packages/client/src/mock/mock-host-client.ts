@@ -918,6 +918,7 @@ const mockPiCatalog = HarnessInstanceCatalogSchema.parse({
 // Cursor signs itself in: the CLI holds the credential in the computer's own
 // keychain, so the catalog reports who it found and offers no setup method.
 const mockCursorCatalog = HarnessInstanceCatalogSchema.parse({
+  lightModel: { providerId: "xai", modelId: "composer-2.5", options: {} },
   connections: [
     {
       accountLabel: "demo@opensteer.test",

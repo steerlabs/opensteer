@@ -743,6 +743,7 @@ describe("RunnerRuntime", () => {
         throw new Error("Unexpected adapter creation");
       },
       inspect: async () => ({
+        lightModel: selection,
         models: [
           {
             displayName: "Test model",
@@ -803,6 +804,7 @@ describe("RunnerRuntime", () => {
         new AbortController().signal,
       );
       expect(catalogs).toHaveLength(1);
+      expect(catalogs[0]).toMatchObject({ lightModel: selection });
       expect(catalogs[0]).toMatchObject({
         continuationIdentity: {
           continuationKey: expect.stringMatching(/^runner:v1:/),

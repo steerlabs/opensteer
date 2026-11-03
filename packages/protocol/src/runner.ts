@@ -1,3 +1,4 @@
+import { DelegationModelChoiceSchema } from "@opensteer/core";
 import { HostAppRequestSchema, RunnerAppResultSchema } from "./apps.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import {
@@ -962,6 +963,7 @@ export const HarnessInstanceCatalogSchema = z.discriminatedUnion("status", [
     continuationIdentity: ProviderContinuationIdentitySchema,
     driverKind: HarnessIdSchema,
     harnessInstanceId: HarnessInstanceIdSchema,
+    lightModel: DelegationModelChoiceSchema.optional(),
     models: z.array(HarnessModelDescriptorSchema).min(1).max(maxHarnessModelsPerCatalog),
     status: z.literal("ready"),
     steering: z.boolean().default(false),

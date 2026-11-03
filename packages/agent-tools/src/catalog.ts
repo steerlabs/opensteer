@@ -233,7 +233,7 @@ const definitions = [
       title: "List Environments",
     },
     description:
-      "Find environments, engine accounts, models and options. query filters offered models by every word across model/provider IDs, names, engines and drivers; blank lists all. Copy selectors; report unavailable catalogs. Page with environmentsNextCursor as environmentCursor and harnessesNextCursor as harnessCursor. For more models, keep query, focus harnessInstanceId and pass modelsNextCursor as cursor.",
+      "Find environments, engine accounts, models and options. query filters offered models by every word across model/provider IDs, names, engines and drivers; blank lists all. Copy selectors; pass an engine’s lightModel directly as thread_delegate model for cheap work; report unavailable catalogs. Page with environmentsNextCursor as environmentCursor and harnessesNextCursor as harnessCursor. For more models, keep query, focus harnessInstanceId and pass modelsNextCursor as cursor.",
     id: "environment.list",
     inputSchema: z.strictObject({
       query: z

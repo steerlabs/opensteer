@@ -294,6 +294,9 @@ export async function delegationEngines(
         ...(catalog?.detail && status === catalog.status && status !== "ready"
           ? { detail: catalog.detail }
           : {}),
+        ...(status === "ready" && catalog?.status === "ready" && catalog.lightModel
+          ? { lightModel: catalog.lightModel }
+          : {}),
         models: shown,
         modelsOmitted: offered.length - next,
         ...(focused && next < offered.length
@@ -327,6 +330,9 @@ export async function delegationEngines(
       enabled,
       environmentId,
       id,
+      ...(enabled && catalog?.status === "ready" && catalog.lightModel
+        ? { lightModel: catalog.lightModel }
+        : {}),
       models: shown.map(({ modelId, providerId }): AgentModelSummary => ({ modelId, providerId })),
       modelsOmitted: offered.length - next,
       ...(focused && next < offered.length

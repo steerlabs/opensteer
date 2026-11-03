@@ -58,6 +58,35 @@ describe("environment model discovery", () => {
     }));
     return { accounts, catalogs, store: { listHarnessCatalogs: vi.fn(async () => catalogs) } };
   }
+  it("preserves a delegation-ready light choice through catalog storage and both projections", async () => {
+    const f = fixture();
+    const lightModel = { providerId: "openai", modelId: "model-49", options: { effort: "max" } };
+    f.catalogs[0]!.catalog = HarnessInstanceCatalogSchema.parse({
+      ...f.catalogs[0]!.catalog,
+      lightModel,
+    });
+    const discovery = await delegationEngines(f.store, f.accounts, {
+      input: { query: "no-match" },
+      connected: () => true,
+      canRun: () => true,
+    });
+    expect(discovery[0]).toMatchObject({ lightModel, models: [] });
+    expect((await delegationEngines(f.store, f.accounts))[0]).toMatchObject({ lightModel });
+    expect(
+      (
+        await delegationEngines(f.store, f.accounts, {
+          input: {},
+          connected: () => false,
+          canRun: () => true,
+        })
+      )[0],
+    ).not.toHaveProperty("lightModel");
+    f.catalogs[0]!.catalog = HarnessInstanceCatalogSchema.parse({
+      ...f.catalogs[0]!.catalog,
+      lightModel: undefined,
+    });
+    expect((await delegationEngines(f.store, f.accounts))[0]).not.toHaveProperty("lightModel");
+  });
   it("normalizes blank search at both boundaries and shares unfiltered cursors", async () => {
     const tool = toolsForCapabilityProfile("main").find(({ name }) => name === "environment_list")!;
     const variants = [{}, { query: "" }, { query: " \t\n " }];

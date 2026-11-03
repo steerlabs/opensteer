@@ -207,6 +207,7 @@ describe("Cursor inspection", () => {
       logoutSupported: false,
       status: "connected",
     });
+    expect(result.lightModel).toEqual({ providerId: "xai", modelId: "composer-2.5", options: {} });
     expect(result.setupMethods ?? []).toEqual([]);
     expect(result.models.length).toBeGreaterThan(30);
     expect(result.models.find((model) => model.modelId === "auto")?.isDefault).toBe(true);
@@ -1495,7 +1496,13 @@ describe("cursor Thread naming", () => {
       expect(launch.cwd).toContain("title-");
 
       expect(launch.args).toEqual(
-        expect.arrayContaining(["--output-format", "text", "--plugin-dir"]),
+        expect.arrayContaining([
+          "--output-format",
+          "text",
+          "--plugin-dir",
+          "--model",
+          "composer-2.5",
+        ]),
       );
       expect(launch.environment.CURSOR_DATA_DIR).toContain("title-");
       expect(launch.environment.HOME).toContain("title-");
