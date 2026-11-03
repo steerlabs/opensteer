@@ -136,7 +136,7 @@ interface ToolResult {
 
 const mcp = vi.hoisted(() => ({
   callHandler: undefined as CallHandler | undefined,
-  instructions: "",
+  instructions: undefined as string | undefined,
   listHandler: undefined as
     ((request: unknown, extra: McpCallExtra) => Promise<unknown>) | undefined,
   registrations: 0,
@@ -156,7 +156,8 @@ vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => ({
         mcp.listHandler = handler;
       },
     };
-    constructor() {
+    constructor(_info: unknown, options?: { readonly instructions?: string }) {
+      mcp.instructions = options?.instructions;
       mcp.callHandler = async (request, extra): Promise<ToolResult> => {
         const callback = this.callbacks.get(request.params.name);
         if (!callback)
