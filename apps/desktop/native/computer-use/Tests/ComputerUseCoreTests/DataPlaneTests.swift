@@ -27,7 +27,7 @@ final class DataPlaneTests: XCTestCase {
           "write_thing": DataOperationContract(contract: writeContract, effect: .write),
         ]
       ],
-      grants: ["fake-app": DataAppGrants(read: .fullDiskAccess, write: .automation)],
+      grants: ["fake-app": DataAppGrants(read: [.fullDiskAccess], write: [.automation])],
       providers: ["fake-app": provider],
       grantReader: reader
         ?? FakeGrants(
@@ -68,6 +68,46 @@ final class DataPlaneTests: XCTestCase {
       XCTFail("Only helper errors may leave the data plane, not \(error)")
       return nil
     }
+  }
+
+  func testMessagesReadsRequireContactsButWritesOnlyRequireAutomation() async {
+    let provider = FakeDataProvider()
+    func messages(_ contacts: DataGrantState) -> DataPlane {
+      DataPlane(contracts: DataContracts.operations, grants: DataContracts.grants,
+        providers: ["apple-messages": provider],
+        grantReader: FakeGrants([.fullDiskAccess: .granted, .contacts: contacts, .automation: .granted]))
+    }
+    func request(_ operation: String, _ effect: DataEffect) -> Wire.DataInvokeParams {
+      invocation(definitionId: "apple-messages", operation: operation,
+        contract: DataContracts.operations["apple-messages"]![operation]!.contract,
+        effect: effect, access: .readWrite)
+    }
+    let denied = await refusal(messages(.requestable), request("list_conversations", .read))
+    XCTAssertEqual(denied?.code, .permissionRequired)
+    XCTAssertEqual(denied?.message, DataPlane.permissionSentence(.contacts))
+    XCTAssertEqual(provider.calls, 0)
+    let allowed = await refusal(messages(.granted), request("read_messages", .read))
+    XCTAssertNil(allowed)
+    let written = await refusal(messages(.denied), request("send_message", .write))
+    XCTAssertNil(written)
+    XCTAssertEqual(provider.calls, 2)
+  }
+
+  func testReadGrantOrderAndRestartTakePrecedence() async {
+    let provider = FakeDataProvider()
+    func subject(_ reader: FakeGrants) -> DataPlane {
+      DataPlane(contracts: ["fake-app": ["read_thing": DataOperationContract(contract: readContract, effect: .read)]],
+        grants: ["fake-app": DataAppGrants(read: [.fullDiskAccess, .contacts], write: [.automation])],
+        providers: ["fake-app": provider], grantReader: reader)
+    }
+    let reader = FakeGrants([.fullDiskAccess: .denied, .contacts: .requestable])
+    let denied = await refusal(subject(reader), invocation())
+    XCTAssertEqual(denied?.message, DataPlane.permissionSentence(.fullDiskAccess))
+    XCTAssertEqual(reader.askedAbout, [.fullDiskAccess, .contacts])
+    let restart = await refusal(subject(FakeGrants(
+      [.fullDiskAccess: .denied, .contacts: .denied], restarting: [.contacts])), invocation())
+    XCTAssertEqual(restart?.message, DataPlane.restartingSentence)
+    XCTAssertEqual(provider.calls, 0)
   }
 
   func testAnAppThisHelperDoesNotServeIsUnsupported() async {
