@@ -1,5 +1,8 @@
 import { PluginStore } from "./plugin-store.js";
-import { writeIntegrationGrantInTransaction } from "./integration-grant-write.js";
+import {
+  writeIntegrationGrantInTransaction,
+  validateIntegrationGrantInTransaction,
+} from "./integration-grant-write.js";
 import type { IntegrationProviderAuthorization } from "@opensteer/integration-core";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -78,6 +81,7 @@ export class PluginSettingsStore {
       packages,
       activations,
       specialists,
+      tools,
     ] = await Promise.all([
       this.database
         .selectFrom("users")
@@ -105,6 +109,8 @@ export class PluginSettingsStore {
           "statusReason",
           "runnerId",
           "computerAccess",
+          "computerBlockedAt",
+          "grantedScopes",
         ])
         .where("ownerUserId", "=", owner)
         .where("status", "!=", "revoked")
@@ -144,7 +150,7 @@ export class PluginSettingsStore {
         ])
         .where((eb) =>
           eb.or([
-            eb("plugins.installedBy", "=", owner),
+            eb.and([eb("plugins.installedBy", "=", owner), eb("plugins.scope", "=", "deployment")]),
             eb("plugins.workspaceId", "in", memberWorkspaces),
             eb.exists(
               eb
@@ -166,6 +172,25 @@ export class PluginSettingsStore {
         .select(["id", "workspaceId", "pluginId", "ownerUserId", "status"])
         .where("workspaceId", "in", memberWorkspaces)
         .where("removedAt", "is", null)
+        .execute(),
+      this.database
+        .selectFrom("integrationTools")
+        .innerJoin("integrationServers", "integrationServers.id", "integrationTools.serverId")
+        .select(["integrationTools.name", "integrationServers.installationId"])
+        .where((eb) =>
+          eb.or([
+            eb("integrationTools.connectionId", "is", null),
+            eb(
+              "integrationTools.connectionId",
+              "in",
+              eb
+                .selectFrom("integrationConnections")
+                .select("integrationConnections.id")
+                .where("integrationConnections.ownerUserId", "=", owner)
+                .where("integrationConnections.status", "!=", "revoked"),
+            ),
+          ]),
+        )
         .execute(),
     ]);
     const rows: PluginRow[] = [];
@@ -193,8 +218,15 @@ export class PluginSettingsStore {
           : installation.name;
       const accounts = connections.filter((c) => c.integrationDefinitionId === definitionId);
       const ownGrants = grants.filter((g) => g.installationId === installation.id);
-      if (!accounts.length && !ownGrants.length) continue;
-      const device = accounts.some((c) => c.connectionKind === "computer");
+      const saved = settings.find(
+        (s) =>
+          (s.target.kind === "service" || s.target.kind === "device-app") &&
+          s.target.definitionId === definitionId,
+      );
+      if (!accounts.length && !ownGrants.length && !saved) continue;
+      const device =
+        accounts.some((c) => c.connectionKind === "computer") ||
+        saved?.target.kind === "device-app";
       const target: PluginTarget = { kind: device ? "device-app" : "service", definitionId };
       rows.push({
         target,
@@ -207,8 +239,18 @@ export class PluginSettingsStore {
           ownGrants.map((g) => g.workspaceId),
         ),
         accountCount: accounts.length,
-        issues: accounts.some((c) => c.status === "needs-attention") ? ["needs-sign-in"] : [],
-        contents: { skills: 0, tools: 0, specialists: 0 },
+        issues:
+          accounts.some((c) => c.status === "needs-attention") ||
+          saved?.personalEverywhereAccounts?.some(
+            (a) => !accounts.some((c) => c.id === a.connectionId),
+          )
+            ? ["needs-sign-in"]
+            : [],
+        contents: {
+          skills: 0,
+          tools: tools.filter((t) => t.installationId === installation.id).length,
+          specialists: 0,
+        },
         permissions: { canEnable: true, canPlace: true, canRemove: true, canUpdate: false },
       });
     }
@@ -235,7 +277,13 @@ export class PluginSettingsStore {
         ),
         accountCount: 0,
         issues: [],
-        contents: { skills, tools: 0, specialists: plugin.specialistManifest ? 1 : 0 },
+        contents: {
+          skills,
+          tools: tools.filter((t) =>
+            installations.some((i) => i.pluginId === plugin.id && i.id === t.installationId),
+          ).length,
+          specialists: plugin.specialistManifest ? 1 : 0,
+        },
         permissions: {
           canEnable: true,
           canPlace: manage,
@@ -243,6 +291,7 @@ export class PluginSettingsStore {
           canUpdate: manage && typeof plugin.source.directory === "string",
         },
       });
+      const packageRow = rows[rows.length - 1]!;
       const owners = new Set(
         specialists.filter((s) => s.pluginId === plugin.id).map((s) => s.ownerUserId),
       );
@@ -257,7 +306,7 @@ export class PluginSettingsStore {
         );
         const canManage = registrationOwner === owner;
         rows.push({
-          ...rows[rows.length - 1]!,
+          ...packageRow,
           target,
           tags: ["specialists"],
           placement: placement(
@@ -284,6 +333,7 @@ export class PluginSettingsStore {
       packages,
       activations,
       specialists,
+      tools,
       viewer,
     };
   }
@@ -462,31 +512,31 @@ export class PluginSettingsStore {
                 code: "forbidden",
                 message: "Future consent needs exact owned accounts",
               });
-            for (const project of command.projects)
-              if (
-                project.accounts.some(
-                  (a) =>
-                    !accounts.some(
-                      (ceiling) =>
-                        ceiling.connectionId === a.connectionId &&
-                        (ceiling.access === "read-write" || a.access === "read"),
-                    ),
-                )
-              )
-                throw new OpensteerError({
-                  code: "bad_request",
-                  message: "Project access exceeds future consent",
-                });
           }
           const installationId = detail.installationIds[0];
           if (!installationId)
             throw new OpensteerError({ code: "conflict", message: "Installation is unavailable" });
-          for (const place of detail.places.filter((p) => p.canSelect)) {
-            if (place.kind === "main" && !command.personalEverywhere) continue;
-            const selection =
-              place.kind === "main"
-                ? command.personalEverywhere
-                : command.projects.find((p) => p.workspaceId === place.workspaceId);
+          const main = detail.places.find((p) => p.kind === "main");
+          if (command.personalEverywhere) {
+            if (!main)
+              throw new OpensteerError({
+                code: "forbidden",
+                message: "Main membership is required for future consent",
+              });
+            for (const account of command.personalEverywhere.accounts)
+              await validateIntegrationGrantInTransaction(tx, {
+                ...account,
+                installationId,
+                ownerUserId: owner,
+                createdBy: owner,
+                workspaceId: main.workspaceId,
+                alias: account.connectionId,
+                isDefault: false,
+                providerAuthorizations: authorizations,
+              });
+          }
+          for (const place of detail.places.filter((p) => p.kind === "project" && p.canSelect)) {
+            const selection = command.projects.find((p) => p.workspaceId === place.workspaceId);
             for (const grant of detail.grants.filter((g) => g.workspaceId === place.workspaceId)) {
               if (!selection?.accounts.some((a) => a.connectionId === grant.connectionId))
                 await tx
@@ -577,6 +627,7 @@ export class PluginSettingsStore {
       packages,
       activations,
       specialists,
+      tools,
       viewer,
     } = snapshot;
     const key = pluginTargetKey(target);
@@ -603,6 +654,40 @@ export class PluginSettingsStore {
           )
         : [];
     const setting = settings.find((s) => s.targetKey === key);
+    const contents: { name: string; kind: "skill" | "tool" | "specialist" }[] = [];
+    for (const skill of Array.isArray(plugin?.manifest.skills) ? plugin.manifest.skills : []) {
+      const name =
+        typeof skill === "string"
+          ? skill
+          : typeof skill === "object" &&
+              skill !== null &&
+              "name" in skill &&
+              typeof skill.name === "string"
+            ? skill.name
+            : null;
+      if (name) contents.push({ name: name.slice(0, 120), kind: "skill" });
+    }
+    if (plugin?.specialistManifest)
+      contents.push({ name: plugin.name.slice(0, 120), kind: "specialist" });
+    const installationIds = installations
+      .filter((i) =>
+        plugin
+          ? i.pluginId === plugin.id
+          : service &&
+            (i.name === target.definitionId ||
+              accounts.some((c) => {
+                const definition = i.manifest.definition;
+                return (
+                  typeof definition === "object" &&
+                  definition !== null &&
+                  "id" in definition &&
+                  definition.id === c.integrationDefinitionId
+                );
+              })),
+      )
+      .map((i) => i.id);
+    for (const tool of tools.filter((t) => installationIds.includes(t.installationId)))
+      contents.push({ name: tool.name.slice(0, 120), kind: "tool" });
     return PluginDetailViewSchema.parse({
       row,
       installationIds: service
@@ -660,8 +745,32 @@ export class PluginSettingsStore {
         ? { accounts: setting.personalEverywhereAccounts }
         : null,
       devices: [],
-      permissions: [],
-      contents: [],
+      permissions: [
+        ...accounts.flatMap((c) =>
+          c.grantedScopes.map((scope) => ({
+            label: `${c.displayName}: ${scope}`.slice(0, 120),
+            layer: "account-scope",
+            state: "allowed",
+          })),
+        ),
+        ...accounts
+          .filter((c) => c.connectionKind === "computer")
+          .map((c) => ({
+            label: c.displayName.slice(0, 120),
+            layer: "app-policy",
+            state: c.computerBlockedAt ? "denied" : c.computerAccess ? "allowed" : "unknown",
+          })),
+        ...publicGrants.map((g) => ({
+          label:
+            `${places.find((p) => p.id === g.workspaceId)?.name ?? "Workspace"}: ${g.access}`.slice(
+              0,
+              120,
+            ),
+          layer: "workspace-grant",
+          state: g.status === "active" ? "allowed" : "denied",
+        })),
+      ],
+      contents,
       sourceFolder:
         plugin?.installedBy === owner && typeof plugin.source.directory === "string"
           ? plugin.source.directory

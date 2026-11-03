@@ -75,6 +75,58 @@ export async function writeIntegrationGrantInTransaction(
   input: CreateIntegrationGrantInput,
 ): Promise<IntegrationGrant> {
   await lockIntegrationGrantScopeInTransaction(transaction, input);
+  await validateIntegrationGrantInTransaction(transaction, input);
+  if (input.isDefault) {
+    await transaction
+      .updateTable("integrationGrants")
+      .set({ isDefault: false, updatedAt: new Date() })
+      .where("workspaceId", "=", input.workspaceId)
+      .where("ownerUserId", "=", input.ownerUserId)
+      .where("installationId", "=", input.installationId)
+      .where("revokedAt", "is", null)
+      .execute();
+  }
+  const now = new Date();
+  const existing = await activeIntegrationGrantInTransaction(transaction, input);
+  const row = existing
+    ? await transaction
+        .updateTable("integrationGrants")
+        .set({
+          access: input.access,
+          alias: input.alias,
+          isDefault: input.isDefault,
+          status: "active",
+          updatedAt: now,
+        })
+        .where("id", "=", existing.id)
+        .returningAll()
+        .executeTakeFirstOrThrow()
+    : await transaction
+        .insertInto("integrationGrants")
+        .values({
+          access: input.access,
+          alias: input.alias,
+          connectionId: input.connectionId,
+          createdBy: input.createdBy,
+          id: createIntegrationId("grant"),
+          installationId: input.installationId,
+          isDefault: input.isDefault,
+          ownerUserId: input.ownerUserId,
+          revokedAt: null,
+          status: "active",
+          updatedAt: now,
+          workspaceId: input.workspaceId,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+  return integrationGrantFromRow(row);
+}
+
+/** Checks consent without creating or replacing a grant. */
+export async function validateIntegrationGrantInTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  input: CreateIntegrationGrantInput,
+): Promise<void> {
   const membership = await transaction
     .selectFrom("workspaceMemberships")
     .select(["state"])
@@ -159,50 +211,6 @@ export async function writeIntegrationGrantInTransaction(
       });
     }
   }
-  if (input.isDefault) {
-    await transaction
-      .updateTable("integrationGrants")
-      .set({ isDefault: false, updatedAt: new Date() })
-      .where("workspaceId", "=", input.workspaceId)
-      .where("ownerUserId", "=", input.ownerUserId)
-      .where("installationId", "=", input.installationId)
-      .where("revokedAt", "is", null)
-      .execute();
-  }
-  const now = new Date();
-  const existing = await activeIntegrationGrantInTransaction(transaction, input);
-  const row = existing
-    ? await transaction
-        .updateTable("integrationGrants")
-        .set({
-          access: input.access,
-          alias: input.alias,
-          isDefault: input.isDefault,
-          status: "active",
-          updatedAt: now,
-        })
-        .where("id", "=", existing.id)
-        .returningAll()
-        .executeTakeFirstOrThrow()
-    : await transaction
-        .insertInto("integrationGrants")
-        .values({
-          access: input.access,
-          alias: input.alias,
-          connectionId: input.connectionId,
-          createdBy: input.createdBy,
-          id: createIntegrationId("grant"),
-          installationId: input.installationId,
-          isDefault: input.isDefault,
-          ownerUserId: input.ownerUserId,
-          revokedAt: null,
-          status: "active",
-          updatedAt: now,
-          workspaceId: input.workspaceId,
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
-  return integrationGrantFromRow(row);
 }
 
 /** The one active grant a Workspace holds on one connection of one installation. */

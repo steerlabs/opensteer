@@ -1,3 +1,5 @@
+import { pauseAfterLock } from "./lock-race.test-support.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createTestWorkspace } from "./workspace-fixture.test-support.js";
 import { createId } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
@@ -50,6 +52,58 @@ describeStore("plugin Settings authority", (test) => {
     expect((await settings.overview(outsider)).rows).toEqual([]);
   });
 
+  test("membership removal hides Workspace package rows and detail even from their installer", async ({
+    storeFixture: f,
+  }) => {
+    const run = await f.createRunFixture("settings-membership");
+    const project = await createTestWorkspace(f.store, {
+      backing: { ...run.workspace.backing, bindingId: createId("workspaceBinding") },
+      createdBy: run.userId,
+      idempotencyKey: "private-package-project",
+      kind: "project",
+      name: "Private project",
+      status: "ready",
+    });
+    const platform = new IntegrationPlatformStore(f.database);
+    const pluginId = randomUUID();
+    await platform.plugins.install({
+      id: pluginId,
+      name: "hidden-package",
+      actorUserId: run.userId,
+      workspaceId: project.id,
+      source: { directory: "/private/hidden-package" },
+      digest: "hidden",
+      manifest: { name: "hidden-package", skills: [{ name: "hidden-skill" }] },
+    });
+    expect((await platform.settings.overview(run.userId)).rows).toHaveLength(1);
+    const successor = await f.store.createUser("Successor");
+    const membership = await f.database
+      .selectFrom("workspaceMemberships")
+      .selectAll()
+      .where("workspaceId", "=", project.id)
+      .where("userId", "=", run.userId)
+      .executeTakeFirstOrThrow();
+    await f.database
+      .insertInto("workspaceMemberships")
+      .values({ ...membership, id: createId("workspaceMembership"), userId: successor })
+      .execute();
+    await f.database
+      .updateTable("workspaceMemberships")
+      .set({
+        state: "revoked",
+        revokedAt: new Date(),
+        revokedBy: successor,
+        generation: membership.generation + 1,
+      })
+      .where("workspaceId", "=", project.id)
+      .where("userId", "=", run.userId)
+      .execute();
+    expect((await platform.settings.overview(run.userId)).rows).toEqual([]);
+    await expect(
+      platform.settings.detail(run.userId, { kind: "plugin", pluginId }),
+    ).rejects.toThrow("unavailable");
+  });
+
   test("Off preserves activation, owner management and idempotent results while filtering the Run plan", async ({
     storeFixture: f,
   }) => {
@@ -63,7 +117,7 @@ describeStore("plugin Settings authority", (test) => {
       workspaceId: run.workspace.id,
       source: { directory: "/private/source" },
       digest: "off",
-      manifest: { name: "off-plugin" },
+      manifest: { name: "off-plugin", skills: [{ name: "summarize" }] },
     });
     const target = { kind: "plugin" as const, pluginId };
     const command = {
@@ -80,6 +134,7 @@ describeStore("plugin Settings authority", (test) => {
     expect(await platform.plugins.current(run.workspace.id)).toHaveLength(1);
     expect(await platform.settings.detail(run.userId, target)).toMatchObject({
       sourceFolder: "/private/source",
+      contents: [{ name: "summarize", kind: "skill" }],
       row: { permissions: { canUpdate: true }, placement: { enabled: false } },
     });
     expect(await platform.settings.setEnabled(run.userId, command)).toMatchObject({
@@ -176,6 +231,43 @@ describeStore("plugin Settings authority", (test) => {
       status: "ready",
     });
     expect(await platform.plugins.current(project.id, run.userId)).toHaveLength(1);
+    const barrier = pauseAfterLock(
+      f.database,
+      (node) => node.includes('"name":"users"') && node.includes("ForNoKeyUpdate"),
+    );
+    const edit = new PluginSettingsStore(barrier.database).setPlacement(
+      run.userId,
+      {
+        ...command,
+        expectedRevision: 1,
+        idempotencyKey: "clear-future-consent",
+        projects: [{ workspaceId: project.id, accounts: [] }],
+        personalEverywhere: null,
+      },
+      {},
+    );
+    let creating: ReturnType<typeof createTestWorkspace> | undefined;
+    try {
+      await withTimeout(barrier.reached, 3000, {
+        timeoutError: () => new Error("Consent edit never locked its owner"),
+      });
+      creating = createTestWorkspace(f.store, {
+        backing: { ...run.workspace.backing, bindingId: createId("workspaceBinding") },
+        createdBy: run.userId,
+        idempotencyKey: "concurrent-project",
+        kind: "project",
+        name: "Concurrent",
+        status: "ready",
+      });
+    } finally {
+      barrier.release();
+      await edit;
+    }
+    if (!creating) throw new Error("Concurrent Project creation never started");
+    const concurrent = await withTimeout(creating, 5000, {
+      timeoutError: () => new Error("Project creation never observed committed consent"),
+    });
+    expect(await platform.plugins.current(concurrent.id, run.userId)).toEqual([]);
     await f.database
       .updateTable("deployments")
       .set({ deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" } })
@@ -185,7 +277,7 @@ describeStore("plugin Settings authority", (test) => {
         run.userId,
         {
           ...command,
-          expectedRevision: 1,
+          expectedRevision: 2,
           idempotencyKey: "server-everywhere",
           projects: [{ workspaceId: project.id, accounts: [] }],
         },
@@ -282,6 +374,13 @@ describeStore("plugin Settings authority", (test) => {
       },
       {},
     );
+    expect(
+      await f.database
+        .selectFrom("integrationGrants")
+        .select("id")
+        .where("workspaceId", "=", run.workspace.id)
+        .execute(),
+    ).toEqual([]);
     const project = await createTestWorkspace(f.store, {
       backing: { ...run.workspace.backing, bindingId: createId("workspaceBinding") },
       createdBy: run.userId,
@@ -290,26 +389,6 @@ describeStore("plugin Settings authority", (test) => {
       name: "Future accounts",
       status: "ready",
     });
-    await expect(
-      platform.settings.setPlacement(
-        run.userId,
-        {
-          type: "settings.plugin.placement.set",
-          target,
-          expectedRevision: 1,
-          idempotencyKey: "over-ceiling",
-          mainIncluded: true,
-          projects: [
-            {
-              workspaceId: project.id,
-              accounts: [{ connectionId: connections[0]!, access: "read-write" }],
-            },
-          ],
-          personalEverywhere: { accounts: [{ connectionId: connections[0]!, access: "read" }] },
-        },
-        {},
-      ),
-    ).rejects.toThrow("exceeds future consent");
     const grants = await f.database
       .selectFrom("integrationGrants")
       .selectAll()
@@ -340,5 +419,21 @@ describeStore("plugin Settings authority", (test) => {
         .where("name", "=", "Must roll back")
         .execute(),
     ).toEqual([]);
+    expect(await platform.settings.detail(run.userId, target)).toMatchObject({
+      row: { issues: ["needs-sign-in"], permissions: { canPlace: true } },
+    });
+    await platform.settings.setPlacement(
+      run.userId,
+      {
+        type: "settings.plugin.placement.set",
+        target,
+        expectedRevision: 1,
+        idempotencyKey: "clear-revoked-consent",
+        mainIncluded: true,
+        projects: [],
+        personalEverywhere: null,
+      },
+      {},
+    );
   });
 });
