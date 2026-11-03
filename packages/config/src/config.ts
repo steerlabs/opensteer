@@ -1,5 +1,4 @@
-import type { VerifiedDeploymentOwnerProfile } from "@opensteer/control-plane-protocol";
-import { ManagedHostProvisioningBundleSchema } from "@opensteer/control-plane-protocol";
+import { HostAccountAdoptionBundleSchema } from "@opensteer/control-plane-protocol";
 import {
   allowsPlaintextRunnerTransport,
   DeploymentIdSchema,
@@ -207,15 +206,13 @@ const HostEnvironmentSchema = z.object({
 export interface HostConfig {
   readonly account?:
     | {
-        readonly provisioningMode: "adoption" | "managed";
+        readonly provisioningMode: "adoption";
         readonly controlApiOrigin: URL;
         readonly hostCredential: string;
-        readonly initialRunnerEnrollmentToken: string | undefined;
         readonly reachability: "canonical";
         readonly issuer: URL;
         readonly oidcClientId: string;
         readonly oidcClientSecret: string;
-        readonly owner: VerifiedDeploymentOwnerProfile | undefined;
       }
     | undefined;
   /**
@@ -261,9 +258,9 @@ export interface HostConfig {
     readonly signupPolicy: "closed" | "invite-only" | "open";
   };
   /**
-   * One-use enrollment tokens for the computers a managed Deployment supervises
+   * One-use enrollment tokens for the computers a Deployment supervises
    * for itself. Each is scoped to exactly one module, so a token minted for a
-   * browser pod can never come back as a machine that executes agents.
+   * browser service can never come back as a machine that executes agents.
    */
   readonly initialBrowserRunnerEnrollmentToken?: string | undefined;
   readonly initialMessagingRunnerEnrollmentToken?: string | undefined;
@@ -284,7 +281,7 @@ export interface HostConfig {
    * declare one and an absent value simply leaves the link unrendered. */
   readonly portalOrigin?: URL;
   /** Pinned trust root for Account-signed Personal link/session grants. It is
-   * separate from a managed Host Account bundle because a Personal Host keeps
+   * separate from an Account adoption bundle because a Personal Host keeps
    * its own loopback canonical authority. */
   readonly personalAccountIssuer?: URL;
   readonly exposure: HostExposure;
@@ -430,22 +427,6 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   if (config.account && config.workspace.shape.kind !== "server") {
     throw new Error("An attached Opensteer Account requires a Server deployment");
   }
-  if (config.account?.provisioningMode === "managed") {
-    if (config.exposure !== "networked") {
-      throw new Error("Managed Account provisioning requires a networked Deployment");
-    }
-    if (!config.account.owner) {
-      throw new Error("Managed Account provisioning requires a verified owner profile");
-    }
-    if (config.identity.localPasswordEnabled) {
-      throw new Error("Local password sign-in conflicts with managed Account provisioning");
-    }
-    if (config.identity.initialOwnerEnrollment) {
-      throw new Error("An owner enrollment code conflicts with managed Account provisioning");
-    }
-  } else if (config.account?.owner) {
-    throw new Error("An adoption bundle cannot designate a managed owner");
-  }
 }
 
 export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
@@ -475,18 +456,8 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     defaultWorkspaceBacking: parsed.OPENSTEER_DEFAULT_WORKSPACE_BACKING ?? "local-directory",
     kind: parsed.OPENSTEER_DEPLOYMENT_KIND ?? "server",
   });
-  const accountBundle = readManagedAccountBundle(parsed);
+  const accountBundle = readAccountAdoptionBundle(parsed);
   const account = accountConfig(accountBundle, parsed.OPENSTEER_MODE);
-  const managedAccountProvisioning = account?.provisioningMode === "managed";
-  if (
-    managedAccountProvisioning &&
-    environment.OPENSTEER_LOCAL_PASSWORD_ENABLED !== undefined &&
-    parsed.OPENSTEER_LOCAL_PASSWORD_ENABLED
-  ) {
-    throw new Error(
-      "OPENSTEER_LOCAL_PASSWORD_ENABLED=true conflicts with managed Account provisioning",
-    );
-  }
   // A bearer token minted by the Host's own OAuth server skips every origin
   // check, and on a Personal Deployment the canonical-origin fence is what
   // stands in for "the owner is at this keyboard". A Personal Host therefore
@@ -510,7 +481,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     "OPENSTEER_CANONICAL_ORIGIN",
   );
   if (accountBundle && accountBundle.deployment.canonicalOrigin !== canonicalOrigin.origin) {
-    throw new Error("OPENSTEER_CANONICAL_ORIGIN must match the managed provisioning bundle");
+    throw new Error("OPENSTEER_CANONICAL_ORIGIN must match the Account adoption bundle");
   }
   const runtimeOrigin = originUrl(
     parsed.OPENSTEER_RUNTIME_ORIGIN ?? parsed.OPENSTEER_CANONICAL_ORIGIN,
@@ -554,7 +525,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   }
   if (accountBundle && configuredPersonalIdentityValues !== 0) {
     throw new Error(
-      "A managed provisioning bundle cannot be combined with an explicit Personal Deployment identity",
+      "An Account adoption bundle cannot be combined with an explicit Personal Deployment identity",
     );
   }
   const explicitPersonalIdentity =
@@ -600,9 +571,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
             token: parsed.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN,
           }
         : undefined,
-      localPasswordEnabled: managedAccountProvisioning
-        ? false
-        : parsed.OPENSTEER_LOCAL_PASSWORD_ENABLED,
+      localPasswordEnabled: parsed.OPENSTEER_LOCAL_PASSWORD_ENABLED,
       localOwnerClaimToken: parsed.OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN,
       ...(nativeOAuthEnabled ? { nativeOAuth: { clients: opensteerHostNativeOAuthClients } } : {}),
       oidcConfigPath: parsed.OPENSTEER_OIDC_CONFIG_PATH,
@@ -645,7 +614,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
 }
 
 function accountConfig(
-  bundle: z.infer<typeof ManagedHostProvisioningBundleSchema> | undefined,
+  bundle: z.infer<typeof HostAccountAdoptionBundleSchema> | undefined,
   mode: RuntimeMode,
 ): HostConfig["account"] {
   if (!bundle) return undefined;
@@ -657,22 +626,19 @@ function accountConfig(
     provisioningMode: bundle.provisioningMode,
     controlApiOrigin,
     hostCredential: bundle.hostCredential,
-    initialRunnerEnrollmentToken:
-      bundle.provisioningMode === "managed" ? bundle.initialRunnerEnrollmentToken : undefined,
     reachability: bundle.deployment.reachability,
     issuer,
     oidcClientId: bundle.oidc.clientId,
     oidcClientSecret: bundle.oidcClientSecret,
-    owner: bundle.provisioningMode === "managed" ? bundle.owner : undefined,
   };
 }
 
-const maximumManagedAccountBundleBytes = 64 * 1_024;
+const maximumAccountAdoptionBundleBytes = 64 * 1_024;
 
-function readManagedAccountBundle(parsed: {
+function readAccountAdoptionBundle(parsed: {
   readonly OPENSTEER_ACCOUNT_BUNDLE_FD?: number | undefined;
   readonly OPENSTEER_ACCOUNT_BUNDLE_PATH?: string | undefined;
-}): z.infer<typeof ManagedHostProvisioningBundleSchema> | undefined {
+}): z.infer<typeof HostAccountAdoptionBundleSchema> | undefined {
   const descriptor = parsed.OPENSTEER_ACCOUNT_BUNDLE_FD;
   const path = parsed.OPENSTEER_ACCOUNT_BUNDLE_PATH;
   if (descriptor !== undefined && path !== undefined) {
@@ -702,8 +668,8 @@ function readManagedAccountBundle(parsed: {
       }
     }
     if (handle === undefined) throw new Error("Opensteer Account bundle is unavailable");
-    const serialized = readBoundedDescriptor(handle, maximumManagedAccountBundleBytes);
-    return ManagedHostProvisioningBundleSchema.parse(JSON.parse(serialized));
+    const serialized = readBoundedDescriptor(handle, maximumAccountAdoptionBundleBytes);
+    return HostAccountAdoptionBundleSchema.parse(JSON.parse(serialized));
   } catch (error) {
     throw new Error("Unable to load the Opensteer Account provisioning bundle", { cause: error });
   } finally {

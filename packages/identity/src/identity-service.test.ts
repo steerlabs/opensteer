@@ -9,19 +9,13 @@ vi.mock("better-auth", async (original) => ({
   betterAuth: () => ({ $context: Promise.resolve({ checkSchema }) }),
 }));
 
-it("joins the auth schema check before a rejected owner bootstrap can destroy its database", async () => {
+it("joins the auth schema check before initialization can destroy its database", async () => {
   const check = Promise.withResolvers<void>();
   checkSchema.mockReturnValue(check.promise);
   const identity = new IdentityService({} as unknown as Kysely<DatabaseSchema>, {
     deployment: { kind: "self-hosted", name: null },
     exposure: "networked",
     localPasswordEnabled: false,
-    managedOwner: {
-      accountId: "account",
-      providerId: "provider",
-      email: "owner@example.test",
-      displayName: "",
-    },
     oidcProviders: [],
     publicOrigin: new URL("https://host.example.test"),
     secret: "s".repeat(40),
@@ -44,7 +38,7 @@ it("joins the auth schema check before a rejected owner bootstrap can destroy it
     );
     expect(settled).toBe(false);
   } finally {
-    check.resolve();
+    check.reject(new Error("Schema validation failed"));
   }
-  expect(await result).toMatchObject({ message: "Managed owner display name is invalid" });
+  expect(await result).toMatchObject({ message: "Schema validation failed" });
 });

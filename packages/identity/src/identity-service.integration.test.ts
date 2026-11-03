@@ -381,18 +381,12 @@ integration("IdentityService", () => {
       expect(configuredIssuer.status).toBe(200);
       expect(new URL(configuredIssuer.data.redirectUrl).origin).toBe(issuerOrigin);
 
-      const managedProviderId = `oidc.enterprise.${createHash("sha256")
+      const configuredProviderId = `oidc.enterprise.${createHash("sha256")
         .update(issuerOrigin)
         .digest("base64url")
         .slice(0, 22)}`;
       const identity = identityService({
         localPasswordEnabled: false,
-        managedOwner: {
-          accountId: "fixture-oidc-subject",
-          displayName: "OIDC User",
-          email: "oidc-user@example.com",
-          providerId: managedProviderId,
-        },
         oidcProviders: [
           {
             allowPrivateNetwork: true,
@@ -415,6 +409,23 @@ integration("IdentityService", () => {
         exposure: "networked",
         signupPolicy: "invite-only",
       });
+      const userId = await new OpensteerStore(database).createUser("OIDC User");
+      await database
+        .updateTable("users")
+        .set({ email: "oidc-user@example.com", emailVerified: true, instanceRole: "administrator" })
+        .where("id", "=", userId)
+        .execute();
+      await database
+        .insertInto("authAccounts")
+        .values({
+          id: createId("authAccount"),
+          userId,
+          accountId: "fixture-oidc-subject",
+          providerId: configuredProviderId,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .execute();
       await identity.initialize();
       const nativeAuthorization = new URL("/v1/auth/native/oauth2/authorize", publicOrigin);
       nativeAuthorization.searchParams.set("client_id", "opensteer-desktop");
@@ -505,7 +516,7 @@ integration("IdentityService", () => {
         .executeTakeFirstOrThrow();
       expect(account).toMatchObject({
         accountId: "fixture-oidc-subject",
-        providerId: managedProviderId,
+        providerId: configuredProviderId,
         refreshToken: null,
       });
       expect(account.accessToken).toMatch(/^(?:\$ba\$|[a-f0-9]{96,})/u);
@@ -551,59 +562,6 @@ integration("IdentityService", () => {
     await expect(
       identityService({ portalOrigin: new URL("https://beta.opensteer.com") }).configuration(),
     ).resolves.toMatchObject({ portalOrigin: "https://beta.opensteer.com" });
-  });
-
-  it("pins managed owner bootstrap to the durable upstream account", async () => {
-    const managedOwner = {
-      accountId: "acct_00000000-0000-4000-8000-000000000001",
-      displayName: "Managed Owner",
-      email: "managed-owner@example.com",
-      providerId: "oidc.opensteer-account.fixture",
-    } as const;
-    const identity = identityService({ managedOwner });
-    await identity.initialize();
-    await expect(identity.initialize()).resolves.toBeUndefined();
-
-    await expect(identity.configuration()).resolves.toMatchObject({ setupState: "complete" });
-    await expect(
-      database
-        .selectFrom("authAccounts")
-        .innerJoin("users", "users.id", "authAccounts.userId")
-        .select([
-          "authAccounts.accountId",
-          "authAccounts.providerId",
-          "users.email",
-          "users.instanceRole",
-        ])
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({
-      accountId: managedOwner.accountId,
-      email: managedOwner.email,
-      instanceRole: "administrator",
-      providerId: managedOwner.providerId,
-    });
-    await expect(
-      database
-        .selectFrom("securityAudit")
-        .select("action")
-        .where("action", "=", "instance.managed-owner-provisioned")
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ action: "instance.managed-owner-provisioned" });
-
-    await expect(
-      identityService({
-        managedOwner: { ...managedOwner, accountId: "acct_other-durable-owner" },
-      }).initialize(),
-    ).rejects.toThrow(/does not match durable Host authority/u);
-    await expect(
-      identityService({
-        initialOwnerEnrollment: {
-          expiresAt: new Date(Date.now() + 60_000),
-          token: "managed-owner-must-not-also-have-a-setup-token",
-        },
-        managedOwner,
-      }).initialize(),
-    ).rejects.toThrow(/cannot be combined/u);
   });
 
   it("issues and consumes one Account adoption proof bound to live Host authority", async () => {

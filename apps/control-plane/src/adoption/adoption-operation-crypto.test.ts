@@ -1,4 +1,4 @@
-import { ManagedHostProvisioningBundleSchema } from "@opensteer/control-plane-protocol";
+import { HostAccountAdoptionBundleSchema } from "@opensteer/control-plane-protocol";
 import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { AdoptionOperationCipher } from "./adoption-operation-crypto.js";
@@ -6,7 +6,7 @@ import { AdoptionOperationCipher } from "./adoption-operation-crypto.js";
 describe("AdoptionOperationCipher", () => {
   it("seals credentials at rest and binds the ciphertext to one proof ID", () => {
     const cipher = new AdoptionOperationCipher("A".repeat(43));
-    const bundle = ManagedHostProvisioningBundleSchema.parse({
+    const bundle = HostAccountAdoptionBundleSchema.parse({
       controlApiOrigin: "https://accounts.example.test",
       deployment: {
         canonicalOrigin: "https://host.example.test",

@@ -416,7 +416,7 @@ export async function createHostRuntime(
     config.deploymentIdentity?.hostKeyFingerprint !== undefined &&
     config.deploymentIdentity.hostKeyFingerprint !== hostKeyFingerprint
   ) {
-    throw new Error("The managed Deployment bundle does not match this Host signing key");
+    throw new Error("The Account adoption bundle does not match this Host signing key");
   }
   // HostInstanceId belongs to this installation, not to the portable database.
   // Materialize it before any database work so startup never creates a
@@ -543,16 +543,6 @@ export async function createHostRuntime(
           }
         : {}),
       hostKeyFingerprint,
-      ...(config.account?.provisioningMode === "managed" && config.account.owner
-        ? {
-            managedOwner: {
-              accountId: config.account.owner.subject,
-              displayName: config.account.owner.displayName,
-              email: config.account.owner.email,
-              providerId: oidcIdentityProviderId(accountOidcProvider!),
-            },
-          }
-        : {}),
       ...(config.account?.provisioningMode === "adoption"
         ? {
             accountAdoption: {
@@ -1398,10 +1388,10 @@ export async function createHostRuntime(
       computerUse,
       computerViews,
     });
-    // The browser and messaging computers a managed Deployment supervises are
-    // enrolled the same way any other machine is; the platform simply
+    // The browser and messaging computers a Deployment supervises are
+    // enrolled the same way any other machine is; the operator
     // minted their one-use tokens ahead of starting them.
-    for (const managed of [
+    for (const service of [
       {
         allowedModules: ["browser"] as const,
         idempotencyKey: "deployment-managed-browser-runner",
@@ -1415,21 +1405,13 @@ export async function createHostRuntime(
         token: config.initialMessagingRunnerEnrollmentToken,
       },
     ]) {
-      if (!managed.token) continue;
+      if (!service.token) continue;
       await runnerAuthenticator.ensureConfiguredDeploymentEnrollment({
-        allowedModules: [...managed.allowedModules],
-        idempotencyKey: managed.idempotencyKey,
+        allowedModules: [...service.allowedModules],
+        idempotencyKey: service.idempotencyKey,
         lifetimeSeconds: 7 * 24 * 60 * 60,
-        name: managed.name,
-        token: managed.token,
-      });
-    }
-    if (config.account?.initialRunnerEnrollmentToken) {
-      await runnerAuthenticator.ensureConfiguredInitialMainEnrollment({
-        allowedModules: ["agents"],
-        idempotencyKey: "deployment-managed-main-runner",
-        lifetimeSeconds: 24 * 60 * 60,
-        token: config.account.initialRunnerEnrollmentToken,
+        name: service.name,
+        token: service.token,
       });
     }
     /** Who owns a module stream once the registry has stopped tracking it. */
