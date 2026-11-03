@@ -316,8 +316,8 @@ integration("agent-to-agent messaging round trip", () => {
         close: vi.fn(),
       },
     });
+    const request = { type: "person.show", requestId: randomUUID(), target: { tabId } };
     try {
-      const request = { type: "person.show", requestId: randomUUID(), target: { tabId } };
       await expect(service.handle(f.tokenA, request)).resolves.toMatchObject({
         status: "sent-unconfirmed",
         connectedDevices: 1,
@@ -334,7 +334,7 @@ integration("agent-to-agent messaging round trip", () => {
       expect(legacyFrames.some((message) => message.type === "host.show")).toBe(false);
       await expect(service.handle(f.tokenA, request)).resolves.toMatchObject({
         status: "sent-unconfirmed",
-        connectedDevices: 0,
+        connectedDevices: 1,
       });
       expect(frames.filter((message) => message.type === "host.show")).toHaveLength(1);
       await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({
@@ -366,6 +366,7 @@ integration("agent-to-agent messaging round trip", () => {
       releaseLegacy();
     }
     await tabs.close(f.userId, tabId);
+    await expect(service.handle(f.tokenA, request)).rejects.toMatchObject({ code: "forbidden" });
     await expect(show(f.tokenA, { tabId })).rejects.toMatchObject({ code: "forbidden" });
     await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({ code: "forbidden" });
   });
@@ -874,7 +875,7 @@ integration("agent-to-agent messaging round trip", () => {
         task: "New task",
         icon: "hotel",
       }),
-    ).rejects.toMatchObject({ code: "bad_request" });
+    ).rejects.toThrow("icon");
     const reused = await service.handle(f.tokenA, {
       type: "thread.delegate",
       requestId: randomUUID(),

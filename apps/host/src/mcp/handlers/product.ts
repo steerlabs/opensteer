@@ -162,9 +162,8 @@ export class ProductToolHandlers {
     return (await this.#readableMessages(caller, [message]))[0]!;
   }
 
-  async person_show({ caller, input, operationKey }: ToolCall<"person_show">) {
+  async preparePersonShow({ caller, input }: ToolCall<"person_show">) {
     const claims = requireRun(caller).claims;
-    const requestId = operationId(caller, operationKey, "person_show");
     if (await this.#store.runAssignment(claims.runId))
       throw forbidden("A task reaches the person through the Thread that assigned it");
 
@@ -218,6 +217,15 @@ export class ProductToolHandlers {
       if (!targetThread) throw forbidden("Thread is unavailable to this user");
       assertTarget(caller, targetThread);
     }
+    return target;
+  }
+
+  async person_show(call: ToolCall<"person_show">) {
+    const { caller, input, operationKey } = call;
+    const claims = requireRun(caller).claims;
+    const requestId = operationId(caller, operationKey, "person_show");
+    const target = await this.preparePersonShow(call);
+    if (!this.#personShow) throw badRequest("Showing places is unavailable on this Host.");
     const admission = await this.#store.admitAgentControlRequest(
       runAdmission(caller, "person_show", input, requestId),
     );

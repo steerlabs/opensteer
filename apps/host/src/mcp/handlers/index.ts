@@ -67,7 +67,14 @@ export function agentToolHandlers(options: {
     assignment_cancel: async (c) =>
       specs.assignment_cancel.output.parse(await p.assignment_cancel(c)),
     person_message: async (c) => specs.person_message.output.parse(await p.person_message(c)),
-    person_show: async (c) => specs.person_show.output.parse(await p.person_show(c)),
+    person_show: Object.assign(
+      async (c: ToolCall<"person_show">) => specs.person_show.output.parse(await p.person_show(c)),
+      {
+        authorize: async (c: ToolCall<"person_show">) => {
+          await p.preparePersonShow(c);
+        },
+      },
+    ),
     request_list: async (c) => specs.request_list.output.parse(await p.request_list(c)),
     request_withdraw: async (c) => specs.request_withdraw.output.parse(await p.request_withdraw(c)),
     browser_profile_create: async (c) =>
