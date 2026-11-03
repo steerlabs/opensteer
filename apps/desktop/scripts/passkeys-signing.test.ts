@@ -18,7 +18,6 @@ const { validatePasskeyProfile, passkeyInputPaths, validatePasskeyEntitlementInp
     validatePasskeyEntitlementInput(input: unknown): void;
     passkeyInputPaths(
       env: NodeJS.ProcessEnv,
-      channel: "stable" | "beta",
     ): { profile: string; entitlements: string } | undefined;
   };
 const identity = { bundleId: "com.example.browser", teamId: "ABCDE12345" };
@@ -35,42 +34,32 @@ const profile = () => ({
   Platform: ["OSX"],
 });
 
-test.each(["stable", "beta"] as const)(
-  "no passkey inputs leave %s release builder arguments unchanged",
-  (channel) => {
-    const { preparePasskeySigning } = require("./passkeys-signing.cjs") as {
-      preparePasskeySigning(
-        desktop: string,
-        env: NodeJS.ProcessEnv,
-        identity: { bundleId: string; teamId: string; channel: "stable" | "beta" },
-      ): string[];
-    };
-    expect(
-      preparePasskeySigning(
-        "/unused",
-        { OPENSTEER_DESKTOP_RELEASE: "1" },
-        { ...identity, channel },
-      ),
-    ).toEqual([]);
-  },
-);
+test("no passkey inputs leave release builder arguments unchanged", () => {
+  const { preparePasskeySigning } = require("./passkeys-signing.cjs") as {
+    preparePasskeySigning(
+      desktop: string,
+      env: NodeJS.ProcessEnv,
+      identity: { bundleId: string; teamId: string },
+    ): string[];
+  };
+  expect(preparePasskeySigning("/unused", { OPENSTEER_DESKTOP_RELEASE: "1" }, identity)).toEqual(
+    [],
+  );
+});
 
-test("each channel requires its own pair of release-only inputs", () => {
-  expect(passkeyInputPaths({}, "stable")).toBeUndefined();
+test("passkeys require a complete pair of release-only inputs", () => {
+  expect(passkeyInputPaths({})).toBeUndefined();
   const env = {
     OPENSTEER_DESKTOP_RELEASE: "1",
-    OPENSTEER_PASSKEYS_STABLE_PROFILE: "/profile",
-    OPENSTEER_PASSKEYS_STABLE_ENTITLEMENTS: "/entitlements",
+    OPENSTEER_PASSKEYS_PROFILE: "/profile",
+    OPENSTEER_PASSKEYS_ENTITLEMENTS: "/entitlements",
   };
-  expect(passkeyInputPaths(env, "stable")).toEqual({
+  expect(passkeyInputPaths(env)).toEqual({
     profile: "/profile",
     entitlements: "/entitlements",
   });
-  expect(passkeyInputPaths(env, "beta")).toBeUndefined();
-  expect(() => passkeyInputPaths({ ...env, OPENSTEER_DESKTOP_RELEASE: "0" }, "stable")).toThrow();
-  expect(() =>
-    passkeyInputPaths({ ...env, OPENSTEER_PASSKEYS_STABLE_ENTITLEMENTS: undefined }, "stable"),
-  ).toThrow();
+  expect(() => passkeyInputPaths({ ...env, OPENSTEER_DESKTOP_RELEASE: "0" })).toThrow();
+  expect(() => passkeyInputPaths({ ...env, OPENSTEER_PASSKEYS_ENTITLEMENTS: undefined })).toThrow();
 });
 
 test("only the granted capability is accepted as the external entitlement input", () => {
@@ -245,9 +234,8 @@ test("after-sign rejects a stray addon in an unprovisioned release", async () =>
   mkdirSync(join(addon, ".."), { recursive: true });
   writeFileSync(addon, "stray");
   vi.stubEnv("OPENSTEER_DESKTOP_RELEASE", "1");
-  vi.stubEnv("OPENSTEER_DESKTOP_RELEASE_CHANNEL", "stable");
-  vi.stubEnv("OPENSTEER_PASSKEYS_STABLE_PROFILE", "");
-  vi.stubEnv("OPENSTEER_PASSKEYS_STABLE_ENTITLEMENTS", "");
+  vi.stubEnv("OPENSTEER_PASSKEYS_PROFILE", "");
+  vi.stubEnv("OPENSTEER_PASSKEYS_ENTITLEMENTS", "");
   try {
     const afterSign = require("./after-sign.cjs") as (context: unknown) => Promise<void>;
     await expect(
@@ -267,9 +255,8 @@ test("after-sign requires an addon when release passkey inputs are supplied", as
   const { vi } = await import("vitest");
   const directory = mkdtempSync(join(tmpdir(), "passkey-provisioned-"));
   vi.stubEnv("OPENSTEER_DESKTOP_RELEASE", "1");
-  vi.stubEnv("OPENSTEER_DESKTOP_RELEASE_CHANNEL", "beta");
-  vi.stubEnv("OPENSTEER_PASSKEYS_BETA_PROFILE", "/profile");
-  vi.stubEnv("OPENSTEER_PASSKEYS_BETA_ENTITLEMENTS", "/entitlements");
+  vi.stubEnv("OPENSTEER_PASSKEYS_PROFILE", "/profile");
+  vi.stubEnv("OPENSTEER_PASSKEYS_ENTITLEMENTS", "/entitlements");
   try {
     const afterSign = require("./after-sign.cjs") as (context: unknown) => Promise<void>;
     await expect(

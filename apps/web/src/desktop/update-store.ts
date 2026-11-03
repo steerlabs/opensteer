@@ -61,3 +61,36 @@ export function subscribeUpdateDownloaded(listener: () => void) {
     downloaded.delete(listener);
   };
 }
+
+/** Changes are broadcast by main, including a check that fails after saving. */
+export async function setDesktopUpdateChannel(
+  channel: import("@opensteer/protocol/desktop").DesktopUpdateChannel,
+): Promise<void> {
+  await desktopBridge()?.updates?.setChannel(channel);
+}
+
+export function desktopUpdateMessage(state: DesktopUpdateState): string {
+  const channel = state.channel === "stable" ? "Stable" : "Beta";
+  switch (state.status) {
+    case "ahead":
+      return `${channel} selected — you're on ${state.currentVersion}; latest is ${state.latestVersion}. Updates resume after ${channel} passes it.`;
+    case "error":
+      return state.failed === "download"
+        ? "Download failed. Try again."
+        : "Couldn't check for updates. Try again.";
+    case "unavailable":
+      return "Automatic updates unavailable for this copy.";
+    case "checking":
+      return "Checking for updates…";
+    case "available":
+      return `Update ${state.availableVersion} available.`;
+    case "downloading":
+      return `Downloading update… ${state.downloadPercent ?? 0}%`;
+    case "downloaded":
+      return "Restart to install the update.";
+    case "up-to-date":
+      return `${channel} selected. You're up to date.`;
+    default:
+      return `${channel} selected.`;
+  }
+}

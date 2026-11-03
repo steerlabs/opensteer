@@ -158,6 +158,11 @@ public final class IdentityStore {
     return try Curve25519.Signing.PrivateKey(rawRepresentation: bytes)
   }
 
+  public func enrollmentToken() throws -> String? {
+    guard let bytes = try vault.read(.enrollmentToken) else { return nil }
+    return String(data: bytes, encoding: .utf8)
+  }
+
   public func runnerPublicKey() throws -> String { IphoneProofs.publicKeyPem(try runnerKey()) }
 
   public func wipe() throws {

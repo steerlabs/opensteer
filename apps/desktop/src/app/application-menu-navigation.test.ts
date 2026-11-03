@@ -88,6 +88,8 @@ describe("update menu", () => {
     const shown = (state: Partial<DesktopUpdateState>) => {
       showDesktopUpdateMenuItem(menu, {
         status: "idle",
+        channel: "stable",
+        latestVersion: null,
         currentVersion: "0.1.396",
         availableVersion: null,
         downloadPercent: null,

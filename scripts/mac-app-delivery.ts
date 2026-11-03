@@ -3,7 +3,7 @@ import { lstat, readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { z } from "zod";
-import type { MacContext } from "./release-beta-mac.js";
+import type { MacContext } from "./release-mac.js";
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
 const metadata = z.object({
@@ -26,7 +26,7 @@ const manifestSchema = z.strictObject({
   schemaVersion: z.literal(1),
   sourceRevision: z.string().regex(/^[a-f0-9]{40}$/u),
   version: z.string(),
-  application: z.literal("Opensteer Beta.app"),
+  application: z.literal("Opensteer.app"),
   entries: entriesSchema,
 });
 export type MacAppManifest = z.infer<typeof manifestSchema>;
@@ -52,7 +52,7 @@ export async function writeMacAppManifest(app: string, filename: string, context
   const manifest = manifestSchema.parse({
     schemaVersion: 1,
     ...context.identity,
-    application: "Opensteer Beta.app",
+    application: "Opensteer.app",
     entries: await inventory(app, context),
   });
   const bytes = JSON.stringify(manifest) + "\n";

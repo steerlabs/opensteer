@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 describe("Host runtime configuration", () => {
-  it("rejects an unpinned managed Account Host before creating local state", async () => {
+  it("rejects an unpinned Account-adopted Host before creating local state", async () => {
     const parent = mkdtempSync(join(tmpdir(), "opensteer-invalid-runtime-"));
     temporaryDirectories.push(parent);
     const dataDirectory = join(parent, "must-not-be-created");

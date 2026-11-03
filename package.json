@@ -15,7 +15,7 @@
     "check": "tsx scripts/check.ts",
     "clean": "pnpm -r --if-present clean",
     "desktop:public-release": "tsx scripts/desktop-public-release.ts",
-    "desktop:install-local": "tsx scripts/install-beta-mac-local.ts",
+    "desktop:install-local": "tsx scripts/install-mac-local.ts",
     "dev": "tsx scripts/dev.ts",
     "dev:host": "pnpm --filter @opensteer/host dev",
     "dev:runner": "pnpm --filter @opensteer/runner dev",

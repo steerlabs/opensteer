@@ -11,12 +11,7 @@ import {
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
-import {
-  DesktopApp,
-  cloudDeletionDisappeared,
-  cloudResultBelongsToAccount,
-  desktopAccessPresentationFromSnapshot,
-} from "./desktop-app.js";
+import { DesktopApp, desktopAccessPresentationFromSnapshot } from "./desktop-app.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -63,38 +58,16 @@ it("lets a connecting place go back and shows cancellation failures", async () =
   container.remove();
 });
 
-it("fences Cloud responses to the Account session that requested them", () => {
-  expect(cloudResultBelongsToAccount("first@example.test", "first@example.test")).toBe(true);
-  expect(cloudResultBelongsToAccount("first@example.test", "second@example.test")).toBe(false);
-  expect(cloudResultBelongsToAccount("first@example.test", null)).toBe(false);
-});
-
-it("detects a completed deletion when the API removes its tombstone from the list", () => {
-  const deleting = {
-    canonicalOrigin: "https://cloud.example.test",
-    deploymentId: createId("deployment"),
-    desiredState: "deleted" as const,
-    error: null,
-    name: "Cloud",
-    operationId: crypto.randomUUID(),
-    progress: null,
-    status: "deleting" as const,
-    updatedAt: "2026-09-05T00:00:00.000Z",
-  };
-  expect(cloudDeletionDisappeared([deleting], [])).toBe(true);
-  expect(cloudDeletionDisappeared([deleting], [deleting])).toBe(false);
-});
-
 const deployment = DesktopDeploymentSummarySchema.parse({
-  activeOrigin: "https://cloud.example.test",
-  canonicalOrigin: "https://cloud.example.test",
+  activeOrigin: "https://server.example.test",
+  canonicalOrigin: "https://server.example.test",
   id: createId("deployment"),
   kind: "self-hosted",
   lastUsedAt: "2026-08-20T10:00:00.000Z",
-  name: "Cloud",
+  name: "Server",
   onThisComputer: false,
   access: "native",
-  routes: [{ kind: "canonical", origin: "https://cloud.example.test", selected: true }],
+  routes: [{ kind: "canonical", origin: "https://server.example.test", selected: true }],
 });
 
 function snapshot(overrides: Partial<DeploymentAccessSnapshot> = {}): DeploymentAccessSnapshot {

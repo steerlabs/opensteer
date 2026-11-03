@@ -165,7 +165,6 @@ export function ComputersPage() {
   const [addingPhone, setAddingPhone] = useState(false);
   const apps = useComputerAppData(hostClient, snapshot.machineRevision);
   const overview = computersOverview({
-    cloud: snapshot.identityConfig?.deployment.cloud ?? false,
     deploymentKind,
     deploymentName,
     hereId,
@@ -320,7 +319,7 @@ export function ComputersPage() {
 /**
  * Where this Opensteer runs, drawn as the object it is. It is the top of the
  * page and never a row: the Mac a Personal Opensteer lives on is not one
- * computer among the others, and Opensteer Cloud or a server is not a
+ * computer among the others, and a server is not a
  * computer anybody added.
  */
 function HomeCard({
@@ -338,21 +337,12 @@ function HomeCard({
 }) {
   const machine = home.kind === "mac" ? home.machine : null;
   const art: PlaceArt =
-    home.kind === "cloud"
-      ? "cloud"
-      : home.kind === "server"
-        ? "server"
-        : machine
-          ? computerGlyph(machine)
-          : "computer";
-  const name =
-    home.kind === "cloud" ? "Opensteer Cloud" : home.kind === "server" ? home.address : home.name;
+    home.kind === "server" ? "server" : machine ? computerGlyph(machine) : "computer";
+  const name = home.kind === "server" ? home.address : home.name;
   const line =
     home.kind === "mac"
       ? "Your Opensteer runs here, and so do its agents."
-      : home.kind === "cloud"
-        ? "Your Opensteer runs in Opensteer Cloud, always on."
-        : "Your Opensteer runs on this server.";
+      : "Your Opensteer runs on this server.";
   const status: ComputerStatus =
     home.kind === "mac"
       ? machine

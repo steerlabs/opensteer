@@ -202,8 +202,8 @@ export class RunnerAuthenticator {
   }
 
   /**
-   * Records a one-use enrollment the platform minted for a computer it will
-   * start itself — a cloud browser pod, a messaging pod. The token is the
+   * Records a one-use enrollment the operator supplied for a computer it will
+   * start itself, such as a browser or messaging service. The token is the
    * caller's, so this only writes the grant it belongs to; a replay with the
    * same key and token is the same enrollment, and one with different modules
    * is refused as a different request.
@@ -243,27 +243,6 @@ export class RunnerAuthenticator {
     ) {
       throw new Error("Runner enrollment lifetime must be between 60 seconds and seven days");
     }
-  }
-
-  async ensureConfiguredInitialMainEnrollment(input: {
-    readonly allowedModules: readonly RunnerModuleName[];
-    readonly idempotencyKey: string;
-    readonly lifetimeSeconds: number;
-    readonly token: string;
-  }): Promise<void> {
-    this.#assertConfiguredToken(input);
-    await this.#store.createRunnerEnrollment({
-      allowedModules: computerRunnerGrant(input.allowedModules),
-      createdBy: null,
-      expiresAt: new Date(this.#now() + input.lifetimeSeconds * 1_000),
-      id: `ren_${randomUUID()}`,
-      idempotencyKey: input.idempotencyKey,
-      mainEnrollmentPurpose: "initial",
-      name: "Main computer",
-      requestFingerprint: configuredEnrollmentFingerprint(input),
-      runnerKind: "main",
-      tokenHash: hashRunnerEnrollmentToken(input.token),
-    });
   }
 
   async #createEnrollment(input: {

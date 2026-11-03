@@ -67,12 +67,7 @@ async function mount(overrides: Partial<DeploymentAccessDeployment> = {}, expire
   const bridge = { select, checkDeployments, signIn } as unknown as OpensteerDesktopBridge;
   root = createRoot(document.body.appendChild(document.createElement("div")));
   await act(async () =>
-    root?.render(
-      <PlaceMenuPlaces
-        onClose={onClose}
-        places={{ bridge, snapshot, cloudDeploymentIds: new Set(), onAddPlace }}
-      />,
-    ),
+    root?.render(<PlaceMenuPlaces onClose={onClose} places={{ bridge, snapshot, onAddPlace }} />),
   );
   return { id, select, checkDeployments, signIn, onClose, onAddPlace };
 }

@@ -110,7 +110,6 @@ public enum AppPolicy {
     "org.hammerspoon.hammerspoon": .automation,
     // Opensteer itself, in every shape it ships.
     "com.opensteer.opensteer": .opensteer,
-    "com.steerlabs.opensteer.beta": .opensteer,
     "com.opensteer.computer-use": .opensteer,
     // macOS security surfaces.
     "com.apple.securityagent": .securitySurface,

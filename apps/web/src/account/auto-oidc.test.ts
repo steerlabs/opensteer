@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { shouldAutoStartOidc, type AutoOidcOptions } from "./auto-oidc.js";
 
 const config = {
-  deployment: { cloud: false, kind: "self-hosted" as const, name: null },
+  deployment: { kind: "self-hosted" as const, name: null },
   emailDeliveryAvailable: false,
   localPasswordEnabled: false,
   machineOwner: false,

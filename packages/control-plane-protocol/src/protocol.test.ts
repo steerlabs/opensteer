@@ -16,7 +16,7 @@ import {
   PublishHostAuthorityRequestSchema,
   HostAccountAdoptionProofCredentialSchema,
   HostAccountAdoptionProofIdSchema,
-  ManagedHostProvisioningBundleSchema,
+  HostAccountAdoptionBundleSchema,
   adoptedHostProvisioningBundle,
 } from "./index.js";
 
@@ -305,7 +305,7 @@ describe("control-plane protocol", () => {
     expect("owner" in response).toBe(false);
   });
 
-  it("binds provisioning mode to canonical reachability", () => {
+  it("accepts only adoption provisioning with canonical reachability", () => {
     const canonicalOrigin = "https://host.example";
     const base = {
       controlApiOrigin: "https://accounts.example",
@@ -327,7 +327,7 @@ describe("control-plane protocol", () => {
       oidcClientSecret: `ocs_${"B".repeat(43)}`,
     } as const;
     expect(
-      ManagedHostProvisioningBundleSchema.safeParse({
+      HostAccountAdoptionBundleSchema.safeParse({
         ...base,
         deployment: { ...base.deployment, reachability: "canonical" },
         initialRunnerEnrollmentToken: "runner-enrollment-token".padEnd(32, "x"),
@@ -338,9 +338,16 @@ describe("control-plane protocol", () => {
           displayName: "Owner",
         },
       }).success,
+    ).toBe(false);
+    expect(
+      HostAccountAdoptionBundleSchema.safeParse({
+        ...base,
+        deployment: { ...base.deployment, reachability: "canonical" },
+        provisioningMode: "adoption",
+      }).success,
     ).toBe(true);
     expect(
-      ManagedHostProvisioningBundleSchema.safeParse({
+      HostAccountAdoptionBundleSchema.safeParse({
         ...base,
         deployment: { ...base.deployment, reachability: "routed" },
         provisioningMode: "adoption",

@@ -1256,8 +1256,8 @@ describe("toolPresentation", () => {
 
 describe("displayCommand", () => {
   it("unwraps the login shell an engine runs every command in", () => {
-    expect(displayCommand(`/bin/zsh -lc "cat '/Applications/Opensteer Beta.app/SKILL.md'"`)).toBe(
-      "cat '/Applications/Opensteer Beta.app/SKILL.md'",
+    expect(displayCommand(`/bin/zsh -lc "cat '/Applications/Opensteer.app/SKILL.md'"`)).toBe(
+      "cat '/Applications/Opensteer.app/SKILL.md'",
     );
     expect(displayCommand(`bash -lc 'rg "foo bar" src'`)).toBe(`rg "foo bar" src`);
     expect(displayCommand(`/bin/bash -c 'echo '\\''hi'\\'''`)).toBe("echo 'hi'");

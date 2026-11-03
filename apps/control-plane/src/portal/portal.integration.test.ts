@@ -27,7 +27,6 @@ import { createControlPlaneDatabase } from "../database/database.js";
 import { migrateControlPlaneToLatest } from "../database/migrations.js";
 import {
   portalCallbackUri,
-  portalHintCookieName,
   portalOAuthClientId,
   portalOAuthScopes,
   portalSignInPath,
@@ -40,7 +39,7 @@ import { ControlPlaneStore } from "../database/store.js";
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const publicOrigin = new URL("https://accounts.portal.test.invalid");
-const managedDeploymentDomain = "portal.test.invalid";
+const testDomain = "portal.test.invalid";
 const accountHost = publicOrigin.host;
 const portalSessionCookieName = "__Host-opensteer.portal";
 const portalFlowCookieName = "__Host-opensteer.portal-flow";
@@ -63,7 +62,7 @@ const config: ControlPlaneConfig = {
   googleClientSecret: "test-google-secret",
   listenHost: "127.0.0.1",
   listenPort: 41_142,
-  managedDeploymentDomain,
+  portalOrigin: new URL(`https://${testDomain}`),
   nativeOAuthClients: opensteerAccountNativeOAuthClients,
   publicOrigin,
 };
@@ -73,7 +72,9 @@ integration("Opensteer web portal", () => {
     connectionString: databaseUrl ?? "postgresql://unconfigured",
     maxConnections: 4,
   });
-  const store = new ControlPlaneStore(database, publicOrigin, { managedDeploymentDomain });
+  const store = new ControlPlaneStore(database, publicOrigin, {
+    portalOrigin: new URL(`https://${testDomain}`),
+  });
   const portalSessions = new PortalSessionStore(database);
   const connectLifecycle = new ConnectLifecycleService(database, {
     delete: async () => undefined,
@@ -91,7 +92,7 @@ integration("Opensteer web portal", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${testDomain}`),
       portalSessions,
       publicOrigin,
       store,
@@ -105,7 +106,7 @@ integration("Opensteer web portal", () => {
     await sql`truncate table users cascade`.execute(database);
     await store.ensureOfficialPortalClient({
       clientId: portalOAuthClientId,
-      redirectUri: portalCallbackUri(publicOrigin, managedDeploymentDomain),
+      redirectUri: portalCallbackUri(new URL(`https://${testDomain}`)),
       scopes: portalOAuthScopes,
     });
     const now = new Date();
@@ -128,6 +129,32 @@ integration("Opensteer web portal", () => {
     await database.destroy();
   });
 
+  it("updates the official portal callback and presentation on startup", async () => {
+    await database
+      .updateTable("oauthClients")
+      .set({
+        redirectUris: JSON.stringify(["https://old.test/auth/callback"]),
+        uri: "https://old.test",
+      })
+      .where("clientId", "=", portalOAuthClientId)
+      .execute();
+    const store = new ControlPlaneStore(database, publicOrigin, {
+      portalOrigin: config.portalOrigin,
+    });
+    await store.ensureOfficialPortalClient({
+      clientId: portalOAuthClientId,
+      redirectUri: portalCallbackUri(config.portalOrigin),
+      scopes: portalOAuthScopes,
+    });
+    const client = await database
+      .selectFrom("oauthClients")
+      .select(["uri", "redirectUris"])
+      .where("clientId", "=", portalOAuthClientId)
+      .executeTakeFirstOrThrow();
+    expect(client.uri).toBe(config.portalOrigin.origin);
+    expect(client.redirectUris).toEqual([portalCallbackUri(config.portalOrigin)]);
+  });
+
   it("renders the signed-out portal immediately, with no redirect and no cookie", async () => {
     const response = await server.inject({ headers: portalHeaders(), method: "GET", url: "/" });
 
@@ -148,7 +175,7 @@ integration("Opensteer web portal", () => {
       url: "/",
     });
     expect(accountRoot.statusCode).toBe(302);
-    expect(accountRoot.headers.location).toBe(`https://${managedDeploymentDomain}/`);
+    expect(accountRoot.headers.location).toBe(`https://${testDomain}/`);
 
     const signInOnApex = await server.inject({
       headers: portalHeaders(),
@@ -170,22 +197,11 @@ integration("Opensteer web portal", () => {
     expect(portalPathOnAccountHost.statusCode).toBe(404);
   });
 
-  it("signs in silently when the hint is present and the Account session is live", async () => {
-    const bounce = await server.inject({
-      headers: portalHeaders({ cookie: `${portalHintCookieName}=1` }),
-      method: "GET",
-      url: "/",
-    });
-    expect(bounce.statusCode).toBe(302);
-    expect(bounce.headers.location).toBe(`${portalSignInPath}?silent=1`);
-
+  it("signs in through the explicit portal OAuth flow", async () => {
     const flow = await runSignInFlow(await signedSessionCookie(accountId));
     expect(location(flow.signIn)).toContain("prompt=none");
     expect(flow.callback.statusCode).toBe(303);
     expect(flow.callback.headers.location).toBe("/");
-    expect(cookieFor(flow.callback, portalHintCookieName)).toContain(
-      `Domain=${managedDeploymentDomain}`,
-    );
     expect(cookieFor(flow.callback, portalFlowCookieName)).toContain("Max-Age=0");
 
     const portal = await server.inject({
@@ -207,31 +223,27 @@ integration("Opensteer web portal", () => {
     expect(Number(tokens.count)).toBe(0);
   });
 
-  it("clears the hint and renders the signed-out portal when no Account session answers", async () => {
+  it("renders the signed-out portal when no Account session answers", async () => {
     const flow = await runSignInFlow();
 
     expect(flow.authorize.statusCode).toBe(302);
     expect(new URL(location(flow.authorize)).searchParams.get("error")).toBe("login_required");
     expect(flow.callback.statusCode).toBe(200);
     expect(flow.callback.body).toContain("Sign in");
-    expect(cookieFor(flow.callback, portalHintCookieName)).toContain("Max-Age=0");
 
     // With the hint gone the next visit renders instead of looping.
     const next = await server.inject({ headers: portalHeaders(), method: "GET", url: "/" });
     expect(next.statusCode).toBe(200);
   });
 
-  it("re-runs the silent flow for a stale portal session with a live hint", async () => {
+  it("renders sign-in for a stale portal session", async () => {
     const response = await server.inject({
-      headers: portalHeaders({
-        cookie: `${portalSessionCookieName}=ops_stale; ${portalHintCookieName}=1`,
-      }),
+      headers: portalHeaders({ cookie: `${portalSessionCookieName}=ops_stale` }),
       method: "GET",
       url: "/",
     });
-
-    expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe(`${portalSignInPath}?silent=1`);
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("Sign in");
     expect(cookieFor(response, portalSessionCookieName)).toContain("Max-Age=0");
   });
 
@@ -317,7 +329,7 @@ integration("Opensteer web portal", () => {
     expect(listed.statusCode).toBe(200);
     expect(listed.body).toContain("First &lt;Server&gt;");
     expect(listed.body).not.toContain("First <Server>");
-    expect(listed.body).toContain(`https://second-server.${managedDeploymentDomain}`);
+    expect(listed.body).toContain(`https://second-server.${testDomain}`);
     expect(listed.body).not.toContain(">Needs attention<");
     expect(listed.body).not.toContain(">Ready<");
     expect(listed.body).not.toContain("Open this deployment to check");
@@ -336,14 +348,13 @@ integration("Opensteer web portal", () => {
     expect(crossOrigin.statusCode).toBe(403);
 
     const signedOut = await server.inject({
-      headers: portalHeaders({ cookie, origin: `https://${managedDeploymentDomain}` }),
+      headers: portalHeaders({ cookie, origin: `https://${testDomain}` }),
       method: "POST",
       url: portalSignOutPath,
     });
     expect(signedOut.statusCode).toBe(303);
     expect(signedOut.headers.location).toBe("/");
     expect(cookieFor(signedOut, portalSessionCookieName)).toContain("Max-Age=0");
-    expect(cookieFor(signedOut, portalHintCookieName)).toContain("Max-Age=0");
 
     const sessions = await database
       .selectFrom("authSessions")
@@ -361,7 +372,7 @@ integration("Opensteer web portal", () => {
     expect(new URL(location(retry.authorize)).searchParams.get("error")).toBe("login_required");
   });
 
-  it("clears the portal hint when the Account host signs out", async () => {
+  it("keeps Account sign-out cookies host scoped", async () => {
     const response = await server.inject({
       headers: {
         cookie: await signedSessionCookie(accountId),
@@ -373,10 +384,6 @@ integration("Opensteer web portal", () => {
     });
 
     expect(response.statusCode).toBe(303);
-    expect(cookieFor(response, portalHintCookieName)).toContain("Max-Age=0");
-    expect(cookieFor(response, portalHintCookieName)).toContain(
-      `Domain=${managedDeploymentDomain}`,
-    );
   });
 
   async function runSignInFlow(accountCookie?: string, signInUrl = `${portalSignInPath}?silent=1`) {
@@ -390,7 +397,7 @@ integration("Opensteer web portal", () => {
     const authorizeUrl = new URL(location(signIn));
     expect(authorizeUrl.origin).toBe(publicOrigin.origin);
     expect(authorizeUrl.searchParams.get("redirect_uri")).toBe(
-      `https://${managedDeploymentDomain}/auth/callback`,
+      `https://${testDomain}/auth/callback`,
     );
     expect(authorizeUrl.searchParams.get("code_challenge_method")).toBe("S256");
 
@@ -403,7 +410,7 @@ integration("Opensteer web portal", () => {
       url: `${authorizeUrl.pathname}${authorizeUrl.search}`,
     });
     const callbackUrl = new URL(location(authorize));
-    expect(callbackUrl.origin).toBe(`https://${managedDeploymentDomain}`);
+    expect(callbackUrl.origin).toBe(`https://${testDomain}`);
     const callback = await server.inject({
       headers: portalHeaders({ cookie: flowCookie }),
       method: "GET",
@@ -439,7 +446,7 @@ integration("Opensteer web portal", () => {
     const hostKeyFingerprint = HostKeyFingerprintSchema.parse(
       `sha256:${createHash("sha256").update(hostSpki).digest("base64url")}`,
     );
-    const canonicalOrigin = `https://${slug}.${managedDeploymentDomain}`;
+    const canonicalOrigin = `https://${slug}.${testDomain}`;
     const authority = {
       canonicalOrigin,
       deploymentId,
@@ -511,7 +518,7 @@ function portalHeaders(
   extra: { readonly cookie?: string; readonly origin?: string } = {},
 ): Record<string, string> {
   return {
-    host: managedDeploymentDomain,
+    host: testDomain,
     ...(extra.cookie === undefined ? {} : { cookie: extra.cookie }),
     ...(extra.origin === undefined ? {} : { origin: extra.origin }),
   };

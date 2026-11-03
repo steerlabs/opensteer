@@ -78,7 +78,7 @@ public final class Helper: NSObject, NSApplicationDelegate, IPCServerDelegate {
         let text = MacCodeIdentity.requirement(
           teamId: MacCodeIdentity.ownTeamId(),
           identifiers: desktop
-            ? ["com.opensteer.opensteer", "com.steerlabs.opensteer.beta"] : [identifier])
+            ? ["com.opensteer.opensteer"] : [identifier])
       else { return nil }
       return .codeRequirement(text)
     #endif

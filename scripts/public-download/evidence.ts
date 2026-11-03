@@ -7,7 +7,7 @@ type Channel = "beta" | "stable";
 export function releaseAsset(channel: Channel, version: string) {
   return channel === "stable"
     ? { tag: `desktop-v${version}`, zip: "Opensteer-mac-arm64.zip" }
-    : { tag: `v${version}-insider`, zip: "Opensteer-Beta-mac-arm64.zip" };
+    : { tag: `v${version}-insider`, zip: "Opensteer-mac-arm64.zip" };
 }
 
 /** Every journey a channel's release must pass; a selected subset is only partial evidence. */

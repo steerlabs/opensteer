@@ -15,17 +15,14 @@ interface NativeReleaseIdentity {
   readonly hostCallback: string;
 }
 
-const desktopReleases = [
-  "../apps/desktop/src/releases/desktop-release.source.json",
-  "../apps/desktop/src/releases/desktop-release.beta.json",
-].map((path) => {
+const desktopReleases = ["../apps/desktop/src/releases/desktop-release.json"].map((path) => {
   const release = JSON.parse(
     readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8"),
   ) as {
     readonly oauth: NativeReleaseIdentity;
     readonly capabilities: { readonly connect: boolean };
   };
-  return { ...release.oauth, connect: release.capabilities.connect };
+  return { ...release.oauth, connect: true };
 });
 
 const mobileRelease: NativeReleaseIdentity & { readonly connect: boolean } = {

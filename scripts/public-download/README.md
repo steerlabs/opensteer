@@ -73,9 +73,8 @@ timeout), a detached root watchdog restores it, so evidence export still connect
 No host firewall or trust settings are touched.
 
 DNS/HTTP Host/TLS SNI capture and the Account sinkhole have positive controls;
-both capture interfaces must report zero dropped packets. Stable forbids any
-Account-host attempt, including failed ones. Beta records Account attempts as
-informational, without signing in or enabling Connect. PF containment covers all
+both capture interfaces must report zero dropped packets. Both channels record
+Account attempts as informational, without signing in or enabling Connect. PF containment covers all
 guest processes and protocols; capture supplies named-host and mirror evidence.
 
 Artifacts live under `$OPENSTEER_UPDATE_JOURNEY_DIR/e2e/<run>/journey.json` and

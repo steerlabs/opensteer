@@ -31,7 +31,7 @@ export function FullAccessPanel({
   appName,
   bridge,
 }: {
-  /** How the macOS list names this app: "Opensteer", or "Opensteer Beta". */
+  /** How the macOS list names this app: "Opensteer". */
   readonly appName: string;
   readonly bridge: FullAccessPanelBridge;
 }) {

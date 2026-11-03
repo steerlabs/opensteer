@@ -516,7 +516,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       });
       if (url.pathname === "/v1/rpc/auth.config") {
         return json({
-          deployment: { cloud: false, kind: "self-hosted" as const, name: null },
+          deployment: { kind: "self-hosted" as const, name: null },
           emailDeliveryAvailable: false,
           localPasswordEnabled: true,
           machineOwner: false,
@@ -584,7 +584,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       paths.push(url.pathname);
       if (url.pathname === "/v1/rpc/auth.config") {
         return json({
-          deployment: { cloud: false, kind: "self-hosted" as const, name: null },
+          deployment: { kind: "self-hosted" as const, name: null },
           emailDeliveryAvailable: false,
           exposure: "networked",
           localPasswordEnabled: false,
@@ -13483,7 +13483,7 @@ function bootstrap(
     machines: [],
     homeWorkspace: workspaces.find((workspace) => workspace.kind === "main") ?? null,
     identityConfig: {
-      deployment: { cloud: false, kind: "self-hosted" as const, name: null },
+      deployment: { kind: "self-hosted" as const, name: null },
       emailDeliveryAvailable: false,
       localPasswordEnabled: true,
       machineOwner: false,

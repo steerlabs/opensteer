@@ -132,13 +132,13 @@ export function DesktopPlaceChooser({
   readonly onSetUpThisComputer: (() => void) | null;
   readonly places: DesktopPlaces;
 }) {
-  const { bridge, cloudDeploymentIds, onAddPlace, snapshot } = places;
+  const { bridge, onAddPlace, snapshot } = places;
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   usePlaceChecks(bridge, true);
   const here = thisComputerLabel();
-  const rows = placeRows(snapshot, { cloudDeploymentIds, thisComputer: here });
+  const rows = placeRows(snapshot, { thisComputer: here });
   const run = (operation: () => Promise<void>) => {
     setPending(true);
     setActionError(null);

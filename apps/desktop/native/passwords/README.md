@@ -8,7 +8,7 @@ agent. Product consent and transport authority live in
 
 ## Release and development
 
-Release peers must be the signed Opensteer desktop (Stable or Beta) under the
+Release peers must be the signed Opensteer desktop under the
 Developer ID team requirement derived from the broker's own code signature, checked by audit token before
 reading bytes. Refused peers receive no bytes. Desktop verifies the installed
 broker signature and the live socket peer too. Development permits same-user

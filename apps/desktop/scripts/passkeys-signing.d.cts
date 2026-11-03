@@ -1,5 +1,4 @@
 export interface PasskeySigningIdentity {
-  readonly channel: "stable" | "beta";
   readonly bundleId: string;
   readonly teamId: string;
 }

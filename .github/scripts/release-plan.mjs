@@ -72,6 +72,11 @@ export function preflight(
   } else throw Error("Choose insider, or stable with a published insider_tag");
   if (!exactSha.test(sha)) throw Error("Expected an exact source SHA");
   git("merge-base", "--is-ancestor", sha, "refs/remotes/origin/main");
+  if (
+    channel === "stable" &&
+    !git("rev-list", "--first-parent", "refs/remotes/origin/main").split("\n").includes(sha)
+  )
+    throw Error("Insider must be on first-parent main");
   const tag = channel === "beta" ? `v${version}-insider` : `desktop-v${version}`;
   if (git("tag", "--list", tag) && git("rev-parse", `${tag}^{commit}`) !== sha)
     throw Error("Existing tag points to another source");
@@ -189,6 +194,16 @@ export async function qualifiedPreflight(
 export function discover(source, run = execute, root = process.cwd()) {
   const { pages, manifest } = client(root, run);
   const releases = pages("releases");
+  if (source.channel === "stable") {
+    for (const release of releases) {
+      if (release.draft || release.prerelease || !release.tag_name.startsWith("desktop-v"))
+        continue;
+      const previous = release.tag_name.slice(9).split(".").map(BigInt);
+      const next = source.version.split(".").map(BigInt);
+      const difference = next.map((v, i) => v - previous[i]).find((v) => v !== 0n) ?? 0n;
+      if (difference <= 0n) throw Error("Stable version must be newer than published Stable");
+    }
+  }
   if (source.channel === "beta") {
     const latest = releases
       .filter(

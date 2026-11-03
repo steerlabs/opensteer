@@ -22,8 +22,8 @@ describe("ElectronServiceNetwork", () => {
     });
     const network = new ElectronServiceNetwork();
 
-    await network.fetch("https://accounts.beta.opensteer.com/v1/account/deployments");
-    await network.fetch("https://accounts.beta.opensteer.com/api/auth/oauth2/token");
+    await network.fetch("https://accounts.opensteer.com/v1/account/deployments");
+    await network.fetch("https://accounts.opensteer.com/api/auth/oauth2/token");
     await network.fetch("https://host.beta.opensteer.com/.well-known/opensteer");
 
     expect(electron.fromPartition).toHaveBeenCalledTimes(2);
@@ -36,7 +36,7 @@ describe("ElectronServiceNetwork", () => {
     expect(created[0]?.setPermissionRequestHandler).toHaveBeenCalledOnce();
     expect(created[0]?.unregisterPreloadScript).toHaveBeenCalledWith("unexpected-preload");
 
-    expect(beforeRequestDecision(created[0]!, "https://accounts.beta.opensteer.com/next")).toEqual({
+    expect(beforeRequestDecision(created[0]!, "https://accounts.opensteer.com/next")).toEqual({
       cancel: false,
     });
     expect(beforeRequestDecision(created[0]!, "https://attacker.example/next")).toEqual({
@@ -55,7 +55,7 @@ describe("ElectronServiceNetwork", () => {
     );
     expect(electron.fromPartition).not.toHaveBeenCalled();
 
-    await network.fetch("https://accounts.beta.opensteer.com/healthz");
+    await network.fetch("https://accounts.opensteer.com/healthz");
     await network.close();
     expect(created.closeAllConnections).toHaveBeenCalledOnce();
     expect(created.clearAuthCache).toHaveBeenCalledOnce();

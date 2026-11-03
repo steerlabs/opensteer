@@ -35,14 +35,6 @@ import {
   ComputerUseDataAppIdSchema,
   ComputerUseDataGrantSchema,
 } from "./computer-use.js";
-import {
-  CloudDeploymentOperationIdSchema,
-  DeleteCloudDeploymentRequestSchema,
-  type CloudDeploymentOperation,
-  type CreateCloudDeploymentRequest,
-  type ListCloudDeploymentsResponse,
-} from "@opensteer/control-plane-protocol";
-export type { CloudDeploymentOperation } from "@opensteer/control-plane-protocol";
 import { AgentPhoneArtifactManifestSchema, agentPhoneApkMaxBytes } from "./android-phone.js";
 import { PersonalPairingCodeSchema } from "./personal-remote-access.js";
 
@@ -486,6 +478,9 @@ export interface DesktopDownloadsBridge {
  * This app's own release updates. Electron main checks on its own; the person
  * starts the download and the restart that installs it.
  */
+export const DesktopUpdateChannelSchema = z.enum(["stable", "beta"]);
+export type DesktopUpdateChannel = z.infer<typeof DesktopUpdateChannelSchema>;
+
 export const DesktopUpdateStateSchema = z.strictObject({
   /** `unavailable`: this copy cannot update itself, as outside Applications. */
   status: z.enum([
@@ -493,11 +488,14 @@ export const DesktopUpdateStateSchema = z.strictObject({
     "idle",
     "checking",
     "up-to-date",
+    "ahead",
     "available",
     "downloading",
     "downloaded",
     "error",
   ]),
+  channel: DesktopUpdateChannelSchema,
+  latestVersion: z.string().min(1).max(64).nullable(),
   currentVersion: z.string().min(1).max(64),
   /** The newer version on offer, from `available` through `downloaded`, and after its download failed. */
   availableVersion: z.string().min(1).max(64).nullable(),
@@ -511,6 +509,7 @@ export type DesktopUpdateState = z.infer<typeof DesktopUpdateStateSchema>;
 /** This app's updates, app-wide; every app window sees the same state. */
 export interface DesktopUpdatesBridge {
   get(): Promise<DesktopUpdateState>;
+  setChannel(channel: DesktopUpdateChannel): Promise<DesktopUpdateState>;
   onChanged(listener: (state: DesktopUpdateState) => void): () => void;
   /** Starts downloading the offered version; progress arrives as changes. */
   download(): Promise<void>;
@@ -1600,12 +1599,7 @@ export interface OpensteerDesktopBridge {
   closeHostWebSocket(input: DesktopCloseHostWebSocketInput): Promise<void>;
   connectPrivate(input: DesktopConnectPrivateDeploymentInput): Promise<void>;
   createPersonalDeployment(): Promise<void>;
-  createCloudDeployment(input: CreateCloudDeploymentRequest): Promise<CloudDeploymentOperation>;
-  deleteCloudDeployment(
-    input: DesktopDeleteCloudDeploymentInput,
-  ): Promise<CloudDeploymentOperation>;
   getDeploymentAccessSnapshot(): Promise<DeploymentAccessSnapshot>;
-  listCloudDeployments(): Promise<ListCloudDeploymentsResponse>;
   getLocalExecutionStatus(input: DesktopLocalExecutionInput): Promise<DesktopLocalExecutionStatus>;
   hostRequest(input: DesktopHostHttpRequest): Promise<DesktopHostResult<DesktopHostHttpResponse>>;
   hostBinaryOpen(
@@ -1663,9 +1657,6 @@ export interface OpensteerDesktopBridge {
   /** Discards an unusable Account-link journal so a needs-repair Personal Host
    * can be linked or unlinked again. Refused unless repair is actually needed. */
   retry(): Promise<void>;
-  retryCloudDeployment(
-    input: DesktopCloudDeploymentOperationInput,
-  ): Promise<CloudDeploymentOperation>;
   select(input: DesktopSelectDeploymentInput): Promise<void>;
   sendHostWebSocket(input: DesktopHostWebSocketCommand): Promise<void>;
   signIn(): Promise<void>;
@@ -1674,17 +1665,3 @@ export interface OpensteerDesktopBridge {
   stopLocalRunner(input: DesktopLocalExecutionInput): Promise<DesktopLocalExecutionStatus>;
   unlinkPersonal(): Promise<void>;
 }
-
-export const DesktopCloudDeploymentOperationInputSchema = z.strictObject({
-  operationId: CloudDeploymentOperationIdSchema,
-});
-export type DesktopCloudDeploymentOperationInput = z.infer<
-  typeof DesktopCloudDeploymentOperationInputSchema
->;
-export const DesktopDeleteCloudDeploymentInputSchema =
-  DesktopCloudDeploymentOperationInputSchema.extend(
-    DeleteCloudDeploymentRequestSchema.shape,
-  ).strict();
-export type DesktopDeleteCloudDeploymentInput = z.infer<
-  typeof DesktopDeleteCloudDeploymentInputSchema
->;

@@ -14,7 +14,6 @@ final class SelfIdentityPolicyTests: XCTestCase {
         XCTAssertTrue(requirement.contains("subject.OU] = \"\(team)\""))
       }
       XCTAssertTrue(incoming.contains("com.opensteer.opensteer"))
-      XCTAssertTrue(incoming.contains("com.steerlabs.opensteer.beta"))
       XCTAssertTrue(reverse.contains("identifier \"com.opensteer.computer-use\""))
       XCTAssertFalse(reverse.contains(team == "ABCDE12345" ? "ZZZZZ12345" : "ABCDE12345"))
     }

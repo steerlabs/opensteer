@@ -1,5 +1,6 @@
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import { autoUpdater } from "electron-updater";
+import { loadDesktopUpdatePreference } from "./app/desktop-update-preference.js";
 import { DesktopUpdater } from "./app/desktop-updater.js";
 import { offerMoveToApplications } from "./app/move-to-applications.js";
 import { DesktopWebLinks, routeDesktopUrl } from "./app/web-links.js";
@@ -186,7 +187,13 @@ app.on("second-instance", (_event, argv) => {
 });
 
 if (acceptLaunch()) {
-  app.setName(desktopApplicationName(app.isPackaged, embeddedRelease.application.name));
+  app.setName(
+    desktopApplicationName(
+      app.isPackaged,
+      embeddedRelease.application.name,
+      process.env.OPENSTEER_DESKTOP_MODE?.trim() === "test" ? "test" : defaultMode(),
+    ),
+  );
   app.enableSandbox();
   void startDesktop().catch((error: unknown) => {
     if (shutdown.requested) return;
@@ -222,13 +229,6 @@ async function startDesktop(): Promise<void> {
     .removeFile(path.join(loaded.config.dataDirectory, "computer-use-approval-key.v1.json"))
     .catch(() => undefined);
   shutdown.signal.throwIfAborted();
-  if (app.isPackaged && embeddedRelease.application.stage === "alpha") {
-    app.setAboutPanelOptions({
-      applicationName: embeddedRelease.application.name,
-      applicationVersion: `${app.getVersion()} (Alpha)`,
-      version: "",
-    });
-  }
   // Only a build that updates itself needs to live in Applications.
   if (loaded.config.updates && (await offerMoveToApplications(reportEvent))) return;
   shutdown.signal.throwIfAborted();
@@ -253,7 +253,11 @@ async function runDesktop(
     protocol,
     path.join(import.meta.dirname, "web"),
   );
-  const updater = new DesktopUpdater({ updates: loaded.config.updates, log: reportEvent });
+  const updater = new DesktopUpdater({
+    updates: loaded.config.updates,
+    log: reportEvent,
+    preference: await loadDesktopUpdatePreference(loaded.config.dataDirectory, reportEvent),
+  });
   const downloads = new DesktopDownloads({
     directory: () => app.getPath("downloads"),
     staging: path.join(loaded.config.dataDirectory, "partial-downloads"),
@@ -932,6 +936,7 @@ async function runDesktop(
       state: () => updater.state(),
       subscribe: (listener) => updater.subscribe(listener),
       download: () => updater.download(),
+      setChannel: (channel) => updater.setChannel(channel),
       restart: () => restartToUpdate(),
     },
     webLinks,
@@ -952,7 +957,6 @@ async function runDesktop(
         ),
     },
     bridgeToken,
-    cloud: accountConnect,
     accountLinkCourier: accountDirectory,
     fullDiskAccess: {
       check: () => probeFullDiskAccess(loaded.config.localExecution.nativeFsHelperBinary),
@@ -1046,22 +1050,27 @@ async function runDesktop(
     if (state.status === "available") return mainProcess.activate();
     const name = app.getName();
     const result =
-      state.status === "up-to-date"
+      state.status === "ahead"
         ? {
-            message: "You're up to date",
-            detail: `${name} ${state.currentVersion} is the newest version.`,
+            message: `${state.channel === "stable" ? "Stable" : "Beta"} selected`,
+            detail: `You’re on ${state.currentVersion}; latest is ${state.latestVersion}. Updates resume after it passes your version.`,
           }
-        : state.status === "error"
+        : state.status === "up-to-date"
           ? {
-              message: "Couldn't check for updates",
-              detail: "Check your internet connection, then try again.",
+              message: "You're up to date",
+              detail: `${name} ${state.currentVersion} is the newest version.`,
             }
-          : state.status === "unavailable"
+          : state.status === "error"
             ? {
-                message: "Updates unavailable",
-                detail: `Move ${name} to your Applications folder to get updates.`,
+                message: "Couldn't check for updates",
+                detail: "Check your internet connection, then try again.",
               }
-            : null;
+            : state.status === "unavailable"
+              ? {
+                  message: "Updates unavailable",
+                  detail: `Move ${name} to your Applications folder to get updates.`,
+                }
+              : null;
     if (result)
       await dialog.showMessageBox({
         type: state.status === "error" ? "warning" : "info",

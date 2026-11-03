@@ -1,24 +1,18 @@
 {
+  "accountUrl": "https://accounts.opensteer.com",
+  "portalUrl": "https://app.opensteer.com",
   "application": {
-    "channel": "stable",
     "id": "com.opensteer.opensteer",
-    "name": "Opensteer",
-    "stage": "alpha"
-  },
-  "capabilities": {
-    "connect": false,
-    "personal": true,
-    "localAgents": true
+    "name": "Opensteer"
   },
   "oauth": {
     "accountCallback": "com.opensteer.opensteer:/oauth/account-callback",
     "clientId": "opensteer-desktop",
     "hostCallback": "com.opensteer.opensteer:/oauth/host-callback"
   },
-  "schemaVersion": 6,
+  "schemaVersion": 7,
   "updates": {
     "owner": "steerlabs",
-    "repo": "opensteer",
-    "channel": "latest"
+    "repo": "opensteer"
   }
 }

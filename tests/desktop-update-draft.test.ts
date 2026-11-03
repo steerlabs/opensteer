@@ -40,7 +40,7 @@ test("draft intake binds exact public manifest, API draft, expectations and both
     channel: "beta",
     prerelease: true,
     tag: "v1.2.3-insider",
-    title: "Opensteer Beta 1.2.3",
+    title: "Opensteer 1.2.3",
     notes: "notes",
     version: "1.2.3",
     sourceSha: "a".repeat(40),
@@ -91,7 +91,7 @@ test("draft intake binds exact public manifest, API draft, expectations and both
     writeFileSync(path.join(dir, "SHA256SUMS"), sums);
     assets.SHA256SUMS = hash(sums);
     write();
-    writeFileSync(path.join(dir, "Opensteer-Beta-mac-arm64.zip"), "tamper");
+    writeFileSync(path.join(dir, "Opensteer-mac-arm64.zip"), "tamper");
     await expect(validateDraft(dir, release, expected)).rejects.toThrow();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -101,7 +101,7 @@ test("draft intake binds exact public manifest, API draft, expectations and both
 test("certification requires every channel case to install the exact draft zip", () => {
   const draft = {
     channel: "beta" as const,
-    assets: { "Opensteer-Beta-mac-arm64.zip": "a".repeat(64) },
+    assets: { "Opensteer-mac-arm64.zip": "a".repeat(64) },
   };
   const results = ["beta:menu", "beta:quit"].map((name) => ({
     name,
@@ -145,7 +145,7 @@ test("PASS publication output binds the downloaded draft ZIP, never the local N+
   const draft = {
     tag: "v1.2.3-insider",
     channel: "beta" as const,
-    assets: { "Opensteer-Beta-mac-arm64.zip": downloaded },
+    assets: { "Opensteer-mac-arm64.zip": downloaded },
   };
   const lines = publicationLines(draft, downloaded, true);
   expect(lines).toEqual([
@@ -160,7 +160,7 @@ test("PASS publication output binds the downloaded draft ZIP, never the local N+
     downloaded,
     true,
   );
-  // Stable rebuilds the published insider of the same version; insiders take no tag.
+  // Stable promotes the published insider of the same version; insiders take no tag.
   expect(stable[1]).toContain("-f channel=stable -f insider_tag=v1.2.3-insider -f publish=true");
 });
 
@@ -211,7 +211,7 @@ test("the older fixture is an explicit input, verified before the N+1 build", as
     const local = path.join(work, "builds", "b".repeat(40), "beta");
     await expect(intakeOlder(work, local, n)).rejects.toThrow(/no build\.json/u);
     mkdirSync(local, { recursive: true });
-    const zip = path.join(local, "Opensteer-Beta-mac-arm64.zip");
+    const zip = path.join(local, "Opensteer-mac-arm64.zip");
     writeFileSync(zip, "older signed build");
     writeFileSync(
       path.join(local, "build.json"),
@@ -249,7 +249,7 @@ test("the older fixture is an explicit input, verified before the N+1 build", as
       channel: "beta",
       prerelease: true,
       tag: "v1.2.2-insider",
-      title: "Opensteer Beta 1.2.2",
+      title: "Opensteer 1.2.2",
       notes: "notes",
       version: "1.2.2",
       sourceSha: "c".repeat(40),
@@ -282,7 +282,7 @@ test("the older fixture is an explicit input, verified before the N+1 build", as
     expect(await sha256File(fromTag.zip)).toBe(fromTag.sha256);
     await expect(intakeOlder(work, "v1.2.3-insider", n, fake)).rejects.toThrow(/below N/u);
     await expect(intakeOlder(work, "desktop-v1.2.2", n, fake)).rejects.toThrow(/channel/u);
-    writeFileSync(path.join(published, "Opensteer-Beta-mac-arm64.zip"), "tamper");
+    writeFileSync(path.join(published, "Opensteer-mac-arm64.zip"), "tamper");
     await expect(intakeOlder(work, "v1.2.2-insider", n, fake)).rejects.toThrow();
   } finally {
     rmSync(root, { recursive: true, force: true });

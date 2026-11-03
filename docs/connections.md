@@ -6,10 +6,10 @@ platform ports; it cannot depend on Node APIs. Start at
 Credential authority belongs in [Host boundaries](host-boundaries.md).
 Focused checks: [check-client-connections](../.agents/skills/check-client-connections/SKILL.md).
 
-The public stable Mac app has no Account issuer: Account discovery, adoption and
-Connect are unavailable, but private HTTPS and one-use pairing still work. Beta
-retains staging Account and Connect. See
-[Stable channel without an Account](releases.md#stable-channel-without-an-account).
+Both desktop update channels use the Account at `https://accounts.opensteer.com`
+and portal at `https://app.opensteer.com`. Personal Hosts run on the person's
+computer; self-hosted servers can attach to an Account. Connect routes remain
+under `opensteerapp.com`. The Account does not provision or host Deployments.
 
 ## Route selection and lifetime
 
@@ -78,8 +78,7 @@ read status.
 
 Administration status is observed only while Settings is open, invalidated by the
 Host event stream and reread after reconnect. It adds no attach round trips or
-initial-screen dependencies. Stable retains private access and pairing without
-acquiring an Account/Connect path.
+initial-screen dependencies.
 
 ## Durable stream and live progress
 

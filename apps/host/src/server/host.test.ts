@@ -2011,7 +2011,7 @@ describe("Personal sharing boundary", () => {
         identity: {
           acceptInvitation,
           configuration: async () => ({
-            deployment: { cloud: false, kind: "personal" as const, name: "This computer" },
+            deployment: { kind: "personal" as const, name: "This computer" },
             emailDeliveryAvailable: false,
             exposure: "loopback",
             localPasswordEnabled: false,
@@ -2981,7 +2981,7 @@ describe("durable harness catalogs", () => {
           authenticateUser: async () => ownerId,
           identity: {
             configuration: async () => ({
-              deployment: { cloud: false, kind: "self-hosted", name: null },
+              deployment: { kind: "self-hosted", name: null },
               emailDeliveryAvailable: false,
               exposure: "networked",
               localPasswordEnabled: true,
@@ -3384,7 +3384,7 @@ describe("durable harness catalogs", () => {
     }
   });
 
-  it("keeps all auth routes safe on a lifecycle-less managed Host", async () => {
+  it("keeps all auth routes safe on a Host with a lifecycle-less managed work location", async () => {
     const fixture = harnessCatalogServer({
       catalog: authenticationRequiredCatalog,
       connected: false,

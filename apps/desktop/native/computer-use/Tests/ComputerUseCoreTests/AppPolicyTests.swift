@@ -30,7 +30,7 @@ final class AppPolicyTests: XCTestCase {
 
   func testOpensteerAndSecuritySurfacesAreRefused() {
     for bundleIdentifier in [
-      "com.opensteer.opensteer", "com.steerlabs.opensteer.beta", "com.opensteer.computer-use",
+      "com.opensteer.opensteer", "com.opensteer.computer-use",
       "com.apple.SecurityAgent", "com.apple.LocalAuthentication.UIAgent",
       "com.apple.LocalAuthenticationRemoteService", "com.apple.UserNotificationCenter",
     ] {

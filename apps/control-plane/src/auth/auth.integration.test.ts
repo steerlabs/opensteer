@@ -46,7 +46,7 @@ const config: ControlPlaneConfig = {
   googleClientSecret: "test-google-secret",
   listenHost: "127.0.0.1",
   listenPort: 41_142,
-  managedDeploymentDomain: "connect.auth.test.invalid",
+  portalOrigin: new URL("https://connect.auth.test.invalid"),
   nativeOAuthClients: opensteerAccountNativeOAuthClients,
   publicOrigin,
 };
@@ -57,7 +57,7 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
     maxConnections: 4,
   });
   const store = new ControlPlaneStore(database, publicOrigin, {
-    managedDeploymentDomain: config.managedDeploymentDomain,
+    portalOrigin: config.portalOrigin,
   });
   const connectLifecycle = new ConnectLifecycleService(database, {
     delete: async () => undefined,
@@ -112,7 +112,7 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
       auth,
       authenticator,
       connectLifecycle,
-      managedDeploymentDomain: config.managedDeploymentDomain,
+      portalOrigin: config.portalOrigin,
       publicOrigin,
       store,
     });
@@ -219,7 +219,7 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
       auth,
       authenticator,
       connectLifecycle,
-      managedDeploymentDomain: config.managedDeploymentDomain,
+      portalOrigin: config.portalOrigin,
       publicOrigin,
       store,
     });
@@ -262,7 +262,7 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
       auth,
       authenticator,
       connectLifecycle,
-      managedDeploymentDomain: config.managedDeploymentDomain,
+      portalOrigin: config.portalOrigin,
       publicOrigin,
       store,
     });
@@ -298,7 +298,7 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
       auth,
       authenticator,
       connectLifecycle,
-      managedDeploymentDomain: config.managedDeploymentDomain,
+      portalOrigin: config.portalOrigin,
       publicOrigin,
       store,
     });

@@ -126,7 +126,7 @@ async function run(): Promise<void> {
   });
   const setupGuide = new ComputerAppSetupGuide({
     appIcon: async () => null,
-    appName: "Opensteer Beta",
+    appName: "Opensteer",
     dataGrants: async () => dataGrants,
     helperAppPath,
     ownFullDiskAccess: async () => thisAppHasFullDiskAccess,
@@ -367,7 +367,7 @@ async function run(): Promise<void> {
         ),
       "this app struck out",
     );
-    assert((await panelText()).includes("Opensteer Beta"));
+    assert((await panelText()).includes("Opensteer"));
     await capture("2-wrong-app");
 
     await setupWindow?.webContents.executeJavaScript(

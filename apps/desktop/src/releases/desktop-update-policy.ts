@@ -10,9 +10,12 @@ export function stageDesktopUpdatePolicy(
   hostOverride: string | undefined,
 ): Release {
   const { updates, ...withoutUpdates } = release;
+  if (operatingSystem === "development") {
+    // Non-release packages never update themselves or reach production services.
+    const { accountUrl: _account, portalUrl: _portal, ...development } = withoutUpdates;
+    return development;
+  }
   if (!updates || operatingSystem !== "darwin" || architecture !== "arm64") return withoutUpdates;
-  if (updates.channel !== (release.application.channel === "stable" ? "latest" : "insider"))
-    throw new Error("Desktop update channel does not match the application.");
   const host = hostOverride?.trim();
   if (host && !/^[a-zA-Z0-9.-]+(?::[0-9]+)?$/u.test(host))
     throw new Error("Desktop update GitHub host must be a hostname with an optional port.");
@@ -20,7 +23,7 @@ export function stageDesktopUpdatePolicy(
 }
 
 export function desktopUpdateFeed(updates: DesktopUpdates): string {
-  return `https://${updates.host ?? "github.com"}/${updates.owner}/${updates.repo}#${updates.channel}`;
+  return `https://${updates.host ?? "github.com"}/${updates.owner}/${updates.repo}`;
 }
 
 /** JSON scalars are also YAML scalars; quote the test host, including its port. */
@@ -30,8 +33,7 @@ export function desktopAppUpdateYaml(updates: DesktopUpdates): string {
     owner: updates.owner,
     repo: updates.repo,
     ...(updates.host ? { host: updates.host } : {}),
-    updaterCacheDirName:
-      updates.channel === "latest" ? "opensteer-updater" : "opensteer-beta-updater",
+    updaterCacheDirName: "opensteer-updater",
   })
     .map(([key, value]) => `${key}: ${JSON.stringify(value)}\n`)
     .join("");

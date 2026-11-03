@@ -1,5 +1,4 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import type { CloudDeploymentOperation } from "@opensteer/protocol/desktop";
 import type {
   DeploymentAccessDeployment,
   DeploymentAccessSnapshot,
@@ -8,7 +7,6 @@ import type {
   OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import { AddDeployment } from "../components/add-deployment.js";
-import { CloudDeploymentFlow } from "../components/cloud-deployment-flow.js";
 import {
   DesktopLoadingScreen,
   DesktopPersonalSetup,
@@ -40,7 +38,7 @@ const SignedInApp = lazy(async () => {
  * They are renderer-local: the Desktop machine has no idea a person is looking
  * at the Directory or filling in an address, and nothing is persisted.
  */
-type BrowsingScreen = "add-deployment" | "cloud-deployments" | null;
+type BrowsingScreen = "add-deployment" | null;
 
 type DesktopAccessPresentation =
   "blocked" | "personal" | "picker" | "ready" | "verified" | "waiting";
@@ -111,17 +109,6 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   const [screen, setScreen] = useState<BrowsingScreen>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [connectingPrivate, setConnectingPrivate] = useState(false);
-  const [cloudAvailable, setCloudAvailable] = useState(false);
-  const [cloudOperations, setCloudOperations] = useState<readonly CloudDeploymentOperation[]>([]);
-  const [cloudError, setCloudError] = useState<string | null>(null);
-  const [cloudLoadedFor, setCloudLoadedFor] = useState<string | null>(null);
-  const createCloudAttempt = useRef<{ readonly name: string; readonly operationId: string } | null>(
-    null,
-  );
-  const observedCloudTerminals = useRef(new Set<string>());
-  const cloudOperationsRef = useRef<readonly CloudDeploymentOperation[]>([]);
-  const accountSessionKeyRef = useRef<string | null>(null);
-  const previousAccountSessionKey = useRef<string | null>(null);
   // The notification that was clicked. It names one Deployment, which this
   // window may not be showing, so it waits here — through the selection and any
   // sign-in that follows — until the app for that Deployment can open it.
@@ -185,90 +172,17 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
 
   useEffect(() => () => hostClient?.dispose(), [hostClient]);
 
-  const cloudDeploymentIds = useMemo(
-    () => new Set(cloudOperations.map(({ deploymentId }) => deploymentId)),
-    [cloudOperations],
-  );
   const places = useMemo<DesktopPlaces | null>(
     () =>
       snapshot
         ? {
             bridge,
-            cloudDeploymentIds,
             onAddPlace: () => setScreen("add-deployment"),
             snapshot,
           }
         : null,
-    [bridge, cloudDeploymentIds, snapshot],
+    [bridge, snapshot],
   );
-
-  const signedIntoAccount = snapshot?.account.status === "signed-in";
-  const accountSessionKey = signedIntoAccount
-    ? snapshot.account.issuer && snapshot.account.subject
-      ? `${snapshot.account.issuer}\u0000${snapshot.account.subject}`
-      : (snapshot.account.email ?? "signed-in")
-    : null;
-  accountSessionKeyRef.current = accountSessionKey;
-  const hasActiveCloudOperation = cloudOperations.some(
-    ({ status }) => status === "creating" || status === "deleting",
-  );
-  useEffect(() => {
-    if (previousAccountSessionKey.current !== accountSessionKey) {
-      createCloudAttempt.current = null;
-      observedCloudTerminals.current.clear();
-      cloudOperationsRef.current = [];
-      previousAccountSessionKey.current = accountSessionKey;
-    }
-    if (!signedIntoAccount) {
-      setCloudAvailable(false);
-      setCloudOperations([]);
-      createCloudAttempt.current = null;
-      observedCloudTerminals.current.clear();
-      cloudOperationsRef.current = [];
-      return;
-    }
-    let cancelled = false;
-    const load = async () => {
-      const requestedFor = accountSessionKey;
-      try {
-        const result = await bridge.listCloudDeployments();
-        if (!cancelled && cloudResultBelongsToAccount(requestedFor, accountSessionKeyRef.current)) {
-          const previous = cloudOperationsRef.current;
-          const completedDeletionDisappeared = cloudDeletionDisappeared(
-            previous,
-            result.deployments,
-          );
-          cloudOperationsRef.current = result.deployments;
-          setCloudLoadedFor(requestedFor);
-          setCloudAvailable(result.available);
-          setCloudOperations(result.deployments);
-          setCloudError(null);
-          const newTerminal = result.deployments.some((operation) => {
-            if (operation.status !== "ready" && operation.status !== "deleted") return false;
-            const key = `${operation.operationId}:${operation.status}`;
-            if (observedCloudTerminals.current.has(key)) return false;
-            observedCloudTerminals.current.add(key);
-            return true;
-          });
-          if (newTerminal || completedDeletionDisappeared) {
-            void bridge
-              .refreshDirectory()
-              .catch((reason: unknown) =>
-                setCloudError(errorDetail(reason, "Your list couldn’t be refreshed.")),
-              );
-          }
-        }
-      } catch (reason) {
-        if (!cancelled) setCloudError(errorDetail(reason, "Opensteer Cloud couldn’t be loaded."));
-      }
-    };
-    void load();
-    const timer = hasActiveCloudOperation ? window.setInterval(() => void load(), 2_000) : null;
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearInterval(timer);
-    };
-  }, [accountSessionKey, bridge, hasActiveCloudOperation, signedIntoAccount, screen]);
 
   useEffect(() => {
     if (selectedConnection?.status !== "connected" || !hostClient) return;
@@ -438,11 +352,6 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
               )
               .finally(() => setConnectingPrivate(false));
           }}
-          onCreateCloud={
-            cloudLoadedFor === accountSessionKey && cloudAvailable
-              ? () => setScreen("cloud-deployments")
-              : null
-          }
           onCreatePersonal={
             snapshot.personalSetup?.deploymentId === null &&
             snapshot.personalSetup.state === "stopped" &&
@@ -453,68 +362,11 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
                 }
               : null
           }
-          onManageCloud={
-            cloudLoadedFor === accountSessionKey && cloudOperations.length > 0
-              ? () => setScreen("cloud-deployments")
-              : null
-          }
           onSignIn={
             snapshot.account.available && snapshot.account.status !== "signed-in"
               ? () => runBridgeOperation(bridge.signIn())
               : null
           }
-        />
-      );
-    }
-
-    if (activeScreen === "cloud-deployments") {
-      const refreshCloud = async () => {
-        const requestedFor = accountSessionKey;
-        const result = await bridge.listCloudDeployments();
-        if (accountSessionKeyRef.current !== requestedFor) return;
-        cloudOperationsRef.current = result.deployments;
-        setCloudAvailable(result.available);
-        setCloudOperations(result.deployments);
-        if (result.deployments.some(({ status }) => status === "ready" || status === "deleted")) {
-          await bridge.refreshDirectory();
-        }
-      };
-      return (
-        <CloudDeploymentFlow
-          available={cloudLoadedFor === accountSessionKey && cloudAvailable}
-          error={cloudError}
-          onBack={() => setScreen(null)}
-          onCreate={async (name) => {
-            const requestedFor = accountSessionKey;
-            const attempt =
-              createCloudAttempt.current?.name === name
-                ? createCloudAttempt.current
-                : { name, operationId: crypto.randomUUID() };
-            createCloudAttempt.current = attempt;
-            await bridge.createCloudDeployment(attempt);
-            if (accountSessionKeyRef.current !== requestedFor) return;
-            createCloudAttempt.current = null;
-            await refreshCloud();
-          }}
-          onDelete={async (operationId, name) => {
-            const requestedFor = accountSessionKey;
-            await bridge.deleteCloudDeployment({ operationId, name });
-            if (accountSessionKeyRef.current !== requestedFor) return;
-            await refreshCloud();
-          }}
-          onOpen={async (deploymentId) => {
-            const requestedFor = accountSessionKey;
-            await bridge.refreshDirectory();
-            if (accountSessionKeyRef.current !== requestedFor) return;
-            await bridge.select({ deploymentId });
-          }}
-          onRetry={async (operationId) => {
-            const requestedFor = accountSessionKey;
-            await bridge.retryCloudDeployment({ operationId });
-            if (accountSessionKeyRef.current !== requestedFor) return;
-            await refreshCloud();
-          }}
-          operations={cloudLoadedFor === accountSessionKey ? cloudOperations : []}
         />
       );
     }
@@ -644,22 +496,4 @@ export function blockedConnectionRecovery(
   return deployment.availableActions.includes("retry")
     ? { action: "retry", label: "Try again" }
     : { action: "cancel", label: "Choose another place" };
-}
-
-export function cloudResultBelongsToAccount(
-  requestedFor: string | null,
-  currentAccount: string | null,
-): boolean {
-  return requestedFor !== null && requestedFor === currentAccount;
-}
-
-export function cloudDeletionDisappeared(
-  previous: readonly CloudDeploymentOperation[],
-  next: readonly CloudDeploymentOperation[],
-): boolean {
-  const presentIds = new Set(next.map(({ operationId }) => operationId));
-  return previous.some(
-    ({ desiredState, operationId, status }) =>
-      (desiredState === "deleted" || status === "deleting") && !presentIds.has(operationId),
-  );
 }

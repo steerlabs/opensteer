@@ -174,10 +174,7 @@ export class IdentityService {
     if (options.secret.length < 32) {
       throw new Error("Opensteer identity secret must contain at least 32 characters");
     }
-    if (
-      options.localMachineOwner &&
-      (options.exposure !== "loopback" || options.managedOwner !== undefined)
-    ) {
+    if (options.localMachineOwner && options.exposure !== "loopback") {
       throw new Error("A local machine owner is allowed only on an unmanaged loopback Host");
     }
     this.#admissionLifetimeMilliseconds =
@@ -197,115 +194,8 @@ export class IdentityService {
     // bootstrap can close the database underneath its schema query.
     const context = await this.#auth.$context;
     await context.checkSchema?.();
-    await this.#ensureManagedOwner();
     await this.#ensureInitialOwnerEnrollment();
     await this.#ensureNativeOAuthClients();
-  }
-
-  async #ensureManagedOwner(): Promise<void> {
-    const owner = this.#options.managedOwner;
-    if (!owner) return;
-    if (this.#options.initialOwnerEnrollment) {
-      throw new Error("Managed owner bootstrap cannot be combined with an owner enrollment code");
-    }
-    const email = normalizeIdentityEmail(owner.email);
-    const displayName = owner.displayName.trim();
-    const providerId = owner.providerId.trim();
-    const accountId = owner.accountId.trim();
-    if (displayName.length < 1 || displayName.length > 120) {
-      throw new Error("Managed owner display name is invalid");
-    }
-    if (!providerId || providerId.length > 512 || !accountId || accountId.length > 512) {
-      throw new Error("Managed owner account identity is invalid");
-    }
-
-    await this.#database.transaction().execute(async (transaction) => {
-      await sqlAdvisoryLock(transaction, "managed-owner-bootstrap");
-      await transaction
-        .selectFrom("users")
-        .select("id")
-        .orderBy("id", "asc")
-        .forNoKeyUpdate()
-        .execute();
-      const existingAccount = await transaction
-        .selectFrom("authAccounts")
-        .innerJoin("users", "users.id", "authAccounts.userId")
-        .select([
-          "authAccounts.accountId",
-          "authAccounts.providerId",
-          "users.disabledAt",
-          "users.id",
-          "users.instanceRole",
-        ])
-        .where("authAccounts.providerId", "=", providerId)
-        .where("authAccounts.accountId", "=", accountId)
-        .forNoKeyUpdate("authAccounts")
-        .executeTakeFirst();
-      if (existingAccount) {
-        if (existingAccount.instanceRole !== "administrator" || existingAccount.disabledAt) {
-          throw new Error("Managed owner account does not match durable Host authority");
-        }
-        return;
-      }
-
-      const existingUser = await transaction
-        .selectFrom("users")
-        .select("id")
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (existingUser) {
-        throw new Error("Managed owner account does not match durable Host authority");
-      }
-
-      const userId = createId("user");
-      const now = new Date();
-      await transaction
-        .insertInto("users")
-        .values({
-          createdAt: now,
-          disabledAt: null,
-          displayName,
-          email,
-          emailVerified: true,
-          id: userId,
-          image: null,
-          instanceRole: "administrator",
-          updatedAt: now,
-        })
-        .executeTakeFirstOrThrow();
-      await transaction
-        .insertInto("authAccounts")
-        .values({
-          accessToken: null,
-          accessTokenExpiresAt: null,
-          accountId,
-          createdAt: now,
-          id: createId("authAccount"),
-          idToken: null,
-          password: null,
-          providerId,
-          refreshToken: null,
-          refreshTokenExpiresAt: null,
-          scope: null,
-          updatedAt: now,
-          userId,
-        })
-        .executeTakeFirstOrThrow();
-      await transaction
-        .insertInto("securityAudit")
-        .values({
-          action: "instance.managed-owner-provisioned",
-          actorSessionId: null,
-          actorUserId: null,
-          id: createId("securityAudit"),
-          metadata: sqlJson({ providerId }),
-          requestId: null,
-          targetId: userId,
-          targetType: "user",
-          workspaceId: null,
-        })
-        .executeTakeFirstOrThrow();
-    });
   }
 
   /**

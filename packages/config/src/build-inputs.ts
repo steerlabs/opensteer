@@ -25,7 +25,6 @@ export const DesktopSigningSchema = z.strictObject({
     .optional(),
 });
 export const DesktopBuildSchema = z.strictObject({
-  channel: z.enum(["beta", "stable"]),
   bundleId: z.string().regex(/^[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$/),
   productName: reference,
   signing: DesktopSigningSchema.optional(),

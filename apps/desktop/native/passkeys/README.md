@@ -50,7 +50,7 @@ compiles arm64 and x86_64, verifies the universal product and stages it into
 `dist/passkeys`. N-API avoids an Electron/V8 ABI dependency. The host test loads the
 real binary in an unentitled Node process; it never requests a sheet.
 
-Release bundling builds and stages the addon only when the selected channel supplies
+Release bundling builds and stages the addon only when the build supplies
 both passkey signing inputs. Otherwise it removes any stale staged addon and the
 packaging checks require it to be absent. The pinned toolchain remains required
 for opt-in builds. Development bundling stages an explicitly built
@@ -67,20 +67,13 @@ any nested helper app.
 
 ## Optional release capability
 
-The default entitlement plists remain unchanged. Supply both inputs for the chosen
-release channel:
-
-| Channel | Profile path                        | Entitlement plist path                   |
-| ------- | ----------------------------------- | ---------------------------------------- |
-| Stable  | `OPENSTEER_PASSKEYS_STABLE_PROFILE` | `OPENSTEER_PASSKEYS_STABLE_ENTITLEMENTS` |
-| Beta    | `OPENSTEER_PASSKEYS_BETA_PROFILE`   | `OPENSTEER_PASSKEYS_BETA_ENTITLEMENTS`   |
-
+The default entitlement plists remain unchanged. Supply both inputs for the
+release app: `OPENSTEER_PASSKEYS_PROFILE` and `OPENSTEER_PASSKEYS_ENTITLEMENTS`.
+The profile must authorize the exact `com.opensteer.opensteer` application ID.
 The entitlement input must contain exactly
 `com.apple.developer.web-browser.public-key-credential = true`. The profile must
-be a current Developer ID profile granting that capability to the release signing
-certificate, team and the exact app ID: `com.opensteer.opensteer` for Stable or
-`com.steerlabs.opensteer.beta` for Beta. Wildcard IDs are refused. Inputs for one
-channel never enable the other. Development builds refuse these inputs.
+be current and authorize the release signing certificate and team. Wildcard IDs
+are refused. Development builds refuse these inputs.
 
 `package-macos.ts` validates the inputs, generates a main-app entitlement plist
 with the profile's team and app identifiers, and passes that plist and a staged

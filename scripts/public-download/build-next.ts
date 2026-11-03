@@ -17,7 +17,7 @@ import {
   preflightAgentPhone,
   stageAgentPhoneRelease,
 } from "../release-agent-phone.js";
-import { localInstallConfigSchema } from "../install-beta-mac-local.js";
+import { localInstallConfigSchema } from "../install-mac-local.js";
 import { acquireReleaseLock, runBounded, timedCommands } from "../command-runner.js";
 
 const { values } = parseArgs({
@@ -40,7 +40,7 @@ const baseSha = z
   .regex(/^[a-f0-9]{40}$/u)
   .parse(values["base-sha"]);
 const baseVersion = numericVersion.parse(values["base-version"]);
-const feed = `https://github.com/steerlabs/opensteer#${channel === "stable" ? "latest" : "insider"}`;
+const feed = "https://github.com/steerlabs/opensteer";
 process.env.OPENSTEER_DESKTOP_SIGNING_FILE ??= path.join(
   homedir(),
   ".config/opensteer/desktop-signing.json",
@@ -52,7 +52,7 @@ await mkdir(directory, { recursive: true, mode: 0o700 });
 const config = localInstallConfigSchema.parse(
   JSON.parse(
     await readFile(
-      values.config ?? path.join(homedir(), ".config/opensteer/install-beta-mac-local.json"),
+      values.config ?? path.join(homedir(), ".config/opensteer/install-mac-local.json"),
       "utf8",
     ),
   ),
@@ -153,7 +153,6 @@ try {
     timeoutMs: 45 * 60_000,
     outputFile: path.join(directory, "ci-build.log"),
     env: {
-      OPENSTEER_DESKTOP_RELEASE_CHANNEL: channel,
       OPENSTEER_RELEASE_VERSION: version,
       OPENSTEER_SOURCE_REVISION: revision,
     },
@@ -162,19 +161,11 @@ try {
     path.join(scratch, "build-inputs.json"),
     path.join(directory, "build-inputs.json"),
   );
-  const app = path.join(
-    source,
-    channel === "beta"
-      ? "apps/desktop/release/beta/mac-arm64/Opensteer Beta.app"
-      : "apps/desktop/release/mac-arm64/Opensteer.app",
-  );
+  const app = path.join(source, "apps/desktop/release/mac-arm64/Opensteer.app");
   const plist = path.join(app, "Contents/Info.plist");
   if ((await run("/usr/libexec/PlistBuddy", ["-c", "Print :OpensteerUpdateFeed", plist])) !== feed)
     throw new Error("Build did not stamp test feed URL");
-  const zip = path.join(
-    directory,
-    channel === "beta" ? "Opensteer-Beta-mac-arm64.zip" : "Opensteer-mac-arm64.zip",
-  );
+  const zip = path.join(directory, "Opensteer-mac-arm64.zip");
   const ownerWrite = await run("find", [app, "!", "-perm", "-u+w"]);
   if (ownerWrite) throw new Error(`Bundle entries lack owner-write: ${ownerWrite}`);
   const evidence: Record<string, string> = {};

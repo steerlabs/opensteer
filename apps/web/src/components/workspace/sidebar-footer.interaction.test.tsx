@@ -46,7 +46,6 @@ function desktop(expired = false) {
       select,
       checkDeployments: vi.fn(async () => undefined),
     } as unknown as OpensteerDesktopBridge,
-    cloudDeploymentIds: new Set(),
     onAddPlace,
     snapshot: DeploymentAccessSnapshotSchema.parse({
       account: {

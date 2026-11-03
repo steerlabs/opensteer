@@ -45,8 +45,6 @@ describe("Host-authorized control-plane routes", () => {
     registerControlPlaneRoutes(app, {
       authenticator: { authenticate: accountAuthenticate } as never,
       connectLifecycle: { revokeForHost } as never,
-      managedDeploymentDomain: "managed.opensteer.test",
-      publicOrigin: new URL("https://accounts.opensteer.test"),
       store: { authenticateHostCredential } as never,
     });
 
@@ -80,8 +78,6 @@ describe("Host-authorized control-plane routes", () => {
     registerControlPlaneRoutes(app, {
       authenticator: { authenticate: vi.fn() } as never,
       connectLifecycle: { revokeForHost } as never,
-      managedDeploymentDomain: "managed.opensteer.test",
-      publicOrigin: new URL("https://accounts.opensteer.test"),
       store: { authenticateHostCredential: vi.fn(async () => authority) } as never,
     });
 
@@ -121,9 +117,7 @@ describe("Host-authorized control-plane routes", () => {
     registerControlPlaneRoutes(app, {
       authenticator: { authenticate: vi.fn() } as never,
       connectLifecycle: {} as never,
-      managedDeploymentDomain: "managed.opensteer.test",
       personalRemoteAccount: { activateLink } as never,
-      publicOrigin: new URL("https://accounts.opensteer.test"),
       store: {
         authenticateHostCredential,
       } as never,
@@ -158,9 +152,7 @@ describe("Host-authorized control-plane routes", () => {
     registerControlPlaneRoutes(app, {
       authenticator: { authenticate } as never,
       connectLifecycle: {} as never,
-      managedDeploymentDomain: "managed.opensteer.test",
       personalRemoteAccount: { cancelLinkOperation } as never,
-      publicOrigin: new URL("https://accounts.opensteer.test"),
       store: {} as never,
     });
 
@@ -196,9 +188,7 @@ describe("Host-authorized control-plane routes", () => {
     registerControlPlaneRoutes(app, {
       authenticator: { authenticate: vi.fn() } as never,
       connectLifecycle: {} as never,
-      managedDeploymentDomain: "managed.opensteer.test",
       personalRemoteAccount: { unlinkPersonalHost } as never,
-      publicOrigin: new URL("https://accounts.opensteer.test"),
       store: {
         authenticateHostCredential,
       } as never,
@@ -228,8 +218,6 @@ describe("Account directory routes", () => {
     registerControlPlaneRoutes(app, {
       authenticator: { authenticate } as never,
       connectLifecycle: {} as never,
-      managedDeploymentDomain: "managed.opensteer.test",
-      publicOrigin: new URL("https://accounts.opensteer.test"),
       store: { removeDeploymentFromDirectory } as never,
     });
 

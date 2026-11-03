@@ -16,12 +16,7 @@ import {
   type ControlPlaneAuth,
   type ControlPlaneAuthenticator,
 } from "../auth/auth.js";
-import {
-  currentSetCookies,
-  escapeHtml,
-  parseForm,
-  requireExactOrigin,
-} from "../portal/browser-http.js";
+import { escapeHtml, parseForm, requireExactOrigin } from "../portal/browser-http.js";
 import { ControlPlaneError } from "./errors.js";
 import {
   brandMark,
@@ -32,13 +27,7 @@ import { registerControlPlaneRoutes, toWebHeaders } from "../portal/routes.js";
 import { registerNotificationRoutes } from "../notifications/notification-routes.js";
 import type { ControlPlaneNotificationStore } from "../notifications/notification-store.js";
 import type { ConnectLifecycleService } from "../account/connect-lifecycle.js";
-import {
-  clearPortalHintCookie,
-  createPortalRouter,
-  portalHintCookie,
-  portalHintCookieDomain,
-  type PortalRouter,
-} from "../portal/portal.js";
+import { createPortalRouter, type PortalRouter } from "../portal/portal.js";
 import type { PortalSessionStore } from "../portal/portal-sessions.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import type { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
@@ -46,8 +35,6 @@ import {
   hostedOAuthLaunchReturnTo,
   registerHostedOAuthBrokerRoutes,
 } from "../auth/hosted-oauth-broker-routes.js";
-import { registerCloudDeploymentRoutes } from "../cloud/routes.js";
-import type { CloudDeploymentLifecycle } from "../cloud/lifecycle.js";
 import type { HostedOAuthBrokerService } from "../auth/hosted-oauth-broker-service.js";
 
 const maxHttpBodyBytes = 1 * 1_024 * 1_024;
@@ -71,10 +58,9 @@ export async function createControlPlaneServer(
     readonly auth: ControlPlaneAuth;
     readonly authenticator: ControlPlaneAuthenticator;
     readonly connectLifecycle: ConnectLifecycleService;
-    readonly cloudDeployments?: CloudDeploymentLifecycle;
     readonly hostedOAuthBroker?: HostedOAuthBrokerService;
     readonly desktopDownloadUrl?: string;
-    readonly managedDeploymentDomain: string;
+    readonly portalOrigin: URL;
     readonly notifications?: ControlPlaneNotificationStore;
     readonly notificationPlatforms?: readonly NotificationDevicePlatform[];
     readonly publicOrigin: URL;
@@ -114,20 +100,17 @@ export async function createControlPlaneServer(
   });
 
   // This process serves two hostnames. The Account host is the authorization
-  // server and nothing else; the managed-Deployment apex is the web portal.
+  // server and nothing else; the explicit portal origin is the web portal.
   // Which one answered a request is decided by its Host header, before any
   // request is rewritten onto the Account public origin. The machine API under
   // /v1 and /healthz belongs to neither browser vhost and stays host-agnostic.
   const portal = dependencies.portalSessions
     ? createPortalRouter({
         auth: dependencies.auth,
-        ...(dependencies.cloudDeployments
-          ? { cloudDeployments: dependencies.cloudDeployments }
-          : {}),
         ...(dependencies.desktopDownloadUrl
           ? { desktopDownloadUrl: dependencies.desktopDownloadUrl }
           : {}),
-        managedDeploymentDomain: dependencies.managedDeploymentDomain,
+        portalOrigin: dependencies.portalOrigin,
         portalSessions: dependencies.portalSessions,
         ...(dependencies.personalRemoteAccount
           ? { personalRemoteAccount: dependencies.personalRemoteAccount }
@@ -136,14 +119,10 @@ export async function createControlPlaneServer(
         store: dependencies.store,
       })
     : undefined;
-  // Better Auth owns the wire name of its session cookie, prefixes included,
-  // so the hint follows whatever it actually writes rather than a guess.
-  const accountSessionCookie = (await dependencies.auth.$context).authCookies.sessionToken.name;
-  registerTransportSecurity(app, dependencies, portal, accountSessionCookie);
+  registerTransportSecurity(app);
 
   app.get("/healthz", async () => ({ ok: true }));
   registerControlPlaneRoutes(app, dependencies);
-  registerCloudDeploymentRoutes(app, dependencies);
   registerNotificationRoutes(app, dependencies);
   if (dependencies.hostedOAuthBroker) {
     registerHostedOAuthBrokerRoutes(app, {
@@ -407,51 +386,11 @@ function copySetCookies(reply: FastifyReply, response: Response): void {
   if (cookies.length > 0) void reply.header("set-cookie", cookies);
 }
 
-/**
- * Adds HSTS to every response, and keeps the portal's presence hint in step
- * with the Account session cookie. Whichever route issues or clears that
- * cookie — the authorization server itself, or the sign-out form in front of
- * it — the hint follows in the same response, so signing out of the Account
- * host is enough to make the portal render its signed-out page immediately.
- */
-function registerTransportSecurity(
-  app: FastifyInstance,
-  dependencies: { readonly managedDeploymentDomain: string; readonly publicOrigin: URL },
-  portal: PortalRouter | undefined,
-  sessionCookieName: string,
-): void {
-  const secure = dependencies.publicOrigin.protocol === "https:";
-  const hintDomain = portalHintCookieDomain(
-    dependencies.publicOrigin,
-    dependencies.managedDeploymentDomain,
-  );
-  app.addHook("onSend", async (request, reply, payload) => {
+function registerTransportSecurity(app: FastifyInstance): void {
+  app.addHook("onSend", async (_request, reply, payload) => {
     void reply.header("strict-transport-security", strictTransportSecurity);
-    if (!hintDomain || portal?.ownsRequest(request)) return payload;
-    const cookies = currentSetCookies(reply);
-    const change = accountSessionCookieChange(cookies, sessionCookieName);
-    if (change === "unchanged") return payload;
-    void reply.header("set-cookie", [
-      ...cookies,
-      change === "issued"
-        ? portalHintCookie(hintDomain, secure)
-        : clearPortalHintCookie(hintDomain, secure),
-    ]);
     return payload;
   });
-}
-
-function accountSessionCookieChange(
-  cookies: readonly string[],
-  name: string,
-): "cleared" | "issued" | "unchanged" {
-  for (const cookie of cookies) {
-    const separator = cookie.indexOf("=");
-    if (separator === -1 || cookie.slice(0, separator).trim() !== name) continue;
-    const value = cookie.slice(separator + 1).split(";", 1)[0] ?? "";
-    return value === "" || /;\s*max-age=0\b/iu.test(cookie) ? "cleared" : "issued";
-  }
-  return "unchanged";
 }
 
 function assertAuthorizeRequestSecurity(request: FastifyRequest, publicOrigin: URL): void {

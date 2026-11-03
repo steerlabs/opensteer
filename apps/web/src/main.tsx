@@ -57,8 +57,7 @@ async function renderOpensteer(): Promise<void> {
   // dev preview bridge reaches it too, so the card can be looked at in a browser.
   if (bridge && window.location.pathname === fullAccessPanelPath) {
     const { FullAccessPanel } = await import("./desktop/full-access-panel.js");
-    // The desktop names itself the way the macOS list does ("Opensteer Beta"
-    // on the beta channel); the preview has no channel and says Opensteer.
+    // Match the app name shown in the macOS permission list.
     const appName = new URLSearchParams(window.location.search).get("app") ?? "Opensteer";
     reactRoot.render(
       <StrictMode>
