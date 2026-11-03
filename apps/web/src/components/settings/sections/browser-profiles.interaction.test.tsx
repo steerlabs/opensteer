@@ -96,11 +96,11 @@ describe("Settings → Browser profiles", () => {
     expect(lastBrowsingChoice(scope)).toEqual({ kind: "guest" });
   });
 
-  it("offers an older Host only what it can do: specialist access", async () => {
+  it("offers an older Host only what it can do: project access", async () => {
     const { dispatch, page } = await mount({ manageable: false });
     await click(button(page, "Manage Work"));
-    expect(menuItems()).toEqual(["Choose specialists…"]);
-    await click(menuItem("Choose specialists…"));
+    expect(menuItems()).toEqual(["Choose projects…"]);
+    await click(menuItem("Choose projects…"));
     await click(button(page, "Off"));
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -140,17 +140,14 @@ async function mount(
     ],
     browserProfileGrants: [
       {
-        access: "full-control",
+        access: "read-write",
         createdAt: "2026-10-30T12:00:00.000Z",
         id: "bpg_shopping_buyer",
         profileId: "bpr_shopping",
         workspaceId: "wsp_buyer",
       },
     ],
-    workspaces: [
-      ...base.workspaces,
-      { ...main, id: "wsp_buyer", kind: "specialized", name: "Buyer" },
-    ],
+    workspaces: [...base.workspaces, { ...main, id: "wsp_buyer", kind: "project", name: "Buyer" }],
   };
   const context = { hostClient, snapshot } as unknown as ShellContext;
   const container = document.createElement("div");

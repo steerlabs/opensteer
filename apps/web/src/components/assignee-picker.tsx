@@ -9,21 +9,21 @@ import { WorkspaceOrb } from "./workspace-orb.js";
 
 /**
  * Who should do the task being written: Opensteer, in Main, or one of the
- * reader's specialists. Each one starts tasks from its own page, so choosing
- * goes there; with no specialist there is nothing to choose and nothing shows.
+ * reader's projects. Each one starts tasks from its own page, so choosing
+ * goes there; with no project there is nothing to choose and nothing shows.
  */
 export function AssigneePicker({
-  specialists,
+  projects,
   workspace,
 }: {
-  readonly specialists: readonly WorkspaceSummary[];
+  readonly projects: readonly WorkspaceSummary[];
   /** The Workspace the composer on screen starts its task in. */
   readonly workspace: WorkspaceSummary;
 }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
-  if (specialists.length === 0) return null;
+  if (projects.length === 0) return null;
   const main = workspace.kind === "main";
   const name = main ? "Opensteer" : workspace.name;
   const choose = (path: string) => {
@@ -80,30 +80,30 @@ export function AssigneePicker({
                 <span className="picker__detail">Works on anything</span>
               </span>
             </button>
-            {specialists.map((specialist) => {
-              const selected = specialist.id === workspace.id;
+            {projects.map((project) => {
+              const selected = project.id === workspace.id;
               return (
                 <button
                   aria-checked={selected}
                   className="picker__row"
-                  key={specialist.id}
-                  onClick={() => choose(`/workspaces/${encodeURIComponent(specialist.id)}`)}
+                  key={project.id}
+                  onClick={() => choose(`/workspaces/${encodeURIComponent(project.id)}`)}
                   role="menuitemradio"
                   type="button"
                 >
                   <span className="picker__check">{selected ? <Icon name="check" /> : null}</span>
                   <span className="picker__glyph">
                     <WorkspaceOrb
-                      icon={specialist.icon}
-                      name={specialist.name}
+                      icon={project.icon}
+                      name={project.name}
                       size="tiny"
-                      color={specialist.color}
+                      color={project.color}
                     />
                   </span>
                   <span className="picker__label-stack">
-                    <span className="picker__label">{specialist.name}</span>
-                    {specialist.description ? (
-                      <span className="picker__detail">{specialist.description}</span>
+                    <span className="picker__label">{project.name}</span>
+                    {project.description ? (
+                      <span className="picker__detail">{project.description}</span>
                     ) : null}
                   </span>
                 </button>

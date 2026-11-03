@@ -21,6 +21,7 @@ const expectedTools = {
     "request_list",
     "request_withdraw",
     "environment_list",
+    "plugin_install",
     "thread_read",
     "thread_list",
     "thread_delegate",
@@ -36,6 +37,26 @@ const expectedTools = {
     "trigger_read",
     "trigger_write",
   ],
+  specialist: [
+    "app_publish",
+    "app_list",
+    "app_fetch",
+    "request_list",
+    "request_withdraw",
+    "environment_list",
+    "thread_read",
+    "thread_list",
+    "assignment_cancel",
+    "thread_message",
+    "thread_write",
+    "browser_profile_list",
+    "sign_in",
+    "browser_tab_read",
+    "browser_tab_write",
+    "browser_session_list",
+    "browser_session_open",
+    "trigger_read",
+  ],
   main: [
     "app_publish",
     "app_list",
@@ -43,9 +64,9 @@ const expectedTools = {
     "request_list",
     "request_withdraw",
     "environment_list",
-    "workspace_list",
-    "workspace_create",
-    "workspace_mount",
+    "project_list",
+    "project_create",
+    "plugin_install",
     "thread_read",
     "thread_list",
     "thread_delegate",
@@ -69,8 +90,8 @@ const expectedTools = {
   ],
   trigger: [
     "environment_list",
-    "workspace_list",
-    "workspace_create",
+    "project_list",
+    "project_create",
     "thread_read",
     "thread_delegate",
     "thread_message",
@@ -84,6 +105,7 @@ const expectedTools = {
     "request_list",
     "request_withdraw",
     "environment_list",
+    "plugin_install",
     "thread_read",
     "thread_list",
     "thread_delegate",
@@ -132,6 +154,8 @@ describe("agent tool catalog", () => {
 
   it("selects the role-specific browser access request schema", () => {
     const main = tool("main", "browser_access_request");
+    expect(main.description).toContain("target Project's workspaceId");
+    expect(main.description).toContain("specialist bindings");
     const workspace = tool("workspace", "browser_access_request");
 
     expect(main.inputSchema.safeParse(browserAccessInput()).success).toBe(false);
@@ -240,7 +264,7 @@ describe("agent tool catalog", () => {
   it("loads the Trigger contract only for program authoring, not timing controls", () => {
     const write = tool("trigger", "trigger_write");
     expect(write.description).toContain(
-      "Before writing or changing a program, load opensteer-triggers",
+      "Before writing or changing a program, load opensteer:triggers",
     );
     expect(write.description).not.toContain("Trigger programs execute as Node.js ESM modules");
     const schema = JSON.stringify(write.inputSchema.toJSONSchema({ io: "input" }));
@@ -263,7 +287,7 @@ describe("agent tool catalog", () => {
     expect(new TextEncoder().encode(opensteerPlatformGuide).byteLength).toBeLessThanOrEqual(2_048);
     expect(opensteerPlatformGuide).toContain("run Node.js on their anchor Thread's Runner");
     expect(opensteerPlatformGuide).toContain(
-      "read opensteer-triggers before writing or changing a program",
+      "read opensteer:triggers before writing or changing a program",
     );
     expect(platformGuideForCapabilityProfile("trigger")).toContain(
       "run Node.js on their anchor Thread's Runner",
@@ -313,7 +337,7 @@ describe("agent tool catalog", () => {
   });
 
   it("names the history cursor input", () => {
-    for (const name of ["thread_read", "thread_list", "workspace_list"] as const) {
+    for (const name of ["thread_read", "thread_list", "project_list"] as const) {
       expect(tool("main", name).description).toContain("window.nextBefore as before");
     }
     expect(
@@ -328,10 +352,10 @@ describe("agent tool catalog", () => {
     for (const profileId of AgentCapabilityProfileIdSchema.options) {
       const instructions = agentCapabilityProfile(profileId).instructions;
       const cue =
-        "For Mac app interfaces or Android phones, read opensteer-computer-use and use the computer tool.";
+        "For Mac app interfaces or Android phones, read opensteer:computer-use and use the computer tool.";
       expect(instructions.split(cue).length - 1).toBe(profileId === "trigger" ? 0 : 1);
       expect(
-        skillsForCapabilityProfile(profileId).some(({ name }) => name === "opensteer-computer-use"),
+        skillsForCapabilityProfile(profileId).some(({ name }) => name === "opensteer:computer-use"),
       ).toBe(profileId !== "trigger");
     }
   });
@@ -342,8 +366,8 @@ describe("agent tool catalog", () => {
       const tools = toolsForCapabilityProfile(profileId).map(({ name }) => name);
       const skills = skillsForCapabilityProfile(profileId).map(({ name }) => name);
       const browses = tools.includes("browser_session_open");
-      expect(instructions.includes("opensteer-browser")).toBe(browses);
-      expect(skills.includes("opensteer-browser")).toBe(browses);
+      expect(instructions.includes("opensteer:browser")).toBe(browses);
+      expect(skills.includes("opensteer:browser")).toBe(browses);
       expect(instructions.length).toBeLessThanOrEqual(2_048);
     }
   });
@@ -391,4 +415,17 @@ it("validates person messages and limits them to Run profiles", () => {
   expect(capabilityProfileAllowsTool("delegated", "person.message")).toBe(false);
   expect(capabilityProfileAllowsTool("delegated", "person.show")).toBe(false);
   expect(capabilityProfileAllowsTool("trigger", "person.message")).toBe(false);
+});
+
+it("specialists cannot delegate, install plugins, author triggers or request access", () => {
+  for (const tool of [
+    "thread.delegate",
+    "plugin.install",
+    "trigger.write",
+    "browser.profile.create",
+    "browser.access.request",
+    "machine.full-disk-access.request",
+  ] as const) {
+    expect(capabilityProfileAllowsTool("specialist", tool)).toBe(false);
+  }
 });

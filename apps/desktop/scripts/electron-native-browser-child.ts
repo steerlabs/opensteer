@@ -1367,7 +1367,6 @@ function bridgeOptions(
     },
     portal: { openExternal: unavailable, pickFolder: unavailable },
     runner: {
-      portableFs: unavailable,
       remove: unavailable,
       start: unavailable,
       status: unavailable,

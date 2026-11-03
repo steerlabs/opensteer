@@ -5,7 +5,6 @@ export default defineConfig(
   nodeApp({
     entry: {
       main: "src/main.ts",
-      "destroy-managed-main": "src/destroy-managed-main.ts",
       "stage-managed-secrets-main": "src/stage-managed-secrets-main.ts",
       "computer-repl-worker": "src/computer-use/computer-repl/computer-repl-worker.ts",
     },

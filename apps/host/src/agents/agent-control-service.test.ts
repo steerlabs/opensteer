@@ -1,3 +1,4 @@
+import { SpecialistStore } from "@opensteer/database";
 import {
   createId,
   HarnessIdSchema,
@@ -51,6 +52,61 @@ const testModelSelection = ModelSelectionSchema.parse({
 });
 
 describe("AgentControlService", () => {
+  it("refuses pending specialists with their binding reasons", async () => {
+    const current = thread(currentThreadId, nativeHarnessId, "Main");
+    const { service } = makeService({
+      threads: [current],
+      messages: [],
+      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+    });
+    const listing = vi.spyOn(SpecialistStore.prototype, "list").mockResolvedValue([
+      {
+        id: "pending-specialist",
+        workspaceId,
+        pluginId: "plugin",
+        pluginVersionId: "version",
+        ownerUserId: ownerId,
+        ownerName: "Alice",
+        canUse: false,
+        plugin: "invoices",
+        version: "a".repeat(64),
+        status: "pending",
+        models: [],
+        fallback: "none",
+        access: [
+          {
+            type: "browser-profile",
+            level: "read",
+            reason: "Read invoices",
+            binding: null,
+            state: "needs-access",
+            candidates: [],
+          },
+          {
+            type: "phone",
+            level: "read",
+            reason: "Choose phone",
+            binding: null,
+            state: "choose",
+            candidates: [],
+          },
+        ],
+      },
+    ]);
+    try {
+      await expect(
+        service.handle("run-token", {
+          type: "thread.delegate",
+          requestId: crypto.randomUUID(),
+          specialist: "invoices",
+          task: "Read invoices",
+        }),
+      ).rejects.toThrow(/browser-profile: needs-access.*phone: choose/);
+    } finally {
+      listing.mockRestore();
+    }
+  });
+
   it.each(["main", "workspace", "delegated"] as const)(
     "lists the Requests visible to the %s Thread",
     async (capabilityProfileId) => {
@@ -156,12 +212,12 @@ describe("AgentControlService", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        type: "workspace.inspect",
+        type: "project.list",
       }),
-    ).rejects.toThrow("does not allow workspace.list");
+    ).rejects.toThrow("does not allow project.list");
   });
 
-  it.each(["browser.sign-in", "sign-in"] as const)(
+  it.each(["sign-in"] as const)(
     "keeps %s Browser Session requests admitted through the single sign-in permission",
     async (type) => {
       const current = thread(currentThreadId, nativeHarnessId, "Worker", null, {
@@ -212,63 +268,14 @@ describe("AgentControlService", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        type: "workspace.inspect",
+        type: "environment.list",
       }),
     ).rejects.toThrow("Main coordination requires active owner authority");
   });
 
-  // The Workspace an agent asks to mount may have been archived, or claimed by
-  // the archive sweep moments ago. Neither is a failed mount: the wake cancels
-  // a quiescing archive, so the answer is "retry", not "not ready".
-  it.each(["archiving", "archived"] as const)(
-    "wakes a %s Workspace instead of failing the agent's mount",
-    async (status) => {
-      const current = thread(currentThreadId, nativeHarnessId, "Main");
-      const target = { ...workspace(targetWorkspaceId, "Client"), status };
-      const mountWorkspace = vi.fn();
-      const { service, wakeWorkspace } = makeService({
-        commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
-        messages: [],
-        mountWorkspace,
-        threads: [current],
-        workspaces: [workspace(workspaceId, "Main"), target],
-      });
-
-      await expect(
-        service.handle("run-token", {
-          requestId: crypto.randomUUID(),
-          type: "workspace.mount",
-          workspaceId: target.id,
-        }),
-      ).rejects.toMatchObject({ code: "conflict", retryable: true });
-      expect(wakeWorkspace).toHaveBeenCalledWith(target.id, "agent-workspace-mount");
-      expect(mountWorkspace).not.toHaveBeenCalled();
-    },
-  );
-
-  it("refuses to mount a Workspace whose storage failed, without waking it", async () => {
-    const current = thread(currentThreadId, nativeHarnessId, "Main");
-    const target = { ...workspace(targetWorkspaceId, "Client"), status: "failed" as const };
-    const { service, wakeWorkspace } = makeService({
-      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
-      messages: [],
-      threads: [current],
-      workspaces: [workspace(workspaceId, "Main"), target],
-    });
-
-    await expect(
-      service.handle("run-token", {
-        requestId: crypto.randomUUID(),
-        type: "workspace.mount",
-        workspaceId: target.id,
-      }),
-    ).rejects.toMatchObject({ code: "conflict", retryable: false });
-    expect(wakeWorkspace).not.toHaveBeenCalled();
-  });
-
   it("projects created Workspaces onto the public response shape", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main");
-    const created = workspace(targetWorkspaceId, "Analysis");
+    const created = { ...workspace(targetWorkspaceId, "Analysis"), slug: "analysis" };
     const createWorkspace = vi.fn(async () => created);
     const { service } = makeService({
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
@@ -280,40 +287,40 @@ describe("AgentControlService", () => {
     const response = await service.handle("run-token", {
       name: "Analysis",
       requestId: crypto.randomUUID(),
-      type: "workspace.create",
+      type: "project.create",
     });
 
     expect(response).toMatchObject({
-      type: "workspace.create.result",
+      type: "project.create.result",
+      slug: "analysis",
+      path: `/main/Projects/${created.slug}`,
       workspace: {
-        capacity: { kind: "managed-quota" },
+        capacity: { kind: "host-filesystem" },
         id: created.id,
-        location: { kind: "shared-storage" },
+        location: { kind: "machine" },
         name: created.name,
       },
     });
-    if (response.type !== "workspace.create.result") throw new Error("Unexpected response type");
+    if (response.type !== "project.create.result") throw new Error("Unexpected response type");
     expect(response.workspace).not.toHaveProperty("backing");
     expect(response.workspace).not.toHaveProperty("capacityPolicy");
     expect(response.workspace).not.toHaveProperty("createdBy");
     // The icon is for people; a Runner parsing this strictly never sees it.
     expect(response.workspace).not.toHaveProperty("icon");
     expect(createWorkspace).toHaveBeenLastCalledWith(
-      expect.objectContaining({ storage: { backing: "portablefs" } }),
+      expect.not.objectContaining({ storage: expect.anything() }),
     );
 
-    // A local directory with no machine named goes on the machine this Run uses.
+    // Creation leaves placement to the owner’s Main storage authority.
     await service.handle("run-token", {
       icon: "plane",
       name: "Travel",
       requestId: crypto.randomUUID(),
-      storage: { backing: "local-directory" },
-      type: "workspace.create",
+      type: "project.create",
     });
     expect(createWorkspace).toHaveBeenLastCalledWith(
       expect.objectContaining({
         icon: "plane",
-        storage: { backing: "local-directory", environmentId },
       }),
     );
   });
@@ -368,7 +375,7 @@ describe("AgentControlService", () => {
 
     const inspectId = crypto.randomUUID();
     await expect(
-      service.handle("run-token", { requestId: inspectId, type: "workspace.inspect" }),
+      service.handle("run-token", { requestId: inspectId, type: "environment.list" }),
     ).resolves.toMatchObject({
       environments: [
         {
@@ -392,12 +399,7 @@ describe("AgentControlService", () => {
         expect.objectContaining({ enabled: true, id: targetCodexHarnessId }),
       ]),
       requestId: inspectId,
-      threads: [current, target],
-      type: "workspace.inspect.result",
-      workspaces: [
-        { id: workspaceId, name: "Main workspace", status: "ready" },
-        { id: targetWorkspaceId, name: "Client", status: "ready" },
-      ],
+      type: "environment.list.result",
     });
 
     const readId = crypto.randomUUID();
@@ -465,7 +467,7 @@ describe("AgentControlService", () => {
     });
     expect(authenticate).toHaveBeenCalledTimes(4);
     expect(authenticate).toHaveBeenCalledWith("run-token");
-    expect(listEnvironmentsForUser).toHaveBeenCalledWith(ownerId, 65);
+    expect(listEnvironmentsForUser).toHaveBeenCalledWith(ownerId, 65, {});
     expect(workspaceSnapshot).not.toHaveBeenCalled();
   });
 
@@ -513,12 +515,11 @@ describe("AgentControlService", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        type: "workspace.inspect",
+        type: "environment.list",
       }),
     ).resolves.toMatchObject({
       environments: [{ compatibleHarnessInstanceIds: [nativeHarnessId], id: environmentId }],
       harnesses: [{ id: nativeHarnessId }],
-      harnessesTruncated: false,
     });
     expect(listHarnessInstances).toHaveBeenCalledWith({ environmentIds: [environmentId] });
   });
@@ -754,7 +755,6 @@ describe("AgentControlService", () => {
         ownerEnvironmentId: environmentId,
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
     };
     const { service } = makeService({
       capabilityProfileId: "main",
@@ -765,7 +765,7 @@ describe("AgentControlService", () => {
       threads: [current],
       workspaces: [
         workspace(workspaceId, "Main workspace"),
-        workspace(targetWorkspaceId, "Client"),
+        workspace(targetWorkspaceId, "Client", ownerId, targetEnvironmentId),
       ],
     });
 
@@ -820,7 +820,7 @@ describe("AgentControlService", () => {
       threads: [current],
       workspaces: [
         workspace(workspaceId, "Main workspace"),
-        workspace(targetWorkspaceId, "Client"),
+        workspace(targetWorkspaceId, "Client", ownerId, targetEnvironmentId),
       ],
     });
     await expect(
@@ -842,7 +842,7 @@ describe("AgentControlService", () => {
       threads: [current],
       workspaces: [
         workspace(workspaceId, "Main workspace"),
-        workspace(targetWorkspaceId, "Client"),
+        workspace(targetWorkspaceId, "Client", ownerId, targetEnvironmentId),
       ],
     });
     await expect(
@@ -873,7 +873,6 @@ describe("AgentControlService", () => {
         ownerEnvironmentId: targetEnvironmentId,
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
     };
     const { service } = makeService({
       capabilityProfileId: "main",
@@ -916,7 +915,7 @@ describe("AgentControlService", () => {
       threads: [current],
       workspaces: [
         workspace(workspaceId, "Main workspace"),
-        workspace(targetWorkspaceId, "Client"),
+        workspace(targetWorkspaceId, "Client", ownerId, targetEnvironmentId),
       ],
     });
 
@@ -948,7 +947,7 @@ describe("AgentControlService", () => {
       threads: [current],
       workspaces: [
         workspace(workspaceId, "Main workspace"),
-        workspace(targetWorkspaceId, "Client"),
+        workspace(targetWorkspaceId, "Client", ownerId, targetEnvironmentId),
       ],
     };
     const request = {
@@ -1025,13 +1024,11 @@ describe("AgentControlService", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        type: "workspace.inspect",
+        type: "environment.list",
       }),
     ).resolves.toMatchObject({
       environments: [{ compatibleHarnessInstanceIds: [codexHarnessId] }],
       harnesses: [{ id: codexHarnessId }],
-      threads: [current, target],
-      workspaces: [{ id: workspaceId }],
     });
 
     await expect(
@@ -1179,7 +1176,7 @@ describe("AgentControlService", () => {
       capabilityProfileId: "main",
     });
     const freshSummary = {
-      access: "full-control" as const,
+      access: "read-write" as const,
       activeAttachmentCount: 1,
       attached: true,
       createdAt: now,
@@ -1611,7 +1608,7 @@ function makeService(options: {
   createWorkspace?: (input: {
     readonly createdBy: typeof ownerId;
     readonly idempotencyKey: string;
-    readonly kind: "specialized";
+    readonly kind: "project";
     readonly name: string;
   }) => Promise<Workspace>;
   disconnectedEnvironmentId?: EnvironmentId;
@@ -1951,7 +1948,6 @@ function makeService(options: {
   const unexpectedBrowserRequest = async () => {
     throw new Error("Unexpected browser request");
   };
-  const wakeWorkspace = vi.fn(async () => undefined);
   const commands = {
     publishPersonMessage: options.commands.publishPersonMessage,
     withInputAdmission: async <T>(_owner: string, _key: string, operation: () => Promise<T>) =>
@@ -1983,7 +1979,6 @@ function makeService(options: {
     authenticate,
     claims,
     listEnvironmentsForUser,
-    wakeWorkspace,
     service: new AgentControlService({
       ...(options.personShow ? { personShow: options.personShow } : {}),
       browserSources: options.browserSources ?? { agentSignIn: unexpectedBrowserRequest },
@@ -2007,16 +2002,15 @@ function makeService(options: {
       store,
       tokens,
       ...(options.triggers === undefined ? {} : { triggers: options.triggers }),
-      defaultWorkspaceBacking: "portablefs",
-      environmentWorkspaceBackings: () => ["portablefs"] as const,
+      defaultWorkspaceBacking: "local-directory",
+      environmentWorkspaceBackings: () => ["local-directory"] as const,
       workspaceMounts: {
         mount:
           options.mountWorkspace ??
           vi.fn(async ({ workspace }: { workspace: Workspace }) => ({
-            path: `workspaces/${workspace.id}`,
+            path: `/main/Projects/${workspace.slug}`,
           })),
       },
-      workspaceWake: { wake: wakeWorkspace },
       workspaces: {
         create:
           options.createWorkspace ??
@@ -2157,25 +2151,23 @@ function workspace(
   id: Workspace["id"],
   name: string,
   createdBy: Workspace["createdBy"] = ownerId,
+  ownerEnvironmentId = environmentId,
 ): Workspace {
   return {
     backing: {
+      kind: "local-directory",
       generation: 1,
-      kind: "portablefs",
-      serviceId: "test-portablefs",
-      volumeId: `pfs_${id}`,
+      bindingId: createId("workspaceBinding"),
+      ownerEnvironmentId,
+      storageAuthorityId: createId("storageAuthority"),
     },
-    capacityPolicy: {
-      blockHardLimitBytes: 10_000_000,
-      inodeHardLimit: 10_000,
-      kind: "hard-quota",
-    },
+
     createdAt: now,
     createdBy,
     homeThreadId: null,
     icon: null,
     id,
-    kind: id === workspaceId ? "main" : "specialized",
+    kind: id === workspaceId ? "main" : "project",
     name,
     status: "ready",
     storageIssue: null,
@@ -2256,9 +2248,10 @@ it.each(["main", "workspace"] as const)(
       events: [],
       wasDuplicate: false,
     }));
+    const enqueueThreadInput = vi.fn();
     const fixture = makeService({
       capabilityProfileId,
-      commands: { publishPersonMessage, delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+      commands: { publishPersonMessage, delegateThread: vi.fn(), enqueueThreadInput },
       messages: [],
       threads: [thread(currentThreadId, nativeHarnessId, "Main", null, { capabilityProfileId })],
     });
@@ -2276,7 +2269,7 @@ it.each(["main", "workspace"] as const)(
         requestId,
       }),
     });
-    expect(fixture.wakeWorkspace).not.toHaveBeenCalled();
+    expect(enqueueThreadInput).not.toHaveBeenCalled();
   },
 );
 

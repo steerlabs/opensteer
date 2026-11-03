@@ -882,11 +882,7 @@ integration("proposal credential guidance", () => {
             manifest,
             adapterSnapshot,
             sourceKind:
-              name === "plugin"
-                ? "agent-plugin"
-                : name === "missing-inline"
-                  ? "built-in"
-                  : "proposed",
+              name === "plugin" ? "plugin" : name === "missing-inline" ? "built-in" : "proposed",
             provenance:
               name === "missing-inline"
                 ? {
@@ -1520,11 +1516,7 @@ integration("proposal credential guidance", () => {
         const started = { ...host, runtime: restarted, store: restarted.store };
         const nextCaller = await connectCallerMachine(started, {
           name: "Bound caller again",
-          token: await enrollmentToken(started, {
-            allowedModules: ["agents"],
-            idempotencyKey: "bound-caller-again",
-            name: "Bound caller again",
-          }),
+          previous: caller,
         });
         closers.unshift(() => nextCaller.close());
         const nextRun = await dispatchCallerRun(started, nextCaller, {
@@ -2071,11 +2063,7 @@ integration("proposal credential guidance", () => {
       const started = { ...host, runtime: restarted, store: restarted.store };
       const nextCaller = await connectCallerMachine(started, {
         name: "Recovering caller again",
-        token: await enrollmentToken(started, {
-          allowedModules: ["agents"],
-          idempotencyKey: "recovering-caller-again",
-          name: "Recovering caller again",
-        }),
+        previous: caller,
       });
       closers.unshift(() => nextCaller.close());
       const nextRun = await dispatchCallerRun(started, nextCaller, {

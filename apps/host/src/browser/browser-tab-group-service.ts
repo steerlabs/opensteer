@@ -168,7 +168,11 @@ export class BrowserTabGroupService {
       visibleGroups.flatMap((group) => group.tabIds.map((tabId) => [tabId, group.id] as const)),
     );
     const profiles = query
-      ? await this.#browser.listGrantedProfiles(actor.ownerId, actor.workspaceId)
+      ? await this.#browser.listGrantedProfiles(
+          actor.ownerId,
+          actor.workspaceId,
+          actor.agentBindingId,
+        )
       : [];
     const profileNames = new Map(profiles.map((profile) => [profile.id, profile.name]));
     const groupTitles = new Map(groups.map((group) => [group.id, group.title]));

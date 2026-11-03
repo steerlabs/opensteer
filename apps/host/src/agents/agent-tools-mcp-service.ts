@@ -10,12 +10,7 @@ import {
   ListToolsRequestSchema,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import {
-  legacyBrowserSignInTool,
-  previousReleaseToolsForCapabilityProfile,
-  toolsForEnvironmentContract,
-  type AgentToolName,
-} from "@opensteer/agent-tools";
+import { toolsForCapabilityProfile, type AgentToolName } from "@opensteer/agent-tools";
 import {
   OpensteerError,
   ThreadWriteInputSchema,
@@ -30,7 +25,6 @@ import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import {
   requiredTriggerToolField,
-  TriggerProgramSchema,
   TriggerReadInputSchema,
   triggerSourceFromInput,
   TriggerWriteInputSchema,
@@ -83,39 +77,14 @@ interface AgentToolControl {
   handle(token: string, input: unknown): Promise<AgentControlResponse>;
 }
 
-function toolInputSchema(
-  definition: { readonly inputSchema: z.ZodType; readonly name: string },
-  version: 1 | 2 | 3 | null,
-): z.ZodObject {
-  const inputSchema = definition.inputSchema as z.ZodObject;
-  if (version !== 1) return inputSchema;
-  if (definition.name === "thread_message") {
-    return inputSchema.extend({ delivery: z.enum(["queue", "trigger"]) });
-  }
-  if (definition.name === "trigger_write") {
-    return inputSchema.extend({
-      program: TriggerProgramSchema.omit({ toolContractVersion: true }).optional(),
-    });
-  }
-  return inputSchema;
-}
-
-function toolDescription(name: string, current: string, version: 1 | 2 | 3 | null): string {
-  if (version !== 1) return current;
-  if (name === "thread_message") {
-    return "Send a message to a Thread. delivery queue records passive context; delivery trigger queues actionable work.";
-  }
-  if (name === "trigger_write") {
-    return "Create or change a Trigger using the version 1 program input contract. Nested programs contain language and source and do not accept toolContractVersion.";
-  }
-  return current;
-}
-
 export class AgentToolsMcpService {
   readonly #apps: Pick<AppService, "publish" | "list" | "fetch">;
   readonly #agentControl: Pick<AgentControlService, "handle">;
   readonly #allowedHost: string;
   readonly #allowedOrigin: string;
+  readonly #pluginInstall:
+    | ((scope: AgentControlRunScope, directory: string) => Promise<Record<string, unknown>>)
+    | undefined;
   readonly #sessions = new Map<string, McpSession>();
   readonly #tokens: AgentControlTokenService;
   readonly #runnerCapabilities:
@@ -135,6 +104,10 @@ export class AgentToolsMcpService {
      * What a Run's Runner advertised, which decides the tools its engine
      * accepts. Without it every Run gets the current inventory.
      */
+    readonly pluginInstall?: (
+      scope: AgentControlRunScope,
+      directory: string,
+    ) => Promise<Record<string, unknown>>;
     readonly runnerCapabilities?: (scope: AgentControlRunScope) => Promise<readonly string[]>;
     readonly store: Pick<OpensteerStore, "getThreadForOwner">;
     readonly tokens: AgentControlTokenService;
@@ -143,6 +116,7 @@ export class AgentToolsMcpService {
     readonly watchControl?: Pick<WatchControlService, "handle">;
     readonly watchTokens?: WatchControlTokenService;
   }) {
+    this.#pluginInstall = options.pluginInstall;
     this.#apps = options.apps;
     this.#agentControl = options.agentControl;
     this.#allowedHost = options.publicUrl.host;
@@ -357,14 +331,7 @@ export class AgentToolsMcpService {
         : null;
     const lacks = (capability: string) =>
       capabilities !== null && !capabilities.includes(capability);
-    const legacyEnvironment =
-      input.scope === "run" ? lacks("environment-list-v1") : input.toolContractVersion !== 3;
-    const definitions = [
-      ...toolsForEnvironmentContract(input.profileId, legacyEnvironment),
-      ...(lacks("browser-profile-create-v1")
-        ? previousReleaseToolsForCapabilityProfile(input.profileId)
-        : []),
-    ].filter(
+    const definitions = toolsForCapabilityProfile(input.profileId).filter(
       (definition) =>
         (!["app_publish", "app_list", "app_fetch"].includes(definition.name) ||
           input.scope === "run") &&
@@ -382,7 +349,7 @@ export class AgentToolsMcpService {
           !programAllowsTool(input.scope, anchor.capabilityProfileId, definition.id))
       )
         continue;
-      const fullInputSchema = toolInputSchema(definition, input.toolContractVersion);
+      const fullInputSchema = definition.inputSchema as z.ZodObject;
       const inputSchema =
         definition.name === "browser_tab_read" && lacks("person-show-v1")
           ? fullInputSchema.omit({ query: true })
@@ -392,7 +359,7 @@ export class AgentToolsMcpService {
         description:
           definition.name === "browser_tab_read" && lacks("person-show-v1")
             ? "Find saved tabs, open or asleep, and their groups. Follow nextCursor to read every page. tabId is Browser Harness surfaceId. profileId is null for Guest. Groups organize the sidebar and grant no access."
-            : toolDescription(definition.name, definition.description, input.toolContractVersion),
+            : definition.description,
         inputSchema,
         title: definition.annotations.title,
       };
@@ -400,9 +367,7 @@ export class AgentToolsMcpService {
         ...registration,
         name: definition.name,
         inputSchema: advertisedJsonSchema(
-          (input.toolContractVersion !== 1 && "advertisedInputSchema" in definition
-            ? definition.advertisedInputSchema
-            : undefined) ??
+          ("advertisedInputSchema" in definition ? definition.advertisedInputSchema : undefined) ??
             toJsonSchemaCompat(inputSchema, { strictUnions: true, pipeStrategy: "input" }),
         ) as Tool["inputSchema"],
         execution: { taskSupport: "forbidden" },
@@ -415,25 +380,13 @@ export class AgentToolsMcpService {
           definition.name,
         );
         try {
-          let parsedInput = inputSchema.parse(args) as Record<string, unknown>;
-          if (
-            input.toolContractVersion === 1 &&
-            definition.name === "trigger_write" &&
-            parsedInput.program &&
-            typeof parsedInput.program === "object"
-          ) {
-            parsedInput = {
-              ...parsedInput,
-              program: { ...parsedInput.program, toolContractVersion: 1 },
-            };
-          }
+          const parsedInput = inputSchema.parse(args) as Record<string, unknown>;
           const token = extra.authInfo?.token;
           if (!token) throw new Error("Agent tools authorization is missing");
           const result = await this.#callTool({
             control: input.control,
             input: parsedInput,
             name: definition.name,
-            legacyEnvironment,
             requestId,
             token,
           });
@@ -458,9 +411,8 @@ export class AgentToolsMcpService {
 
   async #callTool(call: {
     readonly control: AgentToolControl;
-    readonly legacyEnvironment: boolean;
     readonly input: Record<string, unknown>;
-    readonly name: AgentToolName | typeof legacyBrowserSignInTool.name;
+    readonly name: AgentToolName;
     readonly requestId: string;
     readonly token: string;
   }): Promise<Record<string, unknown>> {
@@ -476,58 +428,22 @@ export class AgentToolsMcpService {
         const { type: _type, requestId: _requestId, ...result } = response;
         return result;
       }
-      case "workspace_list": {
-        if (!call.legacyEnvironment) {
-          const response = await control.handle(token, {
-            ...input,
-            requestId,
-            type: "workspace.list",
-          });
-          if (response.type !== "workspace.list.result") throw unexpectedToolResponse();
-          return { workspaces: response.workspaces, window: response.window };
-        }
+      case "project_list": {
         const response = await control.handle(token, {
-          maxWorkspaces: input.limit,
+          ...input,
           requestId,
-          type: "workspace.inspect",
-          ...(input.before ? { workspaceBefore: input.before } : {}),
-          ...(input.harnessCursor ? { harnessCursor: input.harnessCursor } : {}),
-          ...(input.modelPage ? { modelPage: input.modelPage } : {}),
+          type: "project.list",
         });
-        if (response.type !== "workspace.inspect.result") throw unexpectedToolResponse();
+        if (response.type !== "project.list.result") throw unexpectedToolResponse();
         return {
-          delegationDefault: response.delegationDefault,
-          environments: response.environments,
-          environmentsTruncated: response.environmentsTruncated,
-          harnesses: response.harnesses,
-          harnessesTruncated: response.harnessesTruncated,
-          ...(response.harnessesNextCursor
-            ? { harnessesNextCursor: response.harnessesNextCursor }
-            : {}),
-          window: response.workspaceWindow,
-          workspaces: response.workspaces,
+          projects: response.workspaces.filter(({ kind }) => kind === "project"),
+          window: response.window,
         };
       }
-      case "workspace_create": {
-        const response = await control.handle(token, {
-          ...(input.icon ? { icon: input.icon } : {}),
-          ...(input.color ? { color: input.color } : {}),
-          name: input.name,
-          requestId,
-          ...(input.backing === "local-directory"
-            ? {
-                storage: {
-                  backing: "local-directory" as const,
-                  ...(input.environmentId ? { environmentId: input.environmentId } : {}),
-                },
-              }
-            : input.backing === "portablefs"
-              ? { storage: { backing: "portablefs" as const } }
-              : {}),
-          type: "workspace.create",
-        });
-        if (response.type !== "workspace.create.result") throw unexpectedToolResponse();
-        return { workspace: response.workspace };
+      case "plugin_install": {
+        const scope = await this.#tokens.authenticate(token);
+        if (!this.#pluginInstall) throw new Error("Plugin installation is unavailable");
+        return this.#pluginInstall(scope, z.string().parse(input.directory));
       }
       case "app_list":
         return this.#apps.list(token);
@@ -536,14 +452,14 @@ export class AgentToolsMcpService {
       case "app_publish": {
         return this.#apps.publish(token, requestId, AppPublishInputSchema.parse(input));
       }
-      case "workspace_mount": {
+      case "project_create": {
         const response = await control.handle(token, {
+          ...input,
           requestId,
-          type: "workspace.mount",
-          workspaceId: input.workspaceId,
+          type: "project.create",
         });
-        if (response.type !== "workspace.mount.result") throw unexpectedToolResponse();
-        return { path: response.path, workspaceId: response.workspaceId };
+        if (response.type !== "project.create.result") throw unexpectedToolResponse();
+        return { id: response.workspace.id, slug: response.slug, path: response.path };
       }
       case "thread_read": {
         const response = await control.handle(token, {
@@ -679,7 +595,6 @@ export class AgentToolsMcpService {
         if (response.type !== "browser.profile.list.result") throw unexpectedToolResponse();
         return { profiles: response.profiles };
       }
-      case "browser_sign_in":
       case "sign_in": {
         const response = await control.handle(token, {
           ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),

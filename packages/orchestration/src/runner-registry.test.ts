@@ -1,4 +1,8 @@
 import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
+import {
   HarnessIdSchema,
   ModelSelectionSchema,
   ThreadAccessModeSchema,
@@ -1837,8 +1841,7 @@ function hello(
         localStorage: null,
         maxConcurrentRuns: 2,
         providerStateModes: ["isolated"],
-        workspaceBackings: ["portablefs"],
-        workspaceMounts: [],
+        workspaceBackings: ["local-directory"],
       },
     },
     name: "Runner",
@@ -1908,9 +1911,10 @@ function executeCommand(
         token: "agent-tools-token",
         url: "https://host.example.test/internal/v1/integration-mcp",
       },
-      integrationSkills: {
-        token: "integration-skills-token",
-        url: "https://host.example/internal/v1/integration-skills",
+      plugins: {
+        versions: [],
+        token: "plugin-cache-token",
+        url: "https://host.example/internal/v1/plugin-cache",
       },
       bindingGeneration: 1,
       executionLeaseMs: 90_000,
@@ -1949,18 +1953,19 @@ function executeCommand(
       threadRole: "work",
       threadState: { previousAssignment: null, previousRun: null },
       workspaceId,
-      workspaceKind: "specialized",
+      workspaceKind: "project",
       machineAccess: { callerMachineName: "Alex's Mac", machines: [], omittedMachines: 0 },
       workspaceInstructionsPath: "AGENTS.md",
       workspaceAccess: {
-        createdBy: createId("user"),
-        exchangeToken: "token",
-        exchangeUrl: "https://host.example.test/internal/v1/mount-grants/exchange",
         generation: 1,
-        kind: "portablefs",
-        volumeId: "volume-1",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
+
         workspaceId,
-        workspaceKind: "specialized",
       },
     },
     correlationId: CorrelationIdSchema.parse(commandId),
@@ -2041,14 +2046,15 @@ function triggerCommand(
       triggerId,
       workspaceId,
       workspaceAccess: {
-        createdBy: createId("user"),
-        exchangeToken: "token",
-        exchangeUrl: "https://host.example.test/internal/v1/mount-grants/exchange",
         generation: 1,
-        kind: "portablefs",
-        volumeId: "volume-1",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
+
         workspaceId,
-        workspaceKind: "specialized",
       },
     },
     correlationId: CorrelationIdSchema.parse("trigger-dispatch-test"),

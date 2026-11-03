@@ -22,7 +22,7 @@ const claims = {
   operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
   remainingBudgetMs: 18_000,
   wireVersion: 1,
-  access: "full-control",
+  access: "read-write",
   audience: "opensteer-browser-runtime",
   expiresAt: "2026-10-31T12:01:00.000Z",
   identity: { kind: "fresh" },

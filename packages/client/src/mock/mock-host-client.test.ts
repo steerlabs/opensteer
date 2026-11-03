@@ -5,6 +5,8 @@ import {
 } from "@opensteer/integration-core";
 
 import {
+  WorkspaceIdSchema,
+  SpecialistManifestSchema,
   AgentEventSchema,
   BrowserSessionIdSchema,
   createId,
@@ -196,7 +198,7 @@ describe("MockHostClient", () => {
     },
   );
 
-  it("settles an unclassified mock name to document and allocates seven serial colours independently of specialist colour", async () => {
+  it("settles an unclassified mock name to document and allocates seven serial colours independently of project colour", async () => {
     const client = createClient();
     try {
       const workspace = client.getSnapshot().workspaces[0]!;
@@ -215,15 +217,13 @@ describe("MockHostClient", () => {
           "document",
         ),
       );
-      const specialist = client
-        .getSnapshot()
-        .workspaces.find(({ kind }) => kind === "specialized")!;
+      const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
       const before = client.getSnapshot().threads.map(({ id, color }) => ({ id, color }));
       const result = await client.dispatch({
         type: "workspace.color.set",
-        workspaceId: specialist.id,
+        workspaceId: project.id,
         color: "magenta",
-        idempotencyKey: "specialist-color",
+        idempotencyKey: "project-color",
       });
       expect(result).toMatchObject({
         type: "workspace.color.set",
@@ -1136,6 +1136,220 @@ it("accepts a conversation-view history read without a durable mock event log", 
     expect(result.threadId).toBe(threadId);
     expect(result.events).toEqual([]);
     expect(result.window.hasMore).toBe(false);
+  } finally {
+    client.dispose();
+  }
+});
+
+it("creates mock Projects beneath Main with distinct case-insensitive slugs", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    await client.load();
+    await client.dispatch({
+      type: "workspace.create",
+      idempotencyKey: "first-project",
+      name: "Research",
+    });
+    await client.dispatch({
+      type: "workspace.create",
+      idempotencyKey: "second-project",
+      name: "RESEARCH",
+    });
+    const main = client.getSnapshot().homeWorkspaceId!;
+    const root = await client.listWorkspaceFiles(main, { parentKey: "" });
+    const projects = root.entries.find((entry) => entry.name === "Projects");
+    expect(projects).toMatchObject({ kind: "directory" });
+    const children = await client.listWorkspaceFiles(main, { parentKey: projects!.key });
+    expect(children.entries.map((entry) => entry.name)).toEqual(["research", "research-2"]);
+  } finally {
+    client.dispose();
+  }
+});
+
+it("explicitly adopts a relocated Project in the mock and clears its notice", async () => {
+  const client = createClient();
+  try {
+    await client.load();
+    const workspace = client.getSnapshot().workspaces.find((item) => item.kind === "project")!;
+    workspace.status = "failed";
+    workspace.storageIssue = {
+      code: "relocation-required",
+      message: "Move /source to /Main/Projects/research",
+      occurredAt: fixedNow.toISOString(),
+      retryable: false,
+    };
+    const result = await client.dispatch({
+      type: "workspace.adoptRelocated",
+      workspaceId: workspace.id,
+      idempotencyKey: "adopt",
+    });
+    expect(result).toMatchObject({
+      type: "workspace.adoptRelocated",
+      workspace: { id: workspace.id, status: "ready", storageIssue: null },
+    });
+    expect(
+      client.getSnapshot().workspaces.find((item) => item.id === workspace.id)?.storageIssue,
+    ).toBeNull();
+  } finally {
+    client.dispose();
+  }
+});
+
+it("mock specialists reevaluate missing, ambiguous, chosen and revoked access", async () => {
+  const client = new MockHostClient({
+    latencyMs: 0,
+    specialistPlugins: [
+      {
+        id: "research",
+        name: "research",
+        manifest: SpecialistManifestSchema.parse({
+          version: 1,
+          models: [{ engine: "claude", model: "haiku" }],
+          access: [{ type: "browser-profile", level: "read", reason: "Research" }],
+        }),
+      },
+    ],
+  });
+  try {
+    const workspaceId = createId("workspace");
+    const send = (command: Parameters<typeof client.dispatch>[0]) => client.dispatch(command);
+    const added = await send({
+      type: "specialist.add",
+      workspaceId,
+      pluginId: "research",
+      idempotencyKey: "add",
+    });
+    expect(added).toMatchObject({
+      type: "specialist.add",
+      specialist: { status: "pending", access: [{ state: "needs-access" }] },
+    });
+    if (added.type !== "specialist.add") throw new Error("Wrong response");
+    const specialistId = String(added.specialist.id);
+    const first = await send({
+      type: "browser.profile.create",
+      input: { name: "First" },
+      idempotencyKey: "profile1",
+    });
+    const second = await send({
+      type: "browser.profile.create",
+      input: { name: "Second" },
+      idempotencyKey: "profile2",
+    });
+    if (first.type !== "browser.profile.create" || second.type !== "browser.profile.create")
+      throw new Error("Wrong response");
+    const grant1 = await send({
+      type: "browser.profile.grant",
+      workspaceId,
+      profileId: first.profile.id,
+      idempotencyKey: "grant1",
+    });
+    const grant2 = await send({
+      type: "browser.profile.grant",
+      workspaceId,
+      profileId: second.profile.id,
+      idempotencyKey: "grant2",
+    });
+    const list = () => client.rpc["specialist.list"]({ workspaceId });
+    expect(await list()).toMatchObject({
+      ok: true,
+      data: {
+        specialists: [
+          { status: "pending", access: [{ state: "choose", candidates: expect.any(Array) }] },
+        ],
+      },
+    });
+    expect(
+      await send({
+        type: "specialist.bind",
+        workspaceId,
+        specialistId,
+        requirement: 0,
+        resourceId: second.profile.id,
+        idempotencyKey: "bind",
+      }),
+    ).toMatchObject({
+      specialist: {
+        status: "ready",
+        access: [{ state: "bound", binding: { resourceId: second.profile.id } }],
+      },
+    });
+    for (const g of [grant1, grant2]) {
+      if (g.type !== "browser.profile.grant") throw new Error("Wrong response");
+      await send({
+        type: "browser.profileGrant.revoke",
+        grantId: g.grant.id,
+        idempotencyKey: g.grant.id,
+      });
+    }
+    expect(await list()).toMatchObject({
+      data: { specialists: [{ status: "pending", access: [{ state: "rebind" }] }] },
+    });
+    await send({ type: "specialist.remove", workspaceId, specialistId, idempotencyKey: "remove" });
+    expect(await list()).toMatchObject({ data: { specialists: [] } });
+  } finally {
+    client.dispose();
+  }
+});
+
+it("mock Project creation gets a chat without replacing Main chat", async () => {
+  const client = createClient();
+  try {
+    await client.load();
+    const mainChat = client.getSnapshot().homeThreadId;
+    const result = await client.dispatch({
+      type: "workspace.create",
+      name: "Chat Project",
+      idempotencyKey: "project-chat-test",
+    });
+    if (result.type !== "workspace.create") throw new Error("Unexpected command");
+    const project = result.workspace;
+    expect(project.homeThreadId).toBeTruthy();
+    expect(client.getSnapshot().threads.find((t) => t.id === project.homeThreadId)).toMatchObject({
+      role: "conversation",
+      workspaceId: project.id,
+      title: "Chat",
+    });
+    expect(client.getSnapshot().homeThreadId).toBe(mainChat);
+  } finally {
+    client.dispose();
+  }
+});
+
+it("mock plugin member reads hide source paths and refuse collaborator changes", async () => {
+  const client = createClient();
+  try {
+    await client.load();
+    await client.dispatch({
+      type: "plugin.install",
+      input: { directory: "/private/source" },
+      idempotencyKey: "install-member-test",
+    });
+    const snapshot = client.getSnapshot();
+    const workspaceId = WorkspaceIdSchema.parse(
+      snapshot.workspaces.find((w) => w.kind === "project")!.id,
+    );
+    if (!snapshot.user) throw new Error("User missing");
+    snapshot.user.instanceRole = "user";
+    await client.dispatch({
+      type: "workspace.member.update",
+      workspaceId,
+      userId: snapshot.user.id,
+      role: "collaborator",
+      idempotencyKey: "member-role",
+    });
+    const listed = await client.rpc["plugin.list"]({ workspaceId });
+    expect(JSON.stringify(listed)).not.toContain("/private/source");
+    expect(listed).toMatchObject({ ok: true });
+    const plugin = unwrap(listed).plugins[0]!;
+    await expect(
+      client.dispatch({
+        type: "plugin.activation.set",
+        workspaceId,
+        pluginId: String(plugin.id),
+        active: true,
+        idempotencyKey: "member-toggle",
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
   } finally {
     client.dispose();
   }

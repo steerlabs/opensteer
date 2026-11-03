@@ -104,7 +104,7 @@ describe("Runner identity proofs", () => {
     expect(
       verifyRunnerAuthenticationSignature(pair.publicKey, {
         ...input,
-        descriptor: withAgents(input.descriptor, { workspaceBackings: ["portablefs"] }),
+        descriptor: withAgents(input.descriptor, { maxConcurrentRuns: 3 }),
         signature,
       }),
     ).toBe(false);
@@ -281,7 +281,7 @@ describe("Runner identity proofs", () => {
     expect(
       verifyRunnerEnrollmentSignature(pair.publicKey, {
         ...input,
-        descriptor: withAgents(input.descriptor, { workspaceBackings: ["portablefs"] }),
+        descriptor: withAgents(input.descriptor, { maxConcurrentRuns: 3 }),
         signature,
       }),
     ).toBe(false);
@@ -296,7 +296,7 @@ describe("Runner identity proofs", () => {
     const agents = firstDescriptor.modules.agents;
     if (!agents) throw new Error("The fixture descriptor must advertise agents");
     const secondDescriptor = withAgents(firstDescriptor, {
-      workspaceBackings: [...agents.workspaceBackings].reverse(),
+      providerStateModes: [...agents.providerStateModes].reverse(),
     });
     const shared = { challenge: challenge() };
 
@@ -431,9 +431,8 @@ function descriptor(): RunnerDescriptor {
         ],
         localStorage: null,
         maxConcurrentRuns: 4,
-        providerStateModes: ["isolated"],
-        workspaceBackings: ["local-directory", "portablefs"],
-        workspaceMounts: [],
+        providerStateModes: ["ambient", "isolated"],
+        workspaceBackings: ["local-directory"],
       },
     },
     name: "Main runner",

@@ -9,7 +9,6 @@ import type { OpensteerStore, SecurityEffectRecord, TriggerStore } from "@openst
 import type { RealtimeHub, RunnerRegistry } from "@opensteer/orchestration";
 import { CorrelationIdSchema, type RunnerCommand } from "@opensteer/protocol";
 import type { BrowserService } from "../browser/browser-service.js";
-import type { WorkspaceMountService } from "../workspace/workspace-mount-service.js";
 
 const claimLimit = 32;
 const claimLeaseMilliseconds = 60_000;
@@ -27,7 +26,6 @@ type SecurityEffectStore = Pick<
 
 export class SecurityEffectService {
   readonly #browser: Pick<BrowserService, "revokeWorkspaceUser">;
-  readonly #mounts: Pick<WorkspaceMountService, "revokeForMembership"> | undefined;
   readonly #onWatchDesiredChanged: (workspaceId: WorkspaceId) => Promise<void>;
   readonly #publish: (event: AgentEvent) => void;
   readonly #realtime: Pick<RealtimeHub, "closeUserWorkspace" | "publishViewerTasksChanged">;
@@ -41,7 +39,6 @@ export class SecurityEffectService {
 
   constructor(options: {
     readonly browser: Pick<BrowserService, "revokeWorkspaceUser">;
-    readonly mounts?: Pick<WorkspaceMountService, "revokeForMembership">;
     readonly onWatchDesiredChanged: (workspaceId: WorkspaceId) => Promise<void>;
     readonly publish: (event: AgentEvent) => void;
     readonly realtime: Pick<RealtimeHub, "closeUserWorkspace" | "publishViewerTasksChanged">;
@@ -53,7 +50,6 @@ export class SecurityEffectService {
     >;
   }) {
     this.#browser = options.browser;
-    this.#mounts = options.mounts;
     this.#onWatchDesiredChanged = options.onWatchDesiredChanged;
     this.#publish = options.publish;
     this.#realtime = options.realtime;
@@ -110,7 +106,6 @@ export class SecurityEffectService {
           // Host process. Make this effect self-sufficient instead of relying
           // on stop-runs having won an ordering race first.
           await this.#terminateAffectedRuns(effect);
-          await this.#mounts?.revokeForMembership(effect.workspaceId, effect.userId);
           break;
         case "revoke-credentials":
           // Credential capabilities are Run-bound. Publishing the durable

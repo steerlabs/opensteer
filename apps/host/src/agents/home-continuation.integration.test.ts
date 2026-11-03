@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   AgentEventSchema,
   createId,
@@ -922,18 +923,15 @@ integration("durable Thread changes native continuation", () => {
 
     const foreignUserId = await stack.host.store.createUser("Other owner");
     const foreignPlacement = await createForeignPlacement(stack, foreignUserId);
-    const foreignWorkspace = await stack.host.store.createWorkspace({
+    const foreignWorkspace = await createTestWorkspace(stack.host.store, {
       backing: {
+        kind: "local-directory",
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: `foreign-home-${randomUUID()}`,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: foreignUserId,
       idempotencyKey: `foreign-home-workspace-${randomUUID()}`,
       name: "Other Main",
@@ -977,8 +975,8 @@ integration("durable Thread changes native continuation", () => {
         onWorkspaceEvent: vi.fn(),
         store: stack.host.store,
       }),
-      defaultWorkspaceBacking: "portablefs",
-      environmentWorkspaceBackings: () => ["portablefs"],
+      defaultWorkspaceBacking: "local-directory",
+      environmentWorkspaceBackings: () => ["local-directory"],
       isEnvironmentConnected: () => true,
       onWorkspaceEvent: vi.fn(),
       store: stack.host.store,
@@ -1176,8 +1174,8 @@ integration("durable Thread changes native continuation", () => {
         onWorkspaceEvent: vi.fn(),
         store: stack.host.store,
       }),
-      defaultWorkspaceBacking: "portablefs",
-      environmentWorkspaceBackings: () => ["portablefs"],
+      defaultWorkspaceBacking: "local-directory",
+      environmentWorkspaceBackings: () => ["local-directory"],
       isEnvironmentConnected: () => true,
       onWorkspaceEvent: vi.fn(),
       store: stack.host.store,
@@ -1383,11 +1381,14 @@ async function createForeignPlacement(stack: VerticalStack, foreignUserId: UserI
             ],
           },
         ],
-        localStorage: null,
+        localStorage: {
+          bindings: [],
+          storageAuthorityId: createId("storageAuthority"),
+          truncated: false,
+        },
         maxConcurrentRuns: 1,
         providerStateModes: ["isolated"],
-        workspaceBackings: ["portablefs"],
-        workspaceMounts: [],
+        workspaceBackings: ["local-directory"],
       },
     },
     name: "Other owner's runner",

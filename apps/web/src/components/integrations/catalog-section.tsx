@@ -160,8 +160,9 @@ function ServiceCard({
 
 /**
  * Everything installed that has no definition for the services above to
- * manage: Agent Plugins and remote MCP servers. An administrator can remove any
- * of them, which is the only exit an installation that materialized badly has.
+ * manage: remote and agent-proposed MCP servers. An administrator can remove
+ * any of them, which is the only exit an installation that materialized badly
+ * has. Plugins are Settings → Plugins'.
  */
 export function PluginsAndMcpSection({
   entries,
@@ -181,18 +182,15 @@ export function PluginsAndMcpSection({
   return (
     <section className="section">
       <div className="section__head">
-        <h2 className="section__title">Agent Plugins and MCP servers</h2>
+        <h2 className="section__title">MCP servers</h2>
         <span className="section__hint">Added to this deployment.</span>
       </div>
       {entries.length > 0 ? (
         <div className="card">
           {entries.map((entry) => {
-            const { installation, servers, skills, tools } = entry;
-            const offerings = [
-              ...skills.slice(0, 4).map(({ name }) => name),
-              ...tools.slice(0, 4).map(({ title }) => title),
-            ];
-            const extra = skills.length + tools.length - 8;
+            const { installation, servers, tools } = entry;
+            const offerings = tools.slice(0, 4).map(({ title }) => title);
+            const extra = tools.length - 4;
             const inactive = inactiveInstallation(installation.title, entry);
             return (
               <div
@@ -213,7 +211,7 @@ export function PluginsAndMcpSection({
                     ) : null}
                   </span>
                   <span className="card__row-detail">
-                    {installation.sourceKind === "agent-plugin"
+                    {installation.sourceKind === "plugin"
                       ? "Agent Plugin 1.0"
                       : installation.sourceKind === "proposed"
                         ? "Agent-proposed"
@@ -252,7 +250,7 @@ export function PluginsAndMcpSection({
       ) : null}
       {isAdministrator ? (
         <button className="btn" onClick={onInstall} type="button">
-          <Icon name="plus" /> Add Agent Plugin or MCP
+          <Icon name="plus" /> Add MCP server
         </button>
       ) : null}
     </section>

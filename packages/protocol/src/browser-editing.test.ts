@@ -4,7 +4,7 @@ import { RunnerBrowserModuleSchema } from "./runner.js";
 
 const snapshot = {
   type: "browser.snapshot",
-  access: "full-control",
+  access: "read-write",
   state: "ready",
   dialog: null,
   sessionId: createBrowserSessionId(),

@@ -51,11 +51,6 @@ interface MockToolSeed {
   readonly title: string;
 }
 
-interface MockSkillSeed {
-  readonly description: string;
-  readonly name: string;
-}
-
 export function mockIntegrationDigest(seed: string): string {
   return `${seed}${"-0".repeat(43)}`.replaceAll(/[^A-Za-z0-9_-]/g, "-").slice(0, 43);
 }
@@ -512,7 +507,6 @@ function mockVapiInstallation(installedBy: UserId): MockInstallationEntry {
         updatedAt: createdAt,
       },
     ],
-    skills: [],
     tools: [
       {
         annotations: { readOnlyHint: true },
@@ -693,7 +687,6 @@ export function mockTmdbInstallation(installedBy: UserId): MockInstallationEntry
         updatedAt: createdAt,
       },
     ],
-    skills: [],
     tools: [
       tool("search.searchMovie", "Search for movies by title.", true),
       tool("search.searchTv", "Search for TV shows by name.", true),
@@ -759,7 +752,6 @@ function mockMcpProposalInstallation(installedBy: UserId): MockInstallationEntry
         updatedAt: createdAt,
       },
     ],
-    skills: [],
     tools: [
       {
         annotations: { readOnlyHint: true },
@@ -926,7 +918,6 @@ function mockGmailProposalInstallation(installedBy: UserId): MockInstallationEnt
         updatedAt: createdAt,
       },
     ],
-    skills: [],
     tools: [],
   };
 }
@@ -989,7 +980,6 @@ function mockSlackMcpInstallation(installedBy: UserId): MockInstallationEntry {
         updatedAt: createdAt,
       },
     ],
-    skills: [],
     tools: [],
   };
 }
@@ -1158,7 +1148,6 @@ export function mockComputerAppInstallation(input: {
         updatedAt: createdAt,
       },
     ],
-    skills: [],
     tools: input.connections.flatMap(({ access, id }) =>
       mockComputerAppTools({
         access,
@@ -1176,7 +1165,6 @@ export function mockIntegrationInstallation(input: {
   readonly installedBy: UserId;
   readonly digest: string;
   readonly providerApplicationRequired: boolean;
-  readonly skills: readonly MockSkillSeed[];
   readonly tools: readonly MockToolSeed[];
 }): MockInstallationEntry {
   const { createdAt, definition } = input;
@@ -1216,15 +1204,6 @@ export function mockIntegrationInstallation(input: {
         updatedAt: createdAt,
       },
     ],
-    skills: input.skills.map((skill) => ({
-      description: skill.description,
-      digest: mockIntegrationDigest(`${definition.id}-skill-${skill.name}`),
-      id: createIntegrationId("skill"),
-      installationId,
-      name: skill.name,
-      status: "active",
-      updatedAt: createdAt,
-    })),
     tools: input.tools.map((tool) => ({
       annotations: {},
       connectionId: null,
@@ -1415,16 +1394,6 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
     definition: mockGithubDefinition,
     digest: mockIntegrationDigest("github-catalog"),
     providerApplicationRequired: true,
-    skills: [
-      {
-        description: "Draft a release note from merged pull requests in one repository.",
-        name: "release-notes",
-      },
-      {
-        description: "Summarize open issues that have gone stale for a repository.",
-        name: "issue-triage",
-      },
-    ],
     tools: mockGithubToolSeeds,
   });
   const googleCalendar = mockIntegrationInstallation({
@@ -1433,7 +1402,6 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
     definition: mockGoogleCalendarDefinition,
     digest: mockIntegrationDigest("google-calendar-catalog"),
     providerApplicationRequired: true,
-    skills: [],
     tools: mockCatalogTools(mockGoogleCalendarDefinition),
   });
   const linear = mockIntegrationInstallation({
@@ -1442,7 +1410,6 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
     definition: mockLinearDefinition,
     digest: mockIntegrationDigest("linear-catalog"),
     providerApplicationRequired: false,
-    skills: [],
     tools: mockLinearToolSeeds,
   });
   const notion = mockIntegrationInstallation({
@@ -1451,12 +1418,6 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
     definition: mockNotionDefinition,
     digest: mockIntegrationDigest("notion-catalog"),
     providerApplicationRequired: true,
-    skills: [
-      {
-        description: "Turn a Thread transcript into a structured Notion page.",
-        name: "meeting-notes",
-      },
-    ],
     tools: mockNotionToolSeeds,
   });
   const slack = mockIntegrationInstallation({
@@ -1465,7 +1426,6 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
     definition: mockSlackDefinition,
     digest: mockIntegrationDigest("slack-catalog"),
     providerApplicationRequired: true,
-    skills: [],
     tools: mockSlackToolSeeds,
   });
   // Messages is on for the Mac this deployment runs on, and only to read; the
@@ -1575,7 +1535,6 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
         updatedAt: "2026-08-05T09:02:00.000Z",
       },
     ],
-    skills: [],
     tools: [
       {
         annotations: {},

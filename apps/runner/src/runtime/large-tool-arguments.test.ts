@@ -1,3 +1,4 @@
+import { createId as createStorageFixtureId } from "@opensteer/core";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -64,9 +65,10 @@ it("records a successful Codex command with large inline arguments without faili
         token: "test-tools",
         url: "https://host.example/internal/v1/integration-mcp",
       },
-      integrationSkills: {
+      plugins: {
+        versions: [],
         token: "test-skills",
-        url: "https://host.example/internal/v1/integration-skills",
+        url: "https://host.example/internal/v1/plugin-cache",
       },
       bindingGeneration: 1,
       executionLeaseMs: 90_000,
@@ -101,18 +103,17 @@ it("records a successful Codex command with large inline arguments without faili
       threadRole: "work",
       threadState: { previousAssignment: null, previousRun: null },
       workspaceId,
-      workspaceKind: "specialized",
+      workspaceKind: "project",
       machineAccess: { callerMachineName: "test-runner", machines: [], omittedMachines: 0 },
       workspaceInstructionsPath: null,
       workspaceAccess: {
-        createdBy: createId("user"),
-        exchangeToken: "test-exchange",
-        exchangeUrl: "https://host.example/internal/v1/mount-grants/exchange",
         generation: 1,
-        kind: "portablefs",
-        volumeId: "test-volume",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: environmentId,
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
+
         workspaceId,
-        workspaceKind: "specialized",
       },
     },
     correlationId: "large-tool-arguments",
@@ -137,20 +138,20 @@ it("records a successful Codex command with large inline arguments without faili
     agentSkills: {
       rootPath: skillsRoot,
       paths: {
-        "opensteer-specialization": skillPath("opensteer-specialization"),
-        "opensteer-integrations": skillPath("opensteer-integrations"),
-        "opensteer-browser": skillPath("opensteer-browser"),
-        "opensteer-computer-use": skillPath("opensteer-computer-use"),
-        "opensteer-computers": skillPath("opensteer-computers"),
-        "opensteer-threads": skillPath("opensteer-threads"),
-        "opensteer-triggers": skillPath("opensteer-triggers"),
-        "opensteer-workspaces": skillPath("opensteer-workspaces"),
+        "opensteer:skills": skillPath("skills"),
+        "opensteer:integrations": skillPath("integrations"),
+        "opensteer:browser": skillPath("browser"),
+        "opensteer:computer-use": skillPath("computer-use"),
+        "opensteer:computers": skillPath("computers"),
+        "opensteer:threads": skillPath("threads"),
+        "opensteer:triggers": skillPath("triggers"),
+        "opensteer:projects": skillPath("projects"),
       },
     },
-    integrationSkills: async () => ({
+    plugins: async () => ({
       cleanup: async () => undefined,
       digest: "none",
-      directory: undefined,
+      directories: [],
       skills: [],
     }),
     bootId: "large-tool-arguments-test",

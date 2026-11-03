@@ -632,14 +632,14 @@ it("opens the exact phone from its conversation chip and keeps Stop and the step
 });
 
 describe("task mark bylines", () => {
-  it("resolves a live ordinary task, falls back for an unknown author, and keeps specialist attribution", async () => {
+  it("resolves a live ordinary task, falls back for an unknown author, and keeps project attribution", async () => {
     const mock = new MockHostClient();
     try {
       await mock.load();
       const snapshot = mock.getSnapshot();
       const thread = snapshot.threads.find((thread) => thread.icon === "plane")!;
       const main = snapshot.workspaces.find((workspace) => workspace.kind === "main")!;
-      const specialist = snapshot.workspaces.find((workspace) => workspace.name === "Travel")!;
+      const project = snapshot.workspaces.find((workspace) => workspace.name === "Travel")!;
       const author = {
         kind: "agent" as const,
         displayName: thread.title,
@@ -690,9 +690,9 @@ describe("task mark bylines", () => {
         ...entry,
         author: {
           ...author,
-          workspaceId: WorkspaceIdSchema.parse(specialist.id),
-          workspaceName: specialist.name,
-          displayName: specialist.name,
+          workspaceId: WorkspaceIdSchema.parse(project.id),
+          workspaceName: project.name,
+          displayName: project.name,
         },
       });
       expect(

@@ -72,7 +72,7 @@ export function ConversationHeader({
   const [changingIcon, setChangingIcon] = useState(false);
   const canChangeIcon = homeKind === null && directory.snapshot.taskMarksAvailable;
   const thread = threadInDirectory(threadId, directory.snapshot);
-  const specialist = directory.snapshot.workspaces.find(
+  const project = directory.snapshot.workspaces.find(
     (workspace) => workspace.id === thread?.workspaceId && workspace.kind !== "main",
   );
   const canRename = useHostSelector(
@@ -95,7 +95,7 @@ export function ConversationHeader({
   const family = useHostSelector(hostClient, selectFamily, sameTaskFamilyGlance);
   const menu = !home || docked;
   const taskMark = threadMark(threadId, directory.snapshot);
-  const specialistOrb = homeKind === "specialized" && specialist;
+  const projectOrb = homeKind === "project" && project;
   return (
     <header className="conv-header">
       {requester ? (
@@ -122,18 +122,18 @@ export function ConversationHeader({
         <span className="conv-header__mark">
           {home ? (
             <ChatOrb size={20} />
-          ) : specialistOrb ? (
+          ) : projectOrb ? (
             <WorkspaceOrb
-              icon={specialist.icon}
-              name={specialist.name}
-              color={specialist.color}
+              icon={project.icon}
+              name={project.name}
+              color={project.color}
               size="small"
             />
           ) : (
             <TaskMark size={20} mark={taskMark} />
           )}
           {tone === "working" ? (
-            <WorkingRing mark={specialistOrb ? null : taskMark} />
+            <WorkingRing mark={projectOrb ? null : taskMark} />
           ) : tone ? (
             <TaskBadge state={tone} />
           ) : null}
@@ -182,15 +182,15 @@ export function ConversationHeader({
             </p>
           ) : null}
         </div>
-        {specialist && homeKind === null ? (
-          <span className="conv-header__specialist">
+        {project && homeKind === null ? (
+          <span className="conv-header__project">
             <WorkspaceOrb
-              icon={specialist.icon}
-              name={specialist.name}
+              icon={project.icon}
+              name={project.name}
               size="tiny"
-              color={specialist.color}
+              color={project.color}
             />
-            <span>{specialist.name}</span>
+            <span>{project.name}</span>
           </span>
         ) : null}
         <div className="conv-header__end">
@@ -516,7 +516,7 @@ function ConversationMenu({
 
 /**
  * The head of a conversation-area page that is not a conversation yet — New
- * task, a specialist's page: its name, and the computer's toggle.
+ * task, a project's page: its name, and the computer's toggle.
  */
 export function AreaHeader({
   hostClient,

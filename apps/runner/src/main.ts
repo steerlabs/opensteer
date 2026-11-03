@@ -10,12 +10,10 @@ import {
   readProcessSecrets,
 } from "@opensteer/shared/processSecrets";
 import { ensurePrivateDirectory } from "@opensteer/shared/privateFiles";
-import { sameStringSet } from "@opensteer/core";
 import type { EnvironmentId, RunnerId } from "@opensteer/core";
 import { harnessRuntimeBoundaryForRunner } from "@opensteer/harness";
 import { RunnerBootIdSchema, type RunnerDescriptor } from "@opensteer/protocol";
 import { LocalWorkspaceAuthority } from "@opensteer/workspace-local";
-import { PortableFsCliRunner } from "@opensteer/workspace-portablefs";
 import {
   consumeRunnerApplicationConfig,
   parseAgentExecutionConfig,
@@ -31,14 +29,10 @@ import {
   providerContinuationIdentityProjector,
   type RunnerIdentity,
 } from "@opensteer/runner-client";
-import { materializeIntegrationSkills } from "./skills/integration-skills.js";
+import { cacheRunPlugins, prunePluginCache } from "./skills/plugin-cache.js";
 import { JsonRunnerLogger } from "./runtime/logger.js";
 import { RunWorkspaceManager, type RunWorkspaceManagerOptions } from "./workspace/mount-manager.js";
 import { LocalWorkspaceService } from "./workspace/local-workspace-service.js";
-import {
-  OpenSslMountIdentityIssuer,
-  WorkspaceMountRegistry,
-} from "./workspace/workspace-mount-registry.js";
 import { NativeFsHelper } from "./runtime/native-fs-helper.js";
 import { verifyNodeExecutable } from "./runtime/node-executable.js";
 import { RunnerRuntime, type RunnerRuntimeOptions } from "./runtime/runtime.js";
@@ -212,7 +206,6 @@ async function startAgentsRunner(input: {
 }): Promise<StartedRunner> {
   const { applicationConfig, bootId, config, environment, identity, logger, signal } = input;
   await verifyNodeExecutable(config.nodeExecutable, { environment });
-  const runtimeDirectory = config.dataDirectory;
   const shellModule = config.modules.includes("shell")
     ? await prepareShellModule({
         dataDirectory: config.dataDirectory,
@@ -244,70 +237,16 @@ async function startAgentsRunner(input: {
   if (!environmentId) {
     throw new Error("This Runner's saved identity has no work location");
   }
-  if (config.portableFsUnavailableReason) {
-    logger.info(config.portableFsUnavailableReason, { runnerId: identity.runnerId });
-  }
-  const localWorkspace = config.workspaceBackings.includes("local-directory")
-    ? localWorkspaceAccess(
-        config,
-        environmentId,
-        applicationConfig.nativeFsHelperBinary,
-        applicationConfig.localWorkspaceLegacyRegistryPath,
-        logger,
-      )
-    : undefined;
-  // A machine that can hold its own directories stays useful when its
-  // PortableFS mount is missing or unready, so that failure degrades the
-  // advertised capability instead of stopping the Runner.
-  let portableFsWorkspace = config.workspaceBackings.includes("portablefs")
-    ? await portableFsWorkspaceAccess({
-        binary: required(config.mountBinary, "PortableFS mount binary"),
-        dataDirectory: runtimeDirectory,
-        environment,
-        helperBinary: applicationConfig.nativeFsHelperBinary,
-        identityIssuer: new OpenSslMountIdentityIssuer(applicationConfig.opensslBinary),
-        logger,
-        mode: config.mode,
-        namespace: config.workspaceNamespace,
-        root: required(config.workspaceRoot, "PortableFS Workspace root"),
-        runnerId: identity.runnerId,
-        signal,
-      }).catch((error: unknown) => {
-        if (!localWorkspace) throw error;
-        logger.error("PortableFS is not ready on this machine; offering only its own directories", {
-          error: error instanceof Error ? error.message : "unknown failure",
-        });
-        return undefined;
-      })
-    : undefined;
-  let workspaceManager = new RunWorkspaceManager({
-    ...(localWorkspace ? { local: localWorkspace } : {}),
-    ...(portableFsWorkspace ? { portableFs: portableFsWorkspace.access } : {}),
-  });
-  const preflight = await workspaceManager.preflight(signal).catch(async (error: unknown) => {
-    if (!localWorkspace || !portableFsWorkspace) throw error;
-    logger.error("PortableFS storage failed its preflight; offering only local directories", {
-      error: error instanceof Error ? error.message : "unknown failure",
-    });
-    portableFsWorkspace = undefined;
-    workspaceManager = new RunWorkspaceManager({ local: localWorkspace });
-    return workspaceManager.preflight(signal);
-  });
+  const localWorkspace = localWorkspaceAccess(
+    config,
+    environmentId,
+    applicationConfig.nativeFsHelperBinary,
+    applicationConfig.localWorkspaceLegacyRegistryPath,
+    logger,
+  );
+  const workspaceManager = new RunWorkspaceManager({ local: localWorkspace });
+  const preflight = await workspaceManager.preflight(signal);
   const advertisedBackings = preflight.workspaceBackings;
-  if (advertisedBackings.length === 0) {
-    throw new Error("Runner Workspace preflight advertised no storage at all");
-  }
-  if (!sameStringSet(config.workspaceBackings, advertisedBackings)) {
-    logger.info("Advertising the Workspace storage this machine can actually reach", {
-      advertised: advertisedBackings,
-      configured: config.workspaceBackings,
-    });
-  }
-  logger.info("Workspace storage preflight passed", {
-    backings: advertisedBackings,
-    ...(preflight.portableFsVersion ? { portableFsVersion: preflight.portableFsVersion } : {}),
-  });
-  await portableFsWorkspace?.registry.adoptExisting();
   const execution = parseAgentExecutionConfig(environment);
   const attachmentBase = join(homedir(), ".cache", "opensteer", "runner-attachments");
   await ensurePrivateDirectory(attachmentBase);
@@ -324,7 +263,7 @@ async function startAgentsRunner(input: {
     privateRoot,
     await realpath(tmpdir()),
     ...(await Promise.all(
-      [config.workspaceRoot, config.localWorkspaceRoot]
+      [config.localWorkspaceRoot]
         .filter((root): root is string => root !== undefined)
         .map((root) => realpath(root)),
     )),
@@ -361,7 +300,6 @@ async function startAgentsRunner(input: {
         ),
         stateDirectory: resolve(config.dataDirectory, "private", "harness-state"),
         workspaceRoots: [
-          config.workspaceRoot,
           config.workspaceNamespace === "owner-scoped" ? config.localWorkspaceRoot : undefined,
         ].filter((root): root is string => root !== undefined),
       })
@@ -378,6 +316,19 @@ async function startAgentsRunner(input: {
   if (earlierBoots === "unknown") {
     logger.error("An earlier Runner left processes that could not be ended");
   }
+  await prunePluginCache(resolve(config.dataDirectory, "private", "harness-state"));
+  const pluginPruner = setInterval(
+    () => {
+      void prunePluginCache(resolve(config.dataDirectory, "private", "harness-state")).catch(
+        (error: unknown) =>
+          logger.error("Plugin cache pruning failed", {
+            error: error instanceof Error ? error.message : String(error),
+          }),
+      );
+    },
+    24 * 60 * 60 * 1000,
+  );
+  pluginPruner.unref();
   const runtime = new RunnerRuntime({
     agentSkills,
     ...(localWorkspace
@@ -411,7 +362,7 @@ async function startAgentsRunner(input: {
     }),
     harnessRuntimeBoundary,
     ...(harnessSandbox ? { harnessSandbox } : {}),
-    integrationSkills: materializeIntegrationSkills,
+    plugins: cacheRunPlugins,
     logger,
     maxConcurrentRuns: config.maxConcurrentRuns,
     maxConcurrentTriggerPrograms: config.maxConcurrentTriggerPrograms,
@@ -421,7 +372,6 @@ async function startAgentsRunner(input: {
     privateStateDirectory: resolve(config.dataDirectory, "private", "harness-state"),
     projectContinuationIdentity: providerContinuationIdentityProjector(identity.privateKey),
     workspaceManager,
-    ...(portableFsWorkspace ? { workspaceMountRegistry: portableFsWorkspace.registry } : {}),
   });
   return {
     agents: {
@@ -434,6 +384,8 @@ async function startAgentsRunner(input: {
               // what the disk holds now rather than what it held at startup.
               inventory: () => localWorkspace.authority.inventory(signal),
               service: new LocalWorkspaceService({
+                relocate: (workspaceId, move) => runtime.relocateWorkspace(workspaceId, move),
+                removeSpecialist: (id, remove) => runtime.removeSpecialist(id, remove),
                 appServers: runtime.appServers,
                 authority: localWorkspace.authority,
                 filesystem: localWorkspace.filesystem,
@@ -443,9 +395,9 @@ async function startAgentsRunner(input: {
         : {}),
       runtime,
       workspaceBackings: advertisedBackings,
-      workspaceMounts: () => portableFsWorkspace?.registry.inventory() ?? [],
     },
     close: async () => {
+      clearInterval(pluginPruner);
       await messagingModule?.module.close();
       integrationsModule?.close?.();
       await runtime.close();
@@ -581,56 +533,6 @@ function localWorkspaceAccess(
   };
 }
 
-async function portableFsWorkspaceAccess(input: {
-  readonly binary: string;
-  readonly dataDirectory: string;
-  readonly environment: NodeJS.ProcessEnv;
-  readonly helperBinary: string;
-  readonly identityIssuer: OpenSslMountIdentityIssuer;
-  readonly logger: JsonRunnerLogger;
-  readonly mode: ReturnType<typeof parseRunnerConfig>["mode"];
-  readonly namespace: ReturnType<typeof parseRunnerConfig>["workspaceNamespace"];
-  readonly root: string;
-  readonly runnerId: RunnerId;
-  readonly signal: AbortSignal;
-}): Promise<{
-  readonly access: NonNullable<RunWorkspaceManagerOptions["portableFs"]>;
-  readonly registry: WorkspaceMountRegistry;
-}> {
-  const workspaceInstructionReader = new NativeFsHelper({
-    binary: input.helperBinary,
-    rootPolicy: "isolated-mount",
-  });
-  const result = await workspaceInstructionReader.preflight(input.dataDirectory, input.signal);
-  input.logger.info("Mounted filesystem containment preflight passed", {
-    containment: result.containment,
-    helperVersion: result.binaryVersion,
-  });
-  const registry = new WorkspaceMountRegistry({
-    identityIssuer: input.identityIssuer,
-    mode: input.mode,
-    namespace: input.namespace,
-    portableFs: new PortableFsCliRunner({ binary: input.binary, environment: input.environment }),
-    root: input.root,
-    runnerId: input.runnerId,
-    runtimeDirectory: input.dataDirectory,
-  });
-  return {
-    access: {
-      ensureMounted: registry.ensureMounted.bind(registry),
-      namespaceRoot: registry.namespaceRoot.bind(registry),
-      preflight: registry.preflight.bind(registry),
-      workspaceInstructionReader,
-    },
-    registry,
-  };
-}
-
-function required<Value>(value: Value | undefined, label: string): Value {
-  if (value === undefined) throw new Error(`Runner configuration is missing ${label}`);
-  return value;
-}
-
 async function main(): Promise<void> {
   const shutdown = new AbortController();
   let receivedSignal = false;
@@ -674,4 +576,9 @@ if (entryPath && import.meta.url === pathToFileURL(entryPath).href) {
     );
     process.exitCode = 1;
   });
+}
+
+function required<Value>(value: Value | undefined, label: string): Value {
+  if (value === undefined) throw new Error(`Runner configuration is missing ${label}`);
+  return value;
 }

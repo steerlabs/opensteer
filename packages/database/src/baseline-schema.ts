@@ -1,3 +1,4 @@
+// Historical migration snapshot; forward storage changes belong in migrations.ts.
 /** Final PostgreSQL schema for a fresh Opensteer beta deployment. */
 export const BASELINE_SCHEMA_SQL = String.raw`
 --
@@ -2766,7 +2767,7 @@ CREATE TABLE public.workspaces (
     storage_error_message text,
     storage_error_retryable boolean DEFAULT false NOT NULL,
     storage_error_at timestamp with time zone,
-    kind text DEFAULT 'specialized'::text NOT NULL,
+    kind text DEFAULT 'project'::text NOT NULL,
     backing jsonb NOT NULL,
     capacity_policy jsonb NOT NULL,
     deletion_requested_at timestamp with time zone,
@@ -2779,7 +2780,7 @@ CREATE TABLE public.workspaces (
     CONSTRAINT workspaces_backing_shape_check CHECK (((jsonb_typeof(backing) = 'object'::text) AND (jsonb_typeof((backing -> 'generation'::text)) = 'number'::text) AND ((backing ->> 'generation'::text) ~ '^[0-9]+$'::text) AND (((backing ->> 'generation'::text))::numeric >= (1)::numeric) AND (((backing ->> 'generation'::text))::numeric <= ('9007199254740991'::bigint::numeric)) AND ((((backing ->> 'kind'::text) = 'portablefs'::text) AND (backing ?& ARRAY['kind'::text, 'serviceId'::text, 'volumeId'::text, 'generation'::text]) AND (backing = jsonb_build_object('kind', (backing -> 'kind'::text), 'serviceId', (backing -> 'serviceId'::text), 'volumeId', (backing -> 'volumeId'::text), 'generation', (backing -> 'generation'::text))) AND ((length((backing ->> 'serviceId'::text)) >= 1) AND (length((backing ->> 'serviceId'::text)) <= 255)) AND ((backing ->> 'serviceId'::text) ~ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'::text) AND ((length((backing ->> 'volumeId'::text)) >= 1) AND (length((backing ->> 'volumeId'::text)) <= 220)) AND ((backing ->> 'volumeId'::text) ~ '^[A-Za-z0-9_-]+$'::text)) OR (((backing ->> 'kind'::text) = 'local-directory'::text) AND (backing ?& ARRAY['kind'::text, 'bindingId'::text, 'ownerEnvironmentId'::text, 'storageAuthorityId'::text, 'generation'::text]) AND (backing = jsonb_build_object('kind', (backing -> 'kind'::text), 'bindingId', (backing -> 'bindingId'::text), 'ownerEnvironmentId', (backing -> 'ownerEnvironmentId'::text), 'storageAuthorityId', (backing -> 'storageAuthorityId'::text), 'generation', (backing -> 'generation'::text))) AND ((backing ->> 'bindingId'::text) ~ '^wbd_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'::text) AND ((backing ->> 'ownerEnvironmentId'::text) ~ '^env_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'::text) AND (((backing -> 'storageAuthorityId'::text) = 'null'::jsonb) OR ((backing ->> 'storageAuthorityId'::text) ~ '^sta_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'::text)))))),
     CONSTRAINT workspaces_capacity_policy_shape_check CHECK (((jsonb_typeof(capacity_policy) = 'object'::text) AND ((capacity_policy = '{"kind": "host-filesystem"}'::jsonb) OR (((capacity_policy ->> 'kind'::text) = 'hard-quota'::text) AND (capacity_policy ?& ARRAY['kind'::text, 'blockHardLimitBytes'::text, 'inodeHardLimit'::text]) AND (capacity_policy = jsonb_build_object('kind', (capacity_policy -> 'kind'::text), 'blockHardLimitBytes', (capacity_policy -> 'blockHardLimitBytes'::text), 'inodeHardLimit', (capacity_policy -> 'inodeHardLimit'::text))) AND ((capacity_policy ->> 'blockHardLimitBytes'::text) ~ '^[0-9]+$'::text) AND ((((capacity_policy ->> 'blockHardLimitBytes'::text))::numeric >= (1)::numeric) AND (((capacity_policy ->> 'blockHardLimitBytes'::text))::numeric <= ('9007199254740991'::bigint)::numeric)) AND ((capacity_policy ->> 'inodeHardLimit'::text) ~ '^[0-9]+$'::text) AND ((((capacity_policy ->> 'inodeHardLimit'::text))::numeric >= (1)::numeric) AND (((capacity_policy ->> 'inodeHardLimit'::text))::numeric <= ('9007199254740991'::bigint)::numeric)))))),
     CONSTRAINT workspaces_deletion_state_check CHECK ((((status = 'deleting'::text) AND (deletion_requested_at IS NOT NULL) AND (deletion_requested_by IS NOT NULL) AND (purge_after IS NOT NULL) AND (deleted_at IS NULL)) OR ((status = 'deleted'::text) AND (deleted_at IS NOT NULL)) OR ((status <> ALL (ARRAY['deleting'::text, 'deleted'::text])) AND (deletion_requested_at IS NULL) AND (deletion_requested_by IS NULL) AND (purge_after IS NULL) AND (deleted_at IS NULL)))),
-    CONSTRAINT workspaces_kind_check CHECK ((kind = ANY (ARRAY['main'::text, 'specialized'::text]))),
+    CONSTRAINT workspaces_kind_check CHECK ((kind = ANY (ARRAY['main'::text, 'project'::text]))),
     CONSTRAINT workspaces_status_check CHECK ((status = ANY (ARRAY['provisioning'::text, 'ready'::text, 'archiving'::text, 'archived'::text, 'unavailable'::text, 'failed'::text, 'deleting'::text, 'deleted'::text]))),
     CONSTRAINT workspaces_storage_error_shape_check CHECK ((((storage_error_code IS NULL) AND (storage_error_message IS NULL) AND (storage_error_at IS NULL) AND (storage_error_retryable = false)) OR ((storage_error_code = ANY (ARRAY['manager-allocation-rejected'::text, 'manager-configuration-invalid'::text, 'manager-identity-rejected'::text, 'manager-protocol-error'::text, 'manager-unavailable'::text, 'manager-unknown-volume-state'::text, 'local-authority-mismatch'::text, 'local-authority-unavailable'::text, 'local-directory-inaccessible'::text, 'local-directory-missing'::text, 'local-directory-replaced'::text, 'local-registry-invalid'::text])) AND (storage_error_message IS NOT NULL) AND ((octet_length(storage_error_message) >= 1) AND (octet_length(storage_error_message) <= 2000)) AND (storage_error_at IS NOT NULL))))
 );
@@ -6468,4 +6469,5 @@ ALTER TABLE ONLY public.request_continuations
 --
 -- PostgreSQL database dump complete
 --
+DROP TABLE integration_skills;
 `;

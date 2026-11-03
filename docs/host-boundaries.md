@@ -15,9 +15,7 @@ that same issuer fence. Beta keeps its Account authority.
 
 [Config validation](../packages/config/src/config.ts) owns the combinations of
 `DeploymentShape`, exposure, Account attachment and external Runner admission.
-`defaultWorkspaceBacking` is a provisioning default, not a capability fence:
-any Deployment can hold local directories on enrolled machines. PortableFS
-requires Host configuration.
+Workspaces use local directories on enrolled machines.
 
 A Personal Deployment is single-user and loopback-only; an Account-attached
 Deployment must be a server. Loopback exposure requires both the canonical
@@ -240,19 +238,15 @@ Reports retain the Run binding fence; empty reports do nothing.
 
 The browser catalog creates empty profiles before sign-in. The Guest-save tool
 and its permission are removed; historical Requests remain readable and inert.
-`environment-list-v1` independently selects split Environment/Workspace discovery
-and skill-based Trigger descriptions/schemas.
-Select each gate once per MCP session from stored advertisements, preserving the
-inventory through reconnect/restart. Engines use release-local inventories and
-are stopped/reaped on Runner upgrade; no persisted Run catalog pin is needed.
-Upgrade the Host first so new Runners have their required tools.
+Agent and program sessions use the current tool inventory: `environment_list` discovers
+computers and engines, while `project_list` discovers Projects. Trigger program
+versions do not select historical tool names, schemas or message delivery semantics.
 
-Saved Trigger/Watch program versions are separate from tool inventory: v1/v2
-retain old discovery; v3 uses split discovery with v2 delivery and independently
+Saved Trigger/Watch program versions are separate from tool inventory: v3 independently
 requires `trigger-program-v3`. Check the anchor Runner's stored advertisement
 (including offline state) at admission and again at dispatch/reconciliation.
 No advertisement means unsupported. Fail occurrences or back off Watch with an
-update/use-v2 error; never relabel source or change v1/v2 execution.
+update/use-v2 error; never relabel source.
 
 `shared-task-done-v1` gates shared Done controls/commands. Reject old
 `thread.done.set` before mutation **or idempotency lookup** with the update reason:

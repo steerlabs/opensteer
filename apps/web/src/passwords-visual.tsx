@@ -82,7 +82,7 @@ function useShellContext(): ShellContext {
       ? {
           ...live,
           deploymentShape: {
-            defaultWorkspaceBacking: "portablefs" as const,
+            defaultWorkspaceBacking: "local-directory" as const,
             kind: "server" as const,
           },
           identityConfig: live.identityConfig && {

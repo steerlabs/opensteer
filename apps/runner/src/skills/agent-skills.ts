@@ -7,10 +7,13 @@ import {
   type OpensteerAgentSkillName,
 } from "@opensteer/agent-tools";
 import type { AgentCapabilityProfileId } from "@opensteer/core";
-import { parseHarnessSkillMetadata, type HarnessSkill } from "@opensteer/harness";
+import {
+  maximumSkillBytes,
+  parseHarnessSkillMetadata,
+  type HarnessSkill,
+} from "@opensteer/harness";
 import { z } from "zod";
 
-const maximumSkillBytes = 64 * 1_024;
 // The Agent Plugins 1.0 manifest shape, narrowed to the one bundle Opensteer
 // ships. Declared locally so the Runner does not carry the full plugin loader.
 const PluginManifestSchema = z.object({
@@ -35,7 +38,7 @@ export async function loadAgentSkillBundle(directory: string): Promise<AgentSkil
 
   const entries = await Promise.all(
     opensteerAgentSkills.map(async ({ name }) => {
-      const skillDirectory = join(rootPath, "skills", name);
+      const skillDirectory = join(rootPath, "skills", name.split(":")[1]!);
       await requireDirectory(skillDirectory, `Agent Skill ${name}`);
       const resolvedSkill = await realpath(skillDirectory);
       assertWithin(rootPath, resolvedSkill);
@@ -48,7 +51,7 @@ export async function loadAgentSkillBundle(directory: string): Promise<AgentSkil
       if (stat.size > maximumSkillBytes) throw new Error(`Agent Skill ${name} is too large`);
       const content = await readFile(skillFile, "utf8");
       try {
-        parseHarnessSkillMetadata(content, name);
+        parseHarnessSkillMetadata(content, name.split(":")[1]!);
       } catch {
         throw new Error(`Agent Skill ${name} has invalid metadata`);
       }
@@ -69,7 +72,12 @@ export function planAgentSkills(
 ): readonly HarnessSkill[] {
   return Object.freeze(
     skillsForCapabilityProfile(profileId).map(({ name }) =>
-      Object.freeze({ name, path: bundle.paths[name] }),
+      Object.freeze({
+        plugin: "opensteer",
+        localName: name.split(":")[1]!,
+        fullName: name,
+        path: bundle.paths[name],
+      }),
     ),
   );
 }

@@ -17,12 +17,15 @@ import {
 import { z } from "zod";
 import { SignedTokenClaimsSchema, type SignedTokenService } from "../identity/host-keys.js";
 
-// PortableFS's default automatic mount enrollment is 24 hours. Run transport
-// capabilities cover the same maximum unattended window, while every use is
-// still authorized against the renewable live execution binding in PostgreSQL.
+// Each use is authorized against the renewable live execution binding.
 export const runCapabilityLifetimeSeconds = 24 * 60 * 60;
 
 const RunCapabilityScopeSchema = z.strictObject({
+  specialistId: z.string().optional(),
+  pluginDigests: z
+    .array(z.string().regex(/^[a-f0-9]{64}$/u))
+    .max(128)
+    .optional(),
   bindingGeneration: z.number().int().positive(),
   capabilityProfileId: AgentCapabilityProfileIdSchema,
   environmentId: EnvironmentIdSchema,

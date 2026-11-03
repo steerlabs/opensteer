@@ -201,8 +201,8 @@ function host(manage = true, empty = false) {
       { id: "grant-research", profileId: "bpr_work", workspaceId: "wsp_research" },
     ],
     workspaces: [
-      { id: "wsp_research", name: "Research", kind: "specialized" },
-      { id: "wsp_buyer", name: "Buyer", kind: "specialized" },
+      { id: "wsp_research", name: "Research", kind: "project" },
+      { id: "wsp_buyer", name: "Buyer", kind: "project" },
     ],
     browserTabGroups: [],
     workspaceTabs: [],
@@ -288,13 +288,13 @@ describe("mobile browser profiles", () => {
     expect(text()).not.toContain("Deleted profile");
   });
 
-  it("hides Rename and Delete on older Hosts and still manages specialists", async () => {
+  it("hides Rename and Delete on older Hosts and still manages projects", async () => {
     const { dispatch } = host(false);
     await render();
     await press("Work, Opensteer and Research");
     expect(text()).not.toContain("Rename");
     expect(text()).not.toContain("Delete");
-    await press("Specialists");
+    await press("Projects");
     await press("Research");
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: "browser.profileGrant.revoke", grantId: "grant-research" }),

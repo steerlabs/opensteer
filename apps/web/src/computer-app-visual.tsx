@@ -150,7 +150,7 @@ const workspaces = [
     harnessLabel: "Codex",
     icon: "mail",
     id: "wsp_00000000-0000-4000-8000-000000000002",
-    kind: "specialized",
+    kind: "project",
     machineName: null,
     name: "Morning Email Summarizer",
     runnerLabel: machine.name,

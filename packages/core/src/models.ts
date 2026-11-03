@@ -67,18 +67,12 @@ export type DeploymentLifecycle = z.infer<typeof DeploymentLifecycleSchema>;
 export const RuntimeModeSchema = z.enum(["development", "production"]);
 export type RuntimeMode = z.infer<typeof RuntimeModeSchema>;
 
-export const WorkspaceBackingKindSchema = z.enum(["local-directory", "portablefs"]);
+export const WorkspaceBackingKindSchema = z.enum(["local-directory"]);
 export type WorkspaceBackingKind = z.infer<typeof WorkspaceBackingKindSchema>;
 
 export const DeploymentKindSchema = z.enum(["personal", "server"]);
 export type DeploymentKind = z.infer<typeof DeploymentKindSchema>;
 
-/**
- * `defaultWorkspaceBacking` is the provisioning choice for automatic Main
- * creation and for callers that omit one. It is not an exclusive capability:
- * a Deployment whose default is PortableFS still holds local-directory
- * Workspaces owned by the machines its people lend it.
- */
 const deploymentShape = {
   defaultWorkspaceBacking: WorkspaceBackingKindSchema,
   kind: DeploymentKindSchema,
@@ -151,6 +145,8 @@ export const WorkspaceStorageIssueSchema = z.object({
     "manager-protocol-error",
     "manager-unavailable",
     "manager-unknown-volume-state",
+    "relocation-required",
+    "relocation-pending",
     "local-directory-inaccessible",
     "local-directory-missing",
     "local-directory-replaced",
@@ -168,16 +164,10 @@ export const WorkspaceStorageIssueSchema = z.object({
 });
 export type WorkspaceStorageIssue = z.infer<typeof WorkspaceStorageIssueSchema>;
 
-export const WorkspaceKindSchema = z.enum(["main", "specialized"]);
+export const WorkspaceKindSchema = z.enum(["main", "project"]);
 export type WorkspaceKind = z.infer<typeof WorkspaceKindSchema>;
 
-export const PortableFsServiceIdSchema = z
-  .string()
-  .trim()
-  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$/);
-
-export const WorkspaceBackingSchema = z.discriminatedUnion("kind", [
-  // `ownerEnvironmentId` says where the work runs; `storageAuthorityId` proves
+export const WorkspaceBackingSchema = // `ownerEnvironmentId` says where the work runs; `storageAuthorityId` proves
   // which disk holds it. They are separate because a Runner credential copied
   // to a second machine reconnects as the same environment, and must not then
   // be able to report the original directory missing or destroy against the
@@ -193,76 +183,61 @@ export const WorkspaceBackingSchema = z.discriminatedUnion("kind", [
     // their storage. It is an explicit broken binding, never an authority a
     // Runner can claim.
     storageAuthorityId: StorageAuthorityIdSchema.nullable(),
-  }),
-  z.strictObject({
-    generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    kind: z.literal("portablefs"),
-    serviceId: PortableFsServiceIdSchema,
-    volumeId: z.string().regex(/^[A-Za-z0-9_-]{1,220}$/),
-  }),
-]);
+  });
 export type WorkspaceBacking = z.infer<typeof WorkspaceBackingSchema>;
 
 export type LocalWorkspaceBacking = Extract<WorkspaceBacking, { readonly kind: "local-directory" }>;
-export type PortableFsWorkspaceBacking = Extract<WorkspaceBacking, { readonly kind: "portablefs" }>;
 
-export const WorkspaceCapacityPolicySchema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("host-filesystem") }),
-  z.strictObject({
-    blockHardLimitBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    inodeHardLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    kind: z.literal("hard-quota"),
-  }),
+export const AgentCapabilityProfileIdSchema = z.enum([
+  "main",
+  "workspace",
+  "delegated",
+  "specialist",
+  "trigger",
 ]);
-export type WorkspaceCapacityPolicy = z.infer<typeof WorkspaceCapacityPolicySchema>;
-
-export const AgentCapabilityProfileIdSchema = z.enum(["main", "workspace", "delegated", "trigger"]);
 export type AgentCapabilityProfileId = z.infer<typeof AgentCapabilityProfileIdSchema>;
 
-export const WorkspaceSchema = z
-  .object({
-    backing: WorkspaceBackingSchema,
-    capacityPolicy: WorkspaceCapacityPolicySchema,
-    createdAt: IsoDateTimeSchema,
-    createdBy: UserIdSchema,
-    /** The chosen icon, or null to show the name's initials. */
-    icon: WorkspaceIconNameSchema.nullable(),
-    /** The colour its mark is drawn in. Older durable Workspace events lack it. */
-    color: MarkColorSchema.optional(),
-    homeThreadId: ThreadIdSchema.nullable(),
-    id: WorkspaceIdSchema,
-    kind: WorkspaceKindSchema,
-    name: z.string().trim().min(1).max(160),
-    status: z.enum([
-      "provisioning",
-      "ready",
-      // `archiving` is the storage authority's archive cycle in flight — the
-      // filesystem is neither servable nor sealed yet. It is distinct from
-      // `archived`, which promises a sealed archive that can be read and
-      // restored from.
-      "archiving",
-      "archived",
-      "unavailable",
-      "failed",
-      "deleting",
-      "deleted",
-    ]),
-    storageIssue: WorkspaceStorageIssueSchema.nullable(),
-    updatedAt: IsoDateTimeSchema,
-  })
-  .superRefine((workspace, context) => {
-    const valid =
-      (workspace.backing.kind === "local-directory" &&
-        workspace.capacityPolicy.kind === "host-filesystem") ||
-      (workspace.backing.kind === "portablefs" && workspace.capacityPolicy.kind === "hard-quota");
-    if (!valid) {
-      context.addIssue({
-        code: "custom",
-        message: "Workspace capacity policy does not match its storage backing",
-        path: ["capacityPolicy"],
-      });
-    }
-  });
+export const WorkspaceSchema = z.object({
+  slug: z
+    .string()
+    .regex(/^[a-z0-9][a-z0-9-]{0,127}$/)
+    .nullable()
+    .optional(),
+  relocationSource: z
+    .object({
+      backing: z.record(z.string(), z.unknown()),
+      mounts: z.array(z.record(z.string(), z.unknown())),
+    })
+    .nullable()
+    .optional(),
+  backing: WorkspaceBackingSchema,
+  createdAt: IsoDateTimeSchema,
+  createdBy: UserIdSchema,
+  /** The chosen icon, or null to show the name's initials. */
+  icon: WorkspaceIconNameSchema.nullable(),
+  /** The colour its mark is drawn in. Older durable Workspace events lack it. */
+  color: MarkColorSchema.optional(),
+  homeThreadId: ThreadIdSchema.nullable(),
+  id: WorkspaceIdSchema,
+  kind: WorkspaceKindSchema,
+  name: z.string().trim().min(1).max(160),
+  status: z.enum([
+    "provisioning",
+    "ready",
+    // `archiving` is the storage authority's archive cycle in flight — the
+    // filesystem is neither servable nor sealed yet. It is distinct from
+    // `archived`, which promises a sealed archive that can be read and
+    // restored from.
+    "archiving",
+    "archived",
+    "unavailable",
+    "failed",
+    "deleting",
+    "deleted",
+  ]),
+  storageIssue: WorkspaceStorageIssueSchema.nullable(),
+  updatedAt: IsoDateTimeSchema,
+});
 export type Workspace = z.infer<typeof WorkspaceSchema>;
 
 /**
@@ -456,6 +431,7 @@ export const DEFAULT_THREAD_ACCESS_MODE: ThreadAccessMode = "full-access";
 export const CHAT_THREAD_TITLE = "Chat";
 
 export const ThreadSchema = z.object({
+  specialistId: z.string().nullable().optional(),
   accessMode: ThreadAccessModeSchema,
   /**
    * When a person last asked this Thread for work: their newest message that

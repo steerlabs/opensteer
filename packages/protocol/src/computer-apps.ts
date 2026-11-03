@@ -297,6 +297,7 @@ export const computerMcpMaxSessions = 16;
 const McpSessionIdSchema = z.uuid();
 
 export const HostIntegrationsMcpOpenSchema = z.strictObject({
+  packageSource: z.strictObject({ url: z.url(), token: z.string().max(4096) }).optional(),
   ...integrationsFrameBase,
   launch: LocalMcpLaunchSchema,
   serverId: IntegrationServerIdSchema,

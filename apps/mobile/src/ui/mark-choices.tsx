@@ -50,7 +50,7 @@ export function ColorChoices(props: {
   );
 }
 
-/** The same searchable artwork for task edits and specialist creation/editing. */
+/** The same searchable artwork for task edits and project creation/editing. */
 export function IconChoices(props: {
   readonly color: MarkColor | null;
   readonly disabled?: boolean;

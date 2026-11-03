@@ -1,8 +1,4 @@
-import { randomBytes } from "node:crypto";
-import { access, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { crc32 } from "node:zlib";
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { createId, type UserId, type WorkspaceId } from "@opensteer/core";
 import {
   AttachmentStore,
@@ -11,6 +7,11 @@ import {
   OpensteerStore,
 } from "@opensteer/database";
 import { sql } from "kysely";
+import { randomBytes } from "node:crypto";
+import { access, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { crc32 } from "node:zlib";
 import sharp from "sharp";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AttachmentService, RunAttachmentsTokenService } from "./attachment-service.js";
@@ -52,22 +53,19 @@ integration.sequential("Host attachment originals", () => {
   async function fixture(suffix: string) {
     await store.ensureDeployment({
       canonicalOrigin: "https://test-host.invalid",
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
       hostInstanceId: createId("hostInstance"),
     });
     const userId = await store.createUser(`Attachment uploader ${suffix}`);
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
+        kind: "local-directory",
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: `wsp_${suffix}`,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 100_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: userId,
       idempotencyKey: `attachment-workspace-${suffix}`,
       name: `Attachments ${suffix}`,
@@ -117,18 +115,15 @@ integration.sequential("Host attachment originals", () => {
 
   it("returns a conflict when concurrent workspaces reuse one uploader's upload key", async () => {
     const first = await fixture("cross-workspace-key");
-    const second = await store.createWorkspace({
+    const second = await createTestWorkspace(store, {
       backing: {
+        kind: "local-directory",
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_cross-workspace-key-second",
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 100_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: first.userId,
       idempotencyKey: "attachment-workspace-cross-workspace-key-second",
       name: "Other attachments",

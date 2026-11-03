@@ -1,3 +1,6 @@
+import { requestSpecialistRequirements } from "../integrations/specialist-access-requests.js";
+import { randomUUID } from "node:crypto";
+import { withWorkspacePluginPackage } from "../integrations/workspace-plugin-package.js";
 import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
 import {
   AesGcmSecretVault,
@@ -80,15 +83,8 @@ import {
   type HarnessInstanceCatalog,
   type PendingAgentEvent,
   type RunnerAuxiliaryModule,
-  type RunnerDescriptor,
   type ShellSessionId,
 } from "@opensteer/protocol";
-import {
-  Ed25519PortableFsProductAuthorizationSigner,
-  PortableFsManagerClient,
-  PortableFsWorkspaceLifecycleDriver,
-  type PortableFsMountManagerEndpoint,
-} from "@opensteer/workspace-portablefs";
 import type { FastifyInstance } from "fastify";
 import { sign } from "node:crypto";
 import { resolve } from "node:path";
@@ -147,11 +143,6 @@ import {
   SignedTokenService,
   signHostDiscovery,
 } from "../identity/host-keys.js";
-import { MountExchangeService } from "../identity/mount-exchange.js";
-import {
-  loadOrCreatePortableFsProductKey,
-  loadPortableFsManagerTlsIdentity,
-} from "../identity/portablefs-manager-identity.js";
 import { resolveIntegrationAccountBinding } from "../integrations/integration-account-binding.js";
 import { DefaultIntegrationAuthAttemptLifecycle } from "../integrations/integration-auth-attempt-service.js";
 import { integrationCallSubject } from "../integrations/integration-call-subject.js";
@@ -161,7 +152,7 @@ import {
   IntegrationService,
   type IntegrationConnectionConnected,
 } from "../integrations/integration-service.js";
-import { IntegrationSkillBundleService } from "../integrations/integration-skill-bundle-service.js";
+import { PluginPackageService } from "../integrations/plugin-package-service.js";
 import { IntegrationToolsMcpService } from "../integrations/integration-tools-mcp-service.js";
 import { McpOAuthService } from "../integrations/mcp-oauth-service.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
@@ -195,7 +186,6 @@ import { WatchControlService } from "../triggers/watch-control-service.js";
 import { WatchProgramService } from "../triggers/watch-program-service.js";
 import { WatchService } from "../triggers/watch-service.js";
 import {
-  PortableFsWorkspaceFilesDriver,
   RunnerLocalWorkspaceFilesDriver,
   WorkspaceFilesService,
 } from "../workspace/files/workspace-files-service.js";
@@ -204,14 +194,10 @@ import {
   RunnerLocalWorkspaceDriver,
   type RunnerStorageRegistry,
 } from "../workspace/runner-local-workspace-driver.js";
-import { WorkspaceActivityService } from "../workspace/workspace-activity.js";
-import { WorkspaceArchiveService } from "../workspace/workspace-archive-service.js";
 import { WorkspaceDeletionService } from "../workspace/workspace-deletion-service.js";
 import { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
-import { WorkspaceMountService } from "../workspace/workspace-mount-service.js";
 import { WorkspaceReconcileLoop } from "../workspace/workspace-reconcile-loop.js";
 import { WorkspaceService } from "../workspace/workspace-service.js";
-import { WorkspaceWakeService } from "../workspace/workspace-wake-service.js";
 import { withDevelopmentDatabaseReset } from "./development-database.js";
 import { LocalBootstrapService } from "./local-bootstrap.js";
 
@@ -364,19 +350,6 @@ export function runnerRegistrationHook<T>(
   };
 }
 
-export async function reconcileRunnerWorkspaceInventory(
-  identity: Pick<RunnerDescriptor, "modules">,
-  mounts: Pick<WorkspaceMountService, "reconcileRunnerInventory">,
-): Promise<void> {
-  const agents = identity.modules.agents;
-  if (!agents) return;
-  await Promise.all(
-    agents.environmentIds.map((environmentId) =>
-      mounts.reconcileRunnerInventory(environmentId, agents.workspaceMounts),
-    ),
-  );
-}
-
 export interface HostRuntime {
   readonly app: FastifyInstance;
   readonly browser: BrowserService;
@@ -422,7 +395,6 @@ export async function createHostRuntime(
     readonly logger?: boolean | Record<string, unknown>;
     readonly personalAccountGrantFetch?: typeof globalThis.fetch;
     /** Explicit mount-facing endpoint, primarily for split-ingress deployments and tests. */
-    readonly portableFsMountManagerEndpoint?: PortableFsMountManagerEndpoint;
     /** How long Run capability tokens live; journeys shorten it to exercise refresh. */
     readonly runCapabilityLifetimeSeconds?: number;
     /** Issue and verify Run capabilities in domain time; transport/session tokens stay real. */
@@ -664,7 +636,10 @@ export async function createHostRuntime(
     let computerUse: ComputerUseService | undefined;
     let computerViews: ComputerViewService | undefined;
     let displayStreams: DisplayStreamHub | undefined;
+    let pluginPackages: PluginPackageService | undefined;
     const computerApps = new ComputerAppHub({
+      packageSource: (serverId, runnerId, launch) =>
+        pluginPackages?.computerSource(serverId, runnerId, launch),
       knownDefinitionIds: () => computerAppDefinitionIds,
       onPhoneDisplayCapability: (status) =>
         app.log.info(status, "Phone display capability changed"),
@@ -1051,37 +1026,6 @@ export async function createHostRuntime(
       vault: integrationVault,
     });
     const storage = config.workspace.storage;
-    let reportWorkspaceActivityError = (error: unknown, workspaceId: Workspace["id"]): void => {
-      console.debug("Workspace activity update failed", workspaceId, error);
-    };
-    let reportWorkspaceArchiveError = (error: unknown, workspaceId: Workspace["id"]): void => {
-      console.warn("Workspace archive failed", workspaceId, error);
-    };
-    // A skipped archive is normal flow — a lost eligibility race or a Manager
-    // that is at its per-cell archive cap — so it is never reported as a fault.
-    let reportWorkspaceArchiveSkip = (workspaceId: Workspace["id"], reason: string): void => {
-      console.debug("Workspace archive skipped", workspaceId, reason);
-    };
-    let reportWorkspaceWakeError = (
-      error: unknown,
-      workspaceId: Workspace["id"],
-      reason: string,
-    ): void => {
-      console.warn("Workspace wake failed", workspaceId, reason, error);
-    };
-    const workspaceActivity =
-      storage.kind === "portablefs"
-        ? new WorkspaceActivityService({
-            onError: (error, workspaceId) => reportWorkspaceActivityError(error, workspaceId),
-            store,
-          })
-        : undefined;
-    let controlPlane: PortableFsManagerClient | undefined;
-    let workspaceMountService: WorkspaceMountService | undefined;
-    let portableFsFiles: PortableFsWorkspaceFilesDriver | undefined;
-    let portableFsLifecycleDriver: PortableFsWorkspaceLifecycleDriver | undefined;
-    let files: WorkspaceFilesService;
-    let workspaces: WorkspaceService;
     const runnerStorage: RunnerStorageRegistry = {
       identityForEnvironment: (environmentId) =>
         requiredService(runnerRegistry, "Runner registry").identityForEnvironment(environmentId),
@@ -1096,99 +1040,27 @@ export async function createHostRuntime(
     // its own default backing is.
     const localWorkspaceDriver = new RunnerLocalWorkspaceDriver({ runners: runnerStorage });
     const localWorkspaceFiles = new RunnerLocalWorkspaceFilesDriver({ runners: runnerStorage });
-    if (storage.kind === "local-directory") {
-      if (options.portableFsMountManagerEndpoint) {
-        throw new Error("A local-directory Deployment cannot configure a PortableFS endpoint");
-      }
-      workspaces = new WorkspaceService({
-        drivers: { local: localWorkspaceDriver },
-        shape: config.workspace.shape,
-        resolveOwnerEnvironmentId: async () => storage.ownerEnvironmentId,
-        store,
-      });
-      files = new WorkspaceFilesService({ local: localWorkspaceFiles, memberships: store });
-    } else {
-      const productKey = await loadOrCreatePortableFsProductKey({
-        dataDirectory,
-        ...(storage.productPrivateKeyPath ? { privateKeyPath: storage.productPrivateKeyPath } : {}),
-      });
-      const managerTls =
-        storage.managerUrl.protocol === "https:"
-          ? await loadPortableFsManagerTlsIdentity({
-              caPath: requiredConfigPath(storage.managerCaPath, "PortableFS manager CA"),
-              certificatePath: requiredConfigPath(
-                storage.managerCertPath,
-                "PortableFS product mTLS certificate",
-              ),
-              privateKeyPath: requiredConfigPath(
-                storage.managerKeyPath,
-                "PortableFS product mTLS private key",
-              ),
-              ...(storage.managerServerName ? { serverName: storage.managerServerName } : {}),
-            })
-          : undefined;
-      const mountManagerEndpoint =
-        options.portableFsMountManagerEndpoint ??
-        (managerTls
-          ? {
-              caCertificatePem:
-                typeof managerTls.caCertificatePem === "string"
-                  ? managerTls.caCertificatePem
-                  : managerTls.caCertificatePem.toString("utf8"),
-              serverName: managerTls.serverName ?? storage.managerUrl.hostname,
-              url: storage.managerUrl.toString(),
-            }
-          : undefined);
-      controlPlane = new PortableFsManagerClient({
-        authorizationDomain: storage.authorizationDomain,
-        baseUrl: storage.managerUrl,
-        productIssuer: storage.productIssuer,
-        signer: new Ed25519PortableFsProductAuthorizationSigner(productKey.privateKey),
-        ...(mountManagerEndpoint ? { mountEndpoint: mountManagerEndpoint } : {}),
-        ...(managerTls ? { tls: managerTls } : {}),
-      });
-      portableFsLifecycleDriver = new PortableFsWorkspaceLifecycleDriver({
-        controlPlane,
-        serviceId: storage.serviceId,
-      });
-      workspaces = new WorkspaceService({
-        capacityPolicy: {
-          blockHardLimitBytes: storage.defaultBlockLimitBytes,
-          inodeHardLimit: storage.defaultInodeLimit,
-          kind: "hard-quota",
-        },
-        capacityPolicyCeiling: {
-          blockHardLimitBytes: storage.maxBlockLimitBytes,
-          inodeHardLimit: storage.maxInodeLimit,
-          kind: "hard-quota",
-        },
-        drivers: { local: localWorkspaceDriver, portableFs: portableFsLifecycleDriver },
-        shape: config.workspace.shape,
-        store,
-      });
-      portableFsFiles = new PortableFsWorkspaceFilesDriver({
-        baseUrl: storage.filesServiceUrl,
-        manager: controlPlane,
-        tokens,
-      });
-      files = new WorkspaceFilesService({
-        ...(workspaceActivity ? { activity: workspaceActivity } : {}),
-        local: localWorkspaceFiles,
-        memberships: store,
-        portableFs: portableFsFiles,
-      });
-    }
-    const workspaceWake =
-      controlPlane === undefined
-        ? undefined
-        : new WorkspaceWakeService({
-            controlPlane,
-            onError: (error, workspaceId, reason) =>
-              reportWorkspaceWakeError(error, workspaceId, reason),
-            store,
-            workspaces,
+    const workspaces = new WorkspaceService({
+      drivers: { local: localWorkspaceDriver },
+      shape: { ...config.workspace.shape, defaultWorkspaceBacking: "local-directory" },
+      resolveOwnerEnvironmentId: async (ownerId) => {
+        if (config.workspace.shape.kind === "personal" && storage.kind === "local-directory")
+          return storage.ownerEnvironmentId;
+        const environments = await store.listEnvironmentsForUser(ownerId);
+        const environment = environments.find(
+          (entry) => runnerStorage.identityForEnvironment(entry.id)?.modules.agents?.localStorage,
+        );
+        if (!environment)
+          throw new OpensteerError({
+            code: "workspace_unavailable",
+            message: "Connect a computer to create Main storage",
+            retryable: true,
           });
-    let workspaceArchive: WorkspaceArchiveService | undefined;
+        return environment.id;
+      },
+      store,
+    });
+    const files = new WorkspaceFilesService({ local: localWorkspaceFiles, memberships: store });
     let harnessAuthenticationCoordinator: HarnessAuthenticationCoordinator | undefined;
     // A Runner can register before the Fastify instance that owns the log
     // exists, so the boot window gets a real sink rather than a discard. It is
@@ -1608,7 +1480,6 @@ export async function createHostRuntime(
             credentials: {
               agentControl: agentControlTokens.issue(scope),
               attachments: attachmentRunTokens.issue(scope),
-              integrationSkills: integrationSkillsTokens.issue(scope),
               integrationTools: integrationToolsTokens.issue(scope),
             },
             status: "issued",
@@ -1819,14 +1690,12 @@ export async function createHostRuntime(
                   await store.discardHarnessCatalog(environmentId, harness.id);
                 }
               }
-              if (workspaceMountService) {
-                await reconcileRunnerWorkspaceInventory(identity, workspaceMountService);
-              }
               // What the machine says it holds is only ever compared, never
               // acted on destructively: a directory it stopped listing marks
               // its Workspace, and a binding the Host never issued is counted
               // for the Computers page.
               await reconcileRunnerLocalStorage(identity, store);
+              await integrationPlatformStore.specialists.resumeRemovals(identity.environmentIds);
               // Managed AI-engine sign-in attempts survive reconnects, so a
               // managed Runner replays them when it registers again.
               if (identity.runnerKind === "managed") {
@@ -1910,51 +1779,10 @@ export async function createHostRuntime(
       }
     }
     runnerRegistry = runners;
-    if (controlPlane) {
-      workspaceMountService = new WorkspaceMountService({ controlPlane, runners, store });
-    }
-    workspaceArchive =
-      controlPlane === undefined || storage.kind !== "portablefs" || storage.archiveAfterDays === 0
-        ? undefined
-        : new WorkspaceArchiveService({
-            archiveAfterDays: storage.archiveAfterDays,
-            controlPlane,
-            ...(portableFsFiles ? { files: portableFsFiles } : {}),
-            mounts: requiredService(workspaceMountService, "Workspace mount lifecycle"),
-            onError: (error, workspaceId) => reportWorkspaceArchiveError(error, workspaceId),
-            onSkip: (workspaceId, reason) => reportWorkspaceArchiveSkip(workspaceId, reason),
-            store,
-          });
-    const mountExchange =
-      controlPlane && workspaceMountService
-        ? new MountExchangeService({
-            ...(workspaceActivity ? { activity: workspaceActivity } : {}),
-            controlPlane,
-            mounts: workspaceMountService,
-            onControlPlaneFailure: (workspaceId, error) =>
-              workspaces.recordControlPlaneFailure(workspaceId, error).then(() => undefined),
-            runners,
-            store,
-            tokens,
-          })
-        : undefined;
-    const workspaceAccess =
-      storage.kind === "local-directory"
-        ? new WorkspaceExecutionAccessService({
-            local: localWorkspaceDriver,
-            shape: config.workspace.shape,
-          })
-        : new WorkspaceExecutionAccessService({
-            local: localWorkspaceDriver,
-            portableFs: {
-              exchange: requiredService(mountExchange, "PortableFS mount exchange"),
-              exchangeUrl: new URL(
-                "/internal/v1/mount-grants/exchange",
-                config.runtimeOrigin,
-              ).toString(),
-            },
-            shape: config.workspace.shape,
-          });
+    const workspaceAccess = new WorkspaceExecutionAccessService({
+      local: localWorkspaceDriver,
+      shape: { ...config.workspace.shape, defaultWorkspaceBacking: "local-directory" },
+    });
     const egress = new EgressService({
       authorizer: store,
       publicUrl: config.runtimeOrigin,
@@ -1997,8 +1825,8 @@ export async function createHostRuntime(
       tokens: runCapabilityTokens,
       ...runCapabilityLifetime,
     });
-    const integrationSkillsTokens = new RunCapabilityTokenService({
-      audience: "opensteer-integration-skills",
+    const pluginsTokens = new RunCapabilityTokenService({
+      audience: "opensteer-plugin-packages",
       authorizer: store,
       tokens: runCapabilityTokens,
       ...runCapabilityLifetime,
@@ -2057,7 +1885,11 @@ export async function createHostRuntime(
       browser,
       egress,
       executionLeaseMs: config.executionLeaseMs,
-      integrationSkillsTokens,
+      pluginVersions: async (workspaceId) =>
+        (await integrationPlatformStore.plugins.current(workspaceId)).map(
+          ({ id, name, digest }) => ({ pluginId: id, name, digest }),
+        ),
+      pluginsTokens,
       integrationToolsTokens,
       attachmentRunTokens,
       attachments: attachmentStore,
@@ -2069,7 +1901,6 @@ export async function createHostRuntime(
       triggerControlTokens,
       triggerIntegrationToolsTokens,
       triggers: triggerStore,
-      ...(workspaceWake ? { workspaceWake } : {}),
       workspaces,
       workspaceAccess,
     });
@@ -2103,16 +1934,31 @@ export async function createHostRuntime(
       onExecutionQueued: () => {
         coordinator.wake();
       },
-      ...(workspaceActivity
-        ? {
-            onWorkspaceActivity: (workspaceId: Workspace["id"]) => {
-              workspaceActivity.note(workspaceId);
-              void workspaceWake?.wake(workspaceId, "message-send");
-            },
-          }
-        : {}),
       onWorkspaceEvent: publishWorkspaceEvent,
       store,
+    });
+    integrationPlatformStore.specialists.setRemovalHandler(async (input) => {
+      const workspace = await store.getWorkspace(input.workspaceId);
+      if (!workspace || workspace.backing.kind !== "local-directory")
+        throw new Error("Specialist storage is unavailable");
+      const active = await database
+        .selectFrom("runs")
+        .innerJoin("threads", "threads.id", "runs.threadId")
+        .select(["runs.assignmentId", "runs.requestedBy"])
+        .where("threads.specialistId", "=", input.specialistId)
+        .where("runs.status", "in", ["queued", "starting", "running", "waiting"])
+        .execute();
+      for (const run of active)
+        if (run.assignmentId)
+          await commands.cancelAssignment({
+            assignmentId: run.assignmentId,
+            requestedBy: run.requestedBy,
+            idempotencyKey: `specialist-remove:${input.specialistId}:${run.assignmentId}`,
+          });
+      await localWorkspaceDriver.removeSpecialist(
+        { ...workspace, backing: workspace.backing },
+        input.specialistId,
+      );
     });
     let reportContinuationError: (error: unknown) => void = () => undefined;
     const continuations = new ContinuationService({
@@ -2149,10 +1995,8 @@ export async function createHostRuntime(
       homeThread: async (ownerId) =>
         (await store.findMainWorkspaceForOwner(ownerId))?.homeThreadId ?? null,
       onChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
-      onOccurrenceQueued: (occurrence) => {
+      onOccurrenceQueued: () => {
         coordinator.wake();
-        workspaceActivity?.note(occurrence.event.trigger.workspaceId);
-        void workspaceWake?.wake(occurrence.event.trigger.workspaceId, "trigger-occurrence");
       },
       onWatchChanged: (triggerId) => {
         void watchService?.triggerChanged(triggerId);
@@ -2176,7 +2020,6 @@ export async function createHostRuntime(
     });
     channelService = channels;
     const workspaceMounts = new RunnerAgentWorkspaceMountService({
-      ...(workspaceActivity ? { activity: workspaceActivity } : {}),
       runners,
       workspaceAccess,
     });
@@ -2227,7 +2070,6 @@ export async function createHostRuntime(
       tokens: agentControlTokens,
       triggers,
       workspaceMounts,
-      ...(workspaceWake ? { workspaceWake } : {}),
       workspaces,
     });
     const triggerControl = new TriggerControlService({
@@ -2264,6 +2106,43 @@ export async function createHostRuntime(
     });
     await apps.collectGarbage();
     const agentTools = new AgentToolsMcpService({
+      pluginInstall: async (scope, directory) => {
+        const admission = await store.admitWorkspaceFiles(scope.workspaceId, scope.requestedBy);
+        if (!admission) throw new Error("Workspace is unavailable");
+        if (admission.workspace.backing.kind !== "local-directory")
+          throw new Error("Plugins require a local Workspace");
+        return withWorkspacePluginPackage({
+          directory,
+          admission,
+          files,
+          install: async (directory) => {
+            const result = await integrationPlatform.installAgentPlugin({
+              directory,
+              actorUserId: scope.requestedBy,
+              workspaceId: scope.workspaceId,
+              runnerId: scope.runnerId,
+              requestId: randomUUID(),
+            });
+            const pluginId = result.installation.pluginId;
+            const registration =
+              result.specialist && pluginId
+                ? await integrationPlatform.store.specialists.add({
+                    workspaceId: scope.workspaceId,
+                    pluginId,
+                    actorUserId: scope.requestedBy,
+                  })
+                : null;
+            if (registration)
+              await requestSpecialistRequirements({
+                registration,
+                scope: { ...scope, aud: "opensteer-integration-tools" },
+                browser,
+                integrations: integrationTools,
+              });
+            return { pluginId, issues: result.issues, specialist: result.specialist, registration };
+          },
+        });
+      },
       apps,
       // The Runner's stored advertisement, not its live connection: a Run's
       // engine keeps using its tools while that connection drops and returns.
@@ -2292,11 +2171,12 @@ export async function createHostRuntime(
       triggerTokens: triggerIntegrationToolsTokens,
       watchTokens: watchIntegrationToolsTokens,
     });
-    const integrationSkills = new IntegrationSkillBundleService({
+    const plugins = new PluginPackageService({
+      computer: { tokens, store: integrationPlatformStore, publicUrl: config.runtimeOrigin },
       snapshotDirectory: resolve(dataDirectory, "plugins", "data", "packages"),
-      store: integrationPlatformStore,
-      tokens: integrationSkillsTokens,
+      tokens: pluginsTokens,
     });
+    pluginPackages = plugins;
     const discoveryEnvelope = signHostDiscovery(keys, {
       canonicalOrigin: deployment.canonicalOrigin,
       deploymentId: deployment.id,
@@ -2344,7 +2224,6 @@ export async function createHostRuntime(
         : undefined;
     const securityEffects = new SecurityEffectService({
       browser,
-      ...(workspaceMountService ? { mounts: workspaceMountService } : {}),
       onWatchDesiredChanged: (workspaceId) => watchService.workspaceChanged(workspaceId),
       publish: publishWorkspaceEvent,
       realtime,
@@ -2364,9 +2243,7 @@ export async function createHostRuntime(
     const workspaceDeletion = new WorkspaceDeletionService({
       drivers: {
         local: localWorkspaceDriver,
-        ...(portableFsLifecycleDriver ? { portableFs: portableFsLifecycleDriver } : {}),
       },
-      ...(workspaceMountService ? { mounts: workspaceMountService } : {}),
       onError: (error, workspaceId) => reportWorkspaceDeletionError(error, workspaceId),
       onWorkspaceEvent: publishWorkspaceEvent,
       retentionDays: config.workspace.deletionRetentionDays,
@@ -2419,24 +2296,12 @@ export async function createHostRuntime(
           mcpOauth,
           platform: integrationPlatform,
           service: integrations,
-          skills: integrationSkills,
+          skills: plugins,
           tools: integrationTools,
         },
         ...(localBootstrap ? { localBootstrap: { service: localBootstrap } } : {}),
         ...(personalRemoteAccess
           ? { personalRemoteAccess: { service: personalRemoteAccess } }
-          : {}),
-        ...(storage.kind === "portablefs"
-          ? {
-              portablefs: {
-                mountExchange: requiredService(mountExchange, "PortableFS mount exchange"),
-                workspaceActivity: requiredService(
-                  workspaceActivity,
-                  "PortableFS Workspace activity",
-                ),
-                workspaceWake: requiredService(workspaceWake, "PortableFS Workspace wake"),
-              },
-            }
           : {}),
         realtime,
         publishWorkspaceEvent,
@@ -2492,14 +2357,6 @@ export async function createHostRuntime(
       );
     reportWorkspaceDeletionError = (error, workspaceId) =>
       app.log.error({ err: error, workspaceId }, "Workspace deletion teardown failed");
-    reportWorkspaceActivityError = (error, workspaceId) =>
-      app.log.debug({ err: error, workspaceId }, "Workspace activity update failed");
-    reportWorkspaceArchiveError = (error, workspaceId) =>
-      app.log.warn({ err: error, workspaceId }, "Workspace archive failed");
-    reportWorkspaceArchiveSkip = (workspaceId, reason) =>
-      app.log.debug({ reason, workspaceId }, "Workspace archive skipped");
-    reportWorkspaceWakeError = (error, workspaceId, reason) =>
-      app.log.warn({ err: error, reason, workspaceId }, "Workspace wake failed");
     logComputerLifecycle = (event, details) => app.log.info(details, event);
     reportHarnessAuthenticationNudgeError = (environmentId, error) =>
       app.log.warn(
@@ -2568,9 +2425,6 @@ export async function createHostRuntime(
         store: accountDirectoryStore,
       });
     }
-    await workspaceMountService
-      ?.reconcile()
-      .catch((error) => app.log.error({ err: error }, "Workspace mount reconciliation failed"));
     await securityEffects
       .reconcile()
       .catch((error) => app.log.error({ err: error }, "Security effect reconciliation failed"));
@@ -2589,7 +2443,7 @@ export async function createHostRuntime(
             retryable: result.issue?.retryable,
           },
           result.available
-            ? "Workspace storage capacity requires operator attention; pending volume creates are paused"
+            ? "Workspace storage requires operator attention"
             : "Workspace storage requires operator attention; new Workspace Runs are paused",
         );
         return;
@@ -2636,8 +2490,6 @@ export async function createHostRuntime(
       onOccurrenceQueued: (occurrence) => {
         coordinator.wake();
         realtime.publishTriggersChanged(occurrence.event.trigger.workspaceId);
-        workspaceActivity?.note(occurrence.event.trigger.workspaceId);
-        void workspaceWake?.wake(occurrence.event.trigger.workspaceId, "trigger-schedule");
       },
       store: triggerStore,
     });
@@ -2661,27 +2513,8 @@ export async function createHostRuntime(
             }
           })(),
           workspaces.reconcile().then(reportWorkspaceStorageHealth),
-          ...(workspaceMountService
-            ? [
-                store.listWorkspaces().then(async (currentWorkspaces) => {
-                  await Promise.all(
-                    currentWorkspaces.flatMap((workspace) =>
-                      workspace.backing.kind === "portablefs"
-                        ? [
-                            workspaceMountService!.revokeReplacedBacking(
-                              workspace.id,
-                              workspace.backing.generation,
-                            ),
-                          ]
-                        : [],
-                    ),
-                  );
-                }),
-              ]
-            : []),
           workspaceDeletion.purgeDue(new Date()),
           ...(personalRemoteAccess ? [personalRemoteAccess.purgeExpiredAccountLinkKeys()] : []),
-          ...(workspaceArchive ? [workspaceArchive.sweep()] : []),
           // What a work location can run is durable state like any other, so it
           // is reconciled rather than captured once and hoped for.
           store.listEnvironments().then(async (environments) => {
@@ -2713,7 +2546,6 @@ export async function createHostRuntime(
                 : {}),
             });
           }),
-          ...(workspaceMountService ? [workspaceMountService.reconcile()] : []),
           securityEffects.reconcile(),
         ]);
         const failures = results.flatMap((result) =>
@@ -2723,7 +2555,7 @@ export async function createHostRuntime(
           throw new AggregateError(failures, "Storage reconciliation failed");
         }
       },
-      sweep: () => mountExchange?.sweep() ?? 0,
+      sweep: () => 0,
     });
     workspaceReconcileLoop.start();
     // An execution lease is the whole grace a Runner out of reach has, so an
@@ -2801,7 +2633,6 @@ export async function createHostRuntime(
         await step("shell hub", () => shellHub?.close());
         await step("runners", () => runners.close());
         await step("coordinator", () => coordinator.stop());
-        await step("workspace mounts", () => workspaceMountService?.close());
         await step("security effects", () => securityEffects.close());
         files.close();
         await step("HTTP server", () => app.close());
@@ -2876,11 +2707,6 @@ function isTerminalRunEvent(event: AgentEvent): boolean {
     event.type === "run.failed" ||
     event.type === "run.interrupted"
   );
-}
-
-function requiredConfigPath(value: string | undefined, label: string): string {
-  if (!value) throw new Error(`${label} path is required`);
-  return value;
 }
 
 function requiredService<Value>(value: Value | undefined, label: string): Value {

@@ -49,7 +49,7 @@ const id = (prefix: string, number: number) =>
   `${prefix}_00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const at = (minute: number) => new Date(Date.UTC(2026, 9, 26, 12, minute)).toISOString();
 const viewer = "usr_0192f4a1-0000-4000-8000-000000000001";
-/** The mock's Travel specialist: a task there still needs no byline of its own. */
+/** The mock's Travel project: a task there still needs no byline of its own. */
 const workspaceId = "wsp_00000000-0000-4000-8000-000000000800";
 const agent = (run: number) => ({
   displayName: title,

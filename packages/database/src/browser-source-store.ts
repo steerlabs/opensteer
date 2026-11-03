@@ -657,7 +657,7 @@ async function workspaceUsable(
     .where("users.disabledAt", "is", null);
   if (lock) query = query.forShare(["workspaces", "workspaceMemberships"]);
   const workspace = await query.executeTakeFirst();
-  // Main belongs to its owner alone; a specialized Workspace to its members.
+  // Main belongs to its owner alone; a project Workspace to its members.
   return (
     workspace !== undefined &&
     workspace.status === "ready" &&

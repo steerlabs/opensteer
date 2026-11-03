@@ -61,7 +61,7 @@ export function managedBrowserRuntimeEnvironment(
 
 export function managedRunnerEnvironment(
   canonicalOrigin: string,
-  portableFsMountSha256: string,
+  environmentId: string,
 ): readonly KubernetesContainerEnvironmentVariable[] {
   return [
     {
@@ -76,17 +76,18 @@ export function managedRunnerEnvironment(
     { name: "OPENSTEER_HOST_URL", value: canonicalOrigin },
     { name: "OPENSTEER_DEPLOYMENT_KIND", value: "server" },
     { name: "OPENSTEER_MODE", value: "production" },
-    { name: "OPENSTEER_PORTABLEFS_MOUNT_BINARY", value: "/opt/portablefs/portablefs" },
-    {
-      name: "OPENSTEER_PORTABLEFS_MOUNT_SHA256",
-      value: portableFsMountSha256.slice("sha256:".length),
-    },
     { name: "OPENSTEER_RUNNER_KIND", value: "main" },
     { name: "OPENSTEER_RUNNER_DATA_DIR", value: "/var/lib/opensteer" },
     { name: "OPENSTEER_RUNNER_READINESS_PATH", value: "/var/lib/opensteer/ready.json" },
-    { name: "OPENSTEER_RUNNER_WORKSPACE_BACKINGS", value: "portablefs" },
-    { name: "OPENSTEER_RUNNER_WORKSPACE_ROOT", value: "/workspaces" },
-    { name: hostEnvironmentKeys.defaultWorkspaceBacking, value: "portablefs" },
+    { name: "OPENSTEER_RUNNER_WORKSPACE_BACKINGS", value: "local-directory" },
+    { name: "OPENSTEER_ENVIRONMENT_ID", value: environmentId },
+    { name: "OPENSTEER_LOCAL_WORKSPACE_ROOT", value: "/workspaces" },
+    {
+      name: "OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH",
+      value: "/var/lib/opensteer/workspace-bindings.v1.json",
+    },
+    { name: "OPENSTEER_NATIVE_FS_HELPER", value: "/app/native-fs-helper/opensteer-native-fs" },
+    { name: hostEnvironmentKeys.defaultWorkspaceBacking, value: "local-directory" },
   ];
 }
 
@@ -124,10 +125,6 @@ export const KubernetesManagedDeploymentTemplateSchema = z.strictObject({
   browserRuntimeImage: PinnedImageSchema,
   browserEgressImage: PinnedImageSchema,
   channelRuntimeImage: PinnedImageSchema,
-  filesImage: PinnedImageSchema,
-  fuseResourceName: z
-    .string()
-    .regex(/^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?\/[A-Za-z0-9][-A-Za-z0-9_.]{0,62}$/u),
   hostImage: PinnedImageSchema,
   ingressSourceCidrs: z.array(z.cidrv4()).max(16),
   kubernetesApiServer: z
@@ -146,16 +143,6 @@ export const KubernetesManagedDeploymentTemplateSchema = z.strictObject({
     ),
   namespacePrefix: z.string().regex(/^[a-z][a-z0-9-]{0,20}$/u),
   postgresImage: PinnedImageSchema,
-  portableFsMountImage: PinnedImageSchema,
-  portableFsMountSha256: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
-  portableFsManagerUrl: z.url().startsWith("https://"),
-  portableFsManagerCidrs: z.array(z.cidrv4()).min(1).max(16),
-  portableFsManagerCa: z.string().min(1).max(65_536),
-  portableFsManagerCertificate: z.string().min(1).max(65_536),
-  portableFsManagerPrivateKey: z.string().min(1).max(65_536),
-  portableFsProductPrivateKey: z.string().min(1).max(65_536),
-  portableFsProductIssuer: z.string().trim().min(1).max(255),
-  portableFsServiceId: z.string().trim().min(1).max(255),
   runnerImage: PinnedImageSchema,
   storageClassName: z.string().trim().min(1).max(253),
   version: z.literal(1),
@@ -198,19 +185,15 @@ export function managedWorkloadLabel(workload: string): string {
 
 /**
  * The snapshot pins where a deployment lives and what can never move under it: the hosting
- * cluster and its trust, the namespace name, the immutable PVC storage class, the cluster's FUSE
- * resource, the PostgreSQL major version (a bump would refuse the existing data directory), and
- * the PortableFS identity that names its existing volumes. Everything else is the release and
+ * cluster and its trust, namespace, PVC storage class and PostgreSQL major version.
+ * Everything else is the release and
  * comes from the live template at reconcile time so a deployment converges to the current build.
  */
 export const KubernetesManagedDeploymentPlacementSchema = z.object(
   KubernetesManagedDeploymentTemplateSchema.pick({
-    fuseResourceName: true,
     kubernetesApiServer: true,
     kubernetesCa: true,
     namespacePrefix: true,
-    portableFsProductIssuer: true,
-    portableFsServiceId: true,
     postgresImage: true,
     storageClassName: true,
     version: true,
@@ -268,6 +251,7 @@ export function kubernetesManagedDeploymentResources(input: {
   readonly secrets: Readonly<Record<string, string>>;
   readonly template: KubernetesManagedDeploymentTemplate;
 }): readonly KubernetesObject[] {
+  const environmentId = `env_${input.deploymentId.slice("dep_".length)}`;
   const canonicalOrigin = new URL(input.canonicalOrigin);
   if (
     canonicalOrigin.protocol !== "https:" ||
@@ -328,47 +312,29 @@ export function kubernetesManagedDeploymentResources(input: {
         spec: {
           automountServiceAccountToken: false,
           containers: [container],
-          ...(writableVolumeNames.length > 0 || name === "runner"
+          ...(writableVolumeNames.length > 0
             ? {
                 initContainers: [
-                  ...(writableVolumeNames.length > 0
-                    ? [
-                        {
-                          args: [
-                            `chown 10001:10001 ${writableVolumeNames.map((volumeName) => `/volumes/${volumeName}`).join(" ")} && chmod 0700 ${writableVolumeNames.map((volumeName) => `/volumes/${volumeName}`).join(" ")}`,
-                          ],
-                          command: ["/bin/sh", "-ec"],
-                          image: input.template.portableFsMountImage,
-                          name: "initialize-runtime-volumes",
-                          securityContext: {
-                            allowPrivilegeEscalation: false,
-                            capabilities: { add: ["CHOWN", "FOWNER"], drop: ["ALL"] },
-                            readOnlyRootFilesystem: true,
-                            runAsGroup: 0,
-                            runAsNonRoot: false,
-                            runAsUser: 0,
-                          },
-                          volumeMounts: writableVolumeNames.map((volumeName) => ({
-                            mountPath: `/volumes/${volumeName}`,
-                            name: volumeName,
-                          })),
-                        },
-                      ]
-                    : []),
-                  ...(name === "runner"
-                    ? [
-                        {
-                          args: [
-                            `printf '%s  %s\n' '${input.template.portableFsMountSha256.slice(7)}' /portablefs/portablefs | sha256sum --check --strict && cp /portablefs/portablefs /opt/portablefs/portablefs && chmod 0555 /opt/portablefs/portablefs`,
-                          ],
-                          command: ["/bin/sh", "-ec"],
-                          image: input.template.portableFsMountImage,
-                          name: "install-portablefs",
-                          securityContext: containerSecurity,
-                          volumeMounts: [{ mountPath: "/opt/portablefs", name: "portablefs" }],
-                        },
-                      ]
-                    : []),
+                  {
+                    args: [
+                      `chown 10001:10001 ${writableVolumeNames.map((volumeName) => `/volumes/${volumeName}`).join(" ")} && chmod 0700 ${writableVolumeNames.map((volumeName) => `/volumes/${volumeName}`).join(" ")}`,
+                    ],
+                    command: ["/bin/sh", "-ec"],
+                    image: input.template.hostImage,
+                    name: "initialize-runtime-volumes",
+                    securityContext: {
+                      allowPrivilegeEscalation: false,
+                      capabilities: { add: ["CHOWN", "FOWNER"], drop: ["ALL"] },
+                      readOnlyRootFilesystem: true,
+                      runAsGroup: 0,
+                      runAsNonRoot: false,
+                      runAsUser: 0,
+                    },
+                    volumeMounts: writableVolumeNames.map((volumeName) => ({
+                      mountPath: `/volumes/${volumeName}`,
+                      name: volumeName,
+                    })),
+                  },
                 ],
               }
             : {}),
@@ -417,10 +383,6 @@ export function kubernetesManagedDeploymentResources(input: {
             }
           : {}),
         OPENSTEER_DATABASE_URL: `postgresql://postgres:${secrets.POSTGRES_PASSWORD}@postgres:5432/postgres`,
-        "portablefs-ca.pem": input.template.portableFsManagerCa,
-        "portablefs-client.pem": input.template.portableFsManagerCertificate,
-        "portablefs-client-key.pem": input.template.portableFsManagerPrivateKey,
-        "portablefs-product.pem": input.template.portableFsProductPrivateKey,
       },
     },
     ...(runtimeSecrets
@@ -462,20 +424,10 @@ export function kubernetesManagedDeploymentResources(input: {
       metadata: { labels, name: "postgres-password", namespace: input.namespace },
       stringData: { POSTGRES_PASSWORD: secrets.POSTGRES_PASSWORD },
     },
-    {
-      apiVersion: "v1",
-      // The Host's public key, so the files service can verify what the Host
-      // signed. It is public material, which is why it is mounted and never
-      // treated as a credential.
-      kind: "Secret",
-      metadata: { labels, name: "browser-trust", namespace: input.namespace },
-      stringData: { "host-public.pem": secrets["host-public.pem"] },
-    },
-
     pvc("postgres-data", "20Gi"),
     pvc("host-data", "10Gi"),
-    pvc("files-data", "20Gi"),
     pvc("runner-data", "10Gi"),
+    pvc("workspace-data", "10Gi"),
     pvc("browser-data", "10Gi"),
     pvc("channel-data", "10Gi"),
     {
@@ -542,10 +494,10 @@ export function kubernetesManagedDeploymentResources(input: {
             initContainers: [
               {
                 args: [
-                  "chown 10001:10001 /run/opensteer /var/lib/opensteer && chmod 0700 /run/opensteer /var/lib/opensteer && chmod 1777 /var/lib/portablefs-files && cp /staged-trust/host-public.pem /files-trust/host-public.pem && chmod 0444 /files-trust/host-public.pem",
+                  "chown 10001:10001 /run/opensteer /var/lib/opensteer && chmod 0700 /run/opensteer /var/lib/opensteer",
                 ],
                 command: ["/bin/sh", "-ec"],
-                image: input.template.portableFsMountImage,
+                image: input.template.hostImage,
                 name: "initialize-host-volumes",
                 securityContext: {
                   allowPrivilegeEscalation: false,
@@ -557,11 +509,8 @@ export function kubernetesManagedDeploymentResources(input: {
                 },
                 volumeMounts: [
                   { mountPath: "/var/lib/opensteer", name: "host-data" },
-                  { mountPath: "/var/lib/portablefs-files", name: "files-data" },
                   { mountPath: "/run/opensteer", name: "runtime" },
                   { mountPath: "/tmp", name: "tmp" },
-                  { mountPath: "/staged-trust", name: "staged-files-trust", readOnly: true },
-                  { mountPath: "/files-trust", name: "files-trust" },
                 ],
               },
               {
@@ -585,7 +534,6 @@ export function kubernetesManagedDeploymentResources(input: {
                   { name: "OPENSTEER_CANONICAL_ORIGIN", value: input.canonicalOrigin },
                   { name: "OPENSTEER_DEPLOYMENT_NAME", value: input.name },
                   { name: "OPENSTEER_DEPLOYMENT_KIND", value: "server" },
-                  { name: "OPENSTEER_FILES_SERVICE_URL", value: "http://127.0.0.1:4315" },
                   { name: "OPENSTEER_HOST_DATA_DIR", value: "/var/lib/opensteer" },
                   {
                     name: "OPENSTEER_HOST_PRIVATE_KEY_PATH",
@@ -625,40 +573,9 @@ export function kubernetesManagedDeploymentResources(input: {
                   { name: "OPENSTEER_PORT", value: "4310" },
                   {
                     name: hostEnvironmentKeys.defaultWorkspaceBacking,
-                    value: "portablefs",
+                    value: "local-directory",
                   },
-                  {
-                    name: "OPENSTEER_PORTABLEFS_AUTHORIZATION_DOMAIN",
-                    value: input.deploymentId,
-                  },
-                  {
-                    name: "OPENSTEER_PORTABLEFS_MANAGER_URL",
-                    value: input.template.portableFsManagerUrl,
-                  },
-                  {
-                    name: "OPENSTEER_PORTABLEFS_SERVICE_ID",
-                    value: input.template.portableFsServiceId,
-                  },
-                  {
-                    name: "OPENSTEER_PORTABLEFS_PRODUCT_ISSUER",
-                    value: input.template.portableFsProductIssuer,
-                  },
-                  {
-                    name: "OPENSTEER_PORTABLEFS_MANAGER_CA_PATH",
-                    value: "/run/opensteer/portablefs-ca.pem",
-                  },
-                  {
-                    name: "OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH",
-                    value: "/run/opensteer/portablefs-client.pem",
-                  },
-                  {
-                    name: "OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH",
-                    value: "/run/opensteer/portablefs-client-key.pem",
-                  },
-                  {
-                    name: "OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH",
-                    value: "/run/opensteer/portablefs-product.pem",
-                  },
+                  { name: "OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID", value: environmentId },
                 ],
                 image: input.template.hostImage,
                 name: "host",
@@ -672,51 +589,14 @@ export function kubernetesManagedDeploymentResources(input: {
                   { mountPath: "/tmp", name: "tmp" },
                 ],
               },
-              {
-                args: [
-                  "--request-public-key",
-                  "/run/opensteer/host-public.pem",
-                  "--request-issuer",
-                  "opensteer-host",
-                  "--identity-dir",
-                  "/var/lib/portablefs-files/identity",
-                  "--listen",
-                  "127.0.0.1:4315",
-                ],
-                image: input.template.filesImage,
-                name: "files",
-                readinessProbe: {
-                  exec: {
-                    command: ["curl", "--fail", "--silent", "http://127.0.0.1:4315/healthz"],
-                  },
-                  periodSeconds: 5,
-                },
-                resources: { requests: { cpu: "100m", memory: "256Mi" } },
-                securityContext: {
-                  allowPrivilegeEscalation: false,
-                  capabilities: { drop: ["ALL"] },
-                  readOnlyRootFilesystem: true,
-                  runAsNonRoot: true,
-                },
-                volumeMounts: [
-                  { mountPath: "/var/lib/portablefs-files", name: "files-data" },
-                  { mountPath: "/run/opensteer", name: "files-trust", readOnly: true },
-                ],
-              },
             ],
             securityContext: { seccompProfile: { type: "RuntimeDefault" } },
             volumes: [
               { name: "host-data", persistentVolumeClaim: { claimName: "host-data" } },
-              { name: "files-data", persistentVolumeClaim: { claimName: "files-data" } },
               { name: "runtime", emptyDir: {} },
               {
                 name: "staged-runtime",
                 secret: { defaultMode: 292, secretName: "runtime" },
-              },
-              { name: "files-trust", emptyDir: {} },
-              {
-                name: "staged-files-trust",
-                secret: { defaultMode: 292, secretName: "browser-trust" },
               },
               { name: "tmp", emptyDir: {} },
             ],
@@ -727,7 +607,7 @@ export function kubernetesManagedDeploymentResources(input: {
     deployment(
       "runner",
       {
-        env: managedRunnerEnvironment(input.canonicalOrigin, input.template.portableFsMountSha256),
+        env: managedRunnerEnvironment(input.canonicalOrigin, environmentId),
         image: input.template.runnerImage,
         name: "runner",
         readinessProbe: {
@@ -741,31 +621,28 @@ export function kubernetesManagedDeploymentResources(input: {
           periodSeconds: 5,
         },
         resources: {
-          limits: { [input.template.fuseResourceName]: "1" },
-          requests: { cpu: "1", memory: "2Gi", [input.template.fuseResourceName]: "1" },
+          requests: { cpu: "1", memory: "2Gi" },
         },
         securityContext: {
           allowPrivilegeEscalation: true,
           appArmorProfile: { type: "Unconfined" },
-          capabilities: { add: ["DAC_READ_SEARCH", "SYS_ADMIN"], drop: ["ALL"] },
+          capabilities: { add: ["SYS_ADMIN"], drop: ["ALL"] },
           seccompProfile: {
             localhostProfile: "opensteer/runner.json",
             type: "Localhost",
           },
         },
         volumeMounts: [
-          { mountPath: "/opt/portablefs", name: "portablefs", readOnly: true },
           { mountPath: "/var/lib/opensteer", name: "data" },
           { mountPath: "/workspaces", name: "workspaces" },
         ],
       },
       [
         { name: "data", persistentVolumeClaim: { claimName: "runner-data" } },
-        { emptyDir: {}, name: "portablefs" },
-        { emptyDir: {}, name: "workspaces" },
+        { name: "workspaces", persistentVolumeClaim: { claimName: "workspace-data" } },
       ],
       podSecurity,
-      ["data", "portablefs", "workspaces"],
+      ["data", "workspaces"],
     ),
     {
       apiVersion: "v1",
@@ -930,30 +807,6 @@ export function kubernetesManagedDeploymentResources(input: {
         policyTypes: ["Ingress", "Egress"],
       },
     },
-    {
-      apiVersion: "networking.k8s.io/v1",
-      kind: "NetworkPolicy",
-      metadata: { labels, name: "host-portablefs-egress", namespace: input.namespace },
-      spec: {
-        egress: [
-          {
-            to: input.template.portableFsManagerCidrs.map((cidr) => ({ ipBlock: { cidr } })),
-          },
-        ],
-        podSelector: {
-          matchExpressions: [
-            {
-              key: "app.kubernetes.io/name",
-              operator: "In",
-              // The mount daemon renews its enrollment directly with Manager.
-              // Initial authorization through Host alone cannot keep a mount live.
-              values: ["host", "runner", "managed-teardown"],
-            },
-          ],
-        },
-        policyTypes: ["Egress"],
-      },
-    },
   ];
 }
 
@@ -991,7 +844,7 @@ export function kubernetesManagedTeardownJob(input: {
             {
               args: ["chown 10001:10001 /run/opensteer && chmod 0700 /run/opensteer"],
               command: ["/bin/sh", "-ec"],
-              image: input.template.portableFsMountImage,
+              image: input.template.hostImage,
               name: "initialize-runtime-volume",
               securityContext: {
                 allowPrivilegeEscalation: false,
@@ -1035,8 +888,11 @@ export function kubernetesManagedTeardownJob(input: {
                 { name: "OPENSTEER_CANONICAL_ORIGIN", value: input.canonicalOrigin },
                 { name: "OPENSTEER_CREDENTIAL_KEY_PATH", value: "/run/opensteer/credential.key" },
                 { name: "OPENSTEER_DEPLOYMENT_KIND", value: "server" },
+                {
+                  name: "OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID",
+                  value: `env_${input.deploymentId.slice("dep_".length)}`,
+                },
                 { name: "OPENSTEER_DEPLOYMENT_NAME", value: input.name },
-                { name: "OPENSTEER_FILES_SERVICE_URL", value: "http://127.0.0.1:4315" },
                 { name: "OPENSTEER_HOST_DATA_DIR", value: "/var/lib/opensteer" },
                 {
                   name: "OPENSTEER_HOST_PRIVATE_KEY_PATH",
@@ -1044,41 +900,12 @@ export function kubernetesManagedTeardownJob(input: {
                 },
                 { name: "OPENSTEER_HOST_PUBLIC_KEY_PATH", value: "/run/opensteer/host-public.pem" },
                 { name: "OPENSTEER_MODE", value: "production" },
-                { name: "OPENSTEER_PORTABLEFS_AUTHORIZATION_DOMAIN", value: input.deploymentId },
-                {
-                  name: "OPENSTEER_PORTABLEFS_MANAGER_CA_PATH",
-                  value: "/run/opensteer/portablefs-ca.pem",
-                },
-                {
-                  name: "OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH",
-                  value: "/run/opensteer/portablefs-client.pem",
-                },
-                {
-                  name: "OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH",
-                  value: "/run/opensteer/portablefs-client-key.pem",
-                },
-                {
-                  name: "OPENSTEER_PORTABLEFS_MANAGER_URL",
-                  value: input.template.portableFsManagerUrl,
-                },
-                {
-                  name: "OPENSTEER_PORTABLEFS_PRODUCT_ISSUER",
-                  value: input.template.portableFsProductIssuer,
-                },
-                {
-                  name: "OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH",
-                  value: "/run/opensteer/portablefs-product.pem",
-                },
-                {
-                  name: "OPENSTEER_PORTABLEFS_SERVICE_ID",
-                  value: input.template.portableFsServiceId,
-                },
                 { name: "OPENSTEER_PORT", value: "4310" },
                 { name: "OPENSTEER_RUNTIME_ORIGIN", value: input.canonicalOrigin },
                 { name: "OPENSTEER_SIGNUP_POLICY", value: "invite-only" },
                 {
                   name: hostEnvironmentKeys.defaultWorkspaceBacking,
-                  value: "portablefs",
+                  value: "local-directory",
                 },
               ],
               image: input.teardownImage,

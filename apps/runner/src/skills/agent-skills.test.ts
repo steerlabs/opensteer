@@ -28,44 +28,45 @@ describe("Runner Agent Skills", () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
 
     expect(skillNames(bundle, "main")).toEqual([
-      "opensteer-specialization",
-      "opensteer-integrations",
-      "opensteer-computer-use",
-      "opensteer-browser",
-      "opensteer-computers",
-      "opensteer-workspaces",
-      "opensteer-threads",
-      "opensteer-triggers",
+      "opensteer:skills",
+      "opensteer:integrations",
+      "opensteer:computer-use",
+      "opensteer:browser",
+      "opensteer:computers",
+      "opensteer:projects",
+      "opensteer:threads",
+      "opensteer:triggers",
     ]);
     expect(skillNames(bundle, "workspace")).toEqual([
-      "opensteer-specialization",
-      "opensteer-integrations",
-      "opensteer-computer-use",
-      "opensteer-browser",
-      "opensteer-computers",
-      "opensteer-threads",
-      "opensteer-triggers",
+      "opensteer:skills",
+      "opensteer:integrations",
+      "opensteer:computer-use",
+      "opensteer:browser",
+      "opensteer:computers",
+      "opensteer:threads",
+      "opensteer:triggers",
     ]);
     expect(skillNames(bundle, "delegated")).toEqual([
-      "opensteer-specialization",
-      "opensteer-integrations",
-      "opensteer-computer-use",
-      "opensteer-browser",
-      "opensteer-computers",
-      "opensteer-threads",
-      "opensteer-triggers",
+      "opensteer:skills",
+      "opensteer:integrations",
+      "opensteer:computer-use",
+      "opensteer:browser",
+      "opensteer:computers",
+      "opensteer:threads",
+      "opensteer:triggers",
     ]);
-    expect(skillNames(bundle, "trigger")).toEqual(["opensteer-triggers"]);
+    expect(skillNames(bundle, "trigger")).toEqual(["opensteer:triggers"]);
     expect(
-      planAgentSkills(bundle, "main").find(({ name }) => name === "opensteer-integrations")?.path,
-    ).toBe(join(bundle.rootPath, "skills", "opensteer-integrations"));
+      planAgentSkills(bundle, "main").find(({ fullName }) => fullName === "opensteer:integrations")
+        ?.path,
+    ).toBe(join(bundle.rootPath, "skills", "integrations"));
     expect(skillNames(bundle, "main")).toEqual(skillNames(bundle, "main"));
     expect(skillNames(bundle, "workspace")).toEqual(skillNames(bundle, "workspace"));
     expect(skillNames(bundle, "delegated")).toEqual(skillNames(bundle, "delegated"));
     const mainPlan = planAgentSkills(bundle, "main");
     const catalog = await renderHarnessSkillCatalog({ skills: mainPlan });
     for (const skill of mainPlan) {
-      expect(catalog).toContain(`- ${skill.name}:`);
+      expect(catalog).toContain(`- ${skill.fullName}:`);
       expect(catalog).toContain(`SKILL.md: ${join(skill.path, "SKILL.md")}`);
     }
     expect(catalog).not.toContain("Metadata unavailable");
@@ -80,10 +81,12 @@ describe("Runner Agent Skills", () => {
         integration: [],
         workspace: [],
       });
-      const skill = plan?.skills.find(({ name }) => name === "opensteer-triggers");
+      const skill = plan?.skills.find(({ fullName }) => fullName === "opensteer:triggers");
       expect(skill, id).toEqual({
-        name: "opensteer-triggers",
-        path: bundle.paths["opensteer-triggers"],
+        plugin: "opensteer",
+        localName: "triggers",
+        fullName: "opensteer:triggers",
+        path: bundle.paths["opensteer:triggers"],
       });
       const catalog = await renderHarnessSkillCatalog(plan!);
       expect(catalog).toContain(`SKILL.md: ${join(skill!.path, "SKILL.md")}`);
@@ -101,13 +104,13 @@ describe("Runner Agent Skills", () => {
     const recoveryTools = ["browser_session_open"];
     for (const profileId of ["main", "workspace", "delegated"] as const) {
       const selected = planAgentSkills(bundle, profileId);
-      expect(selected.some(({ name }) => name === "opensteer-browser")).toBe(true);
+      expect(selected.some(({ fullName }) => fullName === "opensteer:browser")).toBe(true);
       expect(toolsForCapabilityProfile(profileId).map(({ name }) => name)).toEqual(
         expect.arrayContaining(recoveryTools),
       );
     }
     expect(skillsForCapabilityProfile("trigger").map(({ name }) => name)).not.toContain(
-      "opensteer-browser",
+      "opensteer:browser",
     );
     expect(toolsForCapabilityProfile("trigger").map(({ name }) => name)).not.toEqual(
       expect.arrayContaining(recoveryTools),
@@ -117,7 +120,7 @@ describe("Runner Agent Skills", () => {
     const skill = (
       await Promise.all(
         ["SKILL.md", "references/identity.md", "references/tabs-and-show.md"].map((file) =>
-          readFile(join(bundle.paths["opensteer-browser"], file), "utf8"),
+          readFile(join(bundle.paths["opensteer:browser"], file), "utf8"),
         ),
       )
     ).join("\n");
@@ -144,12 +147,12 @@ describe("Runner Agent Skills", () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
     const read = (name: OpensteerAgentSkillName) =>
       readFile(join(bundle.paths[name], "SKILL.md"), "utf8");
-    const computers = await read("opensteer-computers");
-    const computerUse = await read("opensteer-computer-use");
-    const integrations = await read("opensteer-integrations");
-    const computerMetadata = parseHarnessSkillMetadata(computers, "opensteer-computers");
-    const computerUseMetadata = parseHarnessSkillMetadata(computerUse, "opensteer-computer-use");
-    const integrationMetadata = parseHarnessSkillMetadata(integrations, "opensteer-integrations");
+    const computers = await read("opensteer:computers");
+    const computerUse = await read("opensteer:computer-use");
+    const integrations = await read("opensteer:integrations");
+    const computerMetadata = parseHarnessSkillMetadata(computers, "computers");
+    const computerUseMetadata = parseHarnessSkillMetadata(computerUse, "computer-use");
+    const integrationMetadata = parseHarnessSkillMetadata(integrations, "integrations");
     expect(computerMetadata.description).toContain(
       "Use Opensteer SSH access for another computer’s files, commands or forwarded ports.",
     );
@@ -164,14 +167,14 @@ describe("Runner Agent Skills", () => {
       expect(catalog).toContain(metadata.description);
     }
     expect(computers).toContain(
-      "Use opensteer-computer-use to see or operate Mac app interfaces and Agent Phones.",
+      "Use opensteer:computer-use to see or operate Mac app interfaces and Agent Phones.",
     );
     expect(computerUse).toContain(
       "never read an app's private data files or use AppleScript, `screencapture`, SSH or synthetic events for that purpose.",
     );
     expect(integrations).toContain("never with `integration_call`.");
     const api = await readFile(
-      join(bundle.paths["opensteer-computer-use"], "references", "api.md"),
+      join(bundle.paths["opensteer:computer-use"], "references", "api.md"),
       "utf8",
     );
     expect(api).toContain("`globalThis` persists between computer calls in this Run.");
@@ -180,7 +183,7 @@ describe("Runner Agent Skills", () => {
     );
     expect(api).toContain("Outside an Assignment, if `person_show` is listed");
     const signIn = await readFile(
-      join(bundle.paths["opensteer-computer-use"], "references", "sign-in.md"),
+      join(bundle.paths["opensteer:computer-use"], "references", "sign-in.md"),
       "utf8",
     );
     expect(signIn).toContain("never reveal, read back or screenshot a typed saved field");
@@ -190,11 +193,11 @@ describe("Runner Agent Skills", () => {
   it("teaches that a reply, never a report, is what reaches the person", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
     const threads = await readFile(
-      join(bundle.paths["opensteer-threads"], "references", "chat.md"),
+      join(bundle.paths["opensteer:threads"], "references", "chat.md"),
       "utf8",
     );
     const triggers = await readFile(
-      join(bundle.paths["opensteer-triggers"], "references", "reminders.md"),
+      join(bundle.paths["opensteer:triggers"], "references", "reminders.md"),
       "utf8",
     );
 
@@ -211,7 +214,7 @@ describe("Runner Agent Skills", () => {
 
   it("ships the machine access refusal sentences verbatim", async () => {
     const skill = await readFile(
-      join(bundleDirectory, "skills", "opensteer-computers", "references", "access.md"),
+      join(bundleDirectory, "skills", "computers", "references", "access.md"),
       "utf8",
     );
 
@@ -246,7 +249,7 @@ describe("Runner Agent Skills", () => {
 
   it("claims no more of machine access than it can keep", async () => {
     const skill = await readFile(
-      join(bundleDirectory, "skills", "opensteer-computers", "references", "ssh.md"),
+      join(bundleDirectory, "skills", "computers", "references", "ssh.md"),
       "utf8",
     );
 
@@ -333,16 +336,16 @@ describe("Runner Agent Skills", () => {
     temporaryDirectories.push(directory);
     await cp(bundleDirectory, directory, { recursive: true });
     await writeFile(
-      join(directory, "skills", "opensteer-browser", "SKILL.md"),
-      "---\nname: opensteer-browser\ndescription: [\n---\nBody\n",
+      join(directory, "skills", "browser", "SKILL.md"),
+      "---\nname: opensteer:browser\ndescription: [\n---\nBody\n",
     );
 
     await expect(loadAgentSkillBundle(directory)).rejects.toThrow(
-      "Agent Skill opensteer-browser has invalid metadata",
+      "Agent Skill opensteer:browser has invalid metadata",
     );
   });
 });
 
 function skillNames(...input: Parameters<typeof planAgentSkills>): readonly string[] | undefined {
-  return planAgentSkills(...input).map(({ name }) => name);
+  return planAgentSkills(...input).map(({ fullName }) => fullName);
 }

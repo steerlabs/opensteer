@@ -22,7 +22,7 @@ import { useOptionalWorkspace } from "./workspace/workspace-context.js";
  * its title, and beside it only what the reader needs — "Needs you", where it
  * is working, a dot for something unread, when it stopped. Every row draws
  * what `taskList` says and nothing else, so the sidebar, search and a
- * specialist's page can never read differently.
+ * project's page can never read differently.
  */
 
 const selectSnapshot = (snapshot: HostSnapshot) => snapshot;

@@ -16,7 +16,7 @@ describe("transcriptLinkUrl", () => {
     // origin and replaced the app with a blank page.
     "/Users/person/Downloads/tiger-in-snow.jpg",
     "/settings/devices",
-    "docs/portablefs-contract.md",
+    "docs/storage-contract.md",
     "./out/report.pdf",
     "../outside.txt",
     "#contract",

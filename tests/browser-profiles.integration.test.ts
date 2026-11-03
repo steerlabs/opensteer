@@ -9,7 +9,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -238,7 +238,20 @@ async function fulfillNewProfile(
   evidence: Evidence,
   people?: HttpHostClient[],
 ) {
-  const workspace = await stack.createWorkspace("Brex specialized workspace");
+  const workspace = await stack.createWorkspace("Brex project workspace");
+  expect(
+    (
+      await stat(
+        path.join(
+          path.dirname(stack.mountedWorkspacePath),
+          "local-workspaces",
+          "main",
+          "Projects",
+          "brex-project-workspace",
+        ),
+      )
+    ).isDirectory(),
+  ).toBe(true);
   const first = await profileTurn(stack, evidence, { request: true }, undefined, workspace.id);
   const requestId = first.report.request!.requestId;
   const resolved = await stack.api["commands.dispatch"]({
@@ -312,9 +325,9 @@ run("Browser profiles through a whole deployment", () => {
     "J2-authority current Main Workspace and delegated tool inventories",
     async (evidence) => {
       const { stack } = await profileDeployment();
-      const workspace = await stack.createWorkspace("Specialized authority");
+      const workspace = await stack.createWorkspace("Project authority");
       const main = await profileTurn(stack, evidence, {});
-      const specialized = await profileTurn(stack, evidence, {}, undefined, workspace.id);
+      const project = await profileTurn(stack, evidence, {}, undefined, workspace.id);
       const delegated = await profileTurn(
         stack,
         evidence,
@@ -338,13 +351,13 @@ run("Browser profiles through a whole deployment", () => {
       evidence.observations.push({
         inventories: {
           main: main.report.tools,
-          workspace: specialized.report.tools,
+          workspace: project.report.tools,
           delegated: child!.tools,
         },
       });
       for (const [kind, report] of [
         ["main", main.report],
-        ["workspace", specialized.report],
+        ["workspace", project.report],
         ["delegated", child!],
       ] as const) {
         equal(

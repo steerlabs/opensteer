@@ -71,14 +71,8 @@ const AgentThreadMessageWindowSchema = z.strictObject({
 const agentOmittedWorkspaceFields = { color: true, icon: true } as const;
 const AgentWorkspaceViewSchema = z.strictObject({
   ...WorkspaceViewSchema.omit(agentOmittedWorkspaceFields).shape,
-  capacity: z.discriminatedUnion("kind", [
-    z.strictObject(WorkspaceViewSchema.shape.capacity.options[0].shape),
-    z.strictObject(WorkspaceViewSchema.shape.capacity.options[1].shape),
-  ]),
-  location: z.discriminatedUnion("kind", [
-    z.strictObject(WorkspaceViewSchema.shape.location.options[0].shape),
-    z.strictObject(WorkspaceViewSchema.shape.location.options[1].shape),
-  ]),
+  capacity: z.strictObject(WorkspaceViewSchema.shape.capacity.shape),
+  location: z.strictObject(WorkspaceViewSchema.shape.location.shape),
   storageIssue: z.strictObject(WorkspaceViewSchema.shape.storageIssue.unwrap().shape).nullable(),
 });
 
@@ -129,46 +123,17 @@ const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
     ...requestBase,
     before: DurableWindowCursorSchema.optional(),
     limit: z.number().int().min(1).max(50).default(25),
-    type: z.literal("workspace.list"),
+    type: z.literal("project.list"),
   }),
-  z.strictObject({
-    ...requestBase,
-    maxThreads: z.number().int().min(1).max(100).optional(),
-    maxWorkspaces: z.number().int().min(1).max(50).optional(),
-    harnessCursor: HarnessInstanceIdSchema.optional(),
-    modelPage: z
-      .strictObject({
-        harnessInstanceId: HarnessInstanceIdSchema,
-        cursor: z.string().min(1).max(2_048).optional(),
-      })
-      .optional(),
-    threadBefore: DurableWindowCursorSchema.optional(),
-    type: z.literal("workspace.inspect"),
-    workspaceBefore: DurableWindowCursorSchema.optional(),
-  }),
+
   z.strictObject({
     ...requestBase,
     color: MarkColorSchema.optional(),
     icon: WorkspaceIconNameSchema.optional(),
     name: z.string().trim().min(1).max(160),
-    // Absent means this Deployment's default backing; a local directory with
-    // no machine named is on the machine the caller runs on.
-    storage: z
-      .discriminatedUnion("backing", [
-        z.strictObject({
-          backing: z.literal("local-directory"),
-          environmentId: EnvironmentIdSchema.optional(),
-        }),
-        z.strictObject({ backing: z.literal("portablefs") }),
-      ])
-      .optional(),
-    type: z.literal("workspace.create"),
+    type: z.literal("project.create"),
   }),
-  z.strictObject({
-    ...requestBase,
-    type: z.literal("workspace.mount"),
-    workspaceId: WorkspaceIdSchema,
-  }),
+
   z.strictObject({
     ...requestBase,
     assignmentBefore: DurableWindowCursorSchema.optional(),
@@ -202,6 +167,7 @@ const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
     title: z.string().trim().min(1).max(240).optional(),
     /** A new task Thread's symbol; an existing Thread keeps its own. */
     icon: WorkspaceIconNameSchema.optional(),
+    specialist: z.string().trim().min(1).max(256).optional(),
     type: z.literal("thread.delegate"),
     threadId: ThreadIdSchema.optional(),
     workspaceId: WorkspaceIdSchema.optional(),
@@ -328,17 +294,13 @@ export const AgentControlRequestSchema = AgentControlRequestUnionSchema.refine(
     [request.fresh, request.profileId, request.sessionId].filter(Boolean).length === 1,
   "Choose exactly one of an existing session to attach, a granted browser profile, or a fresh session",
 )
-  .refine(
-    (request) =>
-      request.type !== "workspace.inspect" ||
-      request.harnessCursor === undefined ||
-      request.modelPage === undefined,
-    "Choose either an AI engine profile page or one profile's model page",
-  )
+
   .refine(
     (request) =>
       request.type !== "thread.delegate" ||
-      ((request.threadId !== undefined) !== (request.workspaceId !== undefined) &&
+      ((request.threadId !== undefined
+        ? request.workspaceId === undefined
+        : request.workspaceId !== undefined || request.specialist !== undefined) &&
         (request.threadId === undefined ||
           (request.environmentId === undefined &&
             request.harnessInstanceId === undefined &&
@@ -493,7 +455,7 @@ export const AgentThreadSummarySchema = z.strictObject({
 });
 
 const GrantedBrowserProfileSchema = z.strictObject({
-  access: z.literal("full-control"),
+  access: z.enum(["read", "read-write"]),
   grantId: BrowserProfileGrantIdSchema,
   id: BrowserProfileIdSchema,
   name: z.string().min(1).max(120),
@@ -514,7 +476,7 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...responseBase,
-    type: z.literal("workspace.list.result"),
+    type: z.literal("project.list.result"),
     workspaces: z.array(WorkspaceSummarySchema).max(50),
     window: AgentDurableWindowSchema,
   }),
@@ -525,38 +487,12 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...responseBase,
-    type: z.literal("workspace.create.result"),
+    type: z.literal("project.create.result"),
+    path: z.string().regex(/^(?:\/|[A-Za-z]:[\\/]|\\\\)/u),
+    slug: z.string().min(1),
     workspace: AgentWorkspaceViewSchema,
   }),
-  z.strictObject({
-    ...responseBase,
-    path: z.string().min(1).max(4_096),
-    type: z.literal("workspace.mount.result"),
-    workspaceId: WorkspaceIdSchema,
-  }),
-  z.strictObject({
-    ...responseBase,
-    /** Where new delegated work runs unless the caller names an engine or model. */
-    delegationDefault: DelegationDefaultSchema,
-    environments: z.array(EnvironmentSummarySchema).max(64),
-    environmentsTruncated: z.boolean(),
-    harnesses: z
-      .array(HarnessSummarySchema)
-      .max(64)
-      .refine(
-        (harnesses) =>
-          harnesses.reduce((count, { models }) => count + models.length, 0) <=
-          agentInspectionModelsShown,
-        `An inspection shows at most ${agentInspectionModelsShown} models`,
-      ),
-    harnessesTruncated: z.boolean(),
-    harnessesNextCursor: HarnessInstanceIdSchema.optional(),
-    threadWindow: AgentDurableWindowSchema,
-    threads: z.array(ThreadSchema).max(100),
-    type: z.literal("workspace.inspect.result"),
-    workspaceWindow: AgentDurableWindowSchema,
-    workspaces: z.array(WorkspaceSummarySchema).max(50),
-  }),
+
   z.strictObject({
     ...responseBase,
     assignments: z.array(AssignmentSummarySchema).max(50),
@@ -707,35 +643,14 @@ export const RunIntegrationToolsPlanSchema = z.strictObject({
 });
 export type RunIntegrationToolsPlan = z.infer<typeof RunIntegrationToolsPlanSchema>;
 
-export const RunIntegrationSkillsPlanSchema = z.strictObject({
-  token: z.string().min(1).max(4_096),
+export const PinnedPluginSchema = z.strictObject({
+  pluginId: z.string().min(1).max(256),
+  name: z.string().min(1).max(64),
+  digest: z.string().regex(/^[a-f0-9]{64}$/u),
+});
+export const RunPluginsPlanSchema = z.strictObject({
+  token: z.string().min(1).max(16_000),
   url: z.url(),
+  versions: z.array(PinnedPluginSchema).max(128),
 });
-export type RunIntegrationSkillsPlan = z.infer<typeof RunIntegrationSkillsPlanSchema>;
-
-export const IntegrationSkillBundleSchema = z.strictObject({
-  plugins: z
-    .array(
-      z.strictObject({
-        name: z.string().min(1).max(64),
-        skills: z
-          .array(
-            z.strictObject({
-              files: z
-                .array(
-                  z.strictObject({
-                    content: z.string().max(24 * 1_024 * 1_024),
-                    executable: z.boolean(),
-                    path: z.string().min(1).max(4_096),
-                  }),
-                )
-                .max(10_000),
-              name: z.string().min(1).max(64),
-            }),
-          )
-          .max(1_000),
-      }),
-    )
-    .max(128),
-});
-export type IntegrationSkillBundle = z.infer<typeof IntegrationSkillBundleSchema>;
+export type RunPluginsPlan = z.infer<typeof RunPluginsPlanSchema>;

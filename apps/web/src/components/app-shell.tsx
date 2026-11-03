@@ -30,6 +30,7 @@ import {
 } from "@opensteer/protocol/desktop";
 import {
   type ExecutionPreferences,
+  type MarkColor,
   type ThreadAccessMode,
   type WorkspaceIconName,
 } from "@opensteer/core";
@@ -98,7 +99,7 @@ import {
 } from "./workspace/navigation.js";
 import { DeploymentOperationBanner } from "./deployment-operation.js";
 import { Icon } from "./icon.js";
-import { NewWorkspaceDialog, type NewWorkspaceStorageChoice } from "./new-workspace-dialog.js";
+import { NewWorkspaceDialog } from "./new-workspace-dialog.js";
 import {
   PaneResizeHandle,
   usePersistedPaneSize,
@@ -177,7 +178,7 @@ export interface ShellContext {
   /** Returns from Settings to the workspace address left behind, or Home if opened there. */
   leaveSettings: () => void;
   openMobileNavigation: () => void;
-  /** Opens the dialog that creates a specialist. */
+  /** Opens the dialog that creates a project. */
   openNewWorkspace: () => void;
   /**
    * Runs one action against this computer's Runner slot. It records the
@@ -199,7 +200,7 @@ export interface ShellContext {
 
 /**
  * The three things a person does to this computer's membership of the viewed
- * Deployment, and the PortableFS setup steps that sit beside them.
+ * Deployment.
  *
  * Adding and removing are the only operations that touch identity; running
  * agents is a restart with the other module set, and never a second
@@ -207,7 +208,7 @@ export interface ShellContext {
  * of two positional arguments a given action reads.
  */
 export type LocalExecutionAction =
-  | { readonly kind: "acknowledge" | "install" | "open-setup" | "refresh" | "remove" }
+  | { readonly kind: "refresh" | "remove" }
   | { readonly kind: "add"; readonly name: string; readonly runAgents: boolean }
   | { readonly kind: "set-run-agents"; readonly runAgents: boolean };
 
@@ -607,9 +608,9 @@ export function AppShell({
   }, []);
   const createWorkspace = useCallback(
     async (input: {
+      readonly color: MarkColor | null;
       readonly icon: WorkspaceIconName | null;
       readonly name: string;
-      readonly storage: NewWorkspaceStorageChoice;
     }) => {
       setCreatingWorkspace(true);
       setNewWorkspaceError(null);
@@ -618,24 +619,29 @@ export function AppShell({
           ...(input.icon ? { icon: input.icon } : {}),
           idempotencyKey: mutationIdempotencyKey("workspace"),
           name: input.name,
-          storage:
-            input.storage.backing === "local-directory"
-              ? {
-                  backing: "local-directory",
-                  environmentId: input.storage.environmentId ?? "",
-                }
-              : { backing: "portablefs" },
           type: "workspace.create",
         });
         if (result.type !== "workspace.create") throw new Error("Workspace command mismatch.");
         setNewWorkspaceOpen(false);
+        // The Project exists either way; a colour the Host refused is the
+        // person's to pick again on its page, not a reason to stay here.
+        if (input.color)
+          void hostClient
+            .dispatch({
+              color: input.color,
+              idempotencyKey: mutationIdempotencyKey(`workspace-color:${result.workspace.id}`),
+              type: "workspace.color.set",
+              workspaceId: result.workspace.id,
+            })
+            .catch(reportActionError);
+        openConversation(`/workspaces/${encodeURIComponent(result.workspace.id)}`);
       } catch (error) {
         setNewWorkspaceError(actionErrorMessage(error));
       } finally {
         setCreatingWorkspace(false);
       }
     },
-    [hostClient],
+    [hostClient, openConversation, reportActionError],
   );
   const openSharing = useCallback(
     (workspaceId: string) => {
@@ -885,19 +891,6 @@ export function AppShell({
             });
             await hostClient.refresh();
             break;
-          case "install": {
-            status = await localBridge.installPortableFs(localExecutionInput);
-            if (status.portableFs.state === "needs-user-approval") {
-              status = await localBridge.openPortableFsSetup(localExecutionInput);
-            }
-            break;
-          }
-          case "open-setup":
-            status = await localBridge.openPortableFsSetup(localExecutionInput);
-            break;
-          case "acknowledge":
-            status = await localBridge.acknowledgePortableFsApproval(localExecutionInput);
-            break;
           case "refresh":
             status = await localBridge.getLocalExecutionStatus(localExecutionInput);
             await hostClient.refresh();
@@ -1111,6 +1104,7 @@ export function AppShell({
                       throw error;
                     }
                   }}
+                  onNewProject={openNewWorkspace}
                   onSetTaskDone={setTaskDone}
                   onToggleCollapsed={toggleSidebar}
                 />
@@ -1182,19 +1176,13 @@ export function AppShell({
               ) : null}
               {newWorkspaceOpen ? (
                 <NewWorkspaceDialog
+                  colors={snapshot.taskMarksAvailable}
                   creating={creatingWorkspace}
-                  defaultBacking={
-                    snapshot.deploymentShape?.defaultWorkspaceBacking ?? "local-directory"
-                  }
-                  environments={snapshot.environments}
                   error={newWorkspaceError}
                   onClose={() => {
                     if (!creatingWorkspace) setNewWorkspaceOpen(false);
                   }}
                   onCreate={(input) => void createWorkspace(input)}
-                  sharedStorageAvailable={
-                    snapshot.deploymentShape?.defaultWorkspaceBacking === "portablefs"
-                  }
                 />
               ) : null}
               {harnessAuthentication ? (

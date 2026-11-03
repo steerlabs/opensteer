@@ -8,7 +8,6 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseEnv } from "node:util";
 import { assertDevelopmentWorkspaceEnvironment } from "./dev-supervisor.js";
-import { validatePortableFsSource } from "./portablefs-local.js";
 
 const requiredPnpmVersion = "10.29.3";
 const minimumNodeVersion = [24, 13, 0] as const;
@@ -25,14 +24,12 @@ export interface LocalSetupOptions {
   readonly nodeVersion?: string;
   readonly repositoryRoot?: string;
   readonly runCommand?: CommandRunner;
-  readonly validatePortableFs?: (sourceDirectory: string) => Promise<void>;
 }
 
 export interface LocalSetupResult {
   readonly environmentCreated: boolean;
   readonly environmentUpdated: boolean;
-  readonly portableFsSourceDirectory?: string;
-  readonly backing: "local-directory" | "portablefs";
+  readonly backing: "local-directory";
 }
 
 export async function initializeLocalDevelopment(
@@ -65,25 +62,7 @@ export async function initializeLocalDevelopment(
   const environmentResult = await materializeLocalEnvironment(repositoryRoot);
   const parsedEnvironment = parseEnvironmentFile(environmentResult.content);
   const backing = developmentBacking(environment, parsedEnvironment);
-  assertDevelopmentWorkspaceEnvironment(backing, { ...parsedEnvironment, ...environment });
-  let portableFsSourceDirectory: string | undefined;
-  if (backing === "portablefs") {
-    const deployment =
-      environment.OPENSTEER_DEV_PORTABLEFS ?? parsedEnvironment.OPENSTEER_DEV_PORTABLEFS ?? "local";
-    if (deployment !== "local" && deployment !== "external") {
-      throw new Error("OPENSTEER_DEV_PORTABLEFS must be local or external");
-    }
-    if (deployment === "local") {
-      await run("openssl", ["version"]);
-      portableFsSourceDirectory = resolve(
-        environment.OPENSTEER_PORTABLEFS_SOURCE_DIR ??
-          parsedEnvironment.OPENSTEER_PORTABLEFS_SOURCE_DIR ??
-          join(repositoryRoot, "..", "portablefs"),
-      );
-      await (options.validatePortableFs ?? validatePortableFsSource)(portableFsSourceDirectory);
-    }
-  }
-
+  assertDevelopmentWorkspaceEnvironment({ ...parsedEnvironment, ...environment });
   await run(
     "docker",
     [
@@ -99,7 +78,6 @@ export async function initializeLocalDevelopment(
   return {
     environmentCreated: environmentResult.created,
     environmentUpdated: environmentResult.updated,
-    ...(portableFsSourceDirectory ? { portableFsSourceDirectory } : {}),
     backing,
   };
 }
@@ -107,15 +85,13 @@ export async function initializeLocalDevelopment(
 function developmentBacking(
   processEnvironment: NodeJS.ProcessEnv,
   fileEnvironment: Record<string, string>,
-): "local-directory" | "portablefs" {
+): "local-directory" {
   const value =
     processEnvironment.OPENSTEER_DEFAULT_WORKSPACE_BACKING ??
     fileEnvironment.OPENSTEER_DEFAULT_WORKSPACE_BACKING ??
     "local-directory";
-  if (value === "local-directory" || value === "portablefs") return value;
-  throw new Error(
-    "pnpm setup:local requires OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory or portablefs",
-  );
+  if (value === "local-directory") return value;
+  throw new Error("pnpm setup:local requires OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory");
 }
 
 async function materializeLocalEnvironment(repositoryRoot: string): Promise<{
@@ -210,12 +186,12 @@ function validateLocalEnvironment(content: string): void {
     throw new Error("Local setup requires OPENSTEER_BIND_ADDRESS=127.0.0.1");
   }
   const backing = environment.OPENSTEER_DEFAULT_WORKSPACE_BACKING ?? "local-directory";
-  if (backing !== "local-directory" && backing !== "portablefs") {
+  if (backing !== "local-directory") {
     throw new Error(
-      "pnpm setup:local requires OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory or portablefs",
+      "pnpm setup:local requires OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory",
     );
   }
-  assertDevelopmentWorkspaceEnvironment(backing, environment);
+  assertDevelopmentWorkspaceEnvironment(environment);
 }
 
 function parseEnvironmentFile(content: string): Record<string, string> {
@@ -299,9 +275,7 @@ async function runCommand(
 
 async function main(): Promise<void> {
   const result = await initializeLocalDevelopment();
-  process.stdout.write(
-    `Local Opensteer setup is ready (${result.backing}).\n${result.portableFsSourceDirectory ? `PortableFS: ${result.portableFsSourceDirectory}\n` : ""}Next: pnpm dev\n`,
-  );
+  process.stdout.write(`Local Opensteer setup is ready (${result.backing}).\nNext: pnpm dev\n`);
 }
 
 const entry = process.argv[1];

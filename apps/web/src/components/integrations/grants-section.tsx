@@ -47,7 +47,7 @@ export function GrantsSection({
   readonly pending: boolean;
   readonly platform: IntegrationPlatformDashboardView | null;
   readonly workspaceId: string | null;
-  readonly workspaceKind: "main" | "specialized";
+  readonly workspaceKind: "main" | "project";
   readonly workspaces: readonly WorkspaceSummary[];
 }) {
   const [editing, setEditing] = useState(false);
@@ -83,7 +83,7 @@ export function GrantsSection({
             <strong>Main Workspace access</strong>
             <p>
               Opensteer and your tasks can use all of your connected accounts and installed
-              integrations. Specialists need explicit access.
+              integrations. Projects need explicit access.
             </p>
           </div>
         </div>
@@ -235,7 +235,6 @@ function GrantEditor({
   // A read-only computer has no tool that makes changes, so "Read and make
   // changes" is not an answer this Workspace could be given.
   const readOnlyCeiling = account?.computer?.access === "read";
-  const skillOnly = entry !== null && entry.tools.length === 0 && entry.skills.length > 0;
   const needsAccount = requirement.kind !== "none" && !account;
   const canSubmit = entry !== null && !needsAccount && !pending;
 
@@ -288,7 +287,7 @@ function GrantEditor({
             </p>
           )
         ) : null}
-        {entry && !skillOnly ? (
+        {entry ? (
           <label className="field">
             <span className="field__label">Access</span>
             <select
@@ -305,10 +304,6 @@ function GrantEditor({
               </span>
             ) : null}
           </label>
-        ) : skillOnly ? (
-          <p className="field__hint">
-            This allows the integration&apos;s skills in this Workspace.
-          </p>
         ) : null}
         {entry && !needsAccount ? (
           <>
@@ -347,7 +342,7 @@ function GrantEditor({
             onClick={() => {
               if (!entry) return;
               void onCreate({
-                access: skillOnly || readOnlyCeiling ? "read" : access,
+                access: readOnlyCeiling ? "read" : access,
                 alias: alias.trim() || account?.displayName || entry.installation.title,
                 connectionId: (account?.id ?? null) as CreateIntegrationGrant["connectionId"],
                 installationId: entry.installation.id,
@@ -357,7 +352,7 @@ function GrantEditor({
             }}
             type="button"
           >
-            {pending ? "Allowing…" : skillOnly ? "Allow skills" : "Allow access"}
+            {pending ? "Allowing…" : "Allow access"}
           </button>
         </div>
       </div>

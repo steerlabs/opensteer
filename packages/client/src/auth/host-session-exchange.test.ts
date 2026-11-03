@@ -377,7 +377,7 @@ function cloudConnection(): DeploymentConnection {
       deploymentId: cloudDeploymentId,
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
     }),
     bootstrapMethods: ["password"],
     createdAt: "2026-08-17T09:00:00.000Z",

@@ -315,7 +315,7 @@ describe("Add this iPhone", () => {
     );
     expect(input("Name").value).toBe("Alex's iPhone");
     expect(text()).toContain(
-      "What agents see goes to Opensteer on Mac mini and the AI service the task uses. Tasks in Main can use these apps; a specialist needs your approval first. Nothing else on this iPhone is shared: not other apps, files, messages or the screen.",
+      "What agents see goes to Opensteer on Mac mini and the AI service the task uses. Tasks in Main can use these apps; a project needs your approval first. Nothing else on this iPhone is shared: not other apps, files, messages or the screen.",
     );
     // Everything but Photos starts on, at its widest.
     expect(switches()).toEqual([

@@ -184,7 +184,7 @@ export interface RequestMutation {
 export interface ResolvedBrowserRequest {
   readonly events: readonly AgentEvent[];
   readonly grant: {
-    readonly access: "full-control";
+    readonly access: "read-write";
     readonly createdAt: Date;
     readonly grantId: BrowserProfileGrantId;
     readonly profileId: BrowserProfileId;
@@ -577,7 +577,7 @@ export class RequestStore {
           });
         }
         if (decision.decision === "fulfilled" && !mainTarget) {
-          if (!("alias" in decision)) throw new Error("Specialized access decision has no grant");
+          if (!("alias" in decision)) throw new Error("Project access decision has no grant");
           grant = await createIntegrationGrantForRequest(transaction, {
             ...decision,
             installationId: row.detailInstallationId,
@@ -2194,7 +2194,7 @@ export class RequestStore {
             .select("kind")
             .where("id", "=", request.targetWorkspaceId)
             .executeTakeFirstOrThrow();
-          if (request.kind === "browser.access" || targetWorkspace.kind === "specialized") {
+          if (request.kind === "browser.access" || targetWorkspace.kind === "project") {
             grant = await ensureBrowserGrant(transaction, {
               createdBy: input.resolvedBy,
               profileId: profile.id,
@@ -2969,10 +2969,10 @@ async function createRequestInTransaction(
   ) {
     throw new OpensteerError({ code: "conflict", message: assignmentClosedToRequestsMessage });
   }
-  if (input.kind === "browser.access" && authority.targetWorkspace.kind !== "specialized") {
+  if (input.kind === "browser.access" && authority.targetWorkspace.kind !== "project") {
     throw new OpensteerError({
       code: "bad_request",
-      message: "Browser access Requests must target a specialized Workspace",
+      message: "Browser access Requests must target a project Workspace",
     });
   }
   if (input.kind === "browser.sign-in") {
@@ -3243,7 +3243,7 @@ function integrationInstallationFromRequestRow(row: {
   readonly name: string;
   readonly provenance: unknown;
   readonly revision: number;
-  readonly sourceKind: "agent-plugin" | "built-in" | "proposed" | "remote-mcp";
+  readonly sourceKind: "plugin" | "built-in" | "proposed" | "remote-mcp";
   readonly status: "active" | "disabled" | "needs-attention";
   readonly title: string;
   readonly trust: "administrator-approved" | "built-in" | "verified-publisher";
@@ -3757,22 +3757,12 @@ async function assertMainIntegrationAccessUsable(
           )
           .execute()
       : [];
-    const hasActiveSkill = installation
-      ? (await transaction
-          .selectFrom("integrationSkills")
-          .select("id")
-          .where("installationId", "=", input.installationId)
-          .where("status", "=", "active")
-          .limit(1)
-          .executeTakeFirst()) !== undefined
-      : false;
     if (
       installation &&
-      ((input.requestedServerId === null && hasActiveSkill) ||
-        servers.some(
-          ({ connectionRequirement }) =>
-            IntegrationConnectionRequirementSchema.parse(connectionRequirement).kind === "none",
-        ))
+      servers.some(
+        ({ connectionRequirement }) =>
+          IntegrationConnectionRequirementSchema.parse(connectionRequirement).kind === "none",
+      )
     ) {
       return;
     }
@@ -4334,7 +4324,7 @@ async function ensureBrowserGrant(
   // Check this before capacity, since reusing access consumes no additional slot.
   if (existing) {
     return {
-      access: "full-control",
+      access: "read-write",
       createdAt: existing.createdAt,
       grantId: existing.id,
       profileId: existing.profileId,
@@ -4358,7 +4348,7 @@ async function ensureBrowserGrant(
   const row = await transaction
     .insertInto("browserProfileGrants")
     .values({
-      access: "full-control",
+      access: "read-write",
       createdBy: input.createdBy,
       id: createId("browserProfileGrant"),
       profileId: input.profileId,
@@ -4368,7 +4358,7 @@ async function ensureBrowserGrant(
     .returning(["access", "createdAt", "id", "profileId", "workspaceId"])
     .executeTakeFirstOrThrow();
   return {
-    access: "full-control",
+    access: "read-write",
     createdAt: row.createdAt,
     grantId: row.id,
     profileId: row.profileId,

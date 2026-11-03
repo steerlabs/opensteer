@@ -1,12 +1,9 @@
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
+  createId,
   HarnessIdSchema,
   ModelSelectionSchema,
   ThreadAccessModeSchema,
-  createId,
 } from "@opensteer/core";
 import {
   createDatabase,
@@ -14,11 +11,15 @@ import {
   IntegrationStore,
   OpensteerStore,
 } from "@opensteer/database";
-import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
 
 import type { PendingAgentEvent, RunnerDescriptor } from "@opensteer/protocol";
+import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import { sql } from "kysely";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createMachineAccessDatabase,
@@ -61,7 +62,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     const store = new OpensteerStore(database);
     const persistence = new IntegrationPlatformStore(database);
     const connections = new IntegrationStore(database);
-    const task = await createComputerUseTask(store, randomUUID(), { kind: "specialized" });
+    const task = await createComputerUseTask(store, randomUUID(), { kind: "project" });
     const runnerId = createId("runner");
     const keys = generateKeyPairSync("ed25519");
     await database
@@ -424,7 +425,7 @@ integration.sequential("Host computer-use approval transactions", () => {
 
     // The same person's task in another Workspace cannot resolve this
     // Workspace's grant.
-    const elsewhere = await createWorkspace(test.store, task.userId, randomUUID(), "specialized");
+    const elsewhere = await createWorkspace(test.store, task.userId, randomUUID(), "project");
     const { thread } = await test.store.createThread({
       createdBy: task.userId,
       environmentId: task.environmentId,
@@ -578,20 +579,17 @@ async function createWorkspace(
   store: OpensteerStore,
   createdBy: ReturnType<typeof createId<"user">>,
   suffix: string,
-  kind?: "main" | "specialized",
+  kind?: "main" | "project",
 ) {
-  return store.createWorkspace({
+  return createTestWorkspace(store, {
     backing: {
+      kind: "local-directory",
       generation: 1,
-      kind: "portablefs",
-      serviceId: "test-portablefs",
-      volumeId: `wsp_${suffix.replaceAll("-", "_")}`,
+      bindingId: createId("workspaceBinding"),
+      ownerEnvironmentId: createId("environment"),
+      storageAuthorityId: createId("storageAuthority"),
     },
-    capacityPolicy: {
-      blockHardLimitBytes: 10_000_000,
-      inodeHardLimit: 10_000,
-      kind: "hard-quota",
-    },
+
     createdBy,
     idempotencyKey: `workspace-${suffix}`,
     ...(kind === undefined ? {} : { kind }),
@@ -604,7 +602,7 @@ async function createWorkspace(
 async function createComputerUseTask(
   store: OpensteerStore,
   suffix: string,
-  options: { readonly kind?: "main" | "specialized" } = {},
+  options: { readonly kind?: "main" | "project" } = {},
 ) {
   const userId = await store.createUser(`Owner ${suffix}`);
   const runnerId = createId("runner");
@@ -613,7 +611,7 @@ async function createComputerUseTask(
     await store.ensureDeployment({
       canonicalOrigin: "https://test-host.invalid",
       deploymentShape: {
-        defaultWorkspaceBacking: "portablefs",
+        defaultWorkspaceBacking: "local-directory",
         kind: "server" as const,
       },
       hostInstanceId: createId("hostInstance"),
@@ -662,8 +660,7 @@ async function createComputerUseTask(
         localStorage: null,
         maxConcurrentRuns: 4,
         providerStateModes: ["isolated"],
-        workspaceBackings: ["portablefs"],
-        workspaceMounts: [],
+        workspaceBackings: ["local-directory"],
       },
     },
     name: `Runner ${suffix}`,

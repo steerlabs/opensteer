@@ -1,16 +1,15 @@
+import * as migrations from "@opensteer/database";
+import { createDatabase } from "@opensteer/database";
+import { failDatabaseContainment } from "@opensteer/database/test-support/database";
+import { sql } from "kysely";
+import { Migrator } from "kysely/migration";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sql } from "kysely";
-import { Migrator } from "kysely/migration";
 import { Pool } from "pg";
-import { createDatabase } from "@opensteer/database";
-import * as migrations from "@opensteer/database";
-import { failDatabaseContainment } from "@opensteer/database/test-support/database";
 import { describe, expect, it, type TestContext } from "vitest";
-import { machineAccessHostConfig, freePort } from "./machine-access.test-support.js";
-import { startPortableFsManagerFake } from "./portablefs-manager.test-support.js";
+import { freePort, machineAccessHostConfig } from "./machine-access.test-support.js";
 import { createHostRuntime } from "./runtime.js";
 
 const integration = process.env.OPENSTEER_TEST_DATABASE_URL ? describe : describe.skip;
@@ -28,7 +27,6 @@ integration("production startup migrations", () => {
       url.pathname = `/${name}`;
       const database = createDatabase({ connectionString: url.toString() });
       const dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-startup-host-"));
-      const portableFs = await startPortableFsManagerFake();
       let runtime: Awaited<ReturnType<typeof createHostRuntime>> | undefined;
       context.onTestFinished(async () => {
         try {
@@ -36,7 +34,6 @@ integration("production startup migrations", () => {
           await closeStartupDatabase(database, admin, name);
         } finally {
           await admin.destroy();
-          await portableFs.close();
           await rm(dataDirectory, { recursive: true, force: true });
         }
       });
@@ -58,7 +55,7 @@ integration("production startup migrations", () => {
       const config = machineAccessHostConfig(
         await freePort(),
         dataDirectory,
-        portableFs.url,
+        new URL("http://127.0.0.1:9"),
         url.toString(),
         "invite-only",
       );

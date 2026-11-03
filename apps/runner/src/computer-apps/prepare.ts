@@ -69,7 +69,9 @@ export function prepareIntegrationsModule(options: {
     ...(computerUse
       ? {
           computerUse,
-          localMcp: new LocalMcpServers(),
+          localMcp: new LocalMcpServers({
+            stateDirectory: path.join(options.dataDirectory, "private", "harness-state"),
+          }),
         }
       : {}),
     descriptor: {

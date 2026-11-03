@@ -27,7 +27,7 @@ function failureTranscript(httpStatus, message, grpcStatus, owner = sessionId) {
   ].join("\n");
 }
 
-function prompt(id) {
+function prompt(id, params) {
   promptCount += 1;
   const emitChunk = (text) =>
     update({
@@ -38,6 +38,11 @@ function prompt(id) {
     send({ id, jsonrpc: "2.0", result: { stopReason: "end_turn" } });
   };
 
+  if (scenario === "skills") {
+    emitChunk(JSON.stringify(params));
+    emitResult();
+    return;
+  }
   if (scenario.startsWith("exit-")) {
     const message = "Your prepayment credits are depleted.";
     if (scenario !== "exit-partial") {
@@ -198,7 +203,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       send({ id: request.id, jsonrpc: "2.0", result: {} });
       return;
     case "session/prompt":
-      prompt(request.id);
+      prompt(request.id, request.params);
       return;
     default:
       send({

@@ -496,7 +496,7 @@ describe("ThreadIntegrationAction cancelling a sign-in", () => {
   it.each(["answers", "fails"] as const)(
     "leaves a sign-in started since alone when an older Cancel %s late",
     async (late) => {
-      const loaded = genericSpecializedRequest();
+      const loaded = genericProjectRequest();
       const serverId = createIntegrationId("server");
       loaded.platform.installations[0]!.servers[0] = {
         ...loaded.platform.installations[0]!.servers[0]!,
@@ -704,7 +704,7 @@ describe("ThreadIntegrationAction says what connecting does before it is done", 
     "Your tasks in Main can read and make changes with every account you connect, so connecting also allows this request.";
   // The ways it could fail: on a request for Main, a key that connects also
   // answers the request and resumes the agent with nothing said beforehand;
-  // the note promised where it is false, for a specialized Workspace, whose
+  // the note promised where it is false, for a project Workspace, whose
   // account still waits for Allow; the note on a card that offers nothing to
   // connect; connecting on Main not answering the request after all.
   it("tells a Main request that connecting allows it, and connecting does", async () => {
@@ -748,7 +748,7 @@ describe("ThreadIntegrationAction says what connecting does before it is done", 
     ).toMatchObject({ outcome: "Allowed" });
   });
 
-  it("promises nothing for a specialized Workspace, whose account still waits for Allow", async () => {
+  it("promises nothing for a project Workspace, whose account still waits for Allow", async () => {
     const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
     const pinned = client.getSnapshot().requests[mockVapi.threadId]?.[0];
     if (pinned?.payload.kind !== "integration.access") {
@@ -1140,7 +1140,7 @@ describe("resolveIntegrationAccess", () => {
     );
   });
 
-  it("sends the full grant decision for a specialized target", async () => {
+  it("sends the full grant decision for a project target", async () => {
     const dispatch = vi.fn(async () => ({ type: "request.respond" as const }));
 
     await resolveIntegrationAccess(
@@ -1149,19 +1149,19 @@ describe("resolveIntegrationAccess", () => {
         access: "read",
         accountsCount: 1,
         installationTitle: "Calendar",
-        requestId: "request-specialized",
+        requestId: "request-project",
         selectedAccount: {
           accountIdentifier: null,
           displayName: "Client",
           id: "connection-client",
         },
-        targetKind: "specialized",
+        targetKind: "project",
       },
     );
 
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
-        requestId: "request-specialized",
+        requestId: "request-project",
         response: {
           kind: "external",
           value: {
@@ -1180,7 +1180,7 @@ describe("resolveIntegrationAccess", () => {
 
 describe("accessPlan", () => {
   it("counts read and write operations and carries the requested class", () => {
-    const plan = accessPlan(genericSpecializedRequest(), null);
+    const plan = accessPlan(genericProjectRequest(), null);
 
     expect(plan).toMatchObject({ readCount: 1, requestedAccess: "read", writeCount: 1 });
   });
@@ -1244,7 +1244,7 @@ describe("accessPlan", () => {
   });
 
   it("supports definitionless plugin installations", () => {
-    const loaded = genericSpecializedRequest();
+    const loaded = genericProjectRequest();
     loaded.platform.installations[0]!.installation.manifest = { name: "support-tools" };
 
     const plan = accessPlan(loaded, null);
@@ -1258,7 +1258,7 @@ describe("accessPlan", () => {
   });
 
   it("does not invent a credential-free server when the named MCP server is absent", () => {
-    const loaded = genericSpecializedRequest();
+    const loaded = genericProjectRequest();
     loaded.request.requestedServerId = "server-that-is-not-installed";
 
     expect(accessPlan(loaded, null)).toBeNull();
@@ -1267,7 +1267,7 @@ describe("accessPlan", () => {
   it.each(["active", "needs-attention"] as const)(
     "requires an explicit choice with another %s server",
     (status) => {
-      const loaded = genericSpecializedRequest();
+      const loaded = genericProjectRequest();
       loaded.request.requestedServerId = null;
       loaded.platform.installations[0]!.servers.push({
         ...loaded.platform.installations[0]!.servers[0]!,
@@ -1296,7 +1296,7 @@ describe("accessPlan", () => {
   });
 
   it("uses no-auth only for a true zero-server skills installation", () => {
-    const loaded = genericSpecializedRequest();
+    const loaded = genericProjectRequest();
     loaded.platform.installations[0]!.servers = [];
     loaded.platform.installations[0]!.tools = [];
     loaded.request.requestedServerId = null;
@@ -1305,7 +1305,7 @@ describe("accessPlan", () => {
   });
 
   it("keeps an unprobed MCP account selectable while reporting zero discovered operations", () => {
-    const loaded = genericSpecializedRequest();
+    const loaded = genericProjectRequest();
     loaded.platform.installations[0]!.installation.manifest = { name: "tinycrm" };
     loaded.platform.installations[0]!.servers[0]!.connectionRequirement = { kind: "mcp-oauth" };
     loaded.platform.installations[0]!.tools = [];
@@ -1342,7 +1342,7 @@ describe("effectiveIntegrationAccess", () => {
 
 describe("matchingInstallationForManifest", () => {
   it("matches only the exact active catalog digest", () => {
-    const loaded = genericSpecializedRequest();
+    const loaded = genericProjectRequest();
     loaded.platform.installations[0]!.installation.status = "active";
     loaded.platform.installations[0]!.installation.provenance = {
       definitionDigest: "d".repeat(43),
@@ -1379,7 +1379,7 @@ describe("accountConnectable", () => {
   });
 
   it("offers nothing to connect when the integration needs no account", () => {
-    expect(accountConnectable(accessPlan(genericSpecializedRequest(), null)!)).toBe(false);
+    expect(accountConnectable(accessPlan(genericProjectRequest(), null)!)).toBe(false);
   });
 });
 
@@ -1499,7 +1499,7 @@ function oauthRequest(
   });
 }
 
-function genericSpecializedRequest(): LoadedAccessRequest {
+function genericProjectRequest(): LoadedAccessRequest {
   const definition = {
     adapter: "openapi",
     authMethods: [{ id: "none", kind: "none", label: "No authentication" }],
@@ -1774,6 +1774,6 @@ function shellSnapshot() {
   return {
     machines: [],
     workspaceWindow: { hasMore: false, itemCount: 1 },
-    workspaces: [{ id: "wsp_support", kind: "specialized", name: "Support" }],
+    workspaces: [{ id: "wsp_support", kind: "project", name: "Support" }],
   } as never;
 }

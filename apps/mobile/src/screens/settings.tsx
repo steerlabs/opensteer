@@ -202,13 +202,13 @@ export function SettingsScreen(): ReactNode {
     [selectedRow?.name, snapshot],
   );
   // Agents whose replies and failures can be silenced. Main is not one of
-  // them: Chat is where Opensteer answers the person, not a specialist.
+  // them: Chat is where Opensteer answers the person, not a project.
   const agents = useMemo(
     () =>
       snapshot === null
         ? []
         : snapshot.workspaces
-            .filter((workspace) => workspace.kind === "specialized")
+            .filter((workspace) => workspace.kind === "project")
             .map((workspace) => ({
               muted: (snapshot.notificationMutes ?? []).includes(workspace.id),
               name: workspace.name,
@@ -227,6 +227,7 @@ export function SettingsScreen(): ReactNode {
             onBrowserProfiles: () => navigation.navigate("BrowserProfiles", { deploymentId }),
             onChrome: () => navigation.navigate("Chrome", { deploymentId }),
             onConnectedApps: () => navigation.navigate("ConnectedApps", { deploymentId }),
+            onPlugins: () => navigation.navigate("Plugins", { deploymentId }),
           },
     [deploymentId, navigation, selection.hostClient],
   );

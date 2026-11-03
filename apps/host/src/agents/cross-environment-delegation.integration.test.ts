@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -126,8 +127,8 @@ integration("cross-environment delegation reaches the Runner", () => {
         return claims;
       },
     } as unknown as AgentControlTokenService,
-    defaultWorkspaceBacking: "portablefs",
-    environmentWorkspaceBackings: () => ["portablefs"],
+    defaultWorkspaceBacking: "local-directory",
+    environmentWorkspaceBackings: () => ["local-directory"],
     workspaceMounts: { mount: unexpected },
     workspaces: { create: unexpected },
   });
@@ -272,6 +273,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         throw new Error("Target is now blocked");
       });
     const request = {
+      environmentId: fixture.lentEnvironmentId,
       type: "thread.delegate",
       requestId: randomUUID(),
       workspaceId: fixture.workspaceId,
@@ -547,8 +549,8 @@ integration("cross-environment delegation reaches the Runner", () => {
   });
 
   it("Workspace and delegated agents discover Sol by name and delegate typed model options through MCP", async () => {
-    const fixture = await createFixture({ specialized: true });
-    const base = readyCatalog(fixture.mainHarnessInstanceId, nativeDriver);
+    const fixture = await createFixture({ project: true });
+    const base = readyCatalog(fixture.lentHarnessInstanceId, nativeDriver);
     if (base.status !== "ready") throw new Error("Expected ready catalog");
     const selected = {
       ...base.models[0]!,
@@ -580,8 +582,8 @@ integration("cross-environment delegation reaches the Runner", () => {
           ],
         }),
       ],
-      environmentId: fixture.mainEnvironmentId,
-      expectedRevisions: new Map([[fixture.mainHarnessInstanceId, 1]]),
+      environmentId: fixture.lentEnvironmentId,
+      expectedRevisions: new Map([[fixture.lentHarnessInstanceId, 1]]),
     });
     let caller = fixture.parent;
     for (const profile of ["workspace", "delegated"] as const) {
@@ -613,7 +615,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         try {
           discovery = await mcp.client.callTool({
             name: "environment_list",
-            arguments: { query: "sol OPENAI", harnessInstanceId: fixture.mainHarnessInstanceId },
+            arguments: { query: "sol OPENAI", harnessInstanceId: fixture.lentHarnessInstanceId },
           });
           expect(workspacePages).not.toHaveBeenCalled();
           expect(threadPages).not.toHaveBeenCalled();
@@ -640,11 +642,12 @@ integration("cross-environment delegation reaches the Runner", () => {
           arguments: {
             workspaceId: fixture.workspaceId,
             task: "Have Sol review this",
+            environmentId: fixture.lentEnvironmentId,
             harnessInstanceId: engine.id,
             model: choice,
           },
         });
-        expect(delegated.isError).not.toBe(true);
+        expect(delegated.isError, JSON.stringify(delegated.structuredContent)).not.toBe(true);
         const result = AgentControlResponseSchema.parse({
           requestId: randomUUID(),
           type: "thread.delegate.result",
@@ -672,419 +675,410 @@ integration("cross-environment delegation reaches the Runner", () => {
     }
   });
 
-  it.each([true, false])(
-    "discovers every authorized profile and model through MCP (legacy: %s)",
-    async (legacy) => {
-      const fixture = await createFixture();
-      const extraEnvironments = Array.from({ length: 70 }, () => createId("environment")).sort();
-      const extraHarnesses = extraEnvironments.map(() => createId("harnessInstance")).sort();
-      await database
-        .insertInto("executionEnvironments")
-        .values(
-          extraEnvironments.map((id, index) => ({
-            capabilities: sql`'["filesystem"]'::jsonb`,
-            id,
-            kind: "local" as const,
-            name: `Extra machine ${index}`,
-            runnerId: fixture.lentRunnerId,
-          })),
-        )
-        .execute();
-      await database
-        .insertInto("harnessInstances")
-        .values(
-          extraHarnesses.map((id, index) => ({
-            config: {},
-            driverKind: nativeDriver,
-            enabled: true,
-            environmentId: extraEnvironments[index]!,
-            id,
-            isDefault: false,
-            name: `Extra engine ${index}`,
-            runtimeRevision: 1,
-            sourceId: "native",
-            stateKind: "isolated" as const,
-          })),
-        )
-        .execute();
-      const targetId = extraHarnesses[69]!;
-      const targetEnvironmentId = extraEnvironments[69]!;
-      const base = readyCatalog(targetId, nativeDriver);
-      if (base.status !== "ready") throw new Error("Expected a ready catalog");
-      const catalog = {
-        ...base,
-        models: Array.from({ length: 111 }, (_, index) => ({
-          displayName: `Catalog model ${index}`,
-          isDefault: index === 0,
-          modelId: `catalog-model-${String(index).padStart(3, "0")}`,
-          options: [
-            {
-              id: "effort",
-              label: "Effort",
-              type: "select",
-              defaultValue: "max",
-              values: [{ label: "Max", value: "max" }],
-            },
-            { id: "thinking", label: "Thinking", type: "toggle", defaultValue: false },
-          ],
-          providerId: "openai",
+  it("discovers every authorized profile and model through MCP", async () => {
+    const fixture = await createFixture();
+    const extraEnvironments = Array.from({ length: 70 }, () => createId("environment")).sort();
+    const extraHarnesses = extraEnvironments.map(() => createId("harnessInstance")).sort();
+    await database
+      .insertInto("executionEnvironments")
+      .values(
+        extraEnvironments.map((id, index) => ({
+          capabilities: sql`'["filesystem"]'::jsonb`,
+          id,
+          kind: "local" as const,
+          name: `Extra machine ${index}`,
+          runnerId: fixture.lentRunnerId,
         })),
-      };
+      )
+      .execute();
+    await database
+      .insertInto("harnessInstances")
+      .values(
+        extraHarnesses.map((id, index) => ({
+          config: {},
+          driverKind: nativeDriver,
+          enabled: true,
+          environmentId: extraEnvironments[index]!,
+          id,
+          isDefault: false,
+          name: `Extra engine ${index}`,
+          runtimeRevision: 1,
+          sourceId: "native",
+          stateKind: "isolated" as const,
+        })),
+      )
+      .execute();
+    const targetId = extraHarnesses[69]!;
+    const targetEnvironmentId = extraEnvironments[69]!;
+    const base = readyCatalog(targetId, nativeDriver);
+    if (base.status !== "ready") throw new Error("Expected a ready catalog");
+    const catalog = {
+      ...base,
+      models: Array.from({ length: 111 }, (_, index) => ({
+        displayName: `Catalog model ${index}`,
+        isDefault: index === 0,
+        modelId: `catalog-model-${String(index).padStart(3, "0")}`,
+        options: [
+          {
+            id: "effort",
+            label: "Effort",
+            type: "select",
+            defaultValue: "max",
+            values: [{ label: "Max", value: "max" }],
+          },
+          { id: "thinking", label: "Thinking", type: "toggle", defaultValue: false },
+        ],
+        providerId: "openai",
+      })),
+    };
+    await store.recordHarnessCatalogs({
+      catalogs: [HarnessInstanceCatalogSchema.parse(catalog)],
+      environmentId: targetEnvironmentId,
+      expectedRevisions: new Map([[targetId, 1]]),
+    });
+    const otherCatalogIds = extraHarnesses.slice(0, 6);
+    for (const [index, id] of otherCatalogIds.entries()) {
+      const baseCatalog = readyCatalog(id, nativeDriver);
+      if (baseCatalog.status !== "ready") throw new Error("Expected a ready catalog");
       await store.recordHarnessCatalogs({
-        catalogs: [HarnessInstanceCatalogSchema.parse(catalog)],
+        catalogs: [
+          HarnessInstanceCatalogSchema.parse({
+            ...baseCatalog,
+            models: Array.from({ length: 30 }, (_, model) => ({
+              displayName: `Other ${index} model ${model}`,
+              isDefault: model === 0,
+              modelId: `other-${index}-${model}`,
+              options: [],
+              providerId: "openai",
+            })),
+          }),
+        ],
+        environmentId: extraEnvironments[index]!,
+        expectedRevisions: new Map([[id, 1]]),
+      });
+    }
+    const privateUser = await store.createUser("Private owner");
+    const privateEnvironmentId = createId("environment");
+    const privateRunnerId = createId("runner");
+    await enrollRunner({
+      createdBy: privateUser,
+      driverKind: nativeDriver,
+      environmentId: privateEnvironmentId,
+      name: "Private machine",
+      runnerId: privateRunnerId,
+      runnerKind: "local",
+    });
+    const privateHarness = await store.createHarnessInstance({
+      config: {},
+      driverKind: nativeDriver,
+      environmentId: privateEnvironmentId,
+      name: "Private engine",
+      sourceId: "native",
+      stateKind: "isolated",
+    });
+    const revokedEnvironmentId = createId("environment");
+    const revokedRunnerId = createId("runner");
+    await enrollRunner({
+      createdBy: fixture.userId,
+      driverKind: nativeDriver,
+      environmentId: revokedEnvironmentId,
+      name: "Revoked machine",
+      runnerId: revokedRunnerId,
+      runnerKind: "local",
+    });
+    const revokedHarness = await store.createHarnessInstance({
+      config: {},
+      driverKind: nativeDriver,
+      environmentId: revokedEnvironmentId,
+      name: "Revoked engine",
+      sourceId: "native",
+      stateKind: "isolated",
+    });
+    await database
+      .updateTable("runners")
+      .set({ revokedAt: new Date() })
+      .where("id", "=", revokedRunnerId)
+      .execute();
+    const disabledId = extraHarnesses[68]!;
+    await database
+      .updateTable("harnessInstances")
+      .set({ enabled: false })
+      .where("id", "=", disabledId)
+      .execute();
+
+    const mcp = await startDiscoveryMcp(fixture.token);
+    const discoveryClient = {
+      callTool: (call: { arguments: Record<string, unknown>; name: string }) => {
+        const { modelPage, ...rest } = call.arguments;
+        return mcp.client.callTool({
+          name: "environment_list",
+          arguments: { ...rest, ...(modelPage as Record<string, unknown> | undefined) },
+        });
+      },
+    };
+    try {
+      const seen = new Map<
+        string,
+        { environmentId: string; models: readonly { modelId: string }[]; modelsOmitted: number }
+      >();
+      let harnessCursor: string | undefined;
+      for (;;) {
+        const result = await discoveryClient.callTool({
+          arguments: harnessCursor ? { harnessCursor } : {},
+          name: "environment_list",
+        });
+        if (result.isError) throw new Error(JSON.stringify(result.content));
+        const page = result.structuredContent as {
+          delegationDefault: {
+            environmentId: string;
+            harnessInstanceId: string;
+            model: { modelId: string; providerId: string };
+          };
+          environmentsTruncated: boolean;
+          harnesses: {
+            id: string;
+            environmentId: string;
+            models: { modelId: string }[];
+            modelsOmitted: number;
+          }[];
+          harnessesNextCursor?: string;
+        };
+        expect(page.delegationDefault).toMatchObject({
+          environmentId: fixture.mainEnvironmentId,
+          harnessInstanceId: fixture.mainHarnessInstanceId,
+          model: {
+            modelId: testModelSelection.modelId,
+            providerId: testModelSelection.providerId,
+          },
+        });
+        if (!harnessCursor) expect(page.harnesses.map(({ id }) => id)).not.toContain(targetId);
+        expect(page.harnesses.every(({ models }) => models.length <= 8)).toBe(true);
+        expect(
+          page.harnesses.reduce((count, { models }) => count + models.length, 0),
+        ).toBeLessThanOrEqual(40);
+        for (const harness of page.harnesses) seen.set(harness.id, harness);
+        harnessCursor = page.harnessesNextCursor;
+        if (!harnessCursor) break;
+      }
+      expect(seen.size).toBe(72);
+      expect(seen.get(targetId)?.environmentId).toBe(targetEnvironmentId);
+      expect(seen.has(disabledId)).toBe(true);
+      expect(seen.has(privateHarness.id)).toBe(false);
+      expect(seen.has(revokedHarness.id)).toBe(false);
+      {
+        const environmentIds = new Set<string>();
+        let environmentCursor: string | undefined;
+        do {
+          const result = await discoveryClient.callTool({
+            name: "environment_list",
+            arguments: environmentCursor ? { environmentCursor } : {},
+          });
+          expect(result.isError).not.toBe(true);
+          const page = result.structuredContent as {
+            environments: { id: string }[];
+            environmentsNextCursor?: string;
+          };
+          if (!environmentCursor)
+            expect(page.environments.map(({ id }) => id)).not.toContain(targetEnvironmentId);
+          page.environments.forEach(({ id }) => environmentIds.add(id));
+          environmentCursor = page.environmentsNextCursor;
+        } while (environmentCursor);
+        expect(environmentIds.size).toBe(72);
+        const found = await discoveryClient.callTool({
+          name: "environment_list",
+          arguments: { harnessInstanceId: targetId, query: "OPENAI catalog 110" },
+        });
+        expect(found.isError).not.toBe(true);
+        const foundPage = found.structuredContent as {
+          environments: { id: string }[];
+          harnesses: {
+            status: string;
+            models: { modelId: string; options: unknown[] }[];
+            modelsOmitted: number;
+          }[];
+        };
+        expect(foundPage.environments.map(({ id }) => id)).toEqual([targetEnvironmentId]);
+        expect(foundPage.harnesses[0]).toMatchObject({
+          status: "ready",
+          modelsOmitted: 0,
+          models: [
+            {
+              modelId: "catalog-model-110",
+              options: [
+                { id: "effort", values: ["max"], default: "max" },
+                { id: "thinking", values: [false, true], default: false },
+              ],
+            },
+          ],
+        });
+        const none = await discoveryClient.callTool({
+          name: "environment_list",
+          arguments: { harnessInstanceId: targetId, query: "nothing matches this" },
+        });
+        expect(none.structuredContent).toMatchObject({
+          harnesses: [{ status: "ready", models: [], modelsOmitted: 0 }],
+        });
+        const first = await discoveryClient.callTool({
+          name: "environment_list",
+          arguments: { harnessInstanceId: targetId },
+        });
+        const cursor = (first.structuredContent as { harnesses: { modelsNextCursor: string }[] })
+          .harnesses[0]!.modelsNextCursor;
+        for (const args of [{ cursor }, { harnessInstanceId: targetId, cursor, query: "110" }]) {
+          expect(
+            (await discoveryClient.callTool({ name: "environment_list", arguments: args })).isError,
+          ).toBe(true);
+        }
+        const workspaces = await mcp.client.callTool({ name: "project_list", arguments: {} });
+        expect(workspaces.isError, JSON.stringify(workspaces.content)).not.toBe(true);
+        expect(Object.keys(workspaces.structuredContent ?? {}).sort()).toEqual([
+          "projects",
+          "window",
+        ]);
+        acceptanceEvidence.push({
+          caseId: "environment-discovery-v3",
+          environments: [...environmentIds],
+          found: found.structuredContent,
+          none: none.structuredContent,
+          workspaces: workspaces.structuredContent,
+        });
+      }
+      const starvedId = otherCatalogIds.find((id) => {
+        const summary = seen.get(id);
+        return summary && summary.models.length === 0 && summary.modelsOmitted === 30;
+      });
+      expect(starvedId).toBeDefined();
+      if (!starvedId) throw new Error("Expected one profile past the broad model budget");
+      const recovered = new Set<string>();
+      let recoveredCursor: string | undefined;
+      for (;;) {
+        const focused = await discoveryClient.callTool({
+          arguments: {
+            modelPage: {
+              harnessInstanceId: starvedId,
+              ...(recoveredCursor ? { cursor: recoveredCursor } : {}),
+            },
+          },
+          name: "environment_list",
+        });
+        if (focused.isError) throw new Error(JSON.stringify(focused.content));
+        const page = focused.structuredContent as {
+          harnesses: { models: { modelId: string }[]; modelsNextCursor?: string }[];
+        };
+        for (const model of page.harnesses[0]!.models) recovered.add(model.modelId);
+        recoveredCursor = page.harnesses[0]!.modelsNextCursor;
+        if (!recoveredCursor) break;
+      }
+      expect(recovered.size).toBe(30);
+      const discovered = new Set<string>();
+      let modelCursor: string | undefined;
+      let staleCursor: string | undefined;
+      let repeatedCatalog = false;
+      for (;;) {
+        const result = await discoveryClient.callTool({
+          arguments: {
+            modelPage: {
+              harnessInstanceId: targetId,
+              ...(modelCursor ? { cursor: modelCursor } : {}),
+            },
+          },
+          name: "environment_list",
+        });
+        if (result.isError) throw new Error(JSON.stringify(result.content));
+        const page = result.structuredContent as {
+          harnesses: { models: { modelId: string }[]; modelsNextCursor?: string }[];
+        };
+        for (const model of page.harnesses[0]!.models) discovered.add(model.modelId);
+        modelCursor = page.harnesses[0]!.modelsNextCursor;
+        staleCursor ??= modelCursor;
+        if (modelCursor && !repeatedCatalog) {
+          await store.recordHarnessCatalogs({
+            catalogs: [HarnessInstanceCatalogSchema.parse(catalog)],
+            environmentId: targetEnvironmentId,
+            expectedRevisions: new Map([[targetId, 1]]),
+          });
+          repeatedCatalog = true;
+        }
+        if (!modelCursor) break;
+      }
+      expect(discovered.size).toBe(111);
+      expect(discovered.has("catalog-model-110")).toBe(true);
+      if (!staleCursor) throw new Error("Expected a second model page");
+      expect(
+        (
+          await discoveryClient.callTool({
+            arguments: { modelPage: { harnessInstanceId: privateHarness.id } },
+            name: "environment_list",
+          })
+        ).isError,
+      ).toBe(true);
+      expect(
+        (
+          await discoveryClient.callTool({
+            arguments: { modelPage: { harnessInstanceId: revokedHarness.id } },
+            name: "environment_list",
+          })
+        ).isError,
+      ).toBe(true);
+      expect(
+        (
+          await discoveryClient.callTool({
+            arguments: { modelPage: { harnessInstanceId: disabledId } },
+            name: "environment_list",
+          })
+        ).isError,
+      ).toBe(undefined);
+      expect(
+        (
+          await discoveryClient.callTool({
+            arguments: {
+              modelPage: {
+                harnessInstanceId: fixture.mainHarnessInstanceId,
+                cursor: staleCursor,
+              },
+            },
+            name: "environment_list",
+          })
+        ).isError,
+      ).toBe(true);
+      expect(
+        (
+          await discoveryClient.callTool({
+            arguments: { modelPage: { harnessInstanceId: targetId, cursor: "garbage" } },
+            name: "environment_list",
+          })
+        ).isError,
+      ).toBe(true);
+      await store.recordHarnessCatalogs({
+        catalogs: [
+          HarnessInstanceCatalogSchema.parse({
+            ...catalog,
+            models: catalog.models.slice(0, 110),
+          }),
+        ],
         environmentId: targetEnvironmentId,
         expectedRevisions: new Map([[targetId, 1]]),
       });
-      const otherCatalogIds = extraHarnesses.slice(0, 6);
-      for (const [index, id] of otherCatalogIds.entries()) {
-        const baseCatalog = readyCatalog(id, nativeDriver);
-        if (baseCatalog.status !== "ready") throw new Error("Expected a ready catalog");
-        await store.recordHarnessCatalogs({
-          catalogs: [
-            HarnessInstanceCatalogSchema.parse({
-              ...baseCatalog,
-              models: Array.from({ length: 30 }, (_, model) => ({
-                displayName: `Other ${index} model ${model}`,
-                isDefault: model === 0,
-                modelId: `other-${index}-${model}`,
-                options: [],
-                providerId: "openai",
-              })),
-            }),
-          ],
-          environmentId: extraEnvironments[index]!,
-          expectedRevisions: new Map([[id, 1]]),
-        });
-      }
-      const privateUser = await store.createUser("Private owner");
-      const privateEnvironmentId = createId("environment");
-      const privateRunnerId = createId("runner");
-      await enrollRunner({
-        createdBy: privateUser,
-        driverKind: nativeDriver,
-        environmentId: privateEnvironmentId,
-        name: "Private machine",
-        runnerId: privateRunnerId,
-        runnerKind: "local",
-      });
-      const privateHarness = await store.createHarnessInstance({
-        config: {},
-        driverKind: nativeDriver,
-        environmentId: privateEnvironmentId,
-        name: "Private engine",
-        sourceId: "native",
-        stateKind: "isolated",
-      });
-      const revokedEnvironmentId = createId("environment");
-      const revokedRunnerId = createId("runner");
-      await enrollRunner({
-        createdBy: fixture.userId,
-        driverKind: nativeDriver,
-        environmentId: revokedEnvironmentId,
-        name: "Revoked machine",
-        runnerId: revokedRunnerId,
-        runnerKind: "local",
-      });
-      const revokedHarness = await store.createHarnessInstance({
-        config: {},
-        driverKind: nativeDriver,
-        environmentId: revokedEnvironmentId,
-        name: "Revoked engine",
-        sourceId: "native",
-        stateKind: "isolated",
-      });
-      await database
-        .updateTable("runners")
-        .set({ revokedAt: new Date() })
-        .where("id", "=", revokedRunnerId)
-        .execute();
-      const disabledId = extraHarnesses[68]!;
-      await database
-        .updateTable("harnessInstances")
-        .set({ enabled: false })
-        .where("id", "=", disabledId)
-        .execute();
-
-      const mcp = await startDiscoveryMcp(fixture.token, legacy);
-      const discoveryClient = {
-        callTool: (call: { arguments: Record<string, unknown>; name: string }) => {
-          const { modelPage, ...rest } = call.arguments;
-          return mcp.client.callTool({
-            name: legacy ? "workspace_list" : "environment_list",
-            arguments: legacy
-              ? call.arguments
-              : { ...rest, ...(modelPage as Record<string, unknown> | undefined) },
-          });
-        },
-      };
-      try {
-        const seen = new Map<
-          string,
-          { environmentId: string; models: readonly { modelId: string }[]; modelsOmitted: number }
-        >();
-        let harnessCursor: string | undefined;
-        for (;;) {
-          const result = await discoveryClient.callTool({
-            arguments: harnessCursor ? { harnessCursor } : {},
-            name: "workspace_list",
-          });
-          if (result.isError) throw new Error(JSON.stringify(result.content));
-          const page = result.structuredContent as {
-            delegationDefault: {
-              environmentId: string;
-              harnessInstanceId: string;
-              model: { modelId: string; providerId: string };
-            };
-            environmentsTruncated: boolean;
-            harnesses: {
-              id: string;
-              environmentId: string;
-              models: { modelId: string }[];
-              modelsOmitted: number;
-            }[];
-            harnessesNextCursor?: string;
-          };
-          expect(page.delegationDefault).toMatchObject({
-            environmentId: fixture.mainEnvironmentId,
-            harnessInstanceId: fixture.mainHarnessInstanceId,
-            model: {
-              modelId: testModelSelection.modelId,
-              providerId: testModelSelection.providerId,
-            },
-          });
-          if (!harnessCursor) expect(page.harnesses.map(({ id }) => id)).not.toContain(targetId);
-          expect(page.harnesses.every(({ models }) => models.length <= (legacy ? 20 : 8))).toBe(
-            true,
-          );
-          expect(
-            page.harnesses.reduce((count, { models }) => count + models.length, 0),
-          ).toBeLessThanOrEqual(legacy ? 100 : 40);
-          for (const harness of page.harnesses) seen.set(harness.id, harness);
-          harnessCursor = page.harnessesNextCursor;
-          if (!harnessCursor) break;
-        }
-        expect(seen.size).toBe(legacy ? 71 : 72);
-        expect(seen.get(targetId)?.environmentId).toBe(targetEnvironmentId);
-        expect(seen.has(disabledId)).toBe(!legacy);
-        expect(seen.has(privateHarness.id)).toBe(false);
-        expect(seen.has(revokedHarness.id)).toBe(false);
-        if (!legacy) {
-          const environmentIds = new Set<string>();
-          let environmentCursor: string | undefined;
-          do {
-            const result = await discoveryClient.callTool({
-              name: "environment_list",
-              arguments: environmentCursor ? { environmentCursor } : {},
-            });
-            expect(result.isError).not.toBe(true);
-            const page = result.structuredContent as {
-              environments: { id: string }[];
-              environmentsNextCursor?: string;
-            };
-            if (!environmentCursor)
-              expect(page.environments.map(({ id }) => id)).not.toContain(targetEnvironmentId);
-            page.environments.forEach(({ id }) => environmentIds.add(id));
-            environmentCursor = page.environmentsNextCursor;
-          } while (environmentCursor);
-          expect(environmentIds.size).toBe(72);
-          const found = await discoveryClient.callTool({
+      expect(
+        (
+          await discoveryClient.callTool({
+            arguments: { modelPage: { harnessInstanceId: targetId, cursor: staleCursor } },
             name: "environment_list",
-            arguments: { harnessInstanceId: targetId, query: "OPENAI catalog 110" },
-          });
-          expect(found.isError).not.toBe(true);
-          const foundPage = found.structuredContent as {
-            environments: { id: string }[];
-            harnesses: {
-              status: string;
-              models: { modelId: string; options: unknown[] }[];
-              modelsOmitted: number;
-            }[];
-          };
-          expect(foundPage.environments.map(({ id }) => id)).toEqual([targetEnvironmentId]);
-          expect(foundPage.harnesses[0]).toMatchObject({
-            status: "ready",
-            modelsOmitted: 0,
-            models: [
-              {
-                modelId: "catalog-model-110",
-                options: [
-                  { id: "effort", values: ["max"], default: "max" },
-                  { id: "thinking", values: [false, true], default: false },
-                ],
-              },
-            ],
-          });
-          const none = await discoveryClient.callTool({
-            name: "environment_list",
-            arguments: { harnessInstanceId: targetId, query: "nothing matches this" },
-          });
-          expect(none.structuredContent).toMatchObject({
-            harnesses: [{ status: "ready", models: [], modelsOmitted: 0 }],
-          });
-          const first = await discoveryClient.callTool({
-            name: "environment_list",
-            arguments: { harnessInstanceId: targetId },
-          });
-          const cursor = (first.structuredContent as { harnesses: { modelsNextCursor: string }[] })
-            .harnesses[0]!.modelsNextCursor;
-          for (const args of [{ cursor }, { harnessInstanceId: targetId, cursor, query: "110" }]) {
-            expect(
-              (await discoveryClient.callTool({ name: "environment_list", arguments: args }))
-                .isError,
-            ).toBe(true);
-          }
-          const workspaces = await mcp.client.callTool({ name: "workspace_list", arguments: {} });
-          expect(workspaces.isError, JSON.stringify(workspaces.content)).not.toBe(true);
-          expect(Object.keys(workspaces.structuredContent ?? {}).sort()).toEqual([
-            "window",
-            "workspaces",
-          ]);
-          acceptanceEvidence.push({
-            caseId: "environment-discovery-v3",
-            environments: [...environmentIds],
-            found: found.structuredContent,
-            none: none.structuredContent,
-            workspaces: workspaces.structuredContent,
-          });
-        }
-        const starvedId = otherCatalogIds.find((id) => {
-          const summary = seen.get(id);
-          return summary && summary.models.length === 0 && summary.modelsOmitted === 30;
-        });
-        expect(starvedId).toBeDefined();
-        if (!starvedId) throw new Error("Expected one profile past the broad model budget");
-        const recovered = new Set<string>();
-        let recoveredCursor: string | undefined;
-        for (;;) {
-          const focused = await discoveryClient.callTool({
-            arguments: {
-              modelPage: {
-                harnessInstanceId: starvedId,
-                ...(recoveredCursor ? { cursor: recoveredCursor } : {}),
-              },
-            },
-            name: "workspace_list",
-          });
-          if (focused.isError) throw new Error(JSON.stringify(focused.content));
-          const page = focused.structuredContent as {
-            harnesses: { models: { modelId: string }[]; modelsNextCursor?: string }[];
-          };
-          for (const model of page.harnesses[0]!.models) recovered.add(model.modelId);
-          recoveredCursor = page.harnesses[0]!.modelsNextCursor;
-          if (!recoveredCursor) break;
-        }
-        expect(recovered.size).toBe(30);
-        const discovered = new Set<string>();
-        let modelCursor: string | undefined;
-        let staleCursor: string | undefined;
-        let repeatedCatalog = false;
-        for (;;) {
-          const result = await discoveryClient.callTool({
-            arguments: {
-              modelPage: {
-                harnessInstanceId: targetId,
-                ...(modelCursor ? { cursor: modelCursor } : {}),
-              },
-            },
-            name: "workspace_list",
-          });
-          if (result.isError) throw new Error(JSON.stringify(result.content));
-          const page = result.structuredContent as {
-            harnesses: { models: { modelId: string }[]; modelsNextCursor?: string }[];
-          };
-          for (const model of page.harnesses[0]!.models) discovered.add(model.modelId);
-          modelCursor = page.harnesses[0]!.modelsNextCursor;
-          staleCursor ??= modelCursor;
-          if (modelCursor && !repeatedCatalog) {
-            await store.recordHarnessCatalogs({
-              catalogs: [HarnessInstanceCatalogSchema.parse(catalog)],
-              environmentId: targetEnvironmentId,
-              expectedRevisions: new Map([[targetId, 1]]),
-            });
-            repeatedCatalog = true;
-          }
-          if (!modelCursor) break;
-        }
-        expect(discovered.size).toBe(111);
-        expect(discovered.has("catalog-model-110")).toBe(true);
-        if (!staleCursor) throw new Error("Expected a second model page");
-        expect(
-          (
-            await discoveryClient.callTool({
-              arguments: { modelPage: { harnessInstanceId: privateHarness.id } },
-              name: "workspace_list",
-            })
-          ).isError,
-        ).toBe(true);
-        expect(
-          (
-            await discoveryClient.callTool({
-              arguments: { modelPage: { harnessInstanceId: revokedHarness.id } },
-              name: "workspace_list",
-            })
-          ).isError,
-        ).toBe(true);
-        expect(
-          (
-            await discoveryClient.callTool({
-              arguments: { modelPage: { harnessInstanceId: disabledId } },
-              name: "workspace_list",
-            })
-          ).isError,
-        ).toBe(legacy ? true : undefined);
-        expect(
-          (
-            await discoveryClient.callTool({
-              arguments: {
-                modelPage: {
-                  harnessInstanceId: fixture.mainHarnessInstanceId,
-                  cursor: staleCursor,
-                },
-              },
-              name: "workspace_list",
-            })
-          ).isError,
-        ).toBe(true);
-        expect(
-          (
-            await discoveryClient.callTool({
-              arguments: { modelPage: { harnessInstanceId: targetId, cursor: "garbage" } },
-              name: "workspace_list",
-            })
-          ).isError,
-        ).toBe(true);
-        await store.recordHarnessCatalogs({
-          catalogs: [
-            HarnessInstanceCatalogSchema.parse({
-              ...catalog,
-              models: catalog.models.slice(0, 110),
-            }),
-          ],
-          environmentId: targetEnvironmentId,
-          expectedRevisions: new Map([[targetId, 1]]),
-        });
-        expect(
-          (
-            await discoveryClient.callTool({
-              arguments: { modelPage: { harnessInstanceId: targetId, cursor: staleCursor } },
-              name: "workspace_list",
-            })
-          ).isError,
-        ).toBe(true);
-        acceptanceEvidence.push({
-          caseId: legacy ? "model-discovery-legacy" : "model-discovery-current",
-          profiles: seen.size,
-          models: discovered.size,
-          targetEnvironmentId,
-        });
-      } finally {
-        await mcp.client.close();
-        await mcp.service.close();
-        await new Promise<void>((resolve) => mcp.server.close(() => resolve()));
-      }
-    },
-    60_000,
-  );
+          })
+        ).isError,
+      ).toBe(true);
+      acceptanceEvidence.push({
+        caseId: "model-discovery-current",
+        profiles: seen.size,
+        models: discovered.size,
+        targetEnvironmentId,
+      });
+    } finally {
+      await mcp.client.close();
+      await mcp.service.close();
+      await new Promise<void>((resolve) => mcp.server.close(() => resolve()));
+    }
+  }, 60_000);
 
   it("fails the delegation by name when the lent machine has no engine of that driver", async () => {
     const fixture = await createFixture({ lentDriverKind: HarnessIdSchema.parse("codex") });
@@ -2497,7 +2491,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     options: {
       /** The assigning Thread is the person's Home rather than one of their tasks. */
       readonly home?: boolean;
-      readonly specialized?: boolean;
+      readonly project?: boolean;
       readonly lentDriverKind?: ReturnType<typeof HarnessIdSchema.parse>;
       readonly workspaceId?: WorkspaceId;
     } = {},
@@ -2523,19 +2517,16 @@ integration("cross-environment delegation reaches the Runner", () => {
       runnerId: lentRunnerId,
       runnerKind: "local",
     });
-    const workspace = await store.createWorkspace({
-      kind: options.specialized ? "specialized" : "main",
+    const workspace = await createTestWorkspace(store, {
+      kind: options.project ? "project" : "main",
       backing: {
+        kind: "local-directory",
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: `wsp_main_${randomUUID()}`,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: lentEnvironmentId,
+        storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: userId,
       ...(options.workspaceId ? { id: options.workspaceId } : {}),
       idempotencyKey: `delegation-workspace-${randomUUID()}`,
@@ -2664,7 +2655,7 @@ integration("cross-environment delegation reaches the Runner", () => {
   }
 
   const controlService = service;
-  async function startDiscoveryMcp(token: string, legacyEnvironment = false) {
+  async function startDiscoveryMcp(token: string) {
     let service: AgentToolsMcpService;
     const server = createServer((request, response) => {
       void (async () => {
@@ -2701,7 +2692,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       runnerCapabilities: async () => [
         "browser-profile-create-v1",
         "task-done-v1",
-        ...(legacyEnvironment ? [] : ["environment-list-v1"]),
+        "environment-list-v1",
       ],
       store,
       publicUrl: url,
@@ -2930,9 +2921,12 @@ integration("cross-environment delegation reaches the Runner", () => {
       readonly workspaceId?: WorkspaceId;
     },
   ) {
+    const workspace = input.workspaceId ? await store.getWorkspace(input.workspaceId) : null;
+    const environmentId = input.environmentId ?? workspace?.backing.ownerEnvironmentId;
     const response = await service.handle(token, {
       requestId: randomUUID(),
       type: "thread.delegate",
+      ...(environmentId ? { environmentId } : {}),
       ...input,
     });
     if (response.type !== "thread.delegate.result") throw new Error("Expected a delegate result");
@@ -3064,19 +3058,19 @@ integration("cross-environment delegation reaches the Runner", () => {
     expect(errors).toEqual([]);
   }
 
-  function createWorkspace(userId: UserId, name: string, id?: WorkspaceId) {
-    return store.createWorkspace({
+  async function createWorkspace(userId: UserId, name: string, id?: WorkspaceId) {
+    const main = await store.findMainWorkspaceForOwner(userId);
+    if (!main) throw new Error("Owner Main is missing");
+    return createTestWorkspace(store, {
+      kind: "project",
       backing: {
+        kind: "local-directory",
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: `wsp_worker_${randomUUID()}`,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: main.backing.ownerEnvironmentId,
+        storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: userId,
       ...(id ? { id } : {}),
       idempotencyKey: `worker-workspace-${randomUUID()}`,
@@ -3127,7 +3121,8 @@ integration("cross-environment delegation reaches the Runner", () => {
       agentControlTokens: { issue } as never,
       browser: {} as never,
       egress: { issue: () => ({ allowedHosts: [], token: "test-egress" }) } as never,
-      integrationSkillsTokens: { issue } as never,
+      pluginVersions: async () => [],
+      pluginsTokens: { issue } as never,
       integrationToolsTokens: { issue } as never,
       onWorkspaceEvent: vi.fn(),
       publicUrl: new URL("https://delegation.opensteer.test"),
@@ -3185,7 +3180,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       await store.ensureDeployment({
         canonicalOrigin: "https://delegation.opensteer.test",
         hostInstanceId: createId("hostInstance"),
-        deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
       });
     }
     const pair = generateKeyPairSync("ed25519");
@@ -3212,12 +3207,15 @@ integration("cross-environment delegation reaches the Runner", () => {
               ],
             },
           ],
-          localStorage: null,
+          localStorage: {
+            bindings: [],
+            storageAuthorityId: createId("storageAuthority"),
+            truncated: false,
+          },
           maxConcurrentRuns: 4,
           // A lent computer is single-user, so it may offer the person's own CLI.
           providerStateModes: input.runnerKind === "local" ? ["ambient", "isolated"] : ["isolated"],
-          workspaceBackings: ["portablefs"],
-          workspaceMounts: [],
+          workspaceBackings: ["local-directory"],
         },
       },
       name: input.name,

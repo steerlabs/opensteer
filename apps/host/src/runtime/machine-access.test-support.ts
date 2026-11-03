@@ -36,6 +36,7 @@ import {
   type RunnerBootId,
   type RunnerConnectionFence,
   type RunnerDescriptor,
+  type RunnerLocalStorageInventory,
   type RunnerModuleName,
   type RunnerProof,
 } from "@opensteer/protocol";
@@ -68,7 +69,6 @@ import { promisify } from "node:util";
 import WebSocket from "ws";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { attachLocalWorkspaceDisk } from "../workspace/runner-local-workspace.test-support.js";
-import { startPortableFsManagerFake } from "./portablefs-manager.test-support.js";
 import { createHostRuntime, type HostRuntime } from "./runtime.js";
 
 const executeFile = promisify(execFile);
@@ -360,14 +360,13 @@ async function createMachineAccessHost(
   databaseUrl: string,
   options: NonNullable<Parameters<typeof startMachineAccessHost>[1]>,
 ): Promise<MachineAccessHost> {
-  const portableFs = await startPortableFsManagerFake();
   const dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-ma-host-"));
   const hostPort = await freePort();
   const config = {
     ...machineAccessHostConfig(
       hostPort,
       dataDirectory,
-      portableFs.url,
+      new URL("http://127.0.0.1:9"),
       databaseUrl,
       options.signupPolicy ?? "invite-only",
     ),
@@ -384,7 +383,6 @@ async function createMachineAccessHost(
               `Machine-access Host shutdown stalled at ${runtime?.closingStep() ?? "startup"}`,
             ),
         }),
-      () => portableFs.close(),
       () => rm(dataDirectory, { force: true, recursive: true }),
     ]) {
       try {
@@ -433,7 +431,7 @@ async function createMachineAccessHost(
 export function machineAccessHostConfig(
   hostPort: number,
   hostDataDirectory: string,
-  portableFsManagerUrl: URL,
+  _storageUrl: URL,
   databaseUrl: string,
   signupPolicy: "closed" | "invite-only" | "open",
   /**
@@ -470,25 +468,8 @@ export function machineAccessHostConfig(
     runtimeOrigin: publicOrigin,
     workspace: {
       deletionRetentionDays: 14,
-      shape: { defaultWorkspaceBacking: "portablefs", kind: "server" as const },
-      storage: {
-        archiveAfterDays: 7,
-        authorizationDomain: "opensteer-test",
-        defaultBlockLimitBytes: 10 * 1_024 * 1_024 * 1_024,
-        defaultInodeLimit: 1_000_000,
-        filesServiceUrl: new URL("http://127.0.0.1:4315"),
-        kind: "portablefs",
-        managerCaPath: undefined,
-        managerCertPath: undefined,
-        managerKeyPath: undefined,
-        managerServerName: undefined,
-        managerUrl: portableFsManagerUrl,
-        maxBlockLimitBytes: 100 * 1_024 * 1_024 * 1_024,
-        maxInodeLimit: 10_000_000,
-        productIssuer: "opensteer-test",
-        productPrivateKeyPath: undefined,
-        serviceId: "test-portablefs",
-      },
+      shape: { defaultWorkspaceBacking: "local-directory", kind: "server" as const },
+      storage: { kind: "local-directory", ownerEnvironmentId: createId("environment") },
     },
   };
 }
@@ -794,8 +775,12 @@ export async function connectTargetMachine(
   let prepared: PreparedShellModule = initial;
   const runnerId = createId("runner");
   const environmentId = input.environmentId ?? createId("environment");
-  // The one descriptor this machine ever sends, minus the module set, which is
-  // the only thing a restart changes.
+  const localStorage = {
+    bindings: [],
+    storageAuthorityId: createId("storageAuthority"),
+    truncated: false,
+  };
+  // Reconnect retains the disk authority while changing the advertised modules.
   const descriptorFor = (
     runsAgents: boolean,
     environment: EnvironmentId,
@@ -810,11 +795,10 @@ export async function connectTargetMachine(
               agents: {
                 environmentIds: [environment],
                 harnessDrivers: [],
-                localStorage: null,
+                localStorage,
                 maxConcurrentRuns: 2,
                 providerStateModes: ["isolated"],
-                workspaceBackings: ["portablefs"],
-                workspaceMounts: [],
+                workspaceBackings: ["local-directory"],
               },
             }
           : {}),
@@ -836,7 +820,15 @@ export async function connectTargetMachine(
     logger: silentLogger,
     transport: { controlCaPath: undefined, hostUrl: new URL(host.origin), mode: "development" },
   });
-  let primary = await connectPrimary(host.hostPort, descriptor, { token: input.token });
+  const connect = (
+    descriptor: RunnerDescriptor,
+    credentials: Parameters<typeof connectPrimary>[2],
+  ) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/internal/v1/runners`);
+    attachLocalWorkspaceDisk(socket, { inventory: localStorage });
+    return connectPrimary(host.hostPort, descriptor, credentials, socket);
+  };
+  let primary = await connect(descriptor, { token: input.token });
   acknowledgeCommands(primary, () => true);
   let auxiliary = await attachShellStream(host.hostPort, primary, handler, reported);
   reportShellReadiness(primary);
@@ -852,7 +844,7 @@ export async function connectTargetMachine(
       options.environmentId ?? environmentId,
       options.fullDiskAccess ?? input.fullDiskAccess,
     );
-    primary = await connectPrimary(host.hostPort, booted, { privateKey: primary.privateKey });
+    primary = await connect(booted, { privateKey: primary.privateKey });
     acknowledgeCommands(primary, () => true);
     auxiliary = await attachShellStream(host.hostPort, primary, handler, reported);
     reportShellReadiness(primary);
@@ -1034,6 +1026,7 @@ async function attachShellStream(
 }
 
 export interface CallerMachine {
+  readonly localStorage: RunnerLocalStorageInventory | undefined;
   readonly environmentId: EnvironmentId;
   readonly harnessInstanceId: string;
   readonly primary: PrimaryConnection;
@@ -1071,13 +1064,23 @@ export async function connectCallerMachine(
     readonly rendersImages?: boolean;
     readonly computerTool?: 1;
     readonly runnerKind?: "local" | "main";
-    readonly token: string;
-  },
+  } & (
+    | { readonly token: string; readonly previous?: undefined }
+    /** Reattach the same computer and disk after its Host restarts. */
+    | { readonly previous: CallerMachine; readonly token?: undefined }
+  ),
 ): Promise<CallerMachine> {
-  const runnerId = createId("runner");
-  const environmentId = input.environmentId ?? createId("environment");
+  const runnerId = input.previous?.runnerId ?? createId("runner");
+  const environmentId =
+    input.previous?.environmentId ?? input.environmentId ?? createId("environment");
   const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/internal/v1/runners`);
-  const disk = input.localDirectory ? attachLocalWorkspaceDisk(socket) : undefined;
+  const disk =
+    input.localDirectory !== false
+      ? attachLocalWorkspaceDisk(
+          socket,
+          input.previous?.localStorage ? { inventory: input.previous.localStorage } : {},
+        )
+      : undefined;
   const descriptor = RunnerDescriptorSchema.parse({
     bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
     capabilities: [
@@ -1120,8 +1123,7 @@ export async function connectCallerMachine(
         localStorage: disk?.inventory ?? null,
         maxConcurrentRuns: input.maxConcurrentRuns ?? 4,
         providerStateModes: ["ambient", "isolated"],
-        workspaceBackings: disk ? ["local-directory"] : ["portablefs"],
-        workspaceMounts: [],
+        workspaceBackings: disk ? ["local-directory"] : [],
       },
     },
     name: input.name,
@@ -1129,7 +1131,10 @@ export async function connectCallerMachine(
     runnerKind: input.runnerKind ?? "local",
     runtimeVersion: "integration",
   });
-  const primary = await connectPrimary(host.hostPort, descriptor, { token: input.token }, socket);
+  const credentials = input.previous
+    ? { privateKey: input.previous.primary.privateKey }
+    : { token: input.token };
+  const primary = await connectPrimary(host.hostPort, descriptor, credentials, socket);
   // Every dispatched command is acknowledged, including the ones this Runner
   // has nothing to do about: a command the Host waits on and never hears back
   // ejects the whole connection fifteen seconds later.
@@ -1211,6 +1216,7 @@ export async function connectCallerMachine(
     },
     environmentId,
     harnessInstanceId,
+    localStorage: disk?.inventory,
     primary,
     runnerId,
   };

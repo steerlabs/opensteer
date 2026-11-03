@@ -1,15 +1,15 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
+import { ModelSelectionSchema, type RunId } from "@opensteer/core";
 import {
   HarnessRegistry,
   isolatedServiceHarnessRuntimeBoundary,
   nativeUserHarnessRuntimeBoundary,
 } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
-import { ModelSelectionSchema, type RunId } from "@opensteer/core";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   codexThreadOf,
@@ -141,7 +141,7 @@ integration("Host, Runner, and Codex harness integration", () => {
       harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 15_000,
     });
-    const { host, hostOrigin, mountCalls } = stack;
+    const { host, mountCalls } = stack;
 
     const workspace = await stack.createWorkspace("Vertical client workspace");
     const threadId = await stack.createThread({
@@ -210,22 +210,14 @@ integration("Host, Runner, and Codex harness integration", () => {
     expectRecordedUsage(await recordedUsage(stack, turn.runId), { attempt: null, nodes: [] });
 
     // The owner's Main Workspace is provisioned on first bootstrap, and this
-    // test then creates one specialized Workspace of its own.
-    expect(stack.portableFsCreateCalls()).toBe(2);
-    expect(workspace.kind).toBe("specialized");
+    // test then creates one project Workspace of its own.
+    expect(await host.store.listWorkspaces()).toHaveLength(2);
+    expect(workspace.kind).toBe("project");
     expect(mountCalls).toHaveLength(1);
-    expect(mountCalls[0]).toMatchObject({
-      plan: {
-        kind: "portablefs",
-        volumeId: expect.any(String),
-        workspaceId: workspace.id,
-      },
+    expect(mountCalls[0]?.plan).toMatchObject({
+      ...(await host.store.getWorkspace(workspace.id))?.backing,
+      workspaceId: workspace.id,
     });
-    const preparedPlan = mountCalls[0]?.plan;
-    if (preparedPlan?.kind !== "portablefs") {
-      throw new Error("Expected the Host to dispatch an explicit PortableFS access plan");
-    }
-    expect(preparedPlan.exchangeUrl).toBe(`${hostOrigin.origin}/internal/v1/mount-grants/exchange`);
     expect(stack.mountCleanupCalls()).toBe(0);
   });
 

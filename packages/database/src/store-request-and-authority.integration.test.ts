@@ -1,3 +1,8 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import {
   createId,
   emptyExecutionPreferences,
@@ -175,13 +180,13 @@ describeStore("PostgreSQL store", (it) => {
     const {
       startRunFixture,
       startTriggerOccurrence,
-      createSpecializedWorkspace,
+      createProjectWorkspace,
       store,
       stagedRequestRace,
     } = storeFixture;
     const fixture = await startRunFixture("request-occurrence-fk-race");
     const occurrence = await startTriggerOccurrence(fixture, "request-occurrence-fk-race");
-    const target = await createSpecializedWorkspace(fixture.userId, "request-occurrence-fk-target");
+    const target = await createProjectWorkspace(fixture.userId, "request-occurrence-fk-target");
     const opened = await store.requests.create({
       callId: "request-occurrence-fk-race",
       kind: "browser.access",
@@ -239,12 +244,9 @@ describeStore("PostgreSQL store", (it) => {
   it("serializes durable Request withdrawal behind the resolution event", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, createSpecializedWorkspace, store, database } = storeFixture;
+    const { startRunFixture, createProjectWorkspace, store, database } = storeFixture;
     const fixture = await startRunFixture("request-withdrawal-state-race");
-    const target = await createSpecializedWorkspace(
-      fixture.userId,
-      "request_withdrawal_state_race",
-    );
+    const target = await createProjectWorkspace(fixture.userId, "request_withdrawal_state_race");
     const opened = await store.requests.create({
       callId: "request-withdrawal-state-race",
       kind: "browser.access",
@@ -339,10 +341,9 @@ describeStore("PostgreSQL store", (it) => {
   it("opens, replays, and withdraws a durable Request that originates from a Trigger Occurrence", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, createSpecializedWorkspace, startTriggerOccurrence, store } =
-      storeFixture;
+    const { startRunFixture, createProjectWorkspace, startTriggerOccurrence, store } = storeFixture;
     const fixture = await startRunFixture("request-trigger-origin");
-    const targetWorkspace = await createSpecializedWorkspace(
+    const targetWorkspace = await createProjectWorkspace(
       fixture.userId,
       "request_trigger_origin_target",
     );
@@ -565,7 +566,7 @@ describeStore("PostgreSQL store", (it) => {
   it("cancels Requests atomically when membership or target Workspace authority is removed", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, createSpecializedWorkspace, store, database } = storeFixture;
+    const { startRunFixture, createProjectWorkspace, store, database } = storeFixture;
     const fixture = await startRunFixture("request-authority-removal");
     const requestInput = (callId: string, targetWorkspaceId: Workspace["id"]) => ({
       callId,
@@ -589,7 +590,7 @@ describeStore("PostgreSQL store", (it) => {
       targetWorkspaceId,
     });
 
-    const membershipTarget = await createSpecializedWorkspace(
+    const membershipTarget = await createProjectWorkspace(
       fixture.userId,
       "request_membership_revocation",
     );
@@ -638,7 +639,7 @@ describeStore("PostgreSQL store", (it) => {
       ),
     ).rejects.toMatchObject({ code: "forbidden" });
 
-    const deletionTarget = await createSpecializedWorkspace(
+    const deletionTarget = await createProjectWorkspace(
       fixture.userId,
       "request_workspace_deletion",
     );
@@ -680,9 +681,9 @@ describeStore("PostgreSQL store", (it) => {
   it("serializes cross-Workspace Request creation against source membership revocation", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, createSpecializedWorkspace, store, database } = storeFixture;
+    const { startRunFixture, createProjectWorkspace, store, database } = storeFixture;
     const fixture = await startRunFixture("request-source-membership-race");
-    const targetWorkspace = await createSpecializedWorkspace(
+    const targetWorkspace = await createProjectWorkspace(
       fixture.userId,
       "request_source_membership_race_target",
     );
@@ -712,7 +713,7 @@ describeStore("PostgreSQL store", (it) => {
       originatingWorkspaceId: fixture.workspace.id,
       payload: {
         kind: "browser.access" as const,
-        reason: "Use a specialized browser from Main",
+        reason: "Use a project browser from another Project",
         suggestion: { kind: "user_choice" as const },
       },
       presentation: {
@@ -757,9 +758,9 @@ describeStore("PostgreSQL store", (it) => {
   it("serializes cross-Workspace Request creation against source Workspace deletion", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, createSpecializedWorkspace, store, database } = storeFixture;
-    const fixture = await startRunFixture("request-source-deletion-race");
-    const targetWorkspace = await createSpecializedWorkspace(
+    const { startRunFixture, createProjectWorkspace, store, database } = storeFixture;
+    const fixture = await startRunFixture("request-source-deletion-race", "project");
+    const targetWorkspace = await createProjectWorkspace(
       fixture.userId,
       "request_source_deletion_race_target",
     );
@@ -772,7 +773,7 @@ describeStore("PostgreSQL store", (it) => {
       originatingWorkspaceId: fixture.workspace.id,
       payload: {
         kind: "browser.access" as const,
-        reason: "Use a specialized browser from Main",
+        reason: "Use a project browser from another Project",
         suggestion: { kind: "user_choice" as const },
       },
       presentation: {
@@ -822,9 +823,9 @@ describeStore("PostgreSQL store", (it) => {
   )(
     "serializes cross-Workspace Browser resolution against $removal ($targetId)",
     async ({ removal, targetId }, { storeFixture }) => {
-      const { startRunFixture, createSpecializedWorkspace, store, database } = storeFixture;
+      const { startRunFixture, createProjectWorkspace, store, database } = storeFixture;
       const fixture = await startRunFixture("request-source-resolution-race");
-      const targetWorkspace = await createSpecializedWorkspace(
+      const targetWorkspace = await createProjectWorkspace(
         fixture.userId,
         "request_source_resolution_race_target",
         WorkspaceIdSchema.parse(targetId),
@@ -857,7 +858,7 @@ describeStore("PostgreSQL store", (it) => {
         originatingWorkspaceId: fixture.workspace.id,
         payload: {
           kind: "browser.access",
-          reason: "Create browser authority in the specialized Workspace",
+          reason: "Create browser authority in the project Workspace",
           suggestion: { kind: "user_choice" },
         },
         presentation: {
@@ -970,9 +971,9 @@ describeStore("PostgreSQL store", (it) => {
   it.for(["existing", "new", "declined"] as const)(
     "persists the Host-derived browser access outcome for %s decisions",
     async (choice, { storeFixture }) => {
-      const { startRunFixture, createSpecializedWorkspace, store, database } = storeFixture;
+      const { startRunFixture, createProjectWorkspace, store, database } = storeFixture;
       const fixture = await startRunFixture(`browser-outcome-${choice}`);
-      const target = await createSpecializedWorkspace(fixture.userId, `browser_outcome_${choice}`);
+      const target = await createProjectWorkspace(fixture.userId, `browser_outcome_${choice}`);
       const existing = await store.createBrowserProfile({
         idempotencyKey: `store.integration.test-browser-outcome-${choice}`,
         ownerId: fixture.userId,
@@ -1067,16 +1068,16 @@ describeStore("PostgreSQL store", (it) => {
   it("fulfills repeated browser access requests with one existing grant, including at capacity", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, createSpecializedWorkspace, store, database } = storeFixture;
+    const { startRunFixture, createProjectWorkspace, store, database } = storeFixture;
     const fixture = await startRunFixture("browser-access-existing");
-    const target = await createSpecializedWorkspace(fixture.userId, "browser_access_existing");
+    const target = await createProjectWorkspace(fixture.userId, "browser_access_existing");
     const profile = await store.createBrowserProfile({
       idempotencyKey: "store.integration.test-browser-profile-1",
       ownerId: fixture.userId,
       name: "Personal",
     });
     const grant = await store.createBrowserProfileGrant({
-      access: "full-control",
+      access: "read-write",
       createdBy: fixture.userId,
       profileId: profile.id,
       workspaceId: target.id,
@@ -1123,7 +1124,7 @@ describeStore("PostgreSQL store", (it) => {
           createdBy: fixture.userId,
           profileId: id,
           workspaceId: target.id,
-          access: "full-control",
+          access: "read-write",
           revokedAt: null,
         })),
       )
@@ -1399,26 +1400,25 @@ describeStore("PostgreSQL store", (it) => {
     ]);
   });
 
-  it("enriches valid integration access, rejects mismatched accounts, and preserves specialized grants", async ({
+  it("enriches valid integration access, rejects mismatched accounts, and preserves project grants", async ({
     storeFixture,
   }) => {
     const { startRunFixture, store, database } = storeFixture;
     const fixture = await startRunFixture("integration-access-target-authority");
-    const specialized = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_integration-access-target-authority-specialized",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.userId,
-      idempotencyKey: "workspace-integration-access-target-authority-specialized",
-      kind: "specialized",
+      idempotencyKey: "workspace-integration-access-target-authority-project",
+      kind: "project",
       name: "Integration access specialist",
       status: "ready",
     });
@@ -1626,31 +1626,31 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).resolves.toEqual([]);
 
-    const specializedRequest = await platform.requests.createIntegrationAccessRequest({
+    const projectRequest = await platform.requests.createIntegrationAccessRequest({
       ...requestInput,
-      callId: "integration-access-specialized-target",
+      callId: "integration-access-project-target",
       requestedServerId: null,
-      targetWorkspaceId: specialized.id,
+      targetWorkspaceId: project.id,
     });
     await expect(
       platform.requests.selectIntegrationAccessServer({
-        requestId: specializedRequest.request.id,
+        requestId: projectRequest.request.id,
         requestedServerId: serverId,
         resolvedBy: fixture.userId,
         settlementSessionId: createId("authSession"),
       }),
     ).rejects.toMatchObject({ code: "unauthorized" });
-    expect((await platform.requests.get(specializedRequest.request.id))?.payload).toMatchObject({
+    expect((await platform.requests.get(projectRequest.request.id))?.payload).toMatchObject({
       requestedServerId: null,
     });
     await platform.requests.selectIntegrationAccessServer({
-      requestId: specializedRequest.request.id,
+      requestId: projectRequest.request.id,
       requestedServerId: serverId,
       resolvedBy: fixture.userId,
     });
-    const specializedResolution = await platform.requests.resolveIntegrationAccessRequest({
+    const projectResolution = await platform.requests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
-      requestId: specializedRequest.request.id,
+      requestId: projectRequest.request.id,
       resolvedBy: fixture.userId,
       response: {
         kind: "external",
@@ -1665,12 +1665,12 @@ describeStore("PostgreSQL store", (it) => {
       },
     });
 
-    expect(specializedResolution).toMatchObject({
+    expect(projectResolution).toMatchObject({
       events: [expect.objectContaining({ type: "request.resolved" })],
-      grant: { workspaceId: specialized.id },
+      grant: { workspaceId: project.id },
       request: { status: "fulfilled" },
     });
-    expect(specializedResolution.request.response).toEqual({
+    expect(projectResolution.request.response).toEqual({
       kind: "external",
       value: {
         access: "read",
@@ -1685,7 +1685,7 @@ describeStore("PostgreSQL store", (it) => {
       ...requestInput,
       access: "read-write",
       callId: "integration-access-required-write",
-      targetWorkspaceId: specialized.id,
+      targetWorkspaceId: project.id,
     });
     await expect(
       platform.requests.resolveIntegrationAccessRequest({
@@ -1796,11 +1796,11 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).resolves.toMatchObject({ request: { status: "fulfilled" } });
     await expect(
-      platform.listGrants({ ownerUserId: fixture.userId, workspaceId: specialized.id }),
+      platform.listGrants({ ownerUserId: fixture.userId, workspaceId: project.id }),
     ).resolves.toEqual([
       expect.objectContaining({
         access: "read",
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ]);
     await expect(platform.requests.listPendingContinuations()).resolves.toEqual([
@@ -1808,7 +1808,7 @@ describeStore("PostgreSQL store", (it) => {
         request: expect.objectContaining({ id: mainRequest.request.id }),
       }),
       expect.objectContaining({
-        request: expect.objectContaining({ id: specializedRequest.request.id }),
+        request: expect.objectContaining({ id: projectRequest.request.id }),
       }),
       expect.objectContaining({
         request: expect.objectContaining({ id: declinedRequest.request.id, status: "declined" }),
@@ -2622,18 +2622,17 @@ describeStore("PostgreSQL store", (it) => {
     // Offering somebody else's managed Runner first and letting the Thread
     // authority trigger reject the insert is a retry loop that never ends.
     const fixture = await createCloudBindingFixture("channel-placement");
-    const bobWorkspace = await store.createWorkspace({
+    const bobWorkspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_channel_placement_bob",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.bobId,
       idempotencyKey: "workspace-channel-placement-bob",
       name: "Bob's Workspace",

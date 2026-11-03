@@ -10,7 +10,6 @@ import {
   type UserId,
   type Workspace,
   type WorkspaceBacking,
-  type WorkspaceCapacityPolicy,
   type WorkspaceId,
 } from "@opensteer/core";
 import { durableWindowCursorMaxCharacters } from "@opensteer/protocol";
@@ -406,12 +405,11 @@ export function requirePositiveSafeGeneration(value: number, label: string): voi
 
 export function workspaceFromRow(row: {
   readonly backing: WorkspaceBacking;
-  readonly capacityPolicy: WorkspaceCapacityPolicy;
   readonly homeThreadId: ThreadId | null;
   readonly icon: string | null;
   readonly color: NonNullable<Workspace["color"]>;
   readonly id: WorkspaceId;
-  readonly kind: "main" | "specialized";
+  readonly kind: "main" | "project";
   readonly name: string;
   readonly status: string;
   readonly storageErrorAt: Date | null;

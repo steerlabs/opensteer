@@ -44,40 +44,6 @@ export interface DelegationPlacementRequest {
   readonly parent: Thread;
 }
 
-export async function delegationHarnessPage(
-  store: Pick<OpensteerStore, "listAgentHarnessInstancesForUser">,
-  userId: Parameters<OpensteerStore["listAgentHarnessInstancesForUser"]>[0],
-  input: {
-    readonly harnessCursor?: HarnessInstanceId | undefined;
-    readonly modelPage?:
-      | { readonly harnessInstanceId: HarnessInstanceId; readonly cursor?: string | undefined }
-      | undefined;
-  },
-): Promise<{
-  readonly harnesses: readonly HarnessInstanceRecord[];
-  readonly nextCursor?: HarnessInstanceId;
-}> {
-  if (input.modelPage) {
-    const [harness] = await store.listAgentHarnessInstancesForUser(userId, {
-      id: input.modelPage.harnessInstanceId,
-      limit: 1,
-    });
-    if (!harness) {
-      throw badRequest("AI engine profile is unavailable in your environments");
-    }
-    return { harnesses: [harness] };
-  }
-  const rows = await store.listAgentHarnessInstancesForUser(userId, {
-    ...(input.harnessCursor ? { afterId: input.harnessCursor } : {}),
-    limit: 65,
-  });
-  const last = rows[63];
-  return {
-    harnesses: rows.slice(0, 64),
-    ...(rows.length > 64 && last ? { nextCursor: last.id } : {}),
-  };
-}
-
 type PlacementStore = Pick<
   OpensteerStore,
   "getHarnessCatalog" | "getHarnessInstance" | "listHarnessInstances"

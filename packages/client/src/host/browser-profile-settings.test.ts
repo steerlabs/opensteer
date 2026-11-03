@@ -22,15 +22,15 @@ describe("browser profile settings", () => {
     ]);
   });
 
-  it("lists profiles by name with the specialists allowed and says what deleting takes", () => {
+  it("lists profiles by name with the projects allowed and says what deleting takes", () => {
     const mock = new MockHostClient({ latencyMs: 0 });
     try {
       const base = mock.getSnapshot();
       const main = base.workspaces.find((workspace) => workspace.kind === "main")!;
-      const buyer = { ...main, id: "wsp_buyer", kind: "specialized" as const, name: "Buyer" };
+      const buyer = { ...main, id: "wsp_buyer", kind: "project" as const, name: "Buyer" };
       const research = { ...buyer, id: "wsp_research", name: "Research" };
       const grant = (id: string, profileId: string, workspaceId: string) => ({
-        access: "full-control" as const,
+        access: "read-write" as const,
         createdAt: "2026-10-30T12:00:00.000Z",
         id,
         profileId,
@@ -45,7 +45,7 @@ describe("browser profile settings", () => {
         browserProfileGrants: [
           grant("g1", "bpr_work", buyer.id),
           grant("g2", "bpr_work", research.id),
-          // Main's inherited access is implied, never listed as a specialist.
+          // Main's inherited access is implied, never listed as a project.
           grant("g3", "bpr_shopping", main.id),
         ],
         workspaces: [...base.workspaces, buyer, research],

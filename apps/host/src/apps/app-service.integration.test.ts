@@ -248,7 +248,7 @@ describeStore("published app HTML", (it) => {
   }) => {
     const { store, database, startRunFixture } = storeFixture;
     const f = await startRunFixture("app-refusals");
-    const otherWorkspace = await storeFixture.createSpecializedWorkspace(
+    const otherWorkspace = await storeFixture.createProjectWorkspace(
       f.userId,
       "app-other-workspace",
     );
@@ -381,7 +381,7 @@ describeStore("published app HTML", (it) => {
     storeFixture,
   }) => {
     const { store, database } = storeFixture;
-    const f = await storeFixture.startRunFixture("app-servers");
+    const f = await storeFixture.startRunFixture("app-servers", "project");
     const directory = await mkdtemp(join(tmpdir(), "opensteer-app-server-host-"));
     let scope = {
       runId: f.run.id,
@@ -448,10 +448,6 @@ describeStore("published app HTML", (it) => {
         .set({ accessMode: "full-access" })
         .where("id", "=", f.thread.id)
         .execute();
-      await expect(publish()).rejects.toMatchObject({
-        message: "App servers need a local Workspace",
-      });
-      expect(start).not.toHaveBeenCalled();
       await database
         .updateTable("workspaces")
         .set({
@@ -462,7 +458,6 @@ describeStore("published app HTML", (it) => {
             storageAuthorityId: createId("storageAuthority"),
             ownerEnvironmentId: f.environmentId,
           },
-          capacityPolicy: { kind: "host-filesystem" },
         })
         .where("id", "=", f.workspace.id)
         .execute();

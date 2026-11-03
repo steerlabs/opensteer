@@ -1,3 +1,5 @@
+import { LocalWorkspaceAuthority, NativeFsHelper } from "@opensteer/workspace-local";
+import { LocalWorkspaceService } from "../workspace/local-workspace-service.js";
 import { createPrivateKey } from "node:crypto";
 import { join } from "node:path";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
@@ -15,6 +17,7 @@ import type { AgentSkillBundle } from "../skills/agent-skills.js";
 import { ExecutionContainment, executionScopeVariable } from "../runtime/execution-containment.js";
 
 interface Boot {
+  readonly nativeFsHelperBinary: string;
   readonly bootId: string;
   readonly config: Omit<RunnerConfig, "hostUrl"> & { readonly hostUrl: string };
   readonly engine: { readonly fixture: string; readonly arguments: readonly string[] };
@@ -98,10 +101,10 @@ async function boot(input: Boot) {
       plan: async () => (launch) => launch,
       planProgram: async () => (launch) => launch,
     },
-    integrationSkills: async () => ({
+    plugins: async () => ({
       cleanup: async () => undefined,
       digest: "none",
-      directory: undefined,
+      directories: [],
       skills: [],
     }),
     maxConcurrentRuns: 1,
@@ -127,6 +130,16 @@ async function boot(input: Boot) {
     runnerId: config.runnerId!,
   });
   const identity = await identityStore.loadOrCreate();
+  const filesystem = new NativeFsHelper({
+    binary: input.nativeFsHelperBinary,
+    rootPolicy: "managed-local",
+  });
+  const authority = new LocalWorkspaceAuthority({
+    filesystemAuthority: filesystem,
+    namespace: { kind: "single-owner", ownerEnvironmentId: config.environmentId! },
+    registryFilePath: join(config.dataDirectory, "local-workspaces.json"),
+    visibleRootPath: join(config.dataDirectory, "local-workspaces"),
+  });
   const connection = new ReconnectingHostConnection({
     onConnected: () => authenticated.resolve(),
     bootId: RunnerBootIdSchema.parse(input.bootId),
@@ -138,8 +151,15 @@ async function boot(input: Boot) {
     agents: {
       earlierBootsContained: earlierBoots === "proven",
       runtime,
-      workspaceBackings: config.workspaceBackings,
-      workspaceMounts: () => [],
+      localWorkspaces: {
+        inventory: () => authority.inventory(),
+        service: new LocalWorkspaceService({
+          authority,
+          filesystem,
+          appServers: runtime.appServers,
+        }),
+      },
+      workspaceBackings: ["local-directory"],
     },
   });
   const task = connection.run(stop.signal);

@@ -2160,7 +2160,7 @@ describe("surfaces belonging to one reply", () => {
       }),
       browserSessions: [
         {
-          access: "full-control",
+          access: "read-write",
           attachedRunIds: [],
           dialog: null,
           error: null,
@@ -3205,11 +3205,11 @@ describe("task marks on a phone", () => {
     }
   });
 
-  it("reports specialist tile-only edits in the header without changing the task mark or unread state", async () => {
+  it("reports project tile-only edits in the header without changing the task mark or unread state", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     try {
       await client.load();
-      const workspace = client.getSnapshot().workspaces.find(({ kind }) => kind === "specialized")!;
+      const workspace = client.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
       const template = client.getSnapshot().threads.find(({ role }) => role === "work")!;
       const thread = await client.createThread({
         workspaceId: workspace.id,

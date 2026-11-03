@@ -91,7 +91,7 @@ describe("RunnerLocalWorkspaceDriver", () => {
         storageAuthorityId,
         answer: async (request, fence) => {
           if (request.type !== "host.workspace.local.provision") return unexpected(request, fence);
-          await authority.provision({
+          const path = await authority.provision({
             binding: request.binding,
             fingerprint: request.fingerprint,
             idempotencyKey: request.operationId,
@@ -101,6 +101,7 @@ describe("RunnerLocalWorkspaceDriver", () => {
             fence,
             operationId: request.operationId,
             requestId: request.requestId,
+            path,
             type: "runner.workspace.local.provisioned",
           };
         },
@@ -108,15 +109,25 @@ describe("RunnerLocalWorkspaceDriver", () => {
     });
     const input = provisionInput();
     const backing = driver.initialBacking(input);
+    const mainId = createId("workspace");
+    const mainInput = { ...input, kind: "main" as const, workspaceId: mainId };
+    const mainBacking = driver.initialBacking(mainInput);
+    await driver.provision({
+      idempotencyKey: "main",
+      workspace: { ...localWorkspace(mainBacking), id: mainId, kind: "main" },
+    });
 
     await expect(
       driver.provision({
         idempotencyKey: input.idempotencyKey,
-        workspace: localWorkspace(backing),
+        workspace: { ...localWorkspace(backing), slug: "research" },
       }),
     ).resolves.toMatchObject({ status: "ready" });
+    expect(
+      driver.storageLocation({ ...localWorkspace(mainBacking), id: mainId, kind: "main" }),
+    ).toBe(path.join(root, "workspaces", "main"));
     await expect(authority.inventory()).resolves.toMatchObject({
-      bindings: [expect.objectContaining({ bindingId: backing.bindingId })],
+      bindings: expect.arrayContaining([expect.objectContaining({ bindingId: backing.bindingId })]),
     });
   });
 
@@ -208,6 +219,7 @@ describe("RunnerLocalWorkspaceDriver", () => {
             fence,
             operationId: request.operationId,
             requestId: request.requestId,
+            path: "/Main/Projects/research",
             type: "runner.workspace.local.provisioned",
           };
         },
@@ -280,10 +292,10 @@ const fixedCreatedBy = createId("user");
 function provisionInput() {
   return {
     backingKind: "local-directory" as const,
-    capacityPolicy: { kind: "host-filesystem" as const },
+
     createdBy: fixedCreatedBy,
     idempotencyKey: `workspace:${fixedWorkspaceId}:provision:v1`,
-    kind: "specialized" as const,
+    kind: "project" as const,
     name: "Research",
     ownerEnvironmentId: environmentId,
     workspaceId: fixedWorkspaceId,
@@ -306,13 +318,13 @@ function localWorkspace(
   const now = "2026-08-12T12:00:00.000Z";
   return {
     backing,
-    capacityPolicy: { kind: "host-filesystem" },
+
     createdAt: now,
     createdBy: fixedCreatedBy,
     homeThreadId: null,
     icon: null,
     id: fixedWorkspaceId,
-    kind: "specialized",
+    kind: "project",
     name: "Research",
     status: "ready",
     storageIssue: null,
@@ -331,9 +343,10 @@ function registry(options: {
   const connected = options.connected ?? true;
   const storageAuthorityId =
     options.storageAuthorityId === undefined ? fixedStorageAuthorityId : options.storageAuthorityId;
+  const identity = runnerIdentity(storageAuthorityId);
   return {
     identityForEnvironment: (candidate: EnvironmentId) =>
-      connected && candidate === environmentId ? runnerIdentity(storageAuthorityId) : undefined,
+      connected && candidate === environmentId ? identity : undefined,
     requestWorkspaceLocal: async (candidate, request) => {
       if (!connected) {
         throw new OpensteerError({
@@ -395,7 +408,6 @@ function runnerIdentity(storageAuthority: StorageAuthorityId | null): RunnerIden
         maxConcurrentRuns: 1,
         providerStateModes: ["isolated"],
         workspaceBackings: ["local-directory"],
-        workspaceMounts: [],
       },
     },
     name: "Lent machine",

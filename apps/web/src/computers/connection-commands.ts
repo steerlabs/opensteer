@@ -15,16 +15,6 @@ export interface ComputerConnectionCommandPair {
   readonly container: string;
 }
 
-export interface ComputerConnectionCommands extends ComputerConnectionCommandPair {
-  /**
-   * The optional add-on: the same computer, plus the FUSE privileges and mount
-   * binary it needs to also work on this Deployment's cloud Workspaces. Null
-   * where the Deployment has no PortableFS Manager, so there is nothing extra
-   * to reach.
-   */
-  readonly sharedStorage: ComputerConnectionCommandPair | null;
-}
-
 interface ComputerConnectionInput {
   readonly deploymentShape: DeploymentShape;
   /** Names the storage this addition gets, so two computers never share one. */
@@ -113,16 +103,15 @@ export const runnerDistribution = runnerDistributionPrefix(
 
 /**
  * A lent computer holds its own Workspace directories, so the command it is
- * given is local-only whatever the Deployment's default backing is. PortableFS
- * is never a precondition for lending — it is the variant below.
+ * given advertises local-directory Workspaces.
  */
 export function computerConnectionCommands(
   input: ComputerConnectionInput,
-): ComputerConnectionCommands {
+): ComputerConnectionCommandPair {
   const slug = enrollmentStorageSlug(input.enrollmentId);
   const bareHostDataDirectory = `$HOME/.opensteer/computers/${slug}`;
   const common = {
-    OPENSTEER_DEFAULT_WORKSPACE_BACKING: input.deploymentShape.defaultWorkspaceBacking,
+    OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
     OPENSTEER_DEPLOYMENT_KIND: input.deploymentShape.kind,
     OPENSTEER_HOST_URL: input.hostOrigin,
     OPENSTEER_MODE: "production",
@@ -144,39 +133,11 @@ export function computerConnectionCommands(
     OPENSTEER_RUNNER_DATA_DIR: "/var/lib/opensteer",
     OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
   } as const;
-  const sharedBare = {
-    ...localBare,
-    OPENSTEER_PORTABLEFS_MOUNT_BINARY: "/usr/local/bin/portablefs",
-    OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory,portablefs",
-    // Mounted cloud Workspaces never share the directory that holds this
-    // computer's own folders, the way the container variant keeps them apart.
-    OPENSTEER_RUNNER_WORKSPACE_ROOT: `${bareHostDataDirectory}/mounts`,
-  } as const;
-  const sharedContainer = {
-    ...localContainer,
-    OPENSTEER_PORTABLEFS_MOUNT_BINARY: "/opt/portablefs/portablefs",
-    OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory,portablefs",
-    OPENSTEER_RUNNER_WORKSPACE_ROOT: "/workspaces",
-  } as const;
-  const fusePrivileges = [
-    "--device /dev/fuse --cap-add SYS_ADMIN",
-    "--security-opt apparmor=unconfined",
-    "--tmpfs /workspaces:mode=0700,uid=10001,gid=10001",
-    "--volume /usr/local/bin/portablefs:/opt/portablefs/portablefs:ro",
-    '--env OPENSTEER_PORTABLEFS_MOUNT_SHA256="$(sha256sum /usr/local/bin/portablefs | cut -d " " -f1)"',
-  ];
   const volume = `opensteer-computer-${slug}`;
   const install = installScript(input.runnerDistribution, bareHostDataDirectory);
   return {
     bareHost: bareHostCommand(localBare, install),
-    container: containerCommand(localContainer, volume, []),
-    sharedStorage:
-      input.deploymentShape.defaultWorkspaceBacking === "portablefs"
-        ? {
-            bareHost: bareHostCommand(sharedBare, install),
-            container: containerCommand(sharedContainer, volume, fusePrivileges),
-          }
-        : null,
+    container: containerCommand(localContainer, volume),
   };
 }
 
@@ -238,15 +199,10 @@ function bareHostCommand(
     .join(" ")} sh -c ${shellValue(install)}`;
 }
 
-function containerCommand(
-  environment: Readonly<Record<string, string>>,
-  volume: string,
-  privileges: readonly string[],
-): string {
+function containerCommand(environment: Readonly<Record<string, string>>, volume: string): string {
   return [
     "docker run --detach --restart unless-stopped",
     `--volume ${volume}:/var/lib/opensteer`,
-    ...privileges,
     ...Object.entries(environment).map(([name, value]) => `--env ${name}=${shellValue(value)}`),
     runnerImage,
   ].join(" ");

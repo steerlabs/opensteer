@@ -1,3 +1,8 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import { pauseAfterLock } from "./lock-race.test-support.js";
 import { lockCommandIdempotency } from "./store-primitives.js";
 import { HarnessIdSchema, ModelSelectionSchema, createId } from "@opensteer/core";
@@ -46,18 +51,17 @@ describeStore("PostgreSQL store", (it) => {
       runnerKind: "local",
       tokenSuffix: "bob-private-runner",
     });
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_execution_authority",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: aliceId,
       idempotencyKey: "execution-authority-workspace",
       name: "Shared research",
@@ -921,7 +925,7 @@ describeStore("PostgreSQL store", (it) => {
   it.for(["nested-delegation", "cancel-request", "drain-pending"] as const)(
     "orders Assignment projection fences (%s)",
     async (scenario, { storeFixture }) => {
-      const { startRunFixture, store, database, bindAgentControlRun, createSpecializedWorkspace } =
+      const { startRunFixture, store, database, bindAgentControlRun, createProjectWorkspace } =
         storeFixture;
       const fixture = await startRunFixture("assignment-projection-prefix");
       const delegated = await store.delegateThread({
@@ -964,7 +968,7 @@ describeStore("PostgreSQL store", (it) => {
           workspaceId: fixture.workspace.id,
         }),
       });
-      const target = await createSpecializedWorkspace(fixture.userId, "projection-request-target");
+      const target = await createProjectWorkspace(fixture.userId, "projection-request-target");
       const opened =
         scenario !== "nested-delegation"
           ? await store.requests.create({
@@ -1215,12 +1219,9 @@ describeStore("PostgreSQL store", (it) => {
   });
 
   it("uses its Workspace fence for durable Request membership reads", async ({ storeFixture }) => {
-    const { startRunFixture, createSpecializedWorkspace, store, database } = storeFixture;
+    const { startRunFixture, createProjectWorkspace, store, database } = storeFixture;
     const fixture = await startRunFixture("request-membership-read");
-    const target = await createSpecializedWorkspace(
-      fixture.userId,
-      "request-membership-read-target",
-    );
+    const target = await createProjectWorkspace(fixture.userId, "request-membership-read-target");
     const opened = await store.requests.create({
       callId: "membership-read",
       kind: "browser.access",

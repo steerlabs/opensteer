@@ -1,3 +1,9 @@
+import { resourceAccessLevelsMigration } from "./migrations.js";
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import {
   createId,
   HarnessIdSchema,
@@ -1125,18 +1131,17 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { createRunFixture, store } = storeFixture;
     const fixture = await createRunFixture("owner-coordination");
-    const secondWorkspace = await store.createWorkspace({
+    const secondWorkspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_owner_coordination_second",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.userId,
       idempotencyKey: "workspace-owner-coordination-second",
       name: "Second owned workspace",
@@ -1153,18 +1158,17 @@ describeStore("PostgreSQL store", (it) => {
       workspaceId: secondWorkspace.id,
     });
     const foreignOwnerId = await store.createUser("Foreign owner");
-    const foreignWorkspace = await store.createWorkspace({
+    const foreignWorkspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_owner_coordination_foreign",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: foreignOwnerId,
       idempotencyKey: "workspace-owner-coordination-foreign",
       name: "Foreign workspace",
@@ -1221,21 +1225,20 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { createRunFixture, store } = storeFixture;
     const fixture = await createRunFixture("agent-thread-list");
-    const specialized = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_agent_thread_list_specialized",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.userId,
-      idempotencyKey: "workspace-agent-thread-list-specialized",
-      name: "Specialized listing workspace",
+      idempotencyKey: "workspace-agent-thread-list-project",
+      name: "Project listing workspace",
       status: "ready",
     });
     const makeThread = async (
@@ -1275,20 +1278,19 @@ describeStore("PostgreSQL store", (it) => {
       child.id,
     );
     const unrelated = await makeThread("unrelated", "Report_2026 100% done", fixture.workspace.id);
-    const specializedThread = await makeThread("specialized", "Client onboarding", specialized.id);
+    const projectThread = await makeThread("project", "Client onboarding", project.id);
     const foreignOwnerId = await store.createUser("Foreign listing owner");
-    const foreignWorkspace = await store.createWorkspace({
+    const foreignWorkspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_agent_thread_list_foreign",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: foreignOwnerId,
       idempotencyKey: "workspace-agent-thread-list-foreign",
       name: "Foreign listing workspace",
@@ -1309,7 +1311,7 @@ describeStore("PostgreSQL store", (it) => {
       sibling.id,
       grandchild.id,
       unrelated.id,
-      specializedThread.id,
+      projectThread.id,
     ];
 
     const everything = await store.agentThreadPageForOwner({
@@ -1326,20 +1328,20 @@ describeStore("PostgreSQL store", (it) => {
       nextBefore: null,
       totalItems: ownedIds.length,
     });
-    expect(everything.threads.find(({ id }) => id === specializedThread.id)).toMatchObject({
+    expect(everything.threads.find(({ id }) => id === projectThread.id)).toMatchObject({
       parentThreadId: null,
       status: "idle",
       title: "Client onboarding",
-      workspaceId: specialized.id,
-      workspaceName: "Specialized listing workspace",
+      workspaceId: project.id,
+      workspaceName: "Project listing workspace",
     });
 
     const scoped = await store.agentThreadPageForOwner({
       ownerId: fixture.userId,
-      scope: { kind: "workspace", workspaceId: specialized.id },
-      scopeId: specializedThread.id,
+      scope: { kind: "workspace", workspaceId: project.id },
+      scopeId: projectThread.id,
     });
-    expect(scoped.threads.map(({ id }) => id)).toEqual([specializedThread.id]);
+    expect(scoped.threads.map(({ id }) => id)).toEqual([projectThread.id]);
     expect(scoped.window.totalItems).toBe(1);
 
     const lineage = await store.agentThreadPageForOwner({
@@ -1446,54 +1448,6 @@ describeStore("PostgreSQL store", (it) => {
     ).toEqual([foreignThread.id]);
   });
 
-  it("rejects storage capacity policies that do not match their Workspace backing", async ({
-    storeFixture,
-  }) => {
-    const { store, database } = storeFixture;
-    const userId = await store.createUser("Storage invariant owner");
-    await expect(
-      store.createWorkspace({
-        backing: {
-          bindingId: createId("workspaceBinding"),
-          generation: 1,
-          kind: "local-directory",
-          ownerEnvironmentId: createId("environment"),
-          storageAuthorityId: createId("storageAuthority"),
-        },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
-        createdBy: userId,
-        idempotencyKey: "workspace-invalid-local-capacity",
-        name: "Invalid local Workspace",
-        status: "ready",
-      }),
-    ).rejects.toBeDefined();
-    await expect(
-      store.createWorkspace({
-        backing: {
-          generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: "wsp_invalid_portablefs_capacity",
-        },
-        capacityPolicy: { kind: "host-filesystem" },
-        createdBy: userId,
-        idempotencyKey: "workspace-invalid-portablefs-capacity",
-        name: "Invalid PortableFS Workspace",
-        status: "ready",
-      }),
-    ).rejects.toBeDefined();
-    await expect(
-      database
-        .selectFrom("workspaces")
-        .select((builder) => builder.fn.countAll<string>().as("count"))
-        .executeTakeFirstOrThrow(),
-    ).resolves.toMatchObject({ count: "0" });
-  });
-
   it("enforces owner-scoped cross-Workspace lineage and immutable thread bindings", async ({
     storeFixture,
   }) => {
@@ -1513,18 +1467,17 @@ describeStore("PostgreSQL store", (it) => {
       name: "Other placement",
       runnerId,
     });
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_immutable",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: userId,
       name: "Workspace",
       idempotencyKey: "workspace-immutable",
@@ -1532,11 +1485,9 @@ describeStore("PostgreSQL store", (it) => {
     });
     expect(workspace.kind).toBe("main");
     const materializedBacking = {
-      generation: 1,
-      kind: "portablefs",
-      serviceId: "test-portablefs",
-      volumeId: "wsp_materialized_after_create",
-    } as const;
+      ...workspace.backing,
+      storageAuthorityId: createId("storageAuthority"),
+    };
     await store.setWorkspaceProvisioningResult({
       backing: materializedBacking,
       expectedBacking: workspace.backing,
@@ -1544,18 +1495,9 @@ describeStore("PostgreSQL store", (it) => {
       workspaceId: workspace.id,
     });
     await expect(
-      store.createWorkspace({
-        backing: {
-          generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: "wsp_immutable",
-        },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+      createTestWorkspace(store, {
+        backing: workspace.backing,
+
         createdBy: userId,
         idempotencyKey: "workspace-immutable",
         name: "Workspace",
@@ -1567,18 +1509,9 @@ describeStore("PostgreSQL store", (it) => {
       name: "Workspace",
     });
     await expect(
-      store.createWorkspace({
-        backing: {
-          generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: "ignored_on_retry",
-        },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+      createTestWorkspace(store, {
+        backing: workspace.backing,
+
         createdBy: userId,
         idempotencyKey: "workspace-immutable",
         name: "Changed retry",
@@ -1586,18 +1519,9 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toMatchObject({ code: "conflict" });
     await expect(
-      store.createWorkspace({
-        backing: {
-          generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: "wsp_second_main",
-        },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+      createTestWorkspace(store, {
+        backing: workspace.backing,
+
         createdBy: userId,
         idempotencyKey: "workspace-second-main",
         kind: "main",
@@ -1702,24 +1626,16 @@ describeStore("PostgreSQL store", (it) => {
       store.createThread({ ...childInput, title: "Changed retry title" }),
     ).rejects.toMatchObject({ code: "conflict" });
 
-    const otherWorkspace = await store.createWorkspace({
-      backing: {
-        generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_other_lineage",
-      },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+    const otherWorkspace = await createTestWorkspace(store, {
+      kind: "project",
+      backing: { ...materializedBacking, bindingId: createId("workspaceBinding") },
+
       createdBy: userId,
       name: "Other workspace",
       idempotencyKey: "workspace-other-lineage",
       status: "ready",
     });
-    expect(otherWorkspace.kind).toBe("specialized");
+    expect(otherWorkspace.kind).toBe("project");
     const crossWorkspaceCreation = await store.createThread({
       createdBy: userId,
       environmentId,
@@ -1741,18 +1657,14 @@ describeStore("PostgreSQL store", (it) => {
     });
 
     const foreignUserId = await store.createUser("Other owner");
-    const foreignWorkspace = await store.createWorkspace({
+    const foreignWorkspace = await createTestWorkspace(store, {
       backing: {
-        generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_foreign_lineage",
+        ...workspace.backing,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: foreignUserId,
       name: "Foreign workspace",
       idempotencyKey: "workspace-foreign-lineage",
@@ -1847,7 +1759,7 @@ describeStore("PostgreSQL store", (it) => {
     await expect(
       database
         .updateTable("workspaces")
-        .set({ kind: "specialized" })
+        .set({ kind: "project" })
         .where("id", "=", workspace.id)
         .execute(),
     ).rejects.toThrow(/workspace kind.*immutable/);
@@ -2370,7 +2282,7 @@ describeStore("PostgreSQL store", (it) => {
     await store.ensureDeployment({
       canonicalOrigin: "https://server.test.invalid",
       hostInstanceId: createId("hostInstance"),
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
     });
     const administratorId = await store.createUser("Administrator");
     const mainRunnerId = createId("runner");
@@ -3773,38 +3685,36 @@ describeStore("PostgreSQL store", (it) => {
     const { store, database, enrollBrowserRunner } = storeFixture;
     const ownerId = await store.createUser("Robin");
     const outsiderId = await store.createUser("Sam");
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_bpd",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: ownerId,
       idempotencyKey: "workspace-profile-delete",
       name: "Main",
       status: "ready",
     });
-    const specialist = await store.createWorkspace({
+    const specialist = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_bpd_s",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: ownerId,
       idempotencyKey: "workspace-profile-delete-specialist",
-      kind: "specialized",
+      kind: "project",
       name: "Buyer",
       status: "ready",
     });
@@ -3829,13 +3739,13 @@ describeStore("PostgreSQL store", (it) => {
     ).rejects.toMatchObject({ code: "not_found" });
 
     await store.createBrowserProfileGrant({
-      access: "full-control",
+      access: "read-write",
       createdBy: ownerId,
       profileId: profile.id,
       workspaceId: specialist.id,
     });
     const keptGrant = await store.createBrowserProfileGrant({
-      access: "full-control",
+      access: "read-write",
       createdBy: ownerId,
       profileId: kept.id,
       workspaceId: specialist.id,
@@ -3918,7 +3828,7 @@ describeStore("PostgreSQL store", (it) => {
     ).rejects.toMatchObject({ code: "not_found" });
     await expect(
       store.createBrowserProfileGrant({
-        access: "full-control",
+        access: "read-write",
         createdBy: ownerId,
         profileId: profile.id,
         workspaceId: specialist.id,
@@ -3935,18 +3845,17 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { store, database, enrollBrowserRunner } = storeFixture;
     const ownerId = await store.createUser("Alex");
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_browser",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: ownerId,
       idempotencyKey: "workspace-browser",
       name: "Browser workspace",
@@ -3982,58 +3891,86 @@ describeStore("PostgreSQL store", (it) => {
         ({ grantId }) => grantId,
       ),
     ).toEqual(inheritedMainGrants.map(({ grantId }) => grantId));
-    const specialized = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_browser_specialized",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: ownerId,
-      idempotencyKey: "workspace-browser-specialized",
-      kind: "specialized",
+      idempotencyKey: "workspace-browser-project",
+      kind: "project",
       name: "Browser specialist",
       status: "ready",
     });
-    expect(await store.listActiveBrowserProfileGrantsForWorkspace(specialized.id, ownerId)).toEqual(
-      [],
-    );
+    expect(await store.listActiveBrowserProfileGrantsForWorkspace(project.id, ownerId)).toEqual([]);
     const browserGrant = await store.createBrowserProfileGrant({
-      access: "full-control",
+      access: "read-write",
       createdBy: ownerId,
       profileId: clientProfile.id,
-      workspaceId: specialized.id,
+      workspaceId: project.id,
     });
     const secondBrowserGrant = await store.createBrowserProfileGrant({
-      access: "full-control",
+      access: "read-write",
       createdBy: ownerId,
       profileId: profile.id,
-      workspaceId: specialized.id,
+      workspaceId: project.id,
     });
+    // Upgrade existing consent in place: its identity and owner must survive.
+    await sql`alter table browser_profile_grants drop constraint browser_profile_grants_access_check;
+      update browser_profile_grants set access = 'full-control';
+      alter table browser_profile_grants add constraint browser_profile_grants_access_check check (access = 'full-control')`.execute(
+      database,
+    );
+    await resourceAccessLevelsMigration.up(database);
+    expect(await store.listActiveBrowserProfileGrantsForWorkspace(project.id, ownerId)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ grantId: browserGrant.grantId, access: "read-write" }),
+      ]),
+    );
+    const teammateId = await store.createUser("Browser teammate");
+    await sql`insert into workspace_memberships(id, workspace_id, user_id, role, state)
+      values (${createId("workspaceMembership")}, ${project.id}, ${teammateId}, 'collaborator', 'active')`.execute(
+      database,
+    );
+    const teammateProfile = await store.createBrowserProfile({
+      ownerId: teammateId,
+      name: "Private teammate",
+      idempotencyKey: "private-teammate",
+    });
+    await store.createBrowserProfileGrant({
+      access: "read",
+      createdBy: teammateId,
+      profileId: teammateProfile.id,
+      workspaceId: project.id,
+    });
+    expect(await store.listActiveBrowserProfileGrantsForWorkspace(project.id, teammateId)).toEqual([
+      expect.objectContaining({ profileId: teammateProfile.id, access: "read" }),
+    ]);
     expect(browserGrant.grantId).toMatch(/^bpg_/);
-    expect(await store.listActiveBrowserProfileGrantsForWorkspace(specialized.id, ownerId)).toEqual(
+    expect(await store.listActiveBrowserProfileGrantsForWorkspace(project.id, ownerId)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ grantId: browserGrant.grantId, profileId: clientProfile.id }),
         expect.objectContaining({ grantId: secondBrowserGrant.grantId, profileId: profile.id }),
       ]),
     );
     await store.revokeBrowserProfileGrant(browserGrant.grantId, ownerId);
-    expect(await store.listActiveBrowserProfileGrantsForWorkspace(specialized.id, ownerId)).toEqual(
-      [expect.objectContaining({ grantId: secondBrowserGrant.grantId, profileId: profile.id })],
-    );
+    expect(await store.listActiveBrowserProfileGrantsForWorkspace(project.id, ownerId)).toEqual([
+      expect.objectContaining({ grantId: secondBrowserGrant.grantId, profileId: profile.id }),
+    ]);
     await store.revokeBrowserProfileGrant(secondBrowserGrant.grantId, ownerId);
     await expect(
       sql`
         insert into browser_profile_grants (
           id, workspace_id, created_by, profile_id, access
         ) values (
-          ${`grt_${randomUUID()}`}, ${specialized.id}, ${ownerId}, ${clientProfile.id},
-          ${"full-control"}
+          ${`grt_${randomUUID()}`}, ${project.id}, ${ownerId}, ${clientProfile.id},
+          ${"read-write"}
         )
       `.execute(database),
     ).rejects.toThrow();
@@ -4042,7 +3979,7 @@ describeStore("PostgreSQL store", (it) => {
         insert into browser_profile_grants (
           id, workspace_id, created_by, profile_id, access
         ) values (
-          ${`bpg_${randomUUID()}`}, ${specialized.id}, ${ownerId}, ${clientProfile.id},
+          ${`bpg_${randomUUID()}`}, ${project.id}, ${ownerId}, ${clientProfile.id},
           ${"read-only"}
         )
       `.execute(database),
@@ -4053,12 +3990,12 @@ describeStore("PostgreSQL store", (it) => {
     const hostedRunnerId = await enrollBrowserRunner(ownerId, "Hosted browser");
     const laptopRunnerId = await enrollBrowserRunner(ownerId, "Browser Mac");
     const laptopGrant = await store.createBrowserProfileGrant({
-      access: "full-control",
+      access: "read-write",
       createdBy: ownerId,
       profileId: profile.id,
-      workspaceId: specialized.id,
+      workspaceId: project.id,
     });
-    expect(laptopGrant.access).toBe("full-control");
+    expect(laptopGrant.access).toBe("read-write");
 
     const sessionId = createBrowserSessionId();
     const session = await nativeSession(store, {
@@ -4082,16 +4019,16 @@ describeStore("PostgreSQL store", (it) => {
         profileId: profile.id,
         runnerId: hostedRunnerId,
         runtimeId: "hosted-browser-1",
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toMatchObject({ profileId: profile.id });
 
     await expect(
       store.attachBrowserSession({
-        agentBindingId: "trigger:specialized-browser",
+        agentBindingId: "trigger:project-browser",
         ownerId,
         sessionId: otherSessionId,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toBe(true);
     await store.attachBrowserSession({
@@ -4135,19 +4072,19 @@ describeStore("PostgreSQL store", (it) => {
       await store.listActiveBrowserSessionsForAgent({
         allOwnerWorkspaces: false,
         ownerId,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).toEqual([expect.objectContaining({ activeAttachmentCount: 2, id: otherSessionId })]);
     expect(
       await store.detachBrowserSessionAttachmentsForProfileGrant({
         ownerId,
         profileId: profile.id,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).toBe(1);
-    expect(
-      await store.listActiveBrowserSessionsForAgentBinding("trigger:specialized-browser"),
-    ).toEqual([]);
+    expect(await store.listActiveBrowserSessionsForAgentBinding("trigger:project-browser")).toEqual(
+      [],
+    );
     expect(
       (await store.listActiveBrowserSessionsForAgentBinding("trigger:main-browser")).map(
         ({ id }) => id,

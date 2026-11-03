@@ -1,3 +1,7 @@
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
+import { fetchPluginPackage, retainPluginPackages } from "../skills/plugin-cache.js";
+import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -41,6 +45,7 @@ const tooLargeSentence =
 const notReadingSentence = "The MCP server stopped taking what it was sent, so its session ended.";
 
 interface Session {
+  readonly releasePackage?: (() => Promise<void>) | undefined;
   closing: boolean;
   error: Error | undefined;
   readonly transport: Transport & { readonly stderrTail?: string };
@@ -59,11 +64,15 @@ interface Session {
  * executor never accepts a decision from the desktop bridge.
  */
 export class LocalMcpServers {
+  readonly #stateDirectory: string | undefined;
   readonly #sessions = new Map<string, Session>();
   /** Bumped by every attach and detach; work begun under another one stops. */
   #generation = 0;
   #send: ((frame: LocalMcpFrame) => Promise<void>) | undefined;
 
+  constructor(options: { readonly stateDirectory?: string } = {}) {
+    this.#stateDirectory = options.stateDirectory;
+  }
   attach(send: (frame: LocalMcpFrame) => Promise<void>): void {
     this.detach();
     this.#send = send;
@@ -76,7 +85,17 @@ export class LocalMcpServers {
     for (const [sessionId, session] of this.#sessions) {
       this.#sessions.delete(sessionId);
       session.closing = true;
-      void session.transport.close().catch(() => undefined);
+      void session.transport
+        .close()
+        .then(
+          async () => {
+            await session.releasePackage?.();
+          },
+          async () => {
+            await session.releasePackage?.();
+          },
+        )
+        .catch(() => undefined);
     }
   }
 
@@ -87,8 +106,60 @@ export class LocalMcpServers {
       await this.#closed(frame.sessionId, "failed", capacitySentence);
       return;
     }
-    const transport = launchTransport(frame.launch);
-    const session: Session = { closing: false, error: undefined, transport, unsent: 0 };
+    let releasePackage: (() => Promise<void>) | undefined;
+    let launch = frame.launch;
+    if (launch.packageDigest) {
+      try {
+        if (!this.#stateDirectory || !launch.pluginId)
+          throw new Error("Plugin cache is unavailable");
+        releasePackage = await retainPluginPackages(this.#stateDirectory, [launch.packageDigest]);
+        const root = await fetchPluginPackage({
+          stateDirectory: this.#stateDirectory,
+          digest: launch.packageDigest,
+          verify: true,
+          fetchSnapshot: async () => {
+            if (!frame.packageSource) throw new Error("Package source is unavailable");
+            const response = await fetch(frame.packageSource.url, {
+              headers: { authorization: `Bearer ${frame.packageSource.token}` },
+              redirect: "error",
+              signal: AbortSignal.timeout(30_000),
+            });
+            if (!response.ok) throw new Error(`Plugin package fetch failed: ${response.status}`);
+            return JSON.parse(
+              Buffer.from(
+                await readBoundedResponse(response, {
+                  maximumBytes: 96 * 1024 * 1024,
+                  sizeError: () => new Error("Package too large"),
+                }),
+              ).toString("utf8"),
+            ) as unknown;
+          },
+        });
+        const data = path.join(this.#stateDirectory, "plugin-data", launch.pluginId);
+        await mkdir(data, { recursive: true, mode: 0o700 });
+        launch = resolvePluginLaunch(launch, root, data);
+      } catch (error) {
+        await releasePackage?.();
+        await this.#closed(
+          frame.sessionId,
+          "failed",
+          error instanceof Error ? error.message : "Plugin package unavailable",
+        );
+        return;
+      }
+    }
+    if (generation !== this.#generation) {
+      await releasePackage?.();
+      return;
+    }
+    const transport = launchTransport(launch);
+    const session: Session = {
+      releasePackage,
+      closing: false,
+      error: undefined,
+      transport,
+      unsent: 0,
+    };
     this.#sessions.set(frame.sessionId, session);
     transport.onmessage = (message: JSONRPCMessage) =>
       this.#relay(frame.sessionId, session, message);
@@ -104,7 +175,17 @@ export class LocalMcpServers {
       if (session.closing) return;
       // The program exited on its own; anything it started goes with it.
       session.closing = true;
-      void transport.close().catch(() => undefined);
+      void transport
+        .close()
+        .then(
+          async () => {
+            await session.releasePackage?.();
+          },
+          async () => {
+            await session.releasePackage?.();
+          },
+        )
+        .catch(() => undefined);
       void this.#closed(frame.sessionId, "failed", stoppedSentence(session));
     };
     try {
@@ -152,6 +233,7 @@ export class LocalMcpServers {
     this.#sessions.delete(frame.sessionId);
     session.closing = true;
     await session.transport.close().catch(() => undefined);
+    await session.releasePackage?.();
   }
 
   #relay(sessionId: string, session: Session, message: JSONRPCMessage): void {
@@ -182,6 +264,7 @@ export class LocalMcpServers {
     session.closing = true;
     const generation = this.#generation;
     await session.transport.close().catch(() => undefined);
+    await session.releasePackage?.();
     if (generation === this.#generation) await this.#closed(sessionId, code, message);
   }
 
@@ -196,6 +279,27 @@ export class LocalMcpServers {
   async #emit(frame: LocalMcpFrame): Promise<void> {
     await this.#send?.(frame).catch(() => undefined);
   }
+}
+
+export function resolvePluginLaunch(
+  launch: LocalMcpLaunch,
+  root: string,
+  data: string,
+): LocalMcpLaunch {
+  if (launch.type !== "stdio") return launch;
+  const expand = (value: string) =>
+    value.replaceAll("${PLUGIN_ROOT}", root).replaceAll("${PLUGIN_DATA}", data);
+  return {
+    ...launch,
+    command: expand(launch.command),
+    cwd: expand(launch.cwd),
+    args: launch.args.map(expand),
+    env: {
+      ...Object.fromEntries(Object.entries(launch.env).map(([k, v]) => [k, expand(v)])),
+      PLUGIN_ROOT: root,
+      PLUGIN_DATA: data,
+    },
+  };
 }
 
 function launchTransport(launch: LocalMcpLaunch): Session["transport"] {

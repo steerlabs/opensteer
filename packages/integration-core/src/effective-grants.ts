@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { UserId, WorkspaceId } from "@opensteer/core";
+import { intersectResourceAccess, type UserId, type WorkspaceId } from "@opensteer/core";
 import {
   IntegrationGrantIdSchema,
   type IntegrationConnectionId,
@@ -12,7 +12,6 @@ import type {
   IntegrationConnectionRequirement,
   IntegrationGrant,
   IntegrationInstallation,
-  IntegrationSkill,
   IntegrationTool,
 } from "./models.js";
 import { accessCoversEffect, integrationToolEffect } from "./effect.js";
@@ -54,15 +53,9 @@ export interface ResolveEffectiveGrantsInput {
   readonly inheritedMainAccess: boolean;
   readonly installations: readonly IntegrationInstallation[];
   readonly ownerUserId: UserId;
-  readonly skills: readonly IntegrationSkill[];
   readonly storedGrants: readonly IntegrationGrant[];
   readonly tools: readonly EffectiveGrantTool[];
   readonly workspaceId: WorkspaceId;
-}
-
-export interface ResolvedEffectiveGrantSkill {
-  readonly grant: EffectiveIntegrationGrant;
-  readonly skill: IntegrationSkill;
 }
 
 export interface ResolvedEffectiveGrantTool {
@@ -71,7 +64,6 @@ export interface ResolvedEffectiveGrantTool {
 }
 
 export interface ResolvedEffectiveGrants {
-  readonly skills: readonly ResolvedEffectiveGrantSkill[];
   readonly tools: readonly ResolvedEffectiveGrantTool[];
 }
 
@@ -82,7 +74,9 @@ export interface ResolvedEffectiveGrants {
 export function resolveEffectiveGrants(
   input: ResolveEffectiveGrantsInput,
 ): ResolvedEffectiveGrants {
-  const activeGrants = input.storedGrants.filter(({ status }) => status === "active");
+  const activeGrants = input.storedGrants.filter(
+    ({ status, ownerUserId }) => status === "active" && ownerUserId === input.ownerUserId,
+  );
   return input.inheritedMainAccess
     ? resolveInheritedMainGrants(input, activeGrants)
     : resolveStoredGrants(input, activeGrants);
@@ -100,7 +94,6 @@ function resolveStoredGrants(
   const installationById = new Map(
     input.installations.map((installation) => [installation.id, installation]),
   );
-  const skills: ResolvedEffectiveGrantSkill[] = [];
   const tools: ResolvedEffectiveGrantTool[] = [];
 
   for (const grant of activeGrants) {
@@ -120,13 +113,8 @@ function resolveStoredGrants(
         continue;
       tools.push({ grant: effectiveGrant, tool });
     }
-    for (const skill of input.skills) {
-      if (skill.installationId === grant.installationId && skill.status === "active") {
-        skills.push({ grant: effectiveGrant, skill });
-      }
-    }
   }
-  return { skills, tools };
+  return { tools };
 }
 
 function resolveInheritedMainGrants(
@@ -143,7 +131,6 @@ function resolveInheritedMainGrants(
       grant,
     ]),
   );
-  const skills: ResolvedEffectiveGrantSkill[] = [];
   const tools: ResolvedEffectiveGrantTool[] = [];
 
   for (const tool of input.tools) {
@@ -189,24 +176,7 @@ function resolveInheritedMainGrants(
     }
   }
 
-  for (const installation of activeInstallations) {
-    const overlay = overlayByScope.get(integrationAuthorityKey(installation.id, null));
-    const grant = inheritedMainGrant({
-      access: "read-write",
-      alias: overlay?.alias ?? installation.title,
-      connectionId: null,
-      installationId: installation.id,
-      isDefault: overlay?.isDefault ?? false,
-      ownerUserId: input.ownerUserId,
-      workspaceId: input.workspaceId,
-    });
-    for (const skill of input.skills) {
-      if (skill.installationId === installation.id && skill.status === "active") {
-        skills.push({ grant, skill });
-      }
-    }
-  }
-  return { skills, tools };
+  return { tools };
 }
 
 function matchingUsableConnections(
@@ -276,9 +246,12 @@ export function effectiveIntegrationAccess(
   access: IntegrationAccess,
   connection: Pick<EffectiveGrantConnection, "computerAccess" | "connectionKind"> | null,
 ): IntegrationAccess {
-  return connection?.connectionKind === "computer" && connection.computerAccess === "read"
-    ? "read"
-    : access;
+  return intersectResourceAccess(
+    access,
+    connection?.connectionKind === "computer"
+      ? (connection.computerAccess ?? undefined)
+      : undefined,
+  )!;
 }
 
 function grantWithConnectionCeiling(

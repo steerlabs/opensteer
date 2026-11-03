@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { managedRunnerEnvironment } from "../apps/control-plane/src/cloud/kubernetes-managed-deployment-resources.js";
-import { portableFsArtifactEnvironmentVariables } from "../deploy/container/opensteer-entrypoint.mjs";
-
 describe("managed deployment resources", () => {
-  it("supplies every PortableFS artifact variable the container entrypoint requires", () => {
-    const environment = managedRunnerEnvironment(
-      "https://managed.opensteer.test",
-      `sha256:${"9".repeat(64)}`,
+  it("configures persistent local directories on the enrolled Runner", () => {
+    const environment = Object.fromEntries(
+      managedRunnerEnvironment(
+        "https://managed.opensteer.test",
+        "env_00000000-0000-5000-8000-000000000001",
+      ).map((entry) => [entry.name, entry.value]),
     );
-    const byName = new Map(environment.map((entry) => [entry.name, entry.value]));
-
-    for (const variable of portableFsArtifactEnvironmentVariables) {
-      expect(byName.has(variable), `${variable} is emitted`).toBe(true);
-    }
-    expect(byName.get("OPENSTEER_PORTABLEFS_MOUNT_SHA256")).toBe("9".repeat(64));
+    expect(environment).toMatchObject({
+      OPENSTEER_ENVIRONMENT_ID: "env_00000000-0000-5000-8000-000000000001",
+      OPENSTEER_LOCAL_WORKSPACE_ROOT: "/workspaces",
+      OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/var/lib/opensteer/workspace-bindings.v1.json",
+      OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
+    });
   });
 });

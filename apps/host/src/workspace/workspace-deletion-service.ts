@@ -1,7 +1,6 @@
 import type { AgentEvent, UserId, Workspace, WorkspaceId } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import { type WorkspaceBackingLifecycleDriver, workspaceUsesBacking } from "@opensteer/workspace";
-import type { WorkspaceMountService } from "./workspace-mount-service.js";
 
 const purgePageSize = 100;
 const millisecondsPerDay = 24 * 60 * 60 * 1_000;
@@ -16,12 +15,10 @@ type WorkspaceDeletionStore = Pick<
 
 interface WorkspaceDeletionDrivers {
   readonly local?: Pick<WorkspaceBackingLifecycleDriver<"local-directory">, "destroy">;
-  readonly portableFs?: Pick<WorkspaceBackingLifecycleDriver<"portablefs">, "destroy">;
 }
 
 export class WorkspaceDeletionService {
   readonly #drivers: WorkspaceDeletionDrivers;
-  readonly #mounts: Pick<WorkspaceMountService, "revokeWorkspace"> | undefined;
   readonly #now: () => Date;
   readonly #onError: (error: unknown, workspaceId: WorkspaceId) => void;
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
@@ -31,7 +28,6 @@ export class WorkspaceDeletionService {
 
   constructor(options: {
     readonly drivers: WorkspaceDeletionDrivers;
-    readonly mounts?: Pick<WorkspaceMountService, "revokeWorkspace">;
     readonly now?: () => Date;
     readonly onError: (error: unknown, workspaceId: WorkspaceId) => void;
     readonly onWorkspaceEvent: (event: AgentEvent) => void;
@@ -42,11 +38,10 @@ export class WorkspaceDeletionService {
     if (!Number.isSafeInteger(options.retentionDays) || options.retentionDays < 0) {
       throw new TypeError("Workspace deletion retention days must be a nonnegative integer");
     }
-    if (!options.drivers.local && !options.drivers.portableFs) {
-      throw new TypeError("Workspace deletion requires at least one storage driver");
-    }
+
+    if (!options.drivers.local)
+      throw new TypeError("Workspace deletion requires a local storage driver");
     this.#drivers = options.drivers;
-    this.#mounts = options.mounts;
     this.#now = options.now ?? (() => new Date());
     this.#onError = options.onError;
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
@@ -65,7 +60,6 @@ export class WorkspaceDeletionService {
     for (const event of mutation.requestEvents) this.#onWorkspaceEvent(event);
     const workspace = mutation.workspace;
     const teardown = [this.#terminateRuns(workspaceId)];
-    if (this.#mounts) teardown.push(this.#mounts.revokeWorkspace(workspaceId));
     for (const result of await Promise.allSettled(teardown)) {
       if (result.status === "rejected") this.#onError(result.reason, workspaceId);
     }
@@ -108,11 +102,6 @@ export class WorkspaceDeletionService {
       const local = this.#drivers.local;
       if (!local) throw new Error("This Deployment cannot destroy local Workspace directories");
       return local.destroy({ workspace });
-    }
-    if (workspaceUsesBacking(workspace, "portablefs")) {
-      const portableFs = this.#drivers.portableFs;
-      if (!portableFs) throw new Error("This Deployment has no shared Workspace storage");
-      return portableFs.destroy({ workspace });
     }
     throw new Error("Workspace backing does not match the configured deletion driver");
   }

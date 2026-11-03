@@ -26,7 +26,7 @@ Provider installation, membership and Opensteer admission are separate facts. Gr
 
 Except for linked-members policy, execution uses the binding creator's authority while preserving the external actor for attribution. Shared conversations use the Workspace capability profile, even under the owner's Main; this profile is not an OS sandbox. Only an owner-linked DM routed to that owner's Main uses the main profile.
 
-Main integration inheritance belongs to Thread lineage. A channel root below Main and all its descendants see only explicit Workspace grants; they cannot use or request Main inheritance. Route those conversations to a specialized Workspace for integration access. See `IntegrationPlatformStore.mainAccess` in `packages/database`.
+Main integration inheritance belongs to Thread lineage. A channel root below Main and all its descendants see only explicit Workspace grants; they cannot use or request Main inheritance. Route those conversations to a Project for integration access. See `IntegrationPlatformStore.mainAccess` in `packages/database`.
 
 Each conversation/authority pair has separate context. Policy, placement or profile changes rotate to a fresh root without provider-context inheritance, preventing one linked member from reusing another's private conversation. Admission rechecks current revision, membership and grants at the Inbox, Runner binding and final dispatch; hold the final locks until Runner acceptance. Revocation cancels the sender's pending approved inputs, not unrelated shared work. Pausing blocks adoption and dispatch. Changes cannot undo commands already accepted by a Runner.
 

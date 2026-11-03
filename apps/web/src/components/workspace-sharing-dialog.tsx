@@ -93,7 +93,7 @@ export function WorkspaceSharingDialog({
       title={`Share ${workspace.name}`}
     >
       <p className="section__hint">
-        Sharing gives someone this entire specialist: its files, Threads, history, and future agent
+        Sharing gives someone this entire project: its files, Threads, history, and future agent
         work. Personal browser profiles, credentials, and local computers stay private unless their
         owner grants them separately.
       </p>

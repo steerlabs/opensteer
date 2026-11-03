@@ -1,3 +1,4 @@
+import type { ResourceAccessInput } from "@opensteer/database";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
@@ -379,7 +380,7 @@ export interface BrowserSessionRepository {
   getWorkspaceForOwner(
     workspaceId: WorkspaceId,
     ownerId: UserId,
-  ): Promise<{ readonly id: WorkspaceId; readonly kind: "main" | "specialized" } | null>;
+  ): Promise<{ readonly id: WorkspaceId; readonly kind: "main" | "project" } | null>;
   listBrowserProfiles(ownerId: UserId): Promise<readonly BrowserProfileRecord[]>;
   renameBrowserProfile(input: {
     readonly name: string;
@@ -402,7 +403,9 @@ export interface BrowserSessionRepository {
   listActiveBrowserProfileGrantsForWorkspace(
     workspaceId: WorkspaceId,
     ownerId: UserId,
+    agentBindingId?: string,
   ): Promise<readonly ActiveBrowserProfileGrant[]>;
+  resolveResourceAccess?(input: ResourceAccessInput): Promise<{ inheritsMain: boolean }>;
   listBrowserSessions(ownerId: UserId): Promise<readonly BrowserSessionRecord[]>;
   /** The conversations using each session that the reader can open, bounded per session. */
   listBrowserSessionThreads(input: {
@@ -1218,6 +1221,7 @@ export class BrowserService {
    */
   async assertPagesUsable(input: {
     readonly ownerId: UserId;
+    readonly threadId?: ThreadId;
     readonly pages: readonly {
       readonly sessionId: BrowserSessionId;
       readonly title: string;
@@ -1237,7 +1241,12 @@ export class BrowserService {
           message: `This message includes the browser page "${label}", which you can no longer see. Remove the page and send the message again.`,
         });
       }
-      if (!(await this.agentMayAccessSession(input, record))) {
+      if (
+        !(await this.agentMayAccessSession(
+          { ...input, ...(input.threadId ? { agentBindingId: `thread:${input.threadId}` } : {}) },
+          record,
+        ))
+      ) {
         throw new OpensteerError({
           code: "forbidden",
           message: `This message includes the browser page "${label}" from a browser this conversation's Workspace can't use. Remove the page, or send it from a conversation in that browser's Workspace or in Main.`,
@@ -1784,7 +1793,7 @@ export class BrowserService {
             method: browserHostMethods.openTab,
             parameters: {
               operationAuthority: this.#signer.issue({
-                access: "full-control",
+                access: "read-write",
                 identity: { kind: "fresh" },
                 runtimeId: record.runtimeId,
                 sessionId: record.id,
@@ -2328,12 +2337,17 @@ export class BrowserService {
 
   /** The saved session's record when the agent may reach it, live or not; otherwise null. */
   async agentReachableSavedSession(
-    input: { readonly ownerId: UserId; readonly workspaceId: WorkspaceId },
+    input: {
+      readonly ownerId: UserId;
+      readonly workspaceId: WorkspaceId;
+      readonly agentBindingId?: string;
+    },
     sessionId: BrowserSessionId,
     repository: Pick<
       BrowserSessionRepository,
       | "getBrowserSessionForOwner"
       | "getWorkspaceForOwner"
+      | "resolveResourceAccess"
       | "listActiveBrowserProfileGrantsForWorkspace"
     > = this.#repository,
   ): Promise<BrowserSessionRecord | null> {
@@ -2561,9 +2575,10 @@ export class BrowserService {
   async listGrantedProfiles(
     ownerId: UserId,
     workspaceId: WorkspaceId,
+    agentBindingId?: string,
   ): Promise<
     readonly {
-      readonly access: "full-control";
+      readonly access: "read" | "read-write";
       readonly grantId: import("@opensteer/core").BrowserProfileGrantId;
       readonly id: BrowserProfileId;
       readonly name: string;
@@ -2572,6 +2587,7 @@ export class BrowserService {
     const grants = await this.#repository.listActiveBrowserProfileGrantsForWorkspace(
       workspaceId,
       ownerId,
+      agentBindingId,
     );
     const profiles = await Promise.all(
       grants.map(async (grant) => ({
@@ -2602,18 +2618,25 @@ export class BrowserService {
     if (!workspace) {
       throw new OpensteerError({ code: "not_found", message: "Workspace not found." });
     }
+    const inheritsMain = await browserInheritsMain(this.#repository, input);
     const [records, grants, profiles, attached] = await Promise.all([
       this.#repository.listActiveBrowserSessionsForAgent({
-        allOwnerWorkspaces: workspace.kind === "main",
+        allOwnerWorkspaces: inheritsMain,
         ownerId: input.ownerId,
         workspaceId: input.workspaceId,
       }),
-      this.#repository.listActiveBrowserProfileGrantsForWorkspace(input.workspaceId, input.ownerId),
+      this.#repository.listActiveBrowserProfileGrantsForWorkspace(
+        input.workspaceId,
+        input.ownerId,
+        input.agentBindingId,
+      ),
       this.#repository.listBrowserProfiles(input.ownerId),
       this.#repository.listActiveBrowserSessionsForAgentBinding(input.agentBindingId),
     ]);
     const attachedIds = new Set(attached.map((record) => record.id));
-    const grantedProfileIds = new Set(grants.map((grant) => grant.profileId));
+    const grantedProfileIds = new Set(
+      grants.filter((grant) => grant.access === "read-write").map((grant) => grant.profileId),
+    );
     const profileNames = new Map(profiles.map((profile) => [profile.id, profile.name]));
     return records.flatMap((record): readonly AgentBrowserSessionSummary[] => {
       // A fresh session has no profile to name and no grant to check.
@@ -2696,8 +2719,13 @@ export class BrowserService {
       const grants = await this.#repository.listActiveBrowserProfileGrantsForWorkspace(
         input.workspaceId,
         input.ownerId,
+        input.agentBindingId,
       );
-      if (!grants.some((grant) => grant.profileId === input.profileId)) {
+      if (
+        !grants.some(
+          (grant) => grant.profileId === input.profileId && grant.access === "read-write",
+        )
+      ) {
         throw new OpensteerError({
           code: "forbidden",
           message: "That browser profile is not available to this Workspace.",
@@ -2738,10 +2766,19 @@ export class BrowserService {
     };
   }
 
-  async hasBrowserProfileAccess(ownerId: UserId, workspaceId: WorkspaceId): Promise<boolean> {
+  async hasBrowserProfileAccess(
+    ownerId: UserId,
+    workspaceId: WorkspaceId,
+    agentBindingId?: string,
+  ): Promise<boolean> {
     return (
-      (await this.#repository.listActiveBrowserProfileGrantsForWorkspace(workspaceId, ownerId))
-        .length > 0
+      (
+        await this.#repository.listActiveBrowserProfileGrantsForWorkspace(
+          workspaceId,
+          ownerId,
+          agentBindingId,
+        )
+      ).length > 0
     );
   }
 
@@ -3043,7 +3080,7 @@ export class BrowserService {
       throw new OpensteerError({
         code: "bad_request",
         message:
-          "browser_access_request grants a browser profile only to a specialized Workspace. From Main, pass that Workspace's workspaceId. To browse in Main, open a session with an inherited profile from browser_profile_list, or with fresh: true for signed-out browsing.",
+          "browser_access_request grants a browser profile only to a project Workspace. From Main, pass that Workspace's workspaceId. To browse in Main, open a session with an inherited profile from browser_profile_list, or with fresh: true for signed-out browsing.",
       });
     }
     // Asking the owner for access the Workspace already holds would only put a
@@ -3105,13 +3142,18 @@ export class BrowserService {
     readonly surfaceId?: string;
     readonly sessionId: BrowserSessionId;
     readonly agentWorkspaceId?: WorkspaceId;
+    readonly agentBindingId?: string;
   }): Promise<BrowserSignInTarget | null> {
     const record = await this.#repository.getBrowserSessionForOwner(input.sessionId, input.ownerId);
     if (!record) return null;
     if (
       input.agentWorkspaceId !== undefined &&
       !(await this.agentMayAccessSession(
-        { ownerId: input.ownerId, workspaceId: input.agentWorkspaceId },
+        {
+          ownerId: input.ownerId,
+          workspaceId: input.agentWorkspaceId,
+          ...(input.agentBindingId ? { agentBindingId: input.agentBindingId } : {}),
+        },
         record,
       ))
     ) {
@@ -3582,7 +3624,7 @@ export class BrowserService {
             remainingBudgetMs: Math.max(1, input.operationBudget.expiresAt - Date.now()),
           }
         : {}),
-      access: "full-control",
+      access: "read-write",
       ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
       ...(target.navigationVersion ? { navigationVersion: 1 } : {}),
       ...(target.navigationAttributionVersion ? { navigationAttributionVersion: 1 } : {}),
@@ -3773,7 +3815,11 @@ export class BrowserService {
    * straight from its CDP client.
    */
   async #usableAgentSession(
-    input: { readonly ownerId: UserId; readonly workspaceId: WorkspaceId },
+    input: {
+      readonly ownerId: UserId;
+      readonly workspaceId: WorkspaceId;
+      readonly agentBindingId?: string;
+    },
     sessionId: BrowserSessionId,
   ): Promise<BrowserSessionRecord> {
     const record = await this.#repository.getBrowserSessionForOwner(sessionId, input.ownerId);
@@ -3789,14 +3835,18 @@ export class BrowserService {
         : this.#repository.listActiveBrowserProfileGrantsForWorkspace(
             input.workspaceId,
             input.ownerId,
+            input.agentBindingId,
           ),
     ]);
     const granted =
-      record.profileId === null || grants.some((grant) => grant.profileId === record.profileId);
+      record.profileId === null ||
+      grants.some((grant) => grant.profileId === record.profileId && grant.access === "read-write");
     // A fresh session carries no identity, so grants say nothing about it: it is
     // reachable from the Workspace that opened it and from the owner's Main.
     const reachable =
-      workspace !== null && (workspace.kind === "main" || record.workspaceId === input.workspaceId);
+      workspace !== null &&
+      ((await browserInheritsMain(this.#repository, input)) ||
+        record.workspaceId === input.workspaceId);
     if (!isTerminal(record.state) && granted && reachable) return record;
     // Only a refusal needs the profile's name.
     const profile =
@@ -3840,12 +3890,17 @@ export class BrowserService {
   }
 
   async agentMayAccessSession(
-    input: { readonly ownerId: UserId; readonly workspaceId: WorkspaceId },
+    input: {
+      readonly ownerId: UserId;
+      readonly workspaceId: WorkspaceId;
+      readonly agentBindingId?: string;
+    },
     record: BrowserSessionRecord,
     repository: Pick<
       BrowserSessionRepository,
       | "getBrowserSessionForOwner"
       | "getWorkspaceForOwner"
+      | "resolveResourceAccess"
       | "listActiveBrowserProfileGrantsForWorkspace"
     > = this.#repository,
   ): Promise<boolean> {
@@ -3854,18 +3909,24 @@ export class BrowserService {
       repository.getWorkspaceForOwner(input.workspaceId, input.ownerId),
       record.profileId === null
         ? []
-        : repository.listActiveBrowserProfileGrantsForWorkspace(input.workspaceId, input.ownerId),
+        : repository.listActiveBrowserProfileGrantsForWorkspace(
+            input.workspaceId,
+            input.ownerId,
+            input.agentBindingId,
+          ),
     ]);
     if (!owned || !workspace) return false;
     // A fresh session carries no identity, so grants say nothing about it: it is
     // reachable from the Workspace that opened it and from the owner's Main.
     if (
       record.profileId !== null &&
-      !grants.some((grant) => grant.profileId === record.profileId)
+      !grants.some((grant) => grant.profileId === record.profileId && grant.access === "read-write")
     ) {
       return false;
     }
-    return workspace.kind === "main" || record.workspaceId === input.workspaceId;
+    return (
+      (await browserInheritsMain(repository, input)) || record.workspaceId === input.workspaceId
+    );
   }
 
   /**
@@ -5026,7 +5087,7 @@ class HostedBrowserBroker {
     if (message.type === "browser.snapshot") {
       if (this.#snapshot) throw new Error("Browser Runtime sent a duplicate snapshot.");
       if (message.sessionId !== this.#sessionId) throw new Error("Browser session ID mismatch.");
-      if (message.access !== "full-control") throw new Error("Browser access negotiation failed.");
+      if (message.access !== "read-write") throw new Error("Browser access negotiation failed.");
       assertBrowserDialogSurface(message.dialog, message.surfaces);
       if (
         message.editingVersion !== undefined &&
@@ -6423,7 +6484,7 @@ function publicProfile(record: BrowserProfileRecord): BrowserProfile {
 
 function publicSession(record: BrowserSessionRecord): HostedBrowserSession {
   return {
-    access: "full-control",
+    access: "read-write",
     createdAt: record.createdAt.toISOString(),
     id: record.id,
     origin: record.origin,
@@ -6607,4 +6668,23 @@ class BrowserCdpRefusal extends OpensteerError {
       ...(cause.reason ? { reason: cause.reason } : {}),
     });
   }
+}
+
+async function browserInheritsMain(
+  repository: Pick<BrowserSessionRepository, "resolveResourceAccess" | "getWorkspaceForOwner">,
+  input: {
+    readonly ownerId: UserId;
+    readonly workspaceId: WorkspaceId;
+    readonly agentBindingId?: string;
+  },
+): Promise<boolean> {
+  if (repository.resolveResourceAccess)
+    return (
+      await repository.resolveResourceAccess({
+        ownerUserId: input.ownerId,
+        workspaceId: input.workspaceId,
+        ...(input.agentBindingId ? { agentBindingId: input.agentBindingId } : {}),
+      })
+    ).inheritsMain;
+  return false;
 }

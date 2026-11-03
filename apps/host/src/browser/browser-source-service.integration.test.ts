@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import websocket from "@fastify/websocket";
 import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import { browserSiteDomain } from "@opensteer/browser-profile/source-state";
@@ -119,7 +120,7 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
       : undefined;
     queueMicrotask(() =>
       this.#reply({
-        access: "full-control",
+        access: "read-write",
         dialog: null,
         sessionId: claims.sessionId,
         state: "ready",
@@ -638,11 +639,14 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
               ],
             },
           ],
-          localStorage: null,
+          localStorage: {
+            bindings: [],
+            storageAuthorityId: createId("storageAuthority"),
+            truncated: false,
+          },
           maxConcurrentRuns: 1,
           providerStateModes: ["isolated"],
-          workspaceBackings: ["portablefs"],
-          workspaceMounts: [],
+          workspaceBackings: ["local-directory"],
         },
       },
       name: "Browser sign-in test runner",
@@ -735,27 +739,24 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     } as unknown as PersonalHostAccessRouteEnvelope;
   }
 
-  /** An owner, a specialized Workspace, a running agent in it, and a live fresh session. */
+  /** An owner, a project Workspace, a running agent in it, and a live fresh session. */
   async function scene() {
     const ownerId = await store.createUser("Chrome owner");
     await store.ensureDeployment({
       canonicalOrigin: sourceOrigin,
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
       hostInstanceId: createId("hostInstance"),
     });
-    const workspace = await store.createWorkspace({
-      kind: "specialized",
+    const workspace = await createTestWorkspace(store, {
+      kind: "project",
       backing: {
-        kind: "portablefs",
+        kind: "local-directory",
         generation: 1,
-        serviceId: "test-portablefs",
-        volumeId: `test-${randomUUID()}`,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: ownerId,
       idempotencyKey: randomUUID(),
       name: "Sign-in test",

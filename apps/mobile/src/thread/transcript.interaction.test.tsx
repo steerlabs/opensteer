@@ -722,7 +722,7 @@ it("quiet Chat keeps automatic replies and lets silent human work open Activity"
         description: "",
         fileCount: 0,
         harnessLabel: "Codex",
-        kind: "specialized",
+        kind: "project",
         machineName: null,
         name: "Research",
         icon: null,

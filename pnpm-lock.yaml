@@ -563,9 +563,6 @@ importers:
       '@opensteer/runner':
         specifier: workspace:*
         version: link:../runner
-      '@opensteer/workspace-portablefs':
-        specifier: workspace:*
-        version: link:../../packages/workspace-portablefs
       '@types/ws':
         specifier: 'catalog:'
         version: 8.18.1
@@ -683,9 +680,6 @@ importers:
       '@opensteer/workspace-local':
         specifier: workspace:*
         version: link:../../packages/workspace-local
-      '@opensteer/workspace-portablefs':
-        specifier: workspace:*
-        version: link:../../packages/workspace-portablefs
       fastify:
         specifier: 'catalog:'
         version: 5.12.6
@@ -967,6 +961,9 @@ importers:
       '@openai/codex':
         specifier: 'catalog:'
         version: 0.162.0
+      '@opensteer/agent-plugins':
+        specifier: workspace:*
+        version: link:../../packages/agent-plugins
       '@opensteer/agent-tools':
         specifier: workspace:*
         version: link:../../packages/agent-tools
@@ -1045,12 +1042,12 @@ importers:
       '@opensteer/workspace-local':
         specifier: workspace:*
         version: link:../../packages/workspace-local
-      '@opensteer/workspace-portablefs':
-        specifier: workspace:*
-        version: link:../../packages/workspace-portablefs
       opencode-ai:
         specifier: 'catalog:'
         version: 1.18.32
+      proper-lockfile:
+        specifier: 4.1.2
+        version: 4.1.2
       sharp:
         specifier: 'catalog:'
         version: 0.35.5(@types/node@26.2.0)
@@ -1067,6 +1064,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 26.2.0
+      '@types/proper-lockfile':
+        specifier: 4.1.4
+        version: 4.1.4
       '@types/ws':
         specifier: 'catalog:'
         version: 8.18.1
@@ -2360,28 +2360,6 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0)
-
-  packages/workspace-portablefs:
-    dependencies:
-      '@opensteer/core':
-        specifier: workspace:*
-        version: link:../core
-      '@opensteer/shared':
-        specifier: workspace:*
-        version: link:../shared
-      '@opensteer/workspace':
-        specifier: workspace:*
-        version: link:../workspace
-      zod:
-        specifier: 'catalog:'
-        version: 4.6.7
-    devDependencies:
-      '@types/node':
-        specifier: 'catalog:'
-        version: 26.2.0
-      typescript:
-        specifier: 'catalog:'
-        version: 7.0.2
 
 packages:
 
@@ -4796,6 +4774,9 @@ packages:
 
   '@types/pg@8.21.0':
     resolution: {integrity: sha512-AYdtudzabjLZgVgRZmAnU8bAnVUXzuJX2IYHeSIiIHm68olD+LgQYCGWdtcNYnP0uq9c4S4NibVG3Ni7VbKW7Q==}
+
+  '@types/proper-lockfile@4.1.4':
+    resolution: {integrity: sha512-uo2ABllncSqg9F1D4nugVl9v93RmjxF6LJzQLMLDdPaXCUIDPeOJ21Gbqi43xNKzBi/WQ0Q0dICqufzQbMjipQ==}
 
   '@types/react-dom@19.2.4':
     resolution: {integrity: sha512-Bsc+QHgp+P/F02XDzNCY9jnZNCUuLki36KT7VKrTXXLdHf+vHMNZnW1rVu5DNW/rCK+fya3DATySbLM4yhtKUw==}
@@ -11503,6 +11484,10 @@ snapshots:
       '@types/node': 26.2.0
       pg-protocol: 1.16.0
       pg-types: 2.2.0
+
+  '@types/proper-lockfile@4.1.4':
+    dependencies:
+      '@types/retry': 0.12.0
 
   '@types/react-dom@19.2.4(@types/react@19.2.18)':
     dependencies:

@@ -16,7 +16,6 @@ import type {
   IntegrationProviderAuthorization,
   IntegrationProviderApplication,
   IntegrationServer,
-  IntegrationSkill,
   IntegrationTool,
 } from "./models.js";
 
@@ -324,7 +323,6 @@ export interface IntegrationDashboardRepository {
     ownerUserId: UserId,
   ): Promise<readonly IntegrationPlatformDashboard["connections"][number][]>;
   listServers(installationId: IntegrationInstallationId): Promise<readonly IntegrationServer[]>;
-  listSkills(installationId: IntegrationInstallationId): Promise<readonly IntegrationSkill[]>;
   listTools(
     installationId: IntegrationInstallationId,
     ownerUserId?: UserId,

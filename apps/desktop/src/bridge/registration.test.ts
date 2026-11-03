@@ -458,21 +458,12 @@ function snapshot(revision = 1) {
 
 function runnerController() {
   const listeners = new Set<() => void>();
-  const portableFs = {
-    binaryPath: "/Applications/PortableFS.app",
-    detail: "Ready",
-    installAvailable: false,
-    issue: null,
-    state: "ready-to-mount" as const,
-    version: "3.1.0",
-  };
   const status = (deploymentId: ReturnType<typeof createId<"deployment">>) => ({
     available: true,
     computerName: "Studio Mac",
     deploymentId,
     mayRunAgents: true,
     platform: "macos" as const,
-    portableFs,
     runAgents: false,
     runner: {
       detail: "This Mac is not in this Deployment.",
@@ -488,13 +479,6 @@ function runnerController() {
     notify: () => {
       for (const listener of listeners) listener();
     },
-    portableFs: () => ({
-      acknowledgeApproval: vi.fn(async () => portableFs),
-      install: vi.fn(async () => portableFs),
-      openSetup: vi.fn(async () => portableFs),
-      requireReadyBinary: vi.fn(async () => portableFs.binaryPath),
-      status: vi.fn(async () => portableFs),
-    }),
     start: vi.fn(async (input) => status(input.deploymentId)),
     status: vi.fn(async (deploymentId) => status(deploymentId)),
     subscribe: vi.fn((listener: () => void) => {

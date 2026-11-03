@@ -66,7 +66,6 @@ async function verifyPackagedDesktopContents(context) {
     processSupervisorName(context),
   );
   verifyPersonalRuntime(resources, context.electronPlatformName);
-  verifyPortableFs(resources, desktop.capabilities.portableFs);
   verifyAgentPhone(resources, isDesktopRelease());
   if (context.electronPlatformName === "darwin") {
     const passkeys = require("./passkeys-signing.cjs");
@@ -599,32 +598,6 @@ function verifyPersonalRuntime(resources, operatingSystem) {
   }
 }
 
-function verifyPortableFs(resources, required) {
-  const directory = join(resources, "portablefs");
-  const installerPath = join(directory, "install.sh");
-  const manifestPath = join(directory, "release.json");
-  const hasInstaller = existsSync(installerPath);
-  const hasManifest = existsSync(manifestPath);
-  if (!required && !hasInstaller && !hasManifest) return;
-  if (!required || !hasInstaller || !hasManifest) {
-    throw new Error("Packaged PortableFS capability and artifacts do not match.");
-  }
-  const installer = regularFile(installerPath, true);
-  const manifest = exactObject(regularFile(manifestPath), [
-    "installerSha256",
-    "schemaVersion",
-    "version",
-  ]);
-  if (
-    manifest.schemaVersion !== 1 ||
-    manifest.installerSha256 !== createHash("sha256").update(installer.content).digest("hex") ||
-    typeof manifest.version !== "string" ||
-    !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(manifest.version)
-  ) {
-    throw new Error("Packaged PortableFS release identity is invalid.");
-  }
-}
-
 /**
  * The Agent Phone app the Computers page installs over USB. Setup checks the
  * APK against this manifest before it reaches a phone; this gate makes sure a
@@ -693,11 +666,10 @@ function exactCapabilities(value) {
     typeof value === "object" &&
     !Array.isArray(value) &&
     JSON.stringify(Object.keys(value).sort()) ===
-      JSON.stringify(["connect", "localAgents", "personal", "portableFs"].sort()) &&
+      JSON.stringify(["connect", "localAgents", "personal"].sort()) &&
     typeof value.connect === "boolean" &&
     value.personal === true &&
-    typeof value.localAgents === "boolean" &&
-    typeof value.portableFs === "boolean"
+    typeof value.localAgents === "boolean"
   );
 }
 

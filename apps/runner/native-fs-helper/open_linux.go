@@ -30,3 +30,7 @@ func statModifiedUnixNano(stat unix.Stat_t) int64 {
 func statChangedUnixNano(stat unix.Stat_t) int64 {
 	return stat.Ctim.Sec*1_000_000_000 + stat.Ctim.Nsec
 }
+
+func renameDirectoryExclusive(source int, name string, target int, destination string) error {
+	return unix.Renameat2(source, name, target, destination, unix.RENAME_NOREPLACE)
+}

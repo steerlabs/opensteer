@@ -1283,7 +1283,7 @@ label.action-row input {
   background-color: var(--fill-plate-hover);
 }
 
-/* Who should do it: Opensteer or a specialist, under the composer that will
+/* Who should do it: Opensteer or a project, under the composer that will
    start the task. */
 .assignee {
   display: inline-flex;
@@ -1616,21 +1616,6 @@ fieldset.action-panel {
 .thread-find__result-excerpt {
   color: var(--muted);
   overflow-wrap: anywhere;
-}
-
-.workspace-mute {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  align-items: center;
-}
-
-.workspace-mute__note {
-  margin: 0;
-  max-width: 48ch;
-  color: var(--muted);
-  font-size: var(--text-sm);
-  text-align: center;
 }
 
 /* The page a message will include: small, inside the box, at its top left. */

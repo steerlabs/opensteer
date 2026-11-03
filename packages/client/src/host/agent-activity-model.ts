@@ -1916,19 +1916,30 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     ),
   ],
   [
-    "workspace_create",
+    "project_create",
     (_tool, args) =>
       step({
-        activeLabel: "Creating a workspace",
+        activeLabel: "Creating a project",
         hint: stringField(args, "name") ?? "",
         hintKind: "prose",
         icon: "folder",
         kind: "tool",
-        label: "Created a workspace",
+        label: "Created a project",
       }),
   ],
-  ["workspace_list", said(["Looking up workspaces", "Looked up workspaces"], "folder")],
-  ["workspace_mount", said(["Opening a workspace", "Opened a workspace"], "folder")],
+  ["project_list", said(["Looking up projects", "Looked up projects"], "folder")],
+  [
+    "plugin_install",
+    (_tool, args) =>
+      step({
+        activeLabel: "Installing a plugin",
+        hint: stringField(args, "directory") ?? "",
+        hintKind: "prose",
+        icon: "folder",
+        kind: "tool",
+        label: "Installed a plugin",
+      }),
+  ],
 ]);
 
 /** Every engine's name for each kind of step it shares with the others. */

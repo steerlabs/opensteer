@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import type {
   ComputerAppApprovalAnswer,
   ComputerAppApprovalOutcome,
@@ -1737,8 +1738,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         browser: {} as never,
         canRunHarness: () => true,
         commands,
-        defaultWorkspaceBacking: "portablefs",
-        environmentWorkspaceBackings: () => ["portablefs"],
+        defaultWorkspaceBacking: "local-directory",
+        environmentWorkspaceBackings: () => ["local-directory"],
         isEnvironmentConnected: () => true,
         onWorkspaceEvent: () => undefined,
         store,
@@ -5105,7 +5106,13 @@ async function createWorld(
   const persistence = new IntegrationPlatformStore(database);
   const connections = new IntegrationStore(database);
   const owner = await createOwner(store, randomUUID(), options.ownerUserId);
-  const workspace = await createWorkspace(store, owner.userId, randomUUID(), "specialized");
+  const workspace = await createWorkspace(
+    store,
+    owner.userId,
+    randomUUID(),
+    "project",
+    owner.environmentId,
+  );
   // The Runner authenticates its transport; the Host authorizes owner decisions.
   const keys = generateKeyPairSync("ed25519");
 
@@ -5385,8 +5392,8 @@ async function createWorld(
         ]),
       );
     },
-    async createWorkspace(name: string, kind: "main" | "specialized" = "specialized") {
-      return createWorkspace(store, owner.userId, randomUUID(), kind, name);
+    async createWorkspace(name: string, kind: "main" | "project" = "project") {
+      return createWorkspace(store, owner.userId, randomUUID(), kind, owner.environmentId, name);
     },
     async requestById(id: string) {
       const request = await persistence.requests.get(id as never);
@@ -5525,17 +5532,19 @@ async function createWorkspace(
   store: OpensteerStore,
   createdBy: UserId,
   suffix: string,
-  kind: "main" | "specialized",
+  kind: "main" | "project",
+  ownerEnvironmentId: EnvironmentId,
   name = `Workspace ${suffix}`,
 ) {
-  return store.createWorkspace({
+  return createTestWorkspace(store, {
     backing: {
+      kind: "local-directory",
       generation: 1,
-      kind: "portablefs",
-      serviceId: "test-portablefs",
-      volumeId: `wsp_${suffix.replaceAll("-", "_")}`,
+      bindingId: createId("workspaceBinding"),
+      ownerEnvironmentId,
+      storageAuthorityId: createId("storageAuthority"),
     },
-    capacityPolicy: { blockHardLimitBytes: 10_000_000, inodeHardLimit: 10_000, kind: "hard-quota" },
+
     createdBy,
     idempotencyKey: `workspace-${suffix}`,
     kind,
@@ -5563,7 +5572,7 @@ async function createOwner(
   if (!(await store.getDeployment())) {
     await store.ensureDeployment({
       canonicalOrigin: "https://test-host.invalid",
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" as const },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" as const },
       hostInstanceId: createId("hostInstance"),
     });
   }
@@ -5611,8 +5620,7 @@ async function createOwner(
         localStorage: null,
         maxConcurrentRuns: 4,
         providerStateModes: ["isolated"],
-        workspaceBackings: ["portablefs"],
-        workspaceMounts: [],
+        workspaceBackings: ["local-directory"],
       },
     },
     name: `Runner ${suffix}`,

@@ -25,7 +25,7 @@ export interface TaskDirectory {
 export function homeThreadKind(
   threadId: string,
   snapshot: Pick<HostSnapshot, "homeThreadId" | "workspaces">,
-): "main" | "specialized" | null {
+): "main" | "project" | null {
   if (threadId === snapshot.homeThreadId) return "main";
   return snapshot.workspaces.find((workspace) => workspace.homeThreadId === threadId)?.kind ?? null;
 }

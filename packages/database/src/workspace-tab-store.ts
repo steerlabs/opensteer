@@ -150,7 +150,7 @@ export class WorkspaceTabStore {
       createdAt: group.lineageCreatedAt.toISOString(),
       session: {
         id: group.id,
-        access: "full-control",
+        access: "read-write",
         createdAt: group.createdAt.toISOString(),
         updatedAt: group.updatedAt.toISOString(),
         origin: group.origin,

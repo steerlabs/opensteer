@@ -150,7 +150,7 @@ export function useSidebarMenu(hostClient: HostClient | null): void {
       return;
     }
     const menu: HeaderActionSpec = {
-      accessibilityHint: "Shows Chat, your tasks, Tabs, Schedules, Specialists and Settings",
+      accessibilityHint: "Shows Chat, your tasks, Tabs, Schedules, Projects and Settings",
       accessibilityLabel: attention === 0 ? "Menu" : `Menu, ${attentionPhrase(attention)}`,
       ...(attention === 0 ? {} : { badge: attentionBadge(attention) }),
       icon: "line.3.horizontal",

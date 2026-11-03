@@ -3522,99 +3522,16 @@ button.computer-row:focus-visible {
   white-space: normal;
 }
 
-/* ---- Specialists ----
-   One card per specialist: its mark, its name, what it is for, and one line
-   about its tasks. The last card makes a new one. */
-.specialist-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: var(--space-14);
-  padding: 0;
-  list-style: none;
-}
-
-.specialist-card {
-  display: grid;
-  align-content: start;
-  gap: var(--space-10);
-  width: 100%;
-  height: 100%;
-  padding: var(--space-16);
-  border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-lg);
-  background: var(--sheen) var(--fill-plate);
-  color: var(--text);
-  text-align: left;
-  transition: border-color var(--duration-fast) var(--ease-out);
-  box-shadow: var(--edge-plate);
-}
-
-.specialist-card:hover {
-  border-color: var(--rim-selected);
-  background-color: var(--fill-plate-hover);
-  text-decoration: none;
-}
-
-.specialist-card__name {
-  font-size: var(--text-2xl);
-  font-weight: var(--weight-bold);
-}
-
-.specialist-card__about {
-  color: var(--muted);
-  font-size: var(--text-md);
-}
-
-.specialist-card__state {
-  display: inline-flex;
-  gap: var(--space-6);
-  align-items: center;
-  color: var(--muted);
-  font-size: var(--text-sm);
-}
-
-.specialist-card__state--needs-you {
-  color: var(--amber-text);
-}
-
-.specialist-card--new {
-  place-items: center;
-  align-content: center;
-  min-height: 150px;
-  border-style: dashed;
-  color: var(--muted);
-  font-size: var(--text-lg);
-}
-
-.specialist-card--new:hover {
-  color: var(--text-soft);
-}
-
-.specialist-card--new svg {
-  width: 20px;
-  height: 20px;
-}
-
-.specialists-page__more {
-  align-self: flex-start;
-}
-
-@media (max-width: 680px) {
-  .specialist-cards {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* A specialist's identity and tasks lead its page; the composer follows. */
-.hero--specialist {
+/* A project's identity and tasks lead its page; the composer follows. */
+.hero--project {
   justify-content: flex-start;
 }
 
-.hero--specialist > .hero__inner {
+.hero--project > .hero__inner {
   margin-block: 0;
   align-items: stretch;
 }
-.hero--specialist .hero__workspace {
+.hero--project .hero__workspace {
   justify-content: flex-start;
   align-items: center;
   gap: var(--space-12);
@@ -3634,7 +3551,7 @@ button.computer-row:focus-visible {
   line-height: 1.45;
 }
 
-.specialist-tasks {
+.project-tasks {
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
@@ -3642,7 +3559,7 @@ button.computer-row:focus-visible {
   margin-top: var(--space-12);
 }
 
-.specialist-tasks .task-rows {
+.project-tasks .task-rows {
   padding: var(--space-4);
   border: 1px solid var(--rim-plate);
   border-radius: var(--radius-lg);
@@ -3650,16 +3567,16 @@ button.computer-row:focus-visible {
   box-shadow: var(--edge-plate);
 }
 
-.specialist-tasks .task-group + .task-group {
+.project-tasks .task-group + .task-group {
   margin-top: var(--space-6);
 }
 
-.specialist-tasks__empty {
+.project-tasks__empty {
   padding: 0 var(--space-10);
   color: var(--muted);
   font-size: var(--text-md);
 }
 
-.specialist-tasks__more {
+.project-tasks__more {
   align-self: flex-start;
 }

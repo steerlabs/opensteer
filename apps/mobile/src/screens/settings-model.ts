@@ -313,17 +313,26 @@ export const browserProfilesSettingsRow = {
 } as const;
 
 /** Chrome is connected from a computer; the phone sees it and manages allowed sites. */
+/** The section of what agents can reach: accounts, plugins, browsers and passwords. */
+export const agentAccessSectionTitle = "For agents";
+
 export const connectedAppsSettingsRow = {
   detail: "Gmail, GitHub and the other accounts agents use",
-  title: "Connected apps",
+  title: "Connections",
+} as const;
+
+/** Installed by an administrator, then turned on per project, apart from what it may access. */
+export const pluginsSettingsRow = {
+  detail: "Skills, tools and specialists for your agents",
+  title: "Plugins",
 } as const;
 
 export const chromeSettingsRow = {
   detail: "Your Chrome and the sites agents can sign in to",
   title: "Chrome",
 } as const;
-/** Under the specialists' switches: what muting one silences, and what it never does. */
-export const specialistNotificationsFooter =
+/** Under the projects' switches: what muting one silences, and what it never does. */
+export const projectNotificationsFooter =
   "Turning one off silences its replies and updates. Approvals and questions still notify you, and its work keeps running.";
 
 /**

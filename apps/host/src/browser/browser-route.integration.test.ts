@@ -1,3 +1,9 @@
+import {
+  connectCallerMachine,
+  enrollmentToken,
+  type CallerMachine,
+  type MachineAccessHost,
+} from "../runtime/machine-access.test-support.js";
 import type { HostConfig } from "@opensteer/config";
 import { createId } from "@opensteer/core";
 import { createDatabase, migrateToLatest } from "@opensteer/database";
@@ -14,7 +20,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { startPortableFsManagerFake as startPortableFsController } from "../runtime/portablefs-manager.test-support.js";
 import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
@@ -26,7 +31,7 @@ const accessToken = "browser-access-".padEnd(40, "a");
 integration("Host browser broker vertical", () => {
   let browserRuntime: Awaited<ReturnType<typeof startBrowserRuntime>> | undefined;
   let dataDirectory: string | undefined;
-  let portableFs: Awaited<ReturnType<typeof startPortableFsController>> | undefined;
+  let caller: CallerMachine | undefined;
   let runtime: HostRuntime | undefined;
   let uiSocket: WebSocket | undefined;
 
@@ -65,13 +70,13 @@ integration("Host browser broker vertical", () => {
 
   afterEach(async () => {
     uiSocket?.terminate();
+    await caller?.close();
     await runtime?.close();
-    await Promise.allSettled([browserRuntime?.close(), portableFs?.close()]);
+    await Promise.allSettled([browserRuntime?.close()]);
     if (dataDirectory) await rm(dataDirectory, { force: true, recursive: true });
   });
 
   it("keeps Browser Runtime private while relaying authenticated view and input", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-browser-host-integration-"));
     const hostPort = await freePort();
     const config: HostConfig = {
@@ -101,27 +106,10 @@ integration("Host browser broker vertical", () => {
       workspace: {
         deletionRetentionDays: 14,
         shape: {
-          defaultWorkspaceBacking: "portablefs",
+          defaultWorkspaceBacking: "local-directory",
           kind: "server" as const,
         },
-        storage: {
-          archiveAfterDays: 7,
-          authorizationDomain: "opensteer-test",
-          defaultBlockLimitBytes: 10 * 1_024 * 1_024 * 1_024,
-          defaultInodeLimit: 1_000_000,
-          filesServiceUrl: new URL("http://127.0.0.1:4315"),
-          kind: "portablefs",
-          maxBlockLimitBytes: 100 * 1_024 * 1_024 * 1_024,
-          maxInodeLimit: 10_000_000,
-          managerCaPath: undefined,
-          managerCertPath: undefined,
-          managerKeyPath: undefined,
-          managerServerName: undefined,
-          managerUrl: portableFs.url,
-          productIssuer: "opensteer-test",
-          productPrivateKeyPath: undefined,
-          serviceId: "test-portablefs",
-        },
+        storage: { kind: "local-directory", ownerEnvironmentId: createId("environment") },
       },
     };
     runtime = await createHostRuntime(config);
@@ -150,6 +138,27 @@ integration("Host browser broker vertical", () => {
       navigation: true,
     });
 
+    const owner = await runtime.store.firstUser();
+    if (!owner) throw new Error("Owner was not created");
+    const machineHost: MachineAccessHost = {
+      close: async () => undefined,
+      config,
+      hostPort,
+      origin,
+      ownerHeaders: sessionHeaders,
+      ownerId: owner.id,
+      runtime,
+      store: runtime.store,
+    };
+    caller = await connectCallerMachine(machineHost, {
+      name: "Storage computer",
+      token: await enrollmentToken(machineHost, {
+        allowedModules: ["agents"],
+        idempotencyKey: "storage-computer",
+        name: "Storage computer",
+      }),
+    });
+    await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
     const created = await testRpcData(
       origin,
       "commands.dispatch",

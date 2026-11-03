@@ -802,7 +802,7 @@ function deployment(name: string, canonicalOrigin: string) {
     authority: testDiscoveryEnvelope({
       canonicalOrigin,
       deploymentId: createId("deployment"),
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" as const },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" as const },
       hostInstanceId: createId("hostInstance") as HostInstanceId,
       hostKey: { algorithm: "Ed25519" },
     }),

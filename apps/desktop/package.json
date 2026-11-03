@@ -102,7 +102,6 @@
     "@electron/asar": "3.4.1",
     "@opensteer/protocol": "workspace:*",
     "@opensteer/runner": "workspace:*",
-    "@opensteer/workspace-portablefs": "workspace:*",
     "@types/ws": "catalog:",
     "dmg-builder": "26.15.3",
     "electron": "44.9.2",

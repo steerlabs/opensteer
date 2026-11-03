@@ -5,7 +5,6 @@ import {
   IntegrationGrantSchema,
   IntegrationInstallationSchema,
   IntegrationServerIdSchema,
-  IntegrationSkillSchema,
   IntegrationToolSchema,
   type IntegrationGrant,
 } from "./index.js";
@@ -73,15 +72,6 @@ const writeTool: EffectiveGrantTool = {
   name: "write_tool",
   title: "Write tool",
 };
-const skill = IntegrationSkillSchema.parse({
-  description: "A test skill",
-  digest,
-  id: "isk_00000000-0000-4000-8000-000000000008",
-  installationId: installation.id,
-  name: "test-skill",
-  status: "active",
-  updatedAt: "2026-01-01T00:00:00.000Z",
-});
 const connected: EffectiveGrantConnection = {
   applicationSourceAvailable: true,
   computerAccess: null,
@@ -118,12 +108,20 @@ const computerConnection: EffectiveGrantConnection = {
 };
 
 describe("resolveEffectiveGrants", () => {
-  it("resolves installation tools and skills covered by the access class", () => {
+  it("never lends a different member's explicit consent to the requester", () => {
+    const grant = storedGrant({
+      ownerUserId: UserIdSchema.parse("usr_00000000-0000-4000-8000-000000000099"),
+    });
+    const result = resolveEffectiveGrants(fixture({ storedGrants: [grant] }));
+    expect(result.tools).toEqual([]);
+  });
+
+  it("resolves installation tools covered by the access class", () => {
     const grant = storedGrant();
     const result = resolveEffectiveGrants(fixture({ storedGrants: [grant] }));
 
+    expect(result).not.toHaveProperty("skills");
     expect(result.tools).toEqual([{ grant, tool: providerTool }]);
-    expect(result.skills).toEqual([{ grant, skill }]);
   });
 
   it("keeps write tools out of a read grant", () => {
@@ -132,7 +130,6 @@ describe("resolveEffectiveGrants", () => {
       fixture({ storedGrants: [grant], tools: [providerTool, writeTool] }),
     );
     expect(result.tools).toEqual([{ grant, tool: providerTool }]);
-    expect(result.skills).toEqual([{ grant, skill }]);
   });
 
   it("rejects an explicit tool when its connection is revoked", () => {
@@ -144,7 +141,6 @@ describe("resolveEffectiveGrants", () => {
     );
 
     expect(result.tools).toEqual([]);
-    expect(result.skills).toHaveLength(1);
   });
 
   it("inherits active inventory in the Main Workspace with deterministic pseudo-grants", () => {
@@ -159,7 +155,6 @@ describe("resolveEffectiveGrants", () => {
     expect(first.tools.map(({ grant }) => grant.connectionId)).toEqual([null, connectionId]);
     expect(first.tools[0]?.grant.alias).toBe("Fixture Integration");
     expect(first.tools[1]?.grant.alias).toBe("Primary account");
-    expect(first.skills[0]?.grant).toHaveProperty("source", "main-inherited");
     expect(first.tools.map(({ grant }) => grant.id)).toEqual(
       second.tools.map(({ grant }) => grant.id),
     );
@@ -183,7 +178,6 @@ describe("resolveEffectiveGrants", () => {
     expect(result.tools[0]?.grant).toMatchObject({ alias: "Shared tools", isDefault: false });
     expect(result.tools[1]?.grant).toMatchObject({ alias: "Work account", isDefault: true });
     expect(result.tools[1]?.grant.id).not.toBe(connectionOverlay.id);
-    expect(result.skills[0]?.grant).toMatchObject({ alias: "Shared tools", isDefault: false });
   });
 
   it("does not inherit disabled inventory or unusable provider authority", () => {
@@ -197,7 +191,7 @@ describe("resolveEffectiveGrants", () => {
       }),
     );
 
-    expect(result).toEqual({ skills: [], tools: [] });
+    expect(result).toEqual({ tools: [] });
   });
 
   it("keeps a write operation out of a stored read grant on a read-write computer", () => {
@@ -276,7 +270,6 @@ function fixture(
     inheritedMainAccess: false,
     installations: [installation],
     ownerUserId,
-    skills: [skill],
     storedGrants: [],
     tools: [providerTool],
     workspaceId,

@@ -1,3 +1,4 @@
+import { SpecialistStore } from "@opensteer/database";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import {
   AgentToolIdSchema,
@@ -11,7 +12,6 @@ import {
   provisionalThreadTitle,
   ThreadIdSchema,
   threadInReach,
-  workspaceWakesOnDemand,
   type AgentEvent,
   type EnvironmentId,
   type HarnessId,
@@ -36,7 +36,6 @@ import {
   type AgentControlResponse,
 } from "@opensteer/protocol";
 import type { TriggerControlInput } from "@opensteer/triggers";
-import type { WorkspaceStorageChoice } from "@opensteer/workspace";
 import { createHash } from "node:crypto";
 import type { BrowserService } from "../browser/browser-service.js";
 import type { BrowserSourceService } from "../browser/browser-source-service.js";
@@ -45,12 +44,8 @@ import type { PlaceContextService } from "../computer-use/place-context-service.
 import type { ComputerUseService } from "../computer-use/computer-use-service.js";
 import type { SignedTokenService } from "../identity/host-keys.js";
 import type { MachineFullDiskAccessService } from "../shell/machine-full-disk-access-service.js";
-import { callerWorkspaceStorage } from "../workspace/workspace-service.js";
-import {
-  delegationEngines,
-  delegationHarnessPage,
-  delegationPlacement,
-} from "./delegation-placement.js";
+import { specialistPlacement } from "./specialist-placement.js";
+import { delegationPlacement } from "./delegation-placement.js";
 import { environmentDiscovery } from "./environment-discovery.js";
 import {
   RunCapabilityTokenService,
@@ -68,17 +63,12 @@ export interface AgentWorkspaceMountService {
   }): Promise<{ readonly path: string }>;
 }
 
-export interface AgentWorkspaceWaker {
-  wake(workspaceId: Workspace["id"], reason: string): Promise<void>;
-}
-
 export interface AgentWorkspaceCreator {
   create(input: {
     readonly createdBy: AgentControlRunScope["requestedBy"];
     readonly idempotencyKey: string;
-    readonly kind: "specialized";
+    readonly kind: "project";
     readonly name: string;
-    readonly storage?: WorkspaceStorageChoice;
   }): Promise<Workspace>;
 }
 
@@ -124,7 +114,6 @@ export class AgentControlService {
   readonly #browserTabs: BrowserTabGroupService | undefined;
   readonly #canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
   readonly #commands: CommandService;
-  readonly #defaultWorkspaceBacking: WorkspaceBackingKind;
   readonly #environmentWorkspaceBackings: (
     environmentId: EnvironmentId,
   ) => readonly WorkspaceBackingKind[];
@@ -136,7 +125,7 @@ export class AgentControlService {
   readonly #tokens: AgentControlTokenService;
   readonly #triggers: AgentTriggerManager | undefined;
   readonly #workspaceMounts: AgentWorkspaceMountService;
-  readonly #workspaceWake: AgentWorkspaceWaker | undefined;
+
   readonly #workspaces: AgentWorkspaceCreator;
 
   constructor(options: {
@@ -173,7 +162,6 @@ export class AgentControlService {
     readonly tokens: AgentControlTokenService;
     readonly triggers?: AgentTriggerManager;
     readonly workspaceMounts: AgentWorkspaceMountService;
-    readonly workspaceWake?: AgentWorkspaceWaker;
     readonly workspaces: AgentWorkspaceCreator;
   }) {
     this.#computerUse = options.computerUse;
@@ -185,7 +173,6 @@ export class AgentControlService {
     this.#browserTabs = options.browserTabs;
     this.#canRunHarness = options.canRunHarness;
     this.#commands = options.commands;
-    this.#defaultWorkspaceBacking = options.defaultWorkspaceBacking;
     this.#environmentWorkspaceBackings = options.environmentWorkspaceBackings;
     this.#isEnvironmentConnected = options.isEnvironmentConnected;
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
@@ -195,7 +182,6 @@ export class AgentControlService {
     this.#tokens = options.tokens;
     this.#triggers = options.triggers;
     this.#workspaceMounts = options.workspaceMounts;
-    this.#workspaceWake = options.workspaceWake;
     this.#workspaces = options.workspaces;
   }
 
@@ -224,6 +210,8 @@ export class AgentControlService {
   async handle(token: string, input: unknown): Promise<AgentControlResponse> {
     const claims = await this.#tokens.authenticate(token);
     const request = AgentControlRequestSchema.parse(input);
+    if (request.type === "browser.sign-in")
+      throw badRequest("This agent operation has been removed");
     if (request.type === "thread.delegate" && request.places)
       request.places = request.places.map((part) => {
         if (part.type !== "browser-page") return part;
@@ -380,7 +368,7 @@ export class AgentControlService {
         type: "environment.list.result",
       });
     }
-    if (request.type === "workspace.list") {
+    if (request.type === "project.list") {
       await this.#admit(claims, request);
       const page = await this.#store.workspacePageForOwner({
         ownerId: claims.requestedBy,
@@ -390,7 +378,7 @@ export class AgentControlService {
       });
       return AgentControlResponseSchema.parse({
         requestId: request.requestId,
-        type: "workspace.list.result",
+        type: "project.list.result",
         window: page.window,
         workspaces: page.workspaces.map(({ id, kind, name, status }) => ({
           id,
@@ -401,125 +389,28 @@ export class AgentControlService {
       });
     }
 
-    if (request.type === "workspace.inspect") {
-      await this.#admit(claims, request);
-      const [workspacePage, threadPage, environmentRows] = await Promise.all([
-        this.#store.workspacePageForOwner({
-          ...(request.workspaceBefore ? { before: request.workspaceBefore } : {}),
-          maxBytes: 64 * 1_024,
-          maxItems: request.maxWorkspaces ?? 25,
-          ownerId: claims.requestedBy,
-        }),
-        this.#store.ownerThreadPageForOwner({
-          ...(request.threadBefore ? { before: request.threadBefore } : {}),
-          maxBytes: 64 * 1_024,
-          maxItems: request.maxThreads ?? 50,
-          ownerId: claims.requestedBy,
-        }),
-        this.#store.listEnvironmentsForUser(claims.requestedBy, 65),
-      ]);
-      const environments = environmentRows.slice(0, 64);
-      const harnessPage = await delegationHarnessPage(this.#store, claims.requestedBy, request);
-      const harnesses = harnessPage.harnesses;
-      return AgentControlResponseSchema.parse({
-        environments: environments.map(({ id, kind, name }) => ({
-          compatibleHarnessInstanceIds: harnesses
-            .filter(
-              (harness) =>
-                harness.environmentId === id && this.#canRunHarness(id, harness.driverKind),
-            )
-            .map((harness) => harness.id),
-          connected: this.#isEnvironmentConnected(id),
-          id,
-          kind,
-          name,
-          workspaceBackings: this.#environmentWorkspaceBackings(id),
-        })),
-        environmentsTruncated: environmentRows.length > 64,
-        delegationDefault: {
-          environmentId: currentThread.environmentId,
-          harnessInstanceId: currentThread.harnessInstanceId,
-          model: {
-            modelId: currentThread.modelSelection.modelId,
-            options: currentThread.modelSelection.options,
-            providerId: currentThread.modelSelection.providerId,
-          },
-        },
-        harnesses: await delegationEngines(this.#store, harnesses, request.modelPage),
-        harnessesTruncated: harnessPage.nextCursor !== undefined,
-        ...(harnessPage.nextCursor !== undefined
-          ? { harnessesNextCursor: harnessPage.nextCursor }
-          : {}),
-        requestId: request.requestId,
-        threads: threadPage.threads,
-        threadWindow: threadPage.window,
-        type: "workspace.inspect.result",
-        workspaces: workspacePage.workspaces.map(({ id, kind, name, status }) => ({
-          id,
-          kind,
-          name,
-          status,
-        })),
-        workspaceWindow: workspacePage.window,
-      });
-    }
-
-    if (request.type === "workspace.create") {
+    if (request.type === "project.create") {
       await this.#admit(claims, request);
       const workspace = await this.#workspaces.create({
         createdBy: claims.requestedBy,
         ...(request.icon ? { icon: request.icon } : {}),
         ...(request.color ? { color: request.color } : {}),
         idempotencyKey: idempotencyKey(claims, request.requestId, "workspace"),
-        kind: "specialized",
+        kind: "project",
         name: request.name,
-        storage: callerWorkspaceStorage({
-          callerEnvironmentId: claims.environmentId,
-          defaultBacking: this.#defaultWorkspaceBacking,
-          requested: request.storage,
-        }),
       });
       return AgentControlResponseSchema.parse({
         requestId: request.requestId,
-        type: "workspace.create.result",
+        type: "project.create.result",
         workspace: agentWorkspaceView(workspace),
-      });
-    }
-
-    if (request.type === "workspace.mount") {
-      const workspace = await this.#store.getWorkspaceForOwner(
-        request.workspaceId,
-        claims.requestedBy,
-      );
-      if (!workspace) throw forbidden("Target Workspace is unavailable to this user");
-      if (workspace.kind === "main") {
-        throw badRequest("Main is not a valid mount target; its path is the Run Workspace");
-      }
-      if (workspace.status !== "ready") {
-        // A Workspace whose storage sleeps is not a failed mount, it is a mount
-        // that arrived first: the wake cancels a quiescing archive, and the
-        // agent's retry mounts the restored filesystem.
-        if (workspaceWakesOnDemand(workspace.status)) {
-          void this.#workspaceWake?.wake(workspace.id, "agent-workspace-mount");
-          throw conflict("Target Workspace filesystem is waking", true);
-        }
-        throw conflict(
-          "Target Workspace filesystem is not ready",
-          workspace.status === "provisioning" || workspace.status === "unavailable",
-        );
-      }
-      const admission = await this.#admit(claims, request);
-      const mounted = await this.#workspaceMounts.mount({
-        requestId: request.requestId,
-        scope: claims,
-        workspace,
-      });
-      void admission;
-      return AgentControlResponseSchema.parse({
-        path: mounted.path,
-        requestId: request.requestId,
-        type: "workspace.mount.result",
-        workspaceId: workspace.id,
+        slug: workspace.slug,
+        path: (
+          await this.#workspaceMounts.mount({
+            requestId: request.requestId,
+            scope: claims,
+            workspace,
+          })
+        ).path,
       });
     }
 
@@ -715,7 +606,10 @@ export class AgentControlService {
               throw badRequest("Choose another work Thread for the assignment");
             }
           }
-          const targetWorkspaceId = existingThread?.workspaceId ?? request.workspaceId;
+          const targetWorkspaceId =
+            existingThread?.workspaceId ??
+            request.workspaceId ??
+            (request.specialist ? currentThread.workspaceId : undefined);
           if (!targetWorkspaceId) throw badRequest("Choose a target Workspace or work Thread");
           const workspace = await this.#store.getWorkspaceForOwner(
             targetWorkspaceId,
@@ -725,9 +619,55 @@ export class AgentControlService {
           if (!isMainProfile && workspace.id !== currentThread.workspaceId) {
             throw forbidden("This capability profile can delegate only inside its Workspace");
           }
+          const registrations =
+            request.specialist || existingThread?.specialistId
+              ? await new SpecialistStore(this.#store.database).list(
+                  workspace.id,
+                  claims.requestedBy,
+                )
+              : [];
+          const specialist = existingThread?.specialistId
+            ? registrations.find((r) => r.id === existingThread.specialistId)
+            : (registrations.find((r) => r.id === request.specialist) ??
+              registrations.find(
+                (r) => r.plugin === request.specialist && r.ownerUserId === claims.requestedBy,
+              ) ??
+              registrations.find((r) => r.plugin === request.specialist));
+          if ((request.specialist || existingThread?.specialistId) && !specialist)
+            throw badRequest("Specialist is not registered in this Workspace");
+          if (
+            existingThread &&
+            request.specialist &&
+            request.specialist !== specialist?.id &&
+            request.specialist !== specialist?.plugin
+          )
+            throw badRequest("An existing Thread keeps its specialist binding");
+          if (specialist && specialist.ownerUserId !== claims.requestedBy)
+            throw forbidden(
+              `${specialist.plugin} uses ${specialist.ownerName ?? specialist.ownerUserId}'s accounts; add it for yourself to use your own`,
+            );
+          if (specialist?.status === "pending")
+            throw badRequest(
+              `Specialist is pending: ${specialist.access
+                .filter((a) => a.state !== "bound")
+                .map((a) => `${a.type}: ${a.state} (${a.reason})`)
+                .join("; ")}`,
+            );
+          if (specialist)
+            await new SpecialistStore(this.#store.database).assertRunnable(
+              specialist.id,
+              workspace.id,
+              claims.requestedBy,
+            );
+          if (specialist && (request.model || request.harnessInstanceId || request.environmentId))
+            throw badRequest("Specialist execution is selected by its registration");
           const chosenEnvironmentId = request.environmentId;
           const environmentId =
-            existingThread?.environmentId ?? chosenEnvironmentId ?? currentThread.environmentId;
+            existingThread?.environmentId ??
+            chosenEnvironmentId ??
+            (specialist && workspace.backing.kind === "local-directory"
+              ? workspace.backing.ownerEnvironmentId
+              : currentThread.environmentId);
           const environment = await this.#store.getEnvironment(environmentId);
           if (!environment) throw badRequest("Selected execution environment does not exist");
           if (
@@ -746,14 +686,23 @@ export class AgentControlService {
           ) {
             throw badRequest("A local-directory Workspace can run only in its owning environment");
           }
-          const placement = await delegationPlacement(this.#store, {
-            environment,
-            existingThread,
-            harnessInstanceId: request.harnessInstanceId,
-            model: request.model,
-            parent: currentThread,
-          });
+          const placement =
+            specialist && !existingThread
+              ? await specialistPlacement(this.#store, {
+                  environment,
+                  parent: currentThread,
+                  specialist,
+                  canRun: (engine) => this.#canRunHarness(environment.id, engine),
+                })
+              : await delegationPlacement(this.#store, {
+                  environment,
+                  existingThread,
+                  harnessInstanceId: request.harnessInstanceId,
+                  model: request.model,
+                  parent: currentThread,
+                });
           const delegateInput = {
+            ...(specialist ? { specialistId: specialist.id } : {}),
             callerIntent: {
               requestId: request.requestId,
               requestFingerprint: this.#admissionRequest(claims, request).requestFingerprint,
@@ -858,6 +807,7 @@ export class AgentControlService {
       const profiles = await this.#browser.listGrantedProfiles(
         claims.requestedBy,
         claims.workspaceId,
+        `run:${claims.runId}`,
       );
       return AgentControlResponseSchema.parse({
         profiles,
@@ -865,7 +815,7 @@ export class AgentControlService {
         type: "browser.profile.list.result",
       });
     }
-    if (request.type === "browser.sign-in" || request.type === "sign-in") {
+    if (request.type === "sign-in") {
       await this.#admit(claims, request);
       return AgentControlResponseSchema.parse({
         requestId: request.requestId,
@@ -884,7 +834,7 @@ export class AgentControlService {
           threadId: claims.threadId,
           workspaceId: claims.workspaceId,
         }),
-        type: request.type === "sign-in" ? "sign-in.result" : "browser.sign-in.result",
+        type: "sign-in.result",
       });
     }
 
@@ -1025,6 +975,12 @@ export class AgentControlService {
     }
     const thread = await this.#store.getThreadForOwner(destination, claims.requestedBy);
     if (!thread) throw forbidden("Thread is unavailable to this user");
+    if (thread.specialistId && request.delivery !== "report")
+      await new SpecialistStore(this.#store.database).assertRunnable(
+        thread.specialistId,
+        thread.workspaceId,
+        claims.requestedBy,
+      );
     // Any Thread may leave its person's Home a report. Work there needs the
     // same reach as addressing Home by id.
     if (!home || request.delivery !== "report") {
@@ -1117,12 +1073,10 @@ export class AgentControlService {
 }
 
 const toolForAction: Readonly<
-  Record<Exclude<AgentControlRequest["type"], "trigger.control">, AgentToolId>
+  Partial<Record<Exclude<AgentControlRequest["type"], "trigger.control">, AgentToolId>>
 > = {
   "machine.full-disk-access.request": "machine.full-disk-access.request",
   "browser.access.request": "browser.access.request",
-  // Previous-release Runners still send this action; it shares the current permission.
-  "browser.sign-in": "sign-in",
   "sign-in": "sign-in",
   "browser.profile.create": "browser.profile.create",
   "browser.profile.list": "browser.profile.list",
@@ -1141,11 +1095,9 @@ const toolForAction: Readonly<
   "person.show": "person.show",
   "thread.read": "thread.read",
   "thread.write": "thread.write",
-  "workspace.create": "workspace.create",
-  "workspace.inspect": "workspace.list",
-  "workspace.list": "workspace.list",
+  "project.create": "project.create",
+  "project.list": "project.list",
   "environment.list": "environment.list",
-  "workspace.mount": "workspace.mount",
 };
 
 function assertToolAllowed(
@@ -1184,6 +1136,7 @@ function threadListScope(current: Thread): AgentThreadListScope {
       return { kind: "user" };
     case "workspace":
       return { kind: "workspace", workspaceId: current.workspaceId };
+    case "specialist":
     case "delegated":
     case "trigger":
       return { kind: "lineage", threadId: current.id };

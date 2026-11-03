@@ -49,7 +49,6 @@ import WebSocket from "ws";
 import { fetchWithExplicitHost } from "../access/session-exchange.test-support.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { attachLocalWorkspaceDisk } from "../workspace/runner-local-workspace.test-support.js";
-import { startPortableFsManagerFake } from "./portablefs-manager.test-support.js";
 import { createHostRuntime, type HostRuntime } from "./runtime.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -112,9 +111,7 @@ const noPersonalRemoteAccessRoutes = {
 } as const;
 
 interface ConfigurationPlan {
-  /** Whether this configuration lets somebody lend it a machine from outside
-   * its own network. PortableFS exists for exactly that, and a Personal
-   * Deployment is single-user, so the two are never the same answer. */
+  /** Whether a person can enroll an external Runner. */
   readonly acceptsExternalRunners: boolean;
   readonly displayKind: DeploymentDisplayKind;
   readonly exposure: HostExposure;
@@ -124,12 +121,7 @@ interface ConfigurationPlan {
   readonly sharingAvailable: boolean;
 }
 
-const shippedConfigurations = [
-  "personal",
-  "dev",
-  "self-host-local",
-  "self-host-portablefs",
-] as const;
+const shippedConfigurations = ["personal", "dev", "self-host-local", "self-host-external"] as const;
 type ShippedConfiguration = (typeof shippedConfigurations)[number];
 
 const conformancePlans = {
@@ -187,7 +179,7 @@ const conformancePlans = {
     },
     sharingAvailable: true,
   },
-  "self-host-portablefs": {
+  "self-host-external": {
     acceptsExternalRunners: true,
     displayKind: "self-hosted",
     exposure: "networked",
@@ -195,12 +187,12 @@ const conformancePlans = {
       ...universalRoutes,
       ...noPersonalRemoteAccessRoutes,
       localBootstrap: false,
-      mountGrantExchange: true,
+      mountGrantExchange: false,
       sessionExchange: false,
     },
     sessionExchangeArms: [],
     shape: {
-      defaultWorkspaceBacking: "portablefs",
+      defaultWorkspaceBacking: "local-directory",
       kind: "server" as const,
     },
     sharingAvailable: true,
@@ -442,13 +434,8 @@ function describeConfigurationConformance(
       // capabilities of its real Runner, never globally before one connects.
       expect(machinelessBootstrap.harnesses).toEqual([]);
       // A local directory is a fact about one machine's disk, so not even Main
-      // can exist before that machine does. PortableFS is Host-managed and is
-      // there the moment the owner is.
-      expect(machinelessBootstrap.homeWorkspace).toEqual(
-        shape.defaultWorkspaceBacking === "local-directory"
-          ? null
-          : expect.objectContaining({ kind: "main" }),
-      );
+      // can exist before that machine does.
+      expect(machinelessBootstrap.homeWorkspace).toBeNull();
     });
 
     it("serves a verifiable discovery document with the required public axes", async () => {
@@ -554,7 +541,7 @@ function describeConfigurationConformance(
         { headers: ownerHeaders },
       );
       if (created.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-      expect(created.workspace).toMatchObject({ kind: "specialized", status: "ready" });
+      expect(created.workspace).toMatchObject({ kind: "project", status: "ready" });
 
       const replayed = await testRpcData(
         origin,
@@ -795,12 +782,6 @@ interface HostComposition {
   readonly runtime: HostRuntime;
 }
 
-/**
- * Builds the single-process approximation of each configuration: the same
- * Host code and fakes only where the
- * Deployment genuinely talks to something outside itself (the PortableFS
- * Manager and the Account issuer's JWKS for Personal Connect).
- */
 async function composeHost(
   configuration: ShippedConfiguration,
   plan: ConfigurationPlan,
@@ -815,18 +796,15 @@ async function composeHost(
     await mkdtemp(join(tmpdir(), `opensteer-conformance-${configuration}-`)),
   );
   const environmentId = createId("environment");
-  const portableFs =
-    shape.defaultWorkspaceBacking === "portablefs" ? await startPortableFsManagerFake() : undefined;
   const canonicalOrigin =
     plan.exposure === "loopback"
       ? new URL(`http://127.0.0.1:${port}`)
       : new URL(`https://${configuration}.conformance.opensteer.test`);
-  // A PortableFS Deployment mints every Runner capability URL from its
+  // A local storage Deployment mints every Runner capability URL from its
   // canonical origin, which is the same rule config parsing enforces.
-  const runtimeOrigin =
-    shape.defaultWorkspaceBacking === "portablefs"
-      ? canonicalOrigin
-      : new URL(`http://127.0.0.1:${port}`);
+  const runtimeOrigin = plan.acceptsExternalRunners
+    ? canonicalOrigin
+    : new URL(`http://127.0.0.1:${port}`);
   const personalAccountKeys =
     shape.kind === "personal" ? generateKeyPairSync("ed25519") : undefined;
 
@@ -874,37 +852,16 @@ async function composeHost(
               kind: "local-directory",
               ownerEnvironmentId: environmentId,
             }
-          : {
-              archiveAfterDays: 7,
-              authorizationDomain: "opensteer-test",
-              defaultBlockLimitBytes: 10 * 1_024 * 1_024 * 1_024,
-              defaultInodeLimit: 1_000_000,
-              filesServiceUrl: new URL("http://127.0.0.1:4315"),
-              kind: "portablefs",
-              managerCaPath: undefined,
-              managerCertPath: undefined,
-              managerKeyPath: undefined,
-              managerServerName: undefined,
-              managerUrl: portableFs?.url ?? new URL("http://127.0.0.1:9"),
-              maxBlockLimitBytes: 100 * 1_024 * 1_024 * 1_024,
-              maxInodeLimit: 10_000_000,
-              productIssuer: "opensteer-test",
-              productPrivateKeyPath: undefined,
-              serviceId: "conformance-portablefs",
-            },
+          : { kind: "local-directory", ownerEnvironmentId: createId("environment") },
     },
   };
 
-  const runtimeOptions = {
-    ...(portableFs ? { portableFsMountManagerEndpoint: portableFs.mountEndpoint } : {}),
-    ...(personalAccountKeys
-      ? { personalAccountGrantFetch: accountJwksFetch(personalAccountKeys.publicKey) }
-      : {}),
-  };
+  const runtimeOptions = personalAccountKeys
+    ? { personalAccountGrantFetch: accountJwksFetch(personalAccountKeys.publicKey) }
+    : {};
 
   const cleanup = async (runtime: HostRuntime | undefined) => {
     await runtime?.close();
-    await portableFs?.close();
     await rm(dataDirectory, { force: true, recursive: true });
   };
 
@@ -1161,7 +1118,7 @@ function readBootstrap(owner: OwnerContext) {
  */
 async function attachConformanceRunner(
   owner: OwnerContext,
-  plan: ConfigurationPlan,
+  _plan: ConfigurationPlan,
 ): Promise<RunnerAttachment> {
   const connection = await openRunnerSocket(
     `${owner.origin.replace(/^http/u, "ws")}/internal/v1/runners`,
@@ -1169,7 +1126,7 @@ async function attachConformanceRunner(
   const challenge = RunnerChallengeSchema.parse(connection.challenge);
   const runnerId = createId("runner");
   respondToHarnessInspections(connection.socket);
-  const backing = plan.shape.defaultWorkspaceBacking;
+  const backing = "local-directory" as const;
   const welcome = await enrollRunnerSocket(connection.socket, challenge, owner, {
     backing,
     localStorage:
@@ -1184,7 +1141,7 @@ async function enrollRunnerSocket(
   challenge: ReturnType<typeof RunnerChallengeSchema.parse>,
   context: OwnerContext,
   runner: {
-    readonly backing: "local-directory" | "portablefs";
+    readonly backing: "local-directory";
     readonly localStorage: RunnerLocalStorageInventory | null;
     readonly runnerId: string;
   },
@@ -1225,7 +1182,6 @@ async function enrollRunnerSocket(
         maxConcurrentRuns: 2,
         providerStateModes: ["ambient", "isolated"],
         workspaceBackings: [runner.backing],
-        workspaceMounts: [],
       },
     },
     name: "Conformance Main",

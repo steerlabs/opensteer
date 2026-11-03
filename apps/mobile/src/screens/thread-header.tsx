@@ -175,7 +175,7 @@ export function useThreadHeader(props: {
 }
 
 /**
- * The task subject and title, with a small specialist tile and state below.
+ * The task subject and title, with a small project tile and state below.
  * The two lines share the native menu's touch target; Retry remains its own control.
  */
 function ThreadTitle(
@@ -214,7 +214,7 @@ function ThreadTitle(
         maxWidth={titleWidth}
         onOpenThread={props.onOpenThread}
         task={props.task}
-        specialistName={props.workspaceName}
+        projectName={props.workspaceName}
         connectionLabel={props.connectionLabel}
         threadId={props.threadId}
         title={props.title}

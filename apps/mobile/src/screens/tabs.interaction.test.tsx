@@ -41,7 +41,7 @@ import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-
  * J1 Global Tabs
  *   - the sidebar has no Tabs, or Tabs is not a destination (it piles up behind
  *     Back, keeps Back, or loses the Menu);
- *   - opening it from Chat, a task or Specialists carries a conversation into
+ *   - opening it from Chat, a task or Projects carries a conversation into
  *     a standalone tab, or silently swaps the selected tab;
  *   - the list misses the person's own desktop tab, a task's tab, a delegated
  *     worker's, a saved tab, a task-held app, or the person's own Mac view;
@@ -840,15 +840,15 @@ function HomeStandIn(props: { readonly route: StackRoute }): ReactNode {
     />
   );
 }
-function SpecialistsStandIn(): ReactNode {
+function ProjectsStandIn(): ReactNode {
   useSidebarMenu(useContext(HostContext));
-  return <p>Specialists</p>;
+  return <p>Projects</p>;
 }
 const HostContext = createContext<HostClient>(null as never);
 
 const screens: Record<string, (props: { route: never }) => ReactNode> = {
   Home: HomeStandIn as never,
-  Specialists: SpecialistsStandIn as never,
+  Projects: ProjectsStandIn as never,
   Tabs: TabsScreen as never,
   Thread: ThreadScreen as never,
   WorkspaceBrowser: WorkspaceBrowserScreen as never,
@@ -1282,8 +1282,8 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     const w = await world();
     const destinations = buttons(sidebar(w))
       .map((button) => button.textContent?.trim())
-      .filter((label) => ["Chat", "New task", "Specialists", "All tabs"].includes(label ?? ""));
-    expect(destinations).toEqual(["Chat", "New task", "Specialists", "All tabs"]);
+      .filter((label) => ["Chat", "New task", "Projects", "All tabs"].includes(label ?? ""));
+    expect(destinations).toEqual(["Chat", "New task", "Projects", "All tabs"]);
 
     // From Chat: pushed over Chat, the Deployment's tabs rather than Chat's.
     await openSidebarTabs(w);
@@ -1299,8 +1299,8 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
       buttons(bar).some((button) => button.getAttribute("aria-label")?.startsWith("Menu")),
     ).toBe(true);
 
-    // From Tabs to Specialists and back: one destination replaces the other.
-    await press(control(sidebar(w), "Specialists"));
+    // From Tabs to Projects and back: one destination replaces the other.
+    await press(control(sidebar(w), "Projects"));
     await openSidebarTabs(w);
     expect(w.stack.trace.at(-1)).toEqual({
       action: "REPLACE",
@@ -1308,7 +1308,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
       from: "sidebar",
     });
     expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home", "Tabs"]);
-    w.record("J1 sidebar destination from Chat and Specialists");
+    w.record("J1 sidebar destination from Chat and Projects");
   });
 
   it("from task A resets to Chat and Tabs, carrying no conversation", async () => {
@@ -1363,7 +1363,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
       "Confirm your reservation",
       "Le Petit Jardin",
       "Friday dinner",
-      "PortableFS documentation",
+      "storage documentation",
       "Launch brief",
       "Coffee shortlist",
       "Weekend ideas",
@@ -1400,7 +1400,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     );
     expect(row(screen, "Flight award alerts").dataset["testid"]).toBe("place:acting");
     expect(row(screen, "Friday dinner").getAttribute("aria-label")).toBe(
-      "Friday dinner, resy.com, Work, Review PortableFS integration, idle",
+      "Friday dinner, resy.com, Work, Review storage integration, idle",
     );
     expect(row(screen, "Friday dinner").dataset["testid"]).toBe("place:idle");
     expect(row(screen, "Q4 roadmap – Linear").getAttribute("aria-label")).toBe(
@@ -1474,7 +1474,11 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
   it("is not redrawn by a streamed token, and a sign-in waiting on the reader marks only its tab", async () => {
     let host!: ReturnType<typeof steerable>;
     const w = await world({
-      prepare: (mock) => void (host = steerable(mock)),
+      prepare: (mock) => {
+        // Live mock activity has its own clock; this case drives only transcript and Request changes.
+        mock.scriptPlaces();
+        host = steerable(mock);
+      },
       routes: [{ name: "Tabs", params: { deploymentId } }],
     });
     const drawn = () => [

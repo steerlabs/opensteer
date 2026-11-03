@@ -227,14 +227,6 @@ function localStatus(input: {
     deploymentId: createId("deployment"),
     mayRunAgents: input.mayRunAgents,
     platform: "macos",
-    portableFs: {
-      binaryPath: null,
-      detail: "Not installed",
-      installAvailable: true,
-      issue: null,
-      state: "missing",
-      version: null,
-    },
     runAgents: input.runAgents ?? false,
     runner: {
       detail: input.enrolled ? "Ready" : "Off",
@@ -517,7 +509,7 @@ const snapshot: ShellContext["snapshot"] = {
   ...base,
   connection: "connected",
   deploymentShape: {
-    defaultWorkspaceBacking: scenario.kind === "personal" ? "local-directory" : "portablefs",
+    defaultWorkspaceBacking: "local-directory",
     kind: scenario.kind,
   },
   identityConfig: base.identityConfig && {

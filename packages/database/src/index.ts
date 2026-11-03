@@ -29,6 +29,9 @@ export type { PersonMessageInput, PersonMessageResult } from "./person-message-s
 
 export { withDatabaseOperationSignal, withoutDatabaseOperationSignal } from "./operation-budget.js";
 
+export * from "./resource-access.js";
+
+export * from "./specialist-store.js";
 export { readIntegrationAccountBinding } from "./integration-account-binding.js";
 
 export { requestSettlementActor } from "./request-settlement.js";

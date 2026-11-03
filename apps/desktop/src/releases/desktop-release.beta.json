@@ -8,8 +8,7 @@
   "capabilities": {
     "connect": true,
     "personal": true,
-    "localAgents": true,
-    "portableFs": false
+    "localAgents": true
   },
   "oauth": {
     "accountCallback": "com.steerlabs.opensteer.beta:/oauth/account-callback",

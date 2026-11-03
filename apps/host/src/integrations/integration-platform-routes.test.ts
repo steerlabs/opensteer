@@ -4,6 +4,7 @@ import { createIntegrationId } from "@opensteer/integration-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostAuthenticator } from "../identity/auth.js";
 import {
+  createIntegrationPlatformRpcHandlers,
   handleIntegrationPlatformCommand,
   registerIntegrationPlatformRoutes,
 } from "./integration-platform-routes.js";
@@ -17,6 +18,75 @@ afterEach(async () => {
 });
 
 describe("integration platform OAuth routes", () => {
+  it("keeps plugin uninstall retryable until specialist retirement completes", async () => {
+    const order: string[] = [];
+    const retirePlugin = vi.fn(async (): Promise<void> => {
+      throw new Error("Owner computer offline");
+    });
+    const remove = vi.fn(async () => {
+      order.push("remove");
+    });
+    const uninstallIntegration = vi.fn(async () => {
+      order.push("uninstall");
+    });
+    const options = {
+      authenticator: {} as HostAuthenticator,
+      dashboard: {} as never,
+      mcpOauth: {} as McpOAuthService,
+      platform: {
+        store: {
+          specialists: { retirePlugin },
+          plugins: { remove },
+          listInstallations: async () => [{ id: "installation", pluginId: "plugin" }],
+        },
+        uninstallIntegration,
+      } as never,
+    };
+    const context = testHostApiContext(createId("user"), { instanceRole: "administrator" });
+    const command = {
+      type: "plugin.remove",
+      pluginId: "plugin",
+      idempotencyKey: "remove",
+    } as const;
+    await expect(handleIntegrationPlatformCommand(options, command, context)).rejects.toThrow(
+      "offline",
+    );
+    expect(remove).not.toHaveBeenCalled();
+    expect(uninstallIntegration).not.toHaveBeenCalled();
+    retirePlugin.mockImplementation(async () => {
+      order.push("retire");
+    });
+    await expect(handleIntegrationPlatformCommand(options, command, context)).resolves.toEqual({
+      type: "plugin.remove",
+    });
+    expect(retirePlugin).toHaveBeenCalledWith("plugin");
+    expect(order).toEqual(["retire", "uninstall", "remove"]);
+  });
+
+  it("routes member plugin reads through the scoped projection on both entry points", async () => {
+    const userId = createId("user"),
+      workspaceId = createId("workspace");
+    const listForUser = vi.fn(async () => [{ id: "plugin" }]);
+    const options = {
+      authenticator: {} as HostAuthenticator,
+      dashboard: {} as never,
+      mcpOauth: {} as McpOAuthService,
+      platform: { store: { plugins: { listForUser } } } as never,
+    };
+    const context = testHostApiContext(userId);
+    expect(
+      await createIntegrationPlatformRpcHandlers(options)["plugin.list"]({ workspaceId }, context),
+    ).toMatchObject({ ok: true, data: { plugins: [{ id: "plugin" }] } });
+    expect(
+      await handleIntegrationPlatformCommand(
+        options,
+        { type: "plugin.list", workspaceId, idempotencyKey: "list" },
+        context,
+      ),
+    ).toEqual({ type: "plugin.list", plugins: [{ id: "plugin" }] });
+    expect(listForUser).toHaveBeenNthCalledWith(1, userId, workspaceId);
+    expect(listForUser).toHaveBeenNthCalledWith(2, userId, workspaceId);
+  });
   it("routes computer app changes with the caller's administrator posture", async () => {
     const userId = createId("user");
     const runnerId = createId("runner");

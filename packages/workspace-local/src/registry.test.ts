@@ -1,0 +1,275 @@
+import { createId } from "@opensteer/core";
+import { lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
+import { afterEach, expect, it, vi } from "vitest";
+import { LocalWorkspaceRegistry, type RegistryDocument } from "./registry.js";
+
+const roots: string[] = [];
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+async function fixture(namespace: "single-owner" | "owner-scoped") {
+  const base = await mkdtemp(path.join(tmpdir(), "project-relocation-"));
+  roots.push(base);
+  const ownerEnvironmentId = createId("environment");
+  const createdBy = createId("user");
+  const options = {
+    namespace:
+      namespace === "single-owner" ? { kind: namespace, ownerEnvironmentId } : { kind: namespace },
+    registryFilePath: path.join(base, "private", "registry.json"),
+    visibleRootPath: path.join(base, "files"),
+  };
+  const registry = new LocalWorkspaceRegistry(options);
+  await registry.preflight();
+  const provision = (kind: "main" | "project") =>
+    registry.provision({
+      bindingId: createId("workspaceBinding"),
+      generation: 1,
+      idempotencyKey: crypto.randomUUID(),
+      fingerprint: { createdBy, ownerEnvironmentId, workspaceId: createId("workspace"), kind },
+    });
+  const main = await provision("main");
+  const project = await provision("project");
+  const source = registry.resolvePath(project);
+  const target = path.join(registry.resolvePath(main), "Projects", "research");
+  await writeFile(path.join(source, "keep.txt"), "precious data");
+  const move = vi.fn(async (input: { root: string; path: string; destination: string }) => {
+    const destination = path.join(input.root, input.destination);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await rename(path.join(input.root, input.path), destination);
+  });
+  const identity = async (input: { root: string; path: string }) => {
+    const stat = await lstat(path.join(input.root, input.path), { bigint: true });
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("not a real directory");
+    return {
+      kind: "posix" as const,
+      fileId: String(stat.ino),
+      volumeId: process.platform === "darwin" ? "0" : String(stat.dev),
+    };
+  };
+  const reopen = () =>
+    new LocalWorkspaceRegistry({
+      ...options,
+      filesystemAuthority: {
+        directoryIdentity: identity,
+        relocateDirectory: move,
+        ensureDirectory: vi.fn(),
+        ensureRoot: vi.fn(),
+        list: vi.fn(),
+      },
+    });
+  const input = {
+    bindingId: project.bindingId,
+    generation: project.generation,
+    workspaceId: project.workspaceId,
+    slug: "research",
+  };
+  const document = async () =>
+    JSON.parse(await readFile(options.registryFilePath, "utf8")) as RegistryDocument;
+  return { registry, reopen, options, main, project, source, target, move, input, document };
+}
+
+it.each(["single-owner", "owner-scoped"] as const)(
+  "relocates %s Projects preserving data and binding identity; retry is idempotent",
+  async (namespace) => {
+    const f = await fixture(namespace);
+    await f.reopen().relocate(f.input);
+    await f.reopen().relocate(f.input);
+    expect(f.move).toHaveBeenCalledOnce();
+    expect(await readFile(path.join(f.target, "keep.txt"), "utf8")).toBe("precious data");
+    const binding = await f.reopen().getReadyBinding(f.input);
+    expect(binding.bindingId).toBe(f.project.bindingId);
+    expect(binding.filesystemIdentity).toEqual(f.project.filesystemIdentity);
+    expect(binding.relocation?.state).toBe("bound");
+    await expect(
+      f.reopen().provision({
+        bindingId: f.project.bindingId,
+        generation: f.project.generation,
+        idempotencyKey: f.project.idempotencyKey,
+        fingerprint: { ...f.project.provisionFingerprint, slug: "research" },
+      }),
+    ).resolves.toMatchObject({ bindingId: f.project.bindingId });
+  },
+);
+
+it.each(["planned", "rename", "renamed", "bound"])("resumes a crash at %s", async (step) => {
+  const f = await fixture("single-owner");
+  if (step === "rename")
+    f.move.mockImplementationOnce(async (input) => {
+      await mkdir(path.dirname(f.target), { recursive: true });
+      await rename(path.join(input.root, input.path), f.target);
+      throw new Error("crash after rename");
+    });
+  else f.move.mockRejectedValueOnce(new Error("crash before rename"));
+  await expect(f.reopen().relocate(f.input)).rejects.toThrow(/crash/);
+  await expect(f.reopen().getReadyBinding(f.input)).rejects.toThrow(/relocat/);
+  if (step === "renamed" || step === "bound") {
+    await mkdir(path.dirname(f.target), { recursive: true });
+    await rename(f.source, f.target);
+    const doc = await f.document();
+    const binding = doc.bindings.find((b) => b.bindingId === f.input.bindingId)!;
+    binding.relocation!.state = step;
+    if (step === "bound") binding.relativeSegments = binding.relocation!.target;
+    await writeFile(f.options.registryFilePath, JSON.stringify(doc));
+  }
+  await f.reopen().relocate(f.input);
+  expect(await readFile(path.join(f.target, "keep.txt"), "utf8")).toBe("precious data");
+  expect((await f.reopen().getReadyBinding(f.input)).relocation?.state).toBe("bound");
+});
+
+it("refuses an occupied destination and keeps the original bytes", async () => {
+  const f = await fixture("single-owner");
+  await mkdir(f.target, { recursive: true });
+  await writeFile(path.join(f.target, "other.txt"), "other");
+  await expect(f.reopen().relocate(f.input)).rejects.toThrow(/occupied/);
+  expect(f.move).not.toHaveBeenCalled();
+  expect(await readFile(path.join(f.source, "keep.txt"), "utf8")).toBe("precious data");
+});
+
+it.each(["missing", "symlink", "bound", "success"])("explicit adoption: %s", async (outcome) => {
+  const f = await fixture("single-owner");
+  if (outcome === "symlink") {
+    await mkdir(path.dirname(f.target), { recursive: true });
+    await symlink(f.source, f.target);
+  }
+  if (outcome === "success") {
+    await mkdir(path.dirname(f.target), { recursive: true });
+    await rename(f.source, f.target);
+  }
+  if (outcome === "bound") {
+    const doc = await f.document();
+    await mkdir(f.target, { recursive: true });
+    const stat = await lstat(f.target, { bigint: true });
+    doc.bindings.push({
+      ...f.project,
+      bindingId: createId("workspaceBinding"),
+      workspaceId: createId("workspace"),
+      idempotencyKey: crypto.randomUUID(),
+      relativeSegments: [...f.main.relativeSegments, "Projects", "research"],
+      filesystemIdentity: {
+        kind: "posix",
+        fileId: String(stat.ino),
+        volumeId: process.platform === "darwin" ? "0" : String(stat.dev),
+      },
+    });
+    await writeFile(f.options.registryFilePath, JSON.stringify(doc));
+  }
+  const result = f.reopen().relocate({ ...f.input, adopt: true });
+  if (outcome === "success") {
+    await result;
+    expect((await f.reopen().getReadyBinding(f.input)).relocation?.state).toBe("bound");
+  } else await expect(result).rejects.toThrow(outcome === "bound" ? /bound/ : undefined);
+});
+
+it.each(["single-owner", "owner-scoped"] as const)(
+  "adopts an explicitly relocated Main on %s storage and preserves its files",
+  async (namespace) => {
+    const f = await fixture(namespace);
+    const doc = await f.document();
+    doc.bindings = [];
+    await writeFile(f.options.registryFilePath, JSON.stringify(doc));
+    const mainPath = f.registry.resolvePath(f.main);
+    await writeFile(path.join(mainPath, "keep.txt"), "Main data");
+    const input = {
+      bindingId: f.main.bindingId,
+      generation: f.main.generation,
+      workspaceId: f.main.workspaceId,
+      ownerEnvironmentId: f.main.ownerEnvironmentId,
+      createdBy: f.main.createdBy,
+      slug: null,
+      adopt: true,
+    };
+    await f.reopen().relocate(input);
+    await f.reopen().relocate(input);
+    const adopted = await f.reopen().getReadyBinding(input);
+    expect(adopted.provisionFingerprint.kind).toBe("main");
+    expect(adopted.filesystemIdentity).toEqual(f.main.filesystemIdentity);
+    expect(await readFile(path.join(mainPath, "keep.txt"), "utf8")).toBe("Main data");
+    expect(f.move).not.toHaveBeenCalled();
+    await expect(
+      f.reopen().relocate({ ...input, bindingId: createId("workspaceBinding") }),
+    ).rejects.toThrow(/bound/);
+  },
+);
+
+it.each(["missing", "symlink", "unconfirmed"])("refuses Main adoption: %s", async (outcome) => {
+  const f = await fixture("single-owner");
+  const doc = await f.document();
+  doc.bindings = [];
+  await writeFile(f.options.registryFilePath, JSON.stringify(doc));
+  const mainPath = f.registry.resolvePath(f.main);
+  if (outcome !== "unconfirmed") await rm(mainPath, { recursive: true });
+  if (outcome === "symlink") await symlink(f.source, mainPath);
+  await expect(
+    f.reopen().relocate({
+      bindingId: f.main.bindingId,
+      generation: f.main.generation,
+      workspaceId: f.main.workspaceId,
+      ownerEnvironmentId: f.main.ownerEnvironmentId,
+      createdBy: f.main.createdBy,
+      slug: null,
+      adopt: outcome !== "unconfirmed",
+    }),
+  ).rejects.toThrow();
+  expect((await f.document()).bindings).toEqual([]);
+});
+
+// Released v3 shape: no slug or relocation fields, and specialized fingerprints.
+it.each([3, 2])(
+  "upgrades a released v%s registry containing Main and a specialized Workspace",
+  async (version) => {
+    const f = await fixture("single-owner");
+    const current = await f.document();
+    const bindings = [f.main, f.project].map((b) => ({
+      bindingId: b.bindingId,
+      createdBy: b.createdBy,
+      generation: b.generation,
+      idempotencyKey: b.idempotencyKey,
+      ownerEnvironmentId: b.ownerEnvironmentId,
+      provisionFingerprint: {
+        createdBy: b.createdBy,
+        kind: b === f.main ? "main" : "specialized",
+        ownerEnvironmentId: b.ownerEnvironmentId,
+        workspaceId: b.workspaceId,
+      },
+      relativeSegments: b.relativeSegments,
+      workspaceId: b.workspaceId,
+      filesystemIdentity: b.filesystemIdentity,
+      state: "ready",
+    }));
+    const released = {
+      bindings,
+      namespace: current.namespace,
+      revision: 2,
+      rootIdentity: current.rootIdentity,
+      version,
+      ...(version === 3 ? { receipts: [], storageAuthorityId: current.storageAuthorityId } : {}),
+    };
+    if (version === 2) {
+      await rename(f.options.registryFilePath, f.options.registryFilePath + ".old");
+      await writeFile(f.options.registryFilePath + ".legacy", JSON.stringify(released), {
+        mode: 0o600,
+      });
+      const upgrade = new LocalWorkspaceRegistry({
+        ...f.options,
+        legacyRegistryFilePath: f.options.registryFilePath + ".legacy",
+      });
+      await upgrade.preflight();
+    } else await writeFile(f.options.registryFilePath, JSON.stringify(released));
+    expect(
+      await f.reopen().getReadyBinding({
+        bindingId: f.main.bindingId,
+        generation: 1,
+        workspaceId: f.main.workspaceId,
+      }),
+    ).toMatchObject(f.main);
+    expect(await f.reopen().getReadyBinding(f.input)).toMatchObject(f.project);
+    await f.reopen().relocate(f.input);
+    const moved = await f.reopen().getReadyBinding(f.input);
+    expect(moved.bindingId).toBe(f.project.bindingId);
+    expect(moved.filesystemIdentity).toEqual(f.project.filesystemIdentity);
+    expect(await readFile(path.join(f.target, "keep.txt"), "utf8")).toBe("precious data");
+  },
+);

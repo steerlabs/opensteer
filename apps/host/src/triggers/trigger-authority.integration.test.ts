@@ -1,7 +1,8 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { toolsForCapabilityProfile, toolsForEnvironmentContract } from "@opensteer/agent-tools";
+import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
 import {
   createId,
   HarnessIdSchema,
@@ -37,7 +38,6 @@ import {
   type HostApiServerContext,
   type RunnerDescriptor,
 } from "@opensteer/protocol";
-import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
 import {
   TriggerControlInputSchema,
   TriggerRevisionSchema,
@@ -48,7 +48,7 @@ import {
 } from "@opensteer/triggers";
 import { sql } from "kysely";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -117,11 +117,13 @@ integration.sequential("Trigger authority through real Host services and Postgre
   const occurrenceClaims = new Map<string, TriggerControlScope>();
   const watchClaims = new Map<string, WatchControlScope>();
   const workspaceAccess = new WorkspaceExecutionAccessService({
-    shape: { kind: "server", defaultWorkspaceBacking: "portablefs" },
-    portableFs: {
-      exchange: { issue: async () => "trigger-compatibility-exchange" } as never,
-      exchangeUrl: "https://trigger-authority.opensteer.test/mount-exchange",
-    },
+    shape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+    local: {
+      planExecutionAccess: ({ workspace }: { workspace: Workspace }) => ({
+        ...workspace.backing,
+        workspaceId: workspace.id,
+      }),
+    } as never,
   });
   const commands = new CommandService({
     admission: new KeyedAdmissionQueue({
@@ -153,11 +155,14 @@ integration.sequential("Trigger authority through real Host services and Postgre
   const services = {
     canRunHarness: () => true,
     commands,
-    defaultWorkspaceBacking: "portablefs" as const,
-    environmentWorkspaceBackings: () => ["portablefs"] as const,
+    defaultWorkspaceBacking: "local-directory" as const,
+    environmentWorkspaceBackings: () => ["local-directory"] as const,
     isEnvironmentConnected: () => true,
     store,
-    workspaces: { create: createWorkspace },
+    workspaces: {
+      create: createWorkspace,
+      projectPath: async (workspace: Workspace) => `/Main/Projects/${workspace.slug}`,
+    },
   };
   function triggerService(backing = triggerStore) {
     return new TriggerService({
@@ -479,15 +484,13 @@ integration.sequential("Trigger authority through real Host services and Postgre
       "A3/F12 Workspace list",
       f.specialist.id,
       "list",
-      "only specialized Workspace",
+      "only project Workspace",
       async () => {
         const result = hostApi["triggers.list"].success.parse(
           await agentTrigger(f.specialistToken, { operation: "list", limit: 100 }),
         );
         expect(result.triggers.length).toBeGreaterThan(0);
-        expect(result.triggers.every(({ workspaceId }) => workspaceId === f.specialized.id)).toBe(
-          true,
-        );
+        expect(result.triggers.every(({ workspaceId }) => workspaceId === f.project.id)).toBe(true);
         expect(result.triggers.some(({ id }) => id === chatTrigger.trigger.id)).toBe(false);
         return result;
       },
@@ -614,8 +617,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
       ["Watch", watches, watchToken],
     ] as const) {
       for (const request of [
-        { type: "workspace.inspect" },
-        { type: "workspace.create", name: "Unauthorized Workspace" },
+        { type: "project.list" },
+        { type: "project.create", name: "Unauthorized Workspace" },
         { type: "thread.delegate", workspaceId: f.main.id, task: "Cross Workspace" },
         { type: "thread.delegate", threadId: f.unrelated.id, task: "Outside lineage" },
         { type: "thread.read", threadId: f.unrelated.id },
@@ -674,14 +677,14 @@ integration.sequential("Trigger authority through real Host services and Postgre
         async () => {
           const response = await control.handle(token, {
             type: "thread.delegate",
-            workspaceId: f.specialized.id,
+            workspaceId: f.project.id,
             task: "Local authorized work",
             requestId: randomUUID(),
           });
           if (response.type !== "thread.delegate.result")
             throw new Error("Expected local delegation");
           expect(response.result.thread).toMatchObject({
-            workspaceId: f.specialized.id,
+            workspaceId: f.project.id,
             lineageRootThreadId: f.specialist.id,
             accessMode: "auto",
           });
@@ -735,7 +738,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         });
         const response = await programs.handle(triggerToken, {
           type: "thread.delegate",
-          workspaceId: f.specialized.id,
+          workspaceId: f.project.id,
           task: "Work after mode change",
           requestId: randomUUID(),
         });
@@ -800,10 +803,10 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const own = await personCreate(f, f.chat);
     const token = await startProgram(f, own);
     for (const request of [
-      { type: "workspace.inspect" },
-      { type: "workspace.create", name: "Program-created Workspace" },
+      { type: "project.list" },
+      { type: "project.create", name: "Program-created Workspace" },
       { type: "thread.read", threadId: f.specialist.id },
-      { type: "thread.delegate", workspaceId: f.specialized.id, task: "Owner-wide delegation" },
+      { type: "thread.delegate", workspaceId: f.project.id, task: "Owner-wide delegation" },
       {
         type: "thread.message",
         threadId: f.unrelated.id,
@@ -1531,7 +1534,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         "delegated Trigger",
         f.fullChild.id,
         childClient,
-        toolsForEnvironmentContract("trigger", true)
+        toolsForCapabilityProfile("trigger")
           .filter(({ id }) => toolsForCapabilityProfile("delegated").some((tool) => tool.id === id))
           .map(({ name }) => name),
       ],
@@ -1539,9 +1542,14 @@ integration.sequential("Trigger authority through real Host services and Postgre
         "Chat Trigger",
         f.chat.id,
         chatClient,
-        toolsForEnvironmentContract("trigger", true).map(({ name }) => name),
+        toolsForCapabilityProfile("trigger").map(({ name }) => name),
       ],
-      ["delegated Watch", f.crossChild.id, watchClient, ["thread_message", "thread_delegate"]],
+      [
+        "delegated Watch",
+        f.crossChild.id,
+        watchClient,
+        ["environment_list", "thread_message", "thread_delegate"],
+      ],
     ] as const) {
       await check(
         `F16c ${label} tools`,
@@ -1554,8 +1562,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
           if (label === "delegated Trigger") {
             expect(names).toContain("trigger_read");
             expect(names).toContain("trigger_write");
-            expect(names).not.toContain("workspace_list");
-            expect(names).not.toContain("workspace_create");
+            expect(names).not.toContain("project_list");
+            expect(names).not.toContain("project_create");
           }
           return names;
         },
@@ -1629,24 +1637,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
         return result;
       },
     );
-    const legacy = await personCreate(f, f.chat, cron, { ...program, toolContractVersion: 1 });
-    const legacyClient = await connectMcp(endpoint, await startProgram(f, legacy));
-    await check(
-      "F24 previous program contract",
-      f.chat.id,
-      "version 1 thread_message",
-      "passive report",
-      async () => {
-        const response = await legacyClient.callTool({
-          name: "thread_message",
-          arguments: { delivery: "queue", threadId: "home", message: "Version 1 passive report" },
-        });
-        expect(response.isError).not.toBe(true);
-        const result = response.structuredContent as { input?: { policy?: string } } | undefined;
-        expect(result?.input?.policy).toBe("report");
-        return response;
-      },
-    );
   });
 
   it.each([1, 2, 3] as const)(
@@ -1658,7 +1648,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         bootId: "authority-boot",
         connectionGeneration: 1,
         capabilities: ["execution-plane-v2"],
-        modules: { agents: { workspaceBackings: ["portablefs"] } },
+        modules: { agents: { workspaceBackings: ["local-directory"] } },
       } as unknown as RunnerIdentity;
       const dispatch = vi.fn<RunnerRegistry["dispatch"]>(async (command) => ({
         type: "runner.command-accepted",
@@ -1682,7 +1672,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
         attachments: { listForRun: async () => [] },
         browser: { hasBrowserProfileAccess: async () => false },
         egress: {} as never,
-        integrationSkillsTokens: {} as never,
+        pluginVersions: async () => [],
+        pluginsTokens: {} as never,
         integrationToolsTokens: {} as never,
         triggerControlTokens: { issue: () => "control" } as never,
         triggerIntegrationToolsTokens: { issue: () => "integrations" } as never,
@@ -1835,7 +1826,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         runnerId: f.runnerId,
         bootId: "authority-boot",
         connectionGeneration: 1,
-        modules: { agents: { workspaceBackings: ["portablefs"] } },
+        modules: { agents: { workspaceBackings: ["local-directory"] } },
       } as unknown as RunnerIdentity;
       const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
         async () => undefined,
@@ -2067,7 +2058,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           const legacyTool = (await client.listTools()).tools.find(
             ({ name }) => name === "trigger_write",
           );
-          expect(legacyTool?.description).not.toContain("load opensteer-triggers");
+          expect(legacyTool?.description).toContain("load opensteer:triggers");
           return { refused, capabilities, supported };
         },
       );
@@ -2110,129 +2101,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
     });
     expect(moved.isError, JSON.stringify(moved)).not.toBe(true);
   });
-
-  it.each(["workspace", "delegated"] as const)(
-    "serves the frozen legacy Trigger contract to %s MCP sessions",
-    async (profile) => {
-      const previous = z
-        .object({ description: z.string(), inputSchema: z.record(z.string(), z.unknown()) })
-        .parse(
-          JSON.parse(
-            await readFile(
-              new URL(
-                "../../../../packages/agent-tools/src/fixtures/trigger-write-e45e4ecdc.json",
-                import.meta.url,
-              ),
-              "utf8",
-            ),
-          ),
-        );
-      const f = await fixture([]);
-      const token = profile === "workspace" ? f.specialistToken : f.fullChildToken;
-      const client = await connectMcp(await mcpEndpoint(), token);
-      const current = await connectMcp(await mcpEndpoint(false), token);
-      await check(
-        "legacy Trigger inventory",
-        profile,
-        "tools/list",
-        "e45e4ecdc description and schema",
-        async () => {
-          const tool = (await client.listTools()).tools.find(
-            ({ name }) => name === "trigger_write",
-          )!;
-          expect(tool.description).toBe(previous.description);
-          // MCP deliberately removes patterns and $schema from advertised inputs.
-          expect(tool.inputSchema).toEqual(advertisedJsonSchema(previous.inputSchema));
-          const currentTool = (await current.listTools()).tools.find(
-            ({ name }) => name === "trigger_write",
-          )!;
-          expect(currentTool.description).toContain("load opensteer-triggers");
-          expect(JSON.stringify(currentTool.inputSchema)).toContain('"enum":[1,2,3]');
-          return { legacy: tool, current: currentTool };
-        },
-      );
-    },
-  );
-
-  it.each([1, 2, 3] as const)(
-    "saved program contract %s selects discovery and preserves delivery through MCP",
-    async (version) => {
-      const f = await fixture();
-      const saved = await personCreate(f, f.chat, cron, {
-        ...program,
-        toolContractVersion: version,
-      });
-      expect((await personDetail(f, saved.trigger.id)).revision.program.toolContractVersion).toBe(
-        version,
-      );
-      const token = await startProgram(f, saved);
-      const watch = await personCreate(
-        f,
-        f.fullChild,
-        { kind: "watch" },
-        { ...program, toolContractVersion: version },
-      );
-      const watchToken = await startWatch(f, watch);
-      const endpoint = await mcpEndpoint();
-      const client = await connectMcp(endpoint, token);
-      const watchClient = await connectMcp(endpoint, watchToken);
-      const names = (await client.listTools()).tools.map(({ name }) => name);
-      const watchNames = (await watchClient.listTools()).tools.map(({ name }) => name).sort();
-      expect(names.includes("environment_list")).toBe(version === 3);
-      expect(watchNames).toEqual(
-        (version === 3
-          ? ["environment_list", "thread_delegate", "thread_message"]
-          : ["thread_delegate", "thread_message"]
-        ).sort(),
-      );
-      const discovery = await client.callTool({
-        name: version === 3 ? "environment_list" : "workspace_list",
-        arguments: {},
-      });
-      expect(discovery.isError).not.toBe(true);
-      expect(discovery.structuredContent).toHaveProperty("delegationDefault");
-      if (version === 3) {
-        const workspace = await client.callTool({ name: "workspace_list", arguments: {} });
-        expect(Object.keys(workspace.structuredContent ?? {}).sort()).toEqual([
-          "window",
-          "workspaces",
-        ]);
-        const watchDiscovery = await watchClient.callTool({
-          name: "environment_list",
-          arguments: {},
-        });
-        expect(watchDiscovery.isError).not.toBe(true);
-        expect(watchDiscovery.structuredContent).toHaveProperty("delegationDefault");
-        await check(
-          "v3 Watch discovery",
-          f.fullChild.id,
-          "environment_list",
-          "authorized discovery",
-          async () => watchDiscovery,
-        );
-      } else {
-        expect(discovery.structuredContent).toHaveProperty("workspaces");
-        expect(discovery.structuredContent).toHaveProperty("harnessesTruncated");
-      }
-      const message = await client.callTool({
-        name: "thread_message",
-        arguments: {
-          threadId: "home",
-          delivery: version === 1 ? "queue" : "report",
-          message: `Contract ${version} passive context`,
-        },
-      });
-      expect(message.isError).not.toBe(true);
-      expect(message.structuredContent).toMatchObject({ input: { policy: "report" } });
-      await check(
-        `saved contract ${version} MCP`,
-        f.chat.id,
-        "discovery and delivery",
-        "compatible",
-        async () => ({ names, watchNames, discovery, message }),
-      );
-    },
-  );
 
   it("F23/F25: migrates populated rows and parses old Host details", async () => {
     const f = await fixture();
@@ -2307,23 +2175,27 @@ integration.sequential("Trigger authority through real Host services and Postgre
 
   async function createWorkspace(input: {
     readonly createdBy: UserId;
+    readonly environmentId?: Workspace["backing"]["ownerEnvironmentId"];
     readonly idempotencyKey: string;
     readonly name: string;
-    readonly kind?: "main" | "specialized";
+    readonly kind?: "main" | "project";
   }) {
-    return store.createWorkspace({
-      ...input,
+    return createTestWorkspace(store, {
+      createdBy: input.createdBy,
+      idempotencyKey: input.idempotencyKey,
+      name: input.name,
+      ...(input.kind ? { kind: input.kind } : {}),
       backing: {
+        kind: "local-directory",
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: randomUUID(),
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId:
+          input.environmentId ??
+          (await store.findMainWorkspaceForOwner(input.createdBy))?.backing.ownerEnvironmentId ??
+          createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: {
-        kind: "hard-quota",
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-      },
+
       status: "ready",
     });
   }
@@ -2342,7 +2214,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     await store.ensureDeployment({
       canonicalOrigin: "https://trigger-authority.opensteer.test",
       hostInstanceId: createId("hostInstance"),
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
     });
     const pair = generateKeyPairSync("ed25519");
     const publicKeyPem = pair.publicKey.export({ format: "pem", type: "spki" }).toString();
@@ -2374,8 +2246,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           localStorage: null,
           maxConcurrentRuns: 16,
           providerStateModes: ["isolated"],
-          workspaceBackings: ["portablefs"],
-          workspaceMounts: [],
+          workspaceBackings: ["local-directory"],
         },
       },
       name: "Trigger authority Runner",
@@ -2404,16 +2275,18 @@ integration.sequential("Trigger authority through real Host services and Postgre
       publicKeyPem,
     });
     const main = await createWorkspace({
+      environmentId,
       createdBy: ownerId,
       idempotencyKey: randomUUID(),
       name: "Main Workspace",
       kind: "main",
     });
-    const specialized = await createWorkspace({
+    const project = await createWorkspace({
+      environmentId,
       createdBy: ownerId,
       idempotencyKey: randomUUID(),
-      name: "Specialized Workspace",
-      kind: "specialized",
+      name: "Project Workspace",
+      kind: "project",
     });
     const harness = await store.createHarnessInstance({
       config: { model: "test" },
@@ -2455,7 +2328,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const delegated = await child("Delegated worker", main, "auto");
     const fullChild = await child("Full-access author", main, "full-access");
     const sibling = await child("Same-Workspace sibling", main, "auto");
-    const crossChild = await child("Cross-Workspace sibling", specialized, "auto");
+    const crossChild = await child("Cross-Workspace sibling", project, "auto");
     const { thread: specialist } = await store.createThread({
       accessMode: "full-access",
       createdBy: ownerId,
@@ -2464,7 +2337,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       idempotencyKey: randomUUID(),
       modelSelection,
       title: "Specialist root",
-      workspaceId: specialized.id,
+      workspaceId: project.id,
     });
     const { thread: unrelated } = await store.createThread({
       accessMode: "approval-required",
@@ -2495,7 +2368,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       task: [{ type: "text", text: "Work outside Chat's delegation lineage" }],
       title: "Specialist's delegated worker",
       titleSource: "chosen",
-      workspaceId: specialized.id,
+      workspaceId: project.id,
     });
     expect(chat.capabilityProfileId).toBe("main");
     expect(specialist.capabilityProfileId).toBe("workspace");
@@ -2506,7 +2379,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     return {
       ...base,
       main,
-      specialized,
+      project,
       chat,
       child: delegated,
       fullChild,

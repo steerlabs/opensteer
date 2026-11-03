@@ -1,3 +1,8 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   createChannelId,
@@ -74,7 +79,7 @@ integration("channel conversation authority contexts", () => {
     await store.ensureDeployment({
       canonicalOrigin: "https://channel-contexts.test.invalid",
       hostInstanceId: createId("hostInstance"),
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
     });
 
     runnerId = createId("runner");
@@ -123,8 +128,7 @@ integration("channel conversation authority contexts", () => {
           localStorage: null,
           maxConcurrentRuns: 4,
           providerStateModes: ["isolated"],
-          workspaceBackings: ["portablefs"],
-          workspaceMounts: [],
+          workspaceBackings: ["local-directory"],
         },
         messaging: {
           capabilities: [
@@ -195,18 +199,17 @@ integration("channel conversation authority contexts", () => {
 
   async function createFixture(suffix: string, policy: ChannelAccessPolicy) {
     const ownerId = await store.createUser(`${suffix} owner`);
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: `vol_channel_context_${suffix}`,
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: ownerId,
       idempotencyKey: `workspace-channel-context-${suffix}`,
       name: `Channel context ${suffix}`,

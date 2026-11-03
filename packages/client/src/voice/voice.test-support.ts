@@ -23,7 +23,7 @@ export function voiceSavedTabs(host: MockHostClient): HostSnapshot {
       createdAt: at,
       updatedAt: at,
       origin: "workspace",
-      access: "full-control",
+      access: "read-write",
       placement: { kind: "runner", runnerId: createId("runner") },
       profileId: null,
       runtimeId: "test",

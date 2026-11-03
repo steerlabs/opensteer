@@ -1,3 +1,9 @@
+import { assertLineageCompatibleReuse } from "./resource-access.js";
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
@@ -736,7 +742,6 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     const installationId = createIntegrationId("installation");
     const serverId = createIntegrationId("server");
     const tool = discoveredTool(createIntegrationId("tool"));
-    const skillId = createIntegrationId("skill");
     await platform.install({
       actorUserId: userId,
       adapterSnapshot: {
@@ -760,15 +765,6 @@ integration.sequential("PostgreSQL integration uninstall", () => {
           statusDetail: null,
           catalog: { definitions: {}, tools: [tool] },
           transport: { adapter: "openapi", definitionId: "records-catalog", type: "adapter" },
-        },
-      ],
-      skills: [
-        {
-          description: "Draft a record summary",
-          digest: "s".repeat(43),
-          id: skillId,
-          name: "record-summary",
-          status: "active",
         },
       ],
     });
@@ -814,7 +810,6 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     await expect(platform.listInstallations()).resolves.toEqual([]);
     await expect(countRows(database, "integrationServers")).resolves.toBe(0);
     await expect(countRows(database, "integrationTools")).resolves.toBe(0);
-    await expect(countRows(database, "integrationSkills")).resolves.toBe(0);
     await expect(countRows(database, "integrationGrants")).resolves.toBe(0);
     // The catalog definition still exists, so the account it authorizes stays usable.
     await expect(countRows(database, "integrationConnections")).resolves.toBe(1);
@@ -1480,7 +1475,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       if (!(await store.getDeployment())) {
         await store.ensureDeployment({
           canonicalOrigin: "https://computer-apps.test.invalid",
-          deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+          deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
           hostInstanceId: createId("hostInstance"),
         });
       }
@@ -2687,7 +2682,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     async (resource, { storeFixture }) => {
       const { store, fixture, setApprovedComputerConnection, definition, platform, database } =
         storeFixture;
-      const run = await runningRunFixture(store, "fulfillment-order", { kind: "specialized" });
+      const run = await runningRunFixture(store, "fulfillment-order", { kind: "project" });
       const setup = await fixture("fulfillment-order", run.userId);
       const connected = await setApprovedComputerConnection({
         access: "read",
@@ -2845,7 +2840,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     }
   });
 
-  it("validates computer fulfillment authority atomically for Main and specialized Workspaces", async ({
+  it("validates computer fulfillment authority atomically for Main and project Workspaces", async ({
     storeFixture,
   }) => {
     const {
@@ -2858,21 +2853,20 @@ integration.sequential("PostgreSQL computer app connections", () => {
     } = storeFixture;
     const run = await runningRunFixture(store, "computer-request-authority");
     const setup = await fixture("request-authority", run.userId);
-    const specialized = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_computer_request_authority_specialized",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: run.userId,
-      idempotencyKey: "computer-request-authority-specialized",
-      kind: "specialized",
+      idempotencyKey: "computer-request-authority-project",
+      kind: "project",
       name: "Computer request authority specialist",
       status: "ready",
     });
@@ -2928,7 +2922,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         name: "revoked",
       },
     ];
-    for (const target of [run.workspaceId, specialized.id]) {
+    for (const target of [run.workspaceId, project.id]) {
       for (const candidate of cases) {
         const opened = await platform.requests.createIntegrationAccessRequest({
           access: "read",
@@ -2991,7 +2985,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       reason: "Send with Messages",
       requestedBy: run.userId,
       requestedServerId: setup.serverId,
-      targetWorkspaceId: specialized.id,
+      targetWorkspaceId: project.id,
     });
     await expect(
       platform.requests.resolveIntegrationAccessRequest({
@@ -4242,6 +4236,54 @@ integration.sequential("PostgreSQL computer app connections", () => {
     await expect(accounts(run.threadId)).resolves.not.toEqual([]);
     await expect(accounts(channelRoot)).resolves.toEqual([]);
     await expect(accounts(channelChild)).resolves.toEqual([]);
+    const { database } = storeFixture;
+    const profile = await store.createBrowserProfile({
+      name: "Owner",
+      idempotencyKey: "access-owner-profile",
+      ownerId: run.userId,
+    });
+    // The same guard resolves direct Thread callers and Run-backed browser callers.
+    await expect(
+      store.resolveResourceAccess({
+        ownerUserId: run.userId,
+        workspaceId: run.workspaceId,
+        threadId: channelRoot,
+      }),
+    ).resolves.toMatchObject({ access: null, inheritsMain: false });
+    await expect(
+      store.resolveResourceAccess({
+        ownerUserId: run.userId,
+        workspaceId: run.workspaceId,
+        threadId: homeChild,
+      }),
+    ).resolves.toMatchObject({ access: "read-write", inheritsMain: true });
+    await expect(
+      store.listActiveBrowserProfileGrantsForWorkspace(
+        run.workspaceId,
+        run.userId,
+        `run:${run.runId}`,
+      ),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ profileId: profile.id, access: "read-write" }),
+      ]),
+    );
+    await expect(
+      store.listActiveBrowserProfileGrantsForWorkspace(
+        run.workspaceId,
+        run.userId,
+        `thread:${channelRoot}`,
+      ),
+    ).resolves.toEqual([]);
+    await expect(assertLineageCompatibleReuse(database, channelRoot, homeChild)).rejects.toThrow(
+      "Start a new task instead",
+    );
+    await expect(assertLineageCompatibleReuse(database, channelChild, homeChild)).rejects.toThrow(
+      "Start a new task instead",
+    );
+    await expect(
+      assertLineageCompatibleReuse(database, homeChild, channelChild),
+    ).resolves.toBeUndefined();
   });
 
   // Computer use is the one definition whose connections name an app, so these
@@ -4263,7 +4305,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         database,
       } = storeFixture;
       const run = await runningRunFixture(store, `covered-order-${policy}`, {
-        kind: "specialized",
+        kind: "project",
       });
       const setup = await guiFixture(`covered-order-${policy}`, run.userId);
       const connected = await approveApp({
@@ -4586,7 +4628,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     storeFixture,
   }) => {
     const { store, guiFixture, guiInput, notes, platform, allowAutomatic, database } = storeFixture;
-    const run = await runningRunFixture(store, "automatic-grant", { kind: "specialized" });
+    const run = await runningRunFixture(store, "automatic-grant", { kind: "project" });
     const setup = await guiFixture("automatic-grant", run.userId);
     const input = {
       ...guiInput({
@@ -4649,7 +4691,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
   }) => {
     const { store, guiFixture, approveApp, notes, database, allowAutomatic, platform, guiInput } =
       storeFixture;
-    const run = await runningRunFixture(store, "automatic-existing", { kind: "specialized" });
+    const run = await runningRunFixture(store, "automatic-existing", { kind: "project" });
     const setup = await guiFixture("automatic-existing", run.userId);
     const signed = await approveApp({
       access: "read-write",
@@ -4710,7 +4752,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       guiDefinition,
       approveApp,
     } = storeFixture;
-    const run = await runningRunFixture(store, "blocked-automatic", { kind: "specialized" });
+    const run = await runningRunFixture(store, "blocked-automatic", { kind: "project" });
     const setup = await guiFixture("blocked-automatic", run.userId);
     await allowAutomatic(setup);
     const input = {
@@ -4818,7 +4860,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       guiInput,
       database,
     } = storeFixture;
-    const run = await runningRunFixture(store, "automatic-pending", { kind: "specialized" });
+    const run = await runningRunFixture(store, "automatic-pending", { kind: "project" });
     const setup = await guiFixture("automatic-pending", run.userId);
     const pending = await askOnMac({
       access: "read",
@@ -5141,7 +5183,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("replays one ask, then fulfils it with the specialized Workspace grant when that Mac approves", async ({
+  it("replays one ask, then fulfils it with the project Workspace grant when that Mac approves", async ({
     storeFixture,
   }) => {
     const {
@@ -5155,7 +5197,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       guiInput,
       database,
     } = storeFixture;
-    const run = await runningRunFixture(store, "computer-use-grant", { kind: "specialized" });
+    const run = await runningRunFixture(store, "computer-use-grant", { kind: "project" });
     const setup = await guiFixture("computer-use-grant", run.userId);
     const ask = {
       access: "read" as const,
@@ -5502,7 +5544,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       platform,
       guiInput,
     } = storeFixture;
-    const run = await runningRunFixture(store, "identity-change", { kind: "specialized" });
+    const run = await runningRunFixture(store, "identity-change", { kind: "project" });
     const mac = await guiFixture("identity-change", run.userId);
     await approveApp({
       access: "read",
@@ -5572,7 +5614,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
   }) => {
     const { store, guiFixture, guiDigest, guiDefinition, askOnMac, notes, platform, guiInput } =
       storeFixture;
-    const run = await runningRunFixture(store, "identity-change-pending", { kind: "specialized" });
+    const run = await runningRunFixture(store, "identity-change-pending", { kind: "project" });
     const mac = await guiFixture("identity-change-pending", run.userId);
     const ask = {
       access: "read" as const,
@@ -5658,7 +5700,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     // automatically, the other already has the app and needs only this
     // Workspace's grant. Each writes the Workspace and the Computer use
     // server; taken in opposite orders, they deadlock.
-    const first = await runningRunFixture(store, "lock-order", { kind: "specialized" });
+    const first = await runningRunFixture(store, "lock-order", { kind: "project" });
     const second = await anotherRunIn(store, first, "lock-order-second");
     const automatic = await guiFixture("lock-order", first.userId);
     const covered = { runnerId: createId("runner") };
@@ -5763,7 +5805,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     async function setup(storeFixture: StoreFixture, suffix: string) {
       const { store, guiFixture, notes, guiDigest, guiDefinition, platform, guiInput, database } =
         storeFixture;
-      const run = await runningRunFixture(store, suffix, { kind: "specialized" });
+      const run = await runningRunFixture(store, suffix, { kind: "project" });
       const mac = await guiFixture(suffix, run.userId);
       const ask = (access: "read" | "read-write", app: ComputerAppIdentity = notes) => ({
         access,
@@ -6291,7 +6333,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture,
     }) => {
       const { store, askOnMac, database, askForApp, platform } = storeFixture;
-      const run = await runningRunFixture(store, "phone-ask", { kind: "specialized" });
+      const run = await runningRunFixture(store, "phone-ask", { kind: "project" });
       const setup = await phoneFixture(storeFixture, "phone-ask", run.userId);
       const opened = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read-write"));
       expect(opened.setupRequest).toMatchObject({
@@ -6355,7 +6397,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture,
     }) => {
       const { store, askOnMac, notes, guiDigest, askForApp } = storeFixture;
-      const run = await runningRunFixture(store, "phone-and-mac", { kind: "specialized" });
+      const run = await runningRunFixture(store, "phone-and-mac", { kind: "project" });
       const setup = await phoneFixture(storeFixture, "phone-and-mac", run.userId);
       const phone = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
       const mac = await askOnMac({
@@ -6383,7 +6425,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture,
     }) => {
       const { store, askOnMac, platform } = storeFixture;
-      const run = await runningRunFixture(store, "phone-widen", { kind: "specialized" });
+      const run = await runningRunFixture(store, "phone-widen", { kind: "project" });
       const setup = await phoneFixture(storeFixture, "phone-widen", run.userId);
       const narrow = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
       const other = await anotherRunIn(store, run, "phone-widen-other");
@@ -6409,7 +6451,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture,
     }) => {
       const { store, askOnMac, platform, database, askForApp } = storeFixture;
-      const run = await runningRunFixture(store, "phone-automatic", { kind: "specialized" });
+      const run = await runningRunFixture(store, "phone-automatic", { kind: "project" });
       const setup = await phoneFixture(storeFixture, "phone-automatic", run.userId);
       // A setup request to stand in the forged envelope; nothing reads it.
       const phoneOpened = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
@@ -6445,7 +6487,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture,
     }) => {
       const { store, askOnMac, platform, setApprovedComputerConnection, definition } = storeFixture;
-      const run = await runningRunFixture(store, "phone-lower", { kind: "specialized" });
+      const run = await runningRunFixture(store, "phone-lower", { kind: "project" });
       const setup = await phoneFixture(storeFixture, "phone-lower", run.userId);
       const opened = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read-write"));
       await allowPhoneFromClient(storeFixture, setup, "read-write", opened.setupRequest);
@@ -6505,7 +6547,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture,
     }) => {
       const { store, askOnMac, platform } = storeFixture;
-      const run = await runningRunFixture(store, "phone-key", { kind: "specialized" });
+      const run = await runningRunFixture(store, "phone-key", { kind: "project" });
       const setup = await phoneFixture(storeFixture, "phone-key", run.userId);
       const opened = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
       const mutation = {
@@ -6539,15 +6581,10 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture,
     }) => {
       const { store, askOnMac, platform, database } = storeFixture;
-      const run = await runningRunFixture(store, "phone-settle", { kind: "specialized" });
+      const run = await runningRunFixture(store, "phone-settle", { kind: "project" });
       const setup = await phoneFixture(storeFixture, "phone-settle", run.userId);
       const narrow = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
-      const workspace = await createWorkspace(
-        store,
-        run.userId,
-        "phone-settle-other",
-        "specialized",
-      );
+      const workspace = await createWorkspace(store, run.userId, "phone-settle-other", "project");
       const other = await startRunIn(
         store,
         { ...run, workspaceId: workspace.id },
@@ -6660,7 +6697,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture,
     }) => {
       const { store, askOnMac, database, platform } = storeFixture;
-      const run = await runningRunFixture(store, "phone-upgrade", { kind: "specialized" });
+      const run = await runningRunFixture(store, "phone-upgrade", { kind: "project" });
       const setup = await phoneFixture(storeFixture, "phone-upgrade", run.userId);
       const pending = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
       const other = await anotherRunIn(store, run, "phone-upgrade-decline");
@@ -6784,7 +6821,6 @@ async function countRows(
     | "integrationConnections"
     | "integrationGrants"
     | "integrationServers"
-    | "integrationSkills"
     | "integrationTools"
     | "mcpOAuthCredentials",
 ): Promise<number> {
@@ -6858,20 +6894,19 @@ async function createWorkspace(
   store: OpensteerStore,
   createdBy: ReturnType<typeof createId<"user">>,
   suffix: string,
-  kind?: "main" | "specialized",
+  kind?: "main" | "project",
 ) {
-  return store.createWorkspace({
+  return createTestWorkspace(store, {
     backing: {
       generation: 1,
-      kind: "portablefs",
-      serviceId: "test-portablefs",
-      volumeId: `wsp_${suffix.replaceAll("-", "_")}`,
+      kind: "local-directory",
+      bindingId: createStorageFixtureId("workspaceBinding"),
+      ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+        "env_00000000-0000-4000-8000-000000000001",
+      ),
+      storageAuthorityId: createStorageFixtureId("storageAuthority"),
     },
-    capacityPolicy: {
-      blockHardLimitBytes: 10_000_000,
-      inodeHardLimit: 10_000,
-      kind: "hard-quota",
-    },
+
     createdBy,
     idempotencyKey: `workspace-${suffix}`,
     ...(kind === undefined ? {} : { kind }),
@@ -6884,7 +6919,7 @@ async function createWorkspace(
 async function runningRunFixture(
   store: OpensteerStore,
   suffix: string,
-  options: { readonly kind?: "main" | "specialized" } = {},
+  options: { readonly kind?: "main" | "project" } = {},
 ) {
   const userId = await store.createUser(`Owner ${suffix}`);
   const runnerId = createId("runner");
@@ -6893,7 +6928,7 @@ async function runningRunFixture(
     await store.ensureDeployment({
       canonicalOrigin: "https://test-host.invalid",
       deploymentShape: {
-        defaultWorkspaceBacking: "portablefs",
+        defaultWorkspaceBacking: "local-directory",
         kind: "server" as const,
       },
       hostInstanceId: createId("hostInstance"),
@@ -6942,8 +6977,7 @@ async function runningRunFixture(
         localStorage: null,
         maxConcurrentRuns: 4,
         providerStateModes: ["isolated"],
-        workspaceBackings: ["portablefs"],
-        workspaceMounts: [],
+        workspaceBackings: ["local-directory"],
       },
     },
     name: `Runner ${suffix}`,

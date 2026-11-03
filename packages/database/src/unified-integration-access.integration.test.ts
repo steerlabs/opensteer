@@ -1,3 +1,8 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
@@ -675,7 +680,7 @@ async function runningRunFixture(store: OpensteerStore, suffix: string) {
   const userId = await store.createUser(`Owner ${suffix}`);
   await store.ensureDeployment({
     canonicalOrigin: "https://test-host.invalid",
-    deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+    deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
     hostInstanceId: createId("hostInstance"),
   });
   const runnerId = createId("runner");
@@ -723,8 +728,7 @@ async function runningRunFixture(store: OpensteerStore, suffix: string) {
         localStorage: null,
         maxConcurrentRuns: 1,
         providerStateModes: ["isolated"],
-        workspaceBackings: ["portablefs"],
-        workspaceMounts: [],
+        workspaceBackings: ["local-directory"],
       },
     },
     name: `Runner ${suffix}`,
@@ -738,14 +742,17 @@ async function runningRunFixture(store: OpensteerStore, suffix: string) {
     publicKeyFingerprint: `sha256:${createHash("sha256").update(publicKeyDer).digest("base64url")}`,
     publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
   });
-  const workspace = await store.createWorkspace({
+  const workspace = await createTestWorkspace(store, {
     backing: {
       generation: 1,
-      kind: "portablefs",
-      serviceId: "test-portablefs",
-      volumeId: `wsp_${suffix.replaceAll("-", "_")}`,
+      kind: "local-directory",
+      bindingId: createStorageFixtureId("workspaceBinding"),
+      ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+        "env_00000000-0000-4000-8000-000000000001",
+      ),
+      storageAuthorityId: createStorageFixtureId("storageAuthority"),
     },
-    capacityPolicy: { blockHardLimitBytes: 10_000_000, inodeHardLimit: 10_000, kind: "hard-quota" },
+
     createdBy: userId,
     idempotencyKey: `workspace-${suffix}`,
     name: `Workspace ${suffix}`,

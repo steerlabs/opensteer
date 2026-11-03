@@ -108,8 +108,7 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
   const selectedWorkspaceId = workspaceId ?? homeWorkspaceId;
   const workspace =
     snapshot.workspaces.find((candidate) => candidate.id === selectedWorkspaceId) ?? null;
-  const workspaceKind: "main" | "specialized" =
-    workspace?.kind === "specialized" ? "specialized" : "main";
+  const workspaceKind: "main" | "project" = workspace?.kind === "project" ? "project" : "main";
 
   const [dashboard, setDashboard] = useState<IntegrationDashboard | null>(null);
   const [platform, setPlatform] = useState<IntegrationPlatformDashboardView | null>(null);
@@ -388,6 +387,28 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
    * integration with a definition, catalog or proposed, opens its detail view,
    * anything else scrolls its installed row in.
    */
+  /**
+   * Deep link from a Project's settings: its access, chosen and brought into
+   * view once the page has drawn it. With a provider too, that integration's
+   * own page opens instead and leads back here.
+   */
+  const workspaceParam = searchParams.get("workspace");
+  const [revealAccess, setRevealAccess] = useState(false);
+  useEffect(() => {
+    if (!workspaceParam) return;
+    if (snapshot.workspaces.some(({ id }) => id === workspaceParam)) {
+      setWorkspaceId(workspaceParam);
+      if (!searchParams.has("provider")) setRevealAccess(true);
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete("workspace");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, snapshot.workspaces, workspaceParam]);
+  useEffect(() => {
+    if (!revealAccess || !dashboard) return;
+    document.getElementById(workspaceAccessSectionId)?.scrollIntoView({ block: "start" });
+    setRevealAccess(false);
+  }, [dashboard, revealAccess]);
   const focusParam = searchParams.get("provider");
   useEffect(() => {
     if (!focusParam || !platform) return;
@@ -459,37 +480,6 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
             .name ?? null,
         status: "connected",
       });
-      setView({ kind: "overview" });
-    } catch {
-      /* surfaced inline */
-    }
-  }
-
-  async function installAgentPlugin(directory: string, runnerId: string | null) {
-    try {
-      const installed = await run(async () => {
-        const installed = await client.dispatch({
-          idempotencyKey: mutationIdempotencyKey("integration-plugin"),
-          input: { directory, ...(runnerId ? { runnerId } : {}) },
-          type: "integration.agentPlugin.install",
-        });
-        if (installed.type !== "integration.agentPlugin.install") {
-          throw new Error("Integration plugin command mismatch.");
-        }
-        return installed;
-      });
-      if (installed.issues.length > 0) {
-        setNotice({
-          detail: `Installed with ${installed.issues.length} skipped component${installed.issues.length === 1 ? "" : "s"}: ${installed.issues
-            .slice(0, 3)
-            .map(({ entry, message: issue }) => `${entry ?? "plugin"}: ${issue}`)
-            .join("; ")}`,
-          title: "Installation result",
-        });
-      } else {
-        setNotice(null);
-        toast.success("Agent plugin installed.");
-      }
       setView({ kind: "overview" });
     } catch {
       /* surfaced inline */
@@ -704,7 +694,7 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
                 Settings
               </Link>
             }
-            description="Connect your accounts, install integrations, and decide exactly which tools and skills each specialist can use."
+            description="Connect your accounts, install integrations, and decide exactly which tools each project can use."
             eyebrow="Connections"
             title="Integrations"
           />
@@ -730,7 +720,7 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
                     {result.status === "connected"
                       ? workspaceKind === "main"
                         ? "The account is ready for Opensteer and your tasks."
-                        : "The account is ready for exact tools and skills you authorize."
+                        : "The account is ready for exact tools you authorize."
                       : integrationResultDetail(result.status)}
                   </p>
                 </div>
@@ -837,7 +827,7 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
                   workspaces={snapshot.workspaces}
                 />
                 <PluginsAndMcpSection
-                  entries={otherInstallations}
+                  entries={otherInstallations.filter((e) => e.installation.sourceKind !== "plugin")}
                   isAdministrator={dashboard?.isAdministrator ?? false}
                   onInstall={() => {
                     setError(null);
@@ -907,9 +897,7 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
 
         {view.kind === "install" && dashboard?.isAdministrator ? (
           <IntegrationInstaller
-            computers={snapshot.machines.filter(({ computerUse }) => computerUse !== null)}
             error={error}
-            onAgentPlugin={(directory, runnerId) => void installAgentPlugin(directory, runnerId)}
             onBack={() => {
               setError(null);
               setView({ kind: "overview" });

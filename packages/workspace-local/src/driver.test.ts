@@ -4,6 +4,8 @@ import {
   type StorageAuthorityId,
   type UserId,
 } from "@opensteer/core";
+import { createHash } from "node:crypto";
+import { WorkspaceBindingIdSchema } from "@opensteer/core";
 import { localWorkspaceBindingId } from "@opensteer/workspace/local-binding";
 import {
   chmod,
@@ -48,6 +50,79 @@ describe("LocalWorkspaceAuthority", () => {
     });
     expect(await lstat(fixture.visibleRootPath)).toMatchObject({});
     expect((await registryDocument(fixture.registryFilePath)).bindings).toEqual([]);
+  });
+
+  it("reads existing specialized registry fingerprints without changing binding identity", async () => {
+    const fixture = await provisionedFixture();
+    const current = await registryDocument(fixture.registryFilePath);
+    await overwriteRegistry(fixture.registryFilePath, {
+      ...current,
+      bindings: current.bindings.map((binding) => ({
+        ...binding,
+        provisionFingerprint: { ...binding.provisionFingerprint, kind: "project" },
+      })),
+    });
+    const reopened = new LocalWorkspaceAuthority(fixture.options);
+    expect(await reopened.inspect(fixture.binding)).toEqual({ status: "ready" });
+    await reopened.provision(fixture.request);
+    expect((await reopened.resolveReadAuthority(fixture.binding)).root).toBe(fixture.workspacePath);
+    expect((await registryDocument(fixture.registryFilePath)).bindings[0]?.bindingId).toBe(
+      fixture.binding.bindingId,
+    );
+  });
+
+  it.each(["single-owner", "owner-scoped"] as const)(
+    "provisions nested Projects and destroys only their subtree in %s storage",
+    async (namespace) => {
+      const fixture = await createFixture(
+        namespace === "owner-scoped" ? { namespace: { kind: namespace } } : undefined,
+      );
+      const owner = createId("user");
+      const main = await fixture.provision({ createdBy: owner, kind: "main" });
+      const project = await fixture.provision({ createdBy: owner, slug: "research" });
+      const sibling = await fixture.provision({ createdBy: owner, slug: "research-2" });
+      const mainPath = (await fixture.authority.resolveReadAuthority(main.binding)).root;
+      const projectPath = (await fixture.authority.resolveReadAuthority(project.binding)).root;
+      expect(projectPath).toBe(path.join(mainPath, "Projects", "research"));
+      await expect(
+        fixture.authority.provision({
+          ...project,
+          fingerprint: { ...project.fingerprint, slug: "renamed" },
+        }),
+      ).rejects.toThrow("already used for another request");
+      expect((await fixture.authority.resolveReadAuthority(project.binding)).root).toBe(
+        projectPath,
+      );
+      await writeFile(path.join(mainPath, "keep.txt"), "main");
+      await writeFile(path.join(projectPath, "remove.txt"), "project");
+      await fixture.authority.destroy(project.binding);
+      await expect(lstat(projectPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(path.join(mainPath, "keep.txt"), "utf8")).toBe("main");
+      expect(await fixture.authority.inspect(main.binding)).toEqual({ status: "ready" });
+      expect(await fixture.authority.inspect(sibling.binding)).toEqual({ status: "ready" });
+      await expect(fixture.authority.destroy(main.binding)).rejects.toThrow(
+        "Main cannot be destroyed",
+      );
+    },
+  );
+
+  it("refuses unbound destinations and symlinked Project ancestors", async () => {
+    const fixture = await createFixture();
+    const owner = createId("user");
+    const main = await fixture.provision({ createdBy: owner, kind: "main" });
+    const mainPath = (await fixture.authority.resolveReadAuthority(main.binding)).root;
+    await mkdir(path.join(mainPath, "Projects", "occupied"), { recursive: true });
+    await expect(fixture.provision({ createdBy: owner, slug: "occupied" })).rejects.toThrow(
+      "already exists without a binding",
+    );
+    await rename(path.join(mainPath, "Projects"), path.join(mainPath, "saved"));
+    await symlink(path.join(mainPath, "saved"), path.join(mainPath, "Projects"), "dir");
+    await expect(fixture.provision({ createdBy: owner, slug: "new" })).rejects.toThrow();
+  });
+
+  it("refuses nested provisioning without the owner's Main authority", async () => {
+    const fixture = await createFixture();
+    await expect(fixture.provision({ slug: "research" })).rejects.toThrow("owner's ready Main");
   });
 
   it("mints one storage authority identity and never rewrites it", async () => {
@@ -172,16 +247,16 @@ describe("LocalWorkspaceAuthority", () => {
     await expect(lstat(fixture.registryFilePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("uses stable managed paths for Main and specialized Workspaces", async () => {
+  it("uses stable managed paths for Main and project Workspaces", async () => {
     const fixture = await createFixture();
     const main = await fixture.provision({ kind: "main" });
-    const specialized = await fixture.provision({ kind: "specialized" });
+    const project = await fixture.provision({ kind: "project" });
 
     expect((await fixture.authority.resolveReadAuthority(main.binding)).root).toBe(
       path.join(fixture.visibleRootPath, "main"),
     );
-    expect((await fixture.authority.resolveReadAuthority(specialized.binding)).root).toBe(
-      path.join(fixture.visibleRootPath, specialized.intent.workspaceId),
+    expect((await fixture.authority.resolveReadAuthority(project.binding)).root).toBe(
+      path.join(fixture.visibleRootPath, project.intent.workspaceId),
     );
   });
 
@@ -224,7 +299,11 @@ describe("LocalWorkspaceAuthority", () => {
     const restarted = new LocalWorkspaceAuthority(fixture.options);
 
     expect(await restarted.inspect(request.binding)).toEqual({ status: "ready" });
-    await expect(restarted.provision(request)).resolves.toBeUndefined();
+    await expect(restarted.provision(request)).resolves.toBe(
+      (await restarted.inventory()).bindings.find(
+        ({ bindingId }) => bindingId === request.binding.bindingId,
+      )?.path,
+    );
     expect((await registryDocument(fixture.registryFilePath)).bindings).toHaveLength(1);
   });
 
@@ -426,6 +505,7 @@ describe("LocalWorkspaceAuthority", () => {
         {
           bindingId: fixture.binding.bindingId,
           generation: 1,
+          path: fixture.workspacePath,
           state: "ready",
           workspaceId: fixture.binding.workspaceId,
         },
@@ -547,9 +627,10 @@ describe("LocalWorkspaceAuthority", () => {
 });
 
 interface ProvisionIntent {
+  readonly slug?: string;
   readonly createdBy: UserId;
   readonly idempotencyKey: string;
-  readonly kind: "main" | "specialized";
+  readonly kind: "main" | "project";
   readonly ownerEnvironmentId: EnvironmentId;
   readonly workspaceId: ReturnType<typeof createId<"workspace">>;
 }
@@ -561,7 +642,7 @@ function provisionIntent(
   return {
     createdBy: createId("user"),
     idempotencyKey: `workspace:${createId("workspace")}:provision:v1:1`,
-    kind: "specialized",
+    kind: "project",
     ownerEnvironmentId,
     workspaceId: createId("workspace"),
     ...overrides,
@@ -595,7 +676,11 @@ async function createFixture(input?: {
         storageAuthorityId,
         workspaceId: intent.workspaceId,
       },
-      fingerprint: { createdBy: intent.createdBy, workspaceKind: intent.kind },
+      fingerprint: {
+        createdBy: intent.createdBy,
+        workspaceKind: intent.kind,
+        ...(intent.slug ? { slug: intent.slug } : {}),
+      },
       idempotencyKey: intent.idempotencyKey,
       intent,
     };
@@ -638,3 +723,39 @@ async function overwriteRegistry(filePath: string, value: unknown): Promise<void
   await writeFile(filePath, `${JSON.stringify(value)}\n`, "utf8");
   if (process.platform !== "win32") await chmod(filePath, 0o600);
 }
+
+it("retries a released specialized binding after the Project migration", async () => {
+  const fixture = await createFixture();
+  const request = await fixture.provisionRequest({});
+  const i = request.intent;
+  const bytes = createHash("sha256")
+    .update(
+      [
+        "opensteer:local-workspace-binding:v1",
+        i.workspaceId,
+        i.ownerEnvironmentId,
+        i.createdBy,
+        "specialized",
+        i.idempotencyKey,
+      ].join("\0"),
+    )
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x80;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const h = bytes.toString("hex");
+  const bindingId = WorkspaceBindingIdSchema.parse(
+    `wbd_${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`,
+  );
+  expect(bindingId).not.toBe(request.binding.bindingId);
+  const legacy = { ...request, binding: { ...request.binding, bindingId } };
+  const originalPath = await fixture.authority.provision(legacy);
+  const document = await readFile(fixture.registryFilePath, "utf8");
+  await writeFile(
+    fixture.registryFilePath,
+    document.replaceAll('"kind":"project"', '"kind":"specialized"'),
+  );
+  expect(await readFile(fixture.registryFilePath, "utf8")).toContain('"kind":"specialized"');
+  const upgraded = new LocalWorkspaceAuthority(fixture.options);
+  await expect(upgraded.provision(legacy)).resolves.toBe(originalPath);
+});

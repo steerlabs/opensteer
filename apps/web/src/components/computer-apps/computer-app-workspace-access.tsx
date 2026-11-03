@@ -72,8 +72,8 @@ export function ComputerAppWorkspaceAccess({
   const loadGeneration = useRef(0);
   const mutationGeneration = useRef(0);
   const main = workspaces.find((workspace) => workspace.kind === "main") ?? null;
-  const specialized = workspaces.filter((workspace) => workspace.kind !== "main");
-  const workspaceKey = specialized.map(({ id }) => id).join(",");
+  const project = workspaces.filter((workspace) => workspace.kind !== "main");
+  const workspaceKey = project.map(({ id }) => id).join(",");
 
   const load = useCallback(
     async (
@@ -256,14 +256,14 @@ export function ComputerAppWorkspaceAccess({
               </select>
             </label>
           ) : null}
-          {specialized.length === 0 ? (
-            <p className="computer-apps__workspace-lead">There are no specialists to configure.</p>
+          {project.length === 0 ? (
+            <p className="computer-apps__workspace-lead">There are no projects to configure.</p>
           ) : currentView?.loading && grants === null ? (
             <p className="computer-apps__workspace-lead">Loading Workspace access…</p>
           ) : grants === null ? (
             <p className="computer-apps__workspace-lead">Workspace access could not be loaded.</p>
           ) : (
-            specialized.map((workspace) => {
+            project.map((workspace) => {
               const grant = activeGrantFor(grants, workspace.id, connectionId);
               const effective: WorkspaceAccessLevel = grant
                 ? effectiveGrantAccess(grant.access, access)
@@ -274,7 +274,7 @@ export function ComputerAppWorkspaceAccess({
                     <span className="check-item__label">{workspace.name}</span>
                     <span className="check-item__detail">
                       {grant === null
-                        ? "This specialist cannot use this app."
+                        ? "This project cannot use this app."
                         : grantDetail({
                             access,
                             effective: effectiveGrantAccess(grant.access, access),

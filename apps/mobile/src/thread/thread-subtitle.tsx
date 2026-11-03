@@ -33,7 +33,7 @@ export function ThreadName(props: {
   );
 }
 
-/** Specialist attribution and state stay separate from the task's subject mark. */
+/** Project attribution and state stay separate from the task's subject mark. */
 export function ThreadSubtitle(props: {
   readonly workspaceName: string | null;
   readonly workspaceColor: WorkspaceSummary["color"];

@@ -6,7 +6,7 @@ import {
 } from "@opensteer/core";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertHostConfigInvariants,
@@ -27,10 +27,8 @@ const hostEnvironment = {
   OPENSTEER_AUTH_SECRET: "identity-secret-that-is-at-least-thirty-two-bytes",
   OPENSTEER_DATABASE_URL: "postgres://localhost/opensteer",
   OPENSTEER_CANONICAL_ORIGIN: "http://localhost:4310",
-  OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
+  OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
   OPENSTEER_DEPLOYMENT_KIND: "server",
-  OPENSTEER_PORTABLEFS_SERVICE_ID: "test-portablefs",
-  OPENSTEER_PORTABLEFS_MANAGER_URL: "http://localhost:4314",
 } as const;
 
 /** The axes a Host that anything on the network can reach has to declare. */
@@ -195,35 +193,6 @@ describe("configuration", () => {
     ).toThrow(/allowed only for an unmanaged loopback Personal Host/u);
   });
 
-  it.each([
-    ["OPENSTEER_FILES_SERVICE_URL", "http://localhost:4315"],
-    ["OPENSTEER_PORTABLEFS_AUTHORIZATION_DOMAIN", "opensteer"],
-    ["OPENSTEER_PORTABLEFS_MANAGER_CA_PATH", "/keys/ca.pem"],
-    ["OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH", "/keys/client.pem"],
-    ["OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH", "/keys/client.key"],
-    ["OPENSTEER_PORTABLEFS_MANAGER_SERVER_NAME", "portablefs.internal"],
-    ["OPENSTEER_PORTABLEFS_MANAGER_URL", "http://localhost:4314"],
-    ["OPENSTEER_PORTABLEFS_PRODUCT_ISSUER", "opensteer"],
-    ["OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH", "/keys/product.key"],
-    ["OPENSTEER_PORTABLEFS_SERVICE_ID", "portablefs"],
-    ["OPENSTEER_WORKSPACE_ARCHIVE_AFTER_DAYS", "7"],
-    ["OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES", "10737418240"],
-    ["OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT", "1000000"],
-    ["OPENSTEER_WORKSPACE_MAX_BLOCK_LIMIT_BYTES", "107374182400"],
-    ["OPENSTEER_WORKSPACE_MAX_INODE_LIMIT", "10000000"],
-  ] as const)("rejects PortableFS-only variable %s for local storage", (name, value) => {
-    expect(() => parseHostConfig({ ...localHostEnvironment, [name]: value })).toThrow(name);
-  });
-
-  it("rejects a local default owner environment for PortableFS storage", () => {
-    expect(() =>
-      parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: "env_00000000-0000-4000-8000-000000000001",
-      }),
-    ).toThrow("OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID");
-  });
-
   it("requires explicit deployment axes in production", () => {
     expect(() =>
       parseHostConfig({
@@ -270,52 +239,6 @@ describe("configuration", () => {
       expectedHostVersion: "1.2.3",
       manifestPath: "/release/web/opensteer-web.json",
     });
-  });
-
-  it("rejects deployment backing that disagrees with its configured driver", () => {
-    const local = parseHostConfig(localHostEnvironment);
-    const portableFs = parseHostConfig(hostEnvironment);
-    expect(() =>
-      assertHostConfigInvariants({
-        ...local,
-        workspace: { ...local.workspace, storage: portableFs.workspace.storage },
-      }),
-    ).toThrow(/Deployment backing and storage configuration do not match/u);
-  });
-
-  it("validates the Host-level default Workspace quota policy", () => {
-    const configured = parseHostConfig({
-      ...hostEnvironment,
-      OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES: String(2 * 1_024 * 1_024 * 1_024),
-      OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT: "250000",
-      OPENSTEER_WORKSPACE_MAX_BLOCK_LIMIT_BYTES: String(20 * 1_024 * 1_024 * 1_024),
-      OPENSTEER_WORKSPACE_MAX_INODE_LIMIT: "2000000",
-    });
-    expect(configured.workspace.storage).toMatchObject({
-      defaultBlockLimitBytes: 2 * 1_024 * 1_024 * 1_024,
-      defaultInodeLimit: 250_000,
-      maxBlockLimitBytes: 20 * 1_024 * 1_024 * 1_024,
-      maxInodeLimit: 2_000_000,
-    });
-    expect(() =>
-      parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES: "12345",
-      }),
-    ).toThrow(/multiple of 1024/);
-    expect(() =>
-      parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_WORKSPACE_MAX_BLOCK_LIMIT_BYTES: "12345",
-      }),
-    ).toThrow(/multiple of 1024/);
-    expect(() =>
-      parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT: "2000000",
-        OPENSTEER_WORKSPACE_MAX_INODE_LIMIT: "1000000",
-      }),
-    ).toThrow(/must not exceed/u);
   });
 
   it("lets a browser-only self-host disable the native app authorization surface", () => {
@@ -383,7 +306,7 @@ describe("configuration", () => {
       OPENSTEER_BIND_ADDRESS: "0.0.0.0",
       OPENSTEER_CANONICAL_ORIGIN: canonicalOrigin,
       OPENSTEER_DEPLOYMENT_KIND: "server",
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
+      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
     });
 
     expect(config.account).toMatchObject({
@@ -417,7 +340,7 @@ describe("configuration", () => {
     expect(() =>
       parseHostConfig({
         ...hostEnvironment,
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
+        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
         OPENSTEER_DEPLOYMENT_KIND: "server",
         OPENSTEER_ACCOUNT_BUNDLE_PATH: writeManagedAccountBundle(productionBundle),
         OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
@@ -425,11 +348,6 @@ describe("configuration", () => {
         OPENSTEER_HOST_PRIVATE_KEY_PATH: "/keys/host.key",
         OPENSTEER_HOST_PUBLIC_KEY_PATH: "/keys/host.pub",
         OPENSTEER_MODE: "production",
-        OPENSTEER_PORTABLEFS_MANAGER_CA_PATH: "/keys/control-ca.pem",
-        OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH: "/keys/product.cert",
-        OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH: "/keys/product.key",
-        OPENSTEER_PORTABLEFS_MANAGER_URL: "https://portablefs.example.com",
-        OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH: "/keys/product-signing.key",
         OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
       }),
     ).toThrow(/control API must use HTTPS/);
@@ -472,15 +390,11 @@ describe("configuration", () => {
     expect(() =>
       parseHostConfig({
         ...hostEnvironment,
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
+        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
         OPENSTEER_DEPLOYMENT_KIND: "server",
         OPENSTEER_FILES_SERVICE_URL: "http://files:4315",
         OPENSTEER_MODE: "production",
         OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
-        OPENSTEER_PORTABLEFS_MANAGER_CA_PATH: "/keys/control-ca.pem",
-        OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH: "/keys/product.cert",
-        OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH: "/keys/product.key",
-        OPENSTEER_PORTABLEFS_MANAGER_URL: "https://portablefs.example.com",
       }),
     ).toThrow(/requires OPENSTEER_HOST_PRIVATE_KEY_PATH/);
   });
@@ -514,54 +428,6 @@ describe("configuration", () => {
     ).toThrow(/absolute path/u);
   });
 
-  it.each([
-    ["local-directory", "personal", "main", "single-owner"],
-    ["local-directory", "server", "main", "owner-scoped"],
-    ["portablefs", "server", "main", "owner-scoped"],
-    ["portablefs", "server", "managed", "owner-scoped"],
-    ["portablefs", "server", "local", "owner-scoped"],
-  ] as const)(
-    "derives the %s/%s %s Runner Workspace namespace as %s",
-    (backing, kind, runnerKind, expectedNamespace) => {
-      const storage =
-        backing === "local-directory"
-          ? {
-              OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: ".opensteer/registry.json",
-              OPENSTEER_LOCAL_WORKSPACE_ROOT: ".opensteer/workspaces",
-            }
-          : {
-              OPENSTEER_PORTABLEFS_MOUNT_BINARY: "/opt/portablefs",
-              OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "portablefs",
-            };
-      const config = parseRunnerConfig({
-        ...storage,
-        OPENSTEER_DEPLOYMENT_KIND: kind,
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: backing,
-        OPENSTEER_HOST_URL: "http://127.0.0.1:4310",
-        OPENSTEER_RUNNER_KIND: runnerKind,
-      });
-
-      expect(config.workspaceNamespace).toBe(expectedNamespace);
-    },
-  );
-
-  it("derives an absolute PortableFS root for non-managed Runners and rejects relative overrides", () => {
-    const environment = {
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
-      OPENSTEER_DEPLOYMENT_KIND: "server",
-      OPENSTEER_HOST_URL: "http://127.0.0.1:4310",
-      OPENSTEER_PORTABLEFS_MOUNT_BINARY: "/opt/portablefs",
-      OPENSTEER_RUNNER_DATA_DIR: ".opensteer/custom-runner",
-      OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "portablefs",
-    } as const;
-    expect(parseRunnerConfig(environment).workspaceRoot).toBe(
-      resolve(".opensteer/custom-runner/workspaces"),
-    );
-    expect(() =>
-      parseRunnerConfig({ ...environment, OPENSTEER_RUNNER_WORKSPACE_ROOT: "relative" }),
-    ).toThrow(/OPENSTEER_RUNNER_WORKSPACE_ROOT must be an absolute path/u);
-  });
-
   it("requires every production Runner to declare its Deployment axes", () => {
     expect(() =>
       parseRunnerConfig({
@@ -589,12 +455,13 @@ describe("configuration", () => {
 
     expect(
       parseRunnerConfig({
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
+        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
         OPENSTEER_DEPLOYMENT_KIND: "server",
         OPENSTEER_HOST_URL: "http://127.0.0.1:4310",
         OPENSTEER_MODE: "production",
-        OPENSTEER_PORTABLEFS_MOUNT_BINARY: "/opt/portablefs",
-        OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "portablefs",
+        OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
+        OPENSTEER_LOCAL_WORKSPACE_ROOT: "/var/lib/opensteer/workspaces",
+        OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/var/lib/opensteer/registry.json",
       }).hostUrl,
     ).toEqual(new URL("http://127.0.0.1:4310"));
     expect(() =>
@@ -661,7 +528,7 @@ describe("configuration", () => {
 
   it("starts a reach-only Runner from the settings the desktop actually sends", () => {
     // A computer that only offers shell receives no execution inputs at all:
-    // no Workspace roots, no PortableFS, no browser bridge, no skills.
+    // no Workspace roots, no Workspace storage, no browser bridge, no skills.
     const config = parseRunnerConfig({
       OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
       OPENSTEER_DEPLOYMENT_KIND: "server",
@@ -693,8 +560,6 @@ describe("configuration", () => {
     expect(config.workspaceBackings).toEqual([]);
     expect(config.localWorkspaceRoot).toBeUndefined();
     expect(config.localWorkspaceRegistryPath).toBeUndefined();
-    expect(config.workspaceRoot).toBeUndefined();
-    expect(config.mountBinary).toBeUndefined();
 
     // The desktop restarts the same computer with the other module set from the
     // environment it already built, so leftover storage settings are inert.
@@ -784,102 +649,14 @@ describe("configuration", () => {
   it("rejects Runner origins that cannot carry Host capability traffic", () => {
     expect(() =>
       parseRunnerConfig({
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
+        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
         OPENSTEER_DEPLOYMENT_KIND: "server",
         OPENSTEER_HOST_URL: "https://host.example/path?query=true",
-        OPENSTEER_PORTABLEFS_MOUNT_BINARY: "/opt/portablefs",
-        OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "portablefs",
+        OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
+        OPENSTEER_LOCAL_WORKSPACE_ROOT: "/var/lib/opensteer/workspaces",
+        OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/var/lib/opensteer/registry.json",
       }),
     ).toThrow(/HTTP\(S\) origin/u);
-  });
-
-  it("drops PortableFS rather than refusing to start when its mount binary is absent", () => {
-    const config = parseRunnerConfig({
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
-      OPENSTEER_DEPLOYMENT_KIND: "server",
-      OPENSTEER_HOST_URL: "https://host.example",
-      OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/var/lib/opensteer/registry.json",
-      OPENSTEER_LOCAL_WORKSPACE_ROOT: "/var/lib/opensteer/workspaces",
-      OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory,portablefs",
-    });
-
-    expect(config.workspaceBackings).toEqual(["local-directory"]);
-    expect(config.portableFsUnavailableReason).toMatch(/only its own directories/u);
-  });
-
-  it("still refuses a PortableFS-only Runner with no mount binary", () => {
-    expect(() =>
-      parseRunnerConfig({
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
-        OPENSTEER_DEPLOYMENT_KIND: "server",
-        OPENSTEER_HOST_URL: "https://host.example",
-        OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "portablefs",
-      }),
-    ).toThrow(/requires OPENSTEER_PORTABLEFS_MOUNT_BINARY/u);
-  });
-
-  it("rejects cleartext control-plane transport in production", () => {
-    expect(() =>
-      parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
-        OPENSTEER_DEPLOYMENT_KIND: "server",
-        OPENSTEER_HOST_PRIVATE_KEY_PATH: "/keys/host.key",
-        OPENSTEER_HOST_PUBLIC_KEY_PATH: "/keys/host.pub",
-        OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH: "/keys/product-signing.key",
-        OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
-        OPENSTEER_FILES_SERVICE_URL: "http://files:4315",
-        OPENSTEER_MODE: "production",
-        OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
-      }),
-    ).toThrow(/must use HTTPS/);
-  });
-
-  it("requires one origin-only Manager URL that Runners can use for renewal", () => {
-    expect(() =>
-      parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_PORTABLEFS_MANAGER_URL: "http://localhost:4314/private/control",
-      }),
-    ).toThrow(/origin-only/);
-  });
-
-  it("accepts only an origin-only HTTP Files service URL", () => {
-    expect(
-      parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_FILES_SERVICE_URL: "http://files.internal:4315",
-      }).workspace.storage,
-    ).toMatchObject({ filesServiceUrl: new URL("http://files.internal:4315") });
-    expect(() =>
-      parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_FILES_SERVICE_URL: "http://files.internal:4315/private",
-      }),
-    ).toThrow(/origin/i);
-    expect(() =>
-      parseHostConfig({ ...hostEnvironment, OPENSTEER_FILES_SERVICE_URL: "ftp://files.internal" }),
-    ).toThrow(/HTTP/);
-  });
-
-  it("requires an explicit Files service origin in production", () => {
-    expect(() =>
-      parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
-        OPENSTEER_DEPLOYMENT_KIND: "server",
-        OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
-        OPENSTEER_HOST_PRIVATE_KEY_PATH: "/keys/host.key",
-        OPENSTEER_HOST_PUBLIC_KEY_PATH: "/keys/host.pub",
-        OPENSTEER_MODE: "production",
-        OPENSTEER_PORTABLEFS_MANAGER_CA_PATH: "/keys/control-ca.pem",
-        OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH: "/keys/product.cert",
-        OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH: "/keys/product.key",
-        OPENSTEER_PORTABLEFS_MANAGER_URL: "https://portablefs.example.com",
-        OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH: "/keys/product-signing.key",
-        OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
-      }),
-    ).toThrow(/requires OPENSTEER_FILES_SERVICE_URL/);
   });
 
   it("accepts self-host production axes with the private HTTPS gateway origin", () => {
@@ -917,30 +694,6 @@ describe("configuration", () => {
         OPENSTEER_RUNTIME_ORIGIN: "https://gateway:8443",
       }),
     ).toThrow(/accepts external Runners requires OPENSTEER_RUNTIME_ORIGIN/u);
-  });
-
-  it("refuses a private runtime origin for a PortableFS Deployment", () => {
-    const networked = {
-      ...hostEnvironment,
-      OPENSTEER_BIND_ADDRESS: "0.0.0.0",
-      OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
-      OPENSTEER_DEPLOYMENT_KIND: "server",
-    } as const;
-
-    expect(() =>
-      parseHostConfig({ ...networked, OPENSTEER_RUNTIME_ORIGIN: "https://gateway:8443" }),
-    ).toThrow(/OPENSTEER_RUNTIME_ORIGIN to equal OPENSTEER_CANONICAL_ORIGIN/u);
-
-    const config = parseHostConfig({
-      ...networked,
-      OPENSTEER_RUNTIME_ORIGIN: "https://opensteer.example.com",
-    });
-    expect(config.runtimeOrigin).toEqual(new URL("https://opensteer.example.com"));
-    expect(config.workspace.shape).toEqual({
-      defaultWorkspaceBacking: "portablefs",
-      kind: "server" as const,
-    });
   });
 
   it("accepts exactly the reachable deployment kind and exposure combinations", () => {

@@ -36,11 +36,11 @@ describe("TriggerControlService", () => {
     const { admitTriggerControlRequest, occurrenceId, service } = makeService({});
     const requestId = crypto.randomUUID();
 
-    await service.handle("trigger-token", { requestId, type: "workspace.inspect" });
+    await service.handle("trigger-token", { requestId, type: "project.list" });
 
     expect(admitTriggerControlRequest).toHaveBeenCalledWith(
       expect.objectContaining({
-        action: "workspace.inspect",
+        action: "project.list",
         environmentId,
         executionGeneration: 1,
         occurrenceId,
@@ -52,6 +52,23 @@ describe("TriggerControlService", () => {
         workspaceId,
       }),
     );
+  });
+
+  it("returns a created Project's slug and absolute path", async () => {
+    const created = { ...workspace(createId("workspace"), "Analysis"), slug: "analysis" };
+    const { service } = makeService({ create: async () => created });
+    await expect(
+      service.handle("trigger-token", {
+        name: "Analysis",
+        requestId: crypto.randomUUID(),
+        type: "project.create",
+      }),
+    ).resolves.toMatchObject({
+      type: "project.create.result",
+      workspace: { id: created.id },
+      slug: "analysis",
+      path: "/Main/Projects/analysis",
+    });
   });
 
   it("admits a queued Thread message against the Occurrence ledger", async () => {
@@ -100,42 +117,6 @@ describe("TriggerControlService", () => {
     );
   });
 
-  it("preserves version 1 Trigger message delivery semantics", async () => {
-    const anchor = thread();
-    const targetRun = run(anchor);
-    const delivered = message(anchor.id, targetRun.id);
-    const enqueueThreadInput = vi.fn(async () => ({
-      disposition: "pending" as const,
-      input: inboxInput(delivered, targetRun, "report"),
-      message: delivered,
-      run: null,
-    }));
-    const { service } = makeService({
-      commands: { enqueueThreadInput } as unknown as CommandService,
-      toolContractVersion: 1,
-    });
-
-    await service.handle("trigger-token", {
-      content: [{ text: "Passive status", type: "text" }],
-      delivery: "queue",
-      requestId: crypto.randomUUID(),
-      threadId,
-      type: "thread.message",
-    });
-    expect(enqueueThreadInput).toHaveBeenCalledWith(expect.objectContaining({ policy: "report" }));
-
-    await service.handle("trigger-token", {
-      content: [{ text: "Run the child", type: "text" }],
-      delivery: "trigger",
-      requestId: crypto.randomUUID(),
-      threadId,
-      type: "thread.message",
-    });
-    expect(enqueueThreadInput).toHaveBeenLastCalledWith(
-      expect.objectContaining({ policy: "queue" }),
-    );
-  });
-
   it("refuses a delegation once the Occurrence delegation budget is spent", async () => {
     const delegateThread = vi.fn(async () => {
       throw new Error("Unexpected Thread creation");
@@ -168,15 +149,11 @@ describe("TriggerControlService", () => {
     const targetWorkspace = {
       ...workspace(workspaceId, "Portable workspace"),
       backing: {
+        kind: "local-directory" as const,
         generation: 1,
-        kind: "portablefs" as const,
-        serviceId: "test-portablefs",
-        volumeId: `pfs_${workspaceId}`,
-      },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota" as const,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: targetEnvironmentId,
+        storageAuthorityId: createId("storageAuthority"),
       },
     };
     const delegateThread = vi.fn(async () => {
@@ -317,7 +294,7 @@ function makeService(options: {
   create?: (input: {
     readonly createdBy: typeof ownerId;
     readonly idempotencyKey: string;
-    readonly kind: "specialized";
+    readonly kind: "project";
     readonly name: string;
   }) => Promise<Workspace>;
   listEnvironmentsForUser?: (
@@ -435,7 +412,7 @@ function makeService(options: {
       defaultWorkspaceBacking: "local-directory",
       canRunHarness: () => true,
       commands,
-      environmentWorkspaceBackings: () => ["portablefs"] as const,
+      environmentWorkspaceBackings: () => ["local-directory"] as const,
       isEnvironmentConnected: () => true,
       store,
       tokens,
@@ -447,6 +424,7 @@ function makeService(options: {
           }),
       },
       workspaces: {
+        projectPath: async (workspace) => `/Main/Projects/${workspace.slug}`,
         create:
           options.create ??
           vi.fn(async () => {
@@ -583,13 +561,13 @@ function workspace(id: Workspace["id"], name: string): Workspace {
       ownerEnvironmentId: environmentId,
       storageAuthorityId: createId("storageAuthority"),
     },
-    capacityPolicy: { kind: "host-filesystem" },
+
     createdAt: now,
     createdBy: ownerId,
     homeThreadId: null,
     icon: null,
     id,
-    kind: "specialized",
+    kind: "project",
     name,
     status: "ready",
     storageIssue: null,

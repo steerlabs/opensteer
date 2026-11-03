@@ -42,7 +42,7 @@ const artifactDirectory = path.resolve(
   process.env.OPENSTEER_TRANSCRIPT_LINKS_E2E_ARTIFACT_DIR ??
     path.join(tmpdir(), "opensteer-transcript-links-e2e"),
 );
-const portableFsThreadPath = "/threads/thr_00000000-0000-4000-8000-000000000002";
+const storageThreadPath = "/threads/thr_00000000-0000-4000-8000-000000000002";
 const documentKey = "__opensteerTranscriptJourneyDocument";
 
 const { checks, check, abort } = journeyChecks();
@@ -104,7 +104,7 @@ try {
     return { document: await markDocument(page), reply };
   };
   const pictureReplyText = "Picked a tiger charging through snow";
-  const sourcesReplyText = "PortableFS mount guide";
+  const sourcesReplyText = "storage mount guide";
 
   await check("the incident's file link keeps the app on its page", async () => {
     const { document, reply } = await open("/", pictureReplyText);
@@ -126,10 +126,10 @@ try {
   });
 
   await check("a Workspace-relative file link keeps the app on its page", async () => {
-    const { document, reply } = await open(portableFsThreadPath, sourcesReplyText);
+    const { document, reply } = await open(storageThreadPath, sourcesReplyText);
     await reply.getByText("Mount sequence", { exact: true }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(artifactDirectory, "sources-reply.png") });
-    const label = reply.getByText("portablefs-contract.md", { exact: true });
+    const label = reply.getByText("storage-contract.md", { exact: true });
     const isLink = await label.evaluate((element) => element.closest("a") !== null);
     const before = requests.length;
     const opened = await clickWithoutOpening(page, label);
@@ -138,12 +138,12 @@ try {
     const observed = { after, isLink, navigations, opened };
     expectThat(observed, navigations.length === 0, "the click navigated the app's document");
     expectThat(observed, after.sameDocument, "the app document changed");
-    expectThat(observed, after.path === portableFsThreadPath, "the app route changed");
+    expectThat(observed, after.path === storageThreadPath, "the app route changed");
     expectThat(observed, !isLink && !opened, "a file path was offered as a link");
     return observed;
   });
 
-  const https = "https://portablefs.example/docs/mounts";
+  const https = "https://storage.example/docs/mounts";
   const usePersonal = async () =>
     page.evaluate(() => {
       const snapshot = (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot();
@@ -158,14 +158,14 @@ try {
   for (const { name, label, expected, work, narrow } of [
     {
       name: "HTTPS from Talk",
-      label: "PortableFS mount guide",
+      label: "storage mount guide",
       expected: https,
       work: false,
       narrow: false,
     },
     {
       name: "HTTPS from Work uses the covered tab's profile",
-      label: "PortableFS mount guide",
+      label: "storage mount guide",
       expected: https,
       work: true,
       narrow: false,
@@ -173,13 +173,13 @@ try {
     {
       name: "HTTP from Talk",
       label: "old mirror",
-      expected: "http://mirror.portablefs.example/docs",
+      expected: "http://mirror.storage.example/docs",
       work: false,
       narrow: false,
     },
     {
       name: "phone-width HTTPS",
-      label: "PortableFS mount guide",
+      label: "storage mount guide",
       expected: https,
       work: false,
       narrow: true,
@@ -187,14 +187,14 @@ try {
     {
       name: "linked image",
       label: "Grant flow",
-      expected: "https://portablefs.example/docs/grants",
+      expected: "https://storage.example/docs/grants",
       work: false,
       narrow: false,
     },
   ]) {
     await check(`${name} opens exactly one workspace tab at its exact URL`, async () => {
       await page.setViewportSize({ height: 900, width: narrow ? 390 : 1280 });
-      const { document, reply } = await open(portableFsThreadPath, sourcesReplyText);
+      const { document, reply } = await open(storageThreadPath, sourcesReplyText);
       let profileId = await usePersonal();
       let coveredKey: string | null = null;
       if (work) {
@@ -253,7 +253,7 @@ try {
         expectThat(
           observed,
           after.sameDocument &&
-            after.path === portableFsThreadPath &&
+            after.path === storageThreadPath &&
             after.rendered &&
             navigations.length === 0,
           "the app document changed",
@@ -318,12 +318,12 @@ try {
   await page.setViewportSize({ height: 900, width: 1280 });
   for (const gesture of ["modifier", "middle"] as const) {
     await check(`${gesture} click opens a device page and no workspace tab`, async () => {
-      const { document, reply } = await open(portableFsThreadPath, sourcesReplyText);
+      const { document, reply } = await open(storageThreadPath, sourcesReplyText);
       const beforeTabs = await mockTabs(page);
       const before = requests.length;
       const opening = context.waitForEvent("page", { timeout: 5_000 }).catch(() => null);
       await reply
-        .getByRole("link", { name: "PortableFS mount guide", exact: true })
+        .getByRole("link", { name: "storage mount guide", exact: true })
         .click(gesture === "middle" ? { button: "middle" } : { modifiers: ["ControlOrMeta"] });
       const opened = await opening;
       const openedUrl = opened?.url() ?? null;
@@ -350,10 +350,10 @@ try {
   await check(
     "an ambiguous computer refusal keeps its address, consumes arrival across history and reload, then a chip completes it",
     async () => {
-      const { reply } = await open(portableFsThreadPath, sourcesReplyText);
+      const { reply } = await open(storageThreadPath, sourcesReplyText);
       await page.evaluate(() => localStorage.clear());
       const beforeTabs = await mockTabs(page);
-      await reply.getByRole("link", { name: "PortableFS mount guide", exact: true }).click();
+      await reply.getByRole("link", { name: "storage mount guide", exact: true }).click();
       await page
         .getByRole("alert")
         .filter({ hasText: "Which computer" })
@@ -417,15 +417,15 @@ try {
   );
 
   await check("a mail link stays a link the browser hands to its mail app", async () => {
-    const { reply } = await open(portableFsThreadPath, sourcesReplyText);
-    const link = reply.getByRole("link", { name: "storage@portablefs.example" });
+    const { reply } = await open(storageThreadPath, sourcesReplyText);
+    const link = reply.getByRole("link", { name: "storage@storage.example" });
     const observed = {
       href: await link.getAttribute("href"),
       target: await link.getAttribute("target"),
     };
     expectThat(
       observed,
-      observed.href === "mailto:storage@portablefs.example" && observed.target === "_blank",
+      observed.href === "mailto:storage@storage.example" && observed.target === "_blank",
       "the mail link is not an outside link",
     );
     return observed;
@@ -433,7 +433,7 @@ try {
 
   await check("images an agent names are never fetched, and keep their words", async () => {
     const before = requests.length;
-    const { reply } = await open(portableFsThreadPath, sourcesReplyText);
+    const { reply } = await open(storageThreadPath, sourcesReplyText);
     const fetched = requests
       .slice(before)
       .filter(({ url }) => /mount-sequence|grant-flow/u.test(url));

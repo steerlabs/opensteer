@@ -32,7 +32,7 @@ import { setTaskDone, TaskRowView, taskTextInset, type TaskShelf } from "./task-
 
 /**
  * The reader's tasks as a full screen: every one on the Deployment for
- * Search, or one specialist's own, which the Host lists for that Workspace
+ * Search, or one project's own, which the Host lists for that Workspace
  * alone. The rows and groups are the sidebar's, read from the same shared
  * model — Working, Ready, then Done — and a search narrows each to what
  * matches. Chat is not a task and is never listed: it is the screen
@@ -60,7 +60,7 @@ type TasksRow =
 
 export function TasksPane(props: {
   readonly deploymentId: string;
-  /** Content above the list, scrolling with it: a specialist's own heading. */
+  /** Content above the list, scrolling with it: a project's own heading. */
   readonly header?: ReactNode;
   readonly hostClient: HostClient;
   readonly onOpenTask: (threadId: string) => void;
@@ -83,13 +83,13 @@ export function TasksPane(props: {
   const refused = connection.action === "sign-in";
   const authenticated = snapshot.session === "authenticated";
 
-  // A specialist's own list is read when its page opens, and kept current by
+  // A project's own list is read when its page opens, and kept current by
   // the Host client from then on.
   useEffect(() => {
     if (workspaceId === null || !authenticated) return;
     let live = true;
     void hostClient.loadWorkspaceTasks(workspaceId).catch((error: unknown) => {
-      if (live) setFailure(operationDetail(error, "This specialist’s tasks could not be loaded."));
+      if (live) setFailure(operationDetail(error, "This project’s tasks could not be loaded."));
     });
     return () => {
       live = false;
@@ -148,7 +148,7 @@ export function TasksPane(props: {
         detail:
           workspaceId === null
             ? "Bigger jobs run here as tasks, side by side. Opensteer starts them for you."
-            : "Tasks started here use this specialist’s files, instructions and access.",
+            : "Tasks started here use this project’s files, instructions and access.",
         key: "nothing",
         kind: "nothing",
         signIn: false,

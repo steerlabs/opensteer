@@ -263,6 +263,11 @@ test("git fixture: dev/optional edges, deletion, rename, malformed manifest and 
     rmSync(join(root, "packages/b"), { recursive: true });
     rmSync(join(root, "packages/c"), { recursive: true });
     write("packages/d/package.json", JSON.stringify({ name: "d" }));
+    git("add", "packages/d/package.json");
+    assert.deepEqual(
+      readGraph(root).map((entry) => entry.name),
+      ["d"],
+    );
     commit();
     assert.ok(detect({ root, event: "pull_request", base }).affected.includes("a"));
     write("packages/d/package.json", "{");

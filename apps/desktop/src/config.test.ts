@@ -105,7 +105,6 @@ describe("desktop configuration", () => {
             connect: true,
             localAgents: true,
             personal: true,
-            portableFs: false,
           },
           oauth: {
             // A private-use scheme that is not this build's application id:
@@ -152,10 +151,7 @@ describe("desktop configuration", () => {
     expect(loaded.config.personal.workspaceRoot).toBe(
       join(homedir(), durableProductName, "Workspaces"),
     );
-    // Every packaged build can run agents on this computer; only shared
-    // Workspace storage still depends on a packaged PortableFS.
     expect(loaded.config.localExecution.enabled).toBe(true);
-    expect(loaded.config.localExecution.portableFsInstaller).toBeUndefined();
   });
 
   it("requires secure production origins and permits only loopback HTTP outside production", () => {
@@ -248,40 +244,6 @@ describe("desktop configuration", () => {
     }
   });
 
-  it("requires PortableFS files exactly when the signed capability enables them", () => {
-    const incompleteResources = packagedResources("https://accounts.example.test", true, false);
-    try {
-      expect(() =>
-        readDesktopConfiguration({
-          appDataDirectory,
-          defaultMode: "production",
-          environment: baseEnvironment(),
-          packaged: true,
-          releaseManifestPath: packagedDesktopManifest(incompleteResources),
-          resourcesDirectory: incompleteResources,
-        }),
-      ).toThrow(/PortableFS release is incomplete/u);
-    } finally {
-      rmSync(incompleteResources, { force: true, recursive: true });
-    }
-
-    const portableResources = packagedResources("https://accounts.example.test", true, true);
-    try {
-      const loaded = readDesktopConfiguration({
-        appDataDirectory,
-        defaultMode: "production",
-        environment: baseEnvironment(),
-        packaged: true,
-        releaseManifestPath: packagedDesktopManifest(portableResources),
-        resourcesDirectory: portableResources,
-      });
-      expect(loaded.config.localExecution.enabled).toBe(true);
-      expect(loaded.config.localExecution.portableFsInstaller?.version).toBe("1.2.3");
-    } finally {
-      rmSync(portableResources, { force: true, recursive: true });
-    }
-  });
-
   it("rejects non-production mode in a packaged app", () => {
     expect(() =>
       readDesktopConfiguration({
@@ -298,8 +260,6 @@ describe("desktop configuration", () => {
   it("carries an apex portal only for a build that declares one", () => {
     const portalResources = packagedResources(
       "https://accounts.example.test",
-      false,
-      false,
       "https://beta.opensteer.com",
     );
     try {
@@ -391,8 +351,6 @@ function read(mode: DesktopMode, hostUrl: string) {
 
 function packagedResources(
   accountUrl = "https://accounts.example.test",
-  portableFs = false,
-  includePortableFs = portableFs,
   portalUrl: string | undefined = undefined,
 ): string {
   const directory = mkdtempSync(join(tmpdir(), "opensteer-desktop-resources-"));
@@ -407,7 +365,7 @@ function packagedResources(
         id: "com.opensteer.opensteer",
         name: "Opensteer",
       },
-      capabilities: { connect: true, localAgents: true, personal: true, portableFs },
+      capabilities: { connect: true, localAgents: true, personal: true },
       oauth: {
         accountCallback: "com.opensteer.opensteer:/oauth/account-callback",
         clientId: "opensteer-desktop",
@@ -418,21 +376,6 @@ function packagedResources(
     }),
     { mode: 0o444 },
   );
-  if (includePortableFs) {
-    const portableFs = join(directory, "portablefs");
-    mkdirSync(portableFs, { mode: 0o700 });
-    const installer = "#!/bin/sh\nexit 0\n";
-    writeFileSync(join(portableFs, "install.sh"), installer, { mode: 0o555 });
-    writeFileSync(
-      join(portableFs, "release.json"),
-      JSON.stringify({
-        installerSha256: createHash("sha256").update(installer).digest("hex"),
-        schemaVersion: 1,
-        version: "1.2.3",
-      }),
-      { mode: 0o444 },
-    );
-  }
   const runner = join(directory, "runner");
   mkdirSync(runner, { mode: 0o700 });
   const helper = "test-native-filesystem-helper";

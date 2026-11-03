@@ -98,10 +98,11 @@ export async function runEngine(input: {
   await cp(join(input.checkout, "apps/runner/agent-skills"), bundlePath, { recursive: true });
   const bundle = await loadAgentSkillBundle(bundlePath);
   const selected = await Promise.all(
-    planAgentSkills(bundle, c.profile).map(async ({ name, path }) => {
-      const destination = join(p.workspace, ".eval-skills", name);
+    planAgentSkills(bundle, c.profile).map(async (skill) => {
+      const { fullName, path } = skill;
+      const destination = join(p.workspace, ".eval-skills", fullName);
       await cp(path, destination, { recursive: true });
-      return { name, path: destination };
+      return { ...skill, path: destination };
     }),
   );
   const workspaceSkills = await discoverWorkspaceSkills(p.workspace);
@@ -118,7 +119,7 @@ export async function runEngine(input: {
       instructions,
       skills: await Promise.all(
         (skills?.skills ?? []).map(async (skill) => ({
-          name: skill.name,
+          name: skill.fullName,
           body: await readFile(join(skill.path, "SKILL.md"), "utf8"),
         })),
       ),

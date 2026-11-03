@@ -11,7 +11,6 @@ export class RunCredentials {
   #agentTools: string;
   #attachments: string | undefined;
   #browserCdp: string;
-  #integrationSkills: string;
   #integrationTools: string;
 
   constructor(context: {
@@ -19,14 +18,12 @@ export class RunCredentials {
     readonly agentTools: { readonly token: string };
     readonly browserCdp: { readonly token: string };
     readonly attachments?: { readonly token: string } | undefined;
-    readonly integrationSkills: { readonly token: string };
     readonly integrationTools: { readonly token: string };
   }) {
     this.#agentControl = context.agentControl.token;
     this.#agentTools = context.agentTools.token;
     this.#attachments = context.attachments?.token;
     this.#browserCdp = context.browserCdp.token;
-    this.#integrationSkills = context.integrationSkills.token;
     this.#integrationTools = context.integrationTools.token;
   }
 
@@ -46,10 +43,6 @@ export class RunCredentials {
     return this.#browserCdp;
   }
 
-  get integrationSkills(): string {
-    return this.#integrationSkills;
-  }
-
   get integrationTools(): string {
     return this.#integrationTools;
   }
@@ -60,7 +53,6 @@ export class RunCredentials {
     this.#browserCdp = fresh.agentControl;
     // A Run without attachment authority is never handed any.
     if (this.#attachments !== undefined && fresh.attachments) this.#attachments = fresh.attachments;
-    this.#integrationSkills = fresh.integrationSkills;
     this.#integrationTools = fresh.integrationTools;
   }
 }

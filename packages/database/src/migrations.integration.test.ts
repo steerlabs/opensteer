@@ -1,3 +1,9 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
+import { describeStore } from "./store.integration.test-support.js";
 import { strongRowLockViolations } from "./strong-row-locks.test-support.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
@@ -12,8 +18,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import { createDatabase } from "./connection.js";
 import type { DatabaseSchema } from "./schema.js";
+import { setWorkspaceProvisioningResult } from "./workspace-store.js";
 import { OpensteerStore } from "./store.js";
 import {
+  projectsMigration,
+  projectSlugsMigration,
   advertisedAgentsCapacityMigration,
   betterAuth17Migration,
   agentPhoneOwnerAccessMigration,
@@ -485,11 +494,11 @@ integration.sequential("browser sources retirement migration", () => {
         insert into public.workspaces(
           id, name, status, created_by, kind, backing, capacity_policy
         ) values (
-          'wsp_origin', 'Origin', 'ready', 'usr_owner', 'specialized',
+          'wsp_origin', 'Origin', 'ready', 'usr_owner', 'project',
           '{"kind":"portablefs","serviceId":"test","volumeId":"origin","generation":1}',
           '{"kind":"hard-quota","blockHardLimitBytes":1000000,"inodeHardLimit":1000}'
         ), (
-          'wsp_target', 'Target', 'ready', 'usr_owner', 'specialized',
+          'wsp_target', 'Target', 'ready', 'usr_owner', 'project',
           '{"kind":"portablefs","serviceId":"test","volumeId":"target","generation":1}',
           '{"kind":"hard-quota","blockHardLimitBytes":1000000,"inodeHardLimit":1000}'
         );
@@ -1293,7 +1302,7 @@ integration("one machine identity migration", () => {
       insert into public.workspaces(
         id, name, kind, status, created_by, backing, capacity_policy
       ) values (
-        'wsp_11111111-1111-4111-8111-111111111111', 'Workspace', 'specialized', 'ready',
+        'wsp_11111111-1111-4111-8111-111111111111', 'Workspace', 'project', 'ready',
         'usr_11111111-1111-4111-8111-111111111111',
         '{"kind": "portablefs", "serviceId": "svc", "volumeId": "vol", "generation": 1}'::jsonb,
         '{"kind": "hard-quota", "blockHardLimitBytes": 1024, "inodeHardLimit": 16}'::jsonb
@@ -3140,7 +3149,7 @@ integration("Runner-owned local Workspace migration", () => {
             'wsp_22222222-2222-4222-8222-222222222222',
             'Unfenced',
             'usr_11111111-1111-4111-8111-111111111111',
-            'specialized',
+            'project',
             '{"kind":"local-directory","bindingId":"wbd_22222222-2222-4222-8222-222222222222","ownerEnvironmentId":"env_11111111-1111-4111-8111-111111111111","generation":1}'::jsonb,
             '{"kind":"host-filesystem"}'::jsonb
           )
@@ -3156,7 +3165,7 @@ integration("Runner-owned local Workspace migration", () => {
             'wsp_33333333-3333-4333-8333-333333333333',
             'Elsewhere',
             'usr_11111111-1111-4111-8111-111111111111',
-            'specialized',
+            'project',
             '{"kind":"local-directory","bindingId":"wbd_33333333-3333-4333-8333-333333333333","ownerEnvironmentId":"env_99999999-9999-4999-8999-999999999999","storageAuthorityId":"sta_33333333-3333-4333-8333-333333333333","generation":1}'::jsonb,
             '{"kind":"host-filesystem"}'::jsonb
           )
@@ -3180,7 +3189,7 @@ integration("Runner-owned local Workspace migration", () => {
           'wsp_44444444-4444-4444-8444-444444444444',
           'Shared',
           'usr_11111111-1111-4111-8111-111111111111',
-          'specialized',
+          'project',
           '{"kind":"portablefs","serviceId":"svc","volumeId":"vol-1","generation":1}'::jsonb,
           '{"kind":"hard-quota","blockHardLimitBytes":1048576,"inodeHardLimit":1000}'::jsonb
         );
@@ -3874,17 +3883,18 @@ integration("notification outbox migration", () => {
     await migrateToLatest(scratch);
 
     const store = new OpensteerStore(scratch);
-    const created = await store.createWorkspace({
+    await sql`insert into execution_environments(id, name, kind, runner_id, capabilities)
+      values ('env_00000000-0000-4000-8000-000000000001', 'Fixture computer', 'main', null, '[]'::jsonb)
+      on conflict (id) do nothing`.execute(scratch);
+    const created = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "created-after-notifications",
-      },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
       createdBy: UserIdSchema.parse("usr_22222222-2222-4222-8222-222222222222"),
       idempotencyKey: "notification-migration-new-workspace",
@@ -4500,7 +4510,7 @@ integration("channel dead concepts migration", () => {
       insert into public.workspaces(
         id, name, kind, status, created_by, backing, capacity_policy
       ) values (
-        'wsp_44444444-4444-4444-8444-444444444441', 'Routed', 'specialized', 'ready',
+        'wsp_44444444-4444-4444-8444-444444444441', 'Routed', 'project', 'ready',
         'usr_44444444-4444-4444-8444-444444444441',
         '{"kind":"portablefs","generation":1,"serviceId":"test","volumeId":"vol_dead"}'::jsonb,
         '{"kind":"hard-quota","blockHardLimitBytes":1000,"inodeHardLimit":100}'::jsonb);
@@ -5619,7 +5629,7 @@ integration.sequential("browser sign-ins migration", () => {
         insert into public.workspaces(
           id, name, status, created_by, kind, backing, capacity_policy
         ) values (
-          'wsp_00000000-0000-4000-8000-000000000002', 'Origin', 'ready', 'usr_00000000-0000-4000-8000-000000000001', 'specialized',
+          'wsp_00000000-0000-4000-8000-000000000002', 'Origin', 'ready', 'usr_00000000-0000-4000-8000-000000000001', 'project',
           '{"kind":"portablefs","serviceId":"test","volumeId":"origin","generation":1}',
           '{"kind":"hard-quota","blockHardLimitBytes":1000000,"inodeHardLimit":1000}'
         );
@@ -5987,7 +5997,7 @@ integration.sequential("assignments migration", () => {
         insert into public.workspaces(
           id, name, status, created_by, kind, backing, capacity_policy
         ) values (
-          'wsp_00000000-0000-4000-8000-000000000002', 'Origin', 'ready', ${owner}, 'specialized',
+          'wsp_00000000-0000-4000-8000-000000000002', 'Origin', 'ready', ${owner}, 'project',
           '{"kind":"portablefs","serviceId":"test","volumeId":"origin","generation":1}',
           '{"kind":"hard-quota","blockHardLimitBytes":1000000,"inodeHardLimit":1000}'
         )
@@ -7000,7 +7010,7 @@ integration.sequential("notifications migration", () => {
             ${chat}
           ),
           (
-            ${missing}, 'Research', 'ready', 1, ${owner}, 'specialized',
+            ${missing}, 'Research', 'ready', 1, ${owner}, 'project',
             '{"kind":"portablefs","serviceId":"test","volumeId":"research","generation":1}',
             '{"kind":"hard-quota","blockHardLimitBytes":1000000,"inodeHardLimit":1000}',
             null
@@ -7498,6 +7508,199 @@ integration.sequential("screen presentation removal migration", () => {
         ) values ('run_1', ${randomUUID()}, 'thr_1', 'screen.show', 'screen.show', ${"b".repeat(64)})
       `.execute(database),
     ).rejects.toThrow(/violates check constraint "agent_control_requests_action/u);
+  });
+});
+
+describeStore("Project kind conversion", (it) => {
+  it("preserves rows and backing identities and restores the immutable-kind trigger", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const owner = await store.createUser("Project owner");
+    const workspace = await createTestWorkspace(store, {
+      backing: {
+        kind: "local-directory",
+        generation: 1,
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
+      },
+
+      createdBy: owner,
+      idempotencyKey: "project-kind-conversion",
+      kind: "project",
+      name: "Existing files",
+      status: "ready",
+    });
+    const constraints = () =>
+      sql<{ definition: string }>`
+      select pg_get_constraintdef(oid) as definition from pg_constraint
+      where conrelid = 'public.workspaces'::regclass order by conname
+    `.execute(database);
+    const baselineConstraints = (await constraints()).rows;
+    const before = await database
+      .selectFrom("workspaces")
+      .selectAll()
+      .where("id", "=", workspace.id)
+      .executeTakeFirstOrThrow();
+    await sql`
+      drop trigger workspaces_project_slug on public.workspaces;
+      drop function public.allocate_project_slug();
+      alter table public.workspaces drop column slug;
+      alter table public.workspaces disable trigger workspaces_immutable_kind;
+      alter table public.workspaces drop constraint workspaces_kind_check;
+      alter table public.workspaces alter column kind set default 'specialized';
+    `.execute(database);
+    await sql`update public.workspaces set kind = 'specialized' where id = ${workspace.id}`.execute(
+      database,
+    );
+    await sql`
+      alter table public.workspaces add constraint workspaces_kind_check
+        check (kind = any (array['main'::text, 'specialized'::text]));
+      alter table public.workspaces enable trigger workspaces_immutable_kind;
+    `.execute(database);
+    await projectsMigration.up(database);
+    await projectSlugsMigration.up(database);
+    const after = await database
+      .selectFrom("workspaces")
+      .selectAll()
+      .where("id", "=", workspace.id)
+      .executeTakeFirstOrThrow();
+    expect(after).toEqual(before);
+    expect((await constraints()).rows).toEqual(baselineConstraints);
+    await expect(
+      sql`update public.workspaces set kind = 'main' where id = ${workspace.id}`.execute(database),
+    ).rejects.toThrow("workspace kind is immutable");
+    await projectsMigration.up(database);
+    expect((await constraints()).rows).toEqual(baselineConstraints);
+  });
+});
+
+integration("local directory conversion", () => {
+  const name = `opensteer_local_conversion_${randomUUID().replaceAll("-", "")}`;
+  let database: Kysely<DatabaseSchema>;
+  let maintenance: Pool;
+  beforeAll(async () => {
+    const url = new URL(databaseUrl!);
+    url.pathname = "/postgres";
+    maintenance = new Pool({ connectionString: url.toString() });
+    await maintenance.query(`create database ${name}`);
+    url.pathname = `/${name}`;
+    database = createDatabase({ connectionString: url.toString() });
+  });
+  afterAll(async () => {
+    await database?.destroy();
+    await maintenance?.query(`drop database if exists ${name}`);
+    await maintenance?.end();
+  });
+  it("preserves a retired Main and Project with explicit relocation destinations", async () => {
+    const result = await new Migrator({ db: database, provider: migrationProvider() }).migrateTo(
+      "0138_project_control_actions",
+    );
+    if (result.error) throw result.error;
+    const owner = createStorageFixtureId("user");
+    const main = createStorageFixtureId("workspace");
+    const project = createStorageFixtureId("workspace");
+    await sql`insert into users(id, display_name, email) values (${owner}, 'Storage owner', 'storage@example.test')`.execute(
+      database,
+    );
+    await database.transaction().execute(async (transaction) => {
+      for (const [id, kind, title] of [
+        [main, "main", "Main"],
+        [project, "project", "My project"],
+      ] as const) {
+        await sql`insert into workspaces(id, name, status, created_by, kind, backing, capacity_policy, color)
+        values (${id}, ${title}, 'ready', ${owner}, ${kind},
+          ${JSON.stringify({ kind: "portablefs", generation: 2, serviceId: "retired", volumeId: id })}::jsonb,
+          '{"kind":"hard-quota","blockHardLimitBytes":1024,"inodeHardLimit":100}'::jsonb, 'blue')`.execute(
+          transaction,
+        );
+        await sql`insert into workspace_memberships(id, workspace_id, user_id, role, state)
+        values (${createStorageFixtureId("workspaceMembership")}, ${id}, ${owner}, 'owner', 'active')`.execute(
+          transaction,
+        );
+      }
+    });
+    const runner = createStorageFixtureId("runner");
+    const environment = createStorageFixtureId("environment");
+    await sql`insert into runners(id, owner_kind, owner_user_id, name, kind, public_key_pem, public_key_fingerprint, enrollment_token_hash)
+      values (${runner}, 'user', ${owner}, 'Former computer', 'local', 'fixture', 'fixture', 'fixture')`.execute(
+      database,
+    );
+    await sql`insert into execution_environments(id, name, kind, runner_id, capabilities)
+      values (${environment}, 'Former computer', 'main', ${runner}, '[]'::jsonb)`.execute(database);
+    for (const id of [main, project]) {
+      await sql`insert into workspace_mounts(id, environment_id, runner_id, workspace_id, volume_id,
+        workspace_backing_generation, enrollment_id, authorized_by, membership_generation, status)
+        values (${randomUUID()}, ${environment}, ${runner}, ${id}, ${id}, 2, ${randomUUID()}, ${owner}, 1, 'active')`.execute(
+        database,
+      );
+    }
+    await migrateToLatest(database);
+    const rows = await database.selectFrom("workspaces").selectAll().orderBy("kind").execute();
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.backing).toMatchObject({
+        kind: "local-directory",
+        generation: 2,
+        storageAuthorityId: null,
+      });
+      expect(row.relocationSource).toMatchObject({
+        backing: { kind: "portablefs", generation: 2, serviceId: "retired", volumeId: row.id },
+        mounts: [
+          expect.objectContaining({
+            environment_id: environment,
+            runner_id: runner,
+            volume_id: row.id,
+          }),
+        ],
+      });
+      expect(row.storageErrorMessage).toContain(
+        `from PortableFS service retired, volume ${row.id} to`,
+      );
+      expect(row.storageErrorCode).toBe("relocation-required");
+      expect(row.status).toBe("unavailable");
+      expect(row.storageErrorMessage).toContain(
+        row.kind === "main" ? "Main directory" : "Projects/my-project",
+      );
+    }
+    for (const row of rows) {
+      const failedBacking = { ...row.backing, generation: row.backing.generation + 1 };
+      await expect(
+        setWorkspaceProvisioningResult(database, {
+          workspaceId: row.id,
+          backing: failedBacking,
+          expectedBacking: failedBacking,
+          status: "ready",
+          relocationConfirmed: true,
+        }),
+      ).rejects.toThrow();
+      expect(
+        (
+          await database
+            .selectFrom("workspaces")
+            .select("relocationSource")
+            .where("id", "=", row.id)
+            .executeTakeFirstOrThrow()
+        ).relocationSource,
+      ).toEqual(row.relocationSource);
+      const adopted = await setWorkspaceProvisioningResult(database, {
+        workspaceId: row.id,
+        backing: row.backing,
+        expectedBacking: row.backing,
+        status: "ready",
+        relocationConfirmed: true,
+      });
+      expect(adopted.relocationSource).toBeNull();
+      expect(adopted.storageIssue).toBeNull();
+    }
+    expect(rows[0]?.backing.ownerEnvironmentId).toBe(rows[1]?.backing.ownerEnvironmentId);
+    expect(await database.selectFrom("workspaceMemberships").selectAll().execute()).toHaveLength(2);
+    expect(
+      (await sql`select to_regclass('public.workspace_mounts') as table`.execute(database)).rows,
+    ).toEqual([{ table: null }]);
   });
 });
 

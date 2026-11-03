@@ -12,7 +12,7 @@ import type {
   WorkspaceLocalErrorCode,
   WorkspaceLocalFailure,
 } from "@opensteer/workspace";
-import { localWorkspaceBindingId } from "@opensteer/workspace/local-binding";
+import { matchesLocalWorkspaceBindingId } from "@opensteer/workspace/local-binding";
 import { LocalWorkspaceError, LocalWorkspaceErrorCode } from "./errors.js";
 import {
   LocalWorkspaceRegistry,
@@ -76,6 +76,38 @@ export class LocalWorkspaceAuthority {
     return this.#registry.storageAuthority(signal);
   }
 
+  async relocationNeeded(
+    binding: LocalWorkspaceBindingRequest,
+    slug: string | null,
+  ): Promise<boolean> {
+    await this.#assertAuthority(binding);
+    try {
+      const ready = await this.#registry.getReadyBinding(binding);
+      return slug === null
+        ? ready.provisionFingerprint.kind !== "main"
+        : ready.relativeSegments.at(-2) !== "Projects" || ready.relativeSegments.at(-1) !== slug;
+    } catch {
+      return true;
+    }
+  }
+
+  async relocate(
+    binding: LocalWorkspaceBindingRequest,
+    slug: string | null,
+    adopt: boolean,
+    createdBy: UserId,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.#assertAuthority(binding, signal);
+    await this.#registry.relocate({
+      ...binding,
+      slug,
+      adopt,
+      createdBy,
+      ...(signal ? { signal } : {}),
+    });
+  }
+
   inventory(signal?: AbortSignal) {
     return this.#registry.inventory(signal);
   }
@@ -88,38 +120,44 @@ export class LocalWorkspaceAuthority {
   async provision(
     input: {
       readonly binding: LocalWorkspaceBindingRequest;
-      readonly fingerprint: { readonly createdBy: UserId; readonly workspaceKind: WorkspaceKind };
+      readonly fingerprint: {
+        readonly createdBy: UserId;
+        readonly workspaceKind: WorkspaceKind;
+        readonly slug?: string | undefined;
+      };
       readonly idempotencyKey: string;
     },
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<string> {
     await this.#assertAuthority(input.binding, signal);
     const fingerprint: ProvisionFingerprint = {
+      ...(input.fingerprint.slug ? { slug: input.fingerprint.slug } : {}),
       createdBy: input.fingerprint.createdBy,
       kind: input.fingerprint.workspaceKind,
       ownerEnvironmentId: input.binding.ownerEnvironmentId,
       workspaceId: input.binding.workspaceId,
     };
-    const expected = localWorkspaceBindingId({
+    const matches = matchesLocalWorkspaceBindingId(input.binding.bindingId, {
       createdBy: fingerprint.createdBy,
       idempotencyKey: input.idempotencyKey,
       kind: fingerprint.kind,
       ownerEnvironmentId: fingerprint.ownerEnvironmentId,
       workspaceId: fingerprint.workspaceId,
     });
-    if (expected !== input.binding.bindingId) {
+    if (!matches) {
       throw new LocalWorkspaceError({
         code: LocalWorkspaceErrorCode.workspaceMismatch,
         message: "The local Workspace binding does not match its creation intent.",
       });
     }
-    await this.#registry.provision({
+    const provisioned = await this.#registry.provision({
       bindingId: input.binding.bindingId,
       fingerprint,
       generation: input.binding.generation,
       idempotencyKey: input.idempotencyKey,
       ...(signal === undefined ? {} : { signal }),
     });
+    return this.#registry.resolvePath(provisioned);
   }
 
   async inspect(

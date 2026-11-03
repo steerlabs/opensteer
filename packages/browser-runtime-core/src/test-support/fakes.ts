@@ -506,7 +506,7 @@ export function validClaims(
     remainingBudgetMs: 18_000,
     wireVersion: 1,
     audience: "opensteer-browser-runtime",
-    access: "full-control",
+    access: "read-write",
     expiresAt: "2030-01-01T00:05:00.000Z",
     issuedAt: "2030-01-01T00:00:00.000Z",
     identity: { kind: "fresh" },

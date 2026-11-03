@@ -357,7 +357,7 @@ function press(container: HTMLElement, label: string): void {
 describe("the conversation's bar", () => {
   it("draws nothing for a conversation with nothing around it", async () => {
     const w = await world({ automations: "absent" });
-    const threadId = w.titled("Review PortableFS integration");
+    const threadId = w.titled("Review storage integration");
     w.move({ ...w.snapshot(), browserSessions: [] });
     const { android, ios } = bar(w.client, threadId);
     expect(control(android())).toBeNull();
@@ -431,7 +431,7 @@ describe("the conversation's bar", () => {
 
   it("adds and removes the header control as schedules and tasks appear and vanish", async () => {
     const w = await world();
-    const threadId = w.titled("Review PortableFS integration");
+    const threadId = w.titled("Review storage integration");
     const original = w.snapshot();
     const empty = { ...original, browserSessions: [], assignments: {}, threadAutomations: {} };
     w.move(empty);

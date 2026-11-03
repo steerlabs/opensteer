@@ -63,7 +63,7 @@ import {
   RunAgentControlPlanSchema,
   RunAgentToolsPlanSchema,
   RunBrowserCdpPlanSchema,
-  RunIntegrationSkillsPlanSchema,
+  RunPluginsPlanSchema,
   RunIntegrationToolsPlanSchema,
 } from "./agent-control.js";
 import { RunAttachmentPlanSchema } from "./attachments.js";
@@ -205,7 +205,11 @@ export const RunExecutionContextSchema = z.strictObject({
   agentTools: RunAgentToolsPlanSchema,
   browserCdp: RunBrowserCdpPlanSchema,
   integrationTools: RunIntegrationToolsPlanSchema,
-  integrationSkills: RunIntegrationSkillsPlanSchema,
+  specialistId: z
+    .string()
+    .regex(/^[a-zA-Z0-9-]+$/u)
+    .optional(),
+  plugins: RunPluginsPlanSchema,
   bindingGeneration: z.number().int().positive(),
   membershipGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   egress: RunEgressPlanSchema,
@@ -1175,13 +1179,6 @@ const runnerMessageBase = {} as const;
  */
 const fencedMessageBase = { ...RunnerConnectionFenceSchema.shape } as const;
 
-export const RunnerWorkspaceMountSchema = z.object({
-  enrollmentId: z.string().min(1).max(256),
-  volumeId: z.string().min(1).max(255),
-  workspaceId: WorkspaceIdSchema,
-});
-export type RunnerWorkspaceMount = z.infer<typeof RunnerWorkspaceMountSchema>;
-
 /**
  * Everything an agent-executing machine offers. Only this module carries an
  * environment, harnesses and storage: a Runner that exists to relay a browser
@@ -1224,7 +1221,6 @@ export const RunnerAgentsModuleSchema = z
         values.filter((value) => WorkspaceBackingKindSchema.safeParse(value).success),
       )
       .pipe(z.array(WorkspaceBackingKindSchema).min(1).max(2)),
-    workspaceMounts: z.array(RunnerWorkspaceMountSchema).max(10_000),
   })
   .superRefine((module, context) => {
     if (new Set(module.providerStateModes).size !== module.providerStateModes.length) {
@@ -1249,15 +1245,6 @@ export const RunnerAgentsModuleSchema = z
         code: "custom",
         message: "Runner local Workspace binding identifiers must be unique",
         path: ["localStorage", "bindings"],
-      });
-    }
-    if (
-      new Set(module.workspaceMounts.map((mount) => mount.workspaceId)).size !==
-      module.workspaceMounts.length
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "Runner Workspace mount identifiers must be unique",
       });
     }
   });
@@ -2032,7 +2019,6 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
         credentials: z.strictObject({
           agentControl: capabilityTokenSchema,
           attachments: capabilityTokenSchema.optional(),
-          integrationSkills: capabilityTokenSchema,
           integrationTools: capabilityTokenSchema,
         }),
         status: z.literal("issued"),

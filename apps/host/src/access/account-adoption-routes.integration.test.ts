@@ -8,8 +8,8 @@ import { createId } from "@opensteer/core";
 import { createDatabase, migrateToLatest, OpensteerStore } from "@opensteer/database";
 import { IdentityService } from "@opensteer/identity";
 import Fastify from "fastify";
-import { sql } from "kysely";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostAuthenticator } from "../identity/auth.js";
 import { registerIdentityRoutes } from "../identity/identity-routes.js";
@@ -50,7 +50,7 @@ integration("Host Account adoption routes", () => {
       deploymentId: createId("deployment"),
       hostInstanceId: createId("hostInstance"),
       deploymentShape: {
-        defaultWorkspaceBacking: "portablefs",
+        defaultWorkspaceBacking: "local-directory",
         kind: "server" as const,
       },
     });

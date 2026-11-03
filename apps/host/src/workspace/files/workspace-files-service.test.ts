@@ -1,9 +1,4 @@
-import {
-  createId,
-  type LocalWorkspaceBacking,
-  type PortableFsWorkspaceBacking,
-  type Workspace,
-} from "@opensteer/core";
+import { createId, type LocalWorkspaceBacking, type Workspace } from "@opensteer/core";
 import type {
   WorkspaceFilesAdmission,
   WorkspaceMembershipChangeListener,
@@ -16,13 +11,16 @@ afterEach(() => vi.useRealTimers());
 
 describe("WorkspaceFilesService", () => {
   it("fails closed when a Workspace backing has no configured driver", async () => {
-    const portableFs = membershipFixture(portableFsWorkspace());
+    const unavailable = membershipFixture({
+      ...localWorkspace(),
+      backing: { kind: "unsupported" },
+    } as never);
     const service = new WorkspaceFilesService({
       local: { list: vi.fn() } as never,
-      memberships: portableFs.repository,
+      memberships: unavailable.repository,
     });
     await expect(
-      service.list(portableFs.admission, { limit: 200, parentKey: "" }),
+      service.list(unavailable.admission, { limit: 200, parentKey: "" }),
     ).rejects.toMatchObject({ code: "workspace_unavailable" });
     service.close();
   });
@@ -197,31 +195,19 @@ function localWorkspace(): Workspace & { readonly backing: LocalWorkspaceBacking
   });
 }
 
-function portableFsWorkspace(): Workspace & { readonly backing: PortableFsWorkspaceBacking } {
-  return workspace({
-    generation: 1,
-    kind: "portablefs",
-    serviceId: "portablefs-test",
-    volumeId: "volume_test",
-  });
-}
-
 function workspace<Backing extends Workspace["backing"]>(
   backing: Backing,
 ): Workspace & { readonly backing: Backing } {
   const now = new Date().toISOString();
   return {
     backing,
-    capacityPolicy:
-      backing.kind === "local-directory"
-        ? { kind: "host-filesystem" }
-        : { blockHardLimitBytes: 1_000_000, inodeHardLimit: 10_000, kind: "hard-quota" },
+
     createdAt: now,
     createdBy: createId("user"),
     homeThreadId: null,
     icon: null,
     id: createId("workspace"),
-    kind: "specialized",
+    kind: "project",
     name: "Workspace",
     status: "ready",
     storageIssue: null,

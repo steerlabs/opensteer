@@ -1,4 +1,11 @@
-import type { EnvironmentId, RunnerId, StorageAuthorityId } from "@opensteer/core";
+import { lstat, rm } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  OpensteerError,
+  type EnvironmentId,
+  type RunnerId,
+  type StorageAuthorityId,
+} from "@opensteer/core";
 import type {
   HostWorkspaceLocalRequest,
   RunnerBootId,
@@ -34,16 +41,31 @@ export interface LocalWorkspaceIdentity {
  * request may already have been reissued to a replacement connection.
  */
 export class LocalWorkspaceService {
+  readonly #relocate:
+    | ((
+        workspaceId: HostWorkspaceLocalRequest["binding"]["workspaceId"],
+        move: () => Promise<void>,
+      ) => Promise<void>)
+    | undefined;
+  readonly #removeSpecialist:
+    ((id: string, remove: () => Promise<void>) => Promise<void>) | undefined;
   readonly #appServers: Pick<AppServerManager, "stopBinding">;
   readonly #authority: LocalWorkspaceAuthority;
   readonly #filesystem: NativeWorkspaceFilesAuthority;
 
   constructor(options: {
+    readonly relocate?: (
+      workspaceId: HostWorkspaceLocalRequest["binding"]["workspaceId"],
+      move: () => Promise<void>,
+    ) => Promise<void>;
+    readonly removeSpecialist?: (id: string, remove: () => Promise<void>) => Promise<void>;
     readonly appServers: Pick<AppServerManager, "stopBinding">;
     readonly authority: LocalWorkspaceAuthority;
     readonly filesystem: NativeWorkspaceFilesAuthority;
   }) {
     this.#appServers = options.appServers;
+    this.#relocate = options.relocate;
+    this.#removeSpecialist = options.removeSpecialist;
     this.#authority = options.authority;
     this.#filesystem = options.filesystem;
   }
@@ -73,8 +95,22 @@ export class LocalWorkspaceService {
     } as const;
     try {
       switch (request.type) {
+        case "host.workspace.local.relocate": {
+          const move = () =>
+            this.#authority.relocate(
+              binding,
+              request.slug,
+              request.adopt,
+              request.createdBy,
+              signal,
+            );
+          if (this.#relocate && (await this.#authority.relocationNeeded(binding, request.slug)))
+            await this.#relocate(binding.workspaceId, move);
+          else await move();
+          return { ...echo, type: "runner.workspace.local.relocated" };
+        }
         case "host.workspace.local.provision": {
-          await this.#authority.provision(
+          const path = await this.#authority.provision(
             {
               binding,
               fingerprint: request.fingerprint,
@@ -82,7 +118,7 @@ export class LocalWorkspaceService {
             },
             signal,
           );
-          return { ...echo, type: "runner.workspace.local.provisioned" };
+          return { ...echo, path, type: "runner.workspace.local.provisioned" };
         }
         case "host.workspace.local.inspect": {
           const health = await this.#authority.inspect(binding, signal);
@@ -94,6 +130,22 @@ export class LocalWorkspaceService {
                 : { issue: health.issue, status: health.status },
             type: "runner.workspace.local.inspected",
           };
+        }
+        case "host.workspace.local.specialist.remove": {
+          const read = await this.#authority.resolveReadAuthority(binding, signal);
+          const parent = join(read.root, ".specialists");
+          const stat = await lstat(parent).catch((error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return null;
+            throw error;
+          });
+          if (stat?.isSymbolicLink()) throw new Error("Specialist directory cannot be a symlink");
+          const remove = async () => {
+            if (stat)
+              await rm(join(parent, request.specialistId), { recursive: true, force: true });
+          };
+          if (this.#removeSpecialist) await this.#removeSpecialist(request.specialistId, remove);
+          else await remove();
+          return { ...echo, type: "runner.workspace.local.specialist.removed" };
         }
         case "host.workspace.local.destroy": {
           await this.#appServers.stopBinding(request.binding);
@@ -150,7 +202,14 @@ export class LocalWorkspaceService {
     } catch (error) {
       if (signal.aborted) throw error;
       return {
-        error: failureFromError(error),
+        error:
+          error instanceof OpensteerError && error.code === "workspace_unavailable"
+            ? {
+                code: "workspace-conflict",
+                message: error.message.slice(0, 500),
+                retryable: error.retryable,
+              }
+            : failureFromError(error),
         fence,
         operationId: request.operationId,
         requestId: request.requestId,

@@ -20,7 +20,7 @@ export function mockGeneratedTaskIcon(text: string): WorkspaceIconName {
     [/sofa|loveseat|furniture/iu, "sofa"],
     [/gift|birthday/iu, "gift"],
     [/travel|trip|weekend/iu, "map"],
-    [/code|architecture|portablefs/iu, "code"],
+    [/code|architecture|storage/iu, "code"],
     [/launch/iu, "rocket"],
     [/statement|budget/iu, "wallet"],
     [/report/iu, "chart"],
@@ -31,12 +31,12 @@ export function mockGeneratedTaskIcon(text: string): WorkspaceIconName {
   return subjects.find(([pattern]) => pattern.test(text))?.[1] ?? "document";
 }
 
-/** Errands and specialists that exercise task marks alongside the existing demo journeys. */
+/** Errands and projects that exercise task marks alongside the existing demo journeys. */
 export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
   const main = snapshot.workspaces[0]!;
   const template = snapshot.threads[0]!;
   const at = "2026-10-25T12:00:00.000Z";
-  const specialists = [
+  const projects = [
     [
       "Travel",
       "luggage",
@@ -47,11 +47,11 @@ export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
     ["Money", "wallet", "lime", "Expenses, receipts and monthly budget check-ins."],
     ["Health", "health", "magenta", "Appointments, prescriptions and insurance claims."],
   ] as const;
-  const workspaces: WorkspaceSummary[] = specialists.map(
+  const workspaces: WorkspaceSummary[] = projects.map(
     ([name, icon, color, description], index) => ({
       ...main,
       id: `wsp_00000000-0000-4000-8000-${String(800 + index).padStart(12, "0")}`,
-      kind: "specialized",
+      kind: "project",
       homeThreadId: null,
       fileCount: 0,
       name,
@@ -66,7 +66,7 @@ export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
     title: string;
     icon: WorkspaceIconName | null;
     color: MarkColor;
-    specialist: number | null;
+    project: number | null;
     status: ThreadSummary["status"];
     unread?: boolean;
     paused?: boolean;
@@ -76,7 +76,7 @@ export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
       title: "Hyatt Seoul booking",
       icon: "hotel",
       color: "blue",
-      specialist: 0,
+      project: 0,
       status: "waiting",
     },
     {
@@ -84,7 +84,7 @@ export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
       title: "Tokyo flights in May",
       icon: "plane",
       color: "lime",
-      specialist: 0,
+      project: 0,
       status: "running",
     },
     {
@@ -92,7 +92,7 @@ export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
       title: "Weekly inbox triage",
       icon: "inbox",
       color: "magenta",
-      specialist: null,
+      project: null,
       status: "running",
     },
     {
@@ -100,7 +100,7 @@ export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
       title: "find me a plumber who can come this week to fix the kitchen sink",
       icon: null,
       color: "teal",
-      specialist: null,
+      project: null,
       status: "running",
     },
     {
@@ -108,7 +108,7 @@ export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
       title: "Dentist cleaning",
       icon: "stethoscope",
       color: "purple",
-      specialist: 3,
+      project: 3,
       status: "waiting",
       paused: true,
     },
@@ -117,7 +117,7 @@ export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
       title: "Q3 expense report",
       icon: "receipt",
       color: "green",
-      specialist: 2,
+      project: 2,
       status: "failed",
     },
     {
@@ -125,7 +125,7 @@ export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
       title: "Blue loveseat shortlist",
       icon: "sofa",
       color: "sky",
-      specialist: 1,
+      project: 1,
       status: "idle",
       unread: true,
     },
@@ -134,7 +134,7 @@ export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
       title: "Mom's birthday gift ideas",
       icon: "gift",
       color: "blue",
-      specialist: null,
+      project: null,
       status: "idle",
     },
     {
@@ -142,7 +142,7 @@ export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
       title: "Lisbon weekend plan",
       icon: "map",
       color: "lime",
-      specialist: 0,
+      project: 0,
       status: "idle",
     },
     {
@@ -150,7 +150,7 @@ export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
       title: "Global Entry renewal",
       icon: "shield",
       color: "magenta",
-      specialist: 0,
+      project: 0,
       status: "idle",
     },
   ];
@@ -160,7 +160,7 @@ export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
     title: spec.title,
     icon: spec.icon,
     color: spec.color,
-    workspaceId: spec.specialist === null ? main.id : workspaces[spec.specialist]!.id,
+    workspaceId: spec.project === null ? main.id : workspaces[spec.project]!.id,
     role: "work",
     listed: true,
     parentThreadId: null,

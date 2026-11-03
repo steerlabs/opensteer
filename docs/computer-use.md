@@ -300,7 +300,7 @@ Already-dispatched work drains under its original deadline; queued unstarted wor
 cancelled when the body settles. Generation/call fences reject late results. Dispatched
 mutations may have happened and are never automatically retried. Source and limits:
 `apps/host/src/computer-use/computer-repl/`. Agent-facing procedure belongs in the shipped
-`apps/runner/agent-skills/skills/opensteer-computer-use/`.
+`apps/runner/agent-skills/skills/computer-use/`.
 
 ### Sessions, output and Stop
 

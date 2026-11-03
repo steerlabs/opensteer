@@ -1,11 +1,11 @@
-import { pathToFileURL } from "node:url";
-import { realpath } from "node:fs/promises";
-import { join } from "node:path";
 import {
   replacePrivateFileAtomically,
   securePrivateDirectory,
 } from "@opensteer/shared/atomicPrivateFile";
 import { readBoundedRegularFile } from "@opensteer/shared/privateFiles";
+import { realpath } from "node:fs/promises";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const managedSecretNames = [
   "account-bundle.json",
@@ -13,10 +13,6 @@ const managedSecretNames = [
   "credential.key",
   "host-private.pem",
   "host-public.pem",
-  "portablefs-ca.pem",
-  "portablefs-client.pem",
-  "portablefs-client-key.pem",
-  "portablefs-product.pem",
 ] as const;
 const maximumSecretBytes = 1024 * 1024;
 

@@ -74,6 +74,10 @@ const ProvisionLocalWorkspaceSchema = z.strictObject({
   fingerprint: z.strictObject({
     createdBy: UserIdSchema,
     workspaceKind: WorkspaceKindSchema,
+    slug: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{0,127}$/)
+      .optional(),
   }),
   type: z.literal("host.workspace.local.provision"),
 });
@@ -107,6 +111,22 @@ const ReadLocalWorkspaceFileSchema = z.strictObject({
 });
 
 export const HostWorkspaceLocalRequestSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    ...workspaceLocalRequestBase,
+    type: z.literal("host.workspace.local.relocate"),
+    /** Null adopts Main at its managed path; a slug selects a nested Project. */
+    slug: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{0,127}$/)
+      .nullable(),
+    createdBy: UserIdSchema,
+    adopt: z.boolean(),
+  }),
+  z.strictObject({
+    ...workspaceLocalRequestBase,
+    type: z.literal("host.workspace.local.specialist.remove"),
+    specialistId: z.string().regex(/^[a-zA-Z0-9-]+$/u),
+  }),
   ProvisionLocalWorkspaceSchema,
   InspectLocalWorkspaceSchema,
   DestroyLocalWorkspaceSchema,
@@ -125,6 +145,15 @@ const workspaceLocalResultBase = {
 export const RunnerWorkspaceLocalResultSchema = z.discriminatedUnion("type", [
   z.strictObject({
     ...workspaceLocalResultBase,
+    type: z.literal("runner.workspace.local.specialist.removed"),
+  }),
+  z.strictObject({
+    ...workspaceLocalResultBase,
+    type: z.literal("runner.workspace.local.relocated"),
+  }),
+  z.strictObject({
+    ...workspaceLocalResultBase,
+    path: z.string().regex(/^(?:\/|[A-Za-z]:[\\/]|\\\\)/u),
     type: z.literal("runner.workspace.local.provisioned"),
   }),
   z.strictObject({
@@ -183,6 +212,7 @@ export const RunnerLocalStorageInventorySchema = z.object({
       z.object({
         bindingId: WorkspaceBindingIdSchema,
         generation: positiveGeneration,
+        path: z.string().min(1).max(16_384).optional(),
         state: z.enum(["provisioning", "ready"]),
         workspaceId: WorkspaceIdSchema,
       }),

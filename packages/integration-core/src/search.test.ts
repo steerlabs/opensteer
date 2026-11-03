@@ -67,7 +67,6 @@ function integration(input: {
     servers: [
       { connectionRequirement: { kind: "provider", provider: input.provider }, name: input.name },
     ],
-    skills: [],
     tools: input.toolDescriptions.map((description, index) => ({
       description,
       name: index === 0 ? "search" : "read",

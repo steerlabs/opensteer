@@ -1,3 +1,4 @@
+import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import {
   ModelSelectionSchema,
   createId,
@@ -128,6 +129,7 @@ describe("Antigravity ACP policy", () => {
 });
 
 type TurnScenario =
+  | "skills"
   | "credits-split"
   | "credits-stderr-first"
   | "credits-stdout-first"
@@ -595,3 +597,21 @@ async function expectTerminal(
     ).toBe(true);
   });
 }
+
+it("delivers two namespaced review skills and a loose review through Antigravity ACP", async () => {
+  const fixture = await setupTurn("skills");
+  const skills = await collisionSkills(fixture.context.workspacePath);
+  const session = await fixture.adapter.startSession({ ...fixture.context, skills });
+  const observer = observe(session.events);
+  await session.execute(fixture.turn("Use the review skills."));
+  await session.stop();
+  await observer.done;
+  const payload = JSON.stringify(
+    observer.events.filter((event) => event.type === "assistant.message"),
+  );
+  for (const skill of skills.skills) {
+    expect(payload).toContain(`${skill.fullName} workflow`);
+    expect(payload).toContain(skill.path);
+  }
+  await fixture.adapter.close();
+});

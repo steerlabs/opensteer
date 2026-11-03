@@ -6,7 +6,6 @@ import {
   type IntegrationPlatformDashboardView,
   type IntegrationProvider,
   type IntegrationServerSummary,
-  type IntegrationSkill,
   type IntegrationTool,
 } from "@opensteer/integration-core/models";
 import {
@@ -23,7 +22,6 @@ export { connectionNeedsReconnect };
 export interface InstallationEntry {
   readonly installation: IntegrationPlatformDashboardView["installations"][number]["installation"];
   readonly servers: readonly IntegrationServerSummary[];
-  readonly skills: readonly IntegrationSkill[];
   readonly tools: readonly IntegrationTool[];
 }
 

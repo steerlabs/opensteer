@@ -6,7 +6,7 @@ import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, lstat } from "node:fs/promises";
 import { platform } from "node:os";
 import { join, resolve } from "node:path";
 import { platformGuideForRun } from "@opensteer/agent-tools";
@@ -84,11 +84,10 @@ import type { TriggerExecutionOutput } from "@opensteer/triggers";
 import type { ProviderContinuationIdentityProjector } from "@opensteer/runner-client";
 import { CommandLedger, type CommandDecision } from "../agent/command-ledger.js";
 import type { RunWorkspace, WorkspaceAccessManager } from "../workspace/mount-manager.js";
-import type { WorkspaceMountRegistry } from "../workspace/workspace-mount-registry.js";
 import { HttpAgentControlClient } from "../agent/agent-control-client.js";
 import { planAgentSkills, type AgentSkillBundle } from "../skills/agent-skills.js";
 import type { RunnerLogger } from "../host/host-connection.js";
-import { materializeIntegrationSkills } from "../skills/integration-skills.js";
+import { cacheRunPlugins } from "../skills/plugin-cache.js";
 import { resolveSkillPlan } from "../skills/skill-plan.js";
 import { discoverWorkspaceSkills } from "../skills/workspace-skills.js";
 import { BrowserCdpRelay } from "../browser/browser-cdp-relay.js";
@@ -160,7 +159,7 @@ export interface RunnerRuntimeOptions {
   readonly harnesses: HarnessRegistry;
   /** Present exactly when {@link harnessSandboxRequired} says so for this Runner. */
   readonly harnessSandbox?: HarnessProcessSandbox;
-  readonly integrationSkills: typeof materializeIntegrationSkills;
+  readonly plugins: typeof cacheRunPlugins;
   readonly harnessRuntimeBoundary: HarnessRuntimeBoundary;
   readonly logger?: RunnerLogger;
   readonly maxConcurrentRuns: number;
@@ -187,10 +186,6 @@ export interface RunnerRuntimeOptions {
   readonly watchSupervisor?: Pick<
     WatchSupervisor,
     "activeActivationIds" | "close" | "connectionLost" | "reconcile"
-  >;
-  readonly workspaceMountRegistry?: Pick<
-    WorkspaceMountRegistry,
-    "detach" | "detachAll" | "inventory"
   >;
 }
 
@@ -364,7 +359,7 @@ export class RunnerRuntime {
   readonly #installationQueues = new Map<string, Promise<void>>();
   readonly #installationLifetime = new AbortController();
   readonly #installationTasks = new Set<Promise<void>>();
-  readonly #integrationSkills: typeof materializeIntegrationSkills;
+  readonly #plugins: typeof cacheRunPlugins;
   readonly #harnessRuntimeBoundary: HarnessRuntimeBoundary;
   readonly #ledger = new CommandLedger();
   readonly #logger: RunnerLogger | undefined;
@@ -385,6 +380,8 @@ export class RunnerRuntime {
   readonly #runs = new Map<RunId, ActiveRun>();
   readonly #containment: ExecutionContainment;
   /** Engines kept running between a Thread's Runs. */
+  readonly #relocating = new Set<WorkspaceId>();
+  readonly #removedSpecialists = new Set<string>();
   readonly #warm: WarmEnginePool;
   /**
    * Threads whose last execution left processes the Runner could not prove
@@ -409,7 +406,6 @@ export class RunnerRuntime {
   readonly #threads = new Map<ThreadId, RunId>();
   readonly #triggerPrograms = new Map<TriggerOccurrenceId, ActiveTriggerProgram>();
   readonly #workspaceManager: WorkspaceAccessManager;
-  readonly #workspaceMountRegistry: RunnerRuntimeOptions["workspaceMountRegistry"];
   readonly #watchSupervisor: Pick<
     WatchSupervisor,
     "activeActivationIds" | "close" | "connectionLost" | "reconcile"
@@ -427,7 +423,7 @@ export class RunnerRuntime {
     this.#deploymentShape = options.deploymentShape;
     this.#environmentId = options.environmentId;
     this.#harnesses = options.harnesses;
-    this.#integrationSkills = options.integrationSkills;
+    this.#plugins = options.plugins;
     this.#harnessRuntimeBoundary = options.harnessRuntimeBoundary;
     if (
       harnessSandboxRequired(platform(), options.harnessRuntimeBoundary) &&
@@ -500,7 +496,6 @@ export class RunnerRuntime {
     this.#programExecutor =
       options.programExecutor ?? programExecutorFor(options, this.#privateStateDirectory);
     this.#workspaceManager = options.workspaceManager;
-    this.#workspaceMountRegistry = options.workspaceMountRegistry;
     this.#watchSupervisor =
       options.watchSupervisor ??
       new WatchSupervisor({
@@ -531,6 +526,42 @@ export class RunnerRuntime {
 
   voice(userId: UserId, command: RunnerVoiceCommand): Promise<RunnerVoiceResult> {
     return this.#voice.handle(userId, command);
+  }
+
+  async relocateWorkspace(workspaceId: WorkspaceId, move: () => Promise<void>): Promise<void> {
+    if (
+      this.#relocating.has(workspaceId) ||
+      [...this.#runs.values()].some((run) => run.command.context.workspaceId === workspaceId) ||
+      [...this.#triggerPrograms.values()].some(
+        (program) => program.command.context.workspaceId === workspaceId,
+      )
+    )
+      throw new OpensteerError({
+        code: "workspace_unavailable",
+        message: "Project relocation is waiting for its active Runs to finish",
+        retryable: true,
+      });
+    this.#relocating.add(workspaceId);
+    try {
+      await move();
+    } finally {
+      this.#relocating.delete(workspaceId);
+    }
+  }
+
+  async removeSpecialist(specialistId: string, remove: () => Promise<void>): Promise<void> {
+    this.#removedSpecialists.add(specialistId);
+    const active = [...this.#runs.values()].filter(
+      (run) => run.command.context.specialistId === specialistId,
+    );
+    this.revokeRuns(
+      active.map((run) => ({ runId: run.command.context.runId, reason: "Specialist removed" })),
+    );
+    await withTimeout(Promise.all(active.map((run) => run.task)), runtimeTaskStopWaitMs, {
+      timeoutError: () => new Error("Specialist Runs did not stop before folder removal"),
+    });
+    await this.#warm.evict((engine) => engine.specialistId === specialistId);
+    await remove();
   }
 
   activeRunIds(): readonly RunId[] {
@@ -1329,6 +1360,11 @@ export class RunnerRuntime {
       }
       switch (command.type) {
         case "run.execute":
+          if (
+            command.context.specialistId &&
+            this.#removedSpecialists.has(command.context.specialistId)
+          )
+            return reject("forbidden", "Specialist was removed", false);
           return this.#admitExecution(command, sink);
         case "trigger.execute":
           return this.#admitTriggerProgram(command, sink);
@@ -1899,7 +1935,6 @@ export class RunnerRuntime {
     await settlesWithin([...this.#driverInstallationInspections.values()], runtimeTaskStopWaitMs);
     await settlesWithin([this.#warm.close()], runtimeTaskStopWaitMs);
     await this.#sessions.stopAll();
-    await this.#workspaceMountRegistry?.detachAll();
     await this.#harnesses.close();
   }
 
@@ -1911,6 +1946,8 @@ export class RunnerRuntime {
     command: Extract<RunnerCommand, { readonly type: "run.execute" }>,
     sink: RunnerMessageSink,
   ): CommandDecision {
+    if (this.#relocating.has(command.context.workspaceId))
+      return reject("conflict", "Project relocation is in progress", true);
     if (this.#draining) return reject("conflict", "Runner is draining", true);
     if (this.#harnessMaintenance.has(command.context.harnessInstanceId)) {
       return reject("conflict", "AI engine profile maintenance is in progress", true);
@@ -1950,11 +1987,7 @@ export class RunnerRuntime {
     if (
       command.context.workspaceAccess.workspaceId !== command.context.workspaceId ||
       (command.context.workspaceAccess.kind === "local-directory" &&
-        command.context.workspaceAccess.ownerEnvironmentId !== command.environmentId) ||
-      (command.context.workspaceAccess.kind === "portablefs" &&
-        (command.context.workspaceAccess.workspaceKind !== command.context.workspaceKind ||
-          (command.context.workspaceKind === "main" &&
-            command.context.workspaceAccess.createdBy !== command.context.requestedBy)))
+        command.context.workspaceAccess.ownerEnvironmentId !== command.environmentId)
     ) {
       return reject("forbidden", "Run Workspace access plan does not match its context", false);
     }
@@ -2056,6 +2089,8 @@ export class RunnerRuntime {
     command: Extract<RunnerCommand, { readonly type: "trigger.execute" }>,
     sink: RunnerMessageSink,
   ): CommandDecision {
+    if (this.#relocating.has(command.context.workspaceId))
+      return reject("conflict", "Project relocation is in progress", true);
     if (this.#draining) return reject("conflict", "Runner is draining", true);
     if (this.#triggerPrograms.has(command.context.occurrenceId)) {
       return reject("conflict", "Trigger occurrence is already active", false);
@@ -2174,7 +2209,7 @@ export class RunnerRuntime {
     let credentialProxy: CredentialProxy | undefined;
     let machineAccessSetup: MachineAccessSetup | undefined;
     let agentControl: HttpAgentControlClient | undefined;
-    let integrationSkills: Awaited<ReturnType<typeof materializeIntegrationSkills>> | undefined;
+    let plugins: Awaited<ReturnType<typeof cacheRunPlugins>> | undefined;
     let terminal: HarnessDurableEvent | undefined;
     let consumptionError: unknown;
     let titleTask: Promise<void> | undefined;
@@ -2261,15 +2296,13 @@ export class RunnerRuntime {
         attachmentRoot && attachmentDirectory ? { attachmentDirectory, attachmentRoot } : {};
       this.#requireInputAttachments(command.inputs, attachments);
       this.#requireInputAttachments(command.reports.messages, attachments);
-      const writableRoots = this.#workspaceManager.writableRoots({
+      let writableRoots = this.#workspaceManager.writableRoots({
         plan: context.workspaceAccess,
         requestedBy: context.requestedBy,
         workspaceKind: context.workspaceKind,
         workspacePath: workspace.path,
       });
-      // The Thread's idle engine is this Run's to serve itself with or retire.
-      // Once taken, no idle timeout or eviction retires it — emptying the
-      // Thread's skills directory — while this Run writes its skills there.
+      // Once taken, the idle engine remains this Run’s to reuse or retire.
       warmEngine = await this.#warm.take(context.threadId);
       if (
         warmEngine &&
@@ -2281,13 +2314,42 @@ export class RunnerRuntime {
         await this.#retireWarmEngine(warmEngine);
         warmEngine = undefined;
       }
-      const runSkills = await this.#integrationSkills({
-        plan: context.integrationSkills,
+      const runSkills = await this.#plugins({
+        plan: context.plugins,
         signal: active.abort.signal,
         stateDirectory: this.#privateStateDirectory,
         threadId: context.threadId,
       });
-      integrationSkills = runSkills;
+      plugins = runSkills;
+      if (context.specialistId) {
+        const plugin = context.plugins.versions[0];
+        if (!plugin || context.plugins.versions.length !== 1)
+          throw new Error("Specialist requires exactly one pinned plugin");
+        const pluginRoot = join(this.#privateStateDirectory, "plugins", plugin.digest);
+        const parent = join(workspace.path, ".specialists");
+        await mkdir(parent, { recursive: true });
+        if ((await lstat(parent)).isSymbolicLink())
+          throw new Error("Specialist directory cannot be a symlink");
+        const cwd = join(parent, context.specialistId);
+        await mkdir(cwd, { recursive: true });
+        if ((await lstat(cwd)).isSymbolicLink())
+          throw new Error("Specialist directory cannot be a symlink");
+        const pluginInstructions = (await readFile(join(pluginRoot, "INSTRUCTIONS.md"), "utf8"))
+          .replaceAll("${PLUGIN_ROOT}", pluginRoot)
+          .replaceAll("${PLUGIN_DATA}", cwd);
+        workspace = {
+          ...workspace,
+          path: cwd,
+          instructions: [
+            workspace.instructions,
+            pluginInstructions,
+            `PLUGIN_ROOT=${pluginRoot}\nPLUGIN_DATA=${cwd}\nName outputs per task; this folder is shared by this registration's tasks.`,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+        };
+        writableRoots = [cwd];
+      }
       const workspaceSkills = await discoverWorkspaceSkills(workspace.path);
       for (const warning of workspaceSkills.warnings) {
         this.#logger?.info(warning, {
@@ -2298,7 +2360,7 @@ export class RunnerRuntime {
       const skills = resolveSkillPlan({
         bundled: planAgentSkills(this.#agentSkills, context.agentTools.capabilityProfileId),
         integration: runSkills.skills,
-        workspace: workspaceSkills.skills,
+        workspace: context.specialistId ? [] : workspaceSkills.skills,
       });
       // An engine that outlives its Run serves the Thread's next one only when
       // everything it was started with is the same, the launch directory it
@@ -2324,7 +2386,6 @@ export class RunnerRuntime {
           baseEnvironment,
           context,
           instructions,
-          integrationSkillsDigest: runSkills.digest,
           machineAccessLaunch,
           providerSessionReference,
           skills,
@@ -2343,8 +2404,7 @@ export class RunnerRuntime {
       if (warmEngine && warmEngine.key !== warmKey) {
         const retired = warmEngine;
         warmEngine = undefined;
-        // This Run's skills already replaced the engine's, and are its own to remove.
-        await this.#retireWarmEngine(retired, { keepSkills: true });
+        await this.#retireWarmEngine(retired);
       }
       // An engine that may live on keeps its Thread from running anything else.
       if (this.#uncontainedThreads.has(context.threadId)) {
@@ -2355,7 +2415,8 @@ export class RunnerRuntime {
         });
       }
       if (warmEngine) {
-        warmEngine = { ...warmEngine, integrationSkills: runSkills };
+        await warmEngine.plugins.cleanup();
+        warmEngine = { ...warmEngine, plugins: runSkills };
         warmEngine.authority.credentials = credentials;
         warmEngine.credentialProxy.resume();
         warmEngine.browserCdpRelay.resume();
@@ -2426,7 +2487,7 @@ export class RunnerRuntime {
       const sandboxPlan = {
         ...(attachmentDirectory ? { attachmentDirectory } : {}),
         environment: baseEnvironment,
-        integrationSkillsDirectory: runSkills.directory,
+        pluginCacheDirectories: runSkills.directories,
         providerState,
         threadStateDirectory,
         workspacePath: workspace.path,
@@ -2487,6 +2548,16 @@ export class RunnerRuntime {
       );
       const environment = Object.freeze({
         ...(launch?.environment ?? baseEnvironment),
+        ...(context.specialistId
+          ? {
+              PLUGIN_ROOT: join(
+                this.#privateStateDirectory,
+                "plugins",
+                context.plugins.versions[0]!.digest,
+              ),
+              PLUGIN_DATA: workspace.path,
+            }
+          : {}),
         OPENSTEER_AGENT_WORKSPACE: workspace.path,
         OPENSTEER_BROWSER_CDP_WS: browserCdpUrl,
         OPENSTEER_BROWSER_HARNESS: this.#browserHarnessExecutable,
@@ -2567,7 +2638,8 @@ export class RunnerRuntime {
             browserCdpUrl,
             credentialProxy,
             harnessInstanceId: context.harnessInstanceId,
-            integrationSkills: runSkills,
+            plugins: runSkills,
+            ...(context.specialistId ? { specialistId: context.specialistId } : {}),
             // The next Run continues the conversation this session now holds.
             // A launch that failed its probe matches no Run's plan, so the
             // next Run with routes tries again on an engine of its own.
@@ -2718,7 +2790,7 @@ export class RunnerRuntime {
             withinStopGrace(active.session?.stop().catch(() => undefined)),
           )
           .catch(() => "unknown" as const);
-        await integrationSkills?.cleanup().catch(() => undefined);
+        await plugins?.cleanup().catch(() => undefined);
         await browserCdpRelay?.close().catch(() => undefined);
         await credentialProxy?.close().catch(() => undefined);
         await machineAccessSetup?.close().catch(() => undefined);
@@ -2849,17 +2921,14 @@ export class RunnerRuntime {
   }
 
   /** Ends a warm engine and everything it held, proving its processes gone. */
-  async #retireWarmEngine(
-    engine: WarmEngine,
-    options: { readonly keepSkills?: boolean } = {},
-  ): Promise<void> {
+  async #retireWarmEngine(engine: WarmEngine): Promise<void> {
     const termination = await this.#containment
       .terminate(engine.scope, () => {
         engine.lifetime.abort(new Error("Warm engine retired"));
         return withinStopGrace(engine.session.stop().catch(() => undefined));
       })
       .catch(() => "unknown" as const);
-    if (!options.keepSkills) await engine.integrationSkills.cleanup().catch(() => undefined);
+    await engine.plugins.cleanup().catch(() => undefined);
     await engine.browserCdpRelay.close().catch(() => undefined);
     await engine.credentialProxy.close().catch(() => undefined);
     await engine.machineAccess?.close().catch(() => undefined);
@@ -3259,8 +3328,7 @@ export class RunnerRuntime {
     if (
       command.plan.workspaceId !== command.workspaceId ||
       (command.plan.kind === "local-directory" &&
-        command.plan.ownerEnvironmentId !== command.environmentId) ||
-      (command.plan.kind === "portablefs" && command.plan.workspaceKind === "main")
+        command.plan.ownerEnvironmentId !== command.environmentId)
     ) {
       return reject("forbidden", "Workspace access plan is not assigned to this Main run", false);
     }
@@ -3281,44 +3349,9 @@ export class RunnerRuntime {
   }
 
   async #detachWorkspace(
-    command: Extract<RunnerCommand, { readonly type: "workspace.detach" }>,
+    _command: Extract<RunnerCommand, { readonly type: "workspace.detach" }>,
   ): Promise<CommandDecision> {
-    const registry = this.#workspaceMountRegistry;
-    if (!registry) return { status: "accepted" };
-    const mounted = registry.inventory().find((entry) => entry.workspaceId === command.workspaceId);
-    if (mounted && mounted.volumeId !== command.volumeId) {
-      return reject(
-        "conflict",
-        `Workspace ${command.workspaceId} is mounted from volume ${mounted.volumeId}, not requested volume ${command.volumeId}`,
-        true,
-      );
-    }
-
-    await this.#warm.evict((engine) => engine.workspaceId === command.workspaceId);
-    const tasks: Promise<void>[] = [];
-    for (const active of this.#runs.values()) {
-      if (!active.workspaceIds.has(command.workspaceId)) continue;
-      active.abort.abort(new Error("Workspace access was detached"));
-      if (active.task) tasks.push(active.task);
-    }
-    for (const active of this.#triggerPrograms.values()) {
-      if (!active.workspaceIds.has(command.workspaceId)) continue;
-      active.abort.abort(new Error("Workspace access was detached"));
-      if (active.task) tasks.push(active.task);
-    }
-    if (!(await settlesWithin(tasks, runtimeTaskStopWaitMs))) {
-      return reject(
-        "conflict",
-        "Active Workspace users did not stop before the detach deadline",
-        true,
-      );
-    }
-    try {
-      await registry.detach(command.workspaceId);
-      return { status: "accepted" };
-    } catch (error) {
-      return reject("conflict", safeMessage(error, safeMessageOptions), true);
-    }
+    return reject("conflict", "Workspace storage is unavailable: relocation-required", false);
   }
 
   /**
@@ -3443,12 +3476,11 @@ async function withinStopGrace(work: Promise<unknown> | undefined): Promise<void
  * differs gets an engine of its own. Per-Run facts — its tokens, its history,
  * its machine notice — are not in it; the session is rebound with them.
  */
-function warmEngineKey(input: {
+export function warmEngineKey(input: {
   readonly attachmentRoot: string | null;
   readonly baseEnvironment: Readonly<Record<string, string>>;
   readonly context: Extract<RunnerCommand, { readonly type: "run.execute" }>["context"];
   readonly instructions: string | null;
-  readonly integrationSkillsDigest: string;
   /** What the engine's launch directory for other computers was written from. */
   readonly machineAccessLaunch: string;
   readonly providerSessionReference: string | null;
@@ -3476,10 +3508,11 @@ function warmEngineKey(input: {
         input.instructions,
         context.accessMode,
         input.writableRoots,
+        context.specialistId ?? null,
         context.agentTools.capabilityProfileId,
         context.threadRole,
         context.modelSelection,
-        input.integrationSkillsDigest,
+        [...context.plugins.versions].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
         input.skills,
         input.workspaceSkillsDigest,
         context.agentTools.url,

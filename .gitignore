@@ -6,7 +6,6 @@
 .pnpm-store
 coverage
 deploy/self-host/secrets
-deploy/self-host/portablefs-identity
 deploy/self-host/state
 dist
 apps/runner/dist-integration/

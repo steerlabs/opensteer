@@ -146,7 +146,6 @@ COPY packages/runner-client/package.json ./packages/runner-client/package.json
 COPY packages/shared/package.json ./packages/shared/package.json
 COPY packages/triggers/package.json ./packages/triggers/package.json
 COPY packages/workspace-local/package.json ./packages/workspace-local/package.json
-COPY packages/workspace-portablefs/package.json ./packages/workspace-portablefs/package.json
 COPY packages/workspace/package.json ./packages/workspace/package.json
 RUN pnpm install --offline --frozen-lockfile
 
@@ -275,7 +274,6 @@ COPY packages/runner-client/package.json ./packages/runner-client/package.json
 COPY packages/shared/package.json ./packages/shared/package.json
 COPY packages/triggers/package.json ./packages/triggers/package.json
 COPY packages/workspace-local/package.json ./packages/workspace-local/package.json
-COPY packages/workspace-portablefs/package.json ./packages/workspace-portablefs/package.json
 COPY packages/workspace/package.json ./packages/workspace/package.json
 RUN pnpm install --offline --frozen-lockfile
 COPY tsconfig.base.json tsconfig.json tsconfig.package.json ./
@@ -397,12 +395,9 @@ CMD ["node", "dist/main.js"]
 FROM node-runtime AS runner
 USER root
 RUN apt-get update && \
-    apt-get install --no-install-recommends --yes fuse3 libcap2 openssh-client openssl rsync socat && \
+    apt-get install --no-install-recommends --yes libcap2 openssh-client openssl rsync socat && \
     rm -rf /var/lib/apt/lists/* && \
-    ln --force --symbolic /proc/mounts /etc/mtab && \
     test -x /usr/bin/socat && \
-    test "$(readlink /etc/mtab)" = /proc/mounts && \
-    if getent group fuse >/dev/null; then usermod --append --groups fuse opensteer; fi && \
     install --directory --owner root --group root --mode 0755 /opt/opensteer/control && \
     install --owner root --group root --mode 0555 \
       /usr/local/bin/opensteer-entrypoint.mjs \

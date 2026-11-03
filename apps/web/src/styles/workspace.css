@@ -3486,7 +3486,7 @@ html[data-tab-sorting] * {
   font-weight: normal;
 }
 
-.conv-header__specialist {
+.conv-header__project {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -3509,12 +3509,12 @@ html[data-tab-sorting] * {
   color: var(--muted);
 }
 /* Docked beside the computer, as on a narrow screen, the name keeps the width. */
-.workspace--work .conv-header__specialist {
+.workspace--work .conv-header__project {
   display: none;
 }
 
 @media (max-width: 600px) {
-  .conv-header__specialist {
+  .conv-header__project {
     display: none;
   }
 }
@@ -3522,11 +3522,11 @@ html[data-tab-sorting] * {
 .conv-header:not(.conv-header--area) .conv-header__text {
   flex: 0 1 max-content;
 }
-.conv-header__specialist {
+.conv-header__project {
   flex: 0 1 auto;
   min-width: 0;
 }
-.conv-header__specialist > span:last-child {
+.conv-header__project > span:last-child {
   max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;

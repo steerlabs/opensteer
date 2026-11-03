@@ -10,7 +10,6 @@ from a folder in the publishing Run's local-directory Workspace, on the computer
 that owns that directory. The folder holds its source and data. Publishing
 verifies the start command before committing a version, but it doesn't copy or
 roll back files. Editing the folder can affect an already running server.
-PortableFS cannot host app servers.
 
 Starting a server requires a full-access Run. So do `app_list` and `app_fetch`;
 calling an app can execute code with the computer user's full authority. A

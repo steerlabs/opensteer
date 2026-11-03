@@ -344,8 +344,8 @@ function ComputerSummary(props: {
 const screenRoutes: ReadonlySet<string> = new Set([
   "Home",
   "NewTask",
-  "Specialist",
-  "Specialists",
+  "Project",
+  "Projects",
   "Tabs",
   "TaskSearch",
   "Thread",

@@ -734,7 +734,7 @@ async function mount(input: MountInput) {
             setupRequests={next.setupRequests ?? []}
             workspaces={[
               workspace(mainWorkspace, "main", "Main"),
-              workspace(homeProjects, "specialized", "Home projects"),
+              workspace(homeProjects, "project", "Home projects"),
             ]}
           />
         </MemoryRouter>,
@@ -900,7 +900,7 @@ function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {
   } as MachineSummary;
 }
 
-function workspace(id: string, kind: "main" | "specialized", name: string): WorkspaceSummary {
+function workspace(id: string, kind: "main" | "project", name: string): WorkspaceSummary {
   return {
     description: "",
     fileCount: 0,

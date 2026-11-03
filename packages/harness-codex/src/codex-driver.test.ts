@@ -1,3 +1,4 @@
+import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import {
   lstat,
   mkdir,
@@ -1367,9 +1368,7 @@ describe("Codex app-server harness", () => {
     ).toEqual([
       {
         enabled: true,
-        path: await realpath(
-          join(fixture.context.workspacePath, "skills", "opensteer-workspaces", "SKILL.md"),
-        ),
+        path: await realpath(join(fixture.context.workspacePath, "skills", "projects", "SKILL.md")),
       },
     ]);
     expect(captured.find((message) => message.method === "config/read")).toBeDefined();
@@ -1973,7 +1972,7 @@ describe("Codex app-server harness", () => {
     expect(config?.["skills.config"]).toEqual([
       expect.objectContaining({
         enabled: true,
-        path: expect.stringContaining("opensteer-workspaces"),
+        path: expect.stringContaining("projects"),
       }),
       expect.objectContaining({ enabled: false, path: expect.stringContaining("ambient-skill") }),
     ]);
@@ -2825,8 +2824,10 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     skills: {
       skills: [
         {
-          name: "opensteer-workspaces",
-          path: join(directory, "skills", "opensteer-workspaces"),
+          plugin: null,
+          localName: "projects",
+          fullName: "projects",
+          path: join(directory, "skills", "projects"),
         },
       ],
     },
@@ -2845,7 +2846,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
   await mkdir(testSkillPath, { recursive: true });
   await writeFile(
     join(testSkillPath, "SKILL.md"),
-    "---\nname: opensteer-workspaces\ndescription: Test.\n---\n\nTest skill.\n",
+    "---\nname: projects\ndescription: Test.\n---\n\nTest skill.\n",
   );
   if (scenario === "ambient-extensions") {
     const ambientSkillPath = join(directory, "ambient-skill");
@@ -3136,4 +3137,34 @@ describe("Codex Thread naming", () => {
       await fixture.adapter.close();
     }
   });
+});
+
+it("delivers distinct full names for two plugins and a loose review skill", async () => {
+  const fixture = await setup("reasoning");
+  const skills = await collisionSkills(fixture.context.workspacePath);
+  const context = { ...fixture.context, skills };
+  const session = await fixture.adapter.startSession(context);
+  await session.execute(
+    fixture.turn("Use alpha:review, beta:review and review by their SKILL.md paths."),
+  );
+  await session.stop();
+  const capture = await fixture.capture();
+  const start = capture.find((message) => message.method === "thread/start")!;
+  const config = (start.params as JsonRecord).config as JsonRecord;
+  expect(config["skills.config"]).toEqual(
+    expect.arrayContaining(
+      await Promise.all(
+        skills.skills.map(async (skill) => ({
+          enabled: true,
+          path: await realpath(join(skill.path, "SKILL.md")),
+        })),
+      ),
+    ),
+  );
+  const payload = JSON.stringify(capture);
+  for (const skill of skills.skills) {
+    expect(payload).toContain(`${skill.fullName} workflow`);
+    expect(payload).toContain(skill.path);
+  }
+  await fixture.adapter.close();
 });

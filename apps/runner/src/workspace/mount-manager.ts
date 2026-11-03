@@ -6,7 +6,6 @@ import type {
   WorkspaceNamespace,
 } from "@opensteer/workspace";
 import type { LocalWorkspaceAuthority } from "@opensteer/workspace-local";
-import type { WorkspaceMountRegistry } from "./workspace-mount-registry.js";
 
 const MAX_INSTRUCTIONS_BYTES = 100 * 1_024;
 
@@ -45,12 +44,6 @@ export interface RunWorkspaceManagerOptions {
     readonly root: string;
     readonly workspaceInstructionReader: WorkspaceInstructionReader;
   };
-  readonly portableFs?: Pick<
-    WorkspaceMountRegistry,
-    "ensureMounted" | "namespaceRoot" | "preflight"
-  > & {
-    readonly workspaceInstructionReader: WorkspaceInstructionReader;
-  };
 }
 
 /**
@@ -59,22 +52,19 @@ export interface RunWorkspaceManagerOptions {
  */
 export class RunWorkspaceManager implements WorkspaceAccessManager {
   readonly #local: RunWorkspaceManagerOptions["local"];
-  readonly #portableFs: RunWorkspaceManagerOptions["portableFs"];
 
   constructor(options: RunWorkspaceManagerOptions) {
-    if (!options.local && !options.portableFs) {
+    if (!options.local) {
       throw new Error("Runner must configure at least one Workspace backing");
     }
     this.#local = options.local;
-    this.#portableFs = options.portableFs;
   }
 
   async preflight(signal?: AbortSignal): Promise<{
-    readonly portableFsVersion?: string;
-    readonly workspaceBackings: readonly WorkspaceExecutionAccessPlan["kind"][];
+    readonly workspaceBackings: readonly "local-directory"[];
   }> {
     signal?.throwIfAborted();
-    const workspaceBackings: WorkspaceExecutionAccessPlan["kind"][] = [];
+    const workspaceBackings: "local-directory"[] = [];
     if (this.#local) {
       const health = await this.#local.resolver.preflight(signal);
       if (!health.available) {
@@ -83,15 +73,7 @@ export class RunWorkspaceManager implements WorkspaceAccessManager {
       await this.#local.preflight?.(signal);
       workspaceBackings.push("local-directory");
     }
-    let portableFsVersion: string | undefined;
-    if (this.#portableFs) {
-      ({ portableFsVersion } = await this.#portableFs.preflight(signal));
-      workspaceBackings.push("portablefs");
-    }
-    return {
-      ...(portableFsVersion === undefined ? {} : { portableFsVersion }),
-      workspaceBackings,
-    };
+    return { workspaceBackings };
   }
 
   async prepare(input: {
@@ -103,22 +85,8 @@ export class RunWorkspaceManager implements WorkspaceAccessManager {
     switch (input.plan.kind) {
       case "local-directory":
         return this.#prepareLocal(input.plan, input.instructionsPath, input.signal);
-      case "portablefs": {
-        const portableFs = this.#portableFs;
-        if (!portableFs) {
-          throw new Error("Runner does not support PortableFS Workspace access");
-        }
-        const { path } = await portableFs.ensureMounted(input.plan, input.signal);
-        return {
-          instructions: await readWorkspaceInstructions(
-            portableFs.workspaceInstructionReader,
-            path,
-            input.instructionsPath,
-            input.signal,
-          ),
-          path,
-        };
-      }
+      default:
+        throw new Error("Workspace storage is unavailable: relocation-required");
     }
   }
 
@@ -128,19 +96,7 @@ export class RunWorkspaceManager implements WorkspaceAccessManager {
     readonly workspaceKind: WorkspaceKind;
     readonly workspacePath: string;
   }): readonly string[] {
-    if (input.workspaceKind !== "main") return [resolve(input.workspacePath)];
-    if (input.plan.kind === "portablefs") {
-      const portableFs = this.#portableFs;
-      if (!portableFs) throw new Error("Runner does not support PortableFS Workspace access");
-      return [portableFs.namespaceRoot(input.requestedBy)];
-    }
-    const local = this.#local;
-    if (!local) throw new Error("Runner does not support local-directory Workspace access");
-    return [
-      local.namespace === "single-owner"
-        ? resolve(local.root)
-        : resolve(local.root, input.requestedBy),
-    ];
+    return [resolve(input.workspacePath)];
   }
 
   async #prepareLocal(

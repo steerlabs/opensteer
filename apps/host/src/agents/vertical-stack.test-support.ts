@@ -1,3 +1,5 @@
+import { localWorkspaceBindingId } from "@opensteer/workspace/local-binding";
+import { workspaceLocalOperationId } from "@opensteer/protocol";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import type { HostConfig, RunnerConfig } from "@opensteer/config";
 import {
@@ -65,7 +67,6 @@ import WebSocket, { type RawData } from "ws";
 import { loadOrCreateHostInstance } from "../identity/host-instance.js";
 import { loadOrCreateHostKeys } from "../identity/host-keys.js";
 import { nativeFsHelperBinary } from "../runtime/machine-access.test-support.js";
-import { startPortableFsManagerFake } from "../runtime/portablefs-manager.test-support.js";
 import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { NetworkPartition } from "./network-partition.test-support.js";
@@ -85,14 +86,14 @@ const accessToken = "vertical-access-".padEnd(40, "a");
 const agentSkillsRoot = fileURLToPath(new URL("../../../runner/agent-skills/", import.meta.url));
 const testAgentSkills = {
   paths: {
-    "opensteer-browser": join(agentSkillsRoot, "skills", "opensteer-browser"),
-    "opensteer-computer-use": join(agentSkillsRoot, "skills", "opensteer-computer-use"),
-    "opensteer-computers": join(agentSkillsRoot, "skills", "opensteer-computers"),
-    "opensteer-specialization": join(agentSkillsRoot, "skills", "opensteer-specialization"),
-    "opensteer-integrations": join(agentSkillsRoot, "skills", "opensteer-integrations"),
-    "opensteer-threads": join(agentSkillsRoot, "skills", "opensteer-threads"),
-    "opensteer-triggers": join(agentSkillsRoot, "skills", "opensteer-triggers"),
-    "opensteer-workspaces": join(agentSkillsRoot, "skills", "opensteer-workspaces"),
+    "opensteer:browser": join(agentSkillsRoot, "skills", "browser"),
+    "opensteer:computer-use": join(agentSkillsRoot, "skills", "computer-use"),
+    "opensteer:computers": join(agentSkillsRoot, "skills", "computers"),
+    "opensteer:skills": join(agentSkillsRoot, "skills", "skills"),
+    "opensteer:integrations": join(agentSkillsRoot, "skills", "integrations"),
+    "opensteer:threads": join(agentSkillsRoot, "skills", "threads"),
+    "opensteer:triggers": join(agentSkillsRoot, "skills", "triggers"),
+    "opensteer:projects": join(agentSkillsRoot, "skills", "projects"),
   },
   rootPath: agentSkillsRoot,
 } as const;
@@ -208,6 +209,7 @@ export interface VerticalStack {
   readonly crashRunner: (beforeRestart?: () => Promise<void>) => Promise<void>;
   readonly startAdditionalRunner: () => Promise<{
     readonly environmentId: EnvironmentId;
+    readonly workspaceId: WorkspaceId;
     readonly harnessInstanceId: HarnessInstanceId;
     readonly close: () => Promise<void>;
   }>;
@@ -240,7 +242,6 @@ export interface VerticalStack {
   readonly runnerDataDirectory: string;
   readonly mountCalls: readonly Parameters<RunWorkspaceManager["prepare"]>[0][];
   readonly mountCleanupCalls: () => number;
-  readonly portableFsCreateCalls: () => number;
   readonly close: () => Promise<void>;
   readonly createWorkspace: (
     name: string,
@@ -469,8 +470,6 @@ async function startWithin(
     mkdir(runnerDataDirectory, { mode: 0o700, recursive: true }),
     mkdir(mountedWorkspacePath, { mode: 0o700, recursive: true }),
   ]);
-  const portableFs = await startPortableFsManagerFake();
-  cleanups.push({ label: "PortableFS", run: () => portableFs.close() });
   const hostPort = await freePort();
   const hostOrigin = new URL(`http://127.0.0.1:${hostPort}`);
   const publicOrigin = options.publicOrigin ?? hostOrigin;
@@ -496,7 +495,7 @@ async function startWithin(
           databaseUrl: temporaryDatabase.url,
           executionLeaseMs: options.executionLeaseMs ?? 90_000,
           hostOrigin,
-          portableFsUrl: portableFs.url,
+          environmentId,
           publicOrigin,
         }),
         ...(options.personal
@@ -561,7 +560,6 @@ async function startWithin(
               }),
             }
           : { level: "warn" },
-        ...(!options.personal ? { portableFsMountManagerEndpoint: portableFs.mountEndpoint } : {}),
         ...(options.runCapabilityNow ? { runCapabilityNow: options.runCapabilityNow } : {}),
         ...(options.runCapabilityLifetimeSeconds
           ? { runCapabilityLifetimeSeconds: options.runCapabilityLifetimeSeconds }
@@ -661,22 +659,20 @@ async function startWithin(
   };
   const runnerDeploymentProfile = options.personal
     ? { defaultWorkspaceBacking: "local-directory" as const, kind: "personal" as const }
-    : { defaultWorkspaceBacking: "portablefs" as const, kind: "server" as const };
+    : { defaultWorkspaceBacking: "local-directory" as const, kind: "server" as const };
   const workspaceBackings = options.personal
     ? ["local-directory" as const]
-    : ["portablefs" as const];
+    : ["local-directory" as const];
   const filesystem = new NativeFsHelper({
     binary: nativeFsHelperBinary,
     rootPolicy: "managed-local",
   });
-  const localAuthority = options.personal
-    ? new LocalWorkspaceAuthority({
-        filesystemAuthority: filesystem,
-        namespace: { kind: "single-owner", ownerEnvironmentId: environmentId },
-        registryFilePath: join(runnerDataDirectory, "local-workspaces.json"),
-        visibleRootPath: join(temporaryRoot, "local-workspaces"),
-      })
-    : undefined;
+  const primaryLocalAuthority = new LocalWorkspaceAuthority({
+    filesystemAuthority: filesystem,
+    namespace: { kind: "single-owner", ownerEnvironmentId: environmentId },
+    registryFilePath: join(runnerDataDirectory, "local-workspaces.json"),
+    visibleRootPath: join(temporaryRoot, "local-workspaces"),
+  });
   // A real Runner derives this from its persisted identity key, so it survives a restart.
   const continuationKey = generateKeyPairSync("ed25519").privateKey;
   const runnerStarts = new Set<Promise<unknown>>();
@@ -694,6 +690,7 @@ async function startWithin(
   const bootRunner = async (
     bootId: ReturnType<typeof RunnerBootIdSchema.parse>,
     companion?: {
+      readonly authority: LocalWorkspaceAuthority;
       readonly environment: EnvironmentId;
       readonly id: typeof runnerId;
       readonly directory: string;
@@ -703,6 +700,7 @@ async function startWithin(
     requireReady = true,
   ) => {
     shutdown.throwIfAborted();
+    const localAuthority = companion?.authority ?? primaryLocalAuthority;
     const executionEnvironmentId = companion?.environment ?? environmentId;
     const executionRunnerId = companion?.id ?? runnerId;
     const executionDataDirectory = companion?.directory ?? runnerDataDirectory;
@@ -734,10 +732,10 @@ async function startWithin(
         plan: async () => (launch) => launch,
         planProgram: async () => (launch) => launch,
       },
-      integrationSkills: async () => ({
+      plugins: async () => ({
         cleanup: async () => undefined,
         digest: "none",
-        directory: undefined,
+        directories: [],
         skills: [],
       }),
       maxConcurrentRuns: options.maxConcurrentRuns ?? 1,
@@ -769,13 +767,12 @@ async function startWithin(
             ...(options.browser ? ["browser" as const] : []),
           ]
         : ["agents", "browser", "shell"],
-      mountBinary: "unused-at-the-test-boundary",
+
       name: "Vertical local runner",
       runnerId: executionRunnerId,
-      runnerKind: options.personal ? "main" : "local",
+      runnerKind: options.personal ? "main" : companion ? "managed" : "local",
       workspaceBackings,
       workspaceNamespace: "owner-scoped",
-      workspaceRoot: mountedWorkspacePath,
       localWorkspaceRegistryPath: undefined,
       localWorkspaceRoot: undefined,
       nodeExecutable: process.execPath,
@@ -827,8 +824,18 @@ async function startWithin(
                       requestId: request.requestId,
                     };
                     const signal = AbortSignal.timeout(30_000);
+                    if (request.type === "host.workspace.local.relocate") {
+                      await localAuthority.relocate(
+                        request.binding,
+                        request.slug,
+                        request.adopt,
+                        request.createdBy,
+                        signal,
+                      );
+                      return { ...echo, type: "runner.workspace.local.relocated" };
+                    }
                     if (request.type === "host.workspace.local.provision") {
-                      await localAuthority.provision(
+                      const path = await localAuthority.provision(
                         {
                           binding: request.binding,
                           fingerprint: request.fingerprint,
@@ -836,7 +843,7 @@ async function startWithin(
                         },
                         signal,
                       );
-                      return { ...echo, type: "runner.workspace.local.provisioned" };
+                      return { ...echo, path, type: "runner.workspace.local.provisioned" };
                     }
                     if (request.type === "host.workspace.local.inspect") {
                       const health = await localAuthority.inspect(request.binding, signal);
@@ -859,7 +866,6 @@ async function startWithin(
               },
             }
           : {}),
-        workspaceMounts: () => [],
       },
     });
     const expectedAccounts = companion
@@ -1011,6 +1017,7 @@ async function startWithin(
       void ready.catch(() => undefined);
       void failed.promise.catch(() => undefined);
       child.send({
+        nativeFsHelperBinary,
         bootId,
         config: { ...runnerConfig, hostUrl: partition.url.toString() },
         harnessInstance: options.harnessInstance,
@@ -1228,7 +1235,7 @@ async function startWithin(
       const extraRunner = createId("runner");
       await host.store.createEnvironment({
         id: extraEnvironment,
-        kind: "local",
+        kind: "managed",
         name: "Healthy companion",
       });
       const account = await host.store.createHarnessInstance({
@@ -1243,23 +1250,99 @@ async function startWithin(
         hostOrigin,
         "commands.dispatch",
         {
-          type: "runner.enrollment.createLocal",
+          type: "runner.enrollment.createManaged",
           idempotencyKey: key,
           allowedModules: ["agents"],
           name: "Healthy companion",
         },
         signedIn(key),
       );
-      if (enrollment.type !== "runner.enrollment.createLocal")
+      if (enrollment.type !== "runner.enrollment.createManaged")
         throw new Error("Companion enrollment failed");
+      const authority = new LocalWorkspaceAuthority({
+        filesystemAuthority: filesystem,
+        namespace: { kind: "single-owner", ownerEnvironmentId: extraEnvironment },
+        registryFilePath: join(temporaryRoot, "companion", "local-workspaces.json"),
+        visibleRootPath: join(temporaryRoot, "companion", "workspaces"),
+      });
       const extra = await startRunner(RunnerBootIdSchema.parse(`rbt_${randomUUID()}`), {
+        authority,
         environment: extraEnvironment,
         id: extraRunner,
         directory: join(temporaryRoot, "companion"),
         enrollmentToken: enrollment.token,
         harnessInstanceId: account.id,
       });
-      return { environmentId: extraEnvironment, harnessInstanceId: account.id, close: extra.close };
+      const owner = await host.store.firstUser();
+      if (!owner) throw new Error("Companion has no Workspace owner");
+      const companionOwner = await host.store.createUser("Companion owner");
+      const storageAuthorityId = (await authority.inventory()).storageAuthorityId;
+      const seedWorkspace = async (kind: "main" | "project", name: string) => {
+        const id = createId("workspace");
+        const operationId = workspaceLocalOperationId({
+          generation: 1,
+          operation: "provision",
+          workspaceId: id,
+        });
+        const backing = {
+          kind: "local-directory" as const,
+          bindingId: localWorkspaceBindingId({
+            createdBy: companionOwner,
+            idempotencyKey: operationId,
+            kind,
+            ownerEnvironmentId: extraEnvironment,
+            workspaceId: id,
+          }),
+          generation: 1,
+          ownerEnvironmentId: extraEnvironment,
+          storageAuthorityId,
+        };
+        const workspace = await host.store.createWorkspace({
+          id,
+          backing,
+          createdBy: companionOwner,
+          idempotencyKey: operationId,
+          kind,
+          name,
+          status: "ready",
+        });
+        await authority.provision({
+          binding: { ...backing, workspaceId: id },
+          fingerprint: {
+            createdBy: companionOwner,
+            workspaceKind: kind,
+            ...(workspace.slug ? { slug: workspace.slug } : {}),
+          },
+          idempotencyKey: operationId,
+        });
+        return workspace;
+      };
+      // Independent people keep Main and Projects on their own computers. Share
+      // the companion's Project so the test's authenticated person can run there.
+      await seedWorkspace("main", "Companion Main");
+      const workspace = await seedWorkspace("project", "Healthy companion Project");
+      await host.store.database
+        .insertInto("workspaceMemberships")
+        .values({
+          id: createId("workspaceMembership"),
+          workspaceId: workspace.id,
+          userId: owner.id,
+          role: "collaborator",
+          generation: 1,
+          invitedBy: companionOwner,
+          state: "active",
+          revokedAt: null,
+          revokedBy: null,
+          joinedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .execute();
+      return {
+        environmentId: extraEnvironment,
+        workspaceId: workspace.id,
+        harnessInstanceId: account.id,
+        close: extra.close,
+      };
     },
     crashRunner: async (beforeRestart) => {
       await runnerProcess.crash();
@@ -1305,7 +1388,6 @@ async function startWithin(
     runnerDataDirectory,
     mountCalls,
     mountCleanupCalls: () => mountCleanupCalls,
-    portableFsCreateCalls: () => portableFs.createCalls,
     close,
     notifications,
     configureModel: async (nativeModelId, settings) => {
@@ -1586,8 +1668,8 @@ function hostConfig(input: {
   readonly databaseUrl: string;
   readonly executionLeaseMs: number;
   readonly hostOrigin: URL;
-  readonly portableFsUrl: URL;
   readonly publicOrigin: URL;
+  readonly environmentId: EnvironmentId;
 }): HostConfig {
   return {
     acceptsExternalRunners: true,
@@ -1616,27 +1698,10 @@ function hostConfig(input: {
     workspace: {
       deletionRetentionDays: 14,
       shape: {
-        defaultWorkspaceBacking: "portablefs",
+        defaultWorkspaceBacking: "local-directory",
         kind: "server" as const,
       },
-      storage: {
-        archiveAfterDays: 7,
-        authorizationDomain: "opensteer-test",
-        defaultBlockLimitBytes: 10 * 1_024 * 1_024 * 1_024,
-        defaultInodeLimit: 1_000_000,
-        filesServiceUrl: new URL("http://127.0.0.1:4315"),
-        kind: "portablefs",
-        maxBlockLimitBytes: 100 * 1_024 * 1_024 * 1_024,
-        maxInodeLimit: 10_000_000,
-        managerCaPath: undefined,
-        managerCertPath: undefined,
-        managerKeyPath: undefined,
-        managerServerName: undefined,
-        managerUrl: input.portableFsUrl,
-        productIssuer: "opensteer-test",
-        productPrivateKeyPath: undefined,
-        serviceId: "test-portablefs",
-      },
+      storage: { kind: "local-directory", ownerEnvironmentId: input.environmentId },
     },
   };
 }

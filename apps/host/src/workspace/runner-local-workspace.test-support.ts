@@ -10,7 +10,6 @@ import {
   RunnerChallengeSchema,
   RunnerDescriptorSchema,
   RunnerEnrollmentCredentialSchema,
-  RunnerLocalStorageInventorySchema,
   runnerProofFormatVersion,
   type RunnerLocalStorageInventory,
   type RunnerProof,
@@ -40,9 +39,20 @@ export interface LocalWorkspaceDiskFake {
 
 export function attachLocalWorkspaceDisk(
   socket: WebSocket,
-  options: { readonly storageAuthorityId?: StorageAuthorityId } = {},
+  options: {
+    readonly storageAuthorityId?: StorageAuthorityId;
+    readonly inventory?: RunnerLocalStorageInventory;
+  } = {},
 ): LocalWorkspaceDiskFake {
-  const storageAuthorityId = options.storageAuthorityId ?? createId("storageAuthority");
+  const storageAuthorityId =
+    options.inventory?.storageAuthorityId ??
+    options.storageAuthorityId ??
+    createId("storageAuthority");
+  const inventory: RunnerLocalStorageInventory = options.inventory ?? {
+    bindings: [],
+    storageAuthorityId,
+    truncated: false,
+  };
   const provisioned: WorkspaceId[] = [];
   const destroyed: WorkspaceId[] = [];
 
@@ -57,9 +67,29 @@ export function attachLocalWorkspaceDisk(
       requestId: request.requestId,
     };
     switch (request.type) {
+      case "host.workspace.local.relocate": {
+        socket.send(JSON.stringify({ ...answered, type: "runner.workspace.local.relocated" }));
+        return;
+      }
       case "host.workspace.local.provision": {
         provisioned.push(request.binding.workspaceId);
-        socket.send(JSON.stringify({ ...answered, type: "runner.workspace.local.provisioned" }));
+        if (!inventory.bindings.some((binding) => binding.bindingId === request.binding.bindingId))
+          inventory.bindings.push({
+            bindingId: request.binding.bindingId,
+            workspaceId: request.binding.workspaceId,
+            generation: request.binding.generation,
+            state: "ready",
+          });
+        socket.send(
+          JSON.stringify({
+            ...answered,
+            path:
+              request.fingerprint.workspaceKind === "main"
+                ? "/Main"
+                : `/Main/Projects/${request.fingerprint.slug ?? request.binding.workspaceId}`,
+            type: "runner.workspace.local.provisioned",
+          }),
+        );
         return;
       }
       case "host.workspace.local.inspect": {
@@ -106,11 +136,7 @@ export function attachLocalWorkspaceDisk(
   socket.on("message", receive);
   return {
     destroyed,
-    inventory: RunnerLocalStorageInventorySchema.parse({
-      bindings: [],
-      storageAuthorityId,
-      truncated: false,
-    }),
+    inventory,
     provisioned,
     stop: () => socket.off("message", receive),
     storageAuthorityId,
@@ -155,7 +181,6 @@ export async function connectLocalWorkspaceRunner(input: {
         maxConcurrentRuns: 2,
         providerStateModes: ["ambient", "isolated"],
         workspaceBackings: ["local-directory"],
-        workspaceMounts: [],
       },
     },
     name: input.name,

@@ -160,13 +160,13 @@ describe("Desktop release policy", () => {
   it("packages a stable policy without Account access", async () => {
     const fixture = await archivedPolicy({
       accountUrl: undefined,
-      capabilities: { connect: false, localAgents: true, personal: true, portableFs: false },
+      capabilities: { connect: false, localAgents: true, personal: true },
     });
     expect(readPackagedDesktopPolicy(fixture.archive)).toMatchObject({
       capabilities: { connect: false },
     });
     for (const overrides of [
-      { capabilities: { connect: false, localAgents: true, personal: true, portableFs: false } },
+      { capabilities: { connect: false, localAgents: true, personal: true } },
       { accountUrl: undefined },
     ]) {
       const invalid = await archivedPolicy(overrides);
@@ -235,32 +235,12 @@ describe("Desktop release policy", () => {
     expect(() => readPackagedDesktopPolicy(fixture.archive)).toThrow(/manifest is invalid/u);
   });
 
-  it.each([false, true])(
-    "reads portableFs=%s only from the application archive",
-    async (portableFs) => {
-      const fixture = await archivedPolicy({
-        capabilities: { connect: true, localAgents: true, personal: true, portableFs },
-      });
-      await mkdir(path.join(fixture.root, "desktop"));
-      await writeFile(
-        path.join(fixture.root, "desktop", "release.json"),
-        JSON.stringify({ redirected: true }),
-      );
-
-      expect(readPackagedDesktopPolicy(fixture.archive)).toMatchObject({
-        capabilities: { localAgents: true, portableFs },
-        schemaVersion: 6,
-      });
-    },
-  );
-
   it.each([
     {
       capabilities: {
         connect: true,
         personal: true,
         localAgents: false,
-        portableFs: false,
         retiredCapability: true,
       },
       schemaVersion: 6,
@@ -270,7 +250,6 @@ describe("Desktop release policy", () => {
         connect: true,
         personal: true,
         localAgents: false,
-        portableFs: false,
       },
       schemaVersion: 4,
     },
@@ -352,7 +331,6 @@ async function archivedPolicy(overrides: Record<string, unknown>) {
       connect: true,
       personal: true,
       localAgents: false,
-      portableFs: false,
     },
     oauth: {
       accountCallback: "com.opensteer.opensteer:/oauth/account-callback",

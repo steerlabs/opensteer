@@ -1,4 +1,10 @@
-import { createId, OpensteerError, requestReasonMaxLength } from "@opensteer/core";
+import { requestSpecialistRequirements } from "./specialist-access-requests.js";
+import {
+  SpecialistRegistrationSchema,
+  createId,
+  OpensteerError,
+  requestReasonMaxLength,
+} from "@opensteer/core";
 import {
   IntegrationDefinitionSchema,
   createIntegrationId,
@@ -795,7 +801,7 @@ describe("IntegrationToolsMcpService access classes", () => {
   });
 
   it("accepts installation and account ids without weakening requested read-write access", async () => {
-    const entry = inventoryEntry({ skillsOnly: true });
+    const entry = inventoryEntry({ withoutTools: true });
     const { handler, requests } = await createHarness({ inventory: [entry] });
     await handler(
       {
@@ -804,12 +810,12 @@ describe("IntegrationToolsMcpService access classes", () => {
             access: "read-write",
             account: entry.accounts[0]!.connectionId,
             integration: entry.installation.id,
-            reason: "Use the skill",
+            reason: "Use the integration",
           },
           name: "integration_request",
         },
       },
-      callExtra("skills-only"),
+      callExtra("without-tools"),
     );
     expect(requests.createIntegrationAccessRequest).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1079,11 +1085,11 @@ describe("IntegrationToolsMcpService access classes", () => {
       "A Trigger execution may only request integration access for its own Workspace. Omit workspaceId and request access where the Trigger runs.",
     );
 
-    const specialized = await createHarness({
+    const project = await createHarness({
       inventory: [entry],
       runScope: { ...scope, capabilityProfileId: "workspace" },
     });
-    const specializedResponse = await specialized.handler(
+    const projectResponse = await project.handler(
       {
         params: {
           arguments: {
@@ -1095,9 +1101,9 @@ describe("IntegrationToolsMcpService access classes", () => {
           name: "integration_request",
         },
       },
-      callExtra("specialized-cross-workspace"),
+      callExtra("project-cross-workspace"),
     );
-    expect(errorText(specializedResponse)).toBe(
+    expect(errorText(projectResponse)).toBe(
       "Only a main-profile agent may target another Workspace",
     );
   });
@@ -1639,7 +1645,6 @@ function computerInventory(
       installation,
       readiness: { servers: [readiness], tools: [{ readiness, toolId: tool.id }] },
       servers: [server],
-      skills: [],
       tools: [tool],
     },
   };
@@ -1654,7 +1659,7 @@ const linearToolSchemas = {
 function inventoryEntry(
   input: {
     readonly readinessCode?: "ACCESS_GRANT_REQUIRED" | "READY" | "REAUTHORIZATION_REQUIRED";
-    readonly skillsOnly?: boolean;
+    readonly withoutTools?: boolean;
     readonly toolEffect?: "read" | "write";
   } = {},
 ) {
@@ -1707,7 +1712,7 @@ function inventoryEntry(
     },
     readiness: {
       servers: [readiness],
-      tools: input.skillsOnly ? [] : [{ readiness, toolId }],
+      tools: input.withoutTools ? [] : [{ readiness, toolId }],
     },
     servers: [
       {
@@ -1731,18 +1736,7 @@ function inventoryEntry(
         updatedAt: "2026-08-13T12:00:00.000Z",
       },
     ],
-    skills: input.skillsOnly
-      ? [
-          {
-            description: "Summarize Linear issues",
-            digest: "s".repeat(43),
-            id: createIntegrationId("skill"),
-            name: "summarize-issues",
-            status: "active" as const,
-          },
-        ]
-      : [],
-    tools: input.skillsOnly ? [] : [tool],
+    tools: input.withoutTools ? [] : [tool],
   };
 }
 
@@ -1921,4 +1915,97 @@ describe("computer use discovery", () => {
     expect(JSON.stringify(answer)).not.toContain("teamId");
     expect(JSON.stringify(answer)).not.toContain("iconPng");
   });
+});
+
+it("specialist integration and app asks use ordinary Requests with their Run origin", async () => {
+  const harness = await createHarness({
+    inventory: [],
+    computerUseMacs: [{ name: "Mac", ready: true, runnerId: scope.runnerId }],
+  });
+  await harness.service.requestSpecialistAccess(
+    scope,
+    {
+      type: "integration",
+      service: definition.id,
+      level: "read",
+      reason: "Find invoices",
+    },
+    "specialist-integration",
+  );
+  expect(harness.requests.createIntegrationAccessRequest).toHaveBeenCalledWith(
+    expect.objectContaining({
+      originatingRunId: scope.runId,
+      originatingThreadId: scope.threadId,
+      requestedBy: scope.requestedBy,
+      access: "read",
+    }),
+  );
+  await harness.service.requestSpecialistAccess(
+    scope,
+    { type: "computer-app", app: "com.apple.Safari", level: "read-write", reason: "Browse" },
+    "specialist-app",
+  );
+  expect(harness.requestComputerAppAccess).toHaveBeenCalledWith(
+    expect.objectContaining({
+      originatingRunId: scope.runId,
+      app: "com.apple.Safari",
+      access: "read-write",
+    }),
+  );
+});
+
+it("agent specialist add requests only missing requirements, preserving the Run origin", async () => {
+  const browser = { requestAccess: vi.fn() };
+  const integrations = { requestSpecialistAccess: vi.fn() };
+  const requirement = {
+    type: "browser-profile",
+    level: "read",
+    reason: "Research",
+    binding: null,
+    candidates: [],
+  };
+  const registration = SpecialistRegistrationSchema.parse({
+    id: "specialist",
+    workspaceId: scope.workspaceId,
+    pluginId: "plugin",
+    pluginVersionId: "version",
+    ownerUserId: scope.requestedBy,
+    plugin: "research",
+    version: "digest",
+    models: [{ engine: "claude", model: "haiku" }],
+    fallback: "none",
+    status: "pending",
+    access: [
+      { ...requirement, state: "needs-access" },
+      {
+        ...requirement,
+        state: "choose",
+        candidates: [{ resourceId: "candidate", name: "Choose me" }],
+      },
+      {
+        ...requirement,
+        state: "bound",
+        binding: { requirement: 2, resourceId: "bound", level: "read" },
+      },
+      { ...requirement, type: "integration", service: "gmail", state: "needs-access" },
+      { ...requirement, type: "computer-app", app: "com.apple.Safari", state: "needs-access" },
+    ],
+  });
+  await requestSpecialistRequirements({ registration, scope, browser, integrations });
+  expect(browser.requestAccess).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      runId: scope.runId,
+      threadId: scope.threadId,
+      ownerId: scope.requestedBy,
+      originatingWorkspaceId: scope.workspaceId,
+      workspaceId: scope.workspaceId,
+      suggestion: { kind: "user_choice" },
+    }),
+  );
+  expect(integrations.requestSpecialistAccess).toHaveBeenCalledTimes(2);
+  expect(integrations.requestSpecialistAccess).toHaveBeenCalledWith(
+    scope,
+    expect.objectContaining({ type: "integration", service: "gmail" }),
+    "specialist:specialist:version:3",
+  );
 });

@@ -79,14 +79,17 @@ describe("harness sandbox mounts", () => {
 
   it("re-exposes only this profile's and this Thread's directories", async () => {
     const fixture = await createFixture();
+    const unrelated = join(fixture.pluginsRoot, "b".repeat(64));
+    await mkdir(unrelated, { recursive: true });
     const args = await mounts(fixture);
 
+    expect(args).not.toContain(unrelated);
     expect(segmentIndex(args, bind(fixture.providerHome))).toBeGreaterThanOrEqual(0);
     expect(segmentIndex(args, bind(fixture.storeDirectory))).toBeGreaterThanOrEqual(0);
     expect(segmentIndex(args, readOnlyBind(fixture.threadState))).toBeGreaterThanOrEqual(0);
-    expect(segmentIndex(args, readOnlyBind(fixture.integrationSkills))).toBeGreaterThanOrEqual(0);
+    expect(segmentIndex(args, readOnlyBind(fixture.plugins))).toBeGreaterThanOrEqual(0);
 
-    expect(args).not.toContain(fixture.integrationSkillsRoot);
+    expect(args).not.toContain(fixture.pluginsRoot);
     expect(args).not.toContain(fixture.profilesRoot);
     expect(args).not.toContain(fixture.identityFile);
   });
@@ -111,7 +114,7 @@ describe("harness sandbox mounts", () => {
       fixture.providerHome,
       fixture.storeDirectory,
       fixture.threadState,
-      fixture.integrationSkills,
+      fixture.plugins,
       fixture.workspaceB,
       fixture.identityFile,
     ]) {
@@ -408,8 +411,8 @@ interface Fixture {
   readonly home: string;
   readonly homeCertificate: string;
   readonly identityFile: string;
-  readonly integrationSkills: string;
-  readonly integrationSkillsRoot: string;
+  readonly plugins: string;
+  readonly pluginsRoot: string;
   readonly launchDirectory: string;
   readonly layout: HarnessSandboxLayout;
   readonly linkedCertificate: string;
@@ -442,7 +445,7 @@ async function mounts(
 }
 
 /**
- * The default PortableFS topology: the Workspace backing root lives under the
+ * The default storage topology: the Workspace backing root lives under the
  * Runner data directory, so both are masked and only this Run's Workspace
  * comes back.
  */
@@ -455,8 +458,8 @@ async function createFixture(): Promise<Fixture> {
   const providerHome = join(profilesRoot, "hi_1", "provider-home");
   const storeDirectory = join(harnessState, "harness-stores", "codex", "store");
   const threadState = join(harnessState, "threads", "thr_1");
-  const integrationSkillsRoot = join(harnessState, "integration-skills");
-  const integrationSkills = join(integrationSkillsRoot, "thr_1");
+  const pluginsRoot = join(harnessState, "plugins");
+  const plugins = join(pluginsRoot, "a".repeat(64));
   const backingRoot = join(dataDirectory, "workspaces");
   const namespaceA = join(backingRoot, "user_a");
   const workspaceA = join(namespaceA, "ws1");
@@ -467,7 +470,7 @@ async function createFixture(): Promise<Fixture> {
     providerHome,
     storeDirectory,
     threadState,
-    integrationSkills,
+    plugins,
     workspaceA,
     workspaceB,
     externalRoot,
@@ -512,8 +515,8 @@ async function createFixture(): Promise<Fixture> {
     home,
     homeCertificate,
     identityFile,
-    integrationSkills,
-    integrationSkillsRoot,
+    plugins,
+    pluginsRoot,
     launchDirectory,
     layout: {
       dataDirectory,
@@ -530,7 +533,7 @@ async function createFixture(): Promise<Fixture> {
     providerState,
     run: {
       environment,
-      integrationSkillsDirectory: integrationSkills,
+      pluginCacheDirectories: [plugins],
       launchDirectory,
       providerState,
       threadStateDirectory: threadState,

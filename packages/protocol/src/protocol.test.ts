@@ -288,7 +288,6 @@ describe("wire protocol", () => {
       maxConcurrentRuns: 2,
       providerStateModes: ["isolated"],
       workspaceBackings: ["local-directory"],
-      workspaceMounts: [],
     } as const;
     const descriptor = {
       bootId: `rbt_${randomUUID()}`,
@@ -443,7 +442,7 @@ describe("wire protocol", () => {
 
   it("requires one ready browser snapshot before terminal lifecycle events", () => {
     const snapshot = {
-      access: "full-control",
+      access: "read-write",
       dialog: null,
       sessionId: `bsn_${randomUUID()}`,
       state: "ready",
@@ -544,14 +543,13 @@ describe("wire protocol", () => {
       RunnerCommandSchema.parse({
         ...base,
         plan: {
-          createdBy: createId("user"),
-          exchangeToken: "one-use-token",
-          exchangeUrl: "https://host.example/internal/v1/mount-grants/exchange",
           generation: 4,
-          kind: "portablefs",
-          volumeId: "volume-4",
+          kind: "local-directory",
+          bindingId: createId("workspaceBinding"),
+          ownerEnvironmentId: createId("environment"),
+          storageAuthorityId: createId("storageAuthority"),
+
           workspaceId,
-          workspaceKind: "specialized",
         },
         runId: createId("run"),
         threadId: createId("thread"),
@@ -685,9 +683,10 @@ describe("wire protocol", () => {
           token: "agent-tools-token",
           url: "https://host.example.test/internal/v1/integration-mcp",
         },
-        integrationSkills: {
-          token: "integration-skills-token",
-          url: "https://host.example/internal/v1/integration-skills",
+        plugins: {
+          versions: [],
+          token: "plugin-cache-token",
+          url: "https://host.example/internal/v1/plugin-cache",
         },
         bindingGeneration: 1,
         executionLeaseMs: 90_000,
@@ -732,14 +731,13 @@ describe("wire protocol", () => {
         workspaceKind: "main",
         workspaceInstructionsPath: "AGENTS.md",
         workspaceAccess: {
-          createdBy: createId("user"),
-          exchangeToken: "exchange-token",
-          exchangeUrl: "https://host.example.test/internal/v1/mount-grants/exchange",
           generation: 1,
-          kind: "portablefs",
-          volumeId: "volume-1",
+          kind: "local-directory",
+          bindingId: createId("workspaceBinding"),
+          ownerEnvironmentId: createId("environment"),
+          storageAuthorityId: createId("storageAuthority"),
+
           workspaceId,
-          workspaceKind: "main",
         },
       },
       correlationId: createId("command"),
@@ -888,7 +886,7 @@ describe("wire protocol", () => {
       id: createId("environment"),
       kind: index === 0 ? ("main" as const) : ("local" as const),
       name: "e".repeat(120),
-      workspaceBackings: ["local-directory" as const, "portablefs" as const],
+      workspaceBackings: ["local-directory" as const, "local-directory" as const],
     }));
     const threads = Array.from({ length: 100 }, () => {
       const id = createId("thread");
@@ -925,7 +923,7 @@ describe("wire protocol", () => {
       nextBefore: "cursor",
       totalItems: 101,
     };
-    // Every model an inspection may show, each at its longest names.
+    // Every model a discovery page may show, each at its longest names.
     const longestModel = (index: number) => ({
       modelId: `${index}`.padEnd(255, "m"),
       providerId: `p${index}`.padEnd(100, "p"),
@@ -942,31 +940,19 @@ describe("wire protocol", () => {
         },
       },
       environments,
-      environmentsTruncated: false,
       harnesses: harnessIds.map((id, index) => ({
         driverKind: "d".repeat(100),
         enabled: true,
         environmentId: environments[index % environments.length]!.id,
         id,
         models:
-          index < 5
-            ? Array.from({ length: 20 }, (_, model) => longestModel(index * 20 + model))
-            : [],
-        modelsOmitted: index < 5 ? 8_172 : 0,
+          index < 5 ? Array.from({ length: 8 }, (_, model) => longestModel(index * 8 + model)) : [],
+        modelsOmitted: index < 5 ? 8_184 : 0,
+        status: "ready",
         name: "h".repeat(120),
       })),
-      harnessesTruncated: false,
       requestId,
-      threads,
-      threadWindow: window,
-      type: "workspace.inspect.result",
-      workspaces: Array.from({ length: 50 }, () => ({
-        id: createId("workspace"),
-        kind: "specialized" as const,
-        name: "w".repeat(160),
-        status: "ready" as const,
-      })),
-      workspaceWindow: { ...window, itemCount: 50 },
+      type: "environment.list.result",
     });
     expect(Buffer.byteLength(JSON.stringify(catalog), "utf8")).toBeLessThanOrEqual(
       agentToolPayloadMaxSerializedBytes,
@@ -1102,8 +1088,7 @@ describe("wire protocol", () => {
             localStorage: null,
             maxConcurrentRuns: 1,
             providerStateModes: ["isolated"],
-            workspaceBackings: ["portablefs"],
-            workspaceMounts: [],
+            workspaceBackings: ["local-directory"],
           },
         },
         name: "Main runner",
@@ -1240,7 +1225,7 @@ describe("wire protocol", () => {
       operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
       remainingBudgetMs: 18_000,
       wireVersion: 1,
-      access: "full-control",
+      access: "read-write",
       audience: "opensteer-browser-runtime",
       expiresAt: new Date().toISOString(),
       identity: { kind: "fresh" },
@@ -1262,7 +1247,7 @@ describe("wire protocol", () => {
 
   it("names a fresh Browser Session by the absence of a profile", () => {
     const session = {
-      access: "full-control",
+      access: "read-write",
       createdAt: new Date().toISOString(),
       id: `bsn_${randomUUID()}`,
       origin: "agent",

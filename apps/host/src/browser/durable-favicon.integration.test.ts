@@ -128,6 +128,15 @@ integration("Durable tab icons", () => {
     );
     cleanups.push(() => runtime.close());
     await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true), { timeout: 5_000 });
+    const caller = await connectCallerMachine(host, {
+      name: "History caller",
+      token: await enrollmentToken(host, {
+        allowedModules: ["agents"],
+        idempotencyKey: "history-caller",
+        name: "History caller",
+      }),
+    });
+    cleanups.push(() => caller.close());
     await testRpcData(host.origin, "bootstrap.get", {}, { headers: host.ownerHeaders });
     const profile = await host.store.createBrowserProfile({
       ownerId: host.ownerId,
@@ -141,6 +150,16 @@ integration("Durable tab icons", () => {
       email: "history-stranger@example.com",
       password: "history-stranger-password",
     });
+    const strangerHost = { ...host, ownerId: stranger.userId, ownerHeaders: stranger.headers };
+    const strangerCaller = await connectCallerMachine(strangerHost, {
+      name: "Stranger caller",
+      token: await enrollmentToken(strangerHost, {
+        allowedModules: ["agents"],
+        idempotencyKey: "stranger-caller",
+        name: "Stranger caller",
+      }),
+    });
+    cleanups.push(() => strangerCaller.close());
     await testRpcData(host.origin, "bootstrap.get", {}, { headers: stranger.headers });
     const strangerWorkspace = await host.store.findMainWorkspaceForOwner(stranger.userId);
     if (!strangerWorkspace) throw new Error("Stranger Workspace missing");

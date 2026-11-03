@@ -5,7 +5,7 @@ import {
   type WorkspaceBacking,
 } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
-import { assertBackingAllowedByDeployment, assertExecutionAllowedByDeployment } from "./index.js";
+import { assertExecutionAllowedByDeployment } from "./index.js";
 
 describe("deployment Workspace shape", () => {
   const environmentId = createId("environment") as EnvironmentId;
@@ -16,30 +16,6 @@ describe("deployment Workspace shape", () => {
     ownerEnvironmentId: environmentId,
     storageAuthorityId: createId("storageAuthority"),
   };
-  const portableFs: WorkspaceBacking = {
-    generation: 1,
-    kind: "portablefs",
-    serviceId: "svc",
-    volumeId: "vol-1",
-  };
-
-  it("admits a local directory on a Deployment whose default is PortableFS", () => {
-    const shape = DeploymentShapeSchema.parse({
-      defaultWorkspaceBacking: "portablefs",
-      kind: "server" as const,
-    });
-    expect(() => assertBackingAllowedByDeployment(shape, local)).not.toThrow();
-  });
-
-  it("rejects PortableFS when the Deployment has no PortableFS authority", () => {
-    const shape = DeploymentShapeSchema.parse({
-      defaultWorkspaceBacking: "local-directory",
-      kind: "server" as const,
-    });
-    expect(() => assertBackingAllowedByDeployment(shape, portableFs)).toThrow(
-      "no PortableFS storage authority",
-    );
-  });
 
   it("rejects remote execution for local-directory Workspaces", () => {
     const shape = DeploymentShapeSchema.parse({

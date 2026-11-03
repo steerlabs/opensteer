@@ -225,7 +225,7 @@ async function run(): Promise<void> {
     },
     ipcMain,
     portal: { openExternal: unused, pickFolder: unused },
-    runner: { portableFs: unused, remove: unused, start: unused, status: unused, subscribe },
+    runner: { remove: unused, start: unused, status: unused, subscribe },
   });
   const screenshots = path.join(
     process.env.OPENSTEER_JOURNEY_OUT ?? tmpdir(),

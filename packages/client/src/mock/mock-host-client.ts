@@ -12,6 +12,10 @@ import { emptySavedViewReadiness } from "../host/saved-host-view.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { channelProviderCatalog } from "@opensteer/channel-core";
 import {
+  SpecialistManifestSchema,
+  type SpecialistRegistration,
+  type SpecialistManifest,
+  type SpecialistBinding,
   AgentEventSchema,
   PlaceEnteredEventViewSchema,
   AssignmentIdSchema,
@@ -326,7 +330,7 @@ const mockTmdbReason =
  * person at that Mac.
  */
 const mockComputerUseThreadId = "thr_00000000-0000-4000-8000-000000000001";
-const mockPortableFsThreadId = "thr_00000000-0000-4000-8000-000000000002";
+const mockstorageThreadId = "thr_00000000-0000-4000-8000-000000000002";
 const mockComputerUseRequestId = RequestIdSchema.parse("req_0192f4a1-6666-4000-8000-000000000006");
 const mockComputerUseSetupRequestId = "0192f4a1-4444-4000-8000-000000000004";
 const mockComputerUseReason = "Put the architecture decisions into the Q4 planning sheet.";
@@ -469,7 +473,7 @@ const MainIntegrationAccessResponseSchema = z.strictObject({
     }),
   ]),
 });
-const SpecializedIntegrationAccessResponseSchema = z.strictObject({
+const ProjectIntegrationAccessResponseSchema = z.strictObject({
   kind: z.literal("external"),
   value: z.discriminatedUnion("decision", [
     DeclinedIntegrationAccessDecisionSchema,
@@ -1768,6 +1772,7 @@ const mockMachines: readonly MachineSummary[] = [
 ];
 
 export interface MockHostClientOptions {
+  specialistPlugins?: { id: string; name: string; manifest: SpecialistManifest }[];
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
   readonly sharedTaskDoneAvailable?: boolean;
   /** The platform's lifecycle, reported to display sockets as the real client reports it. */
@@ -2091,6 +2096,10 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           requests: client.listComputerAppSetupRequests(),
         }),
       ),
+    "specialist.list": async (input) =>
+      rpcSuccess({ specialists: client.listSpecialists(input.workspaceId) }),
+    "plugin.list": async (input) =>
+      rpcSuccess({ plugins: await client.listPlugins(input.workspaceId) }),
     "integration.platform.get": async () =>
       rpcSuccess(
         hostApi["integration.platform.get"].success.parse(await client.loadIntegrationPlatform()),
@@ -2330,9 +2339,11 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       });
     },
     "workspace.invitations.list": async (input) =>
-      rpcSuccess({
-        invitations: (await client.loadWorkspaceSharing(input.workspaceId)).invitations,
-      }),
+      rpcSuccess(
+        hostApi["workspace.invitations.list"].success.parse({
+          invitations: (await client.loadWorkspaceSharing(input.workspaceId)).invitations,
+        }),
+      ),
     "workspace.members.list": async (input) =>
       rpcSuccess(
         hostApi["workspace.members.list"].success.parse({
@@ -2406,6 +2417,13 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
           workspace: mockWorkspaceView(
             await client.setWorkspaceColor(command.workspaceId, command.color),
           ),
+        }),
+      );
+    case "workspace.adoptRelocated":
+      return rpcSuccess(
+        hostApi["commands.dispatch"].success.parse({
+          type: command.type,
+          workspace: mockWorkspaceView(await client.adoptRelocated(command.workspaceId)),
         }),
       );
     case "workspace.storage.retry":
@@ -2866,7 +2884,32 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "integration.mcp.disconnect":
       await client.disconnectMcpConnection(command.connectionId);
       return rpcSuccess({ type: command.type });
-    case "integration.agentPlugin.install": {
+    case "specialist.list":
+      return rpcSuccess({
+        type: command.type,
+        specialists: client.listSpecialists(command.workspaceId),
+      });
+    case "specialist.add":
+      return rpcSuccess({
+        type: command.type,
+        specialist: client.addSpecialist(command.workspaceId, command.pluginId),
+      });
+    case "specialist.bind":
+      return rpcSuccess({ type: command.type, specialist: client.bindSpecialist(command) });
+    case "specialist.remove":
+      client.removeSpecialist(command.workspaceId, command.specialistId);
+      return rpcSuccess({ type: command.type });
+    case "plugin.list":
+      return rpcSuccess({
+        type: command.type,
+        plugins: await client.listPlugins(command.workspaceId),
+      });
+    case "plugin.update":
+    case "plugin.remove":
+    case "plugin.activation.set":
+      await client.mutatePlugin(command);
+      return rpcSuccess({ type: command.type });
+    case "plugin.install": {
       const result = await client.installAgentPlugin(command.input.directory);
       return rpcSuccess({ ...result, type: command.type });
     }
@@ -2943,8 +2986,12 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       );
     }
     case "browser.profile.create":
-      await client.createBrowserProfile(command.input.name);
-      return unsupportedMockRpc();
+      return rpcSuccess(
+        hostApi["commands.dispatch"].success.parse({
+          type: command.type,
+          profile: await client.createBrowserProfile(command.input.name),
+        }),
+      );
     case "browser.source.pair":
       return rpcSuccess({ pairing: client.chrome.pair(mockPreviewOrigin()), type: command.type });
     case "browser.source.rename":
@@ -2963,11 +3010,15 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "browser.password-sign-in.respond":
       return rpcSuccess({ status: client.respondPasswordSignIn(command), type: command.type });
     case "browser.profile.grant":
-      await client.grantBrowserProfile(command);
-      return unsupportedMockRpc();
+      return rpcSuccess(
+        hostApi["commands.dispatch"].success.parse({
+          type: command.type,
+          grant: await client.grantBrowserProfile(command),
+        }),
+      );
     case "browser.profileGrant.revoke":
       await client.revokeBrowserProfileGrant(command.grantId);
-      return unsupportedMockRpc();
+      return rpcSuccess({ type: command.type });
     case "browser.history.remove":
       client.places!.removeHistory(command.profileId, command.url);
       return rpcSuccess({ type: command.type });
@@ -4261,7 +4312,7 @@ export class MockHostClient implements HostClient {
       ...(input.generateTitle && this.getSnapshot().threadRenameAvailable
         ? { generateTitle: true }
         : {}),
-      title: input.title?.trim() || "Untitled thread",
+      title: input.home ? "Chat" : input.title?.trim() || "Untitled thread",
       type: "thread.create",
       workspaceId: input.workspaceId,
     });
@@ -4693,7 +4744,301 @@ export class MockHostClient implements HostClient {
   }
 }
 
+interface MockPlugin {
+  id: string;
+  name: string;
+  scope: "deployment" | "workspace";
+  workspaceId: string | null;
+  source: { directory?: string };
+  currentVersionId: string;
+  versions: {
+    id: string;
+    digest: string;
+    manifest: { name: string; version?: string; description?: string; skills: unknown[] };
+    specialistManifest?: SpecialistManifest | undefined;
+  }[];
+  activations: { workspaceId: string }[];
+  createdAt: string;
+  updatedAt: string;
+}
 class MockHostState {
+  private readonly plugins: MockPlugin[] = [];
+  private readonly specialists: {
+    id: string;
+    workspaceId: string;
+    pluginId: string;
+    pluginVersionId: string;
+    ownerUserId: string;
+    bindings: SpecialistBinding[];
+    manifest: SpecialistManifest;
+  }[] = [];
+  listSpecialists(workspaceId: string) {
+    return this.specialists
+      .filter((s) => s.workspaceId === workspaceId)
+      .map((s) => this.refreshSpecialist(s));
+  }
+  private refreshSpecialist(s: (typeof this.specialists)[number]): SpecialistRegistration {
+    const plugin = this.plugins.find((p) => p.id === s.pluginId)!;
+    const main =
+      this.snapshot.homeWorkspaceId === s.workspaceId && s.ownerUserId === this.snapshot.user?.id;
+    const access = (s.manifest.access ?? []).map((requirement, index) => {
+      const candidates =
+        requirement.type === "browser-profile"
+          ? this.snapshot.browserProfiles
+              .filter(
+                (p) =>
+                  main ||
+                  this.snapshot.browserProfileGrants.some(
+                    (g) =>
+                      g.workspaceId === s.workspaceId &&
+                      g.profileId === p.id &&
+                      (g.access === "read-write" || g.access === requirement.level),
+                  ),
+              )
+              .map((p) => ({ resourceId: p.id, name: p.name }))
+          : this.integrations.connections
+              .filter(
+                (c) =>
+                  c.status === "connected" &&
+                  (requirement.type === "integration"
+                    ? c.provider === requirement.service || c.definitionId === requirement.service
+                    : requirement.type === "phone"
+                      ? c.definitionId === "android-phone"
+                      : c.definitionId === "macos-app" &&
+                        c.computer?.app?.bundleId.toLowerCase() ===
+                          requirement.app.toLowerCase()) &&
+                  (!c.computer ||
+                    (c.computer.blockedAt === null &&
+                      (c.computer.access === "read-write" ||
+                        c.computer.access === requirement.level))) &&
+                  (main ||
+                    this.integrations.grants.some(
+                      (g) =>
+                        g.workspaceId === s.workspaceId &&
+                        g.ownerUserId === s.ownerUserId &&
+                        g.connectionId === c.id &&
+                        g.status === "active" &&
+                        g.revokedAt === null &&
+                        (g.access === "read-write" || g.access === requirement.level),
+                    )),
+              )
+              .map((c) => ({ resourceId: c.id, name: c.id }));
+      const previous = s.bindings.find((b) => b.requirement === index);
+      const resourceId =
+        previous && !previous.rebind && candidates.some((c) => c.resourceId === previous.resourceId)
+          ? previous.resourceId
+          : !previous && candidates.length === 1
+            ? candidates[0]!.resourceId
+            : null;
+      const binding = resourceId
+        ? { requirement: index, resourceId, level: requirement.level }
+        : null;
+      return {
+        ...requirement,
+        binding,
+        candidates,
+        state: binding
+          ? ("bound" as const)
+          : previous
+            ? ("rebind" as const)
+            : candidates.length
+              ? ("choose" as const)
+              : ("needs-access" as const),
+      };
+    });
+    s.bindings = access.flatMap((a, index) => {
+      const previous = s.bindings.find((b) => b.requirement === index);
+      return a.binding ? [a.binding] : previous ? [{ ...previous, rebind: true }] : [];
+    });
+    return {
+      id: s.id,
+      workspaceId: s.workspaceId,
+      pluginId: s.pluginId,
+      pluginVersionId: s.pluginVersionId,
+      ownerUserId: s.ownerUserId,
+      ownerName:
+        s.ownerUserId === this.snapshot.user?.id ? this.snapshot.user.displayName : s.ownerUserId,
+      canUse: s.ownerUserId === this.snapshot.user?.id && access.every((a) => a.binding),
+      plugin: plugin.name,
+      version: plugin.versions.find((v) => v.id === s.pluginVersionId)!.digest,
+      models: s.manifest.models,
+      fallback: s.manifest.fallback,
+      status: access.every((a) => a.binding) ? "ready" : "pending",
+      access,
+    };
+  }
+  addSpecialist(workspaceId: string, pluginId: string) {
+    const plugin = this.plugins.find((p) => p.id === pluginId);
+    const version = plugin?.versions.find((v) => v.id === plugin.currentVersionId);
+    if (!plugin || !version?.specialistManifest)
+      throw new Error("Install a specialist package first");
+    const ownerUserId = this.snapshot.user!.id;
+    const previous = this.specialists.find(
+      (s) =>
+        s.workspaceId === workspaceId && s.pluginId === pluginId && s.ownerUserId === ownerUserId,
+    );
+    if (previous && previous.ownerUserId !== ownerUserId)
+      throw new Error("Only the consent owner may re-add this specialist");
+    this.mutatePlugin({
+      type: "plugin.activation.set",
+      idempotencyKey: crypto.randomUUID(),
+      pluginId,
+      workspaceId: WorkspaceIdSchema.parse(workspaceId),
+      active: true,
+    });
+    const registration = {
+      id: previous?.id ?? crypto.randomUUID(),
+      workspaceId,
+      pluginId,
+      pluginVersionId: version.id,
+      ownerUserId,
+      bindings: [],
+      manifest: version.specialistManifest,
+    };
+    if (previous) this.specialists.splice(this.specialists.indexOf(previous), 1);
+    this.specialists.push(registration);
+    return this.refreshSpecialist(registration);
+  }
+  bindSpecialist(input: {
+    workspaceId: string;
+    specialistId: string;
+    requirement: number;
+    resourceId: string;
+  }) {
+    const s = this.specialists.find(
+      (s) => s.id === input.specialistId && s.workspaceId === input.workspaceId,
+    );
+    if (!s || s.ownerUserId !== this.snapshot.user?.id)
+      throw new Error("Only the consent owner may bind this specialist");
+    const requirement = this.refreshSpecialist(s).access[input.requirement];
+    if (!requirement?.candidates.some((c) => c.resourceId === input.resourceId))
+      throw new Error("Choose a currently allowed candidate");
+    s.bindings = [
+      ...s.bindings.filter((b) => b.requirement !== input.requirement),
+      { requirement: input.requirement, resourceId: input.resourceId, level: requirement.level },
+    ];
+    return this.refreshSpecialist(s);
+  }
+  removeSpecialist(workspaceId: string, id: string) {
+    const index = this.specialists.findIndex(
+      (s) =>
+        s.id === id && s.workspaceId === workspaceId && s.ownerUserId === this.snapshot.user?.id,
+    );
+    if (index >= 0) this.specialists.splice(index, 1);
+  }
+  /** The Host's rows: every Deployment plugin, and a Workspace's own when one is named. */
+  async listPlugins(workspaceId?: string): Promise<Record<string, unknown>[]> {
+    const administrator = this.snapshot.user?.instanceRole === "administrator";
+    if (!administrator) {
+      const sharing =
+        workspaceId && this.snapshot.workspaces.some((w) => w.id === workspaceId)
+          ? await this.loadWorkspaceSharing(workspaceId)
+          : null;
+      if (
+        !sharing?.members.some((m) => m.userId === this.snapshot.user?.id && m.state === "active")
+      )
+        throw new HostClientRequestError({
+          code: "forbidden",
+          message: "Active Workspace membership is required",
+          status: 403,
+        });
+    }
+    return this.plugins
+      .filter((p) => !workspaceId || p.scope === "deployment" || p.workspaceId === workspaceId)
+      .map((p) =>
+        administrator
+          ? { ...p, servers: [] }
+          : {
+              id: p.id,
+              name: p.name,
+              scope: p.scope,
+              workspaceId: p.workspaceId,
+              currentVersionId: p.currentVersionId,
+              updatedAt: p.updatedAt,
+              versions: p.versions.map((v) => ({
+                id: v.id,
+                digest: v.digest,
+                manifest: {
+                  description: v.manifest.description,
+                  version: v.manifest.version,
+                  skills: Array.isArray(v.manifest.skills) ? v.manifest.skills.map(() => ({})) : [],
+                },
+                specialistManifest: v.specialistManifest ? {} : null,
+              })),
+              activations: p.activations.filter((a) => a.workspaceId === workspaceId),
+              servers: [],
+            },
+      );
+  }
+  async mutatePlugin(
+    command: Extract<
+      HostApiCommand,
+      { type: "plugin.update" | "plugin.remove" | "plugin.activation.set" }
+    >,
+  ) {
+    const administrator = this.snapshot.user?.instanceRole === "administrator";
+    if (command.type === "plugin.activation.set") {
+      const sharing = await this.loadWorkspaceSharing(command.workspaceId);
+      if (
+        !sharing.members.some(
+          (m) =>
+            m.userId === this.snapshot.user?.id &&
+            m.state === "active" &&
+            (m.role === "owner" || administrator),
+        )
+      )
+        throw new HostClientRequestError({
+          code: "forbidden",
+          message: "Only the Workspace owner or administrator can change plugins",
+          status: 403,
+        });
+    } else if (!administrator)
+      throw new HostClientRequestError({
+        code: "forbidden",
+        message: "Administrator access required",
+        status: 403,
+      });
+    const index = this.plugins.findIndex((p) => p.id === command.pluginId);
+    const plugin = this.plugins[index];
+    if (!plugin) throw new Error("Plugin not found");
+    if (command.type === "plugin.remove") {
+      this.plugins.splice(index, 1);
+      for (let i = this.specialists.length - 1; i >= 0; i--)
+        if (this.specialists[i]?.pluginId === command.pluginId) this.specialists.splice(i, 1);
+    } else if (command.type === "plugin.update") {
+      const id = crypto.randomUUID();
+      const current = plugin.versions.find((v) => v.id === plugin.currentVersionId);
+      plugin.versions.push({
+        id,
+        digest: id,
+        manifest: current?.manifest ?? { name: plugin.name, skills: [] },
+        specialistManifest: current?.specialistManifest,
+      });
+      plugin.currentVersionId = id;
+      plugin.source = { directory: command.input.directory };
+      plugin.updatedAt = this.now().toISOString();
+    } else {
+      if (plugin.scope === "workspace" && plugin.workspaceId !== command.workspaceId)
+        throw new HostClientRequestError({
+          code: "forbidden",
+          message: "This plugin belongs to another Workspace",
+          status: 403,
+        });
+      if (
+        command.active &&
+        this.plugins.some(
+          (p) =>
+            p.id !== plugin.id &&
+            p.name === plugin.name &&
+            p.activations.some((a) => a.workspaceId === command.workspaceId),
+        )
+      )
+        throw new Error("A plugin with that name is already active here");
+      plugin.activations = plugin.activations.filter((a) => a.workspaceId !== command.workspaceId);
+      if (command.active) plugin.activations.push({ workspaceId: command.workspaceId });
+    }
+  }
+
   readonly remoteAdministrationListeners = new Set<() => void>();
   remoteAdministration: import("@opensteer/protocol").PersonalRemoteAdministrationStatus = {
     access: { accountLink: null, generation: 0, mode: "off", route: null, schemaVersion: 2 },
@@ -5354,6 +5699,29 @@ class MockHostState {
   }
 
   constructor(options: MockHostClientOptions = {}) {
+    for (const p of options.specialistPlugins ?? []) {
+      const id = crypto.randomUUID();
+      const at = new Date(0).toISOString();
+      this.plugins.push({
+        id: p.id,
+        name: p.name,
+        scope: "deployment",
+        workspaceId: null,
+        source: { directory: `/opt/opensteer/plugins/${p.name}` },
+        currentVersionId: id,
+        versions: [
+          {
+            id,
+            digest: id,
+            manifest: { name: p.name, version: "1.0.0", skills: [] },
+            specialistManifest: SpecialistManifestSchema.parse(p.manifest),
+          },
+        ],
+        activations: [],
+        createdAt: at,
+        updatedAt: at,
+      });
+    }
     this.sessions = [
       ...(options.sessions ?? [
         {
@@ -5388,7 +5756,7 @@ class MockHostState {
         this.#provisionalIcons.add(thread.id);
     }
     const homeThread = this.snapshot.threads.find(({ id }) => id === this.snapshot.homeThreadId);
-    const workThread = this.snapshot.threads.find(({ id }) => id === mockPortableFsThreadId);
+    const workThread = this.snapshot.threads.find(({ id }) => id === mockstorageThreadId);
     if (options.automations !== "absent" && homeThread && workThread) {
       for (const record of seedMockAutomations({
         homeThread,
@@ -6814,8 +7182,14 @@ class MockHostState {
     this.sessions = this.sessions.filter((session) => session.id !== sessionId);
   }
 
+  private readonly workspaceSharing = new Map<
+    string,
+    import("../host/client.js").WorkspaceSharingSnapshot
+  >();
   async loadWorkspaceSharing(workspaceId: string) {
-    return {
+    const existing = this.workspaceSharing.get(workspaceId);
+    if (existing) return existing;
+    const sharing: import("../host/client.js").WorkspaceSharingSnapshot = {
       invitations: [],
       members: [
         {
@@ -6833,15 +7207,31 @@ class MockHostState {
         },
       ],
     };
+    this.workspaceSharing.set(workspaceId, sharing);
+    return sharing;
   }
 
   async listWorkspaceFiles(workspaceId: string, input: { readonly parentKey: string }) {
     await delay(Math.min(this.latencyMs, 180));
     const { parentKey } = input;
-    const parentPath = parentKey === "" ? "" : mockFileForKey(workspaceId, parentKey)?.path;
+    const projectFiles: MockWorkspaceFile[] =
+      workspaceId === this.snapshot.homeWorkspaceId && this.projectSlugs.size > 0
+        ? [
+            { content: null, path: "Projects", type: "directory" as const },
+            ...[...this.projectSlugs].map((slug) => ({
+              content: null,
+              path: `Projects/${slug}`,
+              type: "directory" as const,
+            })),
+          ]
+        : [];
+    const files = [...(mockWorkspaceFiles[workspaceId] ?? []), ...projectFiles];
+    const parentPath =
+      parentKey === ""
+        ? ""
+        : files.find((file) => encodeMockFileKey(file.path) === parentKey)?.path;
     if (parentPath === undefined) throw new Error("Folder not found.");
     const prefix = parentPath === "" ? "" : `${parentPath}/`;
-    const files = mockWorkspaceFiles[workspaceId] ?? [];
     const entries = files
       .filter((file) => {
         if (!file.path.startsWith(prefix)) return false;
@@ -6919,7 +7309,7 @@ class MockHostState {
     userId: string;
     workspaceId: string;
   }) {
-    return {
+    const membership = {
       displayName: "Alex",
       email: "alex@example.com",
       emailVerified: true,
@@ -6932,6 +7322,9 @@ class MockHostState {
       userId: input.userId,
       workspaceId: input.workspaceId,
     };
+    const sharing = await this.loadWorkspaceSharing(input.workspaceId);
+    sharing.members = [...sharing.members.filter((m) => m.userId !== input.userId), membership];
+    return membership;
   }
 
   async exchangeSetupToken(_token: string): Promise<void> {}
@@ -8067,7 +8460,24 @@ class MockHostState {
     );
   }
 
-  async installAgentPlugin(_directory: string) {
+  async installAgentPlugin(directory: string) {
+    const name = directory.split("/").filter(Boolean).at(-1) ?? "plugin";
+    if (name === "opensteer") throw new Error("The plugin name opensteer is reserved");
+    const id = crypto.randomUUID(),
+      versionId = crypto.randomUUID(),
+      at = this.now().toISOString();
+    this.plugins.push({
+      id,
+      name,
+      scope: "deployment",
+      workspaceId: null,
+      source: { directory },
+      currentVersionId: versionId,
+      versions: [{ id: versionId, digest: versionId, manifest: { name, skills: [] } }],
+      activations: [],
+      createdAt: at,
+      updatedAt: at,
+    });
     return { issues: [] };
   }
 
@@ -8106,7 +8516,6 @@ class MockHostState {
             providerApplicationRequired: definition.authMethods.some(
               ({ kind }) => kind === "oauth",
             ),
-            skills: [],
             tools: mockCatalogTools(definition),
           });
     entry.installationId = installation.installation.id;
@@ -8149,7 +8558,6 @@ class MockHostState {
           updatedAt: timestamp,
         },
       ],
-      skills: [],
       tools: [],
     });
     return installation;
@@ -8620,20 +9028,36 @@ class MockHostState {
   }
 
   async createBrowserProfile(
-    _name: string,
+    name: string,
   ): Promise<import("../host/client.js").BrowserProfileSummary> {
-    throw new Error("The opt-in mock does not provide browser profiles.");
+    const profile = { id: createId("browserProfile"), name };
+    this.update({ ...this.snapshot, browserProfiles: [...this.snapshot.browserProfiles, profile] });
+    return profile;
   }
-
-  async grantBrowserProfile(_input: {
+  async grantBrowserProfile(input: {
     profileId: string;
     workspaceId: string;
+    access?: "read" | "read-write";
   }): Promise<BrowserProfileGrantSummary> {
-    throw new Error("The opt-in mock does not provide browser profile grants.");
+    if (!this.snapshot.browserProfiles.some((p) => p.id === input.profileId))
+      throw new Error("Profile not found");
+    const grant = {
+      ...input,
+      access: input.access ?? ("read-write" as const),
+      id: createId("browserProfileGrant"),
+      createdAt: this.now().toISOString(),
+    };
+    this.update({
+      ...this.snapshot,
+      browserProfileGrants: [...this.snapshot.browserProfileGrants, grant],
+    });
+    return grant;
   }
-
-  async revokeBrowserProfileGrant(_grantId: string): Promise<void> {
-    throw new Error("The opt-in mock does not provide browser profile grants.");
+  async revokeBrowserProfileGrant(grantId: string): Promise<void> {
+    this.update({
+      ...this.snapshot,
+      browserProfileGrants: this.snapshot.browserProfileGrants.filter((g) => g.id !== grantId),
+    });
   }
 
   dispose(): void {
@@ -8710,6 +9134,30 @@ class MockHostState {
     return updated;
   }
 
+  async adoptRelocated(workspaceId: string): Promise<WorkspaceSummary> {
+    const workspace = this.snapshot.workspaces.find((item) => item.id === workspaceId);
+    if (!workspace || workspace.storageIssue?.code !== "relocation-required")
+      throw new Error("Project is not awaiting relocation");
+    const sharing = await this.loadWorkspaceSharing(workspaceId);
+    if (
+      !sharing.members.some(
+        (member) =>
+          member.userId === this.snapshot.user?.id &&
+          member.role === "owner" &&
+          member.state === "active",
+      )
+    )
+      throw new Error("Only the Project owner may confirm relocation");
+    const updated: WorkspaceSummary = { ...workspace, status: "ready", storageIssue: null };
+    this.update({
+      ...this.snapshot,
+      workspaces: this.snapshot.workspaces.map((item) =>
+        item.id === workspaceId ? updated : item,
+      ),
+    });
+    return updated;
+  }
+
   async retryWorkspaceStorage(workspaceId: string): Promise<WorkspaceSummary> {
     const workspace = this.snapshot.workspaces.find((item) => item.id === workspaceId);
     if (!workspace) throw new Error("Workspace not found.");
@@ -8742,9 +9190,20 @@ class MockHostState {
 
   async loadEarlierWorkspaces(): Promise<void> {}
 
+  private readonly projectSlugs = new Set<string>();
+
   async createWorkspace(input: CreateWorkspaceInput) {
     const name = input.name.trim();
     if (!name) throw new Error("Workspace name is required.");
+    const base =
+      name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .slice(0, 100)
+        .replace(/^-|-$/g, "") || "project";
+    let slug = base;
+    for (let suffix = 2; this.projectSlugs.has(slug); suffix++) slug = `${base}-${suffix}`;
+    this.projectSlugs.add(slug);
     const timestamp = this.now().toISOString();
     const workspace = {
       description: "A durable Opensteer Workspace.",
@@ -8753,7 +9212,7 @@ class MockHostState {
       homeThreadId: null,
       icon: input.icon ?? null,
       id: this.nextId("workspace"),
-      kind: "specialized" as const,
+      kind: "project" as const,
       machineName: "Main runner",
       name,
       runnerLabel: this.snapshot.environments[0]?.name ?? "Main runner",
@@ -8771,6 +9230,21 @@ class MockHostState {
       },
       workspaces: [workspace, ...this.snapshot.workspaces],
     });
+    const template =
+      this.snapshot.threads.find((t) => t.id === this.snapshot.homeThreadId) ??
+      this.snapshot.threads[0];
+    if (template) {
+      const chat = await this.createThread({
+        workspaceId: workspace.id,
+        home: true,
+        title: "Chat",
+        environmentId: template.environmentId,
+        harnessInstanceId: template.harnessInstanceId,
+        modelSelection: template.modelSelection,
+        accessMode: template.accessMode,
+      });
+      return { ...workspace, homeThreadId: chat.id };
+    }
     return workspace;
   }
 
@@ -8897,7 +9371,6 @@ class MockHostState {
     const workspace = this.snapshot.workspaces.find((item) => item.id === input.workspaceId);
     if (!workspace) throw new Error("Workspace not found.");
     if (input.home) {
-      if (workspace.kind !== "main") throw new Error("Chat belongs to the Main Workspace.");
       const existing =
         workspace.homeThreadId &&
         this.snapshot.threads.find((thread) => thread.id === workspace.homeThreadId);
@@ -8944,7 +9417,7 @@ class MockHostState {
       runnerLabel: placement.whereLabel,
       doneAt: null,
       status: "idle",
-      title: input.title?.trim() || "Untitled thread",
+      title: input.home ? "Chat" : input.title?.trim() || "Untitled thread",
       icon: null,
       color: this.allocateMarkColor("thread"),
       unread: false,
@@ -8963,7 +9436,9 @@ class MockHostState {
             item.id === workspace.id ? { ...item, homeThreadId: thread.id } : item,
           )
         : this.snapshot.workspaces,
-      ...(input.home ? { homeThreadId: thread.id } : {}),
+      ...(input.home && workspace.id === this.snapshot.homeWorkspaceId
+        ? { homeThreadId: thread.id }
+        : {}),
       transcriptWindows: {
         ...this.snapshot.transcriptWindows,
         [thread.id]: {
@@ -10326,7 +10801,7 @@ class MockHostState {
       const response = (
         target.kind === "main"
           ? MainIntegrationAccessResponseSchema
-          : SpecializedIntegrationAccessResponseSchema
+          : ProjectIntegrationAccessResponseSchema
       ).parse(input.response);
       if (response.value.decision === "fulfilled") {
         this.#verifyMockIntegrationAccessFulfillment(request, response.value.connectionId);
@@ -11387,7 +11862,7 @@ function createInitialSnapshot(): HostSnapshot {
           "run_00000000-0000-4000-8000-000000000001",
           "thr_00000000-0000-4000-8000-000000000001",
         ),
-        body: "The foundation is taking shape around one clear rule: the Host owns durable truth, while Runners execute work in a Thread’s pinned environment.\n\nThe first slice includes:\n\n- versioned Host and Runner protocols\n- durable Workspace and Thread records\n- a storage-neutral filesystem boundary\n- protected local-directory and PortableFS adapters\n- harness-neutral run events\n- one web client that works hosted or on-prem",
+        body: "The foundation is taking shape around one clear rule: the Host owns durable truth, while Runners execute work in a Thread’s pinned environment.\n\nThe first slice includes:\n\n- versioned Host and Runner protocols\n- durable Workspace and Thread records\n- a storage-neutral filesystem boundary\n- protected local-directory and storage adapters\n- harness-neutral run events\n- one web client that works hosted or on-prem",
         createdAt: "2026-08-09T16:34:00.000Z",
         id: "msg_00000000-0000-4000-8000-000000000002",
         kind: "message",
@@ -11400,7 +11875,7 @@ function createInitialSnapshot(): HostSnapshot {
         kind: "reasoning",
         runId: "run_00000000-0000-4000-8000-000000000001",
         state: "done",
-        text: "Workspace storage is an explicit deployment capability, so local binding and PortableFS authority contracts both need review before protocol work continues.",
+        text: "Workspace storage is an explicit deployment capability, so local binding and storage authority contracts both need review before protocol work continues.",
       },
       {
         arguments: { path: "docs/architecture.md" },
@@ -11463,7 +11938,7 @@ function createInitialSnapshot(): HostSnapshot {
     "thr_00000000-0000-4000-8000-000000000002": [
       {
         author: mockHumanAuthor(),
-        body: "Review the PortableFS integration and identify the smallest contract Opensteer needs.",
+        body: "Review the storage integration and identify the smallest contract Opensteer needs.",
         createdAt: "2026-08-09T13:03:00.000Z",
         id: "msg_00000000-0000-4000-8000-000000000006",
         kind: "message",
@@ -11475,7 +11950,7 @@ function createInitialSnapshot(): HostSnapshot {
           "run_00000000-0000-4000-8000-000000000002",
           "thr_00000000-0000-4000-8000-000000000002",
         ),
-        body: "Opensteer only needs an authority endpoint, a scoped mount grant, and lifecycle visibility. PortableFS should remain unaware of Threads, harnesses, or credentials.\n\nSources: the [PortableFS mount guide](https://portablefs.example/docs/mounts), the [old mirror](http://mirror.portablefs.example/docs) and my draft, [portablefs-contract.md](docs/portablefs-contract.md). Questions go to [storage@portablefs.example](mailto:storage@portablefs.example).\n\n![Mount sequence](/Users/person/Workspaces/main/mount-sequence.png)\n\n[![Grant flow](https://portablefs.example/images/grant-flow.png)](https://portablefs.example/docs/grants)",
+        body: "Opensteer only needs an authority endpoint, a scoped mount grant, and lifecycle visibility. storage should remain unaware of Threads, harnesses, or credentials.\n\nSources: the [storage mount guide](https://storage.example/docs/mounts), the [old mirror](http://mirror.storage.example/docs) and my draft, [storage-contract.md](docs/storage-contract.md). Questions go to [storage@storage.example](mailto:storage@storage.example).\n\n![Mount sequence](/Users/person/Workspaces/main/mount-sequence.png)\n\n[![Grant flow](https://storage.example/images/grant-flow.png)](https://storage.example/docs/grants)",
         createdAt: "2026-08-09T13:08:00.000Z",
         id: "msg_00000000-0000-4000-8000-000000000007",
         kind: "message",
@@ -11728,15 +12203,15 @@ function createInitialSnapshot(): HostSnapshot {
           payload: { kind: "harness.input" },
           presentation: {
             detail:
-              "PortableFS now has three backends and the integration suite covers each of them separately. Before the next release I need to know which of them to run, how long to let them run for, and who to tell when one of them fails. Everything below is remembered for the rest of this thread.",
+              "storage now has three backends and the integration suite covers each of them separately. Before the next release I need to know which of them to run, how long to let them run for, and who to tell when one of them fails. Everything below is remembered for the rest of this thread.",
             fields: [
               {
                 choices: [
                   { label: "Local directory", value: "local-directory" },
-                  { label: "PortableFS over S3", value: "portablefs-s3" },
-                  { label: "PortableFS over GCS", value: "portablefs-gcs" },
-                  { label: "PortableFS over Azure Blob", value: "portablefs-azure" },
-                  { label: "PortableFS over the local verifier", value: "portablefs-verifier" },
+                  { label: "storage over S3", value: "storage-s3" },
+                  { label: "storage over GCS", value: "storage-gcs" },
+                  { label: "storage over Azure Blob", value: "storage-azure" },
+                  { label: "storage over the local verifier", value: "storage-verifier" },
                   { label: "Container overlay", value: "container-overlay" },
                 ],
                 id: "backends",
@@ -12221,7 +12696,7 @@ function createInitialSnapshot(): HostSnapshot {
         role: "work",
         runnerLabel: "Main runner",
         status: "waiting",
-        title: "Review PortableFS integration",
+        title: "Review storage integration",
         unread: false,
         updatedAt: "2026-08-09T13:08:00.000Z",
         workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
@@ -12415,7 +12890,7 @@ function createInitialSnapshot(): HostSnapshot {
         fileCount: 27,
         harnessLabel: "Codex",
         id: "wsp_00000000-0000-4000-8000-000000000002",
-        kind: "specialized",
+        kind: "project",
         icon: "rocket",
         machineName: "Main runner",
         name: "Customer launch",
@@ -12431,7 +12906,7 @@ function createInitialSnapshot(): HostSnapshot {
         fileCount: 42,
         harnessLabel: "Codex",
         id: "wsp_00000000-0000-4000-8000-000000000003",
-        kind: "specialized",
+        kind: "project",
         icon: "chart",
         machineName: "Main runner",
         name: "Finance & operations",

@@ -572,9 +572,6 @@
     "no-real-time-wait-in-tests:709a777325aa1e865ba3": 2,
     "no-real-time-wait-in-tests:dbc51bbfb095a102235c": 1
   },
-  "apps/host/src/runtime/portablefs-manager.test-support.test.ts": {
-    "no-unit-test-timeout:5b833d7dc44d5c885927": 1
-  },
   "apps/host/src/runtime/profile-conformance.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
@@ -964,9 +961,6 @@
   },
   "packages/shared/src/httpServer.test-support.ts": {
     "no-real-time-wait-in-tests:3bbcee9a93e3d67ee48c": 1
-  },
-  "packages/workspace-portablefs/src/runner.test.ts": {
-    "no-unit-test-timeout:5b833d7dc44d5c885927": 1
   },
   "tests/browser-deployment.test-support.ts": {
     "no-polling-loop-in-tests:e52093e270e3a8af8429": 1,

@@ -557,7 +557,7 @@ describe("task marks", () => {
     expect(document.querySelector('[data-action="change-icon"]')).toBeNull();
     expect(document.querySelector('[aria-label="Rename task"]')).toBeNull();
   });
-  it("uses a specialist's identity and excludes edits for its home Thread", async () => {
+  it("uses a project's identity and excludes edits for its home Thread", async () => {
     await mount((source) => {
       const read = source.getSnapshot;
       const cache = new WeakMap<HostSnapshot, HostSnapshot>();
@@ -592,7 +592,7 @@ describe("task marks", () => {
     );
     expect(document.querySelector('[data-action="change-icon"]')).toBeNull();
   });
-  it.each(["main", "specialist", "unknown"])(
+  it.each(["main", "project", "unknown"])(
     "attributes an assignment to its %s owner without changing its task mark",
     async (owner) => {
       let catalogResolved = owner !== "unknown";
@@ -814,7 +814,7 @@ describe("task marks", () => {
     expect(document.body.textContent).toContain("Icon refused");
     expect(element(".conv-header .task-mark").getAttribute("data-icon")).toBe("plane");
   });
-  it("changes a specialist's colour without repainting its tasks", async () => {
+  it("changes a project's colour without repainting its tasks", async () => {
     await mount("/workspaces/wsp_00000000-0000-4000-8000-000000000800");
     const dispatch = vi.spyOn(client, "dispatch");
     await click(element(".workspace-icon-chooser"));

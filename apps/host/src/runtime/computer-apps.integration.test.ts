@@ -240,6 +240,21 @@ integration("computer apps", () => {
     expect(secondDashboard.connections).not.toContainEqual(
       expect.objectContaining({ id: enabled.connection.id }),
     );
+    const secondCaller = await connectCallerMachine(
+      { ...host, ownerHeaders: second.headers, ownerId: second.userId },
+      {
+        name: "Second owner's computer",
+        token: await enrollmentToken(
+          { ...host, ownerHeaders: second.headers },
+          {
+            allowedModules: ["agents"],
+            idempotencyKey: "second-owner-computer",
+            name: "Second owner's computer",
+          },
+        ),
+      },
+    );
+    closers.unshift(() => secondCaller.close());
     const secondWorkspace = await testRpcData(
       host.origin,
       "commands.dispatch",

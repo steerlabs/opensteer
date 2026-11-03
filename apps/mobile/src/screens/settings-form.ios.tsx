@@ -29,13 +29,15 @@ import { StyleSheet } from "react-native";
 import { color, deploymentPaint } from "../theme.js";
 import type { DeploymentMark } from "../threads/deployment-identity.js";
 import {
+  agentAccessSectionTitle,
   remoteAdministrationActions,
   remoteAdministrationActionLabels,
   browserProfilesSettingsRow,
   chromeSettingsRow,
   computersSettingsFooter,
   connectedAppsSettingsRow,
-  specialistNotificationsFooter,
+  pluginsSettingsRow,
+  projectNotificationsFooter,
   type SettingsActionModel,
 } from "./settings-model.js";
 import type { SFSymbolName } from "../ui/symbol.js";
@@ -199,12 +201,18 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
         )}
 
         {props.signIns === null ? null : (
-          <Section title="Sign-ins">
+          <Section title={agentAccessSectionTitle}>
             <LinkRow
               detail={connectedAppsSettingsRow.detail}
               onPress={props.signIns.onConnectedApps}
-              symbol="puzzlepiece.extension"
+              symbol="powerplug"
               title={connectedAppsSettingsRow.title}
+            />
+            <LinkRow
+              detail={pluginsSettingsRow.detail}
+              onPress={props.signIns.onPlugins}
+              symbol="puzzlepiece.extension"
+              title={pluginsSettingsRow.title}
             />
             <LinkRow
               detail={chromeSettingsRow.detail}
@@ -258,8 +266,8 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
         {/* Mutes are kept by the Host, so they don't wait on this phone's registration. */}
         {notifications === null || props.agents.length === 0 ? null : (
           <Section
-            footer={<Footer text={specialistNotificationsFooter} />}
-            title="Notifications from specialists"
+            footer={<Footer text={projectNotificationsFooter} />}
+            title="Notifications from projects"
           >
             {props.agents.map((agent) => (
               <Toggle

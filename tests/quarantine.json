@@ -543,5 +543,23 @@
     "evidence": [
       "W5 investigation: hold an older real Host catalogsForViewers projection; let a newer projection publish and await the client-applied generation/revision, then release and acknowledge receipt of the older projection on the real realtime socket. The client retains the newer catalog, and the original attribution/stop/replay assertions pass. The held producer is released and joined in finally. This rules out stale-revision acceptance for this controlled reversed completion, not every Host coalescing path. Historical realtime timeout remains unresolved; no fix is claimed from repeat passes. Keep running without retries or larger deadlines."
     ]
+  },
+  {
+    "file": "apps/host/src/runtime/runtime.integration.test.ts",
+    "name": [
+      "Host vertical slice",
+      "persists the exact managed owner and Main Runner bootstrap across restart"
+    ],
+    "area": "Host",
+    "owner": "Host maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-11-03T02:44:37Z",
+    "deadline": "2026-11-10T02:44:37Z",
+    "sha": "ea539f31f956f5cedfa0687b2baa537c6a6a8da4",
+    "evidence": [
+      "The selected integration phase of pnpm check:changed --base origin/main timed out at the unchanged 30000 ms limit (30223 ms) on the named test, on this SHA plus the D2a skill-identity working tree. All preceding tests in the file passed. The broader integration attempt was stopped after this failure; this is not a complete qualification receipt.",
+      "Diagnostic reproduction: pnpm test:integration -- apps/host/src/runtime/runtime.integration.test.ts -t 'persists the exact managed owner' passed in 934 ms; the subsequent complete file passed all 22 tests, with the named case taking 747 ms. Temporary phase markers confirmed initial startup, both closes, restart and both expected startup rejections settled; markers were removed. No assertion, timeout or execution exemption changed. Logs: ~/.local/state/opensteer/work/d2a-skill-identity/{check-first,managed-isolated,managed-full}.log.",
+      "Reproduce under the normal four-worker selected integration workload and capture bounded startup/shutdown phase diagnostics, including HostRuntime.closingStep(), if it recurs. Acceptance: identify and gate the blocking operation deterministically, preserve managed-owner identity, enrollment replay, Account publication ordering and mismatch refusal assertions, and pass the complete file plus the selected integration workload before removing this record."
+    ]
   }
 ]

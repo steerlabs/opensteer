@@ -3,7 +3,7 @@ import {
   browserProfileDeleteConsequence,
   browserProfileDeletionRows,
   browserProfileSettingsRows,
-  browserProfileSpecialists,
+  browserProfileProjects,
   canRespondToRequests,
   mutationIdempotencyKey,
   type BrowserProfileSettingsRow,
@@ -210,7 +210,7 @@ function BrowserProfilesSettings({
           </AppText>
         )}
         <AppText role="caption" tone="muted">
-          Opensteer can use every profile. A specialist can only use the profiles you choose for it.
+          Opensteer can use every profile. A project can only use the profiles you choose for it.
         </AppText>
       </ScrollView>
     </Screen>
@@ -231,11 +231,11 @@ function ProfileRow({
   readonly onHistory: () => void;
 }): ReactNode {
   const [expanded, setExpanded] = useState(false);
-  const [specialistsShown, setSpecialistsShown] = useState(false);
+  const [projectsShown, setProjectsShown] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const specialists = browserProfileSpecialists(snapshot);
+  const projects = browserProfileProjects(snapshot);
   const mutate = (command: Parameters<HostClient["dispatch"]>[0], done?: () => void) => {
     if (!online || busy) return;
     setBusy(true);
@@ -330,9 +330,9 @@ function ProfileRow({
               </>
             ) : null}
             <SecondaryButton
-              label="Specialists"
+              label="Projects"
               compact
-              onPress={() => setSpecialistsShown(!specialistsShown)}
+              onPress={() => setProjectsShown(!projectsShown)}
             />
           </View>
           {draft === null || !snapshot.browserProfileManageAvailable ? null : (
@@ -365,13 +365,13 @@ function ProfileRow({
               </View>
             </>
           )}
-          {!specialistsShown ? null : specialists.length === 0 ? (
+          {!projectsShown ? null : projects.length === 0 ? (
             <AppText role="secondary" tone="muted">
-              No specialists yet.
+              No projects yet.
             </AppText>
           ) : (
-            specialists.map((workspace) => {
-              const grant = row.specialists.find((entry) => entry.workspace.id === workspace.id);
+            projects.map((workspace) => {
+              const grant = row.projects.find((entry) => entry.workspace.id === workspace.id);
               return (
                 <SwitchRow
                   key={workspace.id}

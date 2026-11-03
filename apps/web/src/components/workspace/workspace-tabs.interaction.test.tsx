@@ -885,7 +885,7 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
           ),
       ],
       // The last web tab: the Mac apps past the hairline are not its neighbours; the tab before it is.
-      ["Q4 roadmap – Linear", "PortableFS documentation", closeButton],
+      ["Q4 roadmap – Linear", "storage documentation", closeButton],
     ];
     for (const [closing, next, close] of closes) {
       const place = tab(closing);

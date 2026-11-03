@@ -157,7 +157,7 @@ describe.sequential.each(matrix)("real $label browser element-action journey", (
             sha256: await sha256(path.join(skillRoot, name, "SKILL.md")),
           })),
         ),
-        browserSkillSha256: await sha256(path.join(skillRoot, "opensteer-browser", "SKILL.md")),
+        browserSkillSha256: await sha256(path.join(skillRoot, "browser", "SKILL.md")),
       });
       const restorePath = await shippedEnginesFirstOnPath();
       addCleanup("shipped engine PATH wrappers", restorePath);
@@ -215,7 +215,7 @@ describe.sequential.each(matrix)("real $label browser element-action journey", (
           options: {},
         }),
       });
-      const prompt = `At ${url}, find pickup availability for the 512GB model in ZIP 10014. Select that capacity, submit the ZIP, and tell me the availability shown by the site. Use the shipped opensteer-browser skill.`;
+      const prompt = `At ${url}, find pickup availability for the 512GB model in ZIP 10014. Select that capacity, submit the ZIP, and tell me the availability shown by the site. Use the shipped opensteer:browser skill.`;
       evidence.prompt = prompt;
       const runStartedAt = Date.now();
       const turn = await stack.sendMessage({
@@ -345,7 +345,7 @@ describe.sequential.each(matrix)("real $label browser element-action journey", (
       }
       try {
         const finalModules = await moduleHashes(harnessRoot);
-        const finalSkill = await sha256(path.join(skillRoot, "opensteer-browser", "SKILL.md"));
+        const finalSkill = await sha256(path.join(skillRoot, "browser", "SKILL.md"));
         evidence.harnessModulesAfterRun = finalModules;
         evidence.browserSkillSha256AfterRun = finalSkill;
         if (

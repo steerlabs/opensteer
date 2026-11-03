@@ -1,3 +1,8 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import { NotificationStore } from "./notification-store.js";
 import { runReply } from "./run-reply.js";
 import type { StoreFixture } from "./store.integration.test-support.js";
@@ -7,7 +12,6 @@ import { createChannelId } from "@opensteer/channel-core";
 import { createIntegrationId } from "@opensteer/integration-core";
 import {
   HarnessIdSchema,
-  WorkspaceIdSchema,
   type WorkspaceId,
   createId,
   type RunId,
@@ -936,18 +940,17 @@ describeStore("PostgreSQL store", (it) => {
       runnerId: mainRunnerId,
       tokenSuffix: "workspace-sharing-main",
     });
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_workspace_sharing",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: ownerId,
       idempotencyKey: "workspace-sharing-workspace",
       name: "Client delivery",
@@ -1184,363 +1187,26 @@ describeStore("PostgreSQL store", (it) => {
     });
   });
 
-  it("keeps a skills-only installation granted across content changes", async ({
-    storeFixture,
-  }) => {
-    const { createRunFixture, store, database } = storeFixture;
-    const fixture = await createRunFixture("integration-skill-lifecycle");
-    const specialized = await store.createWorkspace({
-      backing: {
-        generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_integration_skill_lifecycle_specialized",
-      },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
-      createdBy: fixture.userId,
-      idempotencyKey: "workspace-integration-skill-lifecycle-specialized",
-      kind: "specialized",
-      name: "Specialized integration skill lifecycle",
-      status: "ready",
-    });
-    const platform = new IntegrationPlatformStore(database);
-    const installationId = createIntegrationId("installation");
-    const serverId = createIntegrationId("server");
-    const skillId = createIntegrationId("skill");
-    const digest = (contents: string) =>
-      createHash("sha256").update(contents, "utf8").digest("base64url");
-    const installation = {
-      description: "A skills-only Agent Plugin",
-      id: installationId,
-      manifest: { name: "example-skills", version: "1.0.0" },
-      name: "example-skills",
-      provenance: { snapshotPath: "/immutable/example-skills" },
-      sourceKind: "agent-plugin" as const,
-      status: "active" as const,
-      title: "Example Skills",
-      trust: "administrator-approved" as const,
-      version: "1.0.0",
-    };
-    const discoveredSkill = (contents: string) => ({
-      description: "Research examples without loading unrelated plugin context",
-      digest: digest(contents),
-      id: skillId,
-      name: "research-examples",
-      status: "active" as const,
-    });
-
-    await platform.install({
-      adapterSnapshot: null,
-      actorUserId: fixture.userId,
-      installation,
-      requestId: "install-example-skills",
-      servers: [
-        {
-          connectionRequirement: { kind: "mcp-oauth" },
-          id: serverId,
-          name: "optional-account-tools",
-          status: "needs-attention",
-          statusDetail: "Account authorization required",
-          catalog: { definitions: {}, tools: [] },
-          transport: {
-            headers: {},
-            type: "streamable-http",
-            url: "https://mcp.example.test/mcp",
-          },
-        },
-      ],
-      skills: [discoveredSkill("first immutable snapshot")],
-    });
-    const grant = await platform.createGrant({
-      access: "read",
-      alias: "Research examples",
-      connectionId: null,
-      createdBy: fixture.userId,
-      installationId,
-      isDefault: true,
-      ownerUserId: fixture.userId,
-      providerAuthorizations: {},
-      workspaceId: specialized.id,
-    });
-
-    await expect(
-      platform.listGrantedSkills({
-        ownerUserId: fixture.userId,
-        threadId: fixture.thread.id,
-        workspaceId: specialized.id,
-      }),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        grant: expect.objectContaining({ id: grant.id }),
-        skill: expect.objectContaining({
-          digest: digest("first immutable snapshot"),
-          id: skillId,
-        }),
-      }),
-    ]);
-
-    await platform.install({
-      adapterSnapshot: null,
-      actorUserId: fixture.userId,
-      installation: { ...installation, version: "1.1.0" },
-      requestId: "update-example-skills",
-      servers: [
-        {
-          connectionRequirement: { kind: "mcp-oauth" },
-          id: serverId,
-          name: "optional-account-tools",
-          status: "needs-attention",
-          statusDetail: "Account authorization required",
-          catalog: { definitions: {}, tools: [] },
-          transport: {
-            headers: {},
-            type: "streamable-http",
-            url: "https://mcp.example.test/mcp",
-          },
-        },
-      ],
-      skills: [discoveredSkill("second immutable snapshot")],
-    });
-    await expect(
-      platform.listGrants({
-        ownerUserId: fixture.userId,
-        workspaceId: specialized.id,
-      }),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        access: "read",
-        id: grant.id,
-        isDefault: true,
-        status: "active",
-      }),
-    ]);
-    await expect(
-      platform.listGrantedSkills({
-        ownerUserId: fixture.userId,
-        threadId: fixture.thread.id,
-        workspaceId: specialized.id,
-      }),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        grant: expect.objectContaining({ id: grant.id }),
-        skill: expect.objectContaining({
-          digest: digest("second immutable snapshot"),
-          id: skillId,
-        }),
-      }),
-    ]);
-  });
-
-  it.for(["wsp_00000000-0000-4000-8000-000000000001", "wsp_ffffffff-ffff-4fff-bfff-ffffffffffff"])(
-    "orders covered integration origins against removal (%s)",
-    async (originId, { storeFixture }) => {
-      const {
-        startRunFixture,
-        store,
-        database,
-        createSpecializedWorkspace,
-        enqueueHumanTrigger,
-        stagedRequestRace,
-      } = storeFixture;
-      const fixture = await startRunFixture("integration-access-widening");
-      const specialized = await store.createWorkspace({
-        backing: {
-          generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: "wsp_integration_access_widening",
-        },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
-        createdBy: fixture.userId,
-        idempotencyKey: "workspace-integration-access-widening-specialized",
-        kind: "specialized",
-        name: "Integration access widening",
-        status: "ready",
-      });
-      const platform = new IntegrationPlatformStore(database);
-      const installationId = createIntegrationId("installation");
-      const serverId = createIntegrationId("server");
-      const makeTool = (name: "create" | "get" | "list") => {
-        const inputSchema = { properties: {}, type: "object" };
-        return {
-          annotations: { readOnlyHint: name !== "create" },
-          connectionId: null,
-          description: `${name} records`,
-          id: createIntegrationId("tool"),
-          inputSchema,
-          name,
-          outputSchema: null,
-
-          status: "active" as const,
-          title: `${name} records`,
-        };
-      };
-      const tools = [makeTool("list"), makeTool("get"), makeTool("create")];
-      await platform.install({
-        adapterSnapshot: null,
-        actorUserId: fixture.userId,
-        installation: {
-          description: "Record operations",
-          id: installationId,
-          manifest: {},
-          name: "records-access-widening",
-          provenance: { maintainedBy: "test" },
-          sourceKind: "remote-mcp",
-          status: "active",
-          title: "Records",
-          trust: "administrator-approved",
-          version: "1",
-        },
-        requestId: "install-records-access-widening",
-        servers: [
-          {
-            connectionRequirement: { kind: "none" },
-            id: serverId,
-            name: "default",
-            status: "active",
-            statusDetail: null,
-            catalog: { definitions: {}, tools: tools },
-            transport: {
-              headers: {},
-              type: "streamable-http",
-              url: "https://records-access-widening.example.test/mcp",
-            },
-          },
-        ],
-      });
-      const request = (access: "read" | "read-write", callId: string) =>
-        platform.requests.createIntegrationAccessRequest({
-          access,
-          callId,
-          installationId,
-          originatingRunId: fixture.run.id,
-          originatingThreadId: fixture.thread.id,
-          originatingWorkspaceId: fixture.workspace.id,
-          reason: `Need ${access} records access`,
-          requestedBy: fixture.userId,
-          requestedServerId: serverId,
-          targetWorkspaceId: specialized.id,
-        });
-      const resolve = (
-        requestId: ReturnType<typeof createId<"request">>,
-        access: "read" | "read-write",
-      ) =>
-        platform.requests.resolveIntegrationAccessRequest({
-          providerAuthorizations: {},
-          requestId,
-          resolvedBy: fixture.userId,
-          response: {
-            kind: "external",
-            value: {
-              access,
-              alias: "Records",
-              connectionId: null,
-              decision: "fulfilled",
-              isDefault: true,
-            },
-          },
-        });
-
-      const origin = await createSpecializedWorkspace(
-        fixture.userId,
-        "covered-removal",
-        WorkspaceIdSchema.parse(originId),
-      );
-      const { thread } = await store.createThread({
-        createdBy: fixture.userId,
-        environmentId: fixture.environmentId,
-        harnessInstanceId: fixture.harnessInstance.id,
-        idempotencyKey: "covered-removal",
-        modelSelection: testModelSelection,
-        title: "Covered origin",
-        workspaceId: origin.id,
-      });
-      const turn = await enqueueHumanTrigger({
-        content: [{ type: "text", text: "Start" }],
-        idempotencyKey: "covered-removal",
-        requestedBy: fixture.userId,
-        threadId: thread.id,
-      });
-      const writing = await request("read-write", "covered-removal-write");
-      const template = await database
-        .selectFrom("requests")
-        .selectAll()
-        .where("id", "=", writing.request.id)
-        .executeTakeFirstOrThrow();
-      const detail = await database
-        .selectFrom("integrationRequestDetails")
-        .selectAll()
-        .where("requestId", "=", writing.request.id)
-        .executeTakeFirstOrThrow();
-      const coveredId = createId("request");
-      await database.transaction().execute(async (transaction) => {
-        await transaction
-          .insertInto("requests")
-          .values({
-            ...template,
-            id: coveredId,
-            callId: "covered-removal-read",
-            originatingRunId: turn.run.id,
-            originatingThreadId: thread.id,
-            originatingWorkspaceId: origin.id,
-            payload: jsonValue({ ...writing.request.payload, access: "read" }),
-          })
-          .execute();
-        await transaction
-          .insertInto("integrationRequestDetails")
-          .values({ ...detail, requestId: coveredId, access: "read" })
-          .execute();
-      });
-      const results = await stagedRequestRace(
-        (transaction) =>
-          transaction
-            .selectFrom("requests")
-            .select("id")
-            .where("id", "=", writing.request.id)
-            .forUpdate()
-            .execute(),
-        () => resolve(writing.request.id, "read-write"),
-        () =>
-          store.requestWorkspaceDeletion({
-            requestedBy: fixture.userId,
-            workspaceId: specialized.id,
-            purgeAfter: new Date(Date.now() + 86_400_000),
-          }),
-      );
-      expect(results[1]).toMatchObject({ status: "fulfilled" });
-      expect((await store.requests.get(coveredId))?.status).toMatch(/cancelled|fulfilled/);
-    },
-  );
-
   it("avoids a deadlock when integration resolution discovers a new origin during withdrawal", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, store, database, createSpecializedWorkspace, enqueueHumanTrigger } =
+    const { startRunFixture, store, database, createProjectWorkspace, enqueueHumanTrigger } =
       storeFixture;
     const fixture = await startRunFixture("integration-access-widening");
-    const specialized = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_integration_access_widening",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.userId,
-      idempotencyKey: "workspace-integration-access-widening-specialized",
-      kind: "specialized",
+      idempotencyKey: "workspace-integration-access-widening-project",
+      kind: "project",
       name: "Integration access widening",
       status: "ready",
     });
@@ -1624,7 +1290,7 @@ describeStore("PostgreSQL store", (it) => {
         reason: `Need ${access} records access`,
         requestedBy: fixture.userId,
         requestedServerId: serverId,
-        targetWorkspaceId: specialized.id,
+        targetWorkspaceId: project.id,
       });
     const resolve = (
       requestId: ReturnType<typeof createId<"request">>,
@@ -1646,7 +1312,7 @@ describeStore("PostgreSQL store", (it) => {
         },
       });
 
-    const newWorkspace = await createSpecializedWorkspace(fixture.userId, "new-request-origin");
+    const newWorkspace = await createProjectWorkspace(fixture.userId, "new-request-origin");
     const { thread: newThread } = await store.createThread({
       createdBy: fixture.userId,
       environmentId: fixture.environmentId,
@@ -1701,7 +1367,7 @@ describeStore("PostgreSQL store", (it) => {
           database,
         )
       ).rows;
-    const releaseTarget = await hold(specialized.id);
+    const releaseTarget = await hold(project.id);
     const resolving = resolve(writing.request.id, "read-write");
     void resolving.catch(() => undefined);
     let releaseOrigin: (() => Promise<void>) | undefined;
@@ -1739,7 +1405,7 @@ describeStore("PostgreSQL store", (it) => {
       const expandedLockQuery = database
         .selectFrom("workspaces")
         .select("id")
-        .where("id", "in", [fixture.workspace.id, specialized.id, newWorkspace.id])
+        .where("id", "in", [fixture.workspace.id, project.id, newWorkspace.id])
         .orderBy("id", "asc")
         .forNoKeyUpdate()
         .compile().sql;
@@ -1772,21 +1438,20 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { startRunFixture, store, database } = storeFixture;
     const fixture = await startRunFixture("integration-access-widening");
-    const specialized = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_integration_access_widening",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.userId,
-      idempotencyKey: "workspace-integration-access-widening-specialized",
-      kind: "specialized",
+      idempotencyKey: "workspace-integration-access-widening-project",
+      kind: "project",
       name: "Integration access widening",
       status: "ready",
     });
@@ -1852,7 +1517,7 @@ describeStore("PostgreSQL store", (it) => {
         reason: `Need ${access} records access`,
         requestedBy: fixture.userId,
         requestedServerId: serverId,
-        targetWorkspaceId: specialized.id,
+        targetWorkspaceId: project.id,
       });
     const resolve = (
       requestId: ReturnType<typeof createId<"request">>,
@@ -1882,7 +1547,7 @@ describeStore("PostgreSQL store", (it) => {
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
         providerAuthorizations: {},
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([
       expect.objectContaining({ tool: expect.objectContaining({ name: "get" }) }),
@@ -1904,7 +1569,7 @@ describeStore("PostgreSQL store", (it) => {
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
         providerAuthorizations: {},
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([
       expect.objectContaining({ tool: expect.objectContaining({ name: "create" }) }),
@@ -1913,26 +1578,25 @@ describeStore("PostgreSQL store", (it) => {
     ]);
   });
 
-  it("derives all user-scoped integration access in Main and keeps specialized access explicit", async ({
+  it("derives all user-scoped integration access in Main and keeps project access explicit", async ({
     storeFixture,
   }) => {
     const { createRunFixture, store, database } = storeFixture;
     const fixture = await createRunFixture("integration-main-inheritance");
-    const specialized = await store.createWorkspace({
+    const project = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_integration-main-inheritance-specialized",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.userId,
-      idempotencyKey: "integration-main-inheritance-specialized",
-      kind: "specialized",
+      idempotencyKey: "integration-main-inheritance-project",
+      kind: "project",
       name: "Mail specialist",
       status: "ready",
     });
@@ -2064,7 +1728,7 @@ describeStore("PostgreSQL store", (it) => {
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
         providerAuthorizations,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([]);
 
@@ -2146,7 +1810,7 @@ describeStore("PostgreSQL store", (it) => {
       ).map(({ grant }) => grant.id),
     ).toEqual(firstMainTools.map(({ grant }) => grant.id));
 
-    const specializedGrant = await platform.createGrant({
+    const projectGrant = await platform.createGrant({
       access: "read",
       alias: "Personal only",
       connectionId: personalConnectionId,
@@ -2155,14 +1819,14 @@ describeStore("PostgreSQL store", (it) => {
       isDefault: true,
       ownerUserId: fixture.userId,
       providerAuthorizations,
-      workspaceId: specialized.id,
+      workspaceId: project.id,
     });
     await expect(
       platform.listCallableTools({
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
         providerAuthorizations,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([
       expect.objectContaining({
@@ -2174,17 +1838,17 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ]);
     await platform.revokeGrant({
-      grantId: specializedGrant.id,
+      grantId: projectGrant.id,
       ownerUserId: fixture.userId,
-      requestId: "revoke-specialized-main-inheritance-grant",
-      workspaceId: specialized.id,
+      requestId: "revoke-project-main-inheritance-grant",
+      workspaceId: project.id,
     });
     await expect(
       platform.listCallableTools({
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
         providerAuthorizations,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([]);
 
@@ -2208,7 +1872,7 @@ describeStore("PostgreSQL store", (it) => {
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
         providerAuthorizations,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([]);
   });

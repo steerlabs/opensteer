@@ -1,11 +1,12 @@
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { ModelSelectionSchema, OpensteerError, createId, type Message } from "@opensteer/core";
+import { SpecialistStore } from "@opensteer/database";
 import type { CommandRow, OpensteerStore } from "@opensteer/database";
 import { CommandDispatchError } from "@opensteer/orchestration";
 import { HarnessModelDescriptorSchema, type RunnerCommand } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { HostCommandDispatcher } from "./dispatcher.js";
 import { sealRequestResponse } from "../identity/request-response-vault.js";
+import { HostCommandDispatcher } from "./dispatcher.js";
 
 describe("HostCommandDispatcher Request responses", () => {
   it("decrypts the sealed response only at Runner dispatch", async () => {
@@ -36,7 +37,8 @@ describe("HostCommandDispatcher Request responses", () => {
       agentControlTokens: {} as never,
       browser: {} as never,
       egress: {} as never,
-      integrationSkillsTokens: {} as never,
+      pluginVersions: async () => [],
+      pluginsTokens: {} as never,
       integrationToolsTokens: {} as never,
       onWorkspaceEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
@@ -85,7 +87,8 @@ describe("HostCommandDispatcher Request responses", () => {
       agentControlTokens: {} as never,
       browser: {} as never,
       egress: {} as never,
-      integrationSkillsTokens: {} as never,
+      pluginVersions: async () => [],
+      pluginsTokens: {} as never,
       integrationToolsTokens: {} as never,
       onWorkspaceEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
@@ -186,6 +189,45 @@ describe("HostCommandDispatcher steering", () => {
   });
 });
 
+describe("HostCommandDispatcher specialist admission", () => {
+  it.each([
+    "Specialist is pending: browser-profile: rebind (Research)",
+    "invoices uses Alice's accounts; add it for yourself to use your own",
+    "Specialist registration was removed",
+  ])("fails the Run before Runner dispatch: %s", async (message) => {
+    const admit = vi
+      .spyOn(SpecialistStore.prototype, "assertRunnable")
+      .mockRejectedValue(new Error(message));
+    const send = vi.fn();
+    const workspaceId = createId("workspace");
+    const requestedBy = createId("user");
+    const dispatcher = new HostCommandDispatcher({
+      executionLeaseMs: 90000,
+      publicUrl: new URL("https://host.example"),
+      runners: { dispatch: send },
+      store: {
+        loadRunDispatchContext: async () => ({
+          run: { requestedBy },
+          thread: { specialistId: "registration" },
+          workspace: { id: workspaceId },
+        }),
+      },
+    } as unknown as ConstructorParameters<typeof HostCommandDispatcher>[0]);
+    try {
+      await expect(
+        dispatcher.dispatch(
+          { ...steerCommand(), type: "run.execute", payload: { type: "run.execute" } },
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ message, disposition: "failed" });
+      expect(admit).toHaveBeenCalledWith("registration", workspaceId, requestedBy);
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      admit.mockRestore();
+    }
+  });
+});
+
 describe("HostCommandDispatcher archived Workspace demand", () => {
   // A Workspace claimed by the archive sweep is as wakeable as a sealed one:
   // the Manager's wake cancels a cycle that has not sealed yet.
@@ -193,7 +235,6 @@ describe("HostCommandDispatcher archived Workspace demand", () => {
     "starts a wake for a %s Workspace and returns a retryable dispatch error",
     async (status) => {
       const workspaceId = createId("workspace");
-      const wake = vi.fn(async () => undefined);
       const dispatcher = new HostCommandDispatcher({
         executionLeaseMs: 90_000,
         attachmentRunTokens: { issue: () => "attachment-token" } as never,
@@ -202,7 +243,8 @@ describe("HostCommandDispatcher archived Workspace demand", () => {
         agentControlTokens: {} as never,
         browser: {} as never,
         egress: {} as never,
-        integrationSkillsTokens: {} as never,
+        pluginVersions: async () => [],
+        pluginsTokens: {} as never,
         integrationToolsTokens: {} as never,
         onWorkspaceEvent: vi.fn(),
         publicUrl: new URL("https://host.example"),
@@ -230,7 +272,6 @@ describe("HostCommandDispatcher archived Workspace demand", () => {
         triggerIntegrationToolsTokens: {} as never,
         triggers: {} as never,
         workspaceAccess: {} as never,
-        workspaceWake: { wake },
         workspaces: {} as never,
       });
       const command = {
@@ -242,7 +283,6 @@ describe("HostCommandDispatcher archived Workspace demand", () => {
       await expect(
         dispatcher.dispatch(command, new AbortController().signal),
       ).rejects.toMatchObject({ disposition: "retry" });
-      expect(wake).toHaveBeenCalledWith(workspaceId, "run-dispatch");
     },
   );
 });
@@ -635,7 +675,8 @@ describe("HostCommandDispatcher model selection", () => {
       agentControlTokens: { issue: () => "agent-token" } as never,
       browser: {} as never,
       egress: { issue: () => "egress-token" } as never,
-      integrationSkillsTokens: { issue: () => "skills-token" } as never,
+      pluginVersions: async () => [],
+      pluginsTokens: { issue: () => "skills-token" } as never,
       integrationToolsTokens: { issue: () => "tools-token" } as never,
       onWorkspaceEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
@@ -696,7 +737,7 @@ describe("HostCommandDispatcher model selection", () => {
             requestedBy,
           },
           thread: { capabilityProfileId: null, id: threadId, role: input.role ?? "work" },
-          workspace: { id: createId("workspace"), kind: "specialized", status: "ready" },
+          workspace: { id: createId("workspace"), kind: "project", status: "ready" },
         }),
         notificationState: { timeZoneFor },
         recordHarnessCatalogs: async ({
@@ -749,7 +790,7 @@ describe("HostCommandDispatcher Workspace planning", () => {
         name: "Run computer",
         runnerId: createId("runner"),
       };
-      const workspace = { id: workspaceId, kind: "specialized", status: "ready" };
+      const workspace = { id: workspaceId, kind: "project", status: "ready" };
       const plan = vi.fn(async () => ({ kind: "test-plan" }));
       const dispatch = vi.fn(async () => undefined);
       const command = {
@@ -769,7 +810,8 @@ describe("HostCommandDispatcher Workspace planning", () => {
         agentControlTokens: { issue: () => "agent-token" } as never,
         browser: {} as never,
         egress: { issue: () => "egress-token" } as never,
-        integrationSkillsTokens: { issue: () => "skills-token" } as never,
+        pluginVersions: async () => [],
+        pluginsTokens: { issue: () => "skills-token" } as never,
         integrationToolsTokens: { issue: () => "tools-token" } as never,
         onWorkspaceEvent: vi.fn(),
         publicUrl: new URL("https://host.example"),
@@ -894,7 +936,8 @@ function steerDispatcher(input: {
     agentControlTokens: {} as never,
     browser: {} as never,
     egress: {} as never,
-    integrationSkillsTokens: {} as never,
+    pluginVersions: async () => [],
+    pluginsTokens: {} as never,
     integrationToolsTokens: {} as never,
     onWorkspaceEvent: input.onWorkspaceEvent ?? vi.fn(),
     publicUrl: new URL("https://host.example"),

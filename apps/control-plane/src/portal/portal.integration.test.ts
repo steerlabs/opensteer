@@ -446,7 +446,7 @@ integration("Opensteer web portal", () => {
       hostInstanceId,
       hostKey: { algorithm: "Ed25519" as const },
       deploymentShape: {
-        defaultWorkspaceBacking: "portablefs" as const,
+        defaultWorkspaceBacking: "local-directory" as const,
         kind: "server" as const,
       },
     };

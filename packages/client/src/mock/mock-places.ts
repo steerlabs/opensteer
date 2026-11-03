@@ -132,7 +132,7 @@ export function seedMockPlaces(
       })),
     });
     sessions.push({
-      access: "full-control",
+      access: "read-write",
       acting: pages.some((page) => page.occupants.some((value) => value.acting)),
       attachedRunIds: [
         ...new Set(
@@ -243,7 +243,7 @@ export function seedMockPlaces(
   threads.slice(0, 4).forEach((thread, index) =>
     add(index + 1, "agent", [
       {
-        title: ["Friday dinner", "PortableFS documentation", "Launch brief", "Coffee shortlist"][
+        title: ["Friday dinner", "storage documentation", "Launch brief", "Coffee shortlist"][
           index
         ]!,
         site: [
@@ -1084,7 +1084,7 @@ export class MockPlaceWorld {
     const at = this.#now().toISOString();
     const session: BrowserSessionSummary = {
       id,
-      access: "full-control",
+      access: "read-write",
       opener: { kind: "you" },
       origin: "workspace",
       workspaceId: snapshot.homeWorkspaceId!,

@@ -443,8 +443,8 @@ function TurnView({
 }
 
 /**
- * Who speaks, when it is not the task itself: a specialist's work keeps the
- * specialist's own orb and name, and the orb is Opensteer's for its own
+ * Who speaks, when it is not the task itself: a project's work keeps the
+ * project's own orb and name, and the orb is Opensteer's for its own
  * conversation and its platform notes. A task's own turns have no byline,
  * because the header above them already names the task.
  */
@@ -463,16 +463,11 @@ function AgentByline({ author }: { author: MessageEntry["author"] | null }) {
     );
   }
   if (agent === null || agent.threadId === transcriptThreadId) return null;
-  const specialist = workspaces.find(({ id, kind }) => id === agent.workspaceId && kind !== "main");
-  if (specialist) {
+  const project = workspaces.find(({ id, kind }) => id === agent.workspaceId && kind !== "main");
+  if (project) {
     return (
       <span className="msg--assistant__author">
-        <WorkspaceOrb
-          icon={specialist.icon}
-          name={specialist.name}
-          size="tiny"
-          color={specialist.color}
-        />
+        <WorkspaceOrb icon={project.icon} name={project.name} size="tiny" color={project.color} />
         {agent.displayName}
       </span>
     );

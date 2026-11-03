@@ -78,80 +78,20 @@ export interface DevelopmentListener {
   readonly port: number;
 }
 
-export type DevelopmentWorkspaceBacking = "local-directory" | "portablefs";
+export type DevelopmentWorkspaceBacking = "local-directory";
 
 export function developmentWorkspaceBacking(
   environment: NodeJS.ProcessEnv,
 ): DevelopmentWorkspaceBacking {
   const value = environment.OPENSTEER_DEFAULT_WORKSPACE_BACKING?.trim() || "local-directory";
-  if (value === "local-directory" || value === "portablefs") return value;
-  throw new Error(
-    "pnpm dev requires OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory or portablefs",
-  );
+  if (value === "local-directory") return value;
+  throw new Error("pnpm dev requires OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory");
 }
 
-export function assertDevelopmentWorkspaceEnvironment(
-  backing: DevelopmentWorkspaceBacking,
-  environment: NodeJS.ProcessEnv,
-): void {
-  const localVariables = [
-    "OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID",
-    "OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH",
-    "OPENSTEER_LOCAL_WORKSPACE_ROOT",
-  ] as const;
-  const portableFsVariables = [
-    "OPENSTEER_FILES_BINARY",
-    "OPENSTEER_FILES_SERVICE_URL",
-    "OPENSTEER_PORTABLEFS_AUTHORIZATION_DOMAIN",
-    "OPENSTEER_PORTABLEFS_MANAGER_CA_PATH",
-    "OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH",
-    "OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH",
-    "OPENSTEER_PORTABLEFS_MANAGER_SERVER_NAME",
-    "OPENSTEER_PORTABLEFS_MANAGER_URL",
-    "OPENSTEER_PORTABLEFS_MOUNT_BINARY",
-    "OPENSTEER_PORTABLEFS_LOCAL_AUTHORITY_HOST",
-    "OPENSTEER_PORTABLEFS_LOCAL_AUTHORITY_PORT_END",
-    "OPENSTEER_PORTABLEFS_LOCAL_AUTHORITY_PORT_START",
-    "OPENSTEER_PORTABLEFS_LOCAL_BIND_ADDRESS",
-    "OPENSTEER_PORTABLEFS_LOCAL_MANAGER_HOST",
-    "OPENSTEER_PORTABLEFS_LOCAL_MANAGER_PORT",
-    "OPENSTEER_PORTABLEFS_PRODUCT_ISSUER",
-    "OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH",
-    "OPENSTEER_PORTABLEFS_SERVICE_ID",
-    "OPENSTEER_PORTABLEFS_SOURCE_DIR",
-    "OPENSTEER_RUNNER_WORKSPACE_ROOT",
-    "OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES",
-    "OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT",
-  ] as const;
-  const forbidden = backing === "local-directory" ? portableFsVariables : localVariables;
-  const configured = forbidden.find((name) => environment[name]?.trim());
-  if (configured) {
-    throw new Error(`${backing} must not configure ${configured}`);
-  }
-  if (backing === "local-directory" && environment.OPENSTEER_DEV_PORTABLEFS?.trim()) {
-    throw new Error(
-      "OPENSTEER_DEV_PORTABLEFS is valid only with OPENSTEER_DEFAULT_WORKSPACE_BACKING=portablefs",
-    );
-  }
+export function assertDevelopmentWorkspaceEnvironment(environment: NodeJS.ProcessEnv): void {
   if ((environment.OPENSTEER_DEPLOYMENT_KIND?.trim() || "server") !== "server") {
     throw new Error("pnpm dev requires OPENSTEER_DEPLOYMENT_KIND=server");
   }
-}
-
-export function localFilesServiceUrl(environment: NodeJS.ProcessEnv): URL {
-  const value = environment.OPENSTEER_FILES_SERVICE_URL?.trim() || "http://127.0.0.1:4315";
-  const url = new URL(value);
-  if (
-    url.protocol !== "http:" ||
-    url.username ||
-    url.password ||
-    url.pathname !== "/" ||
-    url.search ||
-    url.hash
-  ) {
-    throw new Error("OPENSTEER_FILES_SERVICE_URL must be an HTTP origin for local development");
-  }
-  return url;
 }
 
 export function developmentListeners(
@@ -159,14 +99,6 @@ export function developmentListeners(
   environment: NodeJS.ProcessEnv,
 ): readonly DevelopmentListener[] {
   const listeners: DevelopmentListener[] = [];
-  if (services.includes("files")) {
-    const filesUrl = localFilesServiceUrl(environment);
-    listeners.push({
-      host: filesUrl.hostname,
-      label: "Files service",
-      port: environmentPort(filesUrl.port, 80, "OPENSTEER_FILES_SERVICE_URL"),
-    });
-  }
   if (services.includes("host")) {
     listeners.push({
       host: environment.OPENSTEER_BIND_ADDRESS?.trim() || "127.0.0.1",

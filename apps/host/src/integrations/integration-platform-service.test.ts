@@ -1056,7 +1056,6 @@ describe("IntegrationPlatformService computer discovery", () => {
             tools: [{ readiness, toolId: callable.tool.id }],
           },
           servers: [callable.server],
-          skills: [],
           tools: [callable.tool],
         },
       ];
@@ -1189,7 +1188,6 @@ describe("IntegrationPlatformService computer discovery", () => {
               ],
             },
             servers: [callable.server],
-            skills: [],
             tools: [callable.tool, { ...sendTool, serverId: callable.server.id }],
           },
         ]),
@@ -1270,7 +1268,6 @@ describe("IntegrationPlatformService computer discovery", () => {
               tools: [{ readiness, toolId: callable.tool.id }],
             },
             servers: [callable.server],
-            skills: [],
             tools: [callable.tool],
           },
         ]),
@@ -1336,7 +1333,6 @@ describe("IntegrationPlatformService computer discovery", () => {
               tools: [{ readiness, toolId: callable.tool.id }],
             },
             servers: [callable.server],
-            skills: [],
             tools: [callable.tool],
           },
         ]),
@@ -1409,7 +1405,6 @@ describe("IntegrationPlatformService computer discovery", () => {
               tools: [{ readiness, toolId: callable.tool.id }],
             },
             servers: [callable.server],
-            skills: [],
             tools: [callable.tool],
           },
         ]),
@@ -1482,7 +1477,6 @@ describe("IntegrationPlatformService computer discovery", () => {
               tools: [{ readiness, toolId: callable.tool.id }],
             },
             servers: [callable.server],
-            skills: [],
             tools: [callable.tool],
           },
         ]),
@@ -2883,7 +2877,6 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
             grant: { ...tool.grant, connectionId },
           },
         ]),
-        listGrantedSkills: vi.fn(async () => []),
         requests: {
           listPendingIntegrationAccessRequests: vi.fn(async () => [
             {
@@ -2968,9 +2961,9 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
     );
   });
 
-  it("leaves specialized and unsatisfied Main Requests pending", async () => {
+  it("leaves project and unsatisfied Main Requests pending", async () => {
     const connectionId = createIntegrationId("connection");
-    const specialized = integrationRequest("integration.access", "pending");
+    const project = integrationRequest("integration.access", "pending");
     const unsatisfied = {
       ...integrationRequest("integration.access", "pending"),
       targetWorkspaceId: createId("workspace"),
@@ -2987,13 +2980,12 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
         mainAccess,
         isConnectionUsableForAccessRequest: vi.fn(async () => false),
         listCallableTools: vi.fn(async () => []),
-        listGrantedSkills: vi.fn(async () => []),
         requests: {
           listPendingIntegrationAccessRequests: vi.fn(async () => [
             {
               access: "read",
               installationId: createIntegrationId("installation"),
-              request: specialized,
+              request: project,
               requestedServerId: null,
             },
             {
@@ -3010,7 +3002,7 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
 
     await service.fulfillSatisfiedMainAccessRequests({
       connectionId,
-      ownerUserId: specialized.requestedBy,
+      ownerUserId: project.requestedBy,
     });
 
     expect(resolveIntegrationAccessRequest).not.toHaveBeenCalled();

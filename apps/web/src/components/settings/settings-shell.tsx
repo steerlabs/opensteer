@@ -30,6 +30,7 @@ import { ChromeSection } from "./sections/chrome.js";
 import { DevicesSettings } from "./sections/devices.js";
 import { GeneralSection } from "./sections/general.js";
 import { PasswordsSection } from "./sections/passwords.js";
+import { PluginsSection } from "./sections/plugins.js";
 
 interface SettingsContext extends ShellContext {
   settingsView: SettingsView;
@@ -266,6 +267,9 @@ export function SettingsSectionRoute({
       break;
     case "passwords":
       content = <PasswordsSection view={view} />;
+      break;
+    case "plugins":
+      content = <PluginsSection view={view} />;
       break;
     case "general":
       content = <GeneralSection view={view} />;

@@ -31,7 +31,7 @@ describe("Workspace Agent Skills", () => {
 
     const discovered = await discoverWorkspaceSkills(workspace);
 
-    expect(discovered.skills.map(({ name }) => name)).toEqual(["real"]);
+    expect(discovered.skills.map(({ fullName }) => fullName)).toEqual(["real"]);
     expect(discovered.warnings).toEqual(["Workspace skill linked was skipped: it is a symlink"]);
   });
 
@@ -46,7 +46,7 @@ describe("Workspace Agent Skills", () => {
 
     const discovered = await discoverWorkspaceSkills(workspace);
 
-    expect(discovered.skills.map(({ name }) => name)).toEqual(["real"]);
+    expect(discovered.skills.map(({ fullName }) => fullName)).toEqual(["real"]);
     expect(discovered.warnings).toEqual([
       "Workspace skill linked was skipped: SKILL.md is not a regular file",
     ]);
@@ -101,35 +101,52 @@ describe("Workspace Agent Skills", () => {
     const discovered = await discoverWorkspaceSkills(workspace);
 
     expect(discovered.skills).toEqual([
-      { name: "release-notes", path: join(workspace, "skills", "release-notes") },
+      {
+        plugin: null,
+        localName: "release-notes",
+        fullName: "release-notes",
+        path: join(workspace, "skills", "release-notes"),
+      },
     ]);
     expect(discovered.warnings).toEqual([]);
   });
 
-  it("rejects a reserved Opensteer skill name and an invalid directory name", async () => {
+  it("rejects a namespaced loose skill name and an invalid directory name", async () => {
     const workspace = await workspaceDirectory();
-    await writeSkill(workspace, "opensteer-threads", frontmatter("opensteer-threads"));
+    await writeSkill(workspace, "opensteer:threads", frontmatter("opensteer:threads"));
     await writeSkill(workspace, "Release_Notes", frontmatter("Release_Notes"));
 
     const discovered = await discoverWorkspaceSkills(workspace);
 
     expect(discovered.skills).toEqual([]);
     expect(discovered.warnings).toEqual([
-      "Workspace skill opensteer-threads was skipped: the opensteer- prefix is reserved for the skills Opensteer ships",
+      "Workspace skill opensteer:threads was skipped: the directory name is not a valid skill name",
       "Workspace skill Release_Notes was skipped: the directory name is not a valid skill name",
     ]);
   });
 
   it("rejects an oversized SKILL.md", async () => {
     const workspace = await workspaceDirectory();
-    await writeSkill(workspace, "huge", `${frontmatter("huge")}${"x".repeat(64 * 1_024)}`);
+    await writeSkill(workspace, "huge", `${frontmatter("huge")}${"x".repeat(256 * 1_024)}`);
 
     const discovered = await discoverWorkspaceSkills(workspace);
 
     expect(discovered.skills).toEqual([]);
     expect(discovered.warnings).toEqual([
-      "Workspace skill huge was skipped: SKILL.md is larger than 65536 bytes",
+      "Workspace skill huge was skipped: SKILL.md is larger than 262144 bytes",
     ]);
+  });
+
+  it("allows old prefixes and plugin namespace names as loose identities", async () => {
+    const workspace = await workspaceDirectory();
+    for (const name of ["opensteer-threads", "opensteer"])
+      await writeSkill(workspace, name, frontmatter(name));
+    const discovered = await discoverWorkspaceSkills(workspace);
+    expect(discovered.skills.map((skill) => skill.fullName)).toEqual([
+      "opensteer",
+      "opensteer-threads",
+    ]);
+    expect(discovered.warnings).toEqual([]);
   });
 
   it("loads at most 64 skills", async () => {
@@ -142,7 +159,7 @@ describe("Workspace Agent Skills", () => {
     const discovered = await discoverWorkspaceSkills(workspace);
 
     expect(discovered.skills).toHaveLength(64);
-    expect(discovered.skills.at(-1)?.name).toBe("skill-63");
+    expect(discovered.skills.at(-1)?.fullName).toBe("skill-63");
     expect(discovered.warnings).toEqual([
       "Workspace skill skill-64 was skipped: a Workspace may load at most 64 skills",
     ]);

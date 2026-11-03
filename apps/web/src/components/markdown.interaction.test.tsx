@@ -53,7 +53,7 @@ function anchorFor(container: HTMLElement, label: string): HTMLAnchorElement | n
 const inertLinks = [
   ["the incident's downloaded file", "/Users/person/Downloads/tiger-in-snow.jpg"],
   ["an app route", "/settings/devices"],
-  ["a Workspace-relative file", "docs/portablefs-contract.md"],
+  ["a Workspace-relative file", "docs/storage-contract.md"],
   ["a dot-relative file", "./out/report.pdf"],
   ["a file URL", "file:///Users/person/notes.md"],
   ["a fragment", "#contract"],

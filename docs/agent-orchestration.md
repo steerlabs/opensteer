@@ -188,7 +188,7 @@ Stops, restarts, failures, lost leases and draining Runners end the engine.
 
 Idle engines have no authority: credential proxies and relays refuse access.
 Reuse requires the same authority, native session, launch configuration and
-sandbox, including integration skill contents and computer routes. A changed
+sandbox, including pinned plugin versions and computer routes. A changed
 route or pinned key requires a new engine; live computer policy is still checked
 on each connection. Relays are suspended and sessions closed before reuse is
 considered, so a connection accepted by one Run never proceeds under the next.
@@ -231,6 +231,17 @@ input or fail a Run merely because its output exceeds storage limits. See
 [Runner runtime](../apps/runner/src/runtime/runtime.ts).
 
 ## Run tool authority
+
+Non-file resource access uses the [resource guard](../packages/database/src/resource-access.ts):
+Main inherits the requester's resources only when the Run's lineage root has the
+`main` profile. Projects require explicit grants belonging to the requester;
+browser consent additionally requires the grant creator's active membership.
+Connection ceilings and optional specialist restrictions can only narrow access.
+A caller cannot reuse, queue work to, or steer a Thread with Main lineage unless
+its own lineage has Main authority; start a new task instead. Cross-Workspace
+delegation still requires the caller's `main` profile. A specialist may send only
+reports to Threads outside its own registration, even when it shares their Main
+lineage. Reports grant no execution.
 
 Every capability names the current attempt's grant. Tool admission needs an
 active grant, live binding, matching Runner boot and non-deleting Workspace;
@@ -379,7 +390,8 @@ See [Browser sessions](browser-sessions.md) and [Computer use](computer-use.md).
 
 ## Chat and native AI sessions
 
-Chat is the Main Workspace's durable `homeThreadId`. The `home` alias resolves
+Main and each Project have their own conversation at `homeThreadId`. Project chats
+use the `workspace` capability profile. The `home` alias resolves
 only the caller's Chat and preserves authorship. Cross-Workspace reports may
 reach it, but actionable work needs ordinary reach; the alias grants no read
 or execution authority. Reports never alert. Quotes are authorized published

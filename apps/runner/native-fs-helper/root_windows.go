@@ -624,6 +624,10 @@ func (root *workspaceRoot) assertTargetIdentity(parent nodeHandle, name string, 
 }
 
 func renameHandleAt(handle windows.Handle, parent windows.Handle, name string) error {
+	return renameHandleAtFlags(handle, parent, name, windows.FILE_RENAME_REPLACE_IF_EXISTS|windows.FILE_RENAME_POSIX_SEMANTICS)
+}
+
+func renameHandleAtFlags(handle windows.Handle, parent windows.Handle, name string, flags uint32) error {
 	encoded, err := windows.UTF16FromString(name)
 	if err != nil {
 		return err
@@ -632,7 +636,7 @@ func renameHandleAt(handle windows.Handle, parent windows.Handle, name string) e
 	var layout fileRenameInformation
 	buffer := make([]byte, int(unsafe.Offsetof(layout.FileName))+nameBytes)
 	information := (*fileRenameInformation)(unsafe.Pointer(&buffer[0]))
-	information.Flags = windows.FILE_RENAME_REPLACE_IF_EXISTS | windows.FILE_RENAME_POSIX_SEMANTICS
+	information.Flags = flags
 	information.RootDirectory = parent
 	information.FileNameLength = uint32(nameBytes)
 	copy((*[windows.MAX_LONG_PATH]uint16)(unsafe.Pointer(&information.FileName[0]))[:nameBytes/2:nameBytes/2], encoded[:len(encoded)-1])

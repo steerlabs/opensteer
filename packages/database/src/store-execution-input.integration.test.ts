@@ -1,5 +1,9 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import type { StoreFixture } from "./store.integration.test-support.js";
-import { randomUUID } from "node:crypto";
 import {
   AgentEventSchema,
   HarnessIdSchema,
@@ -21,7 +25,7 @@ import {
   describeStore,
   testModelSelection,
   testContinuationIdentity,
-  portableFsBacking,
+  localBacking,
   enrollTestRunner,
   pendingEvent,
 } from "./store.integration.test-support.js";
@@ -120,330 +124,6 @@ describeStore("PostgreSQL store", (it) => {
     },
   );
 
-  it("records, selects, reconciles, and revokes machine-scoped Workspace mounts", async ({
-    storeFixture,
-  }) => {
-    const { createRunFixture, store, database } = storeFixture;
-    const fixture = await createRunFixture("workspace-mount-lifecycle");
-    const backing = portableFsBacking(fixture.workspace);
-    const input = {
-      authorizedBy: fixture.userId,
-      enrollmentId: "11111111-1111-4111-8111-111111111111",
-      environmentId: fixture.environmentId,
-      membershipGeneration: 1,
-      runnerId: fixture.runnerId,
-      volumeId: backing.volumeId,
-      workspaceBackingGeneration: backing.generation,
-      workspaceId: fixture.workspace.id,
-    } as const;
-
-    const recorded = await store.recordWorkspaceMount(input);
-    expect(await store.recordWorkspaceMount(input)).toEqual(recorded);
-    expect(await store.listWorkspaceMounts(fixture.workspace.id)).toMatchObject([recorded]);
-    expect(
-      await store.listWorkspaceMountsAuthorizedBy({
-        authorizedBy: fixture.userId,
-        workspaceId: fixture.workspace.id,
-      }),
-    ).toMatchObject([recorded]);
-    expect(await store.listEnvironmentWorkspaceMounts(fixture.environmentId)).toMatchObject([
-      recorded,
-    ]);
-    expect(
-      await store.listReplacedWorkspaceMounts({
-        currentGeneration: backing.generation + 1,
-        workspaceId: fixture.workspace.id,
-      }),
-    ).toMatchObject([recorded]);
-
-    await expect(
-      store.requestWorkspaceMountRevocations({
-        workspaceMountIds: [recorded.id],
-        reason: "membership-revoked",
-      }),
-    ).resolves.toBe(1);
-    await expect(store.recordWorkspaceMount(input)).rejects.toMatchObject({ code: "conflict" });
-    const claimed = await store.claimPendingMountEnrollmentRevocations({
-      leaseUntil: new Date(Date.now() + 60_000),
-      limit: 10,
-      now: new Date(),
-    });
-    expect(claimed).toMatchObject([
-      {
-        enrollmentId: input.enrollmentId,
-        environmentId: fixture.environmentId,
-        revocationAttempt: 1,
-        terminationReason: "membership-revoked",
-        workspaceId: fixture.workspace.id,
-      },
-    ]);
-    await store.failMountEnrollmentRevocation({
-      enrollmentId: input.enrollmentId,
-      errorCode: "manager-unavailable",
-      nextAttemptAt: new Date(),
-    });
-    const retried = await store.claimPendingMountEnrollmentRevocations({
-      leaseUntil: new Date(Date.now() + 60_000),
-      limit: 10,
-      now: new Date(),
-    });
-    expect(retried[0]).toMatchObject({ revocationAttempt: 2 });
-    await store.completeMountEnrollmentRevocation(input.enrollmentId, "REVOKED");
-
-    const lapsed = await store.recordWorkspaceMount({
-      ...input,
-      enrollmentId: "44444444-4444-4444-8444-444444444444",
-    });
-    await store.requestWorkspaceMountRevocations({
-      workspaceMountIds: [lapsed.id],
-      reason: "workspace-idle-archive",
-    });
-    await store.claimPendingMountEnrollmentRevocations({
-      leaseUntil: new Date(Date.now() + 60_000),
-      limit: 10,
-      now: new Date(),
-    });
-    await store.completeMountEnrollmentRevocation(lapsed.enrollmentId, "EXPIRED");
-    expect(
-      (
-        await sql<{ status: string }>`
-          select status from workspace_mounts where id = ${lapsed.id}
-        `.execute(database)
-      ).rows,
-    ).toEqual([{ status: "expired" }]);
-    expect(await store.listWorkspaceMounts(fixture.workspace.id)).toEqual([]);
-
-    const adopted = await store.recordWorkspaceMount({
-      ...input,
-      enrollmentId: "22222222-2222-4222-8222-222222222222",
-    });
-    const pendingDuringInventory = await store.recordWorkspaceMount({
-      ...input,
-      enrollmentId: "66666666-6666-4666-8666-666666666666",
-    });
-    await store.requestWorkspaceMountRevocations({
-      reason: "membership-revoked",
-      workspaceMountIds: [pendingDuringInventory.id],
-    });
-    const unknown = {
-      enrollmentId: "33333333-3333-4333-8333-333333333333",
-      volumeId: backing.volumeId,
-      workspaceId: fixture.workspace.id,
-    };
-    await expect(
-      store.reconcileRunnerInventory({
-        environmentId: fixture.environmentId,
-        mounts: [unknown],
-      }),
-    ).resolves.toEqual([unknown]);
-    expect(await store.listEnvironmentWorkspaceMounts(fixture.environmentId)).toMatchObject([
-      {
-        enrollmentId: adopted.enrollmentId,
-        status: "revocation_pending",
-        terminationReason: "runner-inventory",
-      },
-      {
-        enrollmentId: pendingDuringInventory.enrollmentId,
-        status: "revocation_pending",
-        terminationReason: "membership-revoked",
-      },
-    ]);
-    expect(
-      await store.claimPendingMountEnrollmentRevocations({
-        leaseUntil: new Date(Date.now() + 60_000),
-        limit: 10,
-        now: new Date(),
-      }),
-    ).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          enrollmentId: adopted.enrollmentId,
-          terminationReason: "runner-inventory",
-        }),
-        expect.objectContaining({
-          enrollmentId: pendingDuringInventory.enrollmentId,
-          terminationReason: "membership-revoked",
-        }),
-      ]),
-    );
-    await store.completeMountEnrollmentRevocation(adopted.enrollmentId, "CLOSED");
-    await store.completeMountEnrollmentRevocation(pendingDuringInventory.enrollmentId, "REVOKED");
-    expect(await store.listEnvironmentWorkspaceMounts(fixture.environmentId)).toEqual([]);
-
-    const current = await store.recordWorkspaceMount({
-      ...input,
-      enrollmentId: "55555555-5555-4555-8555-555555555555",
-    });
-    expect(current.status).toBe("active");
-    await expect(
-      store.closeEnvironment(fixture.environmentId, "environment-stopped"),
-    ).resolves.toBe(1);
-    expect(adopted.environmentId).toBe(fixture.environmentId);
-  });
-
-  it("rejects stale membership generations for mount assertion and recording", async ({
-    storeFixture,
-  }) => {
-    const { createRunFixture, store, database } = storeFixture;
-    const fixture = await createRunFixture("workspace-mount-membership-fence");
-    const backing = portableFsBacking(fixture.workspace);
-    const authority = {
-      environmentId: fixture.environmentId,
-      membershipGeneration: 1,
-      requestedBy: fixture.userId,
-      runnerId: fixture.runnerId,
-      volumeId: backing.volumeId,
-      workspaceBackingGeneration: backing.generation,
-      workspaceId: fixture.workspace.id,
-    } as const;
-    await expect(store.assertWorkspaceMountAuthority(authority)).resolves.toBeUndefined();
-    await store.recordWorkspaceMount({
-      ...authority,
-      authorizedBy: authority.requestedBy,
-      enrollmentId: `membership-current-${randomUUID()}`,
-    });
-    await database
-      .updateTable("workspaceMemberships")
-      .set({ generation: sql`${sql.ref("generation")} + 1` })
-      .where("workspaceId", "=", fixture.workspace.id)
-      .where("userId", "=", fixture.userId)
-      .executeTakeFirstOrThrow();
-
-    await expect(store.assertWorkspaceMountAuthority(authority)).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    await expect(
-      store.recordWorkspaceMount({
-        ...authority,
-        authorizedBy: authority.requestedBy,
-        enrollmentId: `membership-stale-${randomUUID()}`,
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-  });
-
-  it("rejects a PortableFS backing generation after the backing is replaced", async ({
-    storeFixture,
-  }) => {
-    const { createRunFixture, store } = storeFixture;
-    const fixture = await createRunFixture("workspace-mount-backing-fence");
-    const backing = portableFsBacking(fixture.workspace);
-    const authority = {
-      environmentId: fixture.environmentId,
-      membershipGeneration: 1,
-      requestedBy: fixture.userId,
-      runnerId: fixture.runnerId,
-      volumeId: backing.volumeId,
-      workspaceBackingGeneration: backing.generation,
-      workspaceId: fixture.workspace.id,
-    } as const;
-    const mount = await store.recordWorkspaceMount({
-      ...authority,
-      authorizedBy: authority.requestedBy,
-      enrollmentId: `backing-current-${randomUUID()}`,
-    });
-    await store.requestWorkspaceMountRevocations({
-      reason: "test-backing-replacement",
-      workspaceMountIds: [mount.id],
-    });
-    await store.completeMountEnrollmentRevocation(mount.enrollmentId, "REVOKED");
-    await store.claimPortableFsWorkspaceForArchive({
-      backingGeneration: backing.generation,
-      idleBefore: new Date(Date.now() + 60_000),
-      workspaceId: fixture.workspace.id,
-    });
-
-    await expect(store.assertWorkspaceMountAuthority(authority)).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    await expect(
-      store.recordWorkspaceMount({
-        ...authority,
-        authorizedBy: authority.requestedBy,
-        enrollmentId: `backing-stale-${randomUUID()}`,
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-  });
-
-  it("rejects a Runner that is not the environment's current Runner", async ({ storeFixture }) => {
-    const { createRunFixture, store } = storeFixture;
-    const fixture = await createRunFixture("workspace-mount-runner-fence");
-    const backing = portableFsBacking(fixture.workspace);
-    const wrongRunner = {
-      environmentId: fixture.environmentId,
-      membershipGeneration: 1,
-      requestedBy: fixture.userId,
-      runnerId: createId("runner"),
-      volumeId: backing.volumeId,
-      workspaceBackingGeneration: backing.generation,
-      workspaceId: fixture.workspace.id,
-    } as const;
-
-    await expect(store.assertWorkspaceMountAuthority(wrongRunner)).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    await expect(
-      store.recordWorkspaceMount({
-        ...wrongRunner,
-        authorizedBy: fixture.userId,
-        enrollmentId: `runner-stale-${randomUUID()}`,
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-  });
-
-  it("leaves attached-Workspace Runs to Runner detach during membership revocation", async ({
-    storeFixture,
-  }) => {
-    const { createRunFixture, store, enqueueHumanTrigger, database } = storeFixture;
-    const fixture = await createRunFixture("mounted-membership-revocation");
-    const attached = await store.createWorkspace({
-      backing: {
-        generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_mounted_membership_revocation",
-      },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
-      createdBy: fixture.userId,
-      idempotencyKey: "mounted-membership-revocation-target",
-      name: "Attached client Workspace",
-      status: "ready",
-    });
-    const turn = await enqueueHumanTrigger({
-      content: [{ text: "Work across both Workspaces", type: "text" }],
-      idempotencyKey: "mounted-membership-revocation-turn",
-      requestedBy: fixture.userId,
-      threadId: fixture.thread.id,
-    });
-    await store.claimCommand(turn.command.id, "mounted-membership-revocation-dispatcher");
-    await store.recordWorkspaceMount({
-      authorizedBy: fixture.userId,
-      enrollmentId: "66666666-6666-4666-8666-666666666666",
-      environmentId: fixture.environmentId,
-      membershipGeneration: 1,
-      runnerId: fixture.runnerId,
-      volumeId: portableFsBacking(attached).volumeId,
-      workspaceId: attached.id,
-      workspaceBackingGeneration: portableFsBacking(attached).generation,
-    });
-
-    const recovery = await store.failActiveRunsForMembershipRevocation({
-      userId: fixture.userId,
-      workspaceId: attached.id,
-    });
-    expect(recovery.terminatedRuns).toEqual([]);
-    expect(recovery.events).toEqual([]);
-    const run = await database
-      .selectFrom("runs")
-      .select("status")
-      .where("id", "=", turn.run.id)
-      .executeTakeFirstOrThrow();
-    expect(run.status).toBe("starting");
-  });
-
   it("terminalizes every active Run in a Workspace once deletion is requested", async ({
     storeFixture,
   }) => {
@@ -499,15 +179,12 @@ describeStore("PostgreSQL store", (it) => {
     const workspaceInput = {
       backing: {
         generation: 1,
-        kind: "portablefs" as const,
-        serviceId: "test-portablefs",
-        volumeId: "wsp_concurrent_command",
+        kind: "local-directory" as const,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota" as const,
-      },
+
       createdBy: userId,
       idempotencyKey: "concurrent-command-workspace",
       name: "Concurrent Workspace",
@@ -515,7 +192,7 @@ describeStore("PostgreSQL store", (it) => {
     };
     const workspaces = await Promise.all(
       Array.from({ length: 8 }, (_, index) =>
-        (index % 2 === 0 ? store : secondHostStore).createWorkspace(workspaceInput),
+        createTestWorkspace(index % 2 === 0 ? store : secondHostStore, workspaceInput),
       ),
     );
     expect(new Set(workspaces.map(({ id }) => id)).size).toBe(1);
@@ -604,18 +281,17 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { store } = storeFixture;
     const userId = await store.createUser("Workspace storage owner");
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "pending_storage_recovery",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 512 * 1_024 * 1_024,
-        inodeHardLimit: 50_000,
-        kind: "hard-quota",
-      },
+
       createdBy: userId,
       idempotencyKey: "workspace-storage-issue",
       name: "Storage recovery",
@@ -656,11 +332,11 @@ describeStore("PostgreSQL store", (it) => {
       },
     });
 
-    const expectedBacking = portableFsBacking(workspace);
+    const expectedBacking = localBacking(workspace);
     const ready = await store.setWorkspaceProvisioningResult({
       backing: {
         ...expectedBacking,
-        volumeId: "00000000-0000-4000-8000-000000000099",
+        storageAuthorityId: createId("storageAuthority"),
       },
       expectedBacking,
       status: "ready",
@@ -672,9 +348,12 @@ describeStore("PostgreSQL store", (it) => {
       store.setWorkspaceProvisioningResult({
         backing: {
           generation: expectedBacking.generation + 1,
-          kind: "portablefs",
-          serviceId: expectedBacking.serviceId,
-          volumeId: "00000000-0000-4000-8000-000000000100",
+          kind: "local-directory",
+          bindingId: createStorageFixtureId("workspaceBinding"),
+          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+            "env_00000000-0000-4000-8000-000000000001",
+          ),
+          storageAuthorityId: createStorageFixtureId("storageAuthority"),
         },
         expectedBacking: ready.backing,
         status: "ready",
@@ -685,9 +364,12 @@ describeStore("PostgreSQL store", (it) => {
       store.setWorkspaceProvisioningResult({
         backing: {
           generation: expectedBacking.generation,
-          kind: "portablefs",
-          serviceId: "another-portablefs-authority",
-          volumeId: "00000000-0000-4000-8000-000000000100",
+          kind: "local-directory",
+          bindingId: createStorageFixtureId("workspaceBinding"),
+          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+            "env_00000000-0000-4000-8000-000000000001",
+          ),
+          storageAuthorityId: createStorageFixtureId("storageAuthority"),
         },
         expectedBacking: ready.backing,
         status: "ready",
@@ -702,21 +384,21 @@ describeStore("PostgreSQL store", (it) => {
     const { store, database } = storeFixture;
     const ownerId = await store.createUser("Workspace deletion owner");
     const collaboratorId = await store.createUser("Workspace deletion collaborator");
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "workspace_deletion_lifecycle",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 512 * 1_024 * 1_024,
-        inodeHardLimit: 50_000,
-        kind: "hard-quota",
-      },
+
       createdBy: ownerId,
       idempotencyKey: "workspace-deletion-lifecycle",
       name: "Deletion lifecycle",
+      kind: "project",
       status: "ready",
     });
     await database

@@ -77,9 +77,9 @@ describe("managed Account bundle file", () => {
         OPENSTEER_AUTH_SECRET: "identity-secret-that-is-at-least-thirty-two-bytes",
         OPENSTEER_CANONICAL_ORIGIN: canonicalOrigin,
         OPENSTEER_DATABASE_URL: "postgres://localhost/opensteer",
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
+        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
         OPENSTEER_DEPLOYMENT_KIND: "server",
-        OPENSTEER_PORTABLEFS_MANAGER_URL: "https://portablefs.example.test",
+        OPENSTEER_storage_MANAGER_URL: "https://storage.example.test",
       });
     } catch (error) {
       failure = error;

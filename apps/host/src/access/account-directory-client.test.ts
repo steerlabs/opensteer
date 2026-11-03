@@ -1,11 +1,11 @@
 import {
   AccountLinkGenerationSchema,
   ConnectOperationIdSchema,
-  PersonalHostAccountLinkChallengeIdSchema,
   PersonalHostAccessRouteEnvelopeSchema,
+  PersonalHostAccountLinkChallengeIdSchema,
 } from "@opensteer/control-plane-protocol";
-import { HostDiscoveryEnvelopeSchema } from "@opensteer/deployment-authority";
 import { createId } from "@opensteer/core";
+import { HostDiscoveryEnvelopeSchema } from "@opensteer/deployment-authority";
 import { describe, expect, it, vi } from "vitest";
 import {
   AccountDirectoryClient as NativeAccountDirectoryClient,
@@ -23,7 +23,7 @@ const authorityEnvelope = HostDiscoveryEnvelopeSchema.parse({
     hostInstanceId: deployment.activeHostInstanceId,
     hostKey: { algorithm: "Ed25519" },
     deploymentShape: {
-      defaultWorkspaceBacking: "portablefs",
+      defaultWorkspaceBacking: "local-directory",
       kind: "server" as const,
     },
   },

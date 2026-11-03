@@ -41,6 +41,7 @@ import {
   RunnerIdSchema,
   OpensteerError,
   requestReasonMaxLength,
+  type SpecialistAccessRequirement,
   type AgentEvent,
   type Request,
   type RunId,
@@ -1135,34 +1136,31 @@ export class IntegrationToolsMcpService {
         ),
     );
     const matches = searched.slice(offset, offset + limit);
-    const results = matches.map(
-      ({ accounts, installation, readiness, servers, skills, tools }) => ({
-        accounts,
-        description: installation.description,
-        integration: installation.title,
-        name: installation.name,
-        installationId: installation.id,
-        servers: servers.map((server) => ({
-          readiness: searchReadiness(
-            readiness.servers.find(({ serverId }) => serverId === server.id),
-          ),
-          server: server.name,
-          serverId: server.id,
-        })),
-        skills: skills.map(({ description, name }) => ({ description, name })),
-        toolCount: tools.length,
-        tools: tools.slice(0, 50).map((tool) => ({
-          effect: integrationToolEffect(tool.annotations),
-          name: tool.name,
-          readiness: searchReadiness(
-            readiness.tools.find(({ toolId }) => toolId === tool.id)?.readiness,
-            readiness.servers,
-          ),
-          ...(tool.title !== tool.name ? { title: tool.title } : {}),
-        })),
-        ...(tools.length > 50 ? { truncated: true } : {}),
-      }),
-    );
+    const results = matches.map(({ accounts, installation, readiness, servers, tools }) => ({
+      accounts,
+      description: installation.description,
+      integration: installation.title,
+      name: installation.name,
+      installationId: installation.id,
+      servers: servers.map((server) => ({
+        readiness: searchReadiness(
+          readiness.servers.find(({ serverId }) => serverId === server.id),
+        ),
+        server: server.name,
+        serverId: server.id,
+      })),
+      toolCount: tools.length,
+      tools: tools.slice(0, 50).map((tool) => ({
+        effect: integrationToolEffect(tool.annotations),
+        name: tool.name,
+        readiness: searchReadiness(
+          readiness.tools.find(({ toolId }) => toolId === tool.id)?.readiness,
+          readiness.servers,
+        ),
+        ...(tool.title !== tool.name ? { title: tool.title } : {}),
+      })),
+      ...(tools.length > 50 ? { truncated: true } : {}),
+    }));
     const installedByDefinitionId = new Map(
       inventory.flatMap((entry) => {
         const definitionId = installationDefinitionId(entry.installation);
@@ -1403,6 +1401,45 @@ export class IntegrationToolsMcpService {
         "This capability profile cannot request integration access. Report what it needs and let the task that delegated it ask.",
       );
     }
+  }
+
+  async requestSpecialistAccess(
+    scope: IntegrationToolsRunScope,
+    requirement: SpecialistAccessRequirement,
+    callId: string,
+  ) {
+    if (requirement.type === "browser-profile") throw new Error("Use the browser access service");
+    if (requirement.type === "integration") {
+      const definition = this.#definitions.find(
+        (d) => d.id === requirement.service || d.provider === requirement.service,
+      );
+      if (!definition) throw new Error(`Unknown specialist integration: ${requirement.service}`);
+      return this.#request(
+        scope,
+        { catalog: definition.id, access: requirement.level, reason: requirement.reason },
+        callId,
+      );
+    }
+    const inventory = await this.#platform.computerAppApprovals.computerUseInventory(
+      scope.requestedBy,
+    );
+    const runnerId =
+      requirement.type === "phone"
+        ? inventory.phones.length === 1
+          ? inventory.phones[0]!.runnerId
+          : undefined
+        : undefined;
+    return this.#request(
+      scope,
+      {
+        kind: "computer-app",
+        access: requirement.level,
+        reason: requirement.reason,
+        ...(runnerId ? { runnerId } : {}),
+        ...(requirement.type === "computer-app" ? { app: requirement.app } : {}),
+      },
+      callId,
+    );
   }
 
   async #request(

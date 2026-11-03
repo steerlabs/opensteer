@@ -11,10 +11,6 @@ export interface IntegrationSearchable {
     };
     readonly name: string;
   }[];
-  readonly skills: readonly {
-    readonly description: string;
-    readonly name: string;
-  }[];
   readonly tools: readonly {
     readonly description: string;
     readonly name: string;
@@ -119,18 +115,15 @@ function scoreEntry(
     connectionRequirement.provider ? [connectionRequirement.provider] : [],
   );
   const serverNames = entry.servers.map(({ name }) => name);
-  const skillNames = entry.skills.map(({ name }) => name);
   const toolNames = entry.tools.flatMap(({ name, title }) => [name, title]);
   const descriptions = [
     entry.installation.description,
-    ...entry.skills.map(({ description }) => description),
     ...entry.tools.map(({ description }) => description),
   ];
   const weightedFields = [
     { values: identity, weight: 120 },
     { values: providers, weight: 100 },
     { values: serverNames, weight: 65 },
-    { values: skillNames, weight: 60 },
     { values: toolNames, weight: 55 },
     { values: descriptions, weight: 15 },
   ] as const;

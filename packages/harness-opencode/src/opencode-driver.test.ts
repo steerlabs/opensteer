@@ -1,3 +1,4 @@
+import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -848,8 +849,18 @@ describe("OpenCode sessions", () => {
     const fixture = await setup("happy", {
       skills: {
         skills: [
-          { name: "duplicate", path: join(await temporaryDirectory(), "one") },
-          { name: "duplicate", path: join(await temporaryDirectory(), "two") },
+          {
+            plugin: null,
+            localName: "duplicate",
+            fullName: "duplicate",
+            path: join(await temporaryDirectory(), "one"),
+          },
+          {
+            plugin: null,
+            localName: "duplicate",
+            fullName: "duplicate",
+            path: join(await temporaryDirectory(), "two"),
+          },
         ],
       },
     });
@@ -934,16 +945,10 @@ describe("OpenCode sessions", () => {
     expect(instructions).toContain("Opensteer platform guide.");
     expect(instructions).toContain("Follow the workspace instructions.");
     const skill = await readFile(
-      join(
-        fixture.context.threadStateDirectory,
-        "opencode",
-        "skills",
-        "opensteer-workspaces",
-        "SKILL.md",
-      ),
+      join(fixture.context.threadStateDirectory, "opencode", "skills", "projects", "SKILL.md"),
       "utf8",
     );
-    expect(skill).toContain("opensteer-workspaces");
+    expect(skill).toContain("projects");
   });
 
   it("gives two concurrent sessions of one account their own configuration and one data home", async () => {
@@ -1861,7 +1866,12 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     signal: new AbortController().signal,
     skills: options.skills ?? {
       skills: [
-        { name: "opensteer-workspaces", path: join(directory, "skills", "opensteer-workspaces") },
+        {
+          plugin: null,
+          localName: "projects",
+          fullName: "projects",
+          path: join(directory, "skills", "projects"),
+        },
       ],
     },
     threadId: createId("thread"),
@@ -1875,7 +1885,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     await mkdir(skill.path, { recursive: true });
     await writeFile(
       join(skill.path, "SKILL.md"),
-      `---\nname: ${skill.name}\ndescription: Test.\n---\n\nTest skill.\n`,
+      `---\nname: ${skill.localName}\ndescription: Test.\n---\n\nTest skill.\n`,
     );
   }
   return {
@@ -1948,4 +1958,44 @@ describe("opencode Thread naming", () => {
       await fixture.adapter.close();
     }
   });
+});
+
+it("delivers distinct full names for two plugins and a loose review skill", async () => {
+  const fixture = await setup("happy");
+  const skills = await collisionSkills(fixture.context.workspacePath);
+  const context = { ...fixture.context, skills };
+  const session = await fixture.adapter.startSession(context);
+  await session.execute(
+    fixture.turn("Use alpha:review, beta:review and review by their SKILL.md paths."),
+  );
+  await session.stop();
+  const payload = await readFile(
+    join(context.threadStateDirectory, "opencode", "instructions.md"),
+    "utf8",
+  );
+  expect(await readdir(join(context.threadStateDirectory, "opencode", "skills"))).toEqual(
+    expect.arrayContaining(skills.skills.map((skill) => encodeURIComponent(skill.fullName))),
+  );
+  expect(
+    (await readdir(join(context.threadStateDirectory, "opencode", "skills"))).every(
+      (name) => !name.includes(":"),
+    ),
+  ).toBe(true);
+  for (const skill of skills.skills) {
+    const delivered = await readFile(
+      join(
+        context.threadStateDirectory,
+        "opencode",
+        "skills",
+        encodeURIComponent(skill.fullName),
+        "SKILL.md",
+      ),
+      "utf8",
+    );
+    expect(delivered).toContain(`"name":"${skill.fullName}"`);
+    expect(await readFile(join(skill.path, "SKILL.md"), "utf8")).toContain("name: review");
+    expect(payload).toContain(`${skill.fullName} workflow`);
+    expect(payload).toContain(skill.path);
+  }
+  await fixture.adapter.close();
 });

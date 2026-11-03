@@ -26,14 +26,16 @@ it("matches the model-visible context byte budget", async () => {
     }
     const catalog = await renderHarnessSkillCatalog({
       skills: skillsForCapabilityProfile(id).map(({ name }) => ({
-        name,
-        path: resolve(skillRoot, name),
+        plugin: "opensteer",
+        localName: name.split(":")[1]!,
+        fullName: name,
+        path: resolve(skillRoot, name.split(":")[1]!),
       })),
     });
     // The renderer reads real shipped metadata; only the machine-specific path
     // prefix is replaced with the same absolute fixture path on every platform.
     metrics[`skillsIndex.${id}.bytes`] = bytes(
-      (catalog ?? "").replaceAll(skillRoot, "/opensteer/skills"),
+      (catalog ?? "").replaceAll(resolve(skillRoot, ".."), "/opensteer"),
     );
   }
   await expect(`${JSON.stringify(metrics, null, 2)}\n`).toMatchFileSnapshot(

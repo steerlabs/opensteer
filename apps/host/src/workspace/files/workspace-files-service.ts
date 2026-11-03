@@ -1,19 +1,13 @@
-import {
-  OpensteerError,
-  type LocalWorkspaceBacking,
-  type PortableFsWorkspaceBacking,
-  type Workspace,
-} from "@opensteer/core";
+import { OpensteerError, type LocalWorkspaceBacking, type Workspace } from "@opensteer/core";
 import type {
   OpensteerStore,
   WorkspaceFilesAdmission,
   WorkspaceMembershipRecord,
 } from "@opensteer/database";
 import type { WorkspaceDirectoryPage } from "@opensteer/protocol";
-import type { RunnerLocalWorkspaceFilesDriver } from "./workspace-files-runner-local-driver.js";
-import type { PortableFsWorkspaceFilesDriver } from "./workspace-files-portablefs-driver.js";
-import type { WorkspaceFileListInput, WorkspaceFilePreview } from "./workspace-files-types.js";
 import type { WorkspaceActivityService } from "../workspace-activity.js";
+import type { RunnerLocalWorkspaceFilesDriver } from "./workspace-files-runner-local-driver.js";
+import type { WorkspaceFileListInput, WorkspaceFilePreview } from "./workspace-files-types.js";
 
 const membershipRevalidationByteInterval = 1 * 1_024 * 1_024;
 const membershipRevalidationTimeIntervalMs = 250;
@@ -25,31 +19,26 @@ type WorkspaceMembershipRepository = Pick<
 >;
 
 /**
- * Product-facing Files router. A Deployment registers a reader for each kind of
- * storage it holds — shared volumes here, and every lent machine's own
- * directories through the Runner that owns them.
+ * Product-facing Files access through the Runner that owns the directory.
  */
 export class WorkspaceFilesService {
   readonly #activeMemberships = new Map<string, Set<WorkspaceFilesLease>>();
   readonly #activity: Pick<WorkspaceActivityService, "note"> | undefined;
   readonly #local: RunnerLocalWorkspaceFilesDriver | undefined;
   readonly #memberships: WorkspaceMembershipRepository;
-  readonly #portableFs: PortableFsWorkspaceFilesDriver | undefined;
   readonly #unsubscribeMembershipChanges: () => void;
 
   constructor(options: {
     readonly activity?: Pick<WorkspaceActivityService, "note">;
     readonly local?: RunnerLocalWorkspaceFilesDriver;
     readonly memberships: WorkspaceMembershipRepository;
-    readonly portableFs?: PortableFsWorkspaceFilesDriver;
   }) {
-    if (options.local === undefined && options.portableFs === undefined) {
+    if (options.local === undefined) {
       throw new TypeError("Workspace Files requires at least one backing driver");
     }
     this.#activity = options.activity;
     this.#local = options.local;
     this.#memberships = options.memberships;
-    this.#portableFs = options.portableFs;
     this.#unsubscribeMembershipChanges = options.memberships.onWorkspaceMembershipChanged(
       (membership) => this.#membershipChanged(membership),
     );
@@ -66,12 +55,8 @@ export class WorkspaceFilesService {
       switch (workspace.backing.kind) {
         case "local-directory":
           return this.#requiredLocal().list(asLocalWorkspace(workspace), input, operationSignal);
-        case "portablefs":
-          return this.#requiredPortableFs().list(
-            asPortableFsWorkspace(workspace),
-            input,
-            operationSignal,
-          );
+        default:
+          throw unsupportedBacking(workspace.backing.kind);
       }
     });
   }
@@ -91,12 +76,8 @@ export class WorkspaceFilesService {
             fileKey,
             operationSignal,
           );
-        case "portablefs":
-          return this.#requiredPortableFs().preview(
-            asPortableFsWorkspace(workspace),
-            fileKey,
-            operationSignal,
-          );
+        default:
+          throw unsupportedBacking(workspace.backing.kind);
       }
     });
   }
@@ -111,13 +92,7 @@ export class WorkspaceFilesService {
     try {
       const { workspace } = admission;
       const response = await abortable(
-        workspace.backing.kind === "local-directory"
-          ? this.#requiredLocal().download(asLocalWorkspace(workspace), fileKey, lease.signal)
-          : this.#requiredPortableFs().download(
-              asPortableFsWorkspace(workspace),
-              fileKey,
-              lease.signal,
-            ),
+        this.#requiredLocal().download(asLocalWorkspace(workspace), fileKey, lease.signal),
         lease.signal,
       );
       await lease.revalidate();
@@ -205,11 +180,6 @@ export class WorkspaceFilesService {
   #requiredLocal(): RunnerLocalWorkspaceFilesDriver {
     if (this.#local !== undefined) return this.#local;
     throw unsupportedBacking("local-directory");
-  }
-
-  #requiredPortableFs(): PortableFsWorkspaceFilesDriver {
-    if (this.#portableFs !== undefined) return this.#portableFs;
-    throw unsupportedBacking("portablefs");
   }
 }
 
@@ -350,7 +320,6 @@ function abortable<Value>(operation: Promise<Value>, signal: AbortSignal): Promi
 }
 
 type LocalWorkspace = Workspace & { readonly backing: LocalWorkspaceBacking };
-type PortableFsWorkspace = Workspace & { readonly backing: PortableFsWorkspaceBacking };
 
 function asLocalWorkspace(workspace: Workspace): LocalWorkspace {
   if (workspace.backing.kind !== "local-directory")
@@ -358,20 +327,14 @@ function asLocalWorkspace(workspace: Workspace): LocalWorkspace {
   return workspace as LocalWorkspace;
 }
 
-function asPortableFsWorkspace(workspace: Workspace): PortableFsWorkspace {
-  if (workspace.backing.kind !== "portablefs") throw unsupportedBacking(workspace.backing.kind);
-  return workspace as PortableFsWorkspace;
-}
-
 function unsupportedBacking(kind: Workspace["backing"]["kind"]): OpensteerError {
   return new OpensteerError({
     code: "workspace_unavailable",
-    message: `This Host is not configured to read ${kind} Workspaces`,
+    message: `Workspace storage requires relocation to a local directory (${kind})`,
   });
 }
 
 export { RunnerLocalWorkspaceFilesDriver } from "./workspace-files-runner-local-driver.js";
-export { PortableFsWorkspaceFilesDriver } from "./workspace-files-portablefs-driver.js";
 export type {
   WorkspaceFileListInput,
   WorkspaceFilePreview,

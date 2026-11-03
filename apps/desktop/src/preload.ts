@@ -516,11 +516,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     ),
   closeComputerUsePermissionsPanel: () =>
     invoke<void>(desktopBridgeChannels.closeComputerUsePermissionsPanel),
-  acknowledgePortableFsApproval: (input: DesktopLocalExecutionInput) =>
-    invoke<DesktopLocalExecutionStatus>(
-      desktopBridgeChannels.acknowledgePortableFsApproval,
-      DesktopLocalExecutionInputSchema.parse(input),
-    ),
   addDirect: (input: DesktopAddDirectRouteInput) =>
     invoke<void>(desktopBridgeChannels.addDirect, DesktopAddDirectRouteInputSchema.parse(input)),
   cancel: () => invoke<void>(desktopBridgeChannels.cancel),
@@ -627,11 +622,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
         DesktopHostBinaryTransferInputSchema.parse(input),
       ),
     ),
-  installPortableFs: (input: DesktopLocalExecutionInput) =>
-    invoke<DesktopLocalExecutionStatus>(
-      desktopBridgeChannels.installPortableFs,
-      DesktopLocalExecutionInputSchema.parse(input),
-    ),
   onDeploymentAccessSnapshotChanged: (listener: (snapshot: DeploymentAccessSnapshot) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) => {
       listener(DeploymentAccessSnapshotSchema.parse(value));
@@ -695,11 +685,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
         desktopBridgeChannels.openIntegrationAuthorization,
         DesktopOpenIntegrationAuthorizationInputSchema.parse(input),
       ),
-    ),
-  openPortableFsSetup: (input: DesktopLocalExecutionInput) =>
-    invoke<DesktopLocalExecutionStatus>(
-      desktopBridgeChannels.openPortableFsSetup,
-      DesktopLocalExecutionInputSchema.parse(input),
     ),
   pickFolder: async () =>
     DesktopPickFolderResultSchema.parse(

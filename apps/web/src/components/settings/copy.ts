@@ -76,7 +76,8 @@ export type SettingsSectionId =
   | "computers"
   | "devices"
   | "general"
-  | "passwords";
+  | "passwords"
+  | "plugins";
 
 export const defaultSettingsSection = "ai-engines" as const satisfies SettingsSectionId;
 
@@ -102,10 +103,16 @@ export const settingsItems: Readonly<Record<SettingsSectionId, SettingsRailItem>
     description: "The accounts your agents think with",
   },
   apps: {
-    icon: "puzzle",
+    icon: "plug",
     id: "apps",
-    label: "Connected apps",
-    description: "Apps agents can use, and where people message them",
+    label: "Connections",
+    description: "Accounts and apps agents can use, and where people message them",
+  },
+  plugins: {
+    icon: "puzzle",
+    id: "plugins",
+    label: "Plugins",
+    description: "Skills, tools and specialists installed for your agents",
   },
   computers: {
     icon: "desktop",
@@ -178,7 +185,15 @@ export function settingsItem(id: SettingsSectionId, kind: DeploymentDisplayKind)
 export function settingsRail(kind: DeploymentDisplayKind): SettingsRailModel {
   return {
     agents: (
-      ["ai-engines", "apps", "computers", "browser-profiles", "chrome", "passwords"] as const
+      [
+        "ai-engines",
+        "apps",
+        "plugins",
+        "computers",
+        "browser-profiles",
+        "chrome",
+        "passwords",
+      ] as const
     ).map((id) => settingsItems[id]),
     devices: settingsItem("devices", kind),
   };

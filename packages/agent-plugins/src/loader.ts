@@ -1,3 +1,4 @@
+import { maximumSkillBytes } from "@opensteer/shared/agentSkills";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { setFileMode } from "@opensteer/shared/privateFiles";
 import type { Stats } from "node:fs";
@@ -5,7 +6,11 @@ import { validateHeaderName, validateHeaderValue } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { isLoopbackHostname } from "@opensteer/core";
+import {
+  SpecialistManifestSchema,
+  type SpecialistManifest,
+  isLoopbackHostname,
+} from "@opensteer/core";
 import { z } from "zod";
 import { parse as parseYaml } from "yaml";
 
@@ -15,7 +20,6 @@ export const agentPluginMcpSchemaUrl =
   "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json" as const;
 
 const maximumDocumentBytes = 1 * 1_024 * 1_024;
-const maximumSkillBytes = 256 * 1_024;
 const maximumServers = 128;
 const maximumArguments = 256;
 const maximumEnvironmentEntries = 128;
@@ -175,6 +179,7 @@ export interface AgentPluginIssue {
 }
 
 interface LoadedAgentPlugin {
+  readonly specialistManifest: SpecialistManifest | null;
   readonly issues: readonly AgentPluginIssue[];
   readonly manifest: z.infer<typeof PluginManifestSchema>;
   readonly root: string;
@@ -213,6 +218,8 @@ export type LoadedAgentPluginServer =
  * symlink, junction, or reparse point.
  */
 export async function loadAgentPlugin(input: {
+  readonly pluginId: string;
+  readonly migrateLegacyData?: boolean;
   readonly dataDirectory: string;
   readonly directory: string;
 }): Promise<LoadedAgentPlugin> {
@@ -243,7 +250,34 @@ export async function loadAgentPlugin(input: {
     delete manifestInput.extensions;
   }
   const manifest = PluginManifestSchema.parse(manifestInput);
-  const pluginData = join(resolve(input.dataDirectory), manifest.name);
+  let specialistManifest: SpecialistManifest | null = null;
+  const specialistPath = join(root, "specialist.json");
+  if (await optionalLstat(specialistPath)) {
+    await requireContainedRegularFile(root, specialistPath, "specialist.json");
+    await requireContainedRegularFile(
+      root,
+      join(root, "INSTRUCTIONS.md"),
+      "Specialists require INSTRUCTIONS.md",
+    );
+    try {
+      specialistManifest = SpecialistManifestSchema.parse(await readJsonDocument(specialistPath));
+    } catch (error) {
+      throw new Error(
+        `Invalid specialist.json: ${error instanceof Error ? error.message : "invalid manifest"}`,
+      );
+    }
+  }
+  if (!/^[a-zA-Z0-9_-]+(?:-[a-zA-Z0-9_-]+)*$/u.test(input.pluginId))
+    throw new Error("Invalid plugin id");
+  const pluginData = join(resolve(input.dataDirectory), input.pluginId);
+  if (input.migrateLegacyData && !(await optionalLstat(pluginData))) {
+    const legacy = join(resolve(input.dataDirectory), manifest.name);
+    const legacyStat = await optionalLstat(legacy);
+    if (legacyStat) {
+      await requireRealDirectory(legacy, "Legacy plugin data");
+      await rename(legacy, pluginData);
+    }
+  }
   await mkdir(pluginData, { mode: 0o700, recursive: true });
   const resolvedData = await realpath(pluginData);
 
@@ -254,6 +288,7 @@ export async function loadAgentPlugin(input: {
   return Object.freeze({
     issues: Object.freeze(issues),
     manifest: Object.freeze(manifest),
+    specialistManifest,
     root,
     sourceRoot,
     servers: Object.freeze(servers),
@@ -329,13 +364,14 @@ async function loadSkills(
   return loaded;
 }
 
-interface SnapshotFile {
+export interface SnapshotFile {
   readonly bytes: Buffer;
   readonly mode: number;
   readonly path: string;
 }
 
-async function snapshotPackage(sourceRoot: string, snapshotRoot: string): Promise<string> {
+export async function readPluginSnapshot(sourceRoot: string): Promise<SnapshotFile[]> {
+  await requireRealDirectory(sourceRoot, "Agent Plugin snapshot");
   const files: SnapshotFile[] = [];
   let totalBytes = 0;
   const visit = async (directory: string, relativeDirectory: string): Promise<void> => {
@@ -365,11 +401,20 @@ async function snapshotPackage(sourceRoot: string, snapshotRoot: string): Promis
     }
   };
   await visit(sourceRoot, "");
+  return files;
+}
+
+export function pluginSnapshotDigest(files: readonly SnapshotFile[]): string {
   const hash = createHash("sha256");
   for (const file of files) {
     hash.update(file.path).update("\0").update(String(file.mode)).update("\0").update(file.bytes);
   }
-  const digest = hash.digest("hex");
+  return hash.digest("hex");
+}
+
+async function snapshotPackage(sourceRoot: string, snapshotRoot: string): Promise<string> {
+  const files = await readPluginSnapshot(sourceRoot);
+  const digest = pluginSnapshotDigest(files);
   await mkdir(snapshotRoot, { mode: 0o700, recursive: true });
   const destination = join(snapshotRoot, digest);
   try {

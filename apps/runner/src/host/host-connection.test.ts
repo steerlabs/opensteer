@@ -29,6 +29,7 @@ import {
 import WebSocket, { WebSocketServer } from "ws";
 import { describe, expect, it, vi } from "vitest";
 import {
+  type RunnerAgentsConnection,
   CausallyOrderedRunnerSink,
   WebSocketMessageSink,
   ReconnectingHostConnection,
@@ -42,26 +43,26 @@ import {
 } from "@opensteer/runner-client";
 
 const cloudDeploymentShape = {
-  defaultWorkspaceBacking: "portablefs",
+  defaultWorkspaceBacking: "local-directory",
   kind: "server" as const,
 } as const;
 const testAgentSkills = {
   paths: {
-    "opensteer-specialization": "/runner/agent-skills/skills/opensteer-specialization",
-    "opensteer-integrations": "/runner/agent-skills/skills/opensteer-integrations",
-    "opensteer-browser": "/runner/agent-skills/skills/opensteer-browser",
-    "opensteer-computer-use": "/runner/agent-skills/skills/opensteer-computer-use",
-    "opensteer-computers": "/runner/agent-skills/skills/opensteer-computers",
-    "opensteer-threads": "/runner/agent-skills/skills/opensteer-threads",
-    "opensteer-triggers": "/runner/agent-skills/skills/opensteer-triggers",
-    "opensteer-workspaces": "/runner/agent-skills/skills/opensteer-workspaces",
+    "opensteer:skills": "/runner/agent-skills/skills/skills",
+    "opensteer:integrations": "/runner/agent-skills/skills/integrations",
+    "opensteer:browser": "/runner/agent-skills/skills/browser",
+    "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",
+    "opensteer:computers": "/runner/agent-skills/skills/computers",
+    "opensteer:threads": "/runner/agent-skills/skills/threads",
+    "opensteer:triggers": "/runner/agent-skills/skills/triggers",
+    "opensteer:projects": "/runner/agent-skills/skills/projects",
   },
   rootPath: "/runner/agent-skills",
 } as const;
-const noIntegrationSkills = async () => ({
+const noPlugins = async () => ({
   cleanup: async () => undefined,
   digest: "none",
-  directory: undefined,
+  directories: [],
   skills: [],
 });
 const projectContinuationIdentity = providerContinuationIdentityProjector(
@@ -469,14 +470,13 @@ describe("runnerWebSocketUrl", () => {
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
         modules: ["shell"],
-        mountBinary: undefined,
+
         name: "Reachable Mac",
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
         workspaceBackings: [],
         workspaceNamespace: "single-owner",
-        workspaceRoot: undefined,
       },
       fullDiskAccessProbe: { deniedIntervalMs: 5, grantedIntervalMs: 5, probe },
       identity,
@@ -659,7 +659,7 @@ describe("runnerWebSocketUrl", () => {
     const runtime = new RunnerRuntime({
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       bootId,
       deploymentShape: cloudDeploymentShape,
       environmentId,
@@ -706,16 +706,15 @@ describe("runnerWebSocketUrl", () => {
       maxConcurrentTriggerPrograms: 4,
       mode: "development",
       modules: ["agents", "browser", "shell"],
-      mountBinary: "portablefs",
+
       localWorkspaceRegistryPath: undefined,
       localWorkspaceRoot: undefined,
       name: "Test runner",
       nodeExecutable: process.execPath,
       runnerId,
       runnerKind: "main",
-      workspaceBackings: ["portablefs"],
+      workspaceBackings: ["local-directory"],
       workspaceNamespace: "owner-scoped",
-      workspaceRoot: "/workspaces",
     };
     const pair = generateKeyPairSync("ed25519");
     const identity = {
@@ -730,15 +729,9 @@ describe("runnerWebSocketUrl", () => {
     };
     const connection = new ReconnectingHostConnection({
       agents: {
+        localWorkspaces: localStorageFixture(),
         runtime,
-        workspaceBackings: ["portablefs"],
-        workspaceMounts: () => [
-          {
-            enrollmentId: "enrollment-1",
-            volumeId: "workspace_volume",
-            workspaceId: createId("workspace"),
-          },
-        ],
+        workspaceBackings: ["local-directory"],
       },
       bootId,
       config,
@@ -765,14 +758,8 @@ describe("runnerWebSocketUrl", () => {
               environmentIds: [environmentId],
               computerTool: 1,
               harnessDrivers: [],
-              localStorage: null,
-              workspaceBackings: ["portablefs"],
-              workspaceMounts: [
-                expect.objectContaining({
-                  enrollmentId: "enrollment-1",
-                  volumeId: "workspace_volume",
-                }),
-              ],
+              localStorage: expect.objectContaining({ bindings: [], truncated: false }),
+              workspaceBackings: ["local-directory"],
             },
           },
           runnerId,
@@ -965,14 +952,13 @@ describe("runnerWebSocketUrl", () => {
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
         modules: ["shell"],
-        mountBinary: undefined,
+
         name: "Reachable Mac",
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
         workspaceBackings: [],
         workspaceNamespace: "single-owner",
-        workspaceRoot: undefined,
       },
       identity,
       identityStore: {
@@ -1213,14 +1199,13 @@ describe("runnerWebSocketUrl", () => {
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
         modules: ["integrations"],
-        mountBinary: undefined,
+
         name: "Reachable Mac",
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
         workspaceBackings: [],
         workspaceNamespace: "single-owner",
-        workspaceRoot: undefined,
       },
       identity,
       identityStore: {
@@ -1424,14 +1409,13 @@ describe("runnerWebSocketUrl", () => {
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
         modules: ["shell"],
-        mountBinary: undefined,
+
         name: "Reachable Mac",
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
         workspaceBackings: [],
         workspaceNamespace: "single-owner",
-        workspaceRoot: undefined,
       },
       identity,
       identityStore: {
@@ -1582,14 +1566,13 @@ describe("runnerWebSocketUrl", () => {
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
         modules: ["shell"],
-        mountBinary: undefined,
+
         name: "Reachable Mac",
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
         workspaceBackings: [],
         workspaceNamespace: "single-owner",
-        workspaceRoot: undefined,
       },
       identity,
       identityStore: { acceptHostConnection: async () => identity },
@@ -1687,7 +1670,7 @@ describe("runnerWebSocketUrl", () => {
     const runtime = new RunnerRuntime({
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       bootId,
       deploymentShape: cloudDeploymentShape,
       environmentId,
@@ -1716,7 +1699,11 @@ describe("runnerWebSocketUrl", () => {
       version: 3 as const,
     };
     const connection = new ReconnectingHostConnection({
-      agents: { runtime, workspaceBackings: ["portablefs"], workspaceMounts: () => [] },
+      agents: {
+        localWorkspaces: localStorageFixture(),
+        runtime,
+        workspaceBackings: ["local-directory"],
+      },
       bootId,
       config: {
         browserBridge: undefined,
@@ -1730,16 +1717,15 @@ describe("runnerWebSocketUrl", () => {
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
         modules: ["agents", "browser", "shell"],
-        mountBinary: "portablefs",
+
         localWorkspaceRegistryPath: undefined,
         localWorkspaceRoot: undefined,
         name: "Test runner",
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "main",
-        workspaceBackings: ["portablefs"],
+        workspaceBackings: ["local-directory"],
         workspaceNamespace: "owner-scoped",
-        workspaceRoot: "/workspaces",
       },
       identity,
       identityStore: {
@@ -1826,5 +1812,13 @@ function terminalEvent(ids: {
       workspaceId: createId("workspace"),
     },
     type: "runner.event",
+  };
+}
+
+function localStorageFixture(): NonNullable<RunnerAgentsConnection["localWorkspaces"]> {
+  const storageAuthorityId = createId("storageAuthority");
+  return {
+    inventory: async () => ({ bindings: [], storageAuthorityId, truncated: false }),
+    service: {} as NonNullable<RunnerAgentsConnection["localWorkspaces"]>["service"],
   };
 }

@@ -361,8 +361,8 @@ const requestPayloadVariants = [
    * renamed; a phone has no app, because its connection is the display. It
    * pairs with a `computer_app_setup_requests` row, named here so declining
    * either declines both, and it resolves only from that row being consumed on
-   * the computer itself — the Mac, or the phone in the owner's hand: nobody can
-   * approve it from anywhere else, only decline it.
+   * the Mac itself for app access. Phone access may be approved by the owner
+   * from any connected client.
    */
   /**
    * The requester approves or declines saved-login use from any signed-in client. Workspace consent covers websites and apps

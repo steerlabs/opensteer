@@ -33,7 +33,6 @@ import {
   type RunnerLocalStorageInventory,
   type RunnerOperationalReport,
   type RunnerToHostMessage,
-  type RunnerWorkspaceMount,
 } from "@opensteer/protocol";
 import { maxBrowserRelayEnvelopeBytes } from "@opensteer/protocol/browser-relay";
 import {
@@ -224,10 +223,7 @@ export interface RunnerAgentsConnection {
     readonly service: LocalWorkspaceService;
   };
   readonly runtime: RunnerRuntime;
-  /** What this Runner can actually reach, which is not always what it was
-   * configured to want: a missing PortableFS mount degrades to local-only. */
-  readonly workspaceBackings: readonly ("local-directory" | "portablefs")[];
-  readonly workspaceMounts: () => readonly RunnerWorkspaceMount[];
+  readonly workspaceBackings: readonly import("@opensteer/workspace").WorkspaceExecutionAccessPlan["kind"][];
 }
 
 export interface ReconnectingHostConnectionOptions {
@@ -726,7 +722,6 @@ export class ReconnectingHostConnection {
       maxConcurrentRuns: this.#config.maxConcurrentRuns,
       providerStateModes: [...agents.runtime.providerStateModes()],
       workspaceBackings: [...agents.workspaceBackings],
-      workspaceMounts: [...agents.workspaceMounts()],
     };
   }
 
@@ -1321,7 +1316,9 @@ class AgentsWorkSession implements RunnerWorkSession {
         void this.#answerAppRequest(message).catch(() => this.#options.fail("App response failed"));
         return;
       case "host.workspace.local.provision":
+      case "host.workspace.local.relocate":
       case "host.workspace.local.inspect":
+      case "host.workspace.local.specialist.remove":
       case "host.workspace.local.destroy":
       case "host.workspace.local.files.list":
       case "host.workspace.local.files.read":
@@ -1679,7 +1676,9 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
           });
           return;
         case "host.workspace.local.provision":
+        case "host.workspace.local.relocate":
         case "host.workspace.local.inspect":
+        case "host.workspace.local.specialist.remove":
         case "host.workspace.local.destroy":
         case "host.workspace.local.files.list":
         case "host.workspace.local.files.read":
@@ -2027,7 +2026,9 @@ function hostMessageFence(message: PostAuthenticationHostMessage): RunnerConnect
     case "host.app.stop":
     case "host.app.cancel":
     case "host.workspace.local.provision":
+    case "host.workspace.local.relocate":
     case "host.workspace.local.inspect":
+    case "host.workspace.local.specialist.remove":
     case "host.workspace.local.destroy":
     case "host.workspace.local.files.list":
     case "host.workspace.local.files.read":

@@ -12,14 +12,6 @@ function onPlatform(
     deploymentId: createId("deployment"),
     mayRunAgents: true,
     platform,
-    portableFs: {
-      binaryPath: null,
-      detail: "Not installed",
-      installAvailable: false,
-      issue: null,
-      state: "missing",
-      version: null,
-    },
     runAgents: false,
     runner: {
       detail: "Off",

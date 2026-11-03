@@ -333,11 +333,14 @@ describe("RunnerAuthenticator identity refusals", () => {
         agents: {
           environmentIds: [environmentId],
           harnessDrivers: [],
-          localStorage: null,
+          localStorage: {
+            storageAuthorityId: createId("storageAuthority"),
+            bindings: [],
+            truncated: false,
+          },
           maxConcurrentRuns: 1,
           providerStateModes: ["isolated"],
-          workspaceBackings: ["portablefs"],
-          workspaceMounts: [],
+          workspaceBackings: ["local-directory"],
         },
         browser: { runtimeId: "older-browser" },
         integrations: { platform: "darwin" },

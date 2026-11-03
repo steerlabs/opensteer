@@ -402,14 +402,15 @@ interface ActiveTurn {
 }
 
 interface ClaudeSkillPlugin {
-  readonly path: string;
+  readonly paths: readonly string[];
   readonly skills: readonly string[];
+  readonly projectRoot: string;
 }
 
 /**
- * Claude loads Agent Skills only through a plugin, so the vendor-neutral plan
- * is wrapped here in one synthetic plugin whose skills link to the resolved
- * directories. Claude retains skill paths across Runs of a provider session, so
+ * Each real namespace gets a synthetic plugin. Loose skills live in a private
+ * project config root so Claude exposes their bare names without ambient settings.
+ * Claude retains skill paths across Runs of a provider session, so
  * the wrapper is rebuilt in place inside the deterministic per-Thread directory
  * the Runner supplies.
  */
@@ -440,24 +441,32 @@ async function synthesizeSkillPlugin(
 ): Promise<ClaudeSkillPlugin | undefined> {
   const selected = context.skills?.skills ?? [];
   if (selected.length === 0) return undefined;
-  const path = join(context.threadStateDirectory, "claude-plugin");
-  await rm(path, { force: true, recursive: true });
-  await mkdir(join(path, ".claude-plugin"), { mode: 0o700, recursive: true });
-  await writeFile(
-    join(path, ".claude-plugin", "plugin.json"),
-    JSON.stringify({ name: "opensteer", version: "1.0.0" }),
-    { flag: "wx", mode: 0o600 },
-  );
-  await mkdir(join(path, "skills"), { mode: 0o700 });
-  for (const skill of selected) {
-    await symlink(skill.path, join(path, "skills", skill.name), "dir");
+  const root = join(context.threadStateDirectory, "claude-plugin");
+  await rm(root, { force: true, recursive: true });
+  const paths: string[] = [];
+  const projectRoot = join(root, "loose");
+  await mkdir(join(projectRoot, ".claude", "skills"), { recursive: true, mode: 0o700 });
+  for (const namespace of new Set(selected.map((skill) => skill.plugin))) {
+    if (namespace === null) {
+      for (const skill of selected.filter((skill) => skill.plugin === null)) {
+        await symlink(skill.path, join(projectRoot, ".claude", "skills", skill.localName), "dir");
+      }
+      continue;
+    }
+    const path = join(root, namespace);
+    await mkdir(join(path, ".claude-plugin"), { mode: 0o700, recursive: true });
+    await writeFile(
+      join(path, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: namespace, version: "1.0.0" }),
+      { mode: 0o600 },
+    );
+    await mkdir(join(path, "skills"), { mode: 0o700 });
+    for (const skill of selected.filter((skill) => skill.plugin === namespace)) {
+      await symlink(skill.path, join(path, "skills", skill.localName), "dir");
+    }
+    paths.push(await realpath(path));
   }
-  return Object.freeze({
-    // Claude reports the canonical plugin path back in its init message, which
-    // the runtime boundary check compares against.
-    path: await realpath(path),
-    skills: Object.freeze(selected.map(({ name }) => `opensteer:${name}`)),
-  });
+  return { paths, projectRoot, skills: selected.map((skill) => skill.fullName) };
 }
 
 /** Every Claude adapter runs with the same provider capabilities. */
@@ -2040,14 +2049,17 @@ class ClaudeHarnessSession implements HarnessSession {
       ...(access.allowDangerouslySkipPermissions ? { allowDangerouslySkipPermissions: true } : {}),
       ...(this.#skillPlugin
         ? {
-            plugins: [
-              { path: this.#skillPlugin.path, skipMcpDiscovery: true, type: "local" as const },
-            ],
+            plugins: this.#skillPlugin.paths.map((path) => ({
+              path,
+              skipMcpDiscovery: true,
+              type: "local" as const,
+            })),
             skills: [...this.#skillPlugin.skills],
           }
         : { skills: [] }),
       persistSession: true,
-      settingSources: [],
+      ...(this.#skillPlugin ? { projectConfigRoot: this.#skillPlugin.projectRoot } : {}),
+      settingSources: this.#skillPlugin ? ["project"] : [],
       strictMcpConfig: true,
       systemPrompt: {
         append: systemAppend,
@@ -2840,7 +2852,8 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     const unexpectedPlugins = message.plugins.filter(
       ({ name, path }) =>
-        path !== this.#skillPlugin?.path && !(path === "builtin" && claudeBuiltinPlugins.has(name)),
+        !this.#skillPlugin?.paths.includes(path) &&
+        !(path === "builtin" && claudeBuiltinPlugins.has(name)),
     );
     if (unexpectedPlugins.length > 0) {
       this.#markUnusable(

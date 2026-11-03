@@ -18,7 +18,7 @@ For Full Disk Access, use the explicit Open System Settings action and have the 
 it to the Runner's launching app. Do not confuse it with engine Full access or helper grants.
 
 For agent SSH commands and diagnosis, use the shipped
-[opensteer-computers skill](../../../apps/runner/agent-skills/skills/opensteer-computers/SKILL.md).
+[opensteer:computers skill](../../../apps/runner/agent-skills/skills/computers/SKILL.md).
 Use the current Run inventory and generated host-key pins; never disable host-key checks.
 Distinguish SFTP shares from command authority and target-network forwarding. Report policy
 refusals instead of bypassing them. Keep local SSH alive while remote work runs; ending the

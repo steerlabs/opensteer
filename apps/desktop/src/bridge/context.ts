@@ -185,10 +185,7 @@ export interface DesktopBridgeOptions {
     /** The chosen folder, or null when the dialog was closed without one. */
     readonly pickFolder: () => Promise<string | null>;
   };
-  readonly runner: Pick<
-    LocalRunnerService,
-    "portableFs" | "remove" | "start" | "status" | "subscribe"
-  >;
+  readonly runner: Pick<LocalRunnerService, "remove" | "start" | "status" | "subscribe">;
 }
 
 export interface DesktopBridgeContext {

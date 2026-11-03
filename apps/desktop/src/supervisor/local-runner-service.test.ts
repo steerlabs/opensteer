@@ -303,19 +303,13 @@ describe("LocalRunnerService", () => {
     const targets = mutableTargetAuthority();
     const target = targets.add("https://browser.opensteer.test");
     const stop = vi.fn(async () => undefined);
-    const running = fixture(
-      await configuration(directory),
-      targets,
-      undefined,
-      undefined,
-      async (input) => ({
-        bridgeToken: "t".repeat(43),
-        signIn: false,
-        runtimeId: input.runtimeId,
-        stop,
-        url: new URL("http://127.0.0.1:7777/"),
-      }),
-    );
+    const running = fixture(await configuration(directory), targets, undefined, async (input) => ({
+      bridgeToken: "t".repeat(43),
+      signIn: false,
+      runtimeId: input.runtimeId,
+      stop,
+      url: new URL("http://127.0.0.1:7777/"),
+    }));
 
     const start = running.service.start(startInput(target.deploymentId));
     await eventually(() => running.children.length === 1);
@@ -333,22 +327,16 @@ describe("LocalRunnerService", () => {
     const first = targets.add("https://first-log.opensteer.test");
     const second = targets.add("https://second-log.opensteer.test");
     const inputs: Parameters<NonNullable<LocalRunnerServiceDependencies["browser"]>>[0][] = [];
-    const running = fixture(
-      await configuration(directory),
-      targets,
-      undefined,
-      undefined,
-      async (input) => {
-        inputs.push(input);
-        return {
-          bridgeToken: "t".repeat(43),
-          signIn: false,
-          runtimeId: input.runtimeId,
-          stop: async () => undefined,
-          url: new URL("http://127.0.0.1:7777/"),
-        };
-      },
-    );
+    const running = fixture(await configuration(directory), targets, undefined, async (input) => {
+      inputs.push(input);
+      return {
+        bridgeToken: "t".repeat(43),
+        signIn: false,
+        runtimeId: input.runtimeId,
+        stop: async () => undefined,
+        url: new URL("http://127.0.0.1:7777/"),
+      };
+    });
 
     const starts = [first, second].map(({ deploymentId }) =>
       running.service.start(startInput(deploymentId)),
@@ -381,11 +369,10 @@ describe("LocalRunnerService", () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const personal = targets.add("https://studio.connect.opensteer.test", "personal");
-    const portableFs = readyPortableFs(path.join(directory, "portablefs"));
     // A Mac that is only reachable never looks for the agent runtime.
     await rm(path.join(directory, "agent-skills"), { force: true, recursive: true });
     await rm(path.join(directory, "browser-harness"), { force: true });
-    const running = fixture(await configuration(directory), targets, portableFs);
+    const running = fixture(await configuration(directory), targets);
 
     const start = running.service.start(startInput(personal.deploymentId, "Studio Mac", false));
     await eventually(() => running.children.length === 1);
@@ -411,12 +398,10 @@ describe("LocalRunnerService", () => {
       "OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH",
       "OPENSTEER_LOCAL_WORKSPACE_ROOT",
       "OPENSTEER_MAX_CONCURRENT_RUNS",
-      "OPENSTEER_PORTABLEFS_MOUNT_BINARY",
       "OPENSTEER_RUNNER_WORKSPACE_BACKINGS",
     ]) {
       expect(child.environment[name]).toBeUndefined();
     }
-    expect(portableFs.requireReadyBinary).not.toHaveBeenCalled();
 
     // The slot is durable, so the app brings the same reach-only Runner back.
     const preference = JSON.parse(
@@ -434,7 +419,7 @@ describe("LocalRunnerService", () => {
     await stopping;
     running.service.dispose();
 
-    const relaunched = fixture(await configuration(directory), targets, portableFs);
+    const relaunched = fixture(await configuration(directory), targets);
     await expect(relaunched.service.status(personal.deploymentId)).resolves.toMatchObject({
       mayRunAgents: false,
       runAgents: false,
@@ -550,7 +535,7 @@ describe("LocalRunnerService", () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const target = targets.add("https://half-joined.opensteer.test");
-    const firstRun = fixture(await configuration(directory), targets, undefined, () => 0);
+    const firstRun = fixture(await configuration(directory), targets, () => 0);
 
     const start = firstRun.service.start(startInput(target.deploymentId));
     const startOutcome = start.then(
@@ -567,7 +552,7 @@ describe("LocalRunnerService", () => {
     await startOutcome;
     firstRun.service.dispose();
 
-    const relaunched = fixture(await configuration(directory), targets, undefined, () => 0);
+    const relaunched = fixture(await configuration(directory), targets, () => 0);
     await relaunched.service.startIfEnabled();
 
     // The token is never written down, so retrying it is a loop with a dead
@@ -602,19 +587,13 @@ describe("LocalRunnerService", () => {
     const stop = vi.fn(async () => {
       filesPresentAtBrowserStop = existsSync(dataDirectory);
     });
-    const running = fixture(
-      await configuration(directory),
-      targets,
-      undefined,
-      undefined,
-      async (input) => ({
-        bridgeToken: "t".repeat(43),
-        signIn: false,
-        runtimeId: input.runtimeId,
-        stop,
-        url: new URL("http://127.0.0.1:7788/"),
-      }),
-    );
+    const running = fixture(await configuration(directory), targets, undefined, async (input) => ({
+      bridgeToken: "t".repeat(43),
+      signIn: false,
+      runtimeId: input.runtimeId,
+      stop,
+      url: new URL("http://127.0.0.1:7788/"),
+    }));
     const start = running.service.start(startInput(target.deploymentId));
     await eventually(() => running.children.length === 1);
     const child = childAt(running.children, 0);
@@ -646,22 +625,16 @@ describe("LocalRunnerService", () => {
     // slot's record of that shutdown is the only thing keeping the profiles
     // in place until the browser has really let go of them.
     let filesPresentAtBrowserStop: boolean | undefined;
-    const running = fixture(
-      await configuration(directory),
-      targets,
-      undefined,
-      undefined,
-      async (input) => ({
-        bridgeToken: "t".repeat(43),
-        signIn: false,
-        runtimeId: input.runtimeId,
-        stop: async () => {
-          await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 50));
-          filesPresentAtBrowserStop = existsSync(dataDirectory);
-        },
-        url: new URL("http://127.0.0.1:7799/"),
-      }),
-    );
+    const running = fixture(await configuration(directory), targets, undefined, async (input) => ({
+      bridgeToken: "t".repeat(43),
+      signIn: false,
+      runtimeId: input.runtimeId,
+      stop: async () => {
+        await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 50));
+        filesPresentAtBrowserStop = existsSync(dataDirectory);
+      },
+      url: new URL("http://127.0.0.1:7799/"),
+    }));
     const start = running.service.start(startInput(target.deploymentId));
     const startOutcome = start.then(
       () => null,
@@ -685,17 +658,10 @@ describe("LocalRunnerService", () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const target = targets.add("https://stubborn.opensteer.test");
-    const running = fixture(
-      await configuration(directory),
-      targets,
-      undefined,
-      undefined,
-      undefined,
-      {
-        stopTimeouts: { forcedMs: 20, gracefulMs: 20, removalMs: 10_000 },
-        stubborn: true,
-      },
-    );
+    const running = fixture(await configuration(directory), targets, undefined, undefined, {
+      stopTimeouts: { forcedMs: 20, gracefulMs: 20, removalMs: 10_000 },
+      stubborn: true,
+    });
     const start = running.service.start(startInput(target.deploymentId));
     const startOutcome = start.then(
       () => null,
@@ -728,17 +694,10 @@ describe("LocalRunnerService", () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const target = targets.add("https://slow-exit.opensteer.test");
-    const running = fixture(
-      await configuration(directory),
-      targets,
-      undefined,
-      undefined,
-      undefined,
-      {
-        stopTimeouts: { forcedMs: 20, gracefulMs: 20, removalMs: 10_000 },
-        stubborn: true,
-      },
-    );
+    const running = fixture(await configuration(directory), targets, undefined, undefined, {
+      stopTimeouts: { forcedMs: 20, gracefulMs: 20, removalMs: 10_000 },
+      stubborn: true,
+    });
     const start = running.service.start(startInput(target.deploymentId));
     await eventually(() => running.children.length === 1);
     const child = childAt(running.children, 0);
@@ -768,17 +727,10 @@ describe("LocalRunnerService", () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const target = targets.add("https://never-exits.opensteer.test");
-    const running = fixture(
-      await configuration(directory),
-      targets,
-      undefined,
-      undefined,
-      undefined,
-      {
-        stopTimeouts: { forcedMs: 20, gracefulMs: 20, removalMs: 40 },
-        stubborn: true,
-      },
-    );
+    const running = fixture(await configuration(directory), targets, undefined, undefined, {
+      stopTimeouts: { forcedMs: 20, gracefulMs: 20, removalMs: 40 },
+      stubborn: true,
+    });
     const start = running.service.start(startInput(target.deploymentId));
     void start.catch(() => undefined);
     await eventually(() => running.children.length === 1);
@@ -797,7 +749,7 @@ describe("LocalRunnerService", () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const target = targets.add("https://revoked.opensteer.test");
-    const running = fixture(await configuration(directory), targets, undefined, () => 0);
+    const running = fixture(await configuration(directory), targets, () => 0);
     const start = running.service.start(startInput(target.deploymentId));
     await eventually(() => running.children.length === 1);
     const child = childAt(running.children, 0);
@@ -859,7 +811,7 @@ describe("LocalRunnerService", () => {
     expect(running.fork).toHaveBeenCalledTimes(1);
   });
 
-  it("runs agents on a local-first computer when shared storage is unavailable", async () => {
+  it("runs agents with local-directory Workspace storage", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const target = targets.add(
@@ -867,16 +819,13 @@ describe("LocalRunnerService", () => {
       "server",
       "local-directory",
     );
-    const portableFs = readyPortableFs(path.join(directory, "portablefs"));
-    portableFs.requireReadyBinary.mockRejectedValue(new Error("PortableFS is unavailable"));
-    const running = fixture(await configuration(directory), targets, portableFs);
+    const running = fixture(await configuration(directory), targets);
 
     const start = running.service.start(startInput(target.deploymentId));
     await eventually(() => running.children.length === 1);
     const child = childAt(running.children, 0);
     expect(child.environment.OPENSTEER_DEFAULT_WORKSPACE_BACKING).toBe("local-directory");
     expect(child.environment.OPENSTEER_RUNNER_WORKSPACE_BACKINGS).toBe("local-directory");
-    expect(child.environment.OPENSTEER_PORTABLEFS_MOUNT_BINARY).toBeUndefined();
     connect(child);
 
     await expect(start).resolves.toMatchObject({ runner: { state: "running" } });
@@ -1012,7 +961,7 @@ describe("LocalRunnerService", () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const target = targets.add("https://crash.opensteer.test");
-    const running = fixture(await configuration(directory), targets, undefined, () => 0);
+    const running = fixture(await configuration(directory), targets, () => 0);
 
     const start = running.service.start(startInput(target.deploymentId));
     await eventually(() => running.children.length === 1);
@@ -1062,7 +1011,7 @@ describe("LocalRunnerService", () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const target = targets.add("https://diagnostics.opensteer.test");
-    const running = fixture(await configuration(directory), targets, undefined, () => 10_000);
+    const running = fixture(await configuration(directory), targets, () => 10_000);
 
     const start = running.service.start(startInput(target.deploymentId));
     await eventually(() => running.children.length === 1);
@@ -1090,7 +1039,7 @@ describe("LocalRunnerService", () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const target = targets.add("https://crash-disabled.opensteer.test");
-    const running = fixture(await configuration(directory), targets, undefined, () => 50);
+    const running = fixture(await configuration(directory), targets, () => 50);
 
     const start = running.service.start(startInput(target.deploymentId));
     await eventually(() => running.children.length === 1);
@@ -1114,15 +1063,13 @@ describe("LocalRunnerService", () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const target = targets.add("https://first.opensteer.test");
-    const portableFs = readyPortableFs(path.join(directory, "portablefs"));
-    const running = fixture(await configuration(directory, false), targets, portableFs);
+    const running = fixture(await configuration(directory, false), targets);
 
     await expect(running.service.status(target.deploymentId)).resolves.toMatchObject({
       available: false,
       deploymentId: target.deploymentId,
       computerName: "Studio Mac",
       mayRunAgents: false,
-      portableFs: { state: "unsupported" },
       runAgents: false,
       runner: { state: "disabled" },
       schemaVersion: 4,
@@ -1131,7 +1078,6 @@ describe("LocalRunnerService", () => {
       "does not include local agent support",
     );
     expect(running.fork).not.toHaveBeenCalled();
-    expect(portableFs.status).not.toHaveBeenCalled();
   });
 
   it("gives every enrolled slot a computer-use bridge, agents or not", async () => {
@@ -1141,14 +1087,9 @@ describe("LocalRunnerService", () => {
     await rm(path.join(directory, "agent-skills"), { force: true, recursive: true });
     await rm(path.join(directory, "browser-harness"), { force: true });
     const computerUse = fakeComputerUse();
-    const running = fixture(
-      await configuration(directory),
-      targets,
-      readyPortableFs(path.join(directory, "portablefs")),
-      undefined,
-      undefined,
-      { computerUse },
-    );
+    const running = fixture(await configuration(directory), targets, undefined, undefined, {
+      computerUse,
+    });
 
     // `runAgents: false`. Computer use rides the `integrations` module a
     // reach-only Runner already has, so it must not be gated on agents.
@@ -1203,7 +1144,6 @@ function fakeComputerUse(
 function fixture(
   config: DesktopConfiguration,
   targets: DesktopLocalRunnerTargetAuthority,
-  portableFs = readyPortableFs(path.join(config.dataDirectory, "portablefs")),
   restartDelayMs?: (attempt: number) => number,
   browser?: LocalRunnerServiceDependencies["browser"],
   options: {
@@ -1237,7 +1177,6 @@ function fixture(
       fork,
       inspectIdentity: async (dataDirectory: string) => readTestIdentity(dataDirectory),
       homeDirectory: config.dataDirectory,
-      portableFs,
       ...(restartDelayMs ? { restartDelayMs } : {}),
       runtimeRelease: testRuntimeRelease(config.dataDirectory),
       ...(options.stopTimeouts ? { stopTimeouts: options.stopTimeouts } : {}),
@@ -1251,7 +1190,7 @@ function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
   add(
     hostUrl: string,
     kind?: "personal" | "server",
-    defaultWorkspaceBacking?: "local-directory" | "portablefs",
+    defaultWorkspaceBacking?: "local-directory",
   ): DesktopLocalRunnerTarget;
   changeRoute(deploymentId: DeploymentId, hostUrl: string): void;
   notify(): void;
@@ -1260,7 +1199,7 @@ function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
   const targets = new Map<DeploymentId, DesktopLocalRunnerTarget>();
   const listeners = new Set<() => void>();
   return {
-    add: (hostUrl, kind = "server", defaultWorkspaceBacking = "portablefs") => {
+    add: (hostUrl, kind = "server", defaultWorkspaceBacking = "local-directory") => {
       const deploymentId = createId("deployment");
       const target: DesktopLocalRunnerTarget = {
         deploymentId,
@@ -1411,24 +1350,6 @@ function childAt(children: readonly FakeUtilityProcess[], index: number): FakeUt
   return child;
 }
 
-function readyPortableFs(binaryPath: string) {
-  const snapshot = {
-    binaryPath,
-    detail: "Ready for the first mount.",
-    installAvailable: true,
-    issue: null,
-    state: "ready-to-mount" as const,
-    version: "3.1.0",
-  };
-  return {
-    acknowledgeApproval: vi.fn(async () => snapshot),
-    install: vi.fn(async () => snapshot),
-    openSetup: vi.fn(async () => snapshot),
-    requireReadyBinary: vi.fn(async () => binaryPath),
-    status: vi.fn(async () => snapshot),
-  };
-}
-
 async function configuration(
   directory: string,
   localExecutionEnabled = true,
@@ -1464,8 +1385,6 @@ async function configuration(
       dataDirectory: path.join(directory, "runner"),
       enabled: localExecutionEnabled,
       nativeFsHelperBinary: helper,
-      portableFsBinary: undefined,
-      portableFsInstaller: undefined,
       runnerWorkerPath: worker,
     },
     mode: "test",

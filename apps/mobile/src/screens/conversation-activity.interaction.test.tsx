@@ -341,7 +341,7 @@ describe("Run details", () => {
 
   it("opens the exact browser tab used by this reply even when another tab is viewed", () => {
     const browser = {
-      access: "full-control",
+      access: "read-write",
       attachedRunIds: [],
       dialog: null,
       error: null,

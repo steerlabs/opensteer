@@ -276,6 +276,10 @@ func (root *workspaceRoot) openParent(parts []string, create bool) (nodeHandle, 
 				closeNode(current)
 				return -1, "", mkdirErr
 			}
+			if err := unix.Fsync(int(current)); err != nil {
+				closeNode(current)
+				return -1, "", err
+			}
 			next, openErr = root.openDirectoryAt(current, part)
 		}
 		if openErr != nil {

@@ -12,13 +12,13 @@ function workspace(status: Workspace["status"] = "deleting"): Workspace {
       ownerEnvironmentId: createId("environment"),
       storageAuthorityId: createId("storageAuthority"),
     },
-    capacityPolicy: { kind: "host-filesystem" },
+
     createdAt: now,
     createdBy: createId("user"),
     homeThreadId: null,
     icon: null,
     id: createId("workspace"),
-    kind: "specialized",
+    kind: "project",
     name: "Delete me",
     status,
     storageIssue: null,
@@ -39,12 +39,8 @@ describe("WorkspaceDeletionService", () => {
     const terminateRuns = vi.fn(async () => {
       order.push("runs");
     });
-    const revokeWorkspace = vi.fn(async () => {
-      order.push("mounts");
-    });
     const now = new Date("2026-08-20T12:00:00.000Z");
     const service = serviceWith({
-      mounts: { revokeWorkspace },
       now: () => now,
       onWorkspaceEvent,
       requestWorkspaceDeletion,
@@ -59,8 +55,29 @@ describe("WorkspaceDeletionService", () => {
       workspaceId: held.id,
     });
     expect(order[0]).toBe("held");
-    expect(order.slice(1).sort()).toEqual(["mounts", "runs"]);
+    expect(order.slice(1).sort()).toEqual(["runs"]);
     expect(onWorkspaceEvent).toHaveBeenCalledWith(requestEvent);
+  });
+
+  it("never destroys unsupported stored backing data or marks it deleted", async () => {
+    const legacy = {
+      ...workspace(),
+      backing: { kind: "retired-storage", volumeId: "keep-user-data" },
+    } as never as Workspace;
+    const destroy = vi.fn();
+    const markWorkspaceDeleted = vi.fn();
+    const onError = vi.fn();
+    const service = serviceWith({
+      destroy,
+      markWorkspaceDeleted,
+      onError,
+      listWorkspacesDuePurge: async () => [legacy],
+    });
+    await service.purgeDue(new Date());
+    expect(destroy).not.toHaveBeenCalled();
+    expect(markWorkspaceDeleted).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), legacy.id);
+    expect(legacy.backing).toEqual({ kind: "retired-storage", volumeId: "keep-user-data" });
   });
 
   it("marks only successfully destroyed Workspaces deleted and continues after errors", async () => {
@@ -92,7 +109,6 @@ function serviceWith(overrides: Record<string, unknown> = {}): WorkspaceDeletion
     readonly destroy?: (input: { readonly workspace: Workspace }) => Promise<void>;
     readonly listWorkspacesDuePurge?: () => Promise<readonly Workspace[]>;
     readonly markWorkspaceDeleted?: () => Promise<Workspace>;
-    readonly mounts?: { readonly revokeWorkspace: () => Promise<void> };
     readonly now?: () => Date;
     readonly onError?: (error: unknown, workspaceId: Workspace["id"]) => void;
     readonly onWorkspaceEvent?: (event: never) => void;
@@ -104,7 +120,6 @@ function serviceWith(overrides: Record<string, unknown> = {}): WorkspaceDeletion
   };
   return new WorkspaceDeletionService({
     drivers: { local: { destroy: values.destroy ?? vi.fn(async () => undefined) } },
-    ...(values.mounts ? { mounts: values.mounts as never } : {}),
     ...(values.now ? { now: values.now } : {}),
     onError: values.onError ?? vi.fn(),
     onWorkspaceEvent: values.onWorkspaceEvent ?? vi.fn(),

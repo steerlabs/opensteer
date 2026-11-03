@@ -26,7 +26,6 @@ import {
   McpOAuthAttemptIdSchema,
   IntegrationProviderApplicationIdSchema,
   IntegrationServerIdSchema,
-  IntegrationSkillIdSchema,
   IntegrationToolIdSchema,
 } from "./ids.js";
 
@@ -600,7 +599,8 @@ export const IntegrationInstallationSchema = z.strictObject({
   name: IntegrationSlugSchema,
   provenance: JsonObjectSchema,
   revision: z.number().int().positive(),
-  sourceKind: z.enum(["agent-plugin", "built-in", "proposed", "remote-mcp"]),
+  pluginId: z.string().nullable().optional(),
+  sourceKind: z.enum(["plugin", "built-in", "proposed", "remote-mcp"]),
   status: z.enum(["active", "disabled", "needs-attention"]),
   title: z.string().trim().min(1).max(160),
   trust: IntegrationTrustSchema,
@@ -612,6 +612,14 @@ export type IntegrationInstallation = z.infer<typeof IntegrationInstallationSche
 
 const localMcpLaunchShapes = {
   stdio: {
+    pluginId: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]+$/u)
+      .optional(),
+    packageDigest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .optional(),
     args: z.array(z.string().max(32_768)).max(256),
     command: z.string().min(1).max(4_096),
     cwd: z.string().min(1).max(4_096),
@@ -619,6 +627,14 @@ const localMcpLaunchShapes = {
     type: z.literal("stdio"),
   },
   http: {
+    pluginId: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]+$/u)
+      .optional(),
+    packageDigest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .optional(),
     headers: z.record(z.string().max(256), z.string().max(8_192)),
     type: z.literal("streamable-http"),
     url: z.url().refine((value) => {
@@ -741,21 +757,6 @@ export interface IntegrationToolCatalog {
   readonly definitions: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   readonly tools: readonly IntegrationToolMaterial[];
 }
-
-export const IntegrationSkillSchema = z.strictObject({
-  description: z.string().trim().min(1).max(1_024),
-  digest: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
-  id: IntegrationSkillIdSchema,
-  installationId: IntegrationInstallationIdSchema,
-  name: z
-    .string()
-    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u)
-    .max(64),
-  status: z.enum(["active", "disabled"]),
-  updatedAt: IsoDateTimeSchema,
-});
-const IntegrationSkillViewSchema = z.object(IntegrationSkillSchema.shape);
-export type IntegrationSkill = z.infer<typeof IntegrationSkillSchema>;
 
 export const IntegrationGrantSchema = z.strictObject({
   access: IntegrationAccessSchema,
@@ -1238,7 +1239,6 @@ export const IntegrationPlatformDashboardSchema = z.strictObject({
       z.strictObject({
         installation: IntegrationInstallationSchema,
         servers: z.array(IntegrationServerSummarySchema).max(100),
-        skills: z.array(IntegrationSkillSchema).max(1_000),
         tools: z.array(IntegrationToolSchema).max(5_000),
       }),
     )
@@ -1256,7 +1256,6 @@ export const IntegrationPlatformDashboardViewSchema = z.object({
         ...IntegrationPlatformDashboardSchema.shape.installations.element.shape,
         installation: IntegrationInstallationViewSchema,
         servers: z.array(IntegrationServerSummaryViewSchema).max(100),
-        skills: z.array(IntegrationSkillViewSchema).max(1_000),
         tools: z.array(IntegrationToolViewSchema).max(5_000),
       }),
     )

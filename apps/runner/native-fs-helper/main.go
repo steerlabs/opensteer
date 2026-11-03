@@ -25,6 +25,7 @@ const (
 )
 
 type request struct {
+	Destination               string                   `json:"destination,omitempty"`
 	CaseSensitive             bool                     `json:"caseSensitive,omitempty"`
 	Content                   string                   `json:"content,omitempty"`
 	ExpectedDirectoryRevision string                   `json:"expectedDirectoryRevision,omitempty"`
@@ -267,6 +268,8 @@ func executeWithRootPolicy(input request, allowNonMountRoot bool) (any, error) {
 			"containment":    root.containment,
 			"platform":       runtime.GOOS,
 		}, nil
+	case "relocate-directory":
+		return root.relocateDirectory(input)
 	case "directory-identity":
 		return executeDirectoryIdentity(root, input)
 	case "ensure-directory":

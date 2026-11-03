@@ -45,21 +45,32 @@ const FilesystemIdentitySchema = NativeDirectoryIdentitySchema;
 export type FilesystemIdentity = NativeDirectoryIdentity;
 
 const ProvisionFingerprintSchema = z.strictObject({
+  slug: z
+    .string()
+    .regex(/^[a-z0-9][a-z0-9-]{0,127}$/)
+    .optional(),
   createdBy: UserIdSchema,
-  kind: WorkspaceKindSchema,
+  kind: z.preprocess((value) => (value === "specialized" ? "project" : value), WorkspaceKindSchema),
   ownerEnvironmentId: EnvironmentIdSchema,
   workspaceId: WorkspaceIdSchema,
 });
 export type ProvisionFingerprint = z.infer<typeof ProvisionFingerprintSchema>;
 
 const RegistryBindingBaseSchema = z.strictObject({
+  relocation: z
+    .strictObject({
+      source: z.array(RelativeSegmentSchema).min(1).max(4),
+      target: z.array(RelativeSegmentSchema).min(1).max(4),
+      state: z.enum(["planned", "renamed", "bound", "blocked"]),
+    })
+    .optional(),
   bindingId: WorkspaceBindingIdSchema,
   createdBy: UserIdSchema,
   generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   idempotencyKey: z.string().min(1).max(512),
   ownerEnvironmentId: EnvironmentIdSchema,
   provisionFingerprint: ProvisionFingerprintSchema,
-  relativeSegments: z.array(RelativeSegmentSchema).min(1).max(3),
+  relativeSegments: z.array(RelativeSegmentSchema).min(1).max(4),
   workspaceId: WorkspaceIdSchema,
 });
 
@@ -101,6 +112,7 @@ export interface LocalStorageInventory {
   bindings: {
     bindingId: WorkspaceBindingId;
     generation: number;
+    path: string;
     state: RegistryBinding["state"];
     workspaceId: WorkspaceId;
   }[];
@@ -140,7 +152,7 @@ export type LocalWorkspaceNamespace =
 export interface LocalWorkspaceRegistryOptions {
   readonly filesystemAuthority?: Pick<
     NativeFilesystem,
-    "directoryIdentity" | "ensureDirectory" | "ensureRoot" | "list"
+    "directoryIdentity" | "ensureDirectory" | "ensureRoot" | "list" | "relocateDirectory"
   >;
   readonly legacyRegistryFilePath?: string;
   readonly namespace: LocalWorkspaceNamespace;
@@ -277,12 +289,32 @@ export class LocalWorkspaceRegistry {
             createdBy: input.fingerprint.createdBy,
             id: input.fingerprint.workspaceId,
             kind: input.fingerprint.kind,
+            ...(input.fingerprint.slug ? { slug: input.fingerprint.slug } : {}),
           },
           this.#options.namespace.kind,
         ),
       ];
+      if (input.fingerprint.kind === "project" && input.fingerprint.slug) {
+        const main = document.bindings.find(
+          (binding) =>
+            binding.provisionFingerprint.kind === "main" &&
+            binding.createdBy === input.fingerprint.createdBy &&
+            binding.ownerEnvironmentId === input.fingerprint.ownerEnvironmentId &&
+            binding.state === "ready",
+        );
+        if (!main || main.state !== "ready") {
+          throw new LocalWorkspaceError({
+            code: LocalWorkspaceErrorCode.workspaceConflict,
+            message: "A Project requires its owner's ready Main on this storage authority.",
+          });
+        }
+        await this.#assertWorkspaceIdentity(main);
+      }
       const pathCollision = document.bindings.find((binding) =>
-        equalSegments(binding.relativeSegments, relativeSegments),
+        equalSegments(
+          binding.relativeSegments.map((segment) => segment.toLowerCase()),
+          relativeSegments.map((segment) => segment.toLowerCase()),
+        ),
       );
       if (pathCollision !== undefined) {
         throw new LocalWorkspaceError({
@@ -325,6 +357,313 @@ export class LocalWorkspaceRegistry {
     });
   }
 
+  async relocate(input: {
+    readonly bindingId: WorkspaceBindingId;
+    readonly workspaceId: WorkspaceId;
+    readonly generation: number;
+    readonly slug: string | null;
+    readonly adopt?: boolean;
+    readonly createdBy?: ProvisionFingerprint["createdBy"];
+    readonly ownerEnvironmentId?: EnvironmentId;
+    readonly signal?: AbortSignal;
+  }): Promise<void> {
+    await withRegistryWriteLock(this.#options.registryFilePath, async () => {
+      let document = await this.#readOrCreateRegistry(input.signal);
+      let binding = document.bindings.find((candidate) => candidate.bindingId === input.bindingId);
+      if (input.slug === null) {
+        if (!input.adopt || !input.createdBy || !input.ownerEnvironmentId)
+          throw new LocalWorkspaceError({
+            code: LocalWorkspaceErrorCode.workspaceConflict,
+            message: "Main adoption requires explicit confirmation and its owner.",
+          });
+        assertOwnerAllowed(this.#options.namespace, input.ownerEnvironmentId);
+        if (binding) {
+          if (
+            binding.state !== "ready" ||
+            binding.workspaceId !== input.workspaceId ||
+            binding.generation !== input.generation ||
+            binding.createdBy !== input.createdBy ||
+            binding.ownerEnvironmentId !== input.ownerEnvironmentId ||
+            binding.provisionFingerprint.kind !== "main"
+          )
+            throw new LocalWorkspaceError({
+              code: LocalWorkspaceErrorCode.workspaceMismatch,
+              message: "Main binding does not match adoption.",
+            });
+          await this.#assertWorkspaceIdentity(binding);
+          return;
+        }
+        const fingerprint: ProvisionFingerprint = {
+          kind: "main",
+          createdBy: input.createdBy,
+          ownerEnvironmentId: input.ownerEnvironmentId,
+          workspaceId: input.workspaceId,
+        };
+        const target = [
+          ...workspacePathSegments(
+            { createdBy: input.createdBy, id: input.workspaceId, kind: "main" },
+            this.#options.namespace.kind,
+          ),
+        ];
+        if (
+          document.bindings.some(
+            (candidate) =>
+              candidate.workspaceId === input.workspaceId ||
+              (candidate.createdBy === input.createdBy &&
+                candidate.provisionFingerprint.kind === "main") ||
+              equalSegments(
+                candidate.relativeSegments.map((segment) => segment.toLowerCase()),
+                target.map((segment) => segment.toLowerCase()),
+              ),
+          )
+        )
+          throw new LocalWorkspaceError({
+            code: LocalWorkspaceErrorCode.workspaceConflict,
+            message: "Main is already bound.",
+          });
+        const filesystemIdentity = await this.#readDirectoryIdentity(target);
+        const adopted: ReadyRegistryBinding = {
+          bindingId: input.bindingId,
+          generation: input.generation,
+          createdBy: input.createdBy,
+          ownerEnvironmentId: input.ownerEnvironmentId,
+          workspaceId: input.workspaceId,
+          idempotencyKey: `workspace:${input.workspaceId}:adopt:v1`,
+          state: "ready",
+          filesystemIdentity,
+          relativeSegments: target,
+          provisionFingerprint: fingerprint,
+        };
+        await writeRegistryAtomic(
+          this.#options.registryFilePath,
+          nextDocument(document, [...document.bindings, adopted]),
+        );
+        return;
+      }
+      if (!binding && input.adopt && input.createdBy && input.ownerEnvironmentId) {
+        const main = document.bindings.find(
+          (candidate) =>
+            candidate.state === "ready" &&
+            candidate.createdBy === input.createdBy &&
+            candidate.provisionFingerprint.kind === "main",
+        );
+        if (!main || main.state !== "ready")
+          throw new LocalWorkspaceError({
+            code: LocalWorkspaceErrorCode.workspaceConflict,
+            message: "Main must be ready before adoption.",
+          });
+        if (
+          main.ownerEnvironmentId !== input.ownerEnvironmentId ||
+          document.bindings.some((candidate) => candidate.workspaceId === input.workspaceId)
+        )
+          throw new LocalWorkspaceError({
+            code: LocalWorkspaceErrorCode.workspaceConflict,
+            message: "This Project already has a binding or Main belongs to another environment.",
+          });
+        const target = [
+          ...main.relativeSegments,
+          "Projects",
+          RelativeSegmentSchema.parse(input.slug),
+        ];
+        await this.#assertWorkspaceIdentity(main);
+        if (
+          document.bindings.some((candidate) =>
+            equalSegments(
+              candidate.relativeSegments.map((s) => s.toLowerCase()),
+              target.map((s) => s.toLowerCase()),
+            ),
+          )
+        )
+          throw new LocalWorkspaceError({
+            code: LocalWorkspaceErrorCode.workspaceConflict,
+            message: "Target is already bound.",
+          });
+        const filesystemIdentity = await this.#readDirectoryIdentity(target);
+        const adopted: ReadyRegistryBinding = {
+          bindingId: input.bindingId,
+          generation: input.generation,
+          createdBy: input.createdBy,
+          ownerEnvironmentId: input.ownerEnvironmentId,
+          workspaceId: input.workspaceId,
+          idempotencyKey: `workspace:${input.workspaceId}:adopt:v1`,
+          state: "ready",
+          filesystemIdentity,
+          relativeSegments: target,
+          provisionFingerprint: {
+            createdBy: input.createdBy,
+            ownerEnvironmentId: input.ownerEnvironmentId,
+            workspaceId: input.workspaceId,
+            kind: "project",
+            slug: input.slug,
+          },
+        };
+        await writeRegistryAtomic(
+          this.#options.registryFilePath,
+          nextDocument(document, [...document.bindings, adopted]),
+        );
+        return;
+      }
+      if (
+        !binding ||
+        binding.state !== "ready" ||
+        binding.workspaceId !== input.workspaceId ||
+        binding.generation !== input.generation ||
+        binding.provisionFingerprint.kind !== "project"
+      ) {
+        throw new LocalWorkspaceError({
+          code: LocalWorkspaceErrorCode.workspaceMismatch,
+          message: "Project binding does not match relocation.",
+        });
+      }
+      const main = document.bindings.find(
+        (candidate) =>
+          candidate.state === "ready" &&
+          candidate.provisionFingerprint.kind === "main" &&
+          candidate.createdBy === binding!.createdBy &&
+          candidate.ownerEnvironmentId === binding!.ownerEnvironmentId,
+      );
+      if (!main || main.state !== "ready")
+        throw new LocalWorkspaceError({
+          code: LocalWorkspaceErrorCode.workspaceConflict,
+          message: "The owner's Main is not ready on this storage authority.",
+        });
+      await this.#assertWorkspaceIdentity(main);
+      const target = [
+        ...main.relativeSegments,
+        "Projects",
+        RelativeSegmentSchema.parse(input.slug),
+      ];
+      if (
+        equalSegments(binding.relativeSegments, target) &&
+        (!binding.relocation || binding.relocation.state === "bound")
+      ) {
+        await this.#assertWorkspaceIdentity(binding);
+        return;
+      }
+      if (
+        document.bindings.some(
+          (candidate) =>
+            candidate.bindingId !== binding!.bindingId &&
+            equalSegments(
+              candidate.relativeSegments.map((s) => s.toLowerCase()),
+              target.map((s) => s.toLowerCase()),
+            ),
+        )
+      )
+        throw new LocalWorkspaceError({
+          code: LocalWorkspaceErrorCode.workspaceConflict,
+          message: "The relocation destination is already bound.",
+        });
+      const save = async (updated: ReadyRegistryBinding) => {
+        document = nextDocument(
+          document,
+          document.bindings.map((candidate) =>
+            candidate.bindingId === updated.bindingId ? updated : candidate,
+          ),
+        );
+        await writeRegistryAtomic(this.#options.registryFilePath, document);
+        binding = updated;
+      };
+      // Persist the source identity before rename. A missing source is resumable
+      // only when the destination is still that exact directory.
+      if (!binding.relocation)
+        await save({
+          ...binding,
+          relocation: { source: binding.relativeSegments, target, state: "planned" },
+        });
+      const relocation = binding.relocation!;
+      if (!equalSegments(relocation.target, target))
+        throw new LocalWorkspaceError({
+          code: LocalWorkspaceErrorCode.workspaceConflict,
+          message: "The recorded relocation destination differs.",
+        });
+      if (input.adopt) {
+        const identity = await this.#readDirectoryIdentity(target);
+        await save({
+          ...binding,
+          filesystemIdentity: identity,
+          provisionFingerprint: { ...binding.provisionFingerprint, slug: input.slug },
+          relativeSegments: target,
+          relocation: { ...relocation, state: "bound" },
+        });
+        return;
+      }
+      if (relocation.state === "blocked")
+        throw new LocalWorkspaceError({
+          code: LocalWorkspaceErrorCode.workspaceConflict,
+          message: "Move the Project folder into Main and explicitly confirm its new location.",
+        });
+      if (relocation.state === "planned") {
+        const sourcePath = resolveContainedPath(this.#options.visibleRootPath, relocation.source);
+        const targetPath = resolveContainedPath(this.#options.visibleRootPath, target);
+        const sourceExists = await lstatOrUndefined(sourcePath);
+        if (sourceExists) {
+          await this.#assertWorkspaceIdentity(binding);
+          if (await lstatOrUndefined(targetPath)) {
+            await save({ ...binding, relocation: { ...relocation, state: "blocked" } });
+            throw new LocalWorkspaceError({
+              code: LocalWorkspaceErrorCode.workspaceConflict,
+              message: `Relocation destination is occupied: ${targetPath}`,
+            });
+          }
+          const move = this.#options.filesystemAuthority?.relocateDirectory;
+          if (!move) {
+            await save({ ...binding, relocation: { ...relocation, state: "blocked" } });
+            throw new LocalWorkspaceError({
+              code: LocalWorkspaceErrorCode.configurationInvalid,
+              message: "Automatic Project relocation requires the native filesystem helper.",
+            });
+          }
+          try {
+            await move.call(
+              this.#options.filesystemAuthority,
+              {
+                root: this.#options.visibleRootPath,
+                path: relocation.source.join("/"),
+                destination: target.join("/"),
+              },
+              input.signal ?? AbortSignal.timeout(30_000),
+            );
+          } catch (error) {
+            if (
+              ["configuration-invalid", "already-exists", "cross-device"].includes(
+                nativeErrorCode(error) ?? "",
+              )
+            ) {
+              await save({ ...binding, relocation: { ...relocation, state: "blocked" } });
+              throw new LocalWorkspaceError({
+                code: LocalWorkspaceErrorCode.configurationInvalid,
+                message:
+                  "Automatic relocation is unavailable or its destination is occupied. Move the folder manually and confirm its location.",
+                cause: error,
+              });
+            }
+            throw error;
+          }
+        }
+        const identity = await this.#readDirectoryIdentity(target);
+        if (!equalIdentity(identity, binding.filesystemIdentity))
+          throw new LocalWorkspaceError({
+            code: LocalWorkspaceErrorCode.directoryReplaced,
+            message: "Relocation target is not the original Project directory.",
+          });
+        await save({ ...binding, relocation: { ...relocation, state: "renamed" } });
+      }
+      const identity = await this.#readDirectoryIdentity(target);
+      if (!equalIdentity(identity, binding.filesystemIdentity))
+        throw new LocalWorkspaceError({
+          code: LocalWorkspaceErrorCode.directoryReplaced,
+          message: "Relocated Project identity changed.",
+        });
+      await save({
+        ...binding,
+        provisionFingerprint: { ...binding.provisionFingerprint, slug: input.slug },
+        relativeSegments: target,
+        relocation: { ...relocation, state: "bound" },
+      });
+    });
+  }
+
   /** The durable identity of the disk this registry protects. */
   async storageAuthority(signal?: AbortSignal): Promise<StorageAuthorityId> {
     return withRegistryWriteLock(this.#options.registryFilePath, async () => {
@@ -340,6 +679,7 @@ export class LocalWorkspaceRegistry {
       const bindings = document.bindings.slice(0, MAX_DESTRUCTION_RECEIPTS).map((binding) => ({
         bindingId: binding.bindingId,
         generation: binding.generation,
+        path: resolveContainedPath(this.#options.visibleRootPath, binding.relativeSegments),
         state: binding.state,
         workspaceId: binding.workspaceId,
       }));
@@ -377,6 +717,17 @@ export class LocalWorkspaceRegistry {
         throw new LocalWorkspaceError({
           code: LocalWorkspaceErrorCode.registryInvalid,
           message: "This machine has no record of destroying that local Workspace directory.",
+        });
+      }
+      if (binding.relocation && binding.relocation.state !== "bound")
+        throw new LocalWorkspaceError({
+          code: LocalWorkspaceErrorCode.workspaceConflict,
+          message: "Finish Project relocation before deleting its files.",
+        });
+      if (binding.provisionFingerprint.kind === "main") {
+        throw new LocalWorkspaceError({
+          code: LocalWorkspaceErrorCode.workspaceConflict,
+          message: "Main cannot be destroyed",
         });
       }
       if (binding.workspaceId !== input.workspaceId) {
@@ -500,6 +851,12 @@ export class LocalWorkspaceRegistry {
       throw new LocalWorkspaceError({
         code: LocalWorkspaceErrorCode.generationMismatch,
         message: "The local Workspace binding generation is stale.",
+      });
+    }
+    if (binding.relocation && binding.relocation.state !== "bound") {
+      throw new LocalWorkspaceError({
+        code: LocalWorkspaceErrorCode.workspaceConflict,
+        message: "This Project is being relocated into Main. Retry after relocation finishes.",
       });
     }
     if (binding.state !== "ready") {
@@ -762,6 +1119,13 @@ export class LocalWorkspaceRegistry {
         throw asNativeDirectoryError(cause);
       }
     }
+    for (let index = 1; index < segments.length; index++) {
+      const parent = await lstat(
+        resolveContainedPath(this.#options.visibleRootPath, segments.slice(0, index)),
+        { bigint: true },
+      );
+      assertRealDirectory(parent, "The managed Workspace parent");
+    }
     return readPosixDirectoryIdentity(
       resolveDirectoryIdentityPath(this.#options.visibleRootPath, segments),
     );
@@ -838,7 +1202,13 @@ function assertOwnerAllowed(
 }
 
 function stableStringify(value: ProvisionFingerprint): string {
-  return JSON.stringify([value.createdBy, value.kind, value.ownerEnvironmentId, value.workspaceId]);
+  return JSON.stringify([
+    value.createdBy,
+    value.kind,
+    value.ownerEnvironmentId,
+    value.workspaceId,
+    value.slug ?? null,
+  ]);
 }
 
 function resolveContainedPath(rootPath: string, segments: readonly string[]): string {
@@ -910,9 +1280,32 @@ function assertRegistryUniqueness(document: Pick<RegistryDocument, "bindings">):
     "Workspace ID",
   );
   assertUnique(
-    document.bindings.map((binding) => binding.relativeSegments.join("/")),
+    document.bindings.map((binding) => binding.relativeSegments.join("/").toLowerCase()),
     "relative path",
   );
+  const paths = new Map(
+    document.bindings.map((binding) => [binding.relativeSegments.join("/").toLowerCase(), binding]),
+  );
+  for (const binding of document.bindings) {
+    for (let depth = 1; depth < binding.relativeSegments.length; depth += 1) {
+      const ancestor = paths.get(binding.relativeSegments.slice(0, depth).join("/").toLowerCase());
+      if (!ancestor) continue;
+      const isOwnedProject =
+        ancestor.provisionFingerprint.kind === "main" &&
+        binding.provisionFingerprint.kind === "project" &&
+        ancestor.createdBy === binding.createdBy &&
+        ancestor.ownerEnvironmentId === binding.ownerEnvironmentId &&
+        binding.relativeSegments.length === depth + 2 &&
+        binding.relativeSegments[depth] === "Projects";
+      if (!isOwnedProject) {
+        throw new LocalWorkspaceError({
+          code: LocalWorkspaceErrorCode.registryInvalid,
+          message:
+            "The protected local Workspace registry contains overlapping directory bindings.",
+        });
+      }
+    }
+  }
 }
 
 function assertUnique(values: readonly string[], description: string): void {

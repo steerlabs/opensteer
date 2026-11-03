@@ -198,7 +198,7 @@ export function IntegrationConnectSheet(props: {
       : null;
   const scopes = plan?.definition ? connectRequestedScopes(plan.definition) : [];
   const effectiveAccess =
-    plan === null || workspace?.kind !== "specialized"
+    plan === null || workspace?.kind !== "project"
       ? (plan?.requestedAccess ?? "read")
       : effectiveIntegrationAccess(plan.requestedAccess, allowChanges);
   const grantedAccess =
@@ -207,7 +207,7 @@ export function IntegrationConnectSheet(props: {
       : grantedIntegrationAccess({
           allowChanges,
           plan,
-          workspaceKind: workspace?.kind === "main" ? "main" : "specialized",
+          workspaceKind: workspace?.kind === "main" ? "main" : "project",
         });
   // An app on a computer is turned on here, inline: there is no sign-in to hand
   // off to, so the phone offers it exactly when a computer is reporting the app.
@@ -1110,7 +1110,7 @@ function ReviewStep(props: {
   readonly reconnect: AccessPlan["requestedAccountReconnect"];
   readonly scopes: readonly string[];
   readonly supportedConnect: boolean;
-  readonly workspaceKind: "main" | "specialized" | null;
+  readonly workspaceKind: "main" | "project" | null;
   readonly workspaceName: string | null;
 }): ReactNode {
   const { plan } = props;
@@ -1301,7 +1301,7 @@ function ReviewStep(props: {
           tone="neutral"
         />
       )}
-      {props.workspaceKind === "specialized" &&
+      {props.workspaceKind === "project" &&
       plan.requestedAccess === "read" &&
       (plan.writeCount > 0 || plan.definition?.computerApp?.accessLevels.length === 2) ? (
         <SwitchRow
@@ -1314,7 +1314,7 @@ function ReviewStep(props: {
           value={props.allowChanges}
         />
       ) : null}
-      {props.workspaceKind === "specialized" && plan.requestedAccess === "read-write" ? (
+      {props.workspaceKind === "project" && plan.requestedAccess === "read-write" ? (
         <AppText role="secondary" tone="muted">
           {plan.writeCount > 0
             ? `This task requires read-write access, including ${changingOperationCount(plan.writeCount)}.`

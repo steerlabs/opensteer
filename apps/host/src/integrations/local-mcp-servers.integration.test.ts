@@ -114,11 +114,11 @@ integration("MCP servers on a computer", () => {
         {
           idempotencyKey: "local-mcp-install",
           input: { directory: fixture.plugin, runnerId: computer.runnerId },
-          type: "integration.agentPlugin.install",
+          type: "plugin.install",
         },
         { headers: host.ownerHeaders },
       );
-      if (installed.type !== "integration.agentPlugin.install") throw new Error("Mismatch");
+      if (installed.type !== "plugin.install") throw new Error("Mismatch");
       const server = await serverRow(host);
       expect(server.transport).toMatchObject({ runnerId: computer.runnerId, type: "runner" });
       expect(server.status).toBe("needs-attention");
@@ -346,7 +346,13 @@ integration("MCP servers on a computer", () => {
           {
             idempotencyKey: key,
             input: { directory: fixture.plugin, runnerId: computer.runnerId },
-            type: "integration.agentPlugin.install",
+            type: "plugin.update",
+            pluginId: (
+              await host.store.database
+                .selectFrom("integrationInstallations")
+                .select("pluginId")
+                .executeTakeFirstOrThrow()
+            ).pluginId!,
           },
           { headers: host.ownerHeaders },
         );
@@ -372,7 +378,13 @@ integration("MCP servers on a computer", () => {
         {
           idempotencyKey: "local-mcp-changed",
           input: { directory: fixture.plugin, runnerId: computer.runnerId },
-          type: "integration.agentPlugin.install",
+          type: "plugin.update",
+          pluginId: (
+            await host.store.database
+              .selectFrom("integrationInstallations")
+              .select("pluginId")
+              .executeTakeFirstOrThrow()
+          ).pluginId!,
         },
         { headers: host.ownerHeaders },
       );

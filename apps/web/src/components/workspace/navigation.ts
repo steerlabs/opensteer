@@ -383,7 +383,7 @@ export interface WorkspaceNavigation {
   /** Where a conversation-area page is, keeping the place in the middle. */
   readonly conversationHref: (to: string) => To;
   /**
-   * Goes to a conversation-area page — Specialists, an automation, back from
+   * Goes to a conversation-area page — Projects, an automation, back from
    * an editor — keeping the place in the middle. Settings keep their own
    * full-page navigation and do not use this.
    */

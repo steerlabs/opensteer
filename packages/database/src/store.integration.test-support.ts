@@ -1,3 +1,8 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import {
   createChannelId,
   slackChannelProviderManifest,
@@ -93,7 +98,7 @@ export const replacementMessagingRunnerId = RunnerIdSchema.parse(
 );
 
 export const testWorkspaceProfile = {
-  defaultWorkspaceBacking: "portablefs",
+  defaultWorkspaceBacking: "local-directory",
   kind: "server" as const,
 } as const;
 
@@ -123,10 +128,10 @@ export function testChannelAccessPolicy(mode: "anyone" | "approved" | "linked-me
   };
 }
 
-export function portableFsBacking(workspace: Workspace) {
-  expect(workspace.backing.kind).toBe("portablefs");
-  if (workspace.backing.kind !== "portablefs") {
-    throw new Error(`Expected PortableFS backing, received ${workspace.backing.kind}`);
+export function localBacking(workspace: Workspace) {
+  expect(workspace.backing.kind).toBe("local-directory");
+  if (workspace.backing.kind !== "local-directory") {
+    throw new Error(`Expected storage backing, received ${workspace.backing.kind}`);
   }
   return workspace.backing;
 }
@@ -236,8 +241,7 @@ export function testRunnerDescriptor(input: {
         localStorage: null,
         maxConcurrentRuns: 4,
         providerStateModes: ["isolated"],
-        workspaceBackings: ["portablefs"],
-        workspaceMounts: [],
+        workspaceBackings: ["local-directory"],
       },
     },
     name: input.name,
@@ -482,11 +486,12 @@ export async function createStoreFixture() {
     suffix: string,
     options: {
       readonly deploymentShape: {
-        readonly defaultWorkspaceBacking: "local-directory" | "portablefs";
+        readonly defaultWorkspaceBacking: "local-directory";
         readonly kind: "personal" | "server";
       };
-      readonly workspaceBacking: "local-directory" | "portablefs";
+      readonly workspaceBacking: "local-directory";
     } | null = null,
+    workspaceKind: "main" | "project" = "main",
   ) {
     if (options) {
       await store.ensureDeployment({
@@ -508,8 +513,7 @@ export async function createStoreFixture() {
     }
     const runnerId = createId("runner");
     const environmentId = createId("environment");
-    const localDirectory = options?.workspaceBacking === "local-directory";
-    const storageAuthorityId = localDirectory ? createId("storageAuthority") : null;
+    const storageAuthorityId = createId("storageAuthority");
     const messagingOnMain = options?.deploymentShape.kind === "personal";
     const agentsModule: NonNullable<RunnerDescriptor["modules"]["agents"]> = {
       environmentIds: [environmentId],
@@ -531,14 +535,10 @@ export async function createStoreFixture() {
           ],
         },
       ],
-      localStorage:
-        localDirectory && storageAuthorityId
-          ? { bindings: [], storageAuthorityId, truncated: false }
-          : null,
+      localStorage: { bindings: [], storageAuthorityId, truncated: false },
       maxConcurrentRuns: 4,
       providerStateModes: ["isolated"],
-      workspaceBackings: [localDirectory ? "local-directory" : "portablefs"],
-      workspaceMounts: [],
+      workspaceBackings: ["local-directory"],
     };
     await enrollTestRunner(store, {
       allowedModules: messagingOnMain ? ["agents", "messaging"] : ["agents"],
@@ -564,34 +564,21 @@ export async function createStoreFixture() {
       runnerId,
       tokenSuffix: suffix,
     });
-    const workspace = await store.createWorkspace({
-      backing: localDirectory
-        ? {
-            bindingId: createId("workspaceBinding"),
-            generation: 1,
-            kind: "local-directory" as const,
-            ownerEnvironmentId: environmentId,
-            storageAuthorityId: storageAuthorityId!,
-          }
-        : {
-            generation: 1,
-            kind: "portablefs" as const,
-            serviceId: "test-portablefs",
-            volumeId: `wsp_${suffix}`,
-          },
-      capacityPolicy: localDirectory
-        ? { kind: "host-filesystem" as const }
-        : {
-            blockHardLimitBytes: 10_000_000,
-            inodeHardLimit: 10_000,
-            kind: "hard-quota" as const,
-          },
+    const workspace = await createTestWorkspace(store, {
+      backing: {
+        bindingId: createId("workspaceBinding"),
+        generation: 1,
+        kind: "local-directory",
+        ownerEnvironmentId: environmentId,
+        storageAuthorityId,
+      },
       createdBy: userId,
       idempotencyKey: `workspace-${suffix}`,
+      ...(workspaceKind === "project" ? { kind: workspaceKind } : {}),
       name: `Workspace ${suffix}`,
       status: "ready",
     });
-    expect(workspace.kind).toBe("main");
+    expect(workspace.kind).toBe(workspaceKind);
     const harnessInstance = await store.createHarnessInstance({
       config: { model: "test" },
       driverKind: HarnessIdSchema.parse("native"),
@@ -609,7 +596,7 @@ export async function createStoreFixture() {
       title: `Thread ${suffix}`,
       workspaceId: workspace.id,
     });
-    expect(thread.capabilityProfileId).toBe("main");
+    expect(thread.capabilityProfileId).toBe(workspaceKind === "main" ? "main" : "workspace");
     return { environmentId, harnessInstance, runnerId, thread, userId, workspace };
   }
 
@@ -745,8 +732,8 @@ export async function createStoreFixture() {
   }
 
   /** A Thread whose head Run has reached `running` on a bound Runner. */
-  async function startRunFixture(suffix: string) {
-    const fixture = await createRunFixture(suffix);
+  async function startRunFixture(suffix: string, workspaceKind: "main" | "project" = "main") {
+    const fixture = await createRunFixture(suffix, null, workspaceKind);
     const runnerBootId = `boot-${suffix}`;
     const turn = await enqueueHumanTrigger({
       content: [{ text: "Start the work", type: "text" }],
@@ -912,23 +899,22 @@ export async function createStoreFixture() {
     });
   }
 
-  function createSpecializedWorkspace(ownerId: UserId, suffix: string, id?: Workspace["id"]) {
-    return store.createWorkspace({
+  function createProjectWorkspace(ownerId: UserId, suffix: string, id?: Workspace["id"]) {
+    return createTestWorkspace(store, {
       ...(id ? { id } : {}),
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: `wsp_${suffix}`,
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: ownerId,
       idempotencyKey: `workspace-${suffix}`,
-      kind: "specialized" as const,
+      kind: "project" as const,
       name: `Workspace ${suffix}`,
       status: "ready" as const,
     });
@@ -961,7 +947,7 @@ export async function createStoreFixture() {
       canonicalOrigin: "https://cloud.test.invalid",
       hostInstanceId: createId("hostInstance"),
       deploymentShape: {
-        defaultWorkspaceBacking: "portablefs",
+        defaultWorkspaceBacking: "local-directory",
         kind: "server" as const,
       },
     });
@@ -986,18 +972,17 @@ export async function createStoreFixture() {
       runnerKind: "managed",
       tokenSuffix: `${suffix}-alice-cloud`,
     });
-    const workspace = await store.createWorkspace({
+    const workspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: `wsp_${suffix}`,
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: aliceId,
       idempotencyKey: `workspace-${suffix}`,
       name: `Workspace ${suffix}`,
@@ -1293,7 +1278,7 @@ export async function createStoreFixture() {
     stagedRequestRace,
     startTriggerOccurrence,
     openLiveRequest,
-    createSpecializedWorkspace,
+    createProjectWorkspace,
     sqlCanExecute,
     principalIdFor,
     createCloudBindingFixture,

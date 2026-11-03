@@ -1,33 +1,23 @@
-import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
-import { createHash, randomBytes } from "node:crypto";
+import { SpecialistStore } from "@opensteer/database";
 import {
-  placeInputFailure,
-  type AgentEvent,
   ModelSelectionSchema,
   OpensteerError,
+  placeInputFailure,
   RequestIdSchema,
   RequestResponseSchema,
   RunIdSchema,
   SequenceSchema,
   ThreadIdSchema,
+  type AgentEvent,
   type WorkspaceId,
-  workspaceWakesOnDemand,
 } from "@opensteer/core";
 import type {
   AttachmentStore,
-  OpensteerStore,
   CommandRow,
+  OpensteerStore,
   PendingCommandRow,
   TriggerStore,
 } from "@opensteer/database";
-import {
-  CorrelationIdSchema,
-  HarnessInputSchema,
-  RunInitialContextSchema,
-  type HarnessInstanceCatalog,
-  type MachineAccessRunContext,
-  type RunnerCommand,
-} from "@opensteer/protocol";
 import {
   initialContinuationContextFits,
   initialContinuationHistoryBudget,
@@ -39,32 +29,43 @@ import {
   type DurableCommandDispatcher,
   type RunnerRegistry,
 } from "@opensteer/orchestration";
+import {
+  CorrelationIdSchema,
+  HarnessInputSchema,
+  RunInitialContextSchema,
+  type HarnessInstanceCatalog,
+  type MachineAccessRunContext,
+  type RunnerCommand,
+} from "@opensteer/protocol";
+import { createHash, randomBytes } from "node:crypto";
+import { z } from "zod";
+import type { BrowserService } from "../browser/browser-service.js";
+import {
+  openRequestResponse,
+  type RequestResponseVault,
+} from "../identity/request-response-vault.js";
+import type { PluginPackagesTokenService } from "../integrations/plugin-package-service.js";
+import type {
+  IntegrationToolsTokenService,
+  TriggerIntegrationToolsTokenService,
+} from "../integrations/integration-tools-mcp-service.js";
 import type { EgressService } from "../server/egress-service.js";
+import { computeMachineAccess } from "../shell/machine-access-run-context.js";
+import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
+import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
+import type { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
+import type { WorkspaceService } from "../workspace/workspace-service.js";
+import type { AgentControlTokenService } from "./agent-control-service.js";
 import {
   harnessInspectionDefinition,
   inspectAndRecordHarnessCatalogs,
 } from "./harness-catalogs.js";
-import type { AgentControlTokenService } from "./agent-control-service.js";
-import type { RunCapabilityTokenService } from "./run-capability.js";
 import {
   matchModelSelection,
   modelOptionUnavailableMessage,
   runModelSelection,
 } from "./model-selection.js";
-import type { IntegrationToolsTokenService } from "../integrations/integration-tools-mcp-service.js";
-import type { IntegrationSkillsTokenService } from "../integrations/integration-skill-bundle-service.js";
-import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
-import type { TriggerIntegrationToolsTokenService } from "../integrations/integration-tools-mcp-service.js";
-import type { BrowserService } from "../browser/browser-service.js";
-import type { WorkspaceService } from "../workspace/workspace-service.js";
-import type { WorkspaceWakeService } from "../workspace/workspace-wake-service.js";
-import type { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
-import { computeMachineAccess } from "../shell/machine-access-run-context.js";
-import {
-  openRequestResponse,
-  type RequestResponseVault,
-} from "../identity/request-response-vault.js";
-import { z } from "zod";
+import type { RunCapabilityTokenService } from "./run-capability.js";
 
 const ControlPayloadSchema = z.discriminatedUnion("type", [
   z
@@ -114,8 +115,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #agentToolsUrl: string;
   readonly #agentBrowserCdpUrl: string;
   readonly #integrationToolsUrl: string;
-  readonly #integrationSkillsTokens: IntegrationSkillsTokenService;
-  readonly #integrationSkillsUrl: string;
+  readonly #pluginVersions: (
+    workspaceId: WorkspaceId,
+  ) => Promise<import("@opensteer/protocol").RunPluginsPlan["versions"]>;
+  readonly #pluginsTokens: PluginPackagesTokenService;
+  readonly #pluginsUrl: string;
   readonly #integrationToolsTokens: IntegrationToolsTokenService;
   readonly #browser: Pick<BrowserService, "hasBrowserProfileAccess">;
   readonly #browserCdpUrl: string;
@@ -130,7 +134,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #triggerIntegrationToolsTokens: TriggerIntegrationToolsTokenService;
   readonly #triggers: TriggerStore;
   readonly #workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
-  readonly #workspaceWake: Pick<WorkspaceWakeService, "wake"> | undefined;
   readonly #workspaceAccess: WorkspaceExecutionAccessService;
 
   constructor(options: {
@@ -141,7 +144,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly browser: Pick<BrowserService, "hasBrowserProfileAccess">;
     readonly onWorkspaceEvent: (event: AgentEvent) => void;
     readonly onTriggerChanged?: (workspaceId: WorkspaceId) => void;
-    readonly integrationSkillsTokens: IntegrationSkillsTokenService;
+    readonly pluginVersions: (
+      workspaceId: WorkspaceId,
+    ) => Promise<import("@opensteer/protocol").RunPluginsPlan["versions"]>;
+    readonly pluginsTokens: PluginPackagesTokenService;
     readonly integrationToolsTokens: IntegrationToolsTokenService;
     readonly egress: EgressService;
     readonly executionLeaseMs: number;
@@ -153,7 +159,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly triggerIntegrationToolsTokens: TriggerIntegrationToolsTokenService;
     readonly triggers: TriggerStore;
     readonly workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
-    readonly workspaceWake?: Pick<WorkspaceWakeService, "wake">;
     readonly workspaceAccess: WorkspaceExecutionAccessService;
   }) {
     this.#attachmentRunTokens = options.attachmentRunTokens;
@@ -167,11 +172,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       "/internal/v1/integration-mcp",
       options.publicUrl,
     ).toString();
-    this.#integrationSkillsTokens = options.integrationSkillsTokens;
-    this.#integrationSkillsUrl = new URL(
-      "/internal/v1/integration-skills",
-      options.publicUrl,
-    ).toString();
+    this.#pluginVersions = options.pluginVersions;
+    this.#pluginsTokens = options.pluginsTokens;
+    this.#pluginsUrl = new URL("/internal/v1/plugin-cache", options.publicUrl).toString();
     this.#integrationToolsTokens = options.integrationToolsTokens;
     this.#browser = options.browser;
     this.#browserCdpUrl = new URL("/internal/v1/trigger-cdp", options.publicUrl).toString();
@@ -186,7 +189,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#triggerIntegrationToolsTokens = options.triggerIntegrationToolsTokens;
     this.#triggers = options.triggers;
     this.#workspaces = options.workspaces;
-    this.#workspaceWake = options.workspaceWake;
     this.#workspaceAccess = options.workspaceAccess;
   }
 
@@ -224,15 +226,25 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     if (!command.runId) throw new CommandDispatchError("Run command is missing its run", "failed");
     const context = await this.#store.loadRunDispatchContext(command.id);
+    if (context.thread.specialistId) {
+      try {
+        await new SpecialistStore(this.#store.database).assertRunnable(
+          context.thread.specialistId,
+          context.workspace.id,
+          context.run.requestedBy,
+        );
+      } catch (error) {
+        throw new CommandDispatchError(
+          error instanceof Error ? error.message : "Specialist is unavailable",
+          "failed",
+        );
+      }
+    }
     const assignment = context.run.assignmentId
       ? await this.#store.getAssignment(context.run.assignmentId)
       : null;
     if (context.run.assignmentId && (!assignment || assignment.status !== "open")) {
       throw new CommandDispatchError("This task assignment is no longer open.", "failed");
-    }
-    if (workspaceWakesOnDemand(context.workspace.status)) {
-      void this.#workspaceWake?.wake(context.workspace.id, "run-dispatch");
-      throw new CommandDispatchError("Workspace filesystem is unavailable", "retry");
     }
     if (context.workspace.status !== "ready") {
       throw new CommandDispatchError("Workspace filesystem is unavailable", "retry");
@@ -454,6 +466,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const agentControlToken = this.#agentControlTokens.issue({
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
+      ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
       capabilityProfileId: context.thread.capabilityProfileId,
       environmentId: context.run.environmentId,
       membershipGeneration: context.membershipGeneration,
@@ -467,6 +480,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const integrationToolsToken = this.#integrationToolsTokens.issue({
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
+      ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
       capabilityProfileId: context.thread.capabilityProfileId,
       environmentId: context.run.environmentId,
       membershipGeneration: context.membershipGeneration,
@@ -477,9 +491,27 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       threadId: context.thread.id,
       workspaceId: context.workspace.id,
     });
-    const integrationSkillsToken = this.#integrationSkillsTokens.issue({
+    const specialist = context.thread.specialistId
+      ? await this.#store.database
+          .selectFrom("specialists")
+          .innerJoin("pluginVersions", "pluginVersions.id", "specialists.pluginVersionId")
+          .innerJoin("plugins", "plugins.id", "specialists.pluginId")
+          .select(["plugins.id as pluginId", "plugins.name", "pluginVersions.digest"])
+          .where("specialists.removedAt", "is", null)
+          .where("specialists.id", "=", context.thread.specialistId)
+          .where("specialists.workspaceId", "=", context.workspace.id)
+          .executeTakeFirst()
+      : null;
+    if (context.thread.specialistId && !specialist)
+      throw new Error("Specialist registration was removed");
+    const pinnedPlugins = specialist
+      ? [specialist]
+      : await this.#pluginVersions(context.workspace.id);
+    const pluginsToken = this.#pluginsTokens.issue({
+      pluginDigests: pinnedPlugins.map((plugin) => plugin.digest),
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
+      ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
       capabilityProfileId: context.thread.capabilityProfileId,
       environmentId: context.run.environmentId,
       membershipGeneration: context.membershipGeneration,
@@ -495,6 +527,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           token: this.#attachmentRunTokens.issue({
             bindingGeneration: binding.bindingGeneration,
             grantId: binding.grantId,
+            ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
             capabilityProfileId: context.thread.capabilityProfileId,
             environmentId: context.run.environmentId,
             membershipGeneration: context.membershipGeneration,
@@ -547,6 +580,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           url: this.#agentControlUrl,
         },
         agentTools: {
+          ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
           capabilityProfileId: context.thread.capabilityProfileId,
           token: agentControlToken,
           url: this.#agentToolsUrl,
@@ -559,9 +593,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           token: integrationToolsToken,
           url: this.#integrationToolsUrl,
         },
-        integrationSkills: {
-          token: integrationSkillsToken,
-          url: this.#integrationSkillsUrl,
+        ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
+        plugins: {
+          versions: pinnedPlugins,
+          token: pluginsToken,
+          url: this.#pluginsUrl,
         },
         bindingGeneration: binding.bindingGeneration,
         // Half a token's life leaves the Runner room to retry before any expires.
@@ -729,10 +765,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
-    if (workspaceWakesOnDemand(initial.workspace.status)) {
-      void this.#workspaceWake?.wake(initial.workspace.id, "trigger-dispatch");
-      throw new CommandDispatchError("Workspace filesystem is unavailable", "retry");
-    }
     if (initial.workspace.status !== "ready") {
       throw new CommandDispatchError("Workspace filesystem is unavailable", "retry");
     }
@@ -775,6 +807,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const hasBrowser = await this.#browser.hasBrowserProfileAccess(
       context.trigger.createdBy,
       context.workspace.id,
+      `thread:${context.anchorThread.id}`,
     );
     const runnerCommand: RunnerCommand = {
       commandId: command.id,

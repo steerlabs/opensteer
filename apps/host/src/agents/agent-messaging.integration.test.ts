@@ -1,12 +1,13 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   createId,
-  SequenceSchema,
   HarnessIdSchema,
   ModelSelectionSchema,
-  provisionalThreadTitle,
   OpensteerError,
+  provisionalThreadTitle,
+  SequenceSchema,
   ThreadAccessModeSchema,
   type AgentEvent,
   type Message,
@@ -16,29 +17,28 @@ import {
 } from "@opensteer/core";
 import {
   BrowserTabGroupStore,
-  WorkspaceTabStore,
   createDatabase,
   migrateToLatest,
   OpensteerStore,
+  WorkspaceTabStore,
 } from "@opensteer/database";
 import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
 import {
   BrowserSurfaceIdSchema,
+  ComputerUseSessionSummarySchema,
   createBrowserSessionId,
   HarnessInputSchema,
-  ComputerUseSessionSummarySchema,
   mintComputerUseSessionId,
   type RunnerDescriptor,
 } from "@opensteer/protocol";
-import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
-import { BrowserService } from "../browser/browser-service.js";
 import { sql } from "kysely";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { baselineWorkspaceCreateResponse } from "./agent-control-baseline.test-support.js";
+import { BrowserService } from "../browser/browser-service.js";
+import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
 import {
   AgentControlService,
   type AgentControlRunScope,
@@ -131,26 +131,21 @@ integration("agent-to-agent messaging round trip", () => {
         return claims;
       },
     } as unknown as AgentControlTokenService,
-    defaultWorkspaceBacking: "portablefs",
-    environmentWorkspaceBackings: () => ["portablefs"],
-    workspaceMounts: { mount: unexpected },
+    defaultWorkspaceBacking: "local-directory",
+    environmentWorkspaceBackings: () => ["local-directory"],
+    workspaceMounts: {
+      mount: async ({ workspace }) => ({ path: `/Main/Projects/${workspace.slug}` }),
+    },
     workspaces: {
-      create: async (input) =>
-        store.createWorkspace({
+      create: async (input) => {
+        const main = await store.findMainWorkspaceForOwner(input.createdBy);
+        if (!main) throw new Error("Owner Main is missing");
+        return createTestWorkspace(store, {
           ...input,
-          backing: {
-            generation: 1,
-            kind: "portablefs",
-            serviceId: "test-portablefs",
-            volumeId: randomUUID(),
-          },
-          capacityPolicy: {
-            kind: "hard-quota",
-            blockHardLimitBytes: 10_000_000,
-            inodeHardLimit: 10_000,
-          },
+          backing: { ...main.backing, bindingId: createId("workspaceBinding") },
           status: "ready",
-        }),
+        });
+      },
     },
   });
 
@@ -193,18 +188,18 @@ integration("agent-to-agent messaging round trip", () => {
   it("authorizes person_show against saved-tab ownership and Thread visibility", async () => {
     const f = await createMessagingFixture();
     const strangerId = await store.createUser("Other person");
-    const otherWorkspace = await store.createWorkspace({
+    const otherWorkspace = await createTestWorkspace(store, {
       createdBy: strangerId,
       idempotencyKey: randomUUID(),
       name: "Private",
       status: "ready",
       backing: {
-        kind: "portablefs",
+        kind: "local-directory",
         generation: 1,
-        serviceId: "test-portablefs",
-        volumeId: randomUUID(),
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "hard-quota", blockHardLimitBytes: 1000000, inodeHardLimit: 1000 },
     });
     const otherThreadId = createId("thread");
     const original = await database
@@ -944,17 +939,17 @@ integration("agent-to-agent messaging round trip", () => {
     },
   );
 
-  it("keeps agent Workspace create compatible with the baseline Runner while storing the requested colour", async () => {
+  it("creates a Project while storing the requested colour", async () => {
     const f = await createMessagingFixture();
     const response = await service.handle(f.tokenA, {
-      type: "workspace.create",
+      type: "project.create",
       requestId: randomUUID(),
       name: "Travel",
       icon: "plane",
       color: "teal",
     });
-    expect(baselineWorkspaceCreateResponse.parse(response)).toEqual(response);
-    if (response.type !== "workspace.create.result") throw new Error("Expected Workspace");
+    if (response.type !== "project.create.result") throw new Error("Expected Project");
+    expect(response).toMatchObject({ slug: "travel", path: "/Main/Projects/travel" });
     expect(await store.getWorkspaceForOwner(response.workspace.id, f.userId)).toMatchObject({
       icon: "plane",
       color: "teal",
@@ -965,18 +960,15 @@ integration("agent-to-agent messaging round trip", () => {
     "republishes completed cross-Workspace assignment titles after %s",
     async (mode) => {
       const fixture = await createMessagingFixture();
-      const workspace = await store.createWorkspace({
+      const workspace = await createTestWorkspace(store, {
         backing: {
+          kind: "local-directory",
           generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: randomUUID(),
+          bindingId: createId("workspaceBinding"),
+          ownerEnvironmentId: fixture.environmentId,
+          storageAuthorityId: createId("storageAuthority"),
         },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+
         createdBy: fixture.userId,
         idempotencyKey: randomUUID(),
         name: "Worker workspace",
@@ -1318,18 +1310,15 @@ integration("agent-to-agent messaging round trip", () => {
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     await enrollTestRunner({ createdBy: userId, environmentId, runnerId });
-    const mainWorkspace = await store.createWorkspace({
+    const mainWorkspace = await createTestWorkspace(store, {
       backing: {
+        kind: "local-directory",
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: `wsp_main_${randomUUID()}`,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: environmentId,
+        storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: userId,
       idempotencyKey: `messaging-main-${randomUUID()}`,
       name: "Main workspace",
@@ -1494,7 +1483,7 @@ integration("agent-to-agent messaging round trip", () => {
         canonicalOrigin: "https://agent-messaging.opensteer.test",
         hostInstanceId: createId("hostInstance"),
         deploymentShape: {
-          defaultWorkspaceBacking: "portablefs",
+          defaultWorkspaceBacking: "local-directory",
           kind: "server" as const,
         },
       });
@@ -1526,11 +1515,14 @@ integration("agent-to-agent messaging round trip", () => {
               ],
             },
           ],
-          localStorage: null,
+          localStorage: {
+            bindings: [],
+            storageAuthorityId: createId("storageAuthority"),
+            truncated: false,
+          },
           maxConcurrentRuns: 4,
           providerStateModes: ["isolated"],
-          workspaceBackings: ["portablefs"],
-          workspaceMounts: [],
+          workspaceBackings: ["local-directory"],
         },
       },
       name: "Main runner",

@@ -5,7 +5,6 @@ import type {
   UserId,
   Workspace,
   WorkspaceBacking,
-  WorkspaceCapacityPolicy,
   WorkspaceId,
   WorkspaceKind,
 } from "@opensteer/core";
@@ -24,7 +23,6 @@ export type WorkspaceExecutionPlanFor<K extends WorkspaceBackingKind> = Extract<
 
 interface ProvisionWorkspaceInputBase<K extends WorkspaceBackingKind> {
   readonly backingKind: K;
-  readonly capacityPolicy: WorkspaceCapacityPolicy;
   readonly createdBy: UserId;
   readonly idempotencyKey: string;
   readonly kind: WorkspaceKind;
@@ -33,10 +31,9 @@ interface ProvisionWorkspaceInputBase<K extends WorkspaceBackingKind> {
 }
 
 export type ProvisionWorkspaceInput<K extends WorkspaceBackingKind> = Extract<
-  | (ProvisionWorkspaceInputBase<"local-directory"> & {
-      readonly ownerEnvironmentId: EnvironmentId;
-    })
-  | ProvisionWorkspaceInputBase<"portablefs">,
+  ProvisionWorkspaceInputBase<"local-directory"> & {
+    readonly ownerEnvironmentId: EnvironmentId;
+  },
   { readonly backingKind: K }
 >;
 
@@ -59,13 +56,15 @@ export interface WorkspaceBackingReadiness {
 
 export interface WorkspaceBackingLifecycleDriver<K extends WorkspaceBackingKind> {
   readonly kind: K;
-  /** Optional deployment-level admission signal. An absent signal preserves
-   * create availability for drivers without a shared capacity authority. */
-  admitsCreates?(): Promise<boolean>;
+  storageLocation?(workspace: Workspace): string | null;
+  relocate?(
+    workspace: Workspace & { readonly backing: LocalWorkspaceBacking },
+    adopt?: boolean,
+  ): Promise<void>;
   /**
    * Derive the first durable binding without touching external storage. The
    * Host persists this value before `provision` runs, so a crash always has one
-   * intent to replay instead of an untracked directory or volume allocation.
+   * intent to replay instead of an untracked directory allocation.
    */
   initialBacking(input: ProvisionWorkspaceInput<K>): WorkspaceBackingFor<K>;
   /**

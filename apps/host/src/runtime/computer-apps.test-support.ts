@@ -84,7 +84,6 @@ export async function connectComputerAppMachine(
               maxConcurrentRuns: 1,
               providerStateModes: ["isolated"],
               workspaceBackings: ["local-directory"],
-              workspaceMounts: [],
             },
           }
         : {}),

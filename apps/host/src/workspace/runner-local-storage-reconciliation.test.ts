@@ -31,13 +31,13 @@ function localWorkspace(options: {
       ownerEnvironmentId: options.ownerEnvironmentId ?? environmentId,
       storageAuthorityId: options.storageAuthorityId ?? storageAuthorityId,
     },
-    capacityPolicy: { kind: "host-filesystem" },
+
     createdAt: now,
     createdBy: createId("user"),
     homeThreadId: null,
     icon: null,
     id: createId("workspace"),
-    kind: "specialized",
+    kind: "project",
     name: "Research",
     status: options.status ?? "ready",
     storageIssue: null,
@@ -185,7 +185,6 @@ function agentsModule(localStorage: RunnerLocalStorageInventory | null) {
     localStorage,
     maxConcurrentRuns: 2,
     providerStateModes: ["isolated" as const],
-    workspaceBackings: [localStorage ? ("local-directory" as const) : ("portablefs" as const)],
-    workspaceMounts: [],
+    workspaceBackings: [localStorage ? ("local-directory" as const) : ("local-directory" as const)],
   };
 }

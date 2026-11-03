@@ -9,7 +9,7 @@ import {
   useNavigationType,
 } from "react-router";
 import { afterEach, beforeAll, vi } from "vitest";
-import { MockHostClient } from "@opensteer/client/mock";
+import { MockHostClient, type MockHostClientOptions } from "@opensteer/client/mock";
 import { type HostClient, placeList, type PlaceItem } from "@opensteer/client/host";
 
 import { AppShell } from "../app-shell.js";
@@ -19,7 +19,8 @@ import { ComputersPage } from "../computers-page.js";
 import { HomeRoute, NewTaskRoute, WorkspaceHomeRoute } from "../home-view.js";
 import { SettingsRedirect } from "../settings/settings-redirect.js";
 import { SettingsSectionRoute, SettingsShell } from "../settings/settings-shell.js";
-import { SpecialistsPage } from "../specialists-page.js";
+import { ProjectSettingsRoute } from "../project-settings.js";
+import { ProjectsPage } from "../projects-page.js";
 import { ThreadRoute } from "../thread-view.js";
 import { ToastProvider } from "../toast.js";
 import { LiveRedirect } from "./live-redirect.js";
@@ -105,6 +106,8 @@ async function mount(
     now?: () => Date;
     /** The mock Host's pace, for a scripted run that must still be working when acted on. */
     latencyMs?: number;
+    /** What else the mock Host starts with: plugins, say. */
+    mock?: Omit<MockHostClientOptions, "latencyMs" | "now">;
     shell?: Partial<
       Pick<
         Parameters<typeof AppShell>[0],
@@ -115,6 +118,7 @@ async function mount(
 ) {
   stubLayout(options.width ?? 1440);
   client = new MockHostClient({
+    ...options.mock,
     latencyMs: options.latencyMs ?? 0,
     ...(options.now ? { now: options.now } : {}),
   });
@@ -146,8 +150,9 @@ async function mount(
                 <Route path="new" element={<NewTaskRoute />} />
                 <Route path="threads/:threadId" element={<ThreadRoute />} />
                 <Route path="live" element={<LiveRedirect />} />
-                <Route path="specialists" element={<SpecialistsPage />} />
+                <Route path="projects" element={<ProjectsPage />} />
                 <Route path="workspaces/:workspaceId" element={<WorkspaceHomeRoute />} />
+                <Route path="workspaces/:workspaceId/settings" element={<ProjectSettingsRoute />} />
                 <Route path="automations" element={<AutomationsPage />} />
                 <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
                 <Route
@@ -164,6 +169,7 @@ async function mount(
                     element={<SettingsSectionRoute section="ai-engines" />}
                   />
                   <Route path="account" element={<SettingsSectionRoute section="account" />} />
+                  <Route path="plugins" element={<SettingsSectionRoute section="plugins" />} />
                   <Route path="computers" element={<ComputersPage />} />
                 </Route>
               </Route>

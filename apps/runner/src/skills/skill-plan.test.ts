@@ -1,67 +1,45 @@
 import { describe, expect, it } from "vitest";
 import { resolveSkillPlan } from "./skill-plan.js";
-
-const bundled = [{ name: "opensteer-threads", path: "/runner/skills/opensteer-threads" }];
-
+const skill = (plugin: string | null, path: string) => ({
+  plugin,
+  localName: "research",
+  fullName: plugin ? `${plugin}:research` : "research",
+  path,
+});
 describe("resolveSkillPlan", () => {
-  it("lets the Workspace layer shadow the integration layer by name", () => {
-    const plan = resolveSkillPlan({
-      bundled: [],
-      integration: [{ name: "research", path: "/state/integration/research" }],
-      workspace: [{ name: "research", path: "/workspace/skills/research" }],
-    });
-
-    expect(plan?.skills).toEqual([{ name: "research", path: "/workspace/skills/research" }]);
+  it("retains two plugins and a loose skill with the same local name", () => {
+    const skills = [skill("one", "/one"), skill("two", "/two"), skill(null, "/loose")];
+    expect(
+      resolveSkillPlan({
+        bundled: [skills[0]!],
+        integration: [skills[1]!],
+        workspace: [skills[2]!],
+      })?.skills,
+    ).toEqual(skills);
   });
-
-  it("lets the integration and Workspace layers shadow bundled skills by name", () => {
-    const plan = resolveSkillPlan({
-      bundled: [
-        { name: "shadowed-by-integration", path: "/runner/skills/one" },
-        { name: "shadowed-by-workspace", path: "/runner/skills/two" },
-        { name: "kept", path: "/runner/skills/three" },
-      ],
-      integration: [{ name: "shadowed-by-integration", path: "/state/integration/one" }],
-      workspace: [{ name: "shadowed-by-workspace", path: "/workspace/skills/two" }],
-    });
-
-    expect(plan?.skills).toEqual([
-      { name: "kept", path: "/runner/skills/three" },
-      { name: "shadowed-by-integration", path: "/state/integration/one" },
-      { name: "shadowed-by-workspace", path: "/workspace/skills/two" },
-    ]);
-  });
-
-  it("rejects a duplicate name inside the bundled layer", () => {
+  it("rejects duplicate full names across layers with both paths", () => {
     expect(() =>
       resolveSkillPlan({
-        bundled: [...bundled, { name: "opensteer-threads", path: "/runner/skills/other" }],
-        integration: [],
+        bundled: [skill("one", "/first")],
+        integration: [skill("one", "/second")],
         workspace: [],
       }),
-    ).toThrow("Duplicate Opensteer bundled Agent Skill name opensteer-threads");
+    ).toThrow("Duplicate Agent Skill full name one:research: /first and /second");
   });
-
-  it("rejects a duplicate name inside the integration layer", () => {
+  it("rejects duplicate loose names and colons in local names", () => {
     expect(() =>
       resolveSkillPlan({
         bundled: [],
-        integration: [
-          { name: "research", path: "/state/integration/a/research" },
-          { name: "research", path: "/state/integration/b/research" },
-        ],
-        workspace: [],
+        integration: [],
+        workspace: [skill(null, "/first"), skill(null, "/second")],
       }),
-    ).toThrow("Duplicate integration Agent Skill name research");
-  });
-
-  it("rejects an integration skill that claims the reserved Opensteer prefix", () => {
+    ).toThrow("Duplicate");
     expect(() =>
       resolveSkillPlan({
-        bundled,
-        integration: [{ name: "opensteer-threads", path: "/state/integration/opensteer-threads" }],
-        workspace: [],
+        bundled: [],
+        integration: [],
+        workspace: [{ ...skill(null, "/first"), localName: "one:research" }],
       }),
-    ).toThrow("reserved for Opensteer");
+    ).toThrow("Invalid");
   });
 });

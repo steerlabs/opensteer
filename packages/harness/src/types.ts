@@ -350,7 +350,9 @@ export interface HarnessSkillPlan {
 }
 
 export interface HarnessSkill {
-  readonly name: string;
+  readonly plugin: string | null;
+  readonly localName: string;
+  readonly fullName: string;
   readonly path: string;
 }
 

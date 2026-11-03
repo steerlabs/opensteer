@@ -1,3 +1,4 @@
+import { resolveResourceAccess } from "./resource-access.js";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
 import {
   checkIntegrationAccountBinding,
@@ -35,7 +36,6 @@ import {
   IntegrationDefinitionSummarySchema,
   IntegrationInstallationSchema,
   IntegrationServerSchema,
-  IntegrationSkillSchema,
   IntegrationToolSchema,
   IntegrationToolMaterialSchema,
   type IntegrationToolMaterial,
@@ -55,8 +55,6 @@ import {
   type IntegrationInstallationId,
   type IntegrationProviderAuthorization,
   type IntegrationServer,
-  type IntegrationSkill,
-  type IntegrationSkillId,
   type IntegrationServerId,
   type IntegrationTool,
   type IntegrationToolId,
@@ -92,7 +90,6 @@ import type {
   IntegrationInstallationTable,
   IntegrationServerTable,
   IntegrationToolTable,
-  IntegrationSkillTable,
 } from "./schema.js";
 import { cancelPending } from "./request-cancellation.js";
 import {
@@ -247,14 +244,6 @@ export interface DiscoveredIntegrationServer {
   readonly transport: IntegrationServer["transport"];
 }
 
-interface DiscoveredIntegrationSkill {
-  readonly description: string;
-  readonly digest: string;
-  readonly id: IntegrationSkillId;
-  readonly name: string;
-  readonly status: "active" | "disabled";
-}
-
 export interface CallableIntegrationTool {
   readonly grant: EffectiveIntegrationGrant;
   readonly installation: IntegrationInstallation;
@@ -271,12 +260,6 @@ export class ComputerAppNotOfferedError extends Error {
     this.name = "ComputerAppNotOfferedError";
     this.runnerName = runnerName;
   }
-}
-
-export interface GrantedIntegrationSkill {
-  readonly grant: EffectiveIntegrationGrant;
-  readonly installation: IntegrationInstallation;
-  readonly skill: IntegrationSkill;
 }
 
 export interface McpOAuthServerContext {
@@ -427,35 +410,8 @@ abstract class IntegrationPlatformStoreBase {
     return rows.map(integrationGrantFromRow);
   }
 
-  /**
-   * How the asking Thread stands to its owner's Main authority, or null when
-   * the Workspace is not their Main at all.
-   *
-   * A Main Workspace is its owner's own, and a Thread there reaches the
-   * owner's connections only when its lineage starts from a Main-profile
-   * Thread. A channel route runs as its creator without being them, so its
-   * root takes `workspace` even in their Main, and whatever that root
-   * delegates stays in its lineage. A Thread's profile and lineage never
-   * change, so neither does this answer.
-   */
   async mainAccess(input: IntegrationRequester): Promise<MainAccess | null> {
-    const [workspace, root] = await Promise.all([
-      this.database
-        .selectFrom("workspaces")
-        .select("id")
-        .where("id", "=", input.workspaceId)
-        .where("createdBy", "=", input.ownerUserId)
-        .where("kind", "=", "main")
-        .executeTakeFirst(),
-      this.database
-        .selectFrom("threads as asking")
-        .innerJoin("threads as root", "root.id", "asking.lineageRootThreadId")
-        .select("root.capabilityProfileId")
-        .where("asking.id", "=", input.threadId)
-        .executeTakeFirst(),
-    ]);
-    if (!workspace) return null;
-    return root?.capabilityProfileId === "main" ? "inherited" : "withheld";
+    return (await resolveResourceAccess(this.database, input)).mainAccess;
   }
 
   protected async installationInventory(): Promise<readonly IntegrationInstallation[]> {
@@ -467,30 +423,16 @@ abstract class IntegrationPlatformStoreBase {
       .execute();
     return rows.map(installationFromRow);
   }
-
-  protected async installationSkills(
-    installationId: IntegrationInstallationId,
-  ): Promise<readonly IntegrationSkill[]> {
-    const rows = await this.database
-      .selectFrom("integrationSkills")
-      .selectAll()
-      .where("installationId", "=", installationId)
-      .where("status", "=", "active")
-      .orderBy("name", "asc")
-      .limit(1_000)
-      .execute();
-    return rows.map(skillFromRow);
-  }
 }
 
 export interface InstallIntegrationInput {
+  readonly beforeInstall?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
   readonly settlementSessionId?: string | undefined;
   readonly adapterSnapshot: IntegrationAdapterSnapshot | null;
   readonly actorUserId: UserId | null;
   readonly installation: Omit<IntegrationInstallation, "createdAt" | "revision" | "updatedAt">;
   readonly requestId: string;
   readonly servers: readonly DiscoveredIntegrationServer[];
-  readonly skills?: readonly DiscoveredIntegrationSkill[];
   /** Rebuilds every live computer connection atomically with rematerialization. */
   readonly computerConnectionTools?: (
     connectionId: IntegrationConnectionId,
@@ -970,10 +912,6 @@ export async function uninstallIntegrationInTransaction(
     }
   }
   await transaction
-    .deleteFrom("integrationSkills")
-    .where("installationId", "=", installation.id)
-    .execute();
-  await transaction
     .deleteFrom("integrationServers")
     .where("installationId", "=", installation.id)
     .execute();
@@ -1099,7 +1037,12 @@ export async function installIntegrationInTransaction(
   const current = await transaction
     .selectFrom("integrationInstallations")
     .selectAll()
-    .where("name", "=", input.installation.name)
+    .$if(input.installation.sourceKind === "plugin", (q) =>
+      q.where("id", "=", input.installation.id),
+    )
+    .$if(input.installation.sourceKind !== "plugin", (q) =>
+      q.where("name", "=", input.installation.name),
+    )
     .forNoKeyUpdate()
     .executeTakeFirst();
   if (current && current.sourceKind !== input.installation.sourceKind) {
@@ -1141,6 +1084,7 @@ export async function installIntegrationInTransaction(
           manifest: jsonValue(input.installation.manifest),
           provenance: jsonValue(input.installation.provenance),
           revision: current.revision + 1,
+          pluginId: input.installation.pluginId ?? null,
           sourceKind: input.installation.sourceKind,
           status: input.installation.status,
           title: input.installation.title,
@@ -1164,6 +1108,7 @@ export async function installIntegrationInTransaction(
           name: input.installation.name,
           provenance: jsonValue(input.installation.provenance),
           revision: 1,
+          pluginId: input.installation.pluginId ?? null,
           sourceKind: input.installation.sourceKind,
           status: input.installation.status,
           title: input.installation.title,
@@ -1240,44 +1185,6 @@ export async function installIntegrationInTransaction(
       .where("id", "not in", retainedServerIds)
       .execute();
   }
-  const existingSkills = await transaction
-    .selectFrom("integrationSkills")
-    .selectAll()
-    .where("installationId", "=", installation.id)
-    .orderBy("id", "asc")
-    .forNoKeyUpdate()
-    .execute();
-  const skillByName = new Map(existingSkills.map((skill) => [skill.name, skill]));
-  const retainedSkillIds: IntegrationSkillId[] = [];
-  for (const discovered of input.skills ?? []) {
-    const current = skillByName.get(discovered.name);
-    const id = current?.id ?? discovered.id;
-    retainedSkillIds.push(id);
-    const values = {
-      description: discovered.description,
-      digest: discovered.digest,
-      status: discovered.status,
-      updatedAt: now,
-    };
-    if (current) {
-      await transaction
-        .updateTable("integrationSkills")
-        .set(values)
-        .where("id", "=", id)
-        .executeTakeFirstOrThrow();
-    } else {
-      await transaction
-        .insertInto("integrationSkills")
-        .values({ ...values, id, installationId: installation.id, name: discovered.name })
-        .executeTakeFirstOrThrow();
-    }
-  }
-  await transaction
-    .updateTable("integrationSkills")
-    .set({ status: "disabled", updatedAt: now })
-    .where("installationId", "=", installation.id)
-    .$if(retainedSkillIds.length > 0, (builder) => builder.where("id", "not in", retainedSkillIds))
-    .execute();
   if (input.computerConnectionTools) {
     const definition = IntegrationDefinitionSummarySchema.parse(
       input.installation.manifest.definition,
@@ -1343,6 +1250,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       this.database,
       (transaction) => discoverInstallationRequestWorkspaces(transaction, input.installation),
       async (transaction) => {
+        await input.beforeInstall?.(transaction);
         const mutation = await installIntegrationInTransaction(transaction, input);
         if (input.actorUserId !== null)
           await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
@@ -1731,7 +1639,6 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
         }[];
       };
       readonly servers: readonly IntegrationServer[];
-      readonly skills: readonly IntegrationSkill[];
       readonly tools: readonly IntegrationTool[];
     }[]
   > {
@@ -1751,18 +1658,45 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     // A lineage below its owner's Main sees only what this Workspace was
     // granted explicitly: the owner's personal accounts are neither usable
     // nor requestable there, so they are not listed either.
-    const connections =
+    let connections =
       mainAccess === "withheld"
         ? authority.connections.filter(({ id }) =>
             activeGrants.some(({ connectionId }) => connectionId === id),
           )
         : authority.connections;
+    const specialistThread = await this.database
+      .selectFrom("threads")
+      .select("specialistId")
+      .where("id", "=", input.threadId)
+      .executeTakeFirst();
+    const ceilings = new Map<string, IntegrationAccess | null>();
+    if (specialistThread?.specialistId) {
+      for (const connection of connections) {
+        const explicit = activeGrants.filter((g) => g.connectionId === connection.id);
+        const decision = await resolveResourceAccess(this.database, {
+          ...input,
+          explicitAccess: explicit.some((g) => g.access === "read-write")
+            ? "read-write"
+            : (explicit[0]?.access ?? null),
+          resource: {
+            type:
+              connection.definitionId === "macos-app"
+                ? "computer-app"
+                : connection.definitionId === "android-phone"
+                  ? "phone"
+                  : "integration",
+            id: connection.id,
+          },
+        });
+        ceilings.set(connection.id, decision.access);
+      }
+      connections = connections.filter((connection) => ceilings.get(connection.id));
+    }
     return Promise.all(
       installations.map(async (row) => {
         const installation = installationFromRow(row);
-        const [servers, skills, tools] = await Promise.all([
+        const [servers, tools] = await Promise.all([
           this.listServers(row.id),
-          this.listSkills(row.id),
           this.listTools(row.id, input.ownerUserId),
         ]);
         const serverById = new Map(servers.map((server) => [server.id, server]));
@@ -1794,6 +1728,13 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
           connectionId: IntegrationConnectionId | null,
           requiredAccess: IntegrationAccess,
         ) => {
+          if (
+            specialistThread?.specialistId &&
+            (!connectionId ||
+              !ceilings.get(connectionId) ||
+              (requiredAccess === "read-write" && ceilings.get(connectionId) !== "read-write"))
+          )
+            return false;
           const connection =
             connectionId === null
               ? null
@@ -1842,11 +1783,13 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
                 candidate.connectionId === connection.id,
             );
             return {
-              access: inheritedMainAccess
-                ? effectiveIntegrationAccess("read-write", connection)
-                : grant
-                  ? effectiveIntegrationAccess(grant.access, connection)
-                  : null,
+              access: specialistThread?.specialistId
+                ? (ceilings.get(connection.id) ?? null)
+                : inheritedMainAccess
+                  ? effectiveIntegrationAccess("read-write", connection)
+                  : grant
+                    ? effectiveIntegrationAccess(grant.access, connection)
+                    : null,
               account: connection.displayName,
               connectionId: connection.id,
               isDefault: grant?.isDefault ?? false,
@@ -1877,7 +1820,6 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
             }),
           },
           servers,
-          skills,
           tools,
         };
       }),
@@ -1921,20 +1863,6 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       .limit(100)
       .execute();
     return rows.map(serverFromRow);
-  }
-
-  async listSkills(
-    installationId: IntegrationInstallationId,
-  ): Promise<readonly IntegrationSkill[]> {
-    const rows = await this.database
-      .selectFrom("integrationSkills")
-      .selectAll()
-      .where("installationId", "=", installationId)
-      .where("status", "=", "active")
-      .orderBy("name", "asc")
-      .limit(1_000)
-      .execute();
-    return rows.map(skillFromRow);
   }
 
   async listTools(
@@ -3246,13 +3174,49 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     for (;;) {
       const generation = await this.authorityGeneration(input.ownerUserId);
       const cached = this.#callableToolsCache.get({ ...scope, generation });
-      if (cached) return cached;
+      if (cached) return this.narrowSpecialistTools(input, cached);
       const resolved = await this.resolveCallableTools({ ...input, inheritsMain });
       const verifiedGeneration = await this.authorityGeneration(input.ownerUserId);
       if (verifiedGeneration !== generation) continue;
       this.#callableToolsCache.set({ ...scope, generation }, resolved);
-      return resolved;
+      return this.narrowSpecialistTools(input, resolved);
     }
+  }
+
+  private async narrowSpecialistTools(
+    input: IntegrationRequester,
+    tools: readonly CallableIntegrationTool[],
+  ): Promise<readonly CallableIntegrationTool[]> {
+    const thread = await this.database
+      .selectFrom("threads")
+      .select("specialistId")
+      .where("id", "=", input.threadId)
+      .executeTakeFirst();
+    if (!thread?.specialistId) return tools;
+    const narrowed: CallableIntegrationTool[] = [];
+    for (const entry of tools) {
+      const connectionId = entry.grant.connectionId;
+      if (!connectionId) continue;
+      const connection = await this.database
+        .selectFrom("integrationConnections")
+        .select("integrationDefinitionId")
+        .where("id", "=", connectionId)
+        .executeTakeFirst();
+      const type =
+        connection?.integrationDefinitionId === "macos-app"
+          ? "computer-app"
+          : connection?.integrationDefinitionId === "android-phone"
+            ? "phone"
+            : "integration";
+      const decision = await resolveResourceAccess(this.database, {
+        ...input,
+        explicitAccess: entry.grant.access,
+        resource: { type, id: connectionId },
+      });
+      if (decision.access)
+        narrowed.push({ ...entry, grant: { ...entry.grant, access: decision.access } });
+    }
+    return narrowed;
   }
 
   async getToolInvocation(toolId: IntegrationToolId): Promise<IntegrationToolInvocation | null> {
@@ -3386,7 +3350,6 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
       inheritedMainAccess,
       installations: [...installationById.values()],
       ownerUserId: input.ownerUserId,
-      skills: [],
       storedGrants: grants,
       tools: rows.map((row) => ({
         ...toolFromRow(row),
@@ -3399,48 +3362,6 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
       workspaceId: input.workspaceId,
     });
     return resolved.tools.map(({ grant, tool }) => callableToolFromRow(byId.get(tool.id)!, grant));
-  }
-
-  async listGrantedSkills(
-    input: IntegrationRequester,
-  ): Promise<readonly GrantedIntegrationSkill[]> {
-    const [storedGrants, mainAccess] = await Promise.all([
-      this.listGrants(input),
-      this.mainAccess(input),
-    ]);
-    const inheritedMainAccess = mainAccess === "inherited";
-    const grants = storedGrants.filter(({ status }) => status === "active");
-    const installations = await this.installationInventory();
-    const installationIds = [
-      ...new Set(
-        (inheritedMainAccess
-          ? installations.filter(({ status }) => status === "active")
-          : grants
-        ).map((record) => ("installationId" in record ? record.installationId : record.id)),
-      ),
-    ];
-    if (installationIds.length === 0) return [];
-    const skillGroups = await Promise.all(
-      installationIds.map((installationId) => this.installationSkills(installationId)),
-    );
-    const installationById = new Map(
-      installations.map((installation) => [installation.id, installation]),
-    );
-    const resolved = resolveEffectiveGrants({
-      connections: [],
-      inheritedMainAccess,
-      installations,
-      ownerUserId: input.ownerUserId,
-      skills: skillGroups.flat(),
-      storedGrants,
-      tools: [],
-      workspaceId: input.workspaceId,
-    });
-    return resolved.skills.map(({ grant, skill }) => ({
-      grant,
-      installation: installationById.get(skill.installationId)!,
-      skill,
-    }));
   }
 }
 
@@ -3651,6 +3572,7 @@ function installationFromRow(
     createdAt: row.createdAt.toISOString(),
     description: row.description,
     id: row.id,
+    pluginId: row.pluginId,
     manifest: row.manifest,
     name: row.name,
     provenance: row.provenance,
@@ -3689,18 +3611,6 @@ function toolFromRow(row: IntegrationToolListingRow): IntegrationTool {
     serverId: row.serverId,
     status: row.status,
     title: row.title,
-  });
-}
-
-function skillFromRow(row: Selectable<IntegrationSkillTable>): IntegrationSkill {
-  return IntegrationSkillSchema.parse({
-    description: row.description,
-    digest: row.digest,
-    id: row.id,
-    installationId: row.installationId,
-    name: row.name,
-    status: row.status,
-    updatedAt: row.updatedAt.toISOString(),
   });
 }
 

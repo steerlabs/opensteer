@@ -167,7 +167,6 @@ describe("definitionOf", () => {
     return {
       installation: { manifest: { definition, digest: "d", kind: "catalog" } },
       servers: [],
-      skills: [],
       tools: [],
     } as unknown as InstallationEntry;
   }
@@ -243,7 +242,6 @@ function computerIntegration(): DefinedIntegration {
     entry: {
       installation: { status: "active" },
       servers: [{ connectionRequirement: { definitionId: "apple-messages", kind: "computer" } }],
-      skills: [],
       tools: [],
     },
   } as unknown as DefinedIntegration;
@@ -294,7 +292,6 @@ function integration(): DefinedIntegration {
           },
         },
       ],
-      skills: [],
       tools: [],
     },
   } as unknown as DefinedIntegration;

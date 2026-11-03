@@ -134,6 +134,10 @@ const ResponseEnvelopeSchema = z.discriminatedUnion("ok", [
 ]);
 
 export interface NativeFilesystem {
+  relocateDirectory?(
+    input: { readonly root: string; readonly path: string; readonly destination: string },
+    signal: AbortSignal,
+  ): Promise<void>;
   directoryIdentity(
     input: { readonly path: string; readonly root: string },
     signal: AbortSignal,
@@ -274,6 +278,13 @@ export class NativeFsHelper implements NativeFilesystem, NativeWorkspaceFilesAut
       throw new Error("Native filesystem containment is unavailable on this platform");
     }
     return result;
+  }
+
+  async relocateDirectory(
+    input: { readonly root: string; readonly path: string; readonly destination: string },
+    signal: AbortSignal,
+  ): Promise<void> {
+    await this.#request({ ...input, operation: "relocate-directory" }, z.object({}), signal);
   }
 
   async directoryIdentity(

@@ -122,7 +122,7 @@ describe("container build context", () => {
     expect(containerfile).toContain("OPENSTEER_HOST_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION}");
   });
 
-  it("packages the required sandbox and FUSE runtime contract into the Runner image", async () => {
+  it("packages the required sandbox runtime contract without retired FUSE dependencies into the Runner image", async () => {
     const containerfile = await readFile(resolve("deploy/container/Containerfile"), "utf8");
     const runnerStart = containerfile.indexOf("FROM node-runtime AS runner\n");
     const runnerEnd = containerfile.indexOf("\nFROM ", runnerStart + 1);
@@ -130,7 +130,7 @@ describe("container build context", () => {
     expect(runnerStart).toBeGreaterThanOrEqual(0);
     expect(runnerEnd).toBeGreaterThan(runnerStart);
     expect(runnerStage).toContain(
-      "apt-get install --no-install-recommends --yes fuse3 libcap2 openssh-client openssl rsync socat",
+      "apt-get install --no-install-recommends --yes libcap2 openssh-client openssl rsync socat",
     );
     expect(containerfile).toContain("AS bubblewrap-build");
     expect(containerfile).toContain(
@@ -147,8 +147,8 @@ describe("container build context", () => {
     expect(runnerStage).toContain('test "$(bwrap --version)" = "bubblewrap 0.11.2"');
     expect(runnerStage).toContain("test ! -u /usr/local/bin/bwrap");
     expect(runnerStage).toContain("test -x /usr/bin/socat");
-    expect(runnerStage).toContain("ln --force --symbolic /proc/mounts /etc/mtab");
-    expect(runnerStage).toContain('test "$(readlink /etc/mtab)" = /proc/mounts');
+    expect(runnerStage).not.toContain("fuse3");
+    expect(runnerStage).not.toContain("/etc/mtab");
   });
 
   it("projects exact Browser and Runner OCI seccomp profiles", async () => {

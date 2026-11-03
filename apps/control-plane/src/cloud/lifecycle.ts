@@ -422,7 +422,7 @@ export class CloudDeploymentLifecycle {
           authority.data.document.canonicalOrigin === row.canonicalOrigin &&
           authority.data.document.deploymentShape.kind === "server" &&
           hostDiscoveryDefaultWorkspaceBacking(authority.data.document.deploymentShape) ===
-            "portablefs";
+            "local-directory";
         if (
           workloads.ready &&
           published &&

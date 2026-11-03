@@ -179,7 +179,7 @@ async function run(): Promise<void> {
       deploymentId: createId("deployment"),
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
     }),
     bootstrapMethods: ["password"],
     createdAt: now,

@@ -32,33 +32,14 @@ const composeFiles = ["deploy/self-host/compose.yaml", ...overlays].map((file) =
 const arguments_ = ["compose"];
 for (const file of composeFiles) arguments_.push("--file", file);
 arguments_.push("config", "--format", "json");
-const portableFsOverlay = overlays.some((file) => file.endsWith("compose.portablefs.yaml"));
-const workspaceBacking = portableFsOverlay
-  ? process.env.OPENSTEER_DEFAULT_WORKSPACE_BACKING || "portablefs"
-  : "local-directory";
+const workspaceBacking = "local-directory";
 const canonicalOrigin = process.env.OPENSTEER_CANONICAL_ORIGIN || "https://opensteer.example.test";
-// The private gateway origin is reachable only from inside this stack, which
-// holds while local-directory storage keeps every Runner cohosted. A PortableFS
-// stack can attach a Runner from outside it, so Host requires the canonical
-// origin there and this template has to select the same one.
-const runtimeOrigin =
-  process.env.OPENSTEER_RUNTIME_ORIGIN ||
-  (portableFsOverlay ? canonicalOrigin : "https://gateway:8443");
-if (portableFsOverlay && workspaceBacking !== "portablefs") {
-  fail("compose.portablefs.yaml requires OPENSTEER_DEFAULT_WORKSPACE_BACKING=portablefs.");
-}
-if (portableFsOverlay && runtimeOrigin !== canonicalOrigin) {
-  fail("A PortableFS stack requires OPENSTEER_RUNTIME_ORIGIN to equal OPENSTEER_CANONICAL_ORIGIN.");
-}
 if (
-  !portableFsOverlay &&
-  process.env.OPENSTEER_DEFAULT_WORKSPACE_BACKING !== undefined &&
+  process.env.OPENSTEER_DEFAULT_WORKSPACE_BACKING &&
   process.env.OPENSTEER_DEFAULT_WORKSPACE_BACKING !== "local-directory"
-) {
-  fail(
-    "Base self-host Compose requires OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory; PortableFS requires compose.portablefs.yaml.",
-  );
-}
+)
+  fail("Self-host Compose requires local-directory Workspace storage.");
+const runtimeOrigin = process.env.OPENSTEER_RUNTIME_ORIGIN || "https://gateway:8443";
 
 const rendered = spawnSync("docker", arguments_, {
   cwd: repositoryRoot,
@@ -69,41 +50,11 @@ const rendered = spawnSync("docker", arguments_, {
     OPENSTEER_SOURCE_REVISION: process.env.OPENSTEER_SOURCE_REVISION || sourceRevision,
     OPENSTEER_DEPLOYMENT_KIND: "server",
     OPENSTEER_DEFAULT_WORKSPACE_BACKING: workspaceBacking,
-    ...(portableFsOverlay
-      ? { OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: "" }
-      : {
-          OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID:
-            process.env.OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID ||
-            "env_00000000-0000-5000-8000-000000000101",
-        }),
+    OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID:
+      process.env.OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID ||
+      "env_00000000-0000-5000-8000-000000000101",
     OPENSTEER_MODE: "production",
     OPENSTEER_RUNTIME_ORIGIN: runtimeOrigin,
-    OPENSTEER_PORTABLEFS_ARTIFACT_PATH:
-      process.env.OPENSTEER_PORTABLEFS_ARTIFACT_PATH || "/opt/opensteer/portablefs",
-    OPENSTEER_PORTABLEFS_AUTHORIZATION_DOMAIN:
-      process.env.OPENSTEER_PORTABLEFS_AUTHORIZATION_DOMAIN || "opensteer-test",
-    OPENSTEER_PORTABLEFS_SERVICE_ID:
-      process.env.OPENSTEER_PORTABLEFS_SERVICE_ID || "portablefs-test-deployment",
-    OPENSTEER_PORTABLEFS_MANAGER_CA_PATH:
-      process.env.OPENSTEER_PORTABLEFS_MANAGER_CA_PATH || "/tmp/portablefs-manager-ca.pem",
-    OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH:
-      process.env.OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH || "/tmp/portablefs-product.cert",
-    OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH:
-      process.env.OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH || "/tmp/portablefs-product.key",
-    OPENSTEER_PORTABLEFS_MANAGER_URL:
-      process.env.OPENSTEER_PORTABLEFS_MANAGER_URL || "https://portablefs.example.test",
-    OPENSTEER_PORTABLEFS_PRODUCT_ISSUER:
-      process.env.OPENSTEER_PORTABLEFS_PRODUCT_ISSUER || "opensteer-test",
-    OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH:
-      process.env.OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH ||
-      "/tmp/portablefs-product-signing.key",
-    OPENSTEER_PORTABLEFS_SHA256: process.env.OPENSTEER_PORTABLEFS_SHA256 || "0".repeat(64),
-    OPENSTEER_PORTABLEFS_SOURCE_DIR:
-      process.env.OPENSTEER_PORTABLEFS_SOURCE_DIR || "/tmp/portablefs",
-    OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES:
-      process.env.OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES || "536870912",
-    OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT:
-      process.env.OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT || "50000",
     OPENSTEER_CANONICAL_ORIGIN: canonicalOrigin,
   },
 });
@@ -127,14 +78,8 @@ const controlCaExporter = service(project, "control-ca-export");
 const hostVolumes = volumes(host);
 const runtimeVolumes = volumes(runtime);
 const runtimeTmpfs = Array.isArray(runtime.tmpfs) ? runtime.tmpfs : [];
+if (!runner) fail("local-directory verification requires compose.runner-linux.yaml.");
 const ownerEnrollmentOverlay = overlays.some((file) => file.endsWith("compose.initial-owner.yaml"));
-
-if (!portableFsOverlay && !runner) {
-  fail("local-directory verification requires compose.runner-linux.yaml.");
-}
-if (workspaceBacking === "portablefs" && !runner) {
-  fail("portablefs verification requires compose.runner-portablefs-linux.yaml.");
-}
 
 assert(
   gateway.environment?.OPENSTEER_SITE_ADDRESS === host.environment?.OPENSTEER_CANONICAL_ORIGIN,
@@ -193,59 +138,10 @@ assert(
   "Host must not receive the Browser Runtime's private profile-state fetch origin.",
 );
 assert(
-  host.environment?.OPENSTEER_HOST_PUBLIC_KEY_PATH ===
-    (portableFsOverlay
-      ? "/var/lib/opensteer-public/host-public.pem"
-      : "/var/lib/opensteer/keys/host-public.pem"),
+  host.environment?.OPENSTEER_HOST_PUBLIC_KEY_PATH === "/var/lib/opensteer/keys/host-public.pem",
   "Host must keep its public key on the configured durable path.",
 );
-if (portableFsOverlay) {
-  const files = service(project, "files");
-  assert(
-    hasVolume(hostVolumes, "browser-trust", "/var/lib/opensteer-public", false) &&
-      hasVolume(volumes(files), "browser-trust", "/request-trust", true),
-    "PortableFS Files must read the Host request-signing public key from a read-only shared volume.",
-  );
-  assert(
-    host.environment?.OPENSTEER_DEFAULT_WORKSPACE_BACKING === workspaceBacking &&
-      host.environment?.OPENSTEER_DEPLOYMENT_KIND === "server",
-    "PortableFS Host must receive the self-host axes.",
-  );
-  assert(
-    host.environment?.OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID === undefined &&
-      host.environment?.OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH === undefined &&
-      host.environment?.OPENSTEER_LOCAL_WORKSPACE_ROOT === undefined,
-    "PortableFS Host must not receive local Workspace configuration.",
-  );
-  assert(
-    !hasVolume(hostVolumes, "workspace-data", "/var/lib/opensteer-workspaces", false) &&
-      !hasVolume(hostVolumes, "workspace-registry", "/var/lib/opensteer-workspace-registry", false),
-    "PortableFS Host must not mount local Workspace volumes.",
-  );
-  assert(
-    project.services?.["workspace-storage-init"] === undefined &&
-      project.volumes?.["workspace-data"] === undefined &&
-      project.volumes?.["workspace-registry"] === undefined,
-    "A PortableFS stack must not retain the local Workspace initializer or volumes.",
-  );
-  assert(
-    host.environment?.OPENSTEER_PORTABLEFS_SERVICE_ID === "portablefs-test-deployment" ||
-      host.environment?.OPENSTEER_PORTABLEFS_SERVICE_ID ===
-        process.env.OPENSTEER_PORTABLEFS_SERVICE_ID,
-    "Host must receive the stable PortableFS deployment identity.",
-  );
-  assert(
-    host.environment?.OPENSTEER_PORTABLEFS_MANAGER_CA_PATH ===
-      "/run/secrets/portablefs_manager_ca" &&
-      host.environment?.OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH ===
-        "/run/secrets/portablefs_product_mtls_cert" &&
-      host.environment?.OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH ===
-        "/run/secrets/portablefs_product_mtls_key" &&
-      host.environment?.OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH ===
-        "/run/secrets/portablefs_product_authorization_key",
-    "Host must receive the PortableFS product mTLS and authorization identities as separate files.",
-  );
-} else {
+{
   const workspaceInitializer = optionalService(project, "workspace-storage-init");
   assert(
     !hasVolume(hostVolumes, "browser-trust", "/var/lib/opensteer-public", false) &&
@@ -269,9 +165,8 @@ if (portableFsOverlay) {
     "The Host must hold no local Workspace paths: the owning Runner owns that disk.",
   );
   assert(
-    host.environment?.OPENSTEER_PORTABLEFS_MANAGER_URL === undefined &&
-      host.environment?.OPENSTEER_FILES_SERVICE_URL === undefined,
-    "Base self-host Compose must not configure PortableFS or Files.",
+    host.environment?.OPENSTEER_FILES_SERVICE_URL === undefined,
+    "Base self-host Compose must not configure a Files service.",
   );
   assert(
     !hasVolume(hostVolumes, "workspace-data", "/var/lib/opensteer-workspaces", false) &&
@@ -305,21 +200,7 @@ if (runner) {
       hasVolume(volumes(runner), "control-ca", "/control-ca", true),
     "A cohosted Runner must use the exported public control CA for its WebSocket and Host-issued HTTPS callbacks.",
   );
-  if (portableFsOverlay) {
-    assert(
-      runner.environment?.OPENSTEER_RUNNER_WORKSPACE_BACKINGS === "portablefs" &&
-        runner.environment?.OPENSTEER_PORTABLEFS_MOUNT_BINARY === "/opt/portablefs/portablefs" &&
-        runner.environment?.OPENSTEER_PORTABLEFS_MOUNT_SHA256 ===
-          (process.env.OPENSTEER_PORTABLEFS_SHA256 || "0".repeat(64)),
-      "A PortableFS Runner overlay must pin the PortableFS mount binary and backing.",
-    );
-    assert(
-      runner.environment?.OPENSTEER_RUNNER_WORKSPACE_ROOT === "/workspaces" &&
-        runner.environment?.OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH === undefined &&
-        runner.environment?.OPENSTEER_LOCAL_WORKSPACE_ROOT === undefined,
-      "A PortableFS Runner must not receive local Workspace configuration.",
-    );
-  } else {
+  {
     const localEnvironmentId =
       process.env.OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID ||
       "env_00000000-0000-5000-8000-000000000101";
@@ -332,11 +213,8 @@ if (runner) {
       "The single-node local Runner must share Host's stable environment and managed paths.",
     );
     assert(
-      runner.environment?.OPENSTEER_PORTABLEFS_MOUNT_BINARY === undefined &&
-        runner.environment?.OPENSTEER_PORTABLEFS_MOUNT_SHA256 === undefined &&
-        runner.cap_add === undefined &&
-        runner.devices === undefined,
-      "The local-directory Runner must not receive PortableFS privileges or binaries.",
+      runner.cap_add === undefined && runner.devices === undefined,
+      "The local-directory Runner must not receive mount privileges.",
     );
   }
 }
@@ -432,7 +310,8 @@ for (const path of [
   "/internal/v1/browser-sources/connect",
   "/internal/v1/egress",
   "/internal/v1/integration-mcp",
-  "/internal/v1/integration-skills",
+  "/internal/v1/plugin-cache/*",
+  "/internal/v1/computer-plugin-packages/*",
   "/internal/v1/mcp",
   "/internal/v1/mount-grants/exchange",
   "/internal/v1/apps/tunnel",

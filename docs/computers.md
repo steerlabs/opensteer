@@ -91,7 +91,7 @@ Keep private-state denial intact. Eligibility belongs to
 [machine-access-setup.test.ts](../apps/runner/src/shell/machine-access-setup.test.ts).
 PTYs, remote/agent/X11 forwarding, per-user allowlists, Windows endpoints and peer-to-peer
 transport are outside this contract. Agent-facing SSH procedures remain in the shipped
-[computer skill](../apps/runner/agent-skills/skills/opensteer-computers/SKILL.md).
+[computer skill](../apps/runner/agent-skills/skills/computers/SKILL.md).
 
 ## Computer apps
 
@@ -124,7 +124,7 @@ missing an OS grant needs local settings, not another approval. See
 
 Program/loopback MCP servers run on the chosen computer, never with Host authority.
 Internet servers run through the Host over HTTPS; Host loopback is refused. On Personal,
-the default is Main, where plugin files exist; a Host-local program path cannot imply those
+the default is Main. Packages are verified and cached on the selected Runner; a Host-local program path cannot imply those
 files exist on a different computer.
 
 The owner reviews the program, arguments, working directory and environment—or URL

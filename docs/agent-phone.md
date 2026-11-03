@@ -58,7 +58,7 @@ protected: Android 13+ hides the bouncer from MediaProjection, so wake dismisses
 keyguard that needs no credential and otherwise the person unlocks on the phone. Lock is
 not Stop. Any PIN supplied to an agent enters its transcript and, if remembered, the
 Workspace; follow the existing
-[credential boundaries](../apps/runner/agent-skills/skills/opensteer-integrations/SKILL.md#boundaries).
+[credential boundaries](../apps/runner/agent-skills/skills/integrations/SKILL.md#boundaries).
 
 ## 4. The Runner
 

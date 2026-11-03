@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
+import { readFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,6 +14,18 @@ afterEach(async () => {
 });
 
 describe("renderHarnessSkillCatalog", () => {
+  it("reads local frontmatter and renders full identities above the old 64 KiB limit", async () => {
+    const root = await temporaryDirectory();
+    const plan = await collisionSkills(root);
+    const file = join(plan.skills[0]!.path, "SKILL.md");
+    await writeFile(file, (await readFile(file, "utf8")) + "x".repeat(65_536));
+    const catalog = await renderHarnessSkillCatalog(plan);
+    for (const skill of plan.skills)
+      expect(catalog).toContain(`- ${skill.fullName}: ${skill.fullName} workflow`);
+    expect(catalog).not.toContain("Metadata unavailable");
+    expect(catalog).not.toContain("Private");
+  });
+
   it("preserves resolved order, parses YAML scalars, and omits skill bodies", async () => {
     const root = await temporaryDirectory();
     const first = await writeSkill(
@@ -29,8 +42,8 @@ describe("renderHarnessSkillCatalog", () => {
     );
     const catalog = await renderHarnessSkillCatalog({
       skills: [
-        { name: "shared", path: first },
-        { name: "other", path: second },
+        { plugin: null, localName: "shared", fullName: "shared", path: first },
+        { plugin: null, localName: "other", fullName: "other", path: second },
       ],
     });
     expect(catalog).toBe(
@@ -48,7 +61,9 @@ describe("renderHarnessSkillCatalog", () => {
       "name: literal # selected name\ndescription: |-\n  First line\n  second line",
     );
     await expect(
-      renderHarnessSkillCatalog({ skills: [{ name: "literal", path }] }),
+      renderHarnessSkillCatalog({
+        skills: [{ plugin: null, localName: "literal", fullName: "literal", path }],
+      }),
     ).resolves.toContain("- literal: First line second line");
   });
 
@@ -60,16 +75,16 @@ describe("renderHarnessSkillCatalog", () => {
       root,
       "huge",
       "name: huge\ndescription: Fine",
-      "x".repeat(65_536),
+      "x".repeat(262_144),
     );
     const missing = join(root, "missing");
 
     const catalog = await renderHarnessSkillCatalog({
       skills: [
-        { name: "valid", path: valid },
-        { name: "malformed", path: malformed },
-        { name: "missing", path: missing },
-        { name: "huge", path: huge },
+        { plugin: null, localName: "valid", fullName: "valid", path: valid },
+        { plugin: null, localName: "malformed", fullName: "malformed", path: malformed },
+        { plugin: null, localName: "missing", fullName: "missing", path: missing },
+        { plugin: null, localName: "huge", fullName: "huge", path: huge },
       ],
     });
 
@@ -89,7 +104,9 @@ describe("renderHarnessSkillCatalog", () => {
       "verbose",
       `name: verbose\ndescription: ${"x".repeat(2_000)}`,
     );
-    const catalog = await renderHarnessSkillCatalog({ skills: [{ name: "verbose", path }] });
+    const catalog = await renderHarnessSkillCatalog({
+      skills: [{ plugin: null, localName: "verbose", fullName: "verbose", path }],
+    });
     const rendered = catalog!.split("\n")[2]!.slice("- verbose: ".length);
     expect(Array.from(rendered)).toHaveLength(1_024);
     expect(rendered.endsWith("…")).toBe(true);
@@ -97,13 +114,17 @@ describe("renderHarnessSkillCatalog", () => {
 
   it("rejects relative paths and duplicate selected names as plan defects", async () => {
     await expect(
-      renderHarnessSkillCatalog({ skills: [{ name: "relative", path: "skills/relative" }] }),
+      renderHarnessSkillCatalog({
+        skills: [
+          { plugin: null, localName: "relative", fullName: "relative", path: "skills/relative" },
+        ],
+      }),
     ).rejects.toThrow(/absolute/u);
     await expect(
       renderHarnessSkillCatalog({
         skills: [
-          { name: "same", path: "/first" },
-          { name: "same", path: "/second" },
+          { plugin: null, localName: "same", fullName: "same", path: "/first" },
+          { plugin: null, localName: "same", fullName: "same", path: "/second" },
         ],
       }),
     ).rejects.toThrow(/Duplicate/u);

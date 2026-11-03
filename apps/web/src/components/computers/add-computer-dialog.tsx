@@ -153,9 +153,6 @@ function usePersonalReachable(input: {
 
 /**
  * The connection code a computer with no screen redeems.
- *
- * It stays exactly as capable as it was — both packagings, and the cloud
- * Workspace variants — and merely stops being the first thing the page offers.
  */
 function HeadlessEnrollment({
   client,
@@ -265,26 +262,6 @@ function HeadlessEnrollment({
           ) : (
             <p className="field__hint">{bareHostUnavailable}</p>
           )}
-          {commands.sharedStorage ? (
-            <>
-              <p className="field__hint">
-                Either command gives the computer folders of its own. To also work on this
-                deployment&apos;s cloud Workspaces from it, use the matching command below instead.
-              </p>
-              <CopyBlock
-                hint={`${containerPrerequisite} Also needs FUSE and the PortableFS binary on that computer.`}
-                label={`${containerLabel} — also cloud Workspaces`}
-                value={commands.sharedStorage.container}
-              />
-              {commands.sharedStorage.bareHost ? (
-                <CopyBlock
-                  hint={`${bareHostPrerequisite} Also needs FUSE and the PortableFS binary on that computer.`}
-                  label={`${bareHostLabel} — also cloud Workspaces`}
-                  value={commands.sharedStorage.bareHost}
-                />
-              ) : null}
-            </>
-          ) : null}
           {new Date(issued.expiresAt).getTime() <= Date.now() ? (
             <button className="btn" onClick={() => setIssued(null)} type="button">
               Create a new code

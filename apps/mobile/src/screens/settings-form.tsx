@@ -6,13 +6,15 @@ import { AppText, RowGroup, SecondaryButton, SectionLabel, SwitchRow } from "../
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import {
+  agentAccessSectionTitle,
   remoteAdministrationActions,
   remoteAdministrationActionLabels,
   browserProfilesSettingsRow,
   chromeSettingsRow,
   computersSettingsFooter,
   connectedAppsSettingsRow,
-  specialistNotificationsFooter,
+  pluginsSettingsRow,
+  projectNotificationsFooter,
   type SettingsActionModel,
 } from "./settings-model.js";
 import type { SettingsFormProps } from "./settings-form.types.js";
@@ -154,15 +156,22 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
         )}
 
         {props.signIns === null ? null : (
-          <Section label="Sign-ins">
+          <Section label={agentAccessSectionTitle}>
             <RowGroup>
               {[
                 <LinkRow
                   detail={connectedAppsSettingsRow.detail}
                   key="connected-apps"
-                  lead={<Tile symbol="puzzlepiece.extension" />}
+                  lead={<Tile symbol="powerplug" />}
                   onPress={props.signIns.onConnectedApps}
                   title={connectedAppsSettingsRow.title}
+                />,
+                <LinkRow
+                  detail={pluginsSettingsRow.detail}
+                  key="plugins"
+                  lead={<Tile symbol="puzzlepiece.extension" />}
+                  onPress={props.signIns.onPlugins}
+                  title={pluginsSettingsRow.title}
                 />,
                 <LinkRow
                   detail={chromeSettingsRow.detail}
@@ -230,7 +239,7 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
 
         {/* Mutes are kept by the Host, so they don't wait on this phone's registration. */}
         {notifications === null || props.agents.length === 0 ? null : (
-          <Section footer={specialistNotificationsFooter} label="Notifications from specialists">
+          <Section footer={projectNotificationsFooter} label="Notifications from projects">
             <RowGroup>
               {props.agents.map((agent) => (
                 <SwitchRow

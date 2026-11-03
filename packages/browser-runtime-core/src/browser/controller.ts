@@ -1289,8 +1289,8 @@ export class BrowserController {
           "fillLogin requires valid parameters and an attached page session.",
         );
       }
-      if (this.claims.access !== "full-control") {
-        throw new BrowserRuntimeError("forbidden", "Filling a login requires full-control access.");
+      if (this.claims.access !== "read-write") {
+        throw new BrowserRuntimeError("forbidden", "Filling a login requires read-write access.");
       }
       this.ledger.recordAgentCommand(targetId);
       const status = await this.signIns.fill({
@@ -1777,8 +1777,8 @@ export class BrowserController {
       { type: "signin.probe" | "login.authorize" | "login.cancel" }
     >,
   ): void {
-    if (this.claims.access !== "full-control") {
-      throw new BrowserRuntimeError("forbidden", "Sign-ins require full-control access.");
+    if (this.claims.access !== "read-write") {
+      throw new BrowserRuntimeError("forbidden", "Sign-ins require read-write access.");
     }
     if (message.type === "login.cancel") {
       this.signIns.cancel(message.operationId, message.reason);
@@ -1828,10 +1828,10 @@ export class BrowserController {
     try {
       // Writing sign-in state changes who the browser is signed in as, for
       // every session on this host, so a view-only attachment cannot ask.
-      if (this.claims.access !== "full-control") {
+      if (this.claims.access !== "read-write") {
         throw new BrowserRuntimeError(
           "forbidden",
-          "Importing browser state requires full-control access.",
+          "Importing browser state requires read-write access.",
         );
       }
       // Answer before the Host's own deadline, and stop the write if it has not

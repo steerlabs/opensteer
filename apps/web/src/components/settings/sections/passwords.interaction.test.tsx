@@ -303,7 +303,7 @@ function page(
   const snapshot: HostSnapshot = input.server
     ? {
         ...base,
-        deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
         identityConfig: base.identityConfig && {
           ...base.identityConfig,
           deployment: { cloud: true, kind: "self-hosted", name: "Design Cloud" },

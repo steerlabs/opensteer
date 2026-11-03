@@ -90,7 +90,7 @@ describe("around a conversation", () => {
   // Failure: an old Host without `task-family-v1` sends no automations, and a
   // conversation with only those must not keep an empty control.
   it("has nothing to show for a conversation with nothing around it", () => {
-    const threadId = titled("Review PortableFS integration");
+    const threadId = titled("Review storage integration");
     expect(glance(source, threadId)?.family?.automations).toBe(1);
     const old = { ...source, browserSessions: [], threadAutomations: {} };
     expect(glance(old, threadId)).toBeNull();

@@ -56,7 +56,7 @@ export interface HarnessSandboxOptions {
   readonly stateDirectory: string;
   /**
    * Every Workspace backing root this Runner shares between users (the
-   * PortableFS root; the local-directory root when it is owner-scoped). Other
+   * local-directory root when it is owner-scoped). Other
    * users' Workspaces live under them, so they are masked like the data
    * directory and only this Run's roots are re-exposed. A single-owner root is
    * one person's and is not listed.
@@ -71,8 +71,8 @@ export interface HarnessSandboxRunPlan {
   readonly environment: Readonly<Record<string, string>>;
   /** Absent when this Run has no machine access. */
   readonly launchDirectory: string | undefined;
-  /** Absent when no integration skills were materialized for this Thread. */
-  readonly integrationSkillsDirectory: string | undefined;
+  /** Absent when no plugin skills were materialized for this Thread. */
+  readonly pluginCacheDirectories: readonly string[];
   readonly providerState: HarnessProviderState;
   readonly threadStateDirectory: string;
   readonly workspacePath: string;
@@ -140,9 +140,7 @@ export async function harnessSandboxMounts(
       { mode: "--bind", path: providerHome },
       { mode: "--bind", path: run.providerState.store.directory },
       { mode: "--ro-bind", path: run.threadStateDirectory },
-      ...(run.integrationSkillsDirectory
-        ? [{ mode: "--ro-bind" as const, path: run.integrationSkillsDirectory }]
-        : []),
+      ...run.pluginCacheDirectories.map((path) => ({ mode: "--ro-bind" as const, path })),
     ],
     workspaceRoots: [run.workspacePath, ...run.writableRoots],
   });
@@ -438,7 +436,7 @@ export class HarnessSandbox implements HarnessProcessSandbox {
       const wrapper = await this.plan({
         ...(ownAttachmentDirectory ? { attachmentDirectory: ownAttachmentDirectory } : {}),
         environment: this.#environment,
-        integrationSkillsDirectory: undefined,
+        pluginCacheDirectories: [],
         launchDirectory,
         providerState: {
           continuationKey: "sandbox-proof",

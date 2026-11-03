@@ -5,11 +5,11 @@ import {
   RunnerBootIdSchema,
   RunnerConnectionIdSchema,
   RunnerConnectionLeaseIdSchema,
-  runnerEnvironmentIds,
   RunnerDescriptorSchema,
+  runnerEnvironmentIds,
 } from "@opensteer/protocol";
-import { randomUUID } from "node:crypto";
 import { TriggerWatchActivationSchema } from "@opensteer/triggers";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { WatchService, type WatchServiceOptions } from "./watch-service.js";
 
@@ -133,16 +133,13 @@ describe("WatchService", () => {
       workspace: WorkspaceSchema.parse({
         ...fixture.context.workspace,
         backing: {
+          kind: "local-directory",
           generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: "test-volume",
+          bindingId: createId("workspaceBinding"),
+          ownerEnvironmentId: createId("environment"),
+          storageAuthorityId: createId("storageAuthority"),
         },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+
         id: sharedWorkspaceId,
       }),
     };
@@ -152,13 +149,13 @@ describe("WatchService", () => {
     const recordWatchUnavailable = vi.fn<WatchServiceOptions["store"]["recordWatchUnavailable"]>(
       async () => ({
         ...sharedContext.activation,
-        lastError: "Runner does not support portablefs Workspace access",
+        lastError: "Runner does not support Workspace access",
         observed: "backoff",
       }),
     );
     const plan = vi.fn<WatchServiceOptions["workspaceAccess"]["plan"]>(async ({ workspace }) => {
-      if (workspace.backing.kind === "portablefs") {
-        throw new Error("Runner does not support portablefs Workspace access");
+      if (workspace.id === sharedWorkspaceId || workspace.backing.kind !== "local-directory") {
+        throw new Error("Runner does not support Workspace access");
       }
       if (workspace.backing.storageAuthorityId === null) {
         throw new Error("Workspace predates machine-owned storage");
@@ -190,7 +187,7 @@ describe("WatchService", () => {
       expect(recordWatchUnavailable).toHaveBeenCalledWith(
         expect.objectContaining({
           activationId: sharedContext.activation.id,
-          reason: "Runner does not support portablefs Workspace access",
+          reason: "Runner does not support Workspace access",
         }),
       );
     } finally {
@@ -373,7 +370,7 @@ function watchFixture(status: "provisioning" | "ready" = "ready"): {
         ownerEnvironmentId: environmentId,
         storageAuthorityId,
       },
-      capacityPolicy: { kind: "host-filesystem" },
+
       createdAt: new Date().toISOString(),
       createdBy: userId,
       id: workspaceId,
@@ -397,7 +394,6 @@ function watchFixture(status: "provisioning" | "ready" = "ready"): {
         maxConcurrentRuns: 4,
         providerStateModes: ["isolated"],
         workspaceBackings: ["local-directory"],
-        workspaceMounts: [],
       },
     },
     name: "Runner",

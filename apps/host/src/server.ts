@@ -52,8 +52,8 @@ import {
 import {
   AttachmentIdSchema,
   BrowserProfileIdSchema,
-  CommandIdSchema,
   CHAT_THREAD_TITLE,
+  CommandIdSchema,
   DEFAULT_THREAD_ACCESS_MODE,
   EnvironmentIdSchema,
   HarnessInstanceIdSchema,
@@ -65,7 +65,6 @@ import {
   harnessDriverLabel,
   isPlaceContentPart,
   unsupportedVersionReason,
-  workspaceWakesOnDemand,
   type AgentEvent,
   type AuthenticatedSession,
   type DeploymentDisplayKind,
@@ -94,7 +93,6 @@ import {
 import {
   HostDescriptorSchema,
   hostApiVersion,
-  hostDiscoveryDefaultWorkspaceBacking,
   type HostBootstrapMethod,
   type HostCapability,
   type HostDiscoveryEnvelope,
@@ -116,10 +114,10 @@ import {
   AgentPhoneHostTargetSchema,
   ApprovePersonalHostAccountLinkRequestSchema,
   BrowserSessionIdSchema,
-  CorrelationIdSchema,
   ClientToHostMessageSchema,
   ConfigurePersonalRemoteAccessRequestSchema,
   ConsumePersonalHostAccountLinkRequestSchema,
+  CorrelationIdSchema,
   HarnessModelSettingsMapSchema,
   HostBootstrapSchema,
   HostToClientMessageSchema,
@@ -256,7 +254,6 @@ import {
   registerIdentityRoutes,
   requireInstanceAdministrator,
 } from "./identity/identity-routes.js";
-import type { MountExchangeService } from "./identity/mount-exchange.js";
 import {
   sealRequestResponse,
   type RequestResponseVault,
@@ -316,10 +313,8 @@ import type { TriggerService } from "./triggers/trigger-service.js";
 import type { WatchCapabilityTokenService } from "./triggers/watch-capability.js";
 import type { WatchProgramService } from "./triggers/watch-program-service.js";
 import type { WorkspaceFilesService } from "./workspace/files/workspace-files-service.js";
-import type { WorkspaceActivityService } from "./workspace/workspace-activity.js";
 import type { WorkspaceDeletionService } from "./workspace/workspace-deletion-service.js";
 import type { WorkspaceService } from "./workspace/workspace-service.js";
-import type { WorkspaceWakeService } from "./workspace/workspace-wake-service.js";
 
 export { hostInternalRoutePatterns } from "./server/internal-routes.js";
 
@@ -406,7 +401,7 @@ export interface HostServerDependencies {
     readonly mcpOauth: McpOAuthService;
     readonly platform: IntegrationPlatformService;
     readonly service: IntegrationService;
-    readonly skills: import("./integrations/integration-skill-bundle-service.js").IntegrationSkillBundleService;
+    readonly skills: import("./integrations/plugin-package-service.js").PluginPackageService;
     readonly tools: IntegrationToolsMcpService;
   };
   /** Shared with Runner registration so live sign-in attempts resume on reconnect. */
@@ -415,14 +410,6 @@ export interface HostServerDependencies {
   readonly localBootstrap?: { readonly service: LocalBootstrapService } | undefined;
   /** Present when reachability is routed personal. */
   readonly personalRemoteAccess?: { readonly service: PersonalRemoteAccessService } | undefined;
-  /** Present when Workspace backing is PortableFS. */
-  readonly portablefs?:
-    | {
-        readonly mountExchange: MountExchangeService;
-        readonly workspaceActivity: Pick<WorkspaceActivityService, "note">;
-        readonly workspaceWake: Pick<WorkspaceWakeService, "wake">;
-      }
-    | undefined;
   /** What active Runs are streaming, for readers that open a Thread mid-turn. */
   readonly liveRuns: Pick<LiveRunRegistry, "threadFrames">;
   readonly realtime: RealtimeHub;
@@ -450,19 +437,6 @@ export async function createHostServer(
   dependencies: HostServerDependencies,
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
 ): Promise<FastifyInstance> {
-  // The signed discovery shape and the PortableFS record are two statements of
-  // one fact. Assembling a server with only one of them either registers the
-  // mount-grant exchange for a Deployment that has no PortableFS storage, or
-  // silently drops Workspace wake and activity for one that does.
-  if (
-    (hostDiscoveryDefaultWorkspaceBacking(dependencies.discovery.document.deploymentShape) ===
-      "portablefs") !==
-    (dependencies.portablefs !== undefined)
-  ) {
-    throw new Error(
-      "A PortableFS Deployment shape and its PortableFS Host services must be declared together",
-    );
-  }
   const publishWorkspaceEvent =
     dependencies.publishWorkspaceEvent ??
     ((event: AgentEvent) => dependencies.realtime.publish(event));
@@ -1559,10 +1533,6 @@ export async function createHostServer(
       if (!workspace || workspace.status === "deleted") {
         throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
       }
-      dependencies.portablefs?.workspaceActivity.note(input.workspaceId);
-      if (workspaceWakesOnDemand(workspace.status)) {
-        void dependencies.portablefs?.workspaceWake.wake(input.workspaceId, "thread-prefetch");
-      }
       return rpcSuccess({});
     },
     "tasks.list": async (input, context) =>
@@ -1713,21 +1683,11 @@ export async function createHostServer(
         return { type: command.type };
       case "workspace.create": {
         const workspace = await dependencies.workspaces.create({
-          ...(command.quotaBytes !== undefined && command.quotaInodes !== undefined
-            ? {
-                capacityPolicy: {
-                  blockHardLimitBytes: command.quotaBytes,
-                  inodeHardLimit: command.quotaInodes,
-                  kind: "hard-quota" as const,
-                },
-              }
-            : {}),
           createdBy: userId,
           ...(command.icon ? { icon: command.icon } : {}),
           idempotencyKey: command.idempotencyKey,
-          kind: "specialized",
+          kind: "project",
           name: command.name,
-          ...(command.storage ? { storage: command.storage } : {}),
         });
         if (workspace.storageIssue) {
           app.log.warn(
@@ -1735,6 +1695,13 @@ export async function createHostServer(
             "Workspace storage provisioning did not reach ready",
           );
         }
+        return {
+          type: command.type,
+          workspace: await workspaceView(dependencies.workspaces, workspace),
+        };
+      }
+      case "workspace.adoptRelocated": {
+        const workspace = await dependencies.workspaces.adoptRelocated(command.workspaceId, userId);
         return {
           type: command.type,
           workspace: await workspaceView(dependencies.workspaces, workspace),
@@ -1809,7 +1776,7 @@ export async function createHostServer(
         if (workspace?.kind === "main") {
           throw new OpensteerError({
             code: "forbidden",
-            message: "Main cannot be shared. Invite people to a specialist instead.",
+            message: "Main cannot be shared. Invite people to a Project instead.",
           });
         }
         const result = await dependencies.authenticator.identity.createWorkspaceInvitation({
@@ -1901,10 +1868,10 @@ export async function createHostServer(
           throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
         }
         if (command.home) {
-          if (workspace.kind !== "main" || workspace.createdBy !== userId || command.parentThreadId)
+          if (workspace.createdBy !== userId || command.parentThreadId)
             throw new OpensteerError({
               code: "bad_request",
-              message: "Chat belongs to your Main Workspace",
+              message: "Chat must be an owner’s root conversation",
             });
           if (workspace.homeThreadId) {
             const existingHome = await dependencies.commands.createThread(input);
@@ -2852,7 +2819,7 @@ export async function createHostServer(
       case "browser.profile.grant":
         return {
           grant: await dependencies.browser.grantProfileToWorkspace({
-            access: "full-control",
+            access: "read-write",
             createdBy: userId,
             profileId: command.profileId,
             workspaceId: command.workspaceId,
@@ -3010,13 +2977,6 @@ export async function createHostServer(
       .send(Buffer.from(content.bytes));
   });
 
-  if (dependencies.portablefs) {
-    app.post(hostInternalRoutePaths.mountGrantExchange, async (request) => {
-      const token = requireBearerToken(request);
-      return dependencies.portablefs!.mountExchange.exchange(token, request.body);
-    });
-  }
-
   app.post(hostInternalRoutePaths.agentControl, async (request) => {
     const token = requireBearerToken(request);
     return dependencies.agentControl.handle(token, request.body);
@@ -3052,11 +3012,30 @@ export async function createHostServer(
     url: hostInternalRoutePaths.integrationMcp,
   });
 
-  app.get(hostInternalRoutePaths.integrationSkills, async (request, reply) => {
-    const token = requireBearerToken(request);
+  app.get(hostInternalRoutePaths.computerPluginPackages, async (request, reply) =>
+    reply
+      .header("cache-control", "no-store")
+      .type("application/json")
+      .send(
+        await dependencies.integrations.skills.stream(
+          requireBearerToken(request),
+          (request.params as { digest: string }).digest,
+          true,
+        ),
+      ),
+  );
+
+  app.get(hostInternalRoutePaths.plugins, async (request, reply) => {
+    const token = requireBearerToken(request, 16_000);
     return reply
       .header("cache-control", "no-store")
-      .send(await dependencies.integrations.skills.bundle(token));
+      .type("application/json")
+      .send(
+        await dependencies.integrations.skills.stream(
+          token,
+          (request.params as { digest: string }).digest,
+        ),
+      );
   });
 
   app.post(hostInternalRoutePaths.egress, { bodyLimit: 12 * 1_024 * 1_024 }, async (request) => {
@@ -4807,9 +4786,9 @@ function decorateWorkspaceView(
     : Promise.resolve(view);
 }
 
-function requireBearerToken(request: FastifyRequest): string {
+function requireBearerToken(request: FastifyRequest, maximumTokenLength = 4_096): string {
   const value = request.headers.authorization;
-  if (!value?.startsWith("Bearer ") || value.length > 4_103) {
+  if (!value?.startsWith("Bearer ") || value.length > maximumTokenLength + 7) {
     throw new OpensteerError({ code: "unauthorized", message: "Bearer token is required" });
   }
   const token = value.slice("Bearer ".length);

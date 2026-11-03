@@ -376,7 +376,7 @@ export function effectiveIntegrationAccess(
 
 /**
  * The access answering a Request gives its Workspace, which its card states. A
- * specialized Workspace gets what the card allows. Tasks in Main use every
+ * project Workspace gets what the card allows. Tasks in Main use every
  * account their owner connects to read and make changes, whatever the Request
  * asked; only a computer's own access limits that, and the card raises it
  * first when the Request needs changes.
@@ -387,10 +387,10 @@ export function grantedIntegrationAccess(input: {
     AccessPlan,
     "definition" | "requestedAccess" | "requirement" | "selectedAccount"
   >;
-  readonly workspaceKind: "main" | "specialized";
+  readonly workspaceKind: "main" | "project";
 }): IntegrationAccess {
   const allowed = effectiveIntegrationAccess(input.plan.requestedAccess, input.allowChanges);
-  if (input.workspaceKind === "specialized") return allowed;
+  if (input.workspaceKind === "project") return allowed;
   if (input.plan.requirement.kind !== "computer") return "read-write";
   const computer = input.plan.selectedAccount?.computer;
   return computer && computerAccessUpgrade(input.plan, allowed) === null

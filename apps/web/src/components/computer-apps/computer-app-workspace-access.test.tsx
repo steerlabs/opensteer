@@ -207,7 +207,7 @@ const presentation: ComputerAppPresentation = {
 };
 
 const mainWorkspace = workspace("wsp_00000000-0000-4000-8000-000000000001", "main", "Main");
-const supportWorkspace = workspace(supportId, "specialized", "Support");
+const supportWorkspace = workspace(supportId, "project", "Support");
 
 function workspace(id: string, kind: WorkspaceSummary["kind"], name: string): WorkspaceSummary {
   return {

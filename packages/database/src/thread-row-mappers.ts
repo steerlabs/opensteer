@@ -58,6 +58,7 @@ type ThreadReadRow = {
   readonly doneAt: Date | null;
   readonly inputQueuePaused: boolean;
   readonly accessMode: ThreadAccessMode;
+  readonly specialistId?: string | null;
   readonly capabilityProfileId: ThreadCapabilityProfileId;
   readonly role: Thread["role"];
   readonly continuationIdentity: Thread["continuationIdentity"];

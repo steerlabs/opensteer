@@ -14,7 +14,7 @@ describe("Trigger program contract", () => {
     const content = readFileSync(
       resolve(
         repositoryRoot,
-        "apps/runner/agent-skills/skills/opensteer-triggers/references/program-contract.md",
+        "apps/runner/agent-skills/skills/triggers/references/program-contract.md",
       ),
       "utf8",
     );
@@ -25,10 +25,7 @@ describe("Trigger program contract", () => {
 
   it("keeps the shipped watch example async-iterable and its proof rule watch-specific", () => {
     const content = readFileSync(
-      resolve(
-        repositoryRoot,
-        "apps/runner/agent-skills/skills/opensteer-triggers/references/watches.md",
-      ),
+      resolve(repositoryRoot, "apps/runner/agent-skills/skills/triggers/references/watches.md"),
       "utf8",
     );
     expect(content).toContain(
@@ -41,7 +38,7 @@ describe("Trigger program contract", () => {
     const verification = readFileSync(
       resolve(
         repositoryRoot,
-        "apps/runner/agent-skills/skills/opensteer-triggers/references/verification.md",
+        "apps/runner/agent-skills/skills/triggers/references/verification.md",
       ),
       "utf8",
     );

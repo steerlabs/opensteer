@@ -153,7 +153,7 @@ afterEach(() => {
 const surfaceId = BrowserSurfaceIdSchema.parse("srf_00000000-0000-4000-8000-000000000001");
 function session(viewerState: BrowserSessionSummary["viewerState"]): BrowserSessionSummary {
   return {
-    access: "full-control",
+    access: "read-write",
     attachedRunIds: [],
     dialog: null,
     error: null,

@@ -54,7 +54,7 @@ export async function cloudHostReady(
     !isSameHost(envelope, expected) ||
     document.canonicalOrigin !== origin ||
     document.deploymentShape.kind !== "server" ||
-    hostDiscoveryDefaultWorkspaceBacking(document.deploymentShape) !== "portablefs"
+    hostDiscoveryDefaultWorkspaceBacking(document.deploymentShape) !== "local-directory"
   ) {
     throw new Error("The public cloud URL did not serve its provisioned Host identity");
   }

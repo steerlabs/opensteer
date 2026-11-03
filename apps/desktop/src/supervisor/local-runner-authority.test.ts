@@ -77,7 +77,7 @@ describe("DesktopLocalRunnerTargetResolver", () => {
     await expect(
       resolver.resolve(connection.authority.document.deploymentId),
     ).resolves.toMatchObject({
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
       hostUrl: "https://cloud.opensteer.test",
       mayRunAgents: true,
     });
@@ -124,7 +124,7 @@ function serverConnection() {
     authority: envelope({
       canonicalOrigin,
       deploymentId: createId("deployment"),
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
     }),

@@ -2,14 +2,9 @@ import type {
   ComputerAppApprovalAnswer,
   ComputerAppApprovalOutcome,
 } from "./computer-apps.test-support.js";
-import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import WebSocket from "ws";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createId } from "@opensteer/core";
 import { channelProviderCatalog } from "@opensteer/channel-core";
+import { createId } from "@opensteer/core";
+import { createDatabase, iphoneDeviceProfileMigration } from "@opensteer/database";
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
 import {
   isComputerAppDefinition,
@@ -28,10 +23,14 @@ import {
   createRunnerAuthenticationSignature,
   createRunnerEnrollmentSignature,
 } from "@opensteer/runner-auth";
-import { z } from "zod";
-import { createHostRuntime } from "./runtime.js";
 import { sql } from "kysely";
-import { iphoneDeviceProfileMigration, createDatabase } from "@opensteer/database";
+import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import WebSocket from "ws";
+import { z } from "zod";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import {
   connectComputerAppMachine,
@@ -63,6 +62,7 @@ import {
   waitForCondition,
   type MachineAccessHost,
 } from "./machine-access.test-support.js";
+import { createHostRuntime } from "./runtime.js";
 
 // H1–H16, written before implementation. The phone is scripted, not Swift/EventKit.
 const baseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -338,10 +338,13 @@ integration.sequential("iPhone integrations Host contract", () => {
             environmentIds: [createId("environment")],
             maxConcurrentRuns: 1,
             harnessDrivers: [],
-            localStorage: null,
-            workspaceMounts: [],
+            localStorage: {
+              storageAuthorityId: createId("storageAuthority"),
+              bindings: [],
+              truncated: false,
+            },
             providerStateModes: ["isolated"],
-            workspaceBackings: ["portablefs"],
+            workspaceBackings: ["local-directory"],
           },
         },
       },
@@ -698,7 +701,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     const mcp = await command(
       host,
       {
-        type: "integration.agentPlugin.install",
+        type: "plugin.install",
         idempotencyKey: randomUUID(),
         input: { directory: pluginDirectory, runnerId: phone.runnerId },
       },

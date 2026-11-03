@@ -1,132 +1,72 @@
-import { useMemo, useRef, useState } from "react";
-import { Link } from "react-router";
-import type { WorkspaceIconName } from "@opensteer/core";
-import {
-  machineChoiceLabel,
-  noWorkspaceStorageExplanation,
-  workspaceIconArt,
-  workspaceStorageMachines,
-  type EnvironmentSummary,
-} from "@opensteer/client/host";
+import { useRef, useState } from "react";
+import type { MarkColor, WorkspaceIconName } from "@opensteer/core";
+import { workspaceIconArt } from "@opensteer/client/host";
 import { Dialog } from "./dialog.js";
 import { WorkspaceIconPicker } from "./workspace-icon-picker.js";
-import { WorkspaceIconGlyph } from "./workspace-orb.js";
-
-export interface NewWorkspaceStorageChoice {
-  readonly backing: "local-directory" | "portablefs";
-  readonly environmentId?: string;
-}
+import { WorkspaceIconGlyph, WorkspaceOrb } from "./workspace-orb.js";
 
 export interface NewWorkspaceDialogProps {
+  /** The Host can keep a Project's colour (`task-marks-v1`). */
+  readonly colors?: boolean;
   readonly creating: boolean;
-  readonly defaultBacking: "local-directory" | "portablefs";
-  readonly environments: readonly EnvironmentSummary[];
   readonly error: string | null;
   readonly onClose: () => void;
   readonly onCreate: (input: {
+    readonly color: MarkColor | null;
     readonly icon: WorkspaceIconName | null;
     readonly name: string;
-    readonly storage: NewWorkspaceStorageChoice;
   }) => void;
-  readonly sharedStorageAvailable: boolean;
 }
 
 /**
- * Where a new Workspace's files go is only worth asking about when there is
- * more than one real answer. With one machine and no shared storage this is a
- * name field, which is all it was before machines could be lent.
+ * A Project is a name and a mark; everything else — who is in it, what it
+ * may use, which plugins it runs — is decided later, on its own page, by
+ * whoever needs it. So this asks for nothing more.
  */
 export function NewWorkspaceDialog({
+  colors = false,
   creating,
-  defaultBacking,
-  environments,
   error,
   onClose,
   onCreate,
-  sharedStorageAvailable,
 }: NewWorkspaceDialogProps) {
   const [icon, setIcon] = useState<WorkspaceIconName | null>(null);
+  const [color, setColor] = useState<MarkColor | null>(null);
   const [choosingIcon, setChoosingIcon] = useState(false);
   const iconButton = useRef<HTMLButtonElement | null>(null);
-  const machines = useMemo(() => workspaceStorageMachines(environments), [environments]);
-  // Creating a folder needs the machine that owns the disk to answer now: the
-  // Host has no durable creation intent to fall back on, so an offline computer
-  // is shown as a computer and refused as a choice rather than accepted and
-  // then rejected by the Host.
-  const availableMachines = useMemo(
-    () => machines.filter((machine) => machine.connected),
-    [machines],
-  );
   const [name, setName] = useState("");
-  const [backing, setBacking] = useState<"local-directory" | "portablefs">(
-    sharedStorageAvailable && (defaultBacking === "portablefs" || availableMachines.length === 0)
-      ? "portablefs"
-      : "local-directory",
-  );
-  const [environmentId, setEnvironmentId] = useState(availableMachines[0]?.id ?? "");
-  const offersBackingChoice =
-    sharedStorageAvailable && (machines.length > 0 || backing === "local-directory");
-  const chosenMachine = availableMachines.find((machine) => machine.id === environmentId);
-  const offersMachineChoice =
-    backing === "local-directory" && (machines.length > 1 || !chosenMachine);
-  const submittable =
-    name.trim().length > 0 &&
-    !creating &&
-    (backing === "portablefs" ? sharedStorageAvailable : chosenMachine !== undefined);
-
-  if (!sharedStorageAvailable && availableMachines.length === 0) {
-    return (
-      <Dialog labelledBy="new-workspace-title" onClose={onClose} title="New specialist">
-        <div className="card__form">
-          <p className="section__hint">{noWorkspaceStorageExplanation(machines.length)}</p>
-          <div className="form-actions">
-            <button className="btn" onClick={onClose} type="button">
-              Close
-            </button>
-            <Link className="btn btn--primary" onClick={onClose} to="/settings/computers">
-              Go to Computers
-            </Link>
-          </div>
-        </div>
-      </Dialog>
-    );
-  }
-
+  const submittable = name.trim().length > 0 && !creating;
   return (
-    <Dialog labelledBy="new-workspace-title" onClose={onClose} title="New specialist">
+    <Dialog labelledBy="new-workspace-title" onClose={onClose} title="New project">
       <form
-        className="card__form"
+        className="card__form new-project"
         onSubmit={(event) => {
           event.preventDefault();
           if (!submittable) return;
-          onCreate({
-            icon,
-            name: name.trim(),
-            storage:
-              backing === "local-directory"
-                ? { backing: "local-directory", environmentId: chosenMachine?.id ?? "" }
-                : { backing: "portablefs" },
-          });
+          onCreate({ color: colors ? color : null, icon, name: name.trim() });
         }}
       >
         <p className="section__hint">
-          An agent with its own files, browsers and sign-ins. Opensteer can hand it work, and you
-          can start tasks in it yourself.
+          A folder inside Main with its own chat, tasks and instructions. It can use only what you
+          allow it.
         </p>
-        <label className="field">
-          <span className="field__label">Name</span>
-          <input
-            autoFocus
-            className="text-input"
-            maxLength={160}
-            onChange={(event) => setName(event.currentTarget.value)}
-            placeholder="Research"
-            value={name}
-          />
-        </label>
+        <div className="new-project__identity">
+          <WorkspaceOrb color={colors ? color : null} icon={icon} name={name.trim()} size="large" />
+          <label className="field new-project__name">
+            <span className="field__label">Name</span>
+            <input
+              autoFocus
+              className="text-input"
+              maxLength={160}
+              onChange={(event) => setName(event.currentTarget.value)}
+              placeholder="Research"
+              value={name}
+            />
+          </label>
+        </div>
 
         <div className="field">
-          <span className="field__label">Icon</span>
+          <span className="field__label">{colors ? "Icon and colour" : "Icon"}</span>
           <button
             aria-expanded={choosingIcon}
             className="btn btn--small new-workspace-icon"
@@ -141,6 +81,7 @@ export function NewWorkspaceDialog({
               focus trap and accessible subtree. */}
           {choosingIcon ? (
             <WorkspaceIconPicker
+              color={colors ? color : null}
               name={name}
               onChange={(next) => {
                 setIcon(next);
@@ -149,72 +90,11 @@ export function NewWorkspaceDialog({
                 // the field it belongs to rather than to the page.
                 iconButton.current?.focus();
               }}
-              color={null}
+              onColorChange={colors ? setColor : undefined}
               value={icon}
             />
           ) : null}
         </div>
-
-        {offersBackingChoice ? (
-          <div aria-label="Where its files live" className="check-list" role="radiogroup">
-            <label className="check-item">
-              <input
-                checked={backing === "local-directory"}
-                name="new-workspace-backing"
-                onChange={() => setBacking("local-directory")}
-                type="radio"
-              />
-              <span className="check-item__meta">
-                <span className="check-item__label">On one computer</span>
-                <span className="check-item__detail">
-                  A folder on that machine&apos;s own disk. Agents run there.
-                </span>
-              </span>
-            </label>
-            <label className="check-item">
-              <input
-                checked={backing === "portablefs"}
-                name="new-workspace-backing"
-                onChange={() => setBacking("portablefs")}
-                type="radio"
-              />
-              <span className="check-item__meta">
-                <span className="check-item__label">Shared storage</span>
-                <span className="check-item__detail">
-                  Computers with shared storage enabled can mount it.
-                </span>
-              </span>
-            </label>
-          </div>
-        ) : null}
-
-        {offersMachineChoice ? (
-          <label className="field">
-            <span className="field__label">Computer</span>
-            <select
-              className="select-input"
-              onChange={(event) => setEnvironmentId(event.currentTarget.value)}
-              value={environmentId}
-            >
-              {!machines.some((machine) => machine.id === environmentId) ? (
-                <option disabled value={environmentId}>
-                  Choose a computer
-                </option>
-              ) : null}
-              {machines.map((machine) => (
-                <option disabled={!machine.connected} key={machine.id} value={machine.id}>
-                  {machineChoiceLabel(machine, machines)}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-
-        {backing === "local-directory" && machines.length > availableMachines.length ? (
-          <p className="section__hint">
-            An offline computer cannot be chosen: it has to be on to make the folder.
-          </p>
-        ) : null}
 
         {error ? (
           <p aria-live="polite" className="notice notice--warn">
@@ -227,7 +107,7 @@ export function NewWorkspaceDialog({
             Cancel
           </button>
           <button className="btn btn--primary" disabled={!submittable} type="submit">
-            {creating ? "Creating…" : "Create specialist"}
+            {creating ? "Creating…" : "Create project"}
           </button>
         </div>
       </form>

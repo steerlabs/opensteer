@@ -1,3 +1,5 @@
+import { SpecialistStore } from "./specialist-store.js";
+import { PluginStore } from "./plugin-store.js";
 import { ComputerOperationStore } from "./computer-operation-store.js";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -27,7 +29,6 @@ export class IntegrationPlatformStore {
   readonly listComputerRunnerIdsForInstallation: IntegrationInstallStore["listComputerRunnerIdsForInstallation"];
   readonly listDiscoveryInventory: IntegrationInstallStore["listDiscoveryInventory"];
   readonly listServers: IntegrationInstallStore["listServers"];
-  readonly listSkills: IntegrationInstallStore["listSkills"];
   readonly listTools: IntegrationInstallStore["listTools"];
   readonly reconcileProviderConnectionTools: IntegrationInstallStore["reconcileProviderConnectionTools"];
   readonly getConnectionKind: IntegrationConnectionAuthStore["getConnectionKind"];
@@ -63,9 +64,12 @@ export class IntegrationPlatformStore {
   readonly getToolInvocation: IntegrationGrantStore["getToolInvocation"];
   readonly getToolSchemas: IntegrationGrantStore["getToolSchemas"];
   readonly listCallableTools: IntegrationGrantStore["listCallableTools"];
-  readonly listGrantedSkills: IntegrationGrantStore["listGrantedSkills"];
+  readonly plugins: PluginStore;
+  readonly specialists: SpecialistStore;
 
   constructor(database: Kysely<DatabaseSchema>) {
+    this.plugins = new PluginStore(database);
+    this.specialists = new SpecialistStore(database);
     this.computerOperations = new ComputerOperationStore(database);
     this.connections = new IntegrationConnectionAuthStore(database);
     this.grants = new IntegrationGrantStore(database);
@@ -81,7 +85,6 @@ export class IntegrationPlatformStore {
       this.installations,
     );
     this.listServers = this.installations.listServers.bind(this.installations);
-    this.listSkills = this.installations.listSkills.bind(this.installations);
     this.listTools = this.installations.listTools.bind(this.installations);
     this.reconcileProviderConnectionTools =
       this.installations.reconcileProviderConnectionTools.bind(this.installations);
@@ -138,6 +141,5 @@ export class IntegrationPlatformStore {
     this.getToolInvocation = this.grants.getToolInvocation.bind(this.grants);
     this.getToolSchemas = this.grants.getToolSchemas.bind(this.grants);
     this.listCallableTools = this.grants.listCallableTools.bind(this.grants);
-    this.listGrantedSkills = this.grants.listGrantedSkills.bind(this.grants);
   }
 }

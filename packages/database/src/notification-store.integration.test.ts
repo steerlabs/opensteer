@@ -1,3 +1,8 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
@@ -110,7 +115,7 @@ integration("notification decision boundary", () => {
       if (!(await store.getDeployment())) {
         await store.ensureDeployment({
           canonicalOrigin: "https://notifications-test-host.invalid",
-          deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+          deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
           hostInstanceId: createId("hostInstance"),
         });
       }
@@ -145,8 +150,7 @@ integration("notification decision boundary", () => {
             localStorage: null,
             maxConcurrentRuns: 4,
             providerStateModes: ["isolated"],
-            workspaceBackings: ["portablefs"],
-            workspaceMounts: [],
+            workspaceBackings: ["local-directory"],
           },
         },
         name: `Main ${input.suffix}`,
@@ -180,18 +184,17 @@ integration("notification decision boundary", () => {
       const ownerId = await store.createUser(`Owner ${suffix}`);
       const environmentId = createId("environment");
       const runnerId = await enrollMainRunner({ environmentId, suffix });
-      const workspace = await store.createWorkspace({
+      const workspace = await createTestWorkspace(store, {
         backing: {
           generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: `wsp_${suffix}`,
+          kind: "local-directory",
+          bindingId: createStorageFixtureId("workspaceBinding"),
+          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+            "env_00000000-0000-4000-8000-000000000001",
+          ),
+          storageAuthorityId: createStorageFixtureId("storageAuthority"),
         },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+
         createdBy: ownerId,
         idempotencyKey: `workspace-${suffix}`,
         name: `Workspace ${suffix}`,
@@ -632,7 +635,7 @@ integration("notification decision boundary", () => {
       await sql`
       update public.deployments
       set deployment_shape = jsonb_build_object(
-        'defaultWorkspaceBacking', 'portablefs', 'kind', 'personal'
+        'defaultWorkspaceBacking', 'local-directory', 'kind', 'personal'
       )
       where singleton_key = 'primary'
     `.execute(database);
@@ -1589,18 +1592,17 @@ integration("notification decision boundary", () => {
         observedViews,
       } = storeFixture;
       const fixture = await createFixture("mute-elsewhere", true);
-      const other = await store.createWorkspace({
+      const other = await createTestWorkspace(store, {
         backing: {
           generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: "wsp_mute-elsewhere-other",
+          kind: "local-directory",
+          bindingId: createStorageFixtureId("workspaceBinding"),
+          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+            "env_00000000-0000-4000-8000-000000000001",
+          ),
+          storageAuthorityId: createStorageFixtureId("storageAuthority"),
         },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+
         createdBy: fixture.ownerId,
         idempotencyKey: "workspace-mute-elsewhere-other",
         name: "Other specialist",
@@ -1750,27 +1752,26 @@ integration("notification decision boundary", () => {
       } = storeFixture;
       const chat = await createFixture("title-chat", true);
       const work = await addThread(chat, { suffix: "title-work" });
-      const specialized = await store.createWorkspace({
+      const project = await createTestWorkspace(store, {
         backing: {
           generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: "wsp_title-specialized",
+          kind: "local-directory",
+          bindingId: createStorageFixtureId("workspaceBinding"),
+          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+            "env_00000000-0000-4000-8000-000000000001",
+          ),
+          storageAuthorityId: createStorageFixtureId("storageAuthority"),
         },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+
         createdBy: chat.ownerId,
-        idempotencyKey: "workspace-title-specialized",
+        idempotencyKey: "workspace-title-project",
         name: "Research",
         status: "ready",
       });
       const specialist = await addThread(chat, {
-        suffix: "title-specialized",
+        suffix: "title-project",
         title: "Research desk",
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       });
 
       await appendCompletedReply(chat, text("From Chat."));
@@ -2337,18 +2338,17 @@ integration("notification decision boundary", () => {
       });
       expect(muted).toMatchObject({ muted: true, revision: "1" });
       expect(unmuted).toMatchObject({ muted: false, revision: "2" });
-      const otherWorkspace = await store.createWorkspace({
+      const otherWorkspace = await createTestWorkspace(store, {
         backing: {
           generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: "wsp_viewer-marker-page-other",
+          kind: "local-directory",
+          bindingId: createStorageFixtureId("workspaceBinding"),
+          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+            "env_00000000-0000-4000-8000-000000000001",
+          ),
+          storageAuthorityId: createStorageFixtureId("storageAuthority"),
         },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+
         createdBy: fixture.ownerId,
         idempotencyKey: "workspace-viewer-marker-page-other",
         name: "Other preference",
@@ -2465,18 +2465,17 @@ integration("notification decision boundary", () => {
       suffix: string,
     ): Promise<WorkspaceId> {
       const { store } = storeFixture;
-      const workspace = await store.createWorkspace({
+      const workspace = await createTestWorkspace(store, {
         backing: {
           generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: `wsp_${suffix}`,
+          kind: "local-directory",
+          bindingId: createStorageFixtureId("workspaceBinding"),
+          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+            "env_00000000-0000-4000-8000-000000000001",
+          ),
+          storageAuthorityId: createStorageFixtureId("storageAuthority"),
         },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+
         createdBy: base.ownerId,
         idempotencyKey: `workspace-${suffix}`,
         name: `Workspace ${suffix}`,
@@ -2496,18 +2495,17 @@ integration("notification decision boundary", () => {
     ): Promise<{ readonly threadId: ThreadId; readonly userId: UserId }> {
       const { store } = storeFixture;
       const userId = await store.createUser(`Stranger ${suffix}`);
-      const workspace = await store.createWorkspace({
+      const workspace = await createTestWorkspace(store, {
         backing: {
           generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: `wsp_${suffix}`,
+          kind: "local-directory",
+          bindingId: createStorageFixtureId("workspaceBinding"),
+          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+            "env_00000000-0000-4000-8000-000000000001",
+          ),
+          storageAuthorityId: createStorageFixtureId("storageAuthority"),
         },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+
         createdBy: userId,
         idempotencyKey: `workspace-${suffix}`,
         name: `Workspace ${suffix}`,

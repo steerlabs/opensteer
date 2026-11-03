@@ -1,9 +1,9 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import { z } from "zod";
 import type { Redaction } from "./agent-phone-device.test-support.js";
 
@@ -12,7 +12,6 @@ export const BaselineHostSchema = z.object({
   dataDirectory: z.string(),
   hostPort: z.number(),
   publicOrigin: z.url(),
-  managerUrl: z.url(),
   origin: z.url(),
   ownerHeaders: z.record(z.string(), z.string()),
 });
@@ -55,9 +54,7 @@ process.on('SIGTERM', () => { void close().finally(() => process.exit(0)); });
 try {
   isolated = await createMachineAccessDatabase(process.env.OPENSTEER_BASELINE_DATABASE_URL);
   host = await startAgentPhoneHost(isolated.url, { publicPort: Number(process.env.OPENSTEER_BASELINE_PUBLIC_PORT), log: line => console.log(line) });
-  const storage = host.config.workspace.storage;
-  if (storage.kind !== 'portablefs') throw new Error('Expected baseline portablefs harness');
-  process.send({ id: 0, value: { databaseUrl: isolated.url, dataDirectory: host.config.dataDirectory, hostPort: host.hostPort, publicOrigin: host.publicOrigin, managerUrl: storage.managerUrl.href, origin: host.origin, ownerHeaders: host.ownerHeaders } });
+  process.send({ id: 0, value: { databaseUrl: isolated.url, dataDirectory: host.config.dataDirectory, hostPort: host.hostPort, publicOrigin: host.publicOrigin, origin: host.origin, ownerHeaders: host.ownerHeaders } });
   let lane = Promise.resolve();
   process.on('message', message => {
     lane = lane.then(async () => {

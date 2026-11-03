@@ -1,3 +1,5 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { describe } from "vitest";
 import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
 import { slackChannelProviderManifest } from "@opensteer/channel-core";
 import type { HostConfig } from "@opensteer/config";
@@ -73,7 +75,7 @@ import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { fetchWithExplicitHost } from "../access/session-exchange.test-support.js";
 import {
@@ -87,20 +89,21 @@ import {
 import { loadOrCreateHostInstance } from "../identity/host-instance.js";
 import { loadOrCreateHostKeys } from "../identity/host-keys.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
-import { connectLocalWorkspaceRunner } from "../workspace/runner-local-workspace.test-support.js";
-import { startPortableFsManagerFake as startPortableFsController } from "./portablefs-manager.test-support.js";
+import {
+  attachLocalWorkspaceDisk,
+  connectLocalWorkspaceRunner,
+} from "../workspace/runner-local-workspace.test-support.js";
 import { createHostRuntime, ensureDefaultHarnesses, type HostRuntime } from "./runtime.js";
 
-const portableFsTestCsrPem = `-----BEGIN CERTIFICATE REQUEST-----
-MIGOMEICAQAwDzENMAsGA1UEAwwEdGVzdDAqMAUGAytlcAMhAAYGrSfAi57mfReG
-R2aFY+3K8yYGH4DbIXXJcl5SkdT5oAAwBQYDK2VwA0EAGrT0jM/3L4H0b3NNmPWi
-y8bGphvw7IH69FOsfMn8nAJYBRlR9UD0j4soZYoYkT+zjZ/iO4FIwasapMoVchkt
-Cw==
------END CERTIFICATE REQUEST-----
-`;
-
+const runtimeTestDisk = {
+  storageAuthorityId: createId("storageAuthority"),
+  bindings: [] as import("@opensteer/protocol").RunnerLocalStorageInventory["bindings"],
+  truncated: false,
+};
+const diskBySocket = new WeakMap<WebSocket, ReturnType<typeof attachLocalWorkspaceDisk>>();
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
+
 const evidenceRoot = join(
   process.env.OPENSTEER_TASK_MARKS_EVIDENCE_DIR ?? join(tmpdir(), "opensteer-task-marks"),
   "runtime",
@@ -139,7 +142,6 @@ integration("Host vertical slice", () => {
   let runnerSocket: WebSocket | undefined;
   let auxiliarySocket: WebSocket | undefined;
   let realtimeSocket: WebSocket | undefined;
-  let portableFs: Awaited<ReturnType<typeof startPortableFsController>> | undefined;
   let dataDirectory: string | undefined;
 
   beforeAll(async () => {
@@ -148,6 +150,7 @@ integration("Host vertical slice", () => {
   });
 
   beforeEach(async () => {
+    runtimeTestDisk.bindings.length = 0;
     ownerSessionHeaders = undefined;
     runnerToken = "";
     const database = createDatabase({ connectionString: databaseUrl ?? "postgres://unconfigured" });
@@ -209,8 +212,6 @@ integration("Host vertical slice", () => {
     realtimeSocket = undefined;
     await runtime?.close();
     runtime = undefined;
-    await portableFs?.close();
-    portableFs = undefined;
     if (dataDirectory) await rm(dataDirectory, { force: true, recursive: true });
     dataDirectory = undefined;
   });
@@ -220,28 +221,13 @@ integration("Host vertical slice", () => {
     async (capabilities) => {
       const capable = capabilities !== "neither";
       const icons = capabilities === "both";
-      portableFs = await startPortableFsController();
       dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-title-runtime-"));
       const hostPort = await freePort();
-      const config = testHostConfig(hostPort, dataDirectory, portableFs.url);
-      runtime = await createHostRuntime(config, {
-        portableFsMountManagerEndpoint: portableFs.mountEndpoint,
-      });
+      const config = testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9"));
+      runtime = await createHostRuntime(config, {});
       await runtime.listen();
       const origin = config.runtimeOrigin.origin;
       await initializeOwnerSession(origin);
-      const bootstrap = await testRpcData(
-        origin,
-        "bootstrap.get",
-        {},
-        { headers: authorization(accessToken) },
-      );
-      if (!bootstrap.homeWorkspace) throw new Error("Missing Main Workspace");
-      const workspaceId = bootstrap.homeWorkspace.id;
-      expect(bootstrap.homeWorkspace.color).toBeDefined();
-      expect(bootstrap.workspaces.find((workspace) => workspace.id === workspaceId)?.color).toBe(
-        bootstrap.homeWorkspace.color,
-      );
       const runnerId = createId("runner");
       const environmentId = createId("environment");
       const connection = await openRunnerSocket(`ws://127.0.0.1:${hostPort}/internal/v1/runners`);
@@ -286,6 +272,18 @@ integration("Host vertical slice", () => {
           ],
           type: "runner.modules.report",
         }),
+      );
+      const bootstrap = await testRpcData(
+        origin,
+        "bootstrap.get",
+        {},
+        { headers: authorization(accessToken) },
+      );
+      if (!bootstrap.homeWorkspace) throw new Error("Missing Main Workspace");
+      const workspaceId = bootstrap.homeWorkspace.id;
+      expect(bootstrap.homeWorkspace.color).toBeDefined();
+      expect(bootstrap.workspaces.find((workspace) => workspace.id === workspaceId)?.color).toBe(
+        bootstrap.homeWorkspace.color,
       );
       let harnessInstanceId = "";
       await waitForCondition(async () => {
@@ -566,19 +564,74 @@ integration("Host vertical slice", () => {
   );
 
   it("provisions a workspace and carries a Runner turn through durable projection", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-host-integration-"));
     const hostPort = await freePort();
-    const config = testHostConfig(hostPort, dataDirectory, portableFs.url);
-    runtime = await createHostRuntime(config, {
-      portableFsMountManagerEndpoint: portableFs.mountEndpoint,
-    });
+    const config = testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9"));
+    runtime = await createHostRuntime(config, {});
     await runtime.listen();
     const origin = config.runtimeOrigin.origin;
     await initializeOwnerSession(origin);
 
     const unauthorized = await testRpcRequest(origin, "bootstrap.get", {});
     expect(unauthorized.status).toBe(401);
+    const withoutComputer = await testRpcData(
+      origin,
+      "bootstrap.get",
+      {},
+      { headers: authorization(accessToken) },
+    );
+    expect(withoutComputer.harnesses).toEqual([]);
+    expect(withoutComputer.homeWorkspace).toBeNull();
+    const runnerId = createId("runner");
+    const environmentId = createId("environment");
+    const runnerConnection = await openRunnerSocket(
+      `ws://127.0.0.1:${hostPort}/internal/v1/runners`,
+    );
+    runnerSocket = runnerConnection.socket;
+    respondToHarnessInspections(runnerSocket, readyCodexCatalog);
+    const runnerEnrollment = await enrollRunnerSocket(
+      runnerSocket,
+      agentsRunnerDescriptor({
+        bootId: `rbt_${randomUUID()}`,
+        capabilities: ["filesystem", "network-egress"],
+        environmentIds: [environmentId],
+        harnessDrivers: [
+          {
+            accessModes: ["approval-required", "auto-accept-edits", "auto", "full-access"],
+            driverKind: "codex",
+            readiness: "configured",
+            sources: [openAiSource],
+          },
+        ],
+        // What the computer says it is travels in the signed hello, so this
+        // enrollment also proves a descriptor carrying it verifies.
+        device: { form: "laptop", platform: "macos" },
+        maxConcurrentRuns: 2,
+        name: "Local runner",
+        providerStateModes: ["ambient", "isolated"],
+        runnerId,
+        runnerKind: "local",
+        runtimeVersion: "integration",
+        workspaceBackings: ["local-directory"],
+        localStorage: null,
+      }),
+      runnerToken,
+      runnerConnection.challenge,
+    );
+    runnerSocket.send(
+      JSON.stringify({
+        ...runnerEnrollment.fence,
+        modules: [
+          {
+            checkedAt: new Date().toISOString(),
+            detail: null,
+            module: "agents",
+            readiness: "ready",
+          },
+        ],
+        type: "runner.modules.report",
+      }),
+    );
     const bootstrap = await testRpcData(
       origin,
       "bootstrap.get",
@@ -595,7 +648,6 @@ integration("Host vertical slice", () => {
       deployment: { cloud: false, kind: "self-hosted", name: null },
       portalOrigin: null,
     });
-    expect(bootstrap.harnesses).toEqual([]);
     expect(bootstrap.homeWorkspace).toMatchObject({ kind: "main" });
     if (!bootstrap.homeWorkspace) throw new Error("Main Workspace is missing.");
     const homeWorkspaceId = bootstrap.homeWorkspace.id;
@@ -643,10 +695,9 @@ integration("Host vertical slice", () => {
     );
     if (created.type !== "workspace.create") throw new Error("Workspace command mismatch.");
     expect(created.workspace.status).toBe("ready");
-    // Main was provisioned by the first bootstrap; this is the second volume.
-    expect(created.workspace.kind).toBe("specialized");
-    expect(portableFs.createCalls).toBe(2);
-    const bootstrapAfterSpecializedWorkspace = await testRpcData(
+    // The Project is provisioned beneath Main.
+    expect(created.workspace.kind).toBe("project");
+    const bootstrapAfterProjectWorkspace = await testRpcData(
       origin,
       "bootstrap.get",
       {},
@@ -654,8 +705,8 @@ integration("Host vertical slice", () => {
         headers: authorization(accessToken),
       },
     );
-    expect(bootstrapAfterSpecializedWorkspace.workspaces[0]?.id).toBe(created.workspace.id);
-    expect(bootstrapAfterSpecializedWorkspace.homeWorkspace?.id).toBe(homeWorkspaceId);
+    expect(bootstrapAfterProjectWorkspace.workspaces[0]?.id).toBe(created.workspace.id);
+    expect(bootstrapAfterProjectWorkspace.homeWorkspace?.id).toBe(homeWorkspaceId);
     const duplicate = await testRpcData(
       origin,
       "commands.dispatch",
@@ -668,7 +719,6 @@ integration("Host vertical slice", () => {
     );
     if (duplicate.type !== "workspace.create") throw new Error("Workspace command mismatch.");
     expect(duplicate.workspace.id).toBe(created.workspace.id);
-    expect(portableFs.createCalls).toBe(2);
     const conflictingWorkspaceRetry = await testRpcRequest(
       origin,
       "commands.dispatch",
@@ -681,57 +731,6 @@ integration("Host vertical slice", () => {
     );
     expect(conflictingWorkspaceRetry.status).toBe(409);
 
-    const runnerId = createId("runner");
-    const environmentId = createId("environment");
-    const runnerConnection = await openRunnerSocket(
-      `ws://127.0.0.1:${hostPort}/internal/v1/runners`,
-    );
-    runnerSocket = runnerConnection.socket;
-    respondToHarnessInspections(runnerSocket, readyCodexCatalog);
-    const runnerEnrollment = await enrollRunnerSocket(
-      runnerSocket,
-      agentsRunnerDescriptor({
-        bootId: `rbt_${randomUUID()}`,
-        capabilities: ["filesystem", "network-egress"],
-        environmentIds: [environmentId],
-        harnessDrivers: [
-          {
-            accessModes: ["approval-required", "auto-accept-edits", "auto", "full-access"],
-            driverKind: "codex",
-            readiness: "configured",
-            sources: [openAiSource],
-          },
-        ],
-        // What the computer says it is travels in the signed hello, so this
-        // enrollment also proves a descriptor carrying it verifies.
-        device: { form: "laptop", platform: "macos" },
-        maxConcurrentRuns: 2,
-        name: "Local runner",
-        providerStateModes: ["ambient", "isolated"],
-        runnerId,
-        runnerKind: "local",
-        runtimeVersion: "integration",
-        workspaceBackings: ["portablefs"],
-        localStorage: null,
-        workspaceMounts: [],
-      }),
-      runnerToken,
-      runnerConnection.challenge,
-    );
-    runnerSocket.send(
-      JSON.stringify({
-        ...runnerEnrollment.fence,
-        modules: [
-          {
-            checkedAt: new Date().toISOString(),
-            detail: null,
-            module: "agents",
-            readiness: "ready",
-          },
-        ],
-        type: "runner.modules.report",
-      }),
-    );
     await waitForCondition(async () => {
       const connectedBootstrap = await testRpcData(
         origin,
@@ -858,20 +857,7 @@ integration("Host vertical slice", () => {
           }),
         );
         const workspaceAccess = command.context.workspaceAccess;
-        if (workspaceAccess.kind !== "portablefs") {
-          throw new Error("Expected an explicit PortableFS access plan");
-        }
-        const grant = await jsonFetch(workspaceAccess.exchangeUrl, {
-          body: JSON.stringify({
-            clientCertificateRequestPem: portableFsTestCsrPem,
-          }),
-          headers: {
-            authorization: `Bearer ${workspaceAccess.exchangeToken}`,
-            "content-type": "application/json",
-          },
-          method: "POST",
-        });
-        expect(grant.volumeId).toBe(workspaceAccess.volumeId);
+        expect(workspaceAccess.kind).toBe("local-directory");
         runnerSocket?.send(
           JSON.stringify({
             ...fence,
@@ -958,24 +944,6 @@ integration("Host vertical slice", () => {
       { text: "Finished through the Runner.", type: "text" },
     ]);
     expect(snapshot.threads[0]?.status).toBe("idle");
-    expect(portableFs.grantCalls).toBe(1);
-    const portableFsController = portableFs;
-    if (!portableFsController) {
-      throw new Error("PortableFS test controller was not initialized");
-    }
-    expect(
-      portableFsController.requests.some(
-        (request) => request.method === "PUT" && request.path.endsWith("/revocation"),
-      ),
-    ).toBe(false);
-    await expect(
-      runtime.store.database
-        .selectFrom("workspaceMounts")
-        .select(["status", "workspaceId"])
-        .where("workspaceId", "=", created.workspace.id)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ status: "active", workspaceId: created.workspace.id });
-
     const inventory = await testRpcData(
       origin,
       "machines.list",
@@ -1082,9 +1050,8 @@ integration("Host vertical slice", () => {
         runnerKind: "local",
         runtimeVersion: "integration",
 
-        workspaceBackings: ["portablefs"],
+        workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       replacementEnrollment.token,
       replacementConnection.challenge,
@@ -1104,12 +1071,11 @@ integration("Host vertical slice", () => {
   });
 
   it("starts the control plane without a Main Runner", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-missing-runner-token-"));
     const hostPort = await freePort();
 
     runtime = await createHostRuntime({
-      ...testHostConfig(hostPort, dataDirectory, portableFs.url),
+      ...testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
     });
     await runtime.listen();
     await initializeOwnerSession(`http://127.0.0.1:${hostPort}`);
@@ -1126,14 +1092,22 @@ integration("Host vertical slice", () => {
   });
 
   it("shares the entire Workspace through a browser-bound invitation and revokes it", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-sharing-integration-"));
     const hostPort = await freePort();
-    const config = testHostConfig(hostPort, dataDirectory, portableFs.url);
+    const config = testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9"));
     runtime = await createHostRuntime(config, { logger: true });
     await runtime.listen();
     const origin = config.runtimeOrigin.origin;
     await initializeOwnerSession(origin);
+    const storageRunner = await connectLocalWorkspaceRunner({
+      origin,
+      enrollmentToken: runnerToken,
+      environmentId: createId("environment"),
+      name: "Project storage",
+      runnerKind: "local",
+    });
+    runnerSocket = storageRunner.socket;
+
     const workspaceResult = await testRpcData(
       origin,
       "commands.dispatch",
@@ -1221,24 +1195,6 @@ integration("Host vertical slice", () => {
       readonly data: { readonly membership: { readonly userId: string } };
     };
     const clientHeaders = { cookie: clientCookies.join("; "), origin };
-    const clientBootstrap = await testRpcData(
-      origin,
-      "bootstrap.get",
-      {},
-      { headers: clientHeaders },
-    );
-    // Accepting an invitation does not stand in for having a home of your own:
-    // the invited account still gets its own Main alongside the shared
-    // Workspace, and Main is scoped to its creator rather than to membership.
-    const clientWorkspaces = clientBootstrap.workspaces as ReadonlyArray<{
-      readonly id: string;
-      readonly kind: string;
-    }>;
-    expect(clientWorkspaces.map((workspace) => workspace.id)).toContain(workspaceId);
-    const clientMain = clientWorkspaces.find((workspace) => workspace.kind === "main");
-    expect(clientMain).toBeDefined();
-    expect(clientMain).not.toHaveProperty("createdBy");
-    expect(clientWorkspaces).toHaveLength(2);
     const members = await testRpcData(
       origin,
       "workspace.members.list",
@@ -1271,45 +1227,61 @@ integration("Host vertical slice", () => {
       throw new Error("Runner enrollment command mismatch.");
     }
     const clientRunnerId = createId("runner");
+    let clientMain: { readonly id: string; readonly kind: string } | undefined;
     const clientRunner = await openRunnerSocket(`ws://127.0.0.1:${hostPort}/internal/v1/runners`);
-    try {
-      await enrollRunnerSocket(
-        clientRunner.socket,
-        agentsRunnerDescriptor({
-          bootId: `rbt_${randomUUID()}`,
-          device: { form: "laptop", platform: "linux" },
-          environmentIds: [createId("environment")],
-          harnessDrivers: [],
-          name: "Client laptop",
-          runnerId: clientRunnerId,
-          runnerKind: "local",
-          runtimeVersion: "integration",
-        }),
-        clientEnrollment.token,
-        clientRunner.challenge,
-      );
-      const administratorView = await testRpcData(
-        origin,
-        "machines.list",
-        {},
-        { headers: authorization(accessToken) },
-      );
-      expect(
-        administratorView.machines.find((machine) => machine.id === clientRunnerId),
-      ).toMatchObject({
-        access: null,
+    auxiliarySocket = clientRunner.socket;
+    await enrollRunnerSocket(
+      clientRunner.socket,
+      agentsRunnerDescriptor({
+        bootId: `rbt_${randomUUID()}`,
         device: { form: "laptop", platform: "linux" },
-        ownerName: "Client",
-        ownership: "other",
-      });
-      const ownerView = await testRpcData(origin, "machines.list", {}, { headers: clientHeaders });
-      expect(ownerView.machines.find((machine) => machine.id === clientRunnerId)).toMatchObject({
-        ownerName: null,
-        ownership: "mine",
-      });
-    } finally {
-      clientRunner.socket.close();
-    }
+        environmentIds: [createId("environment")],
+        harnessDrivers: [],
+        name: "Client laptop",
+        runnerId: clientRunnerId,
+        runnerKind: "local",
+        runtimeVersion: "integration",
+      }),
+      clientEnrollment.token,
+      clientRunner.challenge,
+    );
+    const clientBootstrap = await testRpcData(
+      origin,
+      "bootstrap.get",
+      {},
+      { headers: clientHeaders },
+    );
+    // Accepting an invitation does not stand in for having a home of your own:
+    // the invited account still gets its own Main alongside the shared
+    // Workspace, and Main is scoped to its creator rather than to membership.
+    const clientWorkspaces = clientBootstrap.workspaces as ReadonlyArray<{
+      readonly id: string;
+      readonly kind: string;
+    }>;
+    expect(clientWorkspaces.map((workspace) => workspace.id)).toContain(workspaceId);
+    clientMain = clientWorkspaces.find((workspace) => workspace.kind === "main");
+    expect(clientMain).toBeDefined();
+    expect(clientMain).not.toHaveProperty("createdBy");
+    expect(clientWorkspaces).toHaveLength(2);
+    const administratorView = await testRpcData(
+      origin,
+      "machines.list",
+      {},
+      { headers: authorization(accessToken) },
+    );
+    expect(
+      administratorView.machines.find((machine) => machine.id === clientRunnerId),
+    ).toMatchObject({
+      access: null,
+      device: { form: "laptop", platform: "linux" },
+      ownerName: "Client",
+      ownership: "other",
+    });
+    const ownerView = await testRpcData(origin, "machines.list", {}, { headers: clientHeaders });
+    expect(ownerView.machines.find((machine) => machine.id === clientRunnerId)).toMatchObject({
+      ownerName: null,
+      ownership: "mine",
+    });
 
     // A Workspace's icon is the Workspace's own: every member sees it, only an
     // owner changes it, Main keeps the product mark, and the catalog is the
@@ -1476,11 +1448,10 @@ integration("Host vertical slice", () => {
   });
 
   it("persists the fixed initial-owner enrollment deadline across Host restarts", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-bootstrap-expiry-"));
     const firstPort = await freePort();
     const firstConfig = {
-      ...testHostConfig(firstPort, dataDirectory, portableFs.url),
+      ...testHostConfig(firstPort, dataDirectory, new URL("http://127.0.0.1:9")),
     } satisfies HostConfig;
     runtime = await createHostRuntime(firstConfig);
     const firstRow = await initialOwnerEnrollmentDeadline(runtime.store);
@@ -1500,10 +1471,11 @@ integration("Host vertical slice", () => {
   });
 
   it("restarts Host and local Runner identity without the enrollment token", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-runner-token-removal-"));
     const firstPort = await freePort();
-    runtime = await createHostRuntime(testHostConfig(firstPort, dataDirectory, portableFs.url));
+    runtime = await createHostRuntime(
+      testHostConfig(firstPort, dataDirectory, new URL("http://127.0.0.1:9")),
+    );
     await runtime.listen();
     await initializeOwnerSession(`http://127.0.0.1:${firstPort}`);
     const runnerId = createId("runner");
@@ -1529,9 +1501,8 @@ integration("Host vertical slice", () => {
       runnerKind: "local",
       runtimeVersion: "integration",
 
-      workspaceBackings: ["portablefs"],
+      workspaceBackings: ["local-directory"],
       localStorage: null,
-      workspaceMounts: [],
     });
     const runnerKeys = await enrollRunnerSocket(
       connection.socket,
@@ -1548,7 +1519,7 @@ integration("Host vertical slice", () => {
 
     const secondPort = firstPort;
     runtime = await createHostRuntime(
-      withoutInitialOwner(testHostConfig(secondPort, dataDirectory, portableFs.url)),
+      withoutInitialOwner(testHostConfig(secondPort, dataDirectory, new URL("http://127.0.0.1:9"))),
     );
     await runtime.listen();
     await expect(runtime.store.runnerForAuthentication(runnerId)).resolves.toMatchObject({
@@ -1585,10 +1556,11 @@ integration("Host vertical slice", () => {
   });
 
   it("converges after Runner invalidation's first catalog recapture fails", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-invalidation-recovery-"));
     const hostPort = await freePort();
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, portableFs.url));
+    runtime = await createHostRuntime(
+      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
+    );
     await runtime.listen();
     await initializeOwnerSession(`http://127.0.0.1:${hostPort}`);
     const environmentId = createId("environment");
@@ -1646,9 +1618,8 @@ integration("Host vertical slice", () => {
         runnerId: createId("runner"),
         runnerKind: "local",
         runtimeVersion: "integration",
-        workspaceBackings: ["portablefs"],
+        workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       runnerToken,
       connection.challenge,
@@ -1728,10 +1699,11 @@ integration("Host vertical slice", () => {
   }, 75_000);
 
   it("returns a structured authentication rejection before closing a Runner socket", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-runner-auth-rejection-"));
     const hostPort = await freePort();
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, portableFs.url));
+    runtime = await createHostRuntime(
+      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
+    );
     await runtime.listen();
 
     const connection = await openRunnerSocket(`ws://127.0.0.1:${hostPort}/internal/v1/runners`);
@@ -1756,9 +1728,8 @@ integration("Host vertical slice", () => {
       runnerKind: "main",
       runtimeVersion: "integration",
 
-      workspaceBackings: ["portablefs"],
+      workspaceBackings: ["local-directory"],
       localStorage: null,
-      workspaceMounts: [],
     });
     const pair = generateKeyPairSync("ed25519");
     const rejected = waitForMessage(connection.socket, (message) => message.type === "host.error");
@@ -1786,10 +1757,11 @@ integration("Host vertical slice", () => {
   });
 
   it("advertises AI-engine readiness and admits only compatible new Thread placements", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-placement-integration-"));
     const hostPort = await freePort();
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, portableFs.url));
+    runtime = await createHostRuntime(
+      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
+    );
     await runtime.listen();
     const origin = `http://127.0.0.1:${hostPort}`;
     await initializeOwnerSession(origin);
@@ -1860,33 +1832,34 @@ integration("Host vertical slice", () => {
         runnerKind: "local",
         runtimeVersion: "integration",
 
-        workspaceBackings: ["portablefs"],
+        workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       runnerToken,
       runnerConnection.challenge,
     );
     const ownerId = await administratorId(runtime.store);
-    const portableFsVolumeId = randomUUID();
-    portableFs.seedReadyVolume({ id: portableFsVolumeId, owner: ownerId });
-    const workspace = await runtime.store.createWorkspace({
+    const workspace = await createTestWorkspace(runtime.store, {
       backing: {
+        kind: "local-directory",
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: portableFsVolumeId,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
+        storageAuthorityId: runtimeTestDisk.storageAuthorityId,
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: ownerId,
       idempotencyKey: "placement-runtime-workspace",
       name: "Placement workspace",
       status: "ready",
     });
+    if (workspace.backing.kind === "local-directory")
+      runtimeTestDisk.bindings.push({
+        bindingId: workspace.backing.bindingId,
+        generation: workspace.backing.generation,
+        workspaceId: workspace.id,
+        state: "ready",
+      });
     // A driver the Runner reports as unavailable is not seeded a default
     // profile, and adding one is refused: an engine the Runner cannot run has
     // no source to validate against. This case's unavailable account is one
@@ -2186,10 +2159,11 @@ integration("Host vertical slice", () => {
   });
 
   it("keeps a removed existing-CLI profile removed across the next Runner connect", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-ambient-removal-integration-"));
     const hostPort = await freePort();
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, portableFs.url));
+    runtime = await createHostRuntime(
+      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
+    );
     await runtime.listen();
     const origin = `http://127.0.0.1:${hostPort}`;
     await initializeOwnerSession(origin);
@@ -2220,9 +2194,8 @@ integration("Host vertical slice", () => {
         runnerId: createId("runner"),
         runnerKind: "local",
         runtimeVersion: "integration",
-        workspaceBackings: ["portablefs"],
+        workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       runnerToken,
       runnerConnection.challenge,
@@ -2275,25 +2248,27 @@ integration("Host vertical slice", () => {
   });
 
   it("projects and broadcasts a non-retryable Runner dispatch rejection", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-rejection-integration-"));
     const hostPort = await freePort();
     const bootId = `rbt_${randomUUID()}`;
     const committed = new EventEmitter();
     let snapshot: RunnerReadinessSnapshot | undefined;
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, portableFs.url), {
-      onRunnerCatalogsCommitted: (identity, environmentId, catalogs) => {
-        snapshot = {
-          bootId: identity.bootId,
-          connectionId: identity.connectionId,
-          currentConnectionId: identity.connectionId,
-          environmentId,
-          connected: true,
-          catalogs,
-        };
-        committed.emit("update");
+    runtime = await createHostRuntime(
+      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
+      {
+        onRunnerCatalogsCommitted: (identity, environmentId, catalogs) => {
+          snapshot = {
+            bootId: identity.bootId,
+            connectionId: identity.connectionId,
+            currentConnectionId: identity.connectionId,
+            environmentId,
+            connected: true,
+            catalogs,
+          };
+          committed.emit("update");
+        },
       },
-    });
+    );
     await runtime.listen();
     await initializeOwnerSession(`http://127.0.0.1:${hostPort}`);
 
@@ -2323,9 +2298,8 @@ integration("Host vertical slice", () => {
         runnerKind: "local",
         runtimeVersion: "integration",
 
-        workspaceBackings: ["portablefs"],
+        workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       runnerToken,
       runnerConnection.challenge,
@@ -2340,25 +2314,27 @@ integration("Host vertical slice", () => {
 
     try {
       const ownerId = await administratorId(runtime.store);
-      const portableFsVolumeId = randomUUID();
-      portableFs.seedReadyVolume({ id: portableFsVolumeId, owner: ownerId });
-      const workspace = await runtime.store.createWorkspace({
+      const workspace = await createTestWorkspace(runtime.store, {
         backing: {
+          kind: "local-directory",
           generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: portableFsVolumeId,
+          bindingId: createId("workspaceBinding"),
+          ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
+          storageAuthorityId: runtimeTestDisk.storageAuthorityId,
         },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+
         createdBy: ownerId,
         idempotencyKey: "rejection-runtime-workspace",
         name: "Rejected dispatch workspace",
         status: "ready",
       });
+      if (workspace.backing.kind === "local-directory")
+        runtimeTestDisk.bindings.push({
+          bindingId: workspace.backing.bindingId,
+          generation: workspace.backing.generation,
+          workspaceId: workspace.id,
+          state: "ready",
+        });
       await publication.entered;
       const harnesses = await runtime.store.listHarnessInstances({
         environmentIds: [environmentId],
@@ -2504,12 +2480,11 @@ integration("Host vertical slice", () => {
 
   it("keeps an active Run through its Runner's disconnect until its lease runs out", async () => {
     const clock = new ManualClock();
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-disconnect-integration-"));
     const hostPort = await freePort();
     runtime = await createHostRuntime(
       {
-        ...testHostConfig(hostPort, dataDirectory, portableFs.url),
+        ...testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
         executionLeaseMs: 10_000,
       },
       { executionClock: clock },
@@ -2544,9 +2519,8 @@ integration("Host vertical slice", () => {
         runnerKind: "local",
         runtimeVersion: "integration",
 
-        workspaceBackings: ["portablefs"],
+        workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       runnerToken,
       runnerConnection.challenge,
@@ -2554,25 +2528,27 @@ integration("Host vertical slice", () => {
     const stopCatalogResponder = respondToHarnessInspections(runnerSocket, readyCodexCatalog);
 
     const ownerId = await administratorId(runtime.store);
-    const portableFsVolumeId = randomUUID();
-    portableFs.seedReadyVolume({ id: portableFsVolumeId, owner: ownerId });
-    const workspace = await runtime.store.createWorkspace({
+    const workspace = await createTestWorkspace(runtime.store, {
       backing: {
+        kind: "local-directory",
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: portableFsVolumeId,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
+        storageAuthorityId: runtimeTestDisk.storageAuthorityId,
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: ownerId,
       idempotencyKey: "disconnect-runtime-workspace",
       name: "Disconnect workspace",
       status: "ready",
     });
+    if (workspace.backing.kind === "local-directory")
+      runtimeTestDisk.bindings.push({
+        bindingId: workspace.backing.bindingId,
+        generation: workspace.backing.generation,
+        workspaceId: workspace.id,
+        state: "ready",
+      });
     const harness = await seededHarness(runtime.store, environmentId);
     const { thread } = await runtime.store.createThread({
       createdBy: ownerId,
@@ -2725,7 +2701,6 @@ integration("Host vertical slice", () => {
   }, 60_000);
 
   it("cancels a Browser Request whose session a Host restart ended, and keeps its Run", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-restart-integration-"));
     const hostPort = await freePort();
     const hostInstance = await loadOrCreateHostInstance(dataDirectory);
@@ -2739,7 +2714,7 @@ integration("Host vertical slice", () => {
       deploymentId: createId("deployment"),
       hostInstanceId: hostInstance.hostInstanceId,
       deploymentShape: {
-        defaultWorkspaceBacking: "portablefs",
+        defaultWorkspaceBacking: "local-directory",
         kind: "server" as const,
       },
     });
@@ -2779,31 +2754,34 @@ integration("Host vertical slice", () => {
         runnerKind: "main",
         runtimeVersion: "integration",
 
-        workspaceBackings: ["portablefs"],
+        workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       enrollmentTokenHash: seedEnrollmentTokenHash,
       publicKeyFingerprint: runnerPublicKeyFingerprint(seedKeys.publicKey),
       publicKeyPem: canonicalRunnerPublicKeyPem(seedKeys.publicKey),
     });
-    const workspace = await seedStore.createWorkspace({
+    const workspace = await createTestWorkspace(seedStore, {
       backing: {
+        kind: "local-directory",
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_restart_runtime",
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
+        storageAuthorityId: runtimeTestDisk.storageAuthorityId,
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: ownerId,
       idempotencyKey: "restart-runtime-workspace",
       name: "Restart workspace",
       status: "ready",
     });
+    if (workspace.backing.kind === "local-directory")
+      runtimeTestDisk.bindings.push({
+        bindingId: workspace.backing.bindingId,
+        generation: workspace.backing.generation,
+        workspaceId: workspace.id,
+        state: "ready",
+      });
     const harness = await seedStore.createHarnessInstance({
       config: { model: "test" },
       driverKind: HarnessIdSchema.parse("native"),
@@ -2887,7 +2865,9 @@ integration("Host vertical slice", () => {
     );
     await seedDatabase.destroy();
 
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, portableFs.url));
+    runtime = await createHostRuntime(
+      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
+    );
     await expect(runtime.store.getThreadForOwner(idleThread.id, ownerId)).resolves.toMatchObject({
       pendingRequests: 0,
     });
@@ -2969,7 +2949,6 @@ integration("Host vertical slice", () => {
   });
 
   it("keeps Chat follow-ups from an older reattached Runner and in order when a Runner refuses one", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-steer-answer-integration-"));
     const hostPort = await freePort();
     const hostInstance = await loadOrCreateHostInstance(dataDirectory);
@@ -2982,7 +2961,7 @@ integration("Host vertical slice", () => {
       canonicalOrigin: `http://127.0.0.1:${hostPort}`,
       deploymentId: createId("deployment"),
       hostInstanceId: hostInstance.hostInstanceId,
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" as const },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" as const },
     });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
@@ -3019,9 +2998,8 @@ integration("Host vertical slice", () => {
         runnerId,
         runnerKind: "main",
         runtimeVersion: "integration",
-        workspaceBackings: ["portablefs"],
+        workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       });
       return RunnerDescriptorSchema.parse({
         ...current,
@@ -3040,20 +3018,28 @@ integration("Host vertical slice", () => {
       publicKeyFingerprint: runnerPublicKeyFingerprint(runnerKeys.publicKey),
       publicKeyPem: canonicalRunnerPublicKeyPem(runnerKeys.publicKey),
     });
-    const volumeId = randomUUID();
-    portableFs.seedReadyVolume({ id: volumeId, owner: ownerId });
-    const workspace = await seedStore.createWorkspace({
-      backing: { generation: 1, kind: "portablefs", serviceId: "test-portablefs", volumeId },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
+    const workspace = await createTestWorkspace(seedStore, {
+      backing: {
+        kind: "local-directory",
+        generation: 1,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
+        storageAuthorityId: runtimeTestDisk.storageAuthorityId,
       },
+
       createdBy: ownerId,
       idempotencyKey: "steer-answer-workspace",
+      kind: "main",
       name: "Steer answer workspace",
       status: "ready",
     });
+    if (workspace.backing.kind === "local-directory")
+      runtimeTestDisk.bindings.push({
+        bindingId: workspace.backing.bindingId,
+        generation: workspace.backing.generation,
+        workspaceId: workspace.id,
+        state: "ready",
+      });
     const harness = await seedStore.createHarnessInstance({
       config: {},
       driverKind: HarnessIdSchema.parse("codex"),
@@ -3151,9 +3137,12 @@ integration("Host vertical slice", () => {
     await seedDatabase.destroy();
 
     // The Host is upgraded; the same Runner boot reconnects and states its reply.
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, portableFs.url));
+    runtime = await createHostRuntime(
+      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
+    );
     await runtime.listen();
     const connect = async (descriptor: RunnerDescriptor) => {
+      if (descriptor.modules.agents) descriptor.modules.agents.localStorage = runtimeTestDisk;
       const connection = await openRunnerSocket(`ws://127.0.0.1:${hostPort}/internal/v1/runners`);
       const challenge = RunnerChallengeSchema.parse(connection.challenge);
       const frames: HostToRunnerMessage[] = [];
@@ -3386,10 +3375,9 @@ integration("Host vertical slice", () => {
   }, 90_000);
 
   it("opens a browser module stream beside the primary connection, once per ticket", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-runner-browser-module-"));
     const hostPort = await freePort();
-    const config = testHostConfig(hostPort, dataDirectory, portableFs.url);
+    const config = testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9"));
     runtime = await createHostRuntime(config);
     await runtime.listen();
     const origin = config.runtimeOrigin.origin;
@@ -3544,10 +3532,9 @@ integration("Host vertical slice", () => {
   });
 
   it("enrolls a messaging-only computer and projects its one module", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-runner-messaging-module-"));
     const hostPort = await freePort();
-    const config = testHostConfig(hostPort, dataDirectory, portableFs.url);
+    const config = testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9"));
     runtime = await createHostRuntime(config);
     await runtime.listen();
     const origin = config.runtimeOrigin.origin;
@@ -3811,42 +3798,42 @@ integration("Host vertical slice", () => {
       name: "Main",
     });
     expect(JSON.stringify(bootstrap.workspaces[0])).not.toContain(dataDirectory);
-    const specialized = await testRpcData(
+    const project = await testRpcData(
       origin,
       "commands.dispatch",
       {
-        idempotencyKey: "personal-specialized-workspace",
+        idempotencyKey: "personal-project-workspace",
         name: "Private research",
         type: "workspace.create",
       },
       { headers: sessionHeaders },
     );
-    if (specialized.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-    expect(specialized.workspace).toMatchObject({
+    if (project.type !== "workspace.create") throw new Error("Workspace command mismatch.");
+    expect(project.workspace).toMatchObject({
       location: { environmentId: ownerEnvironmentId, kind: "machine" },
       name: "Private research",
       status: "ready",
     });
-    const sharingSpecialized = await testRpcRequest(
+    const sharingProject = await testRpcRequest(
       origin,
       "commands.dispatch",
       {
-        idempotencyKey: "share-personal-specialized",
+        idempotencyKey: "share-personal-project",
         role: "collaborator",
         type: "workspace.invitation.create",
-        workspaceId: specialized.workspace.id,
+        workspaceId: project.workspace.id,
       },
       { headers: sessionHeaders },
     );
-    expect(sharingSpecialized.status).toBe(403);
-    expect(await sharingSpecialized.json()).toMatchObject({
+    expect(sharingProject.status).toBe(403);
+    expect(await sharingProject.json()).toMatchObject({
       error: {
         code: "forbidden",
         message: "Workspace sharing is unavailable for this Deployment",
       },
     });
 
-    // Main is the mount point for specialized Workspaces, so it cannot be shared.
+    // Main is the mount point for project Workspaces, so it cannot be shared.
     const mainWorkspace = bootstrap.workspaces[0];
     if (!mainWorkspace) throw new Error("Main Workspace is missing.");
     const sharingMain = await testRpcRequest(
@@ -4868,10 +4855,9 @@ integration("Host vertical slice", () => {
   });
 
   it("does not expose the local bootstrap route on a reachable Host", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-hosted-bootstrap-"));
     const hostPort = await freePort();
-    const config = testHostConfig(hostPort, dataDirectory, portableFs.url);
+    const config = testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9"));
     runtime = await createHostRuntime(config);
     await runtime.listen();
 
@@ -5093,11 +5079,7 @@ integration("Host vertical slice", () => {
   });
 });
 
-function testHostConfig(
-  hostPort: number,
-  hostDataDirectory: string,
-  portableFsManagerUrl: URL,
-): HostConfig {
+function testHostConfig(hostPort: number, hostDataDirectory: string, _storageUrl: URL): HostConfig {
   return {
     acceptsExternalRunners: true,
     authSecret: "runtime-auth-secret".padEnd(40, "x"),
@@ -5122,35 +5104,18 @@ function testHostConfig(
     privateKeyPath: undefined,
     publicKeyPath: undefined,
     runtimeOrigin: new URL(`http://127.0.0.1:${hostPort}`),
-    workspace: portableFsWorkspaceConfig(portableFsManagerUrl),
+    workspace: localWorkspaceConfig(),
   };
 }
 
-function portableFsWorkspaceConfig(managerUrl: URL): HostConfig["workspace"] {
+function localWorkspaceConfig(): HostConfig["workspace"] {
   return {
     deletionRetentionDays: 14,
     shape: {
-      defaultWorkspaceBacking: "portablefs",
+      defaultWorkspaceBacking: "local-directory",
       kind: "server" as const,
     },
-    storage: {
-      archiveAfterDays: 7,
-      authorizationDomain: "opensteer-test",
-      defaultBlockLimitBytes: 10 * 1_024 * 1_024 * 1_024,
-      defaultInodeLimit: 1_000_000,
-      filesServiceUrl: new URL("http://127.0.0.1:4315"),
-      kind: "portablefs",
-      maxBlockLimitBytes: 100 * 1_024 * 1_024 * 1_024,
-      maxInodeLimit: 10_000_000,
-      managerCaPath: undefined,
-      managerCertPath: undefined,
-      managerKeyPath: undefined,
-      managerServerName: undefined,
-      managerUrl,
-      productIssuer: "opensteer-test",
-      productPrivateKeyPath: undefined,
-      serviceId: "test-portablefs",
-    },
+    storage: { kind: "local-directory", ownerEnvironmentId: createId("environment") },
   };
 }
 
@@ -5351,7 +5316,7 @@ function agentsRunnerDescriptor(input: {
   readonly workspaceBackings?: readonly string[];
   readonly workspaceMounts?: readonly unknown[];
 }): RunnerDescriptor {
-  return RunnerDescriptorSchema.parse({
+  const descriptor = RunnerDescriptorSchema.parse({
     bootId: input.bootId,
     capabilities: [
       ...new Set([
@@ -5370,10 +5335,14 @@ function agentsRunnerDescriptor(input: {
       agents: {
         environmentIds: input.environmentIds,
         harnessDrivers: input.harnessDrivers,
-        localStorage: input.localStorage ?? null,
+        localStorage: input.localStorage ?? {
+          storageAuthorityId: runtimeTestDisk.storageAuthorityId,
+          bindings: [],
+          truncated: false,
+        },
         maxConcurrentRuns: input.maxConcurrentRuns ?? 1,
         providerStateModes: input.providerStateModes ?? ["ambient", "isolated"],
-        workspaceBackings: input.workspaceBackings ?? ["portablefs"],
+        workspaceBackings: input.workspaceBackings ?? ["local-directory"],
         workspaceMounts: input.workspaceMounts ?? [],
       },
     },
@@ -5382,6 +5351,9 @@ function agentsRunnerDescriptor(input: {
     runnerKind: input.runnerKind,
     runtimeVersion: input.runtimeVersion,
   });
+  if (input.localStorage == null && descriptor.modules.agents)
+    descriptor.modules.agents.localStorage = runtimeTestDisk;
+  return descriptor;
 }
 
 async function enrollRunnerSocket(
@@ -5395,6 +5367,14 @@ async function enrollRunnerSocket(
   readonly publicKey: KeyObject;
 }> {
   const challenge = RunnerChallengeSchema.parse(challengeInput);
+  const storageAuthorityId = descriptor.modules.agents?.localStorage?.storageAuthorityId;
+  if (storageAuthorityId) {
+    diskBySocket.get(socket)?.stop();
+    diskBySocket.set(
+      socket,
+      attachLocalWorkspaceDisk(socket, { inventory: descriptor.modules.agents!.localStorage! }),
+    );
+  }
   const pair = generateKeyPairSync("ed25519");
   const publicKeyPem = pair.publicKey.export({ format: "pem", type: "spki" }).toString();
   const credential = RunnerEnrollmentCredentialSchema.parse({
@@ -5438,6 +5418,7 @@ async function openRunnerSocket(url: string): Promise<{
   readonly socket: WebSocket;
 }> {
   const socket = new WebSocket(url);
+  diskBySocket.set(socket, attachLocalWorkspaceDisk(socket, { inventory: runtimeTestDisk }));
   const challenge = waitForMessage(socket, (message) => message.type === "host.challenge");
   await new Promise<void>((resolve, reject) => {
     socket.once("open", resolve);

@@ -1,3 +1,8 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import { prepareThreadInsertion } from "./thread-insertion.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { takeTransactionConflicts } from "./lock-order-checker.test-support.js";
@@ -30,18 +35,17 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { createRunFixture, store, database } = storeFixture;
     const fixture = await createRunFixture("active-tasks");
-    const otherWorkspace = await store.createWorkspace({
+    const otherWorkspace = await createTestWorkspace(store, {
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_active-other",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.userId,
       idempotencyKey: "active-other-workspace",
       name: "Other",
@@ -187,10 +191,9 @@ describeStore("PostgreSQL store", (it) => {
   it.for(["wsp_00000000-0000-4000-8000-000000000001", "wsp_ffffffff-ffff-4fff-bfff-ffffffffffff"])(
     "orders withdrawal against target removal (%s)",
     async (targetId, { storeFixture }) => {
-      const { startRunFixture, createSpecializedWorkspace, store, stagedRequestRace } =
-        storeFixture;
+      const { startRunFixture, createProjectWorkspace, store, stagedRequestRace } = storeFixture;
       const fixture = await startRunFixture("withdraw-target-removal");
-      const target = await createSpecializedWorkspace(
+      const target = await createProjectWorkspace(
         fixture.userId,
         "withdraw-target-removal-target",
         WorkspaceIdSchema.parse(targetId),
@@ -245,10 +248,10 @@ describeStore("PostgreSQL store", (it) => {
   it("retries Request Workspace discovery with the expanded sorted set", async ({
     storeFixture,
   }) => {
-    const { createRunFixture, createSpecializedWorkspace, database } = storeFixture;
+    const { createRunFixture, createProjectWorkspace, database } = storeFixture;
     const { withRequestWorkspaceLocks } = await import("./request-cancellation.js");
     const fixture = await createRunFixture("request-lock-discovery");
-    const other = await createSpecializedWorkspace(fixture.userId, "request-lock-discovery-other");
+    const other = await createProjectWorkspace(fixture.userId, "request-lock-discovery-other");
     let discoveries = 0;
     const attempts: number[] = [];
     const result = await withRequestWorkspaceLocks(
@@ -320,10 +323,10 @@ describeStore("PostgreSQL store", (it) => {
   it("avoids a deadlock between delegation and membership cancellation", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, createSpecializedWorkspace, store, database, stagedRequestRace } =
+    const { startRunFixture, createProjectWorkspace, store, database, stagedRequestRace } =
       storeFixture;
     const fixture = await startRunFixture("delegation-membership-race");
-    const target = await createSpecializedWorkspace(fixture.userId, "delegation-membership-target");
+    const target = await createProjectWorkspace(fixture.userId, "delegation-membership-target");
     const input = {
       callId: "pending-state",
       kind: "browser.access" as const,
@@ -399,9 +402,9 @@ describeStore("PostgreSQL store", (it) => {
     it("publishes each committed projection before waiting on the next Thread", async ({
       storeFixture,
     }) => {
-      const { createRunFixture, createSpecializedWorkspace, store, database } = storeFixture;
+      const { createRunFixture, createProjectWorkspace, store, database } = storeFixture;
       const first = await createRunFixture("drain-first");
-      const workspace = await createSpecializedWorkspace(first.userId, "drain-second");
+      const workspace = await createProjectWorkspace(first.userId, "drain-second");
       const { thread } = await store.createThread({
         createdBy: first.userId,
         environmentId: first.environmentId,
@@ -457,9 +460,9 @@ describeStore("PostgreSQL store", (it) => {
     it("records Request changes and drains one absolute event only for a changed tuple", async ({
       storeFixture,
     }) => {
-      const { startRunFixture, createSpecializedWorkspace, database, store } = storeFixture;
+      const { startRunFixture, createProjectWorkspace, database, store } = storeFixture;
       const fixture = await startRunFixture("pending-state");
-      const target = await createSpecializedWorkspace(fixture.userId, "pending-state-target");
+      const target = await createProjectWorkspace(fixture.userId, "pending-state-target");
       const input = {
         callId: "pending-state",
         kind: "browser.access" as const,
@@ -1244,9 +1247,9 @@ describeStore("PostgreSQL store", (it) => {
   it("deduplicates durable Requests by call identity and withdraws them replay-safely", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, createSpecializedWorkspace, store } = storeFixture;
+    const { startRunFixture, createProjectWorkspace, store } = storeFixture;
     const fixture = await startRunFixture("request-withdrawal");
-    const targetWorkspace = await createSpecializedWorkspace(
+    const targetWorkspace = await createProjectWorkspace(
       fixture.userId,
       "request_withdrawal_target",
     );
@@ -1339,8 +1342,7 @@ describeStore("PostgreSQL store", (it) => {
   )(
     "keeps Watch $mutation foreign keys transparent to $writer ($order)",
     async ({ mutation, writer, order }, { storeFixture }) => {
-      const { startRunFixture, store, triggers, createSpecializedWorkspace, database } =
-        storeFixture;
+      const { startRunFixture, store, triggers, createProjectWorkspace, database } = storeFixture;
       const fixture = await startRunFixture(`watch-fk-${mutation}-${writer}-${order}`);
       const { thread: anchor } = await store.createThread({
         createdBy: fixture.userId,
@@ -1372,7 +1374,7 @@ describeStore("PostgreSQL store", (it) => {
           triggerId: watch.trigger.id,
         });
       }
-      const target = await createSpecializedWorkspace(fixture.userId, "watch-fk-target");
+      const target = await createProjectWorkspace(fixture.userId, "watch-fk-target");
       const opened = await store.requests.create({
         callId: "watch-fk-request",
         kind: "browser.access",
@@ -2057,10 +2059,10 @@ describeStore("PostgreSQL store", (it) => {
   it("keeps durable Request event foreign keys compatible with Runner ingestion", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, createSpecializedWorkspace, store, stagedRequestRace, database } =
+    const { startRunFixture, createProjectWorkspace, store, stagedRequestRace, database } =
       storeFixture;
     const fixture = await startRunFixture("request-run-fk-race");
-    const target = await createSpecializedWorkspace(fixture.userId, "request-run-fk-race-target");
+    const target = await createProjectWorkspace(fixture.userId, "request-run-fk-race-target");
     const opened = await store.requests.create({
       callId: "request-run-fk-race",
       kind: "browser.access",

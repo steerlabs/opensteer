@@ -25,6 +25,7 @@ import {
 } from "./personal-remote-access.js";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import {
+  SpecialistRegistrationViewSchema,
   AssignmentIdSchema,
   AssignmentSummarySchema,
   AssignmentViewSchema,
@@ -133,7 +134,6 @@ import {
   TriggerWatchActivationViewSchema,
   UpdateTriggerHttpBodySchema,
 } from "@opensteer/triggers";
-import { WorkspaceStorageChoiceSchema } from "@opensteer/workspace";
 import { z } from "zod";
 import { AppIdSchema, AppSchema } from "@opensteer/core";
 import { AgentPhoneHostTargetViewSchema } from "./android-phone.js";
@@ -360,13 +360,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     icon: WorkspaceIconNameSchema.optional(),
     idempotencyKey: idempotencyKeySchema,
     name: z.string().trim().min(1).max(160),
-    quotaBytes: z.number().int().positive().optional(),
-    quotaInodes: z.number().int().positive().optional(),
-    // Absent means the Deployment's default backing, and for a local directory
-    // the caller's own machine. A quota is meaningful only for shared storage,
-    // so the Host refuses one alongside a local-directory choice.
-    storage: WorkspaceStorageChoiceSchema.optional(),
     type: z.literal("workspace.create"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("workspace.adoptRelocated"),
+    workspaceId: WorkspaceIdSchema,
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -809,8 +808,56 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    type: z.literal("plugin.update"),
+    pluginId: z.string(),
     input: InstallAgentPluginSchema,
-    type: z.literal("integration.agentPlugin.install"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("plugin.remove"),
+    pluginId: z.string(),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("plugin.activation.set"),
+    pluginId: z.string(),
+    workspaceId: WorkspaceIdSchema,
+    active: z.boolean(),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("plugin.list"),
+    workspaceId: WorkspaceIdSchema.optional(),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("specialist.add"),
+    workspaceId: WorkspaceIdSchema,
+    pluginId: z.string().min(1),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("specialist.bind"),
+    workspaceId: WorkspaceIdSchema,
+    specialistId: z.string().min(1),
+    requirement: z.number().int().nonnegative(),
+    resourceId: z.string().min(1),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("specialist.remove"),
+    workspaceId: WorkspaceIdSchema,
+    specialistId: z.string().min(1),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("specialist.list"),
+    workspaceId: WorkspaceIdSchema,
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    input: InstallAgentPluginSchema,
+    type: z.literal("plugin.install"),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1106,6 +1153,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("attachment.upload.create"), attachment: AttachmentSchema }),
   z.object({ type: z.literal("attachment.upload.discard") }),
   z.object({ type: z.literal("workspace.create"), workspace: WorkspaceViewSchema }),
+  z.object({ type: z.literal("workspace.adoptRelocated"), workspace: WorkspaceViewSchema }),
   z.object({ type: z.literal("workspace.storage.retry"), workspace: WorkspaceViewSchema }),
   z.object({ type: z.literal("workspace.icon.set"), workspace: WorkspaceViewSchema }),
   z.object({ type: z.literal("workspace.color.set"), workspace: WorkspaceViewSchema }),
@@ -1275,6 +1323,17 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("integration.authorization.cancel"),
   }),
   z.object({ type: z.literal("integration.mcp.disconnect") }),
+  z.object({ type: z.literal("plugin.update") }),
+  z.object({ type: z.literal("plugin.remove") }),
+  z.object({ type: z.literal("specialist.add"), specialist: SpecialistRegistrationViewSchema }),
+  z.object({ type: z.literal("specialist.bind"), specialist: SpecialistRegistrationViewSchema }),
+  z.object({ type: z.literal("specialist.remove") }),
+  z.object({
+    type: z.literal("specialist.list"),
+    specialists: z.array(SpecialistRegistrationViewSchema),
+  }),
+  z.object({ type: z.literal("plugin.activation.set") }),
+  z.object({ type: z.literal("plugin.list"), plugins: z.array(z.record(z.string(), z.unknown())) }),
   z.object({
     issues: z
       .array(
@@ -1285,7 +1344,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
         }),
       )
       .max(1_000),
-    type: z.literal("integration.agentPlugin.install"),
+    type: z.literal("plugin.install"),
   }),
   z.object({
     installation: IntegrationInstallationViewSchema,
@@ -1676,6 +1735,17 @@ export const hostApi = defineRpc({
       total: z.number().int().nonnegative(),
       unavailableReason: z.enum(["offline", "not-ready"]).optional(),
     }),
+  ),
+  "specialist.list": declaration(
+    "GET",
+    z.strictObject({ workspaceId: WorkspaceIdSchema }),
+    z.object({ specialists: z.array(SpecialistRegistrationViewSchema) }),
+  ),
+  // Without workspaceId this is administrator-only; members receive a safe Workspace projection.
+  "plugin.list": declaration(
+    "GET",
+    z.strictObject({ workspaceId: WorkspaceIdSchema.optional() }),
+    z.object({ plugins: z.array(z.record(z.string(), z.unknown())) }),
   ),
   "integration.platform.get": declaration(
     "GET",

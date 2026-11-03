@@ -57,12 +57,7 @@ export function WorkspaceIconChooser({
         </span>
       </button>
       {anchor ? (
-        <Popover
-          anchor={anchor}
-          label="Specialist icon"
-          onClose={() => setAnchor(null)}
-          role="dialog"
-        >
+        <Popover anchor={anchor} label="Project icon" onClose={() => setAnchor(null)} role="dialog">
           <WorkspaceIconPicker
             onColorChange={onColorChange}
             name={name}

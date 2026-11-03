@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { createId, type Workspace } from "@opensteer/core";
 import { createDatabase, migrateToLatest, OpensteerStore } from "@opensteer/database";
 import { sql } from "kysely";
@@ -23,7 +24,7 @@ integration("Workspace Files membership generation", () => {
 
   afterAll(async () => database.destroy());
 
-  it.each(["local-directory", "portablefs"] as const)(
+  it.each(["local-directory"] as const)(
     "stops an in-flight %s download when the admitted member is revoked",
     async (backingKind) => {
       await store.ensureDeployment({
@@ -42,7 +43,7 @@ integration("Workspace Files membership generation", () => {
         kind: "local",
         name: "Files membership laptop",
       });
-      const workspace = await store.createWorkspace({
+      const workspace = await createTestWorkspace(store, {
         backing:
           backingKind === "local-directory"
             ? {
@@ -53,22 +54,16 @@ integration("Workspace Files membership generation", () => {
                 storageAuthorityId: createId("storageAuthority"),
               }
             : {
+                kind: "local-directory",
                 generation: 1,
-                kind: "portablefs",
-                serviceId: "files-membership-test",
-                volumeId: `volume_${createId("workspace")}`,
+                bindingId: createId("workspaceBinding"),
+                ownerEnvironmentId: createId("environment"),
+                storageAuthorityId: createId("storageAuthority"),
               },
-        capacityPolicy:
-          backingKind === "local-directory"
-            ? { kind: "host-filesystem" }
-            : {
-                blockHardLimitBytes: 10_000_000,
-                inodeHardLimit: 10_000,
-                kind: "hard-quota",
-              },
+
         createdBy: ownerId,
         idempotencyKey: `files-membership-${backingKind}`,
-        kind: "specialized",
+        kind: "project",
         name: "Shared files",
         status: "ready",
       });
@@ -112,9 +107,7 @@ integration("Workspace Files membership generation", () => {
         },
       );
       const files = new WorkspaceFilesService({
-        ...(backingKind === "local-directory"
-          ? { local: { download } as never }
-          : { portableFs: { download } as never }),
+        local: { download } as never,
         memberships: store,
       });
       try {

@@ -15,21 +15,28 @@ export function observeDispatchReadiness(store: OpensteerStore) {
   let gate:
     | {
         readonly commandId: CommandId;
+        harnessInstanceId?: string;
         readonly entered: () => void;
         readonly released: Promise<void>;
       }
     | undefined;
-  // Dispatch reads its Runner only after this context, so holding it here
-  // lets that Runner leave in between.
   vi.spyOn(store, "loadRunDispatchContext").mockImplementation(async (commandId) => {
     const context = await loadContext(commandId);
-    if (gate?.commandId === commandId) {
+    if (gate?.commandId === commandId) gate.harnessInstanceId = context.run.harnessInstanceId;
+    return context;
+  });
+  const getHarness = store.getHarnessInstance.bind(store);
+  // Hold after local storage inspection, immediately before dispatch reads the
+  // live Runner. Disconnecting earlier tests disk unavailability instead.
+  vi.spyOn(store, "getHarnessInstance").mockImplementation(async (harnessInstanceId) => {
+    const harness = await getHarness(harnessInstanceId);
+    if (gate?.harnessInstanceId === harnessInstanceId) {
       const held = gate;
       gate = undefined;
       held.entered();
       await held.released;
     }
-    return context;
+    return harness;
   });
 
   async function snapshot(commandId: CommandId) {

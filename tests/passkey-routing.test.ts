@@ -156,7 +156,7 @@ it.each([true, false])(
         keyId: "example",
         privateKey: keys.privateKey,
       }).issue({
-        access: "full-control",
+        access: "read-write",
         runtimeId: "example",
         sessionId,
         subject: "person",

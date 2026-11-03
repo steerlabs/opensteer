@@ -142,6 +142,17 @@ const releasedMigrationNames = [
   "0132_remote_administration",
   "0133_personal_account_link_sealing",
   "0134_personal_account_operation",
+  "0135_projects",
+  "0136_project_slugs",
+  "0137_project_relocation",
+  "0138_project_control_actions",
+  "0139_local_directory_only",
+  "0140_resource_access_levels",
+  "0141_plugins",
+  "0142_specialists",
+  "0143_specialist_threads",
+  "0144_project_chats",
+  "0145_specialist_lifecycle",
 ];
 
 describe("migration names", () => {

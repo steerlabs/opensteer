@@ -1,3 +1,4 @@
+import { PLUGIN_SCHEMA_SQL } from "./plugin-schema.js";
 import { conversationUnreadPredicate } from "./message-visibility.js";
 import {
   ContentPartSchema,
@@ -689,8 +690,10 @@ const fixedIntegrationAuthorizationMigration: Migration = {
       )
     `.execute(database);
     await sql`
-      delete from public.integration_skills
-      where installation_id in (select id from retired_integration_installations)
+      DO $$ BEGIN
+      IF to_regclass('public.integration_skills') IS NOT NULL THEN
+        delete from public.integration_skills where installation_id in (select id from retired_integration_installations);
+      END IF; END $$;
     `.execute(database);
     await sql`
       delete from public.integration_servers
@@ -4683,6 +4686,17 @@ export function migrationProvider() {
         "0132_remote_administration": remoteAdministrationMigration,
         "0133_personal_account_link_sealing": personalAccountLinkSealingMigration,
         "0134_personal_account_operation": personalAccountOperationMigration,
+        "0135_projects": projectsMigration,
+        "0136_project_slugs": projectSlugsMigration,
+        "0137_project_relocation": projectRelocationMigration,
+        "0138_project_control_actions": projectControlActionsMigration,
+        "0139_local_directory_only": localDirectoryOnlyMigration,
+        "0140_resource_access_levels": resourceAccessLevelsMigration,
+        "0141_plugins": pluginsMigration,
+        "0142_specialists": specialistsMigration,
+        "0143_specialist_threads": specialistThreadsMigration,
+        "0144_project_chats": projectChatsMigration,
+        "0145_specialist_lifecycle": specialistLifecycleMigration,
       };
     },
   };
@@ -6737,5 +6751,310 @@ const appsMigration: Migration = {
         primary key (app_id, version), unique (created_by_run, publish_key)
       );
     `.execute(database);
+  },
+};
+
+/** Kind conversion never changes backing identities or removes application records. */
+export const projectsMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.workspaces disable trigger workspaces_immutable_kind;
+      alter table public.workspaces drop constraint workspaces_kind_check;
+      update public.workspaces set kind = 'project' where kind = 'specialized';
+      alter table public.workspaces alter column kind set default 'project';
+      alter table public.workspaces add constraint workspaces_kind_check
+        check (kind = any (array['main'::text, 'project'::text]));
+      alter table public.workspaces enable trigger workspaces_immutable_kind;
+    `.execute(database);
+  },
+};
+
+/** Allocate folder names under the owner lock, including imports and direct inserts. */
+export const projectSlugsMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.workspaces add column slug text;
+      create function public.allocate_project_slug() returns trigger language plpgsql as $$
+      declare
+        base text;
+        candidate text;
+        suffix integer := 1;
+      begin
+        if TG_OP = 'UPDATE' then
+          if NEW.slug is distinct from OLD.slug then
+            raise exception 'Project folder slugs are immutable';
+          end if;
+          return NEW;
+        end if;
+        if NEW.kind = 'main' then
+          NEW.slug := null;
+          return NEW;
+        end if;
+        perform id from public.users where id = NEW.created_by for no key update;
+        base := trim(both '-' from left(regexp_replace(lower(NEW.name collate "C"), '[^a-z0-9]+', '-', 'g'), 100));
+        if base = '' then base := 'project'; end if;
+        candidate := base;
+        while exists (select 1 from public.workspaces where created_by = NEW.created_by and lower(slug) = candidate) loop
+          suffix := suffix + 1;
+          candidate := base || '-' || suffix;
+        end loop;
+        NEW.slug := candidate;
+        return NEW;
+      end $$;
+      create trigger workspaces_project_slug before insert or update on public.workspaces
+        for each row execute function public.allocate_project_slug();
+    `.execute(database);
+    // Use the same allocator as new inserts, in durable creation order.
+    await sql`
+      do $$
+      declare
+        item record;
+        base text;
+        candidate text;
+        suffix integer;
+      begin
+        alter table public.workspaces disable trigger workspaces_project_slug;
+        for item in select id, name, created_by from public.workspaces where kind = 'project' order by created_at, id loop
+          base := trim(both '-' from left(regexp_replace(lower(item.name collate "C"), '[^a-z0-9]+', '-', 'g'), 100));
+          if base = '' then base := 'project'; end if;
+          candidate := base;
+          suffix := 1;
+          while exists (select 1 from public.workspaces where created_by = item.created_by and lower(slug) = candidate) loop
+            suffix := suffix + 1;
+            candidate := base || '-' || suffix;
+          end loop;
+          update public.workspaces set slug = candidate where id = item.id;
+        end loop;
+        alter table public.workspaces enable trigger workspaces_project_slug;
+      end $$;
+      alter table public.workspaces add constraint workspaces_slug_check check
+        ((kind = 'main' and slug is null) or (kind = 'project' and slug is not null and slug ~ '^[a-z0-9][a-z0-9-]{0,127}$'));
+      create unique index workspaces_owner_slug on public.workspaces (created_by, lower(slug)) where kind = 'project';
+    `.execute(database);
+  },
+};
+
+const projectRelocationMigration: Migration = {
+  async up(database) {
+    const result = await sql<{
+      definition: string;
+    }>`select pg_get_constraintdef(oid) as definition from pg_constraint where conrelid = 'public.workspaces'::regclass and conname = 'workspaces_storage_error_shape_check'`.execute(
+      database,
+    );
+    const definition = result.rows[0]?.definition;
+    if (!definition?.includes("'local-registry-invalid'::text"))
+      throw new Error("Workspace storage issue constraint is missing");
+    await sql`alter table public.workspaces drop constraint workspaces_storage_error_shape_check`.execute(
+      database,
+    );
+    await sql
+      .raw(
+        `alter table public.workspaces add constraint workspaces_storage_error_shape_check ${definition.replace("'local-registry-invalid'::text", "'local-registry-invalid'::text, 'relocation-required'::text, 'relocation-pending'::text")}`,
+      )
+      .execute(database);
+  },
+};
+
+const projectControlActionsMigration: Migration = {
+  async up(database) {
+    for (const table of ["agent_control_requests", "trigger_control_requests"] as const) {
+      for (const column of ["action", "action_class"] as const) {
+        const name = `${table}_${column}_check`;
+        const result = await sql<{
+          definition: string;
+        }>`select pg_get_constraintdef(oid) as definition from pg_constraint where conrelid = ${table}::regclass and conname = ${name}`.execute(
+          database,
+        );
+        const definition = result.rows[0]?.definition;
+        if (!definition) throw new Error(`Missing ${name}`);
+        await sql.raw(`alter table ${table} drop constraint ${name}`).execute(database);
+        const next = definition
+          .replaceAll("'workspace.create'::text", "'project.create'::text")
+          .replaceAll("'workspace.list'::text", "'project.list'::text")
+          .replace("'workspace.inspect'::text", "'workspace.inspect'::text, 'project.list'::text");
+        await sql
+          .raw(`alter table ${table} add constraint ${name} ${next} not valid`)
+          .execute(database);
+      }
+      await sql
+        .raw(`alter table ${table} drop constraint ${table}_action_mapping_check`)
+        .execute(database);
+      await sql
+        .raw(
+          `update ${table} set action = case action when 'workspace.create' then 'project.create' when 'workspace.list' then 'project.list' else action end, action_class = case when action = 'workspace.list' then 'project.list' when action_class = 'workspace.create' then 'project.create' else action_class end`,
+        )
+        .execute(database);
+      await sql
+        .raw(
+          `alter table ${table} add constraint ${table}_action_mapping_check check (action_class = case when action = 'person.message' then 'thread.message' else action end)`,
+        )
+        .execute(database);
+      for (const column of ["action", "action_class"] as const)
+        await sql
+          .raw(`alter table ${table} validate constraint ${table}_${column}_check`)
+          .execute(database);
+    }
+  },
+};
+
+/** Retire shared-volume metadata without deleting application records or disk data. */
+export const localDirectoryOnlyMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.workspaces drop constraint workspaces_backing_capacity_policy_match_check;
+      alter table public.workspaces drop constraint workspaces_backing_shape_check;
+      alter table public.workspaces add column relocation_source jsonb;
+      create temporary table retired_workspace_destinations on commit drop as
+        select w.created_by,
+          coalesce(
+            (select m.backing->>'ownerEnvironmentId' from public.workspaces m
+             where m.created_by = w.created_by and m.kind = 'main' and m.backing->>'kind' = 'local-directory' limit 1),
+            (select e.id from public.execution_environments e join public.runners r on r.id = e.runner_id
+             where r.owner_user_id = w.created_by order by (e.kind = 'main') desc, e.created_at, e.id limit 1),
+            (select e.id from public.execution_environments e join public.runners r on r.id = e.runner_id
+             where r.owner_kind = 'deployment' order by (e.kind = 'main') desc, e.created_at, e.id limit 1),
+            'env_' || gen_random_uuid()::text
+          ) as environment_id
+        from public.workspaces w where w.backing->>'kind' = 'portablefs' group by w.created_by;
+      insert into public.execution_environments(id, name, kind, runner_id, capabilities)
+        select environment_id, 'Main (computer required)', 'main', null, '[]'::jsonb
+        from retired_workspace_destinations on conflict (id) do nothing;
+      update public.workspaces w set
+        relocation_source = jsonb_build_object('backing', w.backing, 'mounts',
+          coalesce((select jsonb_agg(to_jsonb(m)) from public.workspace_mounts m where m.workspace_id = w.id), '[]'::jsonb)),
+        backing = jsonb_build_object('kind', 'local-directory', 'bindingId', 'wbd_' || gen_random_uuid()::text,
+          'generation', w.backing->'generation', 'ownerEnvironmentId', d.environment_id, 'storageAuthorityId', null),
+        status = case when w.status in ('deleting', 'deleted') then w.status else 'unavailable' end,
+        storage_error_code = 'relocation-required', storage_error_retryable = false, storage_error_at = now(),
+        storage_error_message = 'Restore files from PortableFS service ' || (w.backing->>'serviceId') || ', volume ' || (w.backing->>'volumeId') || ' to ' || case when w.kind = 'main' then 'your Main directory' else 'your Main directory/Projects/' || w.slug end || ', then confirm its location.'
+        from retired_workspace_destinations d where w.created_by = d.created_by and w.backing->>'kind' = 'portablefs';
+      drop table public.workspace_mounts;
+      drop index public.workspaces_portablefs_backing_unique;
+      alter table public.workspaces drop column capacity_policy;
+      alter table public.workspaces add constraint workspaces_backing_shape_check check (
+        backing->>'kind' = 'local-directory'
+        and backing ?& array['kind','bindingId','generation','ownerEnvironmentId','storageAuthorityId']
+        and backing - array['kind','bindingId','generation','ownerEnvironmentId','storageAuthorityId'] = '{}'::jsonb
+        and jsonb_typeof(backing->'generation') = 'number'
+        and (backing->>'generation') ~ '^[0-9]+$'
+        and (backing->>'generation')::numeric between 1 and 9007199254740991
+        and (backing->>'bindingId') ~ '^wbd_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+        and (backing->>'ownerEnvironmentId') ~ '^env_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+        and (backing->'storageAuthorityId' = 'null'::jsonb or (backing->>'storageAuthorityId') ~ '^sta_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$')
+      );
+    `.execute(database);
+  },
+};
+
+export const resourceAccessLevelsMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table browser_profile_grants drop constraint browser_profile_grants_access_check;
+      update browser_profile_grants set access = 'read-write' where access = 'full-control';
+      alter table browser_profile_grants add constraint browser_profile_grants_access_check check (access in ('read', 'read-write'));
+    `.execute(database);
+  },
+};
+
+export const pluginsMigration: Migration = {
+  async up(database) {
+    await sql.raw(PLUGIN_SCHEMA_SQL).execute(database);
+    // Databases upgraded from releases before integration skills never had the table.
+    const skills = await sql<{
+      present: string | null;
+    }>`select to_regclass('public.integration_skills')::text as present`.execute(database);
+    const hasSkills = Boolean(skills.rows[0]?.present);
+    const skillsJson = hasSkills
+      ? `COALESCE((SELECT jsonb_agg(jsonb_build_object('name',s.name,'description',s.description,'digest',s.digest)) FROM integration_skills s WHERE s.installation_id=i.id AND s.status='active'),'[]'::jsonb)`
+      : "'[]'::jsonb";
+    // Multiple statements need the simple query protocol, so the text carries no parameters.
+    await sql
+      .raw(
+        `
+   INSERT INTO plugins(id,name,scope,source,installed_by,current_version_id,created_at,updated_at)
+   SELECT id, CASE WHEN name = 'opensteer' THEN 'imported-opensteer' ELSE name END, 'deployment', provenance, created_by, id || '-v1',created_at,updated_at
+   FROM integration_installations WHERE source_kind = 'agent-plugin';
+   INSERT INTO plugin_versions(id,plugin_id,digest,manifest,created_at)
+   SELECT i.id || '-v1',i.id,i.provenance->>'snapshotDigest',
+    i.manifest || jsonb_build_object('skills', ${skillsJson}),i.created_at
+   FROM integration_installations i WHERE i.source_kind='agent-plugin';
+   INSERT INTO plugin_activations(workspace_id,plugin_id,created_by)
+   SELECT DISTINCT w.id,i.id,i.created_by FROM integration_installations i CROSS JOIN workspaces w
+   WHERE i.source_kind='agent-plugin' AND i.status='active' AND (
+     w.kind='main' OR EXISTS(SELECT 1 FROM integration_grants g WHERE g.installation_id=i.id AND g.workspace_id=w.id AND g.revoked_at IS NULL AND EXISTS(SELECT 1 FROM workspace_memberships m WHERE m.workspace_id=w.id AND m.user_id=g.owner_user_id AND m.state='active'))
+   );
+   UPDATE integration_installations SET source_kind='plugin',plugin_id=id WHERE source_kind='agent-plugin';
+  `,
+      )
+      .execute(database);
+    if (hasSkills) await sql`drop table integration_skills`.execute(database);
+  },
+};
+
+export const specialistsMigration: Migration = {
+  async up(database) {
+    await sql`CREATE TABLE specialists (
+      id text PRIMARY KEY,
+      workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      plugin_id text NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+      plugin_version_id text NOT NULL,
+      owner_user_id text NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      created_by text NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      status text NOT NULL CHECK(status IN ('pending','ready')),
+      bindings jsonb NOT NULL CHECK(jsonb_typeof(bindings) = 'array'),
+      created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE(workspace_id,plugin_id),
+      FOREIGN KEY(plugin_id,plugin_version_id) REFERENCES plugin_versions(plugin_id,id) ON DELETE CASCADE
+    )`.execute(database);
+  },
+};
+
+export const specialistThreadsMigration: Migration = {
+  async up(database) {
+    await sql`ALTER TABLE threads ADD COLUMN specialist_id text; ALTER TABLE threads DROP CONSTRAINT threads_capability_profile_check; ALTER TABLE threads ADD CONSTRAINT threads_capability_profile_check CHECK (capability_profile_id IN ('main','workspace','delegated','specialist')); ALTER TABLE specialists ADD COLUMN removed_at timestamptz`.execute(
+      database,
+    );
+    await sql`DO $$ DECLARE definition text; BEGIN
+      SELECT pg_get_functiondef('public.opensteer_enforce_thread_capability_profile()'::regprocedure) INTO definition;
+      definition := replace(definition, 'if new.capability_profile_id is distinct from ''delegated'' then',
+        'if new.capability_profile_id not in (''delegated'', ''specialist'') then');
+      EXECUTE definition;
+    END $$`.execute(database);
+    await sql`CREATE FUNCTION opensteer_enforce_specialist_binding() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+      IF TG_OP = 'UPDATE' AND new.specialist_id IS DISTINCT FROM old.specialist_id THEN
+        RAISE EXCEPTION 'specialist binding is immutable';
+      END IF;
+      IF TG_OP = 'INSERT' AND (new.capability_profile_id = 'specialist' OR new.specialist_id IS NOT NULL) THEN
+        IF new.capability_profile_id <> 'specialist' OR new.parent_thread_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM specialists WHERE id = new.specialist_id AND workspace_id = new.workspace_id AND status = 'ready' AND removed_at IS NULL FOR SHARE
+        ) THEN RAISE EXCEPTION 'invalid specialist binding'; END IF;
+      END IF;
+      RETURN new;
+    END $$;
+    CREATE TRIGGER threads_specialist_binding BEFORE INSERT OR UPDATE ON threads
+      FOR EACH ROW EXECUTE FUNCTION opensteer_enforce_specialist_binding()`.execute(database);
+  },
+};
+
+export const projectChatsMigration: Migration = {
+  async up(database) {
+    await sql`ALTER TABLE workspaces DROP CONSTRAINT workspaces_home_main_only_check`.execute(
+      database,
+    );
+  },
+};
+
+export const specialistLifecycleMigration: Migration = {
+  async up(database) {
+    await sql`ALTER TABLE specialists DROP CONSTRAINT specialists_workspace_id_plugin_id_key;
+      ALTER TABLE specialists ADD UNIQUE(workspace_id, plugin_id, owner_user_id);
+      ALTER TABLE specialists DROP CONSTRAINT specialists_status_check;
+      ALTER TABLE specialists ADD CHECK(status IN ('pending','ready','removing','removal-failed'));
+      ALTER TABLE specialists DROP CONSTRAINT specialists_plugin_id_fkey;
+      ALTER TABLE specialists ADD FOREIGN KEY(plugin_id) REFERENCES plugins(id) ON DELETE RESTRICT;
+      ALTER TABLE specialists DROP CONSTRAINT specialists_plugin_id_plugin_version_id_fkey;
+      ALTER TABLE specialists ADD FOREIGN KEY(plugin_id, plugin_version_id) REFERENCES plugin_versions(plugin_id,id) ON DELETE RESTRICT`.execute(
+      database,
+    );
   },
 };

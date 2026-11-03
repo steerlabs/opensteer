@@ -74,10 +74,7 @@ export type ThreadMessageWindow = z.infer<typeof ThreadMessageWindowSchema>;
 
 export const WorkspaceViewSchema = z.object({
   homeThreadId: ThreadIdSchema.nullable(),
-  capacity: z.discriminatedUnion("kind", [
-    z.object({ kind: z.literal("host-filesystem") }),
-    z.object({ kind: z.literal("managed-quota") }),
-  ]),
+  capacity: z.object({ kind: z.literal("host-filesystem") }),
   createdAt: z.iso.datetime({ offset: true }),
   icon: WorkspaceIconNameSchema.nullable(),
   /** The colour its mark is drawn in; absent from older Hosts, and a colour a newer Host added reads as none. */
@@ -87,14 +84,11 @@ export const WorkspaceViewSchema = z.object({
   // A local directory lives on one identified machine, which is not
   // necessarily the reader's. `name` is presentation only: the Host fills it in
   // when it serves the view, and it stays null where that machine is unknown.
-  location: z.discriminatedUnion("kind", [
-    z.object({
-      environmentId: EnvironmentIdSchema,
-      kind: z.literal("machine"),
-      name: z.string().trim().min(1).max(120).nullable(),
-    }),
-    z.object({ kind: z.literal("shared-storage") }),
-  ]),
+  location: z.object({
+    environmentId: EnvironmentIdSchema,
+    kind: z.literal("machine"),
+    name: z.string().trim().min(1).max(120).nullable(),
+  }),
   name: z.string().trim().min(1).max(160),
   restoreProgressPermille: z.number().int().min(0).max(1_000).optional(),
   status: z.enum([
@@ -129,24 +123,14 @@ export function workspaceViewFromWorkspace(workspace: Workspace): WorkspaceView 
   return WorkspaceViewSchema.parse({
     homeThreadId: workspace.homeThreadId,
     capacity: {
-      kind:
-        workspace.capacityPolicy.kind === "host-filesystem" ? "host-filesystem" : "managed-quota",
+      kind: "host-filesystem",
     },
     createdAt: workspace.createdAt,
     icon: workspace.icon,
     color: workspace.color,
     id: workspace.id,
     kind: workspace.kind,
-    location:
-      workspace.backing.kind === "local-directory"
-        ? {
-            environmentId: workspace.backing.ownerEnvironmentId,
-            kind: "machine",
-            // The aggregate carries no directory of machine names, so the name
-            // is filled in by whoever serves the view to a reader.
-            name: null,
-          }
-        : { kind: "shared-storage" },
+    location: { environmentId: workspace.backing.ownerEnvironmentId, kind: "machine", name: null },
     name: workspace.name,
     status: workspace.status,
     storageIssue: workspace.storageIssue,

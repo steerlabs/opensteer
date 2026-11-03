@@ -1,3 +1,4 @@
+import { EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema } from "@opensteer/core";
 import {
   BrowserTabGroupIdSchema,
   ModelSelectionSchema,
@@ -632,7 +633,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       createdAt: now,
       session: {
         id: sessionId,
-        access: "full-control",
+        access: "read-write",
         createdAt: now,
         updatedAt: now,
         origin: "workspace",
@@ -704,7 +705,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       createdAt: now,
       session: {
         id: sessionId,
-        access: "full-control",
+        access: "read-write",
         createdAt: now,
         updatedAt: now,
         origin: "workspace",
@@ -865,7 +866,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       createdAt: now,
       session: {
         id: sessionId,
-        access: "full-control",
+        access: "read-write",
         createdAt: now,
         updatedAt: now,
         origin: "workspace",
@@ -1793,7 +1794,7 @@ describe("HttpHostClient durable realtime", () => {
     const b = createId("thread");
     const sessions = [
       {
-        access: "full-control" as const,
+        access: "read-write" as const,
         createdAt: now,
         id: sessionId,
         origin: "agent" as const,
@@ -1917,7 +1918,7 @@ describe("HttpHostClient durable realtime", () => {
       const sockets: FakeSocket[] = [];
       const sessions = [
         {
-          access: "full-control" as const,
+          access: "read-write" as const,
           createdAt: now,
           id: sessionId,
           origin: "agent" as const,
@@ -2021,7 +2022,7 @@ describe("HttpHostClient durable realtime", () => {
     const now = new Date().toISOString();
     const sockets: FakeSocket[] = [];
     const session = (state: "ready" | "starting") => ({
-      access: "full-control" as const,
+      access: "read-write" as const,
       createdAt: now,
       id: sessionId,
       origin: "agent" as const,
@@ -2128,7 +2129,7 @@ describe("HttpHostClient durable realtime", () => {
               reads > 1
                 ? [
                     {
-                      access: "full-control" as const,
+                      access: "read-write" as const,
                       createdAt: now,
                       id: sessionId,
                       origin: "agent" as const,
@@ -2172,16 +2173,16 @@ describe("HttpHostClient durable realtime", () => {
     client.dispose();
   });
 
-  it("hydrates the explicit Main home when a specialized Workspace is more recent", async () => {
+  it("hydrates the explicit Main home when a project Workspace is more recent", async () => {
     const main = makeWorkspace("Opensteer");
-    const specialized = {
+    const project = {
       ...makeWorkspace("Gmail Briefing"),
-      kind: "specialized" as const,
+      kind: "project" as const,
       updatedAt: "2026-08-09T20:01:00.000Z",
     };
     const mainThread = makeThread(main.id);
     const sockets: FakeSocket[] = [];
-    const payload = bootstrap([specialized]);
+    const payload = bootstrap([project]);
     const client = createHttpHostClient({
       fetch: async () =>
         json({
@@ -2200,7 +2201,7 @@ describe("HttpHostClient durable realtime", () => {
     await client.load();
 
     expect(client.getSnapshot().homeWorkspaceId).toBe(main.id);
-    expect(client.getSnapshot().workspaces.map(({ id }) => id)).toEqual([main.id, specialized.id]);
+    expect(client.getSnapshot().workspaces.map(({ id }) => id)).toEqual([main.id, project.id]);
     // The supplemental Home entry does not exhaust the authoritative catalog cursor.
     expect(client.getSnapshot().workspaceWindow.hasMore).toBe(true);
     expect(sockets).toHaveLength(1);
@@ -6866,7 +6867,7 @@ describe("HttpHostClient hosted browser", () => {
             id: createId("browserProfileGrant"),
             profileId,
             workspaceId: workspace.id,
-            access: "full-control",
+            access: "read-write",
             createdAt: now,
           },
         ],
@@ -6879,7 +6880,7 @@ describe("HttpHostClient hosted browser", () => {
             runtimeId: "runtime",
             origin: "workspace",
             state: "ready",
-            access: "full-control",
+            access: "read-write",
             createdAt: now,
             updatedAt: now,
             tabCatalog: {
@@ -6925,7 +6926,7 @@ describe("HttpHostClient hosted browser", () => {
           type: "browser.snapshot",
           sessionId,
           state: "ready",
-          access: "full-control",
+          access: "read-write",
           targetedStreamingVersion: 1,
           dialog: null,
           surfaces: [{ id: "page-1", active: true, title: "Page", url: "https://example.com" }],
@@ -6989,7 +6990,7 @@ describe("HttpHostClient hosted browser", () => {
       browser.sessions = [
         {
           id: sessionId,
-          access: "full-control",
+          access: "read-write",
           origin: "workspace",
           state: "ready",
           createdAt: now,
@@ -7054,7 +7055,7 @@ describe("HttpHostClient hosted browser", () => {
         return json(
           {
             session: {
-              access: "full-control",
+              access: "read-write",
               createdAt: now,
               id: sessionId,
               origin: "workspace",
@@ -7097,7 +7098,7 @@ describe("HttpHostClient hosted browser", () => {
     expect(browserSocket?.binaryType).toBe("arraybuffer");
     browserSocket?.open();
     browserSocket?.receiveRaw({
-      access: "full-control",
+      access: "read-write",
       dialog: {
         id: "00000000-0000-4000-8000-0000000000d1",
         message: "Continue?",
@@ -7214,7 +7215,7 @@ describe("HttpHostClient hosted browser", () => {
             profiles: [{ id: profileId, name: "Default browser" }],
             sessions: [
               {
-                access: "full-control",
+                access: "read-write",
                 createdAt: now,
                 id: sessionId,
                 origin: "workspace",
@@ -7256,7 +7257,7 @@ describe("HttpHostClient hosted browser", () => {
 
     browserSockets()[2]?.open();
     browserSockets()[2]?.receiveRaw({
-      access: "full-control",
+      access: "read-write",
       dialog: null,
       sessionId,
       state: "ready",
@@ -7301,7 +7302,7 @@ describe("HttpHostClient hosted browser", () => {
             profiles: [{ id: profileId, name: "Default browser" }],
             sessions: [
               {
-                access: "full-control",
+                access: "read-write",
                 createdAt: now,
                 id: sessionId,
                 origin: "workspace",
@@ -7368,7 +7369,7 @@ describe("HttpHostClient hosted browser", () => {
             profiles: [{ id: profileId, name: "Default browser" }],
             sessions: [
               {
-                access: "full-control",
+                access: "read-write",
                 createdAt: now,
                 id: sessionId,
                 origin: "workspace",
@@ -7395,7 +7396,7 @@ describe("HttpHostClient hosted browser", () => {
     const socket = sockets.find(({ url }) => url.includes("/browser-sessions/"))?.socket;
     socket?.open();
     socket?.receiveRaw({
-      access: "full-control",
+      access: "read-write",
       dialog: {
         id: "00000000-0000-4000-8000-0000000000d1",
         message: "Continue?",
@@ -7466,7 +7467,7 @@ describe("HttpHostClient browser profiles", () => {
         return json(
           {
             session: {
-              access: "full-control",
+              access: "read-write",
               createdAt: now,
               id: sessionId,
               origin: "workspace",
@@ -7996,7 +7997,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   );
 
   it("rolls back an icon failure without a newer event and refuses mark commands on an old Host", async () => {
-    const workspace = { ...makeWorkspace(), kind: "specialized" as const, color: "green" as const };
+    const workspace = { ...makeWorkspace(), kind: "project" as const, color: "green" as const };
     const thread = { ...makeThread(workspace.id), icon: "hotel" as const };
     const { answer, asked, client } = await delayedRead({
       path: "/v1/rpc/commands.dispatch",
@@ -8053,11 +8054,11 @@ describe("HttpHostClient Thread state reconciliation", () => {
   });
 
   it.each(["success", "failure"] as const)(
-    "optimistically changes specialist colour and settles %s",
+    "optimistically changes project colour and settles %s",
     async (outcome) => {
       const workspace = {
         ...makeWorkspace(),
-        kind: "specialized" as const,
+        kind: "project" as const,
         color: "green" as const,
       };
       const { answer, asked, client } = await delayedRead({
@@ -8099,7 +8100,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   );
 
   async function pendingMarks() {
-    const workspace = { ...makeWorkspace(), kind: "specialized" as const, color: "green" as const };
+    const workspace = { ...makeWorkspace(), kind: "project" as const, color: "green" as const };
     const thread = { ...makeThread(workspace.id), icon: "hotel" as const };
     const socket = new FakeSocket();
     const responses: ReturnType<typeof Promise.withResolvers<Response>>[] = [];
@@ -9519,7 +9520,7 @@ describe("HttpHostClient command projection", () => {
       return json(
         {
           session: {
-            access: "full-control",
+            access: "read-write",
             createdAt: now,
             id: sessionId,
             origin: "workspace",
@@ -9551,7 +9552,7 @@ describe("HttpHostClient command projection", () => {
     expect(viewer).toBeDefined();
     viewer?.open();
     viewer?.receiveRaw({
-      access: "full-control",
+      access: "read-write",
       dialog: null,
       sessionId,
       state: "ready",
@@ -10057,7 +10058,7 @@ describe("HttpHostClient lifecycle", () => {
             profiles: [{ id: profileId, name: "Default browser" }],
             sessions: [
               {
-                access: "full-control",
+                access: "read-write",
                 createdAt: now,
                 id: sessionId,
                 origin: "workspace",
@@ -11293,7 +11294,7 @@ describe("HttpHostClient task list", () => {
     "renames an unopened task across global and Workspace pages (%s)",
     async (outcome) => {
       const main = makeWorkspace("Main");
-      const research = { ...makeWorkspace("Research"), kind: "specialized" as const };
+      const research = { ...makeWorkspace("Research"), kind: "project" as const };
       const venue = {
         ...task(research.id, "Find a venue", "2026-08-09T10:00:03.000Z"),
         status: "running" as const,
@@ -11430,7 +11431,7 @@ describe("HttpHostClient task list", () => {
     "changes the icon of an unopened task across global and Workspace pages (%s)",
     async (outcome) => {
       const main = makeWorkspace("Main");
-      const research = { ...makeWorkspace("Research"), kind: "specialized" as const };
+      const research = { ...makeWorkspace("Research"), kind: "project" as const };
       const venue = {
         ...task(research.id, "Find a venue", "2026-08-09T10:00:03.000Z"),
         status: "running" as const,
@@ -11577,7 +11578,7 @@ describe("HttpHostClient task list", () => {
 
   it("keeps the task list of each Workspace a screen asked for, rereading it with the rest", async () => {
     const main = makeWorkspace("Main");
-    const research = { ...makeWorkspace("Research"), kind: "specialized" as const };
+    const research = { ...makeWorkspace("Research"), kind: "project" as const };
     const host = taskHost([main, research]);
     const socket = sockets();
     const client = createHttpHostClient({
@@ -11756,7 +11757,7 @@ describe("HttpHostClient task list", () => {
 
   it("drops the tasks of a Workspace the Host refuses this reader", async () => {
     const home = makeWorkspace("Main");
-    const other = { ...makeWorkspace("Research"), kind: "specialized" as const };
+    const other = { ...makeWorkspace("Research"), kind: "project" as const };
     const host = taskHost([home, other]);
     const socket = sockets();
     const client = createHttpHostClient({
@@ -12489,7 +12490,7 @@ describe("HttpHostClient owner views", () => {
           catalog: { generation: 1, revision: 1, tabs: [] },
           browserStarted: true,
           session: {
-            access: "full-control",
+            access: "read-write",
             createdAt: now,
             id: sessionId,
             origin: "workspace",
@@ -13721,12 +13722,18 @@ function browserFrame(frameId: number, targeted = false): ArrayBuffer {
 function makeWorkspace(name = "Opensteer"): WorkspaceView {
   return {
     homeThreadId: null,
-    capacity: { kind: "managed-quota" },
+    capacity: { kind: "host-filesystem" },
     createdAt: now,
     icon: null,
     id: createId("workspace"),
     kind: "main",
-    location: { kind: "shared-storage" },
+    location: {
+      kind: "machine",
+      environmentId: StorageFixtureEnvironmentIdSchema.parse(
+        "env_00000000-0000-4000-8000-000000000001",
+      ),
+      name: null,
+    },
     name,
     status: "ready",
     storageIssue: null,
@@ -14002,7 +14009,7 @@ describe("task marks through the production client and mock transport", () => {
               ? { ...command, threadId: second!.id }
               : {
                   type: "workspace.color.set",
-                  workspaceId: source.workspaces.find(({ kind }) => kind === "specialized")!.id,
+                  workspaceId: source.workspaces.find(({ kind }) => kind === "project")!.id,
                   color: "purple",
                   idempotencyKey: command.idempotencyKey,
                 },
@@ -14166,34 +14173,34 @@ describe("task marks through the production client and mock transport", () => {
             idempotencyKey: `transport-${mode}`,
           });
           expect(result.type).toBe("thread.icon.set");
-          const specialist = source.workspaces.find(({ kind }) => kind === "specialized")!;
+          const project = source.workspaces.find(({ kind }) => kind === "project")!;
           await client.dispatch({
             type: "workspace.color.set",
-            workspaceId: specialist.id,
+            workspaceId: project.id,
             color: "purple",
             idempotencyKey: `transport-color-${mode}`,
           });
-          expect(
-            client.getSnapshot().workspaces.find(({ id }) => id === specialist.id)?.color,
-          ).toBe(mode === "future" ? null : "purple");
+          expect(client.getSnapshot().workspaces.find(({ id }) => id === project.id)?.color).toBe(
+            mode === "future" ? null : "purple",
+          );
           await client.dispatch({
             type: "workspace.color.set",
-            workspaceId: specialist.id,
+            workspaceId: project.id,
             color: "green",
             idempotencyKey: `transport-new-color-${mode}`,
           });
           await client.dispatch({
             type: "workspace.color.set",
-            workspaceId: specialist.id,
+            workspaceId: project.id,
             color: "purple",
             idempotencyKey: `transport-color-${mode}`,
           });
-          expect(mock.getSnapshot().workspaces.find(({ id }) => id === specialist.id)?.color).toBe(
+          expect(mock.getSnapshot().workspaces.find(({ id }) => id === project.id)?.color).toBe(
             "green",
           );
-          expect(
-            client.getSnapshot().workspaces.find(({ id }) => id === specialist.id)?.color,
-          ).toBe(mode === "future" ? null : "green");
+          expect(client.getSnapshot().workspaces.find(({ id }) => id === project.id)?.color).toBe(
+            mode === "future" ? null : "green",
+          );
           expect(client.getSnapshot().threads.find(({ id }) => id === task.id)).toMatchObject({
             icon: "gift",
             color: expected.color,
@@ -14931,7 +14938,7 @@ it.each([false, true])(
       sessions: [
         {
           id: sessionId,
-          access: "full-control",
+          access: "read-write",
           origin: "workspace",
           state: "ready",
           createdAt: now,
@@ -14982,7 +14989,7 @@ it.each([false, true])(
       connection.socket.receiveRaw({
         type: "browser.snapshot",
         sessionId,
-        access: "full-control",
+        access: "read-write",
         state: "ready",
         dialog: null,
         targetedStreamingVersion: 1,
@@ -15365,7 +15372,7 @@ it("orders bootstrap session state by read freshness and Host update time, inclu
         profileId: null,
         placement: { kind: "runner", runnerId },
         origin: "workspace",
-        access: "full-control",
+        access: "read-write",
         state: "starting",
         createdAt: now,
         updatedAt: now,
@@ -15437,7 +15444,7 @@ it("orders bootstrap session state by read freshness and Host update time, inclu
       type: "browser.snapshot",
       sessionId: id,
       state: "ready",
-      access: "full-control",
+      access: "read-write",
       targetedStreamingVersion: 1,
       dialog: null,
       surfaces: [{ id: tab, active: true, title: "Page", url: "https://example.com" }],

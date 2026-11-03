@@ -16,7 +16,7 @@ const runId = createId("run");
 describe("independent browser creation", () => {
   it("keeps another session in the same workspace when a new browser starts", () => {
     const original: BrowserSessionSummary = {
-      access: "full-control",
+      access: "read-write",
       attachedRunIds: [],
       dialog: null,
       error: null,
@@ -48,11 +48,11 @@ describe("browser profile patches", () => {
     const work = { id: "bpr_work", name: "Work", revision: 3 };
     const shopping = { id: "bpr_shopping", name: "Shopping", revision: 1 };
     const grant = (id: string, profileId: string) => ({
-      access: "full-control" as const,
+      access: "read-write" as const,
       createdAt: now,
       id,
       profileId,
-      workspaceId: "specialist",
+      workspaceId: "project",
     });
     const snapshot = {
       ...baseSnapshot(),

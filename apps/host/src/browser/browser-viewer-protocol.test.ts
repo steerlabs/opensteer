@@ -4,7 +4,7 @@ import { browserViewerMessage } from "./browser-viewer-protocol.js";
 it("projects passkey fields only to opted-in viewers while preserving old snapshots", () => {
   const snapshot = BrowserServerMessageSchema.parse({
     type: "browser.snapshot",
-    access: "full-control",
+    access: "read-write",
     dialog: null,
     sessionId: "bsn_e2799da2-9fe9-438e-a160-47e275ee2703",
     state: "ready",

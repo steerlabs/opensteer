@@ -11,18 +11,6 @@ import type { AgentPhoneUpdateRelease } from "./update-release.js";
  * hierarchy `dumpsys activity top` prints, taps them with `input tap`, and
  * reads what the fixture app recorded through its content provider.
  */
-import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { once } from "node:events";
-import { closeSync, openSync } from "node:fs";
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { request as httpRequest, type IncomingMessage } from "node:http";
-import { connect as connectTcp, type Socket } from "node:net";
-import { homedir, networkInterfaces, tmpdir } from "node:os";
-import { join } from "node:path";
-import { Transform, Writable } from "node:stream";
-import { createServer as createTlsServer, type Server as TlsServer } from "node:tls";
-import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -39,19 +27,15 @@ import {
 import { HttpHostClient } from "@opensteer/client/host";
 import { DeploymentIdSchema, type RunnerId, type WorkspaceId } from "@opensteer/core";
 import {
-  HostIntegrationsComputerViewSchema,
-  RunnerIntegrationsComputerViewResultSchema,
-  RunnerAuxiliaryWelcomeSchema,
-  RunnerAuxiliaryFrameFenceSchema,
-  HostIntegrationsDisplayStartSchema,
-  HostIntegrationsDisplayPowerSchema,
-  type HostIntegrationsDisplayStart,
-  type HostIntegrationsComputerView,
-  type ComputerViewNativeResult,
-  type RunnerAuxiliaryFrameFence,
   AgentPhoneArtifactManifestSchema,
   AgentPhoneHostTargetSchema,
   AgentPhoneSetupStatusSchema,
+  HostIntegrationsComputerViewSchema,
+  HostIntegrationsDisplayPowerSchema,
+  HostIntegrationsDisplayStartSchema,
+  RunnerAuxiliaryFrameFenceSchema,
+  RunnerAuxiliaryWelcomeSchema,
+  RunnerIntegrationsComputerViewResultSchema,
   agentPhonePackageName,
   agentPhonePairingExtra,
   agentPhoneSetupActions,
@@ -60,20 +44,28 @@ import {
   type AgentPhoneArtifactManifest,
   type AgentPhoneHostTarget,
   type AgentPhoneSetupStatus,
+  type ComputerViewNativeResult,
+  type HostIntegrationsComputerView,
+  type HostIntegrationsDisplayStart,
+  type RunnerAuxiliaryFrameFence,
 } from "@opensteer/protocol";
 import { delay } from "@opensteer/shared/delay";
 import { AdbServerClient, type Adb } from "@yume-chan/adb";
 import { AdbServerNodeTcpConnector } from "@yume-chan/adb-server-node-tcp";
-import { z } from "zod";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { closeSync, openSync } from "node:fs";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { request as httpRequest, type IncomingMessage } from "node:http";
 import { createRequire } from "node:module";
-
-// ws exposes Receiver at runtime but omits it from its public TypeScript declarations.
-const { Receiver } = createRequire(import.meta.url)("ws") as {
-  Receiver: new (options: { isServer: boolean; maxPayload: number }) => Writable & {
-    on(event: "message", listener: (bytes: Buffer) => void): Writable;
-  };
-};
-import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
+import { connect as connectTcp, type Socket } from "node:net";
+import { homedir, networkInterfaces, tmpdir } from "node:os";
+import { join } from "node:path";
+import { Transform, Writable } from "node:stream";
+import { createServer as createTlsServer, type Server as TlsServer } from "node:tls";
+import { fileURLToPath } from "node:url";
+import { z } from "zod";
 import {
   connectCallerMachine,
   dispatchCallerRun,
@@ -85,8 +77,15 @@ import {
   type CallerRun,
   type MachineAccessHost,
 } from "../runtime/machine-access.test-support.js";
-import { startPortableFsManagerFake } from "../runtime/portablefs-manager.test-support.js";
+import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
 import { testRpcData } from "../server/test-host-api-request.js";
+
+// ws exposes Receiver at runtime but omits it from its public TypeScript declarations.
+const { Receiver } = createRequire(import.meta.url)("ws") as {
+  Receiver: new (options: { isServer: boolean; maxPayload: number }) => Writable & {
+    on(event: "message", listener: (bytes: Buffer) => void): Writable;
+  };
+};
 
 export const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 
@@ -1541,14 +1540,13 @@ export async function startAgentPhoneHost(
     readonly log: (line: string) => void;
   },
 ): Promise<AgentPhoneHost> {
-  const portableFs = await startPortableFsManagerFake();
   const dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-agent-phone-host-"));
   const hostPort = await freePort();
   const publicOrigin = new URL(`https://${emulatorHostAlias}:${input.publicPort}`);
   const config = machineAccessHostConfig(
     hostPort,
     dataDirectory,
-    portableFs.url,
+    new URL("http://127.0.0.1:9"),
     databaseUrl,
     input.signupPolicy ?? "invite-only",
     publicOrigin,
@@ -1579,7 +1577,6 @@ export async function startAgentPhoneHost(
   return {
     close: async () => {
       await runtime.close();
-      await portableFs.close();
       await rm(dataDirectory, { force: true, recursive: true });
     },
     config,

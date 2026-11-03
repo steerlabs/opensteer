@@ -678,8 +678,8 @@ html.electron-shell .settings-navigation__header :is(a, button) {
   background: none;
 }
 
-/* Specialists hang under their profile, aligned with its name. */
-.browser-profile-settings__specialists {
+/* Projects hang under their profile, aligned with its name. */
+.browser-profile-settings__projects {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -688,7 +688,7 @@ html.electron-shell .settings-navigation__header :is(a, button) {
   animation: rise-in var(--duration-fast) var(--ease-out);
 }
 
-.browser-profile-settings__specialists ul {
+.browser-profile-settings__projects ul {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -698,7 +698,7 @@ html.electron-shell .settings-navigation__header :is(a, button) {
   list-style: none;
 }
 
-.browser-profile-settings__specialists li {
+.browser-profile-settings__projects li {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -708,7 +708,7 @@ html.electron-shell .settings-navigation__header :is(a, button) {
   border-left: 1px solid var(--line-strong);
 }
 
-.browser-profile-settings__specialist {
+.browser-profile-settings__project {
   min-width: 0;
   overflow: hidden;
   color: var(--text-soft);
@@ -727,7 +727,7 @@ html.electron-shell .settings-navigation__header :is(a, button) {
 }
 
 @media (max-width: 560px) {
-  .browser-profile-settings__specialists {
+  .browser-profile-settings__projects {
     margin-left: var(--space-16);
   }
 }

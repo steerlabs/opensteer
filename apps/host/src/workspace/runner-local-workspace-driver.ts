@@ -34,13 +34,14 @@ export type RunnerStorageRegistry = Pick<
 const requestTimeoutMs = 30_000;
 
 /**
- * The Host's side of Runner-owned local storage. It holds no paths and opens no
+ * The Host's side of Runner-owned local storage. It opens no
  * files: it derives the durable binding, addresses the machine that owns it, and
  * turns that machine's answer into Workspace state.
  */
 export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriver<"local-directory"> {
   readonly kind = "local-directory" as const;
   readonly #runners: RunnerStorageRegistry;
+  readonly #provisionedPaths = new WeakMap<object, Map<Workspace["id"], string>>();
 
   constructor(options: { readonly runners: RunnerStorageRegistry }) {
     this.#runners = options.runners;
@@ -102,11 +103,15 @@ export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriv
     input: { readonly idempotencyKey: string; readonly workspace: LocalWorkspace },
     signal?: AbortSignal,
   ): Promise<ProvisionWorkspaceResult<"local-directory">> {
-    await this.#request(
+    const identity = this.#runners.identityForEnvironment(
+      input.workspace.backing.ownerEnvironmentId,
+    );
+    const result = await this.#request(
       input.workspace.backing,
       {
         binding: bindingRef(input.workspace.backing, input.workspace.id),
         fingerprint: {
+          ...(input.workspace.slug ? { slug: input.workspace.slug } : {}),
           createdBy: input.workspace.createdBy,
           workspaceKind: input.workspace.kind,
         },
@@ -121,7 +126,42 @@ export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriv
       "runner.workspace.local.provisioned",
       signal,
     );
+    if (identity) {
+      const paths =
+        this.#provisionedPaths.get(identity.fence) ?? new Map<Workspace["id"], string>();
+      paths.set(input.workspace.id, result.path);
+      this.#provisionedPaths.set(identity.fence, paths);
+    }
     return { backing: input.workspace.backing, status: "ready" };
+  }
+
+  storageLocation(workspace: Workspace): string | null {
+    if (workspace.backing.kind !== "local-directory") return null;
+    const identity = this.#runners.identityForEnvironment(workspace.backing.ownerEnvironmentId);
+    const inventory = identity?.modules.agents?.localStorage;
+    if (inventory?.storageAuthorityId !== workspace.backing.storageAuthorityId) return null;
+    return (
+      inventory.bindings.find((binding) => binding.workspaceId === workspace.id)?.path ??
+      (identity ? this.#provisionedPaths.get(identity.fence)?.get(workspace.id) : null) ??
+      null
+    );
+  }
+
+  async relocate(workspace: LocalWorkspace, adopt = false): Promise<void> {
+    if (workspace.kind === "project" && !workspace.slug) throw new Error("Project slug is missing");
+    await this.#request(
+      workspace.backing,
+      {
+        binding: bindingRef(workspace.backing, workspace.id),
+        operationId: `workspace:${workspace.id}:relocate:v1`,
+        requestId: randomUUID(),
+        type: "host.workspace.local.relocate",
+        slug: workspace.kind === "main" ? null : workspace.slug!,
+        createdBy: workspace.createdBy,
+        adopt,
+      },
+      "runner.workspace.local.relocated",
+    );
   }
 
   async inspect(workspace: LocalWorkspace, signal?: AbortSignal): Promise<WorkspaceBackingHealth> {
@@ -172,6 +212,20 @@ export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriv
       });
     }
     return { ...bindingRef(input.workspace.backing, input.workspace.id), kind: "local-directory" };
+  }
+
+  async removeSpecialist(workspace: LocalWorkspace, specialistId: string): Promise<void> {
+    await this.#request(
+      workspace.backing,
+      {
+        binding: bindingRef(workspace.backing, workspace.id),
+        operationId: `workspace:${workspace.id}:specialist.remove:v1`,
+        requestId: randomUUID(),
+        specialistId,
+        type: "host.workspace.local.specialist.remove",
+      },
+      "runner.workspace.local.specialist.removed",
+    );
   }
 
   issueFromError(error: unknown): NonNullable<Workspace["storageIssue"]> {

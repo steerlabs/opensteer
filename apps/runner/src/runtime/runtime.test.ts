@@ -1,3 +1,4 @@
+import { createId as createStorageFixtureId } from "@opensteer/core";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import {
   ignoreForeignTestRequest,
@@ -70,19 +71,19 @@ import { prepareHarnessProviderState } from "../harness/harness-provider-state.j
 import { createHarnessRegistry } from "../harness/harness-registry.js";
 import type { HarnessProcessSandbox, HarnessSandboxRunPlan } from "../sandbox/harness-sandbox.js";
 import { ExecutionContainment, executionScopeVariable } from "./execution-containment.js";
-import { RunnerRuntime, type RunnerMessageSink } from "./runtime.js";
+import { RunnerRuntime, warmEngineKey, type RunnerMessageSink } from "./runtime.js";
 import { providerContinuationIdentityProjector } from "@opensteer/runner-client";
 
 const testAgentSkills = {
   paths: {
-    "opensteer-specialization": "/runner/agent-skills/skills/opensteer-specialization",
-    "opensteer-integrations": "/runner/agent-skills/skills/opensteer-integrations",
-    "opensteer-browser": "/runner/agent-skills/skills/opensteer-browser",
-    "opensteer-computer-use": "/runner/agent-skills/skills/opensteer-computer-use",
-    "opensteer-computers": "/runner/agent-skills/skills/opensteer-computers",
-    "opensteer-threads": "/runner/agent-skills/skills/opensteer-threads",
-    "opensteer-triggers": "/runner/agent-skills/skills/opensteer-triggers",
-    "opensteer-workspaces": "/runner/agent-skills/skills/opensteer-workspaces",
+    "opensteer:skills": "/runner/agent-skills/skills/skills",
+    "opensteer:integrations": "/runner/agent-skills/skills/integrations",
+    "opensteer:browser": "/runner/agent-skills/skills/browser",
+    "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",
+    "opensteer:computers": "/runner/agent-skills/skills/computers",
+    "opensteer:threads": "/runner/agent-skills/skills/threads",
+    "opensteer:triggers": "/runner/agent-skills/skills/triggers",
+    "opensteer:projects": "/runner/agent-skills/skills/projects",
   },
   rootPath: "/runner/agent-skills",
 } as const;
@@ -94,14 +95,14 @@ const testPersonalDeploymentShape = {
   defaultWorkspaceBacking: "local-directory",
   kind: "personal" as const,
 } as const;
-const testPortableDeploymentShape = {
-  defaultWorkspaceBacking: "portablefs",
+const testServerDeploymentShape = {
+  defaultWorkspaceBacking: "local-directory",
   kind: "server" as const,
 } as const;
-const noIntegrationSkills = async () => ({
+const noPlugins = async () => ({
   cleanup: async () => undefined,
   digest: "none",
-  directory: undefined,
+  directories: [],
   skills: [],
 });
 const projectContinuationIdentity = providerContinuationIdentityProjector(
@@ -255,6 +256,9 @@ describe("RunnerRuntime", () => {
         // Let the already-published terminal be consumed while naming stays held.
         await new Promise<void>((resolve) => setImmediate(resolve));
         expect(runtime.activeRunIds()).toContain(command.context.runId);
+        await expect(
+          runtime.relocateWorkspace(command.context.workspaceId, async () => undefined),
+        ).rejects.toThrow(/active Runs/);
         await runtime.handleCommand(
           {
             type: "run.interrupt",
@@ -649,7 +653,7 @@ describe("RunnerRuntime", () => {
       environmentId: createId("environment"),
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       maxConcurrentRuns: 1,
       dataDirectory: temporaryRoot,
       privateStateDirectory: join(temporaryRoot, "private"),
@@ -761,7 +765,7 @@ describe("RunnerRuntime", () => {
       environmentId: createId("environment"),
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       maxConcurrentRuns: 1,
       dataDirectory: temporaryRoot,
       privateStateDirectory: join(temporaryRoot, "private"),
@@ -2999,7 +3003,7 @@ describe("RunnerRuntime", () => {
     let executions = 0;
     const runtime = runtimeWithLeaseGrants({
       agentSkills: testAgentSkills,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       bootId: "boot-trigger-test",
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: testDeploymentShape,
@@ -3081,7 +3085,7 @@ describe("RunnerRuntime", () => {
       environmentId,
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       maxConcurrentRuns: 1,
       dataDirectory: dirname(testPrivateStateRoot),
       privateStateDirectory: testPrivateStateRoot,
@@ -3174,7 +3178,7 @@ describe("RunnerRuntime", () => {
       environmentId,
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       maxConcurrentRuns: 2,
       dataDirectory: dirname(testPrivateStateRoot),
       privateStateDirectory: testPrivateStateRoot,
@@ -3282,7 +3286,7 @@ describe("RunnerRuntime", () => {
     const runtime = runtimeWithLeaseGrants({
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       bootId: "boot-test",
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: testDeploymentShape,
@@ -3309,12 +3313,7 @@ describe("RunnerRuntime", () => {
 
     expect(mounts).toBe(1);
     expect(driver.context?.instructions).toBe("Be precise.");
-    expect(command.context.workspaceAccess.kind).toBe("portablefs");
-    const exchangeToken =
-      command.context.workspaceAccess.kind === "portablefs"
-        ? command.context.workspaceAccess.exchangeToken
-        : "unexpected-local-plan";
-    expect(Object.values(driver.context?.environment ?? {})).not.toContain(exchangeToken);
+    expect(command.context.workspaceAccess.kind).toBe("local-directory");
     expect(driver.context?.environment.OPENSTEER_AGENT_WORKSPACE).toBe(
       "/runner/runs/test/workspace",
     );
@@ -3347,7 +3346,7 @@ describe("RunnerRuntime", () => {
   it.each([
     ["personal local-directory", testPersonalDeploymentShape],
     ["server local-directory", testDeploymentShape],
-    ["server portablefs", testPortableDeploymentShape],
+    ["server local-directory", testServerDeploymentShape],
   ] as const)("binds an exact resumed provider session on %s", async (_name, deploymentShape) => {
     const reference = "existing-provider-session";
     const session = new ReferenceHarnessSession(reference);
@@ -3383,7 +3382,7 @@ describe("RunnerRuntime", () => {
   it.each([
     ["personal local-directory", testPersonalDeploymentShape],
     ["server local-directory", testDeploymentShape],
-    ["server portablefs", testPortableDeploymentShape],
+    ["server local-directory", testServerDeploymentShape],
   ] as const)(
     "rejects a changed resumed provider session without executing on %s",
     async (_name, deploymentShape) => {
@@ -3436,7 +3435,7 @@ describe("RunnerRuntime", () => {
     const runtime = runtimeWithLeaseGrants({
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       bootId: "boot-claude-test",
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: testDeploymentShape,
@@ -3475,14 +3474,23 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it("resolves the bundled, integration, and Workspace Agent Skill layers into one plan", async () => {
+  it.each([false, true])("resolves skill layers with specialist=%s", async (specialist) => {
     const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-skill-layer-test-"));
     const workspacePath = join(temporaryRoot, "workspace");
     const stateRoot = join(temporaryRoot, "private", "harness-state");
     await writeWorkspaceSkill(workspacePath, "release-notes");
     await writeWorkspaceSkill(workspacePath, "research");
-    await writeWorkspaceSkill(workspacePath, "opensteer-threads");
-    const driver = new FakeHarnessDriver();
+    await writeWorkspaceSkill(workspacePath, "opensteer:threads");
+    const pluginRoot = join(stateRoot, "plugins", "a".repeat(64));
+    await mkdir(pluginRoot, { recursive: true });
+    await writeFile(
+      join(pluginRoot, "INSTRUCTIONS.md"),
+      "Plugin instructions ${PLUGIN_ROOT} ${PLUGIN_DATA}",
+    );
+    let hold = false;
+    const driver = new FakeHarnessDriver("test-driver", () =>
+      hold ? new HeldHarnessSession() : new FakeHarnessSession(),
+    );
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
     const environmentId = createId("environment");
@@ -3496,13 +3504,23 @@ describe("RunnerRuntime", () => {
       environmentId,
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
-      integrationSkills: async () => ({
+      plugins: async () => ({
         cleanup: async () => undefined,
         digest: "example",
-        directory: "/state/integration-skills/example",
+        directories: ["/state/plugin-cache/example"],
         skills: [
-          { name: "research", path: "/state/integration-skills/example/research" },
-          { name: "example-helper", path: "/state/integration-skills/example/helper" },
+          {
+            plugin: "example",
+            localName: "research",
+            fullName: "example:research",
+            path: "/state/plugin-cache/example/research",
+          },
+          {
+            plugin: "example",
+            localName: "helper",
+            fullName: "example:helper",
+            path: "/state/plugin-cache/example/helper",
+          },
         ],
       }),
       logger: {
@@ -3516,7 +3534,7 @@ describe("RunnerRuntime", () => {
       workspaceManager: {
         writableRoots: () => ["/runner/workspaces"],
         prepare: async () => ({
-          instructions: undefined,
+          instructions: "Workspace instructions",
           path: workspacePath,
         }),
       },
@@ -3524,39 +3542,129 @@ describe("RunnerRuntime", () => {
     const sink: RunnerMessageSink = { send: async () => undefined };
     try {
       const command = executeCommand(environmentId);
+      if (specialist) {
+        command.context.specialistId = "registration-1";
+        command.context.agentTools.capabilityProfileId = "specialist";
+        command.context.plugins.versions = [
+          { pluginId: "example", name: "example", digest: "a".repeat(64) },
+        ];
+      }
       await reconcile(registry, command);
       await expect(runtime.handleCommand(command, sink)).resolves.toEqual({
         status: "accepted",
       });
       await waitUntil(() => runtime.activeRunIds().length === 0);
 
+      if (specialist) {
+        const cwd = join(workspacePath, ".specialists", "registration-1");
+        expect(driver.context?.workspacePath).toBe(cwd);
+        expect(driver.context?.writableRoots).toEqual([cwd]);
+        expect(driver.context?.instructions).toContain(
+          `Workspace instructions\n\nPlugin instructions ${pluginRoot} ${cwd}`,
+        );
+        expect(driver.context?.environment).toMatchObject({
+          PLUGIN_ROOT: pluginRoot,
+          PLUGIN_DATA: cwd,
+        });
+        expect(driver.context?.skills?.skills.some((skill) => skill.plugin === null)).toBe(false);
+        expect(
+          driver.context?.skills?.skills
+            .filter((skill) => skill.plugin === "example")
+            .map((skill) => skill.fullName),
+        ).toEqual(["example:research", "example:helper"]);
+        hold = true;
+        const running = executeCommand(environmentId);
+        running.context.specialistId = "registration-1";
+        running.context.agentTools.capabilityProfileId = "specialist";
+        running.context.plugins.versions = command.context.plugins.versions;
+        await reconcile(registry, running);
+        await runtime.handleCommand(running, sink);
+        await vi.waitFor(() => expect(driver.contexts).toHaveLength(2), { timeout: 5_000 });
+        let removed = false;
+        await runtime.removeSpecialist("registration-1", async () => {
+          expect(runtime.activeRunIds()).toEqual([]);
+          removed = true;
+        });
+        expect(removed).toBe(true);
+        const stale = executeCommand(environmentId);
+        stale.context.specialistId = "registration-1";
+        await expect(runtime.handleCommand(stale, sink)).resolves.toMatchObject({
+          status: "rejected",
+          error: { code: "forbidden" },
+        });
+        return;
+      }
       expect(driver.context?.providerState.privateStateRoot).toBe(dirname(stateRoot));
       expect(driver.context?.skills?.skills).toEqual([
         {
-          name: "opensteer-specialization",
-          path: "/runner/agent-skills/skills/opensteer-specialization",
+          plugin: "opensteer",
+          localName: "skills",
+          fullName: "opensteer:skills",
+          path: "/runner/agent-skills/skills/skills",
         },
         {
-          name: "opensteer-integrations",
-          path: "/runner/agent-skills/skills/opensteer-integrations",
+          plugin: "opensteer",
+          localName: "integrations",
+          fullName: "opensteer:integrations",
+          path: "/runner/agent-skills/skills/integrations",
         },
         {
-          name: "opensteer-computer-use",
-          path: "/runner/agent-skills/skills/opensteer-computer-use",
+          plugin: "opensteer",
+          localName: "computer-use",
+          fullName: "opensteer:computer-use",
+          path: "/runner/agent-skills/skills/computer-use",
         },
-        { name: "opensteer-browser", path: "/runner/agent-skills/skills/opensteer-browser" },
-        { name: "opensteer-computers", path: "/runner/agent-skills/skills/opensteer-computers" },
-        { name: "opensteer-threads", path: "/runner/agent-skills/skills/opensteer-threads" },
-        { name: "opensteer-triggers", path: "/runner/agent-skills/skills/opensteer-triggers" },
         {
-          name: "example-helper",
-          path: "/state/integration-skills/example/helper",
+          plugin: "opensteer",
+          localName: "browser",
+          fullName: "opensteer:browser",
+          path: "/runner/agent-skills/skills/browser",
         },
-        { name: "release-notes", path: join(workspacePath, "skills", "release-notes") },
-        { name: "research", path: join(workspacePath, "skills", "research") },
+        {
+          plugin: "opensteer",
+          localName: "computers",
+          fullName: "opensteer:computers",
+          path: "/runner/agent-skills/skills/computers",
+        },
+        {
+          plugin: "opensteer",
+          localName: "threads",
+          fullName: "opensteer:threads",
+          path: "/runner/agent-skills/skills/threads",
+        },
+        {
+          plugin: "opensteer",
+          localName: "triggers",
+          fullName: "opensteer:triggers",
+          path: "/runner/agent-skills/skills/triggers",
+        },
+        {
+          plugin: "example",
+          localName: "research",
+          fullName: "example:research",
+          path: "/state/plugin-cache/example/research",
+        },
+        {
+          plugin: "example",
+          localName: "helper",
+          fullName: "example:helper",
+          path: "/state/plugin-cache/example/helper",
+        },
+        {
+          plugin: null,
+          localName: "release-notes",
+          fullName: "release-notes",
+          path: join(workspacePath, "skills", "release-notes"),
+        },
+        {
+          plugin: null,
+          localName: "research",
+          fullName: "research",
+          path: join(workspacePath, "skills", "research"),
+        },
       ]);
       expect(logged).toEqual([
-        "Workspace skill opensteer-threads was skipped: the opensteer- prefix is reserved for the skills Opensteer ships",
+        "Workspace skill opensteer:threads was skipped: the directory name is not a valid skill name",
       ]);
     } finally {
       await runtime.close();
@@ -4389,53 +4497,6 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it("interrupts active Workspace users before detaching the machine mount", async () => {
-    const driver = new FakeHarnessDriver("blocking-driver", () => new BlockingHarnessSession());
-    const registry = new HarnessRegistry();
-    registry.registerDriver(driver);
-    const environmentId = createId("environment");
-    const command = executeCommand(environmentId, "blocking-driver");
-    await reconcile(registry, command);
-    const detach = vi.fn(async () => undefined);
-    const runtime = configuredRuntime({
-      environmentId,
-      registry,
-      workspaceMountRegistry: {
-        detach,
-        detachAll: async () => undefined,
-        inventory: () => [
-          {
-            enrollmentId: "enrollment-1",
-            volumeId: "workspace_volume",
-            workspaceId: command.context.workspaceId,
-          },
-        ],
-      },
-    });
-    const sink: RunnerMessageSink = { send: async () => undefined };
-    try {
-      await expect(runtime.handleCommand(command, sink)).resolves.toEqual({ status: "accepted" });
-      await waitUntil(() => driver.context !== undefined);
-      await expect(
-        runtime.handleCommand(
-          RunnerCommandSchema.parse({
-            commandId: createId("command"),
-            correlationId: CorrelationIdSchema.parse("detach-active-workspace"),
-            environmentId,
-            type: "workspace.detach",
-            volumeId: "workspace_volume",
-            workspaceId: command.context.workspaceId,
-          }),
-          sink,
-        ),
-      ).resolves.toEqual({ status: "accepted" });
-      expect(runtime.activeRunIds()).toEqual([]);
-      expect(detach).toHaveBeenCalledWith(command.context.workspaceId);
-    } finally {
-      await runtime.close();
-    }
-  });
-
   it("injects a steer into the active turn and reports it as one ordered event", async () => {
     const session = new SteerableHarnessSession();
     const driver = new FakeHarnessDriver("steerable-driver", () => session);
@@ -4624,7 +4685,7 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it("accepts a local specialized Workspace plan without PortableFS mount segments", async () => {
+  it("accepts a local project Workspace plan without storage mount segments", async () => {
     const driver = new FakeHarnessDriver("blocking-driver", () => new BlockingHarnessSession());
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
@@ -4636,13 +4697,13 @@ describe("RunnerRuntime", () => {
       registry,
       workspacePrepare: async (input) => {
         preparedPlans.push(
-          input.plan.kind === "local-directory" ? "workspace.mount" : "run.execute",
+          input.plan.workspaceId === targetWorkspaceId ? "workspace.mount" : "run.execute",
         );
         return {
           instructions: undefined,
           path:
-            input.plan.kind === "local-directory"
-              ? `/Users/test/Opensteer/Workspaces/${targetWorkspaceId}`
+            input.plan.workspaceId === targetWorkspaceId
+              ? "/Users/test/Opensteer/Workspaces/main/Projects/research"
               : "/Users/test/Opensteer/Workspaces/main",
         };
       },
@@ -4654,8 +4715,6 @@ describe("RunnerRuntime", () => {
         ...base.context,
         workspaceAccess: {
           ...base.context.workspaceAccess,
-          createdBy: base.context.requestedBy,
-          workspaceKind: "main",
         },
         workspaceKind: "main",
       },
@@ -4688,7 +4747,7 @@ describe("RunnerRuntime", () => {
 
       expect(decision).toEqual({
         status: "accepted",
-        workspacePath: `/Users/test/Opensteer/Workspaces/${targetWorkspaceId}`,
+        workspacePath: "/Users/test/Opensteer/Workspaces/main/Projects/research",
       });
       expect(preparedPlans).toEqual(["run.execute", "workspace.mount"]);
     } finally {
@@ -4696,7 +4755,7 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it("lets Main attach a specialized Workspace already used by a child Run", async () => {
+  it("lets Main attach a project Workspace already used by a child Run", async () => {
     const driver = new FakeHarnessDriver("blocking-driver", () => new BlockingHarnessSession());
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
@@ -4709,8 +4768,6 @@ describe("RunnerRuntime", () => {
         ...mainBase.context,
         workspaceAccess: {
           ...mainBase.context.workspaceAccess,
-          createdBy: mainBase.context.requestedBy,
-          workspaceKind: "main",
         },
         workspaceKind: "main",
       },
@@ -5499,9 +5556,10 @@ function executeCommand(
         token: "opaque-agent-tools-token",
         url: "https://host.example/internal/v1/integration-mcp",
       },
-      integrationSkills: {
-        token: "integration-skills-token",
-        url: "https://host.example/internal/v1/integration-skills",
+      plugins: {
+        versions: [],
+        token: "plugin-cache-token",
+        url: "https://host.example/internal/v1/plugin-cache",
       },
       bindingGeneration: 3,
       executionLeaseMs: 90_000,
@@ -5540,18 +5598,17 @@ function executeCommand(
       threadRole: "work",
       threadState: { previousAssignment: null, previousRun: null },
       workspaceId,
-      workspaceKind: "specialized",
+      workspaceKind: "project",
       machineAccess: { callerMachineName: "cloud-1", machines: [], omittedMachines: 0 },
       workspaceInstructionsPath: null,
       workspaceAccess: {
-        createdBy: createId("user"),
-        exchangeToken: "opaque-exchange-token",
-        exchangeUrl: "https://host.example/internal/v1/mount-grants/exchange",
         generation: 1,
-        kind: "portablefs",
-        volumeId: "workspace_volume",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: environmentId,
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
+
         workspaceId,
-        workspaceKind: "specialized",
       },
     },
     correlationId: CorrelationIdSchema.parse("runtime-test"),
@@ -5610,14 +5667,13 @@ function triggerCommand(
       triggerId,
       workspaceId,
       workspaceAccess: {
-        createdBy: createId("user"),
-        exchangeToken: "trigger-mount-token",
-        exchangeUrl: "https://host.example/internal/v1/mount-grants/exchange",
         generation: 1,
-        kind: "portablefs",
-        volumeId: "workspace_volume",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: environmentId,
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
+
         workspaceId,
-        workspaceKind: "specialized",
       },
     },
     correlationId: CorrelationIdSchema.parse("trigger-runtime-test"),
@@ -5870,16 +5926,13 @@ function configuredRuntime(input: {
   readonly workspacePrepare?: ConstructorParameters<
     typeof RunnerRuntime
   >[0]["workspaceManager"]["prepare"];
-  readonly workspaceMountRegistry?: ConstructorParameters<
-    typeof RunnerRuntime
-  >[0]["workspaceMountRegistry"];
   readonly watchSupervisor?: ConstructorParameters<typeof RunnerRuntime>[0]["watchSupervisor"];
 }): RunnerRuntime {
   return runtimeWithLeaseGrants(
     {
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       bootId: "boot-control-test",
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: input.deploymentShape ?? testDeploymentShape,
@@ -5896,9 +5949,6 @@ function configuredRuntime(input: {
       privateStateDirectory: input.privateStateDirectory ?? testPrivateStateRoot,
       projectContinuationIdentity,
       ...(input.watchSupervisor ? { watchSupervisor: input.watchSupervisor } : {}),
-      ...(input.workspaceMountRegistry
-        ? { workspaceMountRegistry: input.workspaceMountRegistry }
-        : {}),
       workspaceManager: {
         writableRoots: () => ["/runner/workspaces"],
         prepare:
@@ -5957,6 +6007,63 @@ import { stat } from "node:fs/promises";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+
+it("refuses a Run while its Project is relocating and releases admission after failure", async () => {
+  const registry = new HarnessRegistry();
+  const environmentId = createId("environment");
+  const runtime = configuredRuntime({ environmentId, registry });
+  const command = executeCommand(environmentId);
+  const entered = deferred<void>();
+  const finish = deferred<void>();
+  const moving = runtime.relocateWorkspace(command.context.workspaceId, async () => {
+    entered.resolve();
+    await finish.promise;
+    throw new Error("Move failed");
+  });
+  const failed = expect(moving).rejects.toThrow("Move failed");
+  try {
+    await entered.promise;
+    const decision = await runtime.handleCommand(command, { send: async () => undefined });
+    expect(decision).toMatchObject({
+      status: "rejected",
+      error: { message: "Project relocation is in progress" },
+    });
+    finish.resolve();
+    await failed;
+    await expect(
+      runtime.relocateWorkspace(command.context.workspaceId, async () => undefined),
+    ).resolves.toBeUndefined();
+  } finally {
+    finish.resolve();
+    await failed;
+    await runtime.close();
+  }
+});
+
+it("invalidates warm engines when the pinned package set changes, regardless of order", () => {
+  const context = executeCommand(createId("environment")).context;
+  const input = {
+    context,
+    attachmentRoot: null,
+    baseEnvironment: {},
+    instructions: null,
+    machineAccessLaunch: "",
+    providerSessionReference: null,
+    runtimeBoundary: "native-user",
+    skills: undefined,
+    workspaceSkillsDigest: "",
+    workspacePath: "/workspace",
+    writableRoots: ["/workspace"],
+  };
+  const first = { pluginId: "a", name: "alpha", digest: "a".repeat(64) };
+  const second = { pluginId: "b", name: "beta", digest: "b".repeat(64) };
+  context.plugins.versions = [first, second];
+  const before = warmEngineKey(input);
+  context.plugins.versions = [second, first];
+  expect(warmEngineKey(input)).toBe(before);
+  context.plugins.versions = [{ ...first, digest: "c".repeat(64) }, second];
+  expect(warmEngineKey(input)).not.toBe(before);
+});
 
 it("stops app servers on primary connection loss and Runner shutdown", async () => {
   const runtime = configuredRuntime({

@@ -62,7 +62,7 @@ Claude defers Opensteer tool schemas through ToolSearch, which must remain avail
 
 ## Instructions and skills
 
-Workspace skills shadow integration skills; `opensteer-` belongs to bundled skills. Platform, role and capability instructions supplement the engine's system prompt and never confer Host authority. Keep cross-tool routing in the Run guide so Claude can choose tools before discovering their deferred schemas. MCP initialization must not repeat that guide.
+Skills have unique full names: `plugin:skill` for plugin skills (including the built-in `opensteer` plugin), bare names for loose Workspace skills. Duplicate full names fail the Run; no layer shadows another. Platform, role and capability instructions supplement the engine's system prompt and never confer Host authority. Keep cross-tool routing in the Run guide so Claude can choose tools before discovering their deferred schemas. MCP initialization must not repeat that guide.
 
 Deliver skill discovery metadata rather than every body. Pi disables ambient discovery in favor of the resolved plan. On Codex resume, send current Workspace and Opensteer instructions through keyed turn context: changed startup instructions do not refresh an existing conversation. An absent Workspace file must clear prior instructions. See `apps/runner/agent-skills/skills`, `packages/harness/src/skill-catalog.ts` and each driver's protocol tests. Transport success alone does not prove model behavior.
 

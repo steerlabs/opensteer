@@ -1,3 +1,4 @@
+import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
@@ -716,7 +717,7 @@ describe("Claude Agent SDK harness", () => {
     expect(sdk.calls[0]?.options.mcpServers?.opensteer_integrations).toMatchObject({
       alwaysLoad: false,
     });
-    expect(sdk.calls[0]?.options.settingSources).toEqual([]);
+    expect(sdk.calls[0]?.options.settingSources).toEqual(["project"]);
     expect(sdk.calls[0]?.options.strictMcpConfig).toBe(true);
     expect(sdk.calls[0]?.options.pathToClaudeCodeExecutable).toBe(fakeClaudeExecutable);
     expect(sdk.calls[0]?.options.permissionMode).toBe("bypassPermissions");
@@ -764,9 +765,9 @@ describe("Claude Agent SDK harness", () => {
       "mcp__opensteer__request_list",
       "mcp__opensteer__request_withdraw",
       "mcp__opensteer__environment_list",
-      "mcp__opensteer__workspace_list",
-      "mcp__opensteer__workspace_create",
-      "mcp__opensteer__workspace_mount",
+      "mcp__opensteer__project_list",
+      "mcp__opensteer__project_create",
+      "mcp__opensteer__plugin_install",
       "mcp__opensteer__thread_read",
       "mcp__opensteer__thread_list",
       "mcp__opensteer__thread_delegate",
@@ -794,7 +795,9 @@ describe("Claude Agent SDK harness", () => {
       "mcp__opensteer_integrations__integration_request",
       "mcp__opensteer_integrations__integration_propose",
     ]);
-    const pluginPath = await realpath(join(sessionContext.threadStateDirectory, "claude-plugin"));
+    const pluginPath = await realpath(
+      join(sessionContext.threadStateDirectory, "claude-plugin", "opensteer"),
+    );
     expect(sdk.calls[0]?.options.plugins).toEqual([
       {
         path: pluginPath,
@@ -802,11 +805,11 @@ describe("Claude Agent SDK harness", () => {
         type: "local",
       },
     ]);
-    expect(sdk.calls[0]?.options.skills).toEqual(["opensteer:opensteer-workspaces"]);
+    expect(sdk.calls[0]?.options.skills).toEqual(["opensteer:projects"]);
     expect(
       JSON.parse(await readFile(join(pluginPath, ".claude-plugin", "plugin.json"), "utf8")),
     ).toEqual({ name: "opensteer", version: "1.0.0" });
-    expect(await realpath(join(pluginPath, "skills", "opensteer-workspaces"))).toBe(
+    expect(await realpath(join(pluginPath, "skills", "projects"))).toBe(
       await realpath(sessionContext.skills?.skills[0]?.path ?? ""),
     );
     expect(sdk.calls[0]?.options.systemPrompt).toMatchObject({
@@ -2258,7 +2261,11 @@ describe("Claude Agent SDK harness", () => {
     },
     {
       expected: "plugins outside",
-      overrides: { plugins: [{ name: "ambient", path: "/user/plugin" }] },
+      overrides: {
+        plugins: [
+          { plugin: null, localName: "ambient", fullName: "ambient", path: "/user/plugin" },
+        ],
+      },
     },
   ])(
     "fails closed if Claude reports provider-native $expected the boundary",
@@ -3005,7 +3012,7 @@ async function context(
   await mkdir(join(workspacePath, "bundled-skills"), { recursive: true });
   await writeFile(
     join(workspacePath, "bundled-skills", "SKILL.md"),
-    "---\nname: opensteer-workspaces\ndescription: Test.\n---\n",
+    "---\nname: projects\ndescription: Test.\n---\n",
   );
   const threadId = createId("thread");
   // The Runner creates the per-Thread directory before the session starts.
@@ -3052,7 +3059,14 @@ async function context(
     }),
     signal: new AbortController().signal,
     skills: {
-      skills: [{ name: "opensteer-workspaces", path: join(workspacePath, "bundled-skills") }],
+      skills: [
+        {
+          plugin: "opensteer",
+          localName: "projects",
+          fullName: "opensteer:projects",
+          path: join(workspacePath, "bundled-skills"),
+        },
+      ],
     },
     threadId,
     threadStateDirectory,
@@ -3541,4 +3555,34 @@ describe("Claude Thread naming", () => {
       await fixture.adapter.close();
     }
   });
+});
+
+it("maps real namespaces to Claude plugins and loose skills to a private project root", async () => {
+  const sdk = new FakeSdk((parameters) =>
+    scriptedQuery([
+      initMessage(providerSessionId(parameters.options)),
+      successMessage(providerSessionId(parameters.options), "Done."),
+    ]),
+  );
+  const fixture = await openSession(sdk);
+  await fixture.session.stop();
+  const skills = await collisionSkills(fixture.context.workspacePath);
+  const session = await fixture.adapter.startSession({ ...fixture.context, skills });
+  await send(session, "Use alpha:review, beta:review and review.");
+  await session.stop();
+  const options = sdk.calls.at(-1)!.options;
+  expect(options.skills).toEqual(["alpha:review", "beta:review", "review"]);
+  expect(options.plugins).toHaveLength(2);
+  for (const plugin of options.plugins ?? []) {
+    const manifest = JSON.parse(
+      await readFile(join(plugin.path, ".claude-plugin", "plugin.json"), "utf8"),
+    );
+    const skill = skills.skills.find((skill) => skill.plugin === manifest.name)!;
+    expect(await realpath(join(plugin.path, "skills", "review"))).toBe(await realpath(skill.path));
+  }
+  expect(options.settingSources).toEqual(["project"]);
+  expect(await realpath(join(options.projectConfigRoot!, ".claude", "skills", "review"))).toBe(
+    await realpath(skills.skills[2]!.path),
+  );
+  await fixture.adapter.close();
 });

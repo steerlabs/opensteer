@@ -71,8 +71,8 @@ import type {
   TriggerRevisionId,
   TriggerWatchActivationId,
   UserId,
+  Workspace,
   WorkspaceBacking,
-  WorkspaceCapacityPolicy,
   WorkspaceIconName,
   WorkspaceId,
   WorkspaceInvitationId,
@@ -89,7 +89,6 @@ import type {
   IntegrationProvider,
   IntegrationProviderApplicationId,
   IntegrationServerId,
-  IntegrationSkillId,
   IntegrationToolId,
   LocalMcpServerSetup,
 } from "@opensteer/integration-core";
@@ -125,7 +124,7 @@ export type NullableTimestamp = ColumnType<
 export type JsonColumn<T> = ColumnType<T, T, T>;
 
 /** Threads never hold the Trigger profile, which belongs to Trigger occurrences. */
-export type ThreadCapabilityProfileId = "main" | "workspace" | "delegated";
+export type ThreadCapabilityProfileId = "main" | "workspace" | "delegated" | "specialist";
 
 export interface DeploymentTable {
   id: DeploymentId;
@@ -674,16 +673,17 @@ interface UserExecutionPreferenceTable {
 }
 
 export interface WorkspaceTable {
+  slug: Generated<string | null>;
   color: MarkColor;
   homeThreadId: Generated<ThreadId | null>;
+  relocationSource: Generated<NonNullable<Workspace["relocationSource"]> | null>;
   backing: JsonColumn<WorkspaceBacking>;
-  capacityPolicy: JsonColumn<WorkspaceCapacityPolicy>;
   deletedAt: NullableTimestamp;
   deletionRequestedAt: NullableTimestamp;
   deletionRequestedBy: UserId | null;
   icon: ColumnType<string | null, string | null | undefined, string | null>;
   id: WorkspaceId;
-  kind: "main" | "specialized";
+  kind: "main" | "project";
   lastActivityAt: Timestamp;
   name: string;
   /** Generated from the backing so the owning machine is a real reference the
@@ -783,6 +783,7 @@ export interface ThreadTable {
   inputQueuePaused: Generated<boolean>;
   inputQueuePausedBy: Generated<UserId | null>;
   accessMode: Generated<ThreadAccessMode>;
+  specialistId: Generated<string | null>;
   capabilityProfileId: ThreadCapabilityProfileId;
   role: Generated<ThreadRole>;
   id: ThreadId;
@@ -1127,25 +1128,6 @@ interface RequestContinuationTable {
   updatedAt: Timestamp;
 }
 
-export interface WorkspaceMountTable {
-  id: string;
-  environmentId: EnvironmentId;
-  runnerId: RunnerId;
-  workspaceId: WorkspaceId;
-  volumeId: string;
-  workspaceBackingGeneration: ColumnType<string, number | string, number | string>;
-  enrollmentId: string;
-  authorizedBy: UserId;
-  membershipGeneration: ColumnType<string, number | string, number | string>;
-  status: "active" | "revocation_pending" | "closed" | "revoked" | "expired";
-  terminationReason: string | null;
-  revocationAttempts: Generated<number>;
-  nextAttemptAt: NullableTimestamp;
-  lastErrorCode: string | null;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
 interface TriggerTable {
   id: TriggerId;
   workspaceId: WorkspaceId;
@@ -1301,11 +1283,9 @@ export interface AgentControlRequestTable {
     | "thread.write"
     | "trigger.read"
     | "trigger.write"
-    | "workspace.create"
+    | "project.create"
     | "environment.list"
-    | "workspace.list"
-    | "workspace.inspect"
-    | "workspace.mount";
+    | "project.list";
   actionClass:
     | "person.show"
     | "assignment.cancel"
@@ -1328,10 +1308,9 @@ export interface AgentControlRequestTable {
     | "thread.write"
     | "trigger.read"
     | "trigger.write"
-    | "workspace.create"
+    | "project.create"
     | "environment.list"
-    | "workspace.inspect"
-    | "workspace.mount";
+    | "project.list";
   requestFingerprint: string;
   createdAt: Timestamp;
 }
@@ -1750,7 +1729,8 @@ export interface IntegrationInstallationTable {
   title: string;
   description: string;
   version: string | null;
-  sourceKind: "agent-plugin" | "built-in" | "proposed" | "remote-mcp";
+  pluginId: Generated<string | null>;
+  sourceKind: "plugin" | "built-in" | "proposed" | "remote-mcp";
   trust: "built-in" | "verified-publisher" | "administrator-approved";
   manifest: JsonColumn<Readonly<Record<string, unknown>>>;
   provenance: JsonColumn<Readonly<Record<string, unknown>>>;
@@ -1800,17 +1780,6 @@ export interface IntegrationToolDefinitionsTable {
   serverId: IntegrationServerId;
   connectionId: IntegrationConnectionId | null;
   definitions: JsonColumn<Readonly<Record<string, Readonly<Record<string, unknown>>>>>;
-  updatedAt: Timestamp;
-}
-
-export interface IntegrationSkillTable {
-  id: IntegrationSkillId;
-  installationId: IntegrationInstallationId;
-  name: string;
-  description: string;
-  digest: string;
-  status: "active" | "disabled";
-  createdAt: Timestamp;
   updatedAt: Timestamp;
 }
 
@@ -2119,7 +2088,6 @@ export interface DatabaseSchema {
   integrationRequestDetails: IntegrationRequestDetailTable;
   requestCallJoins: RequestCallJoinTable;
   requestContinuations: RequestContinuationTable;
-  workspaceMounts: WorkspaceMountTable;
   triggers: TriggerTable;
   triggerRevisions: TriggerRevisionTable;
   triggerWatchActivations: TriggerWatchActivationTable;
@@ -2186,7 +2154,44 @@ export interface DatabaseSchema {
   integrationServers: IntegrationServerTable;
   integrationTools: IntegrationToolTable;
   integrationToolDefinitions: IntegrationToolDefinitionsTable;
-  integrationSkills: IntegrationSkillTable;
+  plugins: {
+    id: string;
+    name: string;
+    scope: "deployment" | "workspace";
+    workspaceId: string | null;
+    source: JsonColumn<Readonly<Record<string, unknown>>>;
+    installedBy: UserId | null;
+    currentVersionId: string | null;
+    createdAt: Timestamp;
+    updatedAt: Timestamp;
+  };
+  specialists: {
+    removedAt: Generated<Date | null>;
+    id: string;
+    workspaceId: WorkspaceId;
+    pluginId: string;
+    pluginVersionId: string;
+    ownerUserId: UserId;
+    createdBy: UserId;
+    status: "pending" | "ready" | "removing" | "removal-failed";
+    bindings: JsonColumn<readonly import("@opensteer/core").SpecialistBinding[]>;
+    createdAt: Timestamp;
+    updatedAt: Timestamp;
+  };
+  pluginVersions: {
+    id: string;
+    pluginId: string;
+    digest: string;
+    manifest: JsonColumn<Readonly<Record<string, unknown>>>;
+    specialistManifest: JsonColumn<Readonly<Record<string, unknown>>> | null;
+    createdAt: Timestamp;
+  };
+  pluginActivations: {
+    workspaceId: WorkspaceId;
+    pluginId: string;
+    createdBy: UserId | null;
+    createdAt: Timestamp;
+  };
   integrationGrants: IntegrationGrantTable;
   mcpOAuthCredentials: McpOAuthCredentialTable;
   channelAccounts: ChannelAccountTable;

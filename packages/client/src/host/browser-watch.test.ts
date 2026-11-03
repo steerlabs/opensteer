@@ -45,7 +45,7 @@ class TargetSocket implements WebSocketClient {
       type: "browser.snapshot",
       sessionId,
       state: "ready",
-      access: "full-control",
+      access: "read-write",
       targetedStreamingVersion: 1,
       dialog: null,
       surfaces: [{ id: surfaceId, active: true, title: "Page", url: "about:blank" }],
@@ -325,7 +325,7 @@ describe("BrowserWatchStore", () => {
     const release = store.retain(sessionId, "page-a", { picture: false });
     socket.open();
     socket.receive({
-      access: "full-control",
+      access: "read-write",
       dialog: null,
       sessionId,
       state: "ready",

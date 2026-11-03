@@ -1081,7 +1081,7 @@ describe("BrowserService", () => {
         createdBy: ownerId,
         profileId: profile.id,
         workspaceId,
-        access: "full-control",
+        access: "read-write",
       });
       const recordVisit = vi.fn().mockResolvedValue(true);
       const history = {
@@ -3450,7 +3450,7 @@ describe("BrowserService", () => {
       kind: "profile-local",
       binding: { profileId: workProfile.id },
     });
-    await repository.grant(workProfile.id, "full-control");
+    await repository.grant(workProfile.id, "read-write");
 
     const peer = new RecordingPeer("ui-1");
     const attachment = await service.attach(ownerId, started.session.id, peer, consumerOptions());
@@ -4036,7 +4036,7 @@ describe("BrowserService", () => {
     });
     await expect(service.listGrantedProfiles(ownerId, workspaceId)).resolves.toEqual([
       {
-        access: "full-control",
+        access: "read-write",
         grantId: resolved.grant?.id,
         id: resolved.profile?.id,
         name: "Client portal",
@@ -4110,7 +4110,7 @@ describe("BrowserService", () => {
     });
   });
 
-  it("targets only owned specialized Workspaces and treats profile suggestions as advisory", async () => {
+  it("targets only owned project Workspaces and treats profile suggestions as advisory", async () => {
     const keys = generateKeyPairSync("ed25519");
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
@@ -4121,7 +4121,7 @@ describe("BrowserService", () => {
       repository: new MemoryBrowserRepository(ownerId, workspaceId, "main"),
       signer,
     });
-    const specialized = new BrowserService({
+    const project = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
       repository: new MemoryBrowserRepository(ownerId, workspaceId),
@@ -4141,13 +4141,13 @@ describe("BrowserService", () => {
     await expect(main.requestAccess(request)).rejects.toMatchObject({
       code: "bad_request",
       message:
-        "browser_access_request grants a browser profile only to a specialized Workspace. From Main, pass that Workspace's workspaceId. To browse in Main, open a session with an inherited profile from browser_profile_list, or with fresh: true for signed-out browsing.",
+        "browser_access_request grants a browser profile only to a project Workspace. From Main, pass that Workspace's workspaceId. To browse in Main, open a session with an inherited profile from browser_profile_list, or with fresh: true for signed-out browsing.",
     });
     await expect(
-      specialized.requestAccess({ ...request, workspaceId: createId("workspace") }),
+      project.requestAccess({ ...request, workspaceId: createId("workspace") }),
     ).rejects.toMatchObject({ code: "not_found" });
     await expect(
-      specialized.requestAccess({
+      project.requestAccess({
         ...request,
         callId: "browser-access-advisory-profile",
         suggestion: { kind: "existing", profileId: createId("browserProfile") },
@@ -4183,7 +4183,7 @@ describe("BrowserService", () => {
     await expect(overflow.bootstrap(ownerId)).rejects.toMatchObject({ code: "conflict" });
   });
 
-  it("requires one full-control profile grant before raw CDP reaches a Runtime", async () => {
+  it("requires one read-write profile grant before raw CDP reaches a Runtime", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
@@ -4214,12 +4214,12 @@ describe("BrowserService", () => {
     expect(runtime.connectionCount()).toBe(0);
 
     const grant = await service.grantProfileToWorkspace({
-      access: "full-control",
+      access: "read-write",
       createdBy: ownerId,
       profileId: profile.id,
       workspaceId,
     });
-    expect(grant).toMatchObject({ access: "full-control", profileId: profile.id });
+    expect(grant).toMatchObject({ access: "read-write", profileId: profile.id });
     const visible = await service.start({ ownerId, profileId: profile.id, workspaceId });
     expect(visible.session.placement).toEqual({ kind: "runner", runnerId: target.runnerId });
     const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
@@ -4527,7 +4527,7 @@ describe("BrowserService", () => {
     const environmentId = createId("environment");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const profile = repository.addHostedProfile("Established profile");
-    await repository.grant(profile.id, "full-control");
+    await repository.grant(profile.id, "read-write");
     const established = testRunner({});
     const bound = testRunner({ environmentIds: [environmentId] });
     const service = placementService({
@@ -4557,7 +4557,7 @@ describe("BrowserService", () => {
       runnerId: established.runnerId,
     });
 
-    const sessionWorkspaceId = repository.addWorkspace("specialized");
+    const sessionWorkspaceId = repository.addWorkspace("project");
     const existing = await service.start({
       fresh: true,
       ownerId,
@@ -4596,7 +4596,7 @@ describe("BrowserService", () => {
     });
     cleanups.push(async () => service.close());
     await service.start({ ownerId, profileId: userOnly.id, workspaceId });
-    await repository.grant(granted.id, "full-control");
+    await repository.grant(granted.id, "read-write");
     const agent = await service.openAgentSession({
       agentBindingId: "run:isolation-test",
       ownerId,
@@ -4721,7 +4721,7 @@ describe("BrowserService", () => {
       workspaceId,
     });
 
-    const otherWorkspaceId = repository.addWorkspace("specialized");
+    const otherWorkspaceId = repository.addWorkspace("project");
     await expect(
       service.openAgentSession({
         agentBindingId: "run:other-workspace",
@@ -4732,6 +4732,22 @@ describe("BrowserService", () => {
     ).rejects.toMatchObject({ code: "forbidden" });
 
     const mainWorkspaceId = repository.addWorkspace("main");
+    await expect(
+      service.openAgentSession({
+        agentBindingId: "run:channel",
+        ownerId,
+        sessionId: opened.session.id,
+        workspaceId: mainWorkspaceId,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      service.listAgentSessions({
+        agentBindingId: "run:channel",
+        ownerId,
+        workspaceId: mainWorkspaceId,
+      }),
+    ).resolves.toEqual([]);
+
     await expect(
       service.openAgentSession({
         agentBindingId: "run:main",
@@ -5107,17 +5123,17 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     workspaceId: WorkspaceId;
   } | null = null;
   readonly #ownerId: UserId;
-  readonly #otherWorkspaces = new Map<WorkspaceId, "main" | "specialized">();
+  readonly #otherWorkspaces = new Map<WorkspaceId, "main" | "project">();
   readonly #profiles = new Map<BrowserProfileId, BrowserProfileRecord>();
   readonly #deletedProfiles = new Set<BrowserProfileId>();
   readonly #sessions = new Map<BrowserSessionId, BrowserSessionRecord>();
   readonly #workspaceId: WorkspaceId;
-  readonly #workspaceKind: "main" | "specialized";
+  readonly #workspaceKind: "main" | "project";
 
-  constructor(ownerId: UserId, workspaceId: WorkspaceId, workspaceKind?: "main" | "specialized") {
+  constructor(ownerId: UserId, workspaceId: WorkspaceId, workspaceKind?: "main" | "project") {
     this.#ownerId = ownerId;
     this.#workspaceId = workspaceId;
-    this.#workspaceKind = workspaceKind ?? "specialized";
+    this.#workspaceKind = workspaceKind ?? "project";
   }
 
   readonly requests: BrowserSessionRepository["requests"] = {
@@ -5211,11 +5227,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
         pending.targetWorkspaceId === this.#workspaceId
           ? this.#workspaceKind
           : this.#otherWorkspaces.get(pending.targetWorkspaceId);
-      if (
-        fulfilled &&
-        profile &&
-        (pending.kind === "browser.access" || targetKind === "specialized")
-      ) {
+      if (fulfilled && profile && (pending.kind === "browser.access" || targetKind === "project")) {
         if (
           this.#grant &&
           (this.#grant.profileId !== profile.id ||
@@ -5226,7 +5238,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
         grant =
           this.#grant ??
           ({
-            access: "full-control",
+            access: "read-write",
             createdAt: new Date(),
             grantId: createId("browserProfileGrant"),
             profileId: profile.id,
@@ -5375,6 +5387,18 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       attached.set(attachment.sessionId, ids);
     }
     return attached;
+  }
+
+  async resolveResourceAccess(input: {
+    ownerUserId: UserId;
+    workspaceId: WorkspaceId;
+    agentBindingId?: string;
+  }) {
+    return {
+      inheritsMain:
+        input.agentBindingId !== "run:channel" &&
+        (await this.getWorkspaceForOwner(input.workspaceId, input.ownerUserId))?.kind === "main",
+    };
   }
 
   async listActiveBrowserProfileGrantsForWorkspace(workspaceId: WorkspaceId, ownerId: UserId) {
@@ -5591,14 +5615,14 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
   async getWorkspaceForOwner(
     workspaceId: WorkspaceId,
     ownerId: UserId,
-  ): Promise<{ readonly id: WorkspaceId; readonly kind: "main" | "specialized" } | null> {
+  ): Promise<{ readonly id: WorkspaceId; readonly kind: "main" | "project" } | null> {
     if (ownerId !== this.#ownerId) return null;
     if (workspaceId === this.#workspaceId) return { id: workspaceId, kind: this.#workspaceKind };
     const kind = this.#otherWorkspaces.get(workspaceId);
     return kind ? { id: workspaceId, kind } : null;
   }
 
-  addWorkspace(kind: "main" | "specialized"): WorkspaceId {
+  addWorkspace(kind: "main" | "project"): WorkspaceId {
     const workspaceId = createId("workspace");
     this.#otherWorkspaces.set(workspaceId, kind);
     return workspaceId;
@@ -5873,7 +5897,7 @@ class MaximumBrowserCatalogRepository extends MemoryBrowserRepository {
     if (ownerId !== this.#ownerId) return [];
     return Array.from({ length: this.#grantCount }, (_, grantIndex) => {
       return {
-        access: "full-control" as const,
+        access: "read-write" as const,
         createdAt: new Date(2_000 + grantIndex),
         grantId: createId("browserProfileGrant"),
         profileId: this.#profileId,
