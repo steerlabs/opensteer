@@ -125,7 +125,7 @@ describe("WatchSupervisor", () => {
               anchorThreadId,
               capabilities: {
                 browserCdp: null,
-                integrationMcp: { expiresAt, token: "integration-token", url: baseUrl },
+
                 mcp: { expiresAt, token: controlToken, url: baseUrl },
               },
               executionGeneration: 1,
@@ -397,7 +397,7 @@ async function watchHarness(source: string): Promise<{
         anchorThreadId,
         capabilities: {
           browserCdp: null,
-          integrationMcp: { expiresAt, token: "integration-token", url: baseUrl },
+
           mcp: { expiresAt, token: "control-token", url: baseUrl },
         },
         executionGeneration: 1,

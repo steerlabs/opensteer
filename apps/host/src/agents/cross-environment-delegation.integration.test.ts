@@ -3123,7 +3123,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       egress: { issue: () => ({ allowedHosts: [], token: "test-egress" }) } as never,
       pluginVersions: async () => [],
       pluginsTokens: { issue } as never,
-      integrationToolsTokens: { issue } as never,
+
       onWorkspaceEvent: vi.fn(),
       publicUrl: new URL("https://delegation.opensteer.test"),
       requestResponseVault: {} as never,
@@ -3144,6 +3144,7 @@ integration("cross-environment delegation reaches the Runner", () => {
             "thread-state-v1",
             "requester-time-zone-v1",
             "execution-plane-v2",
+            "agent-tools-plan-v1",
           ],
           name: "Lent Mac",
           runnerId,
@@ -3161,7 +3162,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       } as never,
       store,
       triggerControlTokens: { issue } as never,
-      triggerIntegrationToolsTokens: { issue } as never,
+
       triggers: {} as never,
       workspaceAccess: { plan: async () => ({ kind: "none" }) } as never,
       workspaces: { ensureExecutionReady: async () => undefined } as never,

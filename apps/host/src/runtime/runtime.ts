@@ -1480,7 +1480,6 @@ export async function createHostRuntime(
             credentials: {
               agentControl: agentControlTokens.issue(scope),
               attachments: attachmentRunTokens.issue(scope),
-              integrationTools: integrationToolsTokens.issue(scope),
             },
             status: "issued",
           };
@@ -1868,8 +1867,6 @@ export async function createHostRuntime(
       browser,
       browserCdpUrl: new URL("/internal/v1/watch-cdp", config.runtimeOrigin).toString(),
       controlTokens: watchControlTokens,
-      integrationMcpUrl: new URL("/internal/v1/integration-mcp", config.runtimeOrigin).toString(),
-      integrationTokens: watchIntegrationToolsTokens,
       mcpUrl: new URL("/internal/v1/mcp", config.runtimeOrigin).toString(),
       onChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
       onError: (error, environmentId) => reportWatchReconciliationError(environmentId, error),
@@ -1890,7 +1887,6 @@ export async function createHostRuntime(
           ({ id, name, digest }) => ({ pluginId: id, name, digest }),
         ),
       pluginsTokens,
-      integrationToolsTokens,
       attachmentRunTokens,
       attachments: attachmentStore,
       onWorkspaceEvent: publishWorkspaceEvent,
@@ -1899,7 +1895,6 @@ export async function createHostRuntime(
       runners,
       store,
       triggerControlTokens,
-      triggerIntegrationToolsTokens,
       triggers: triggerStore,
       workspaces,
       workspaceAccess,

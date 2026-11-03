@@ -9,7 +9,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, lstat } from "node:fs/promises";
 import { platform } from "node:os";
 import { join, resolve } from "node:path";
-import { platformGuideForRun } from "@opensteer/agent-tools";
 import { defaultRunnerMaxConcurrentTriggerPrograms, type RunnerConfig } from "@opensteer/config";
 import {
   createId,
@@ -2358,7 +2357,7 @@ export class RunnerRuntime {
         });
       }
       const skills = resolveSkillPlan({
-        bundled: planAgentSkills(this.#agentSkills, context.agentTools.capabilityProfileId),
+        bundled: planAgentSkills(this.#agentSkills, context.agentTools.skills),
         integration: runSkills.skills,
         workspace: context.specialistId ? [] : workspaceSkills.skills,
       });
@@ -2469,10 +2468,6 @@ export class RunnerRuntime {
               token: () => current().agentTools,
               upstream: context.agentTools.url,
             },
-            "integration-tools": {
-              token: () => current().integrationTools,
-              upstream: context.integrationTools.url,
-            },
           },
           transport,
         });
@@ -2577,7 +2572,6 @@ export class RunnerRuntime {
           token: proxied.secret,
           url: proxied.urls["agent-tools"],
         },
-        integrationTools: { token: proxied.secret, url: proxied.urls["integration-tools"] },
         environment,
         environmentId: context.environmentId,
         history: context.history,
@@ -2604,10 +2598,7 @@ export class RunnerRuntime {
         machineAccessPlatform: launch?.machineAccessPlatform,
         machineAccessRelaySocket: launch?.machineAccessRelaySocket,
         modelSelection: context.modelSelection,
-        platformGuide: platformGuideForRun({
-          capabilityProfileId: context.agentTools.capabilityProfileId,
-          role: context.threadRole,
-        }),
+        platformGuide: context.agentTools.instructions,
         providerState,
         runtimeBoundary: this.#harnessRuntimeBoundary,
         signal: engineLifetime.signal,
@@ -3509,14 +3500,15 @@ export function warmEngineKey(input: {
         context.accessMode,
         input.writableRoots,
         context.specialistId ?? null,
-        context.agentTools.capabilityProfileId,
+        context.agentTools.toolsRevision,
+        context.agentTools.tools,
+        context.agentTools.instructions,
         context.threadRole,
         context.modelSelection,
         [...context.plugins.versions].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
         input.skills,
         input.workspaceSkillsDigest,
         context.agentTools.url,
-        context.integrationTools.url,
         context.browserCdp.url,
         input.attachmentRoot,
         input.baseEnvironment,

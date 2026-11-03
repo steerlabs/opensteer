@@ -27,7 +27,6 @@ import type {
   HarnessInput,
   HarnessRunReports,
   RunAgentToolsPlan,
-  RunIntegrationToolsPlan,
   RunHistoryWindow,
   RunInitialContext,
 } from "@opensteer/protocol";
@@ -284,7 +283,6 @@ export interface HarnessSessionContext {
   readonly accessMode: ThreadAccessMode;
   readonly agentControl?: AgentControlClient;
   readonly agentTools: RunAgentToolsPlan;
-  readonly integrationTools: RunIntegrationToolsPlan;
   readonly environmentId: EnvironmentId;
   readonly history: readonly Message[];
   readonly historyWindow: RunHistoryWindow;

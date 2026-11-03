@@ -1,3 +1,5 @@
+import { integrationGatewayToolNames } from "@opensteer/integration-core";
+import { agentToolDefinitions } from "@opensteer/agent-tools";
 import { createId as createStorageFixtureId } from "@opensteer/core";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -56,15 +58,15 @@ it("records a successful Codex command with large inline arguments without faili
         url: "https://host.example/internal/v1/agent-control",
       },
       agentTools: {
-        capabilityProfileId: "workspace",
+        tools: [...agentToolDefinitions.map(({ name }) => name), ...integrationGatewayToolNames],
+        toolsRevision: "test-tools-v1",
+        instructions: "Host Opensteer instructions",
+        skills: ["opensteer:threads"],
         token: "test-tools",
         url: "https://host.example/internal/v1/mcp",
       },
       browserCdp: { token: "test-browser", url: "https://host.example/internal/v1/browser-cdp" },
-      integrationTools: {
-        token: "test-tools",
-        url: "https://host.example/internal/v1/integration-mcp",
-      },
+
       plugins: {
         versions: [],
         token: "test-skills",

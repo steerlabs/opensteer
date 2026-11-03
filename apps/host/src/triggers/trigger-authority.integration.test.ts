@@ -1647,7 +1647,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         runnerId: f.runnerId,
         bootId: "authority-boot",
         connectionGeneration: 1,
-        capabilities: ["execution-plane-v2"],
+        capabilities: ["execution-plane-v2", "agent-tools-plan-v1"],
         modules: { agents: { workspaceBackings: ["local-directory"] } },
       } as unknown as RunnerIdentity;
       const dispatch = vi.fn<RunnerRegistry["dispatch"]>(async (command) => ({
@@ -1674,9 +1674,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
         egress: {} as never,
         pluginVersions: async () => [],
         pluginsTokens: {} as never,
-        integrationToolsTokens: {} as never,
+
         triggerControlTokens: { issue: () => "control" } as never,
-        triggerIntegrationToolsTokens: { issue: () => "integrations" } as never,
+
         workspaces: { ensureExecutionReady: async (workspace) => workspace },
         workspaceAccess,
       });
@@ -1818,7 +1818,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         .set({
           capabilities: sql<
             RunnerDescriptor["capabilities"]
-          >`${JSON.stringify(["filesystem"])}::jsonb`,
+          >`${JSON.stringify(["filesystem", "agent-tools-plan-v1"])}::jsonb`,
         })
         .where("id", "=", f.runnerId)
         .execute();
@@ -1826,6 +1826,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         runnerId: f.runnerId,
         bootId: "authority-boot",
         connectionGeneration: 1,
+        capabilities: ["agent-tools-plan-v1"],
         modules: { agents: { workspaceBackings: ["local-directory"] } },
       } as unknown as RunnerIdentity;
       const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
@@ -1838,9 +1839,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         browser: { hasBrowserProfileAccess: async () => false },
         browserCdpUrl: "wss://host.test",
         controlTokens: { issue: () => ({ token: "control", expiresAt: nextHour }) },
-        integrationTokens: { issue: () => ({ token: "integrations", expiresAt: nextHour }) },
         watchBrowserTokens: { issue: () => ({ token: "browser", expiresAt: nextHour }) },
-        integrationMcpUrl: "https://host.test",
         mcpUrl: "https://host.test",
         onChanged: vi.fn(),
         onError: vi.fn(),

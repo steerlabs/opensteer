@@ -66,13 +66,7 @@ describe("credential proxy", () => {
   ) {
     const seen: Seen[] = [];
     const server = createServer((request, response) => {
-      if (
-        ignoreForeignTestRequest(
-          request,
-          response,
-          (path) => path === "/internal/v1/mcp" || path === "/internal/v1/integration-mcp",
-        )
-      )
+      if (ignoreForeignTestRequest(request, response, (path) => path === "/internal/v1/mcp"))
         return;
       const chunks: Buffer[] = [];
       request.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -101,10 +95,6 @@ describe("credential proxy", () => {
       maxBodyBytes: 1_024,
       routes: {
         "agent-tools": { token: () => token.current, upstream: `${origin}/internal/v1/mcp` },
-        "integration-tools": {
-          token: () => token.current,
-          upstream: `${origin}/internal/v1/integration-mcp`,
-        },
       },
       transport: { mode: "development" },
     });
@@ -206,6 +196,13 @@ describe("credential proxy", () => {
     const unknown = await fetch(new URL("/elsewhere", base), {
       headers: { authorization },
     });
+    const retiredRoute = await fetch(
+      urls["agent-tools"].replace(/agent-tools$/u, "integration-tools"),
+      {
+        headers: { authorization },
+      },
+    );
+    expect(retiredRoute.status).toBe(404);
     const put = await fetch(urls["agent-tools"], {
       body: "{}",
       headers: { authorization },
@@ -267,7 +264,7 @@ describe("credential proxy", () => {
     const token = { current: "first" };
     const { secret, urls } = await proxyFor(host.origin, token);
     const call = () =>
-      fetch(urls["integration-tools"], {
+      fetch(urls["agent-tools"], {
         body: "{}",
         headers: { authorization: `Bearer ${secret}` },
         method: "POST",
@@ -279,10 +276,7 @@ describe("credential proxy", () => {
       "Bearer first",
       "Bearer refreshed",
     ]);
-    expect(host.seen.map(({ url }) => url)).toEqual([
-      "/internal/v1/integration-mcp",
-      "/internal/v1/integration-mcp",
-    ]);
+    expect(host.seen.map(({ url }) => url)).toEqual(["/internal/v1/mcp", "/internal/v1/mcp"]);
   });
 
   it("refuses new calls and cuts open streams once revoked", async () => {
@@ -388,7 +382,6 @@ describe("credential proxy", () => {
     const proxy = new CredentialProxy({
       routes: {
         "agent-tools": { token: () => "host-token", upstream: "http://127.0.0.1:9/mcp" },
-        "integration-tools": { token: () => "host-token", upstream: "http://127.0.0.1:9/mcp" },
       },
       transport: { mode: "development" },
     });

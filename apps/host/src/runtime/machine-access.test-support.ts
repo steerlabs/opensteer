@@ -1395,7 +1395,7 @@ export async function acceptCallerRun(
     get attempt() {
       return current;
     },
-    integrationTools: context.integrationTools,
+    integrationTools: context.agentTools,
     complete: async () => {
       release();
       await report(current, "run.completed", { status: "completed" });

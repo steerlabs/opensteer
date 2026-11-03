@@ -1,3 +1,5 @@
+import { integrationGatewayToolNames } from "@opensteer/integration-core";
+import { agentToolDefinitions } from "@opensteer/agent-tools";
 import { ThreadAccessModeSchema, createId, type Message } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -591,7 +593,7 @@ describe("wire protocol", () => {
           anchorThreadId: createId("thread"),
           capabilities: {
             browserCdp: null,
-            integrationMcp: { expiresAt, token: "integration-token", url: "https://host.test/mcp" },
+
             mcp: { expiresAt, token: "control-token", url: "https://host.test/mcp" },
           },
           executionGeneration: 2,
@@ -671,7 +673,10 @@ describe("wire protocol", () => {
           url: "https://host.example.test/internal/v1/agent-control",
         },
         agentTools: {
-          capabilityProfileId: "main",
+          tools: [...agentToolDefinitions.map(({ name }) => name), ...integrationGatewayToolNames],
+          toolsRevision: "test-tools-v1",
+          instructions: "Host Opensteer instructions",
+          skills: ["opensteer:threads"],
           token: "agent-tools-token",
           url: "https://host.example.test/internal/v1/mcp",
         },
@@ -679,10 +684,7 @@ describe("wire protocol", () => {
           token: "browser-cdp-token",
           url: "https://host.example.test/internal/v1/browser-cdp",
         },
-        integrationTools: {
-          token: "agent-tools-token",
-          url: "https://host.example.test/internal/v1/integration-mcp",
-        },
+
         plugins: {
           versions: [],
           token: "plugin-cache-token",
