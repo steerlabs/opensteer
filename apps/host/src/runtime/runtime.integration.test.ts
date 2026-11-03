@@ -5327,6 +5327,7 @@ function agentsRunnerDescriptor(input: {
         "browser-page-input-v1",
         "thread-state-v1",
         "requester-time-zone-v1",
+        "agent-tools-plan-v1",
         "execution-plane-v2",
       ]),
     ],
