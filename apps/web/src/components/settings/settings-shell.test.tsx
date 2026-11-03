@@ -55,19 +55,33 @@ describe("Device settings placement", () => {
     }
   });
 
+  it("opens remote access and session children without the Account landing page", () => {
+    const context = placementFixtures()["personal-remote"];
+    const remote = renderSettings(context, "/settings/account/remote-access");
+    expect(remote).toContain("Connection options");
+    expect(remote).not.toContain("Where you’re signed in");
+    expect(remote).not.toContain("Your account");
+    const session = renderSettings(context, "/settings/account/sessions/session-id");
+    expect(session).toContain("Where you’re signed in");
+    expect(session).not.toContain("Your account");
+    expect(session).not.toContain("Connection options");
+    expect(renderSettings(context, "/settings/account")).not.toContain("Connection options");
+  });
   it("shows remote access administration on a remote Personal device", () => {
     const html = renderSettings(placementFixtures()["personal-remote"], "/settings/account");
 
-    expect(html).toContain('aria-label="Open Opensteer from anywhere"');
+    expect(html).toContain('href="/settings/account/remote-access"');
     expect(html).toContain("Disconnecting ends this device’s access to Mac mini.");
     expect(html).toContain("Nothing on Mac mini changes");
-    expect(html).toContain("Changing remote access");
+    expect(
+      renderSettings(placementFixtures()["personal-remote"], "/settings/account/remote-access"),
+    ).toContain("Changing remote access");
     expect(html).toContain("Where you’re signed in");
   });
 
   it("gives a signed-in machine-owner browser the same remote access controls", () => {
     const context = { ...placementFixtures().browser, snapshot: machineOwnerSnapshot() };
-    const html = renderSettings(context, "/settings/account");
+    const html = renderSettings(context, "/settings/account/remote-access");
 
     expect(html).toContain('aria-label="Open Opensteer from anywhere"');
     expect(html).toContain("Connection options");
@@ -81,7 +95,7 @@ describe("Device settings placement", () => {
     };
     const html = renderSettings(context, "/settings/account");
 
-    expect(html).toContain('aria-label="Open Opensteer from anywhere"');
+    expect(html).toContain('href="/settings/account/remote-access"');
     expect(html).toContain("Disconnecting ends this device’s access to Mac mini.");
     expect(html).not.toContain("turn on remote access in the Opensteer app");
   });
@@ -100,7 +114,10 @@ describe("Settings identity honesty", () => {
     expect(renderSettings({ ...context, deploymentAccess }, "/settings/general")).not.toContain(
       "Add to your Account",
     );
-    const html = renderSettings({ ...context, deploymentAccess }, "/settings/account");
+    const html = renderSettings(
+      { ...context, deploymentAccess },
+      "/settings/account/remote-access",
+    );
     expect(html).toContain("Loading remote access");
     expect(html).not.toContain('value="connect"');
     expect(html).toContain("Connection options");
@@ -209,7 +226,7 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
           <Route element={<SettingsShell />} path="settings">
             <Route index element={<SettingsSectionRoute section="ai-engines" />} />
             <Route element={<SettingsSectionRoute section="ai-engines" />} path="ai-engines" />
-            <Route element={<SettingsSectionRoute section="account" />} path="account" />
+            <Route element={<SettingsSectionRoute section="account" />} path="account/*" />
             <Route element={<SettingsSectionRoute section="devices" />} path="devices" />
             <Route element={<SettingsSectionRoute section="general" />} path="general" />
             <Route element={<p>Connected apps route</p>} path="apps/*" />

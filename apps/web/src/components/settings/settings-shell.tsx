@@ -253,6 +253,7 @@ export function SettingsSectionRoute({
 }: {
   readonly section: Exclude<SettingsSectionId, "apps" | "computers">;
 }) {
+  const location = useLocation();
   const { settingsView: view, openMobileNavigation } = useOutletContext<SettingsContext>();
   let content;
   switch (section) {
@@ -261,11 +262,28 @@ export function SettingsSectionRoute({
       content = <AiEnginesSection />;
       break;
     case "account":
-      content = (
+      content = location.pathname.includes("/remote-access") ? (
+        <>
+          <Link to="/settings/account">Account</Link>
+          <RemoteAccessSection view={view} />
+        </>
+      ) : location.pathname.includes("/sessions/") ? (
+        <>
+          <Link to="/settings/account">Account</Link>
+          <SignedInDevicesSection
+            view={view}
+            sessionId={decodeURIComponent(location.pathname.split("/sessions/")[1] ?? "")}
+          />
+        </>
+      ) : (
         <>
           <AccountSection />
           {view.kind === "personal" && view.administrator ? (
-            <RemoteAccessSection view={view} />
+            <Link className="card card__row" to="/settings/account/remote-access">
+              <Icon name="globe" />
+              <span className="card__row-body">Open Opensteer from anywhere</span>
+              <Icon name="chevron-right" />
+            </Link>
           ) : null}
           <SignedInDevicesSection view={view} />
         </>

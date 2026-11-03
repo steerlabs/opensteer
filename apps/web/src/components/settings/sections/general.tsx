@@ -1,3 +1,6 @@
+import { Dialog } from "../../dialog.js";
+import { useDesktopPlaces } from "../../../desktop/places-context.js";
+import { PlaceMenuPlaces } from "../../places/place-menu.js";
 import { DesktopUpdatesRow } from "./desktop-updates.js";
 import { useEffect, useState } from "react";
 import {
@@ -12,6 +15,8 @@ import { useHomeComputer } from "./devices.js";
 import { SectionHeader, SettingsRow, StatusChip, type SettingsView } from "../primitives.js";
 
 export function GeneralSection({ view }: { readonly view: SettingsView }) {
+  const places = useDesktopPlaces();
+  const [switching, setSwitching] = useState(false);
   const { snapshot } = useShell();
   const home = useHomeComputer();
   const place = settingsPlace({
@@ -38,10 +43,47 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
             publicOrigin: snapshot.identityConfig?.publicOrigin,
           })}
         />
+        {places ? (
+          <SettingsRow
+            icon="globe"
+            title="Switch Opensteer"
+            action={
+              <button className="btn" type="button" onClick={() => setSwitching(true)}>
+                Switch
+              </button>
+            }
+          />
+        ) : null}
         <NotificationsRow />
         <DesktopUpdatesRow />
         <SearchSuggestionsRow />
       </div>
+      <h2>About</h2>
+      <div className="card">
+        <SettingsRow
+          icon="puzzle"
+          title="Opensteer"
+          action={
+            <a
+              className="btn"
+              href="https://github.com/steerlabs/opensteer"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Website
+            </a>
+          }
+        />
+      </div>
+      {switching && places ? (
+        <Dialog
+          labelledBy="switch-opensteer"
+          title="Switch Opensteer"
+          onClose={() => setSwitching(false)}
+        >
+          <PlaceMenuPlaces places={places} onClose={() => setSwitching(false)} />
+        </Dialog>
+      ) : null}
     </>
   );
 }

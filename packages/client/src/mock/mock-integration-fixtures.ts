@@ -1388,6 +1388,28 @@ const mockSlackToolSeeds: readonly MockToolSeed[] = [
  * the provider-authorization spread the connect and admin flows branch on.
  */
 export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrationState {
+  const gmailDefinition = IntegrationDefinitionSummarySchema.parse({
+    ...mockGoogleCalendarDefinition,
+    id: "google-gmail",
+    name: "Gmail",
+    description: "Read and search Gmail messages.",
+    authMethods: mockGoogleCalendarDefinition.authMethods.map((method) =>
+      method.kind === "oauth"
+        ? {
+            ...method,
+            oauth: { ...method.oauth, scopes: ["https://www.googleapis.com/auth/gmail.readonly"] },
+          }
+        : method,
+    ),
+  });
+  const gmail = mockIntegrationInstallation({
+    installedBy: ownerUserId,
+    createdAt: "2026-07-15T10:00:00.000Z",
+    definition: gmailDefinition,
+    digest: mockIntegrationDigest("gmail-catalog"),
+    providerApplicationRequired: true,
+    tools: [],
+  });
   const github = mockIntegrationInstallation({
     installedBy: ownerUserId,
     createdAt: "2026-07-14T09:12:00.000Z",
@@ -1620,6 +1642,11 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
       slack: mockIntegrationCallbackUrl("slack"),
     },
     catalog: [
+      {
+        definition: gmailDefinition,
+        digest: mockIntegrationDigest("gmail-catalog"),
+        installationId: gmail.installation.id,
+      },
       ...mockIphoneAppDefinitions.map((definition) => ({
         definition,
         digest: mockIntegrationDigest(`${definition.id}-catalog`),
@@ -1672,6 +1699,29 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
       },
     ],
     connections: [
+      ...["tim@example.com", "tim@steerlabs.com"].map(
+        (email, index): IntegrationConnectionSummary => ({
+          accountIdentifier: email,
+          applicationSource: null,
+          authMethodId: "google-oauth",
+          authorizationDigest: null,
+          computer: null,
+          connectionMethod: "managed-oauth",
+          createdAt: "2026-07-15T10:00:00.000Z",
+          definitionId: "google-gmail",
+          displayName: email,
+          externalIdentityId: `gmail-${index}`,
+          externalTenantId: null,
+          grantedScopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+          id: createIntegrationId("connection"),
+          provider: "google",
+          providerApplicationId: null,
+          status: "connected",
+          statusDetail: null,
+          statusReason: null,
+          updatedAt: "2026-07-15T10:00:00.000Z",
+        }),
+      ),
       {
         accountIdentifier: "octocat",
         applicationSource: githubHostedSource,
@@ -2003,6 +2053,7 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
       },
     ],
     installations: [
+      gmail,
       github,
       googleCalendar,
       linear,

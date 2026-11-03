@@ -1,3 +1,4 @@
+import { Link, useLocation } from "react-router";
 import { Fragment, useCallback, useEffect, useState, type FormEvent } from "react";
 import type {
   ChannelAccessPolicy,
@@ -52,6 +53,10 @@ interface ChannelDraft {
 
 /** Routed page for connecting messaging accounts and routing them to Workspaces. */
 export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean }) {
+  const location = useLocation();
+  const connectionId = location.pathname.startsWith("/settings/messaging/")
+    ? decodeURIComponent(location.pathname.slice("/settings/messaging/".length))
+    : null;
   const { hostClient, openMobileNavigation, snapshot } = useShell();
   const workspaces = snapshot.workspaces;
   const homeWorkspaceId =
@@ -415,6 +420,7 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
           </button>
         ) : null}
 
+        {connectionId ? <Link to="/settings/messaging">All connections</Link> : null}
         <PageHeader
           description={subheading(view, step, provider?.label)}
           eyebrow="Messaging"
@@ -423,7 +429,31 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
 
         {view === "overview" ? (
           <ChannelOverview
-            dashboard={dashboard}
+            dashboard={
+              dashboard && connectionId
+                ? {
+                    ...dashboard,
+                    connections: dashboard.connections.filter(
+                      (connection) => connection.id === connectionId,
+                    ),
+                    accounts: dashboard.accounts.filter(
+                      (account) => account.connectionId === connectionId,
+                    ),
+                    bindings: dashboard.bindings.filter((binding) =>
+                      dashboard.accounts.some(
+                        (account) =>
+                          account.id === binding.accountId && account.connectionId === connectionId,
+                      ),
+                    ),
+                    accessGrants: dashboard.accessGrants.filter((grant) =>
+                      dashboard.accounts.some(
+                        (account) =>
+                          account.id === grant.accountId && account.connectionId === connectionId,
+                      ),
+                    ),
+                  }
+                : dashboard
+            }
             error={error}
             homeWorkspaceId={homeWorkspaceId}
             linkError={linkError}
@@ -701,7 +731,9 @@ export function ChannelOverview({
                     </span>
                     <div className="card__row-body">
                       <span className="card__row-title">
-                        {connection.displayName}
+                        <Link to={`/settings/messaging/${encodeURIComponent(connection.id)}`}>
+                          {connection.displayName}
+                        </Link>
                         <span className={`chip ${statusChip(connection.status)}`}>
                           {statusLabel(connection.status)}
                         </span>

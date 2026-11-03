@@ -120,7 +120,8 @@ export function AddComputerDialog({
               : `. Then open ${deploymentName}.`}
           </li>
           <li>
-            On its Computers page, choose <strong>Add</strong>. It shows up here right away.
+            In Settings → Devices, choose <strong>Add device</strong>, then{" "}
+            <strong>Computer</strong>. It shows up here right away.
           </li>
         </ol>
         {personal ? (

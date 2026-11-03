@@ -48,8 +48,20 @@ export function DevicesHeader({
 }
 
 /** Every device you are signed in from, this one first. */
-export function SignedInDevicesSection({ view }: { readonly view: SettingsView }) {
-  const sessions = useSessions();
+export function SignedInDevicesSection({
+  view,
+  sessionId,
+}: {
+  readonly view: SettingsView;
+  readonly sessionId?: string;
+}) {
+  const allSessions = useSessions();
+  const sessions = {
+    ...allSessions,
+    list: sessionId
+      ? (allSessions.list?.filter((session) => session.id === sessionId) ?? null)
+      : allSessions.list,
+  };
   const current = sessions.list?.find((session) => session.current) ?? null;
   return (
     <>
@@ -63,7 +75,7 @@ export function SignedInDevicesSection({ view }: { readonly view: SettingsView }
         loading={sessions.list === null}
         name={view.name}
       />
-      <OtherDevicesGroup sessions={sessions} />
+      {!sessionId || !current ? <OtherDevicesGroup sessions={sessions} /> : null}
     </>
   );
 }
@@ -202,7 +214,9 @@ function ThisDeviceGroup({
           icon={sessionIcon(current)}
           title={
             <>
-              {current.deviceLabel}
+              <Link to={`/settings/account/sessions/${encodeURIComponent(current.id)}`}>
+                {current.deviceLabel}
+              </Link>
               <HerePin />
             </>
           }
@@ -244,7 +258,11 @@ export function OtherDevicesGroup({
           detail={sessionActivity(session.lastSeenAt)}
           icon={sessionIcon(session)}
           key={session.id}
-          title={session.deviceLabel}
+          title={
+            <Link to={`/settings/account/sessions/${encodeURIComponent(session.id)}`}>
+              {session.deviceLabel}
+            </Link>
+          }
         />
       ))}
       {sessions.list === null ? (

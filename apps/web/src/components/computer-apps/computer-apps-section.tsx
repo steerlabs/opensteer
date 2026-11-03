@@ -1,3 +1,5 @@
+import { pluginPath } from "@opensteer/client/settings";
+import { Link } from "react-router";
 import { ComputerSetupApprovals } from "./computer-app-approval.js";
 import { Icon } from "../icon.js";
 import { IntegrationIcon } from "../integrations/integration-icon.js";
@@ -504,7 +506,12 @@ function AppRow({
           name={row.definition.name}
         />
         <span className="card__row-body">
-          <span className="card__row-title">{row.definition.name}</span>
+          <Link
+            className="card__row-title"
+            to={pluginPath({ kind: "device-app", definitionId: row.definition.id })}
+          >
+            {row.definition.name}
+          </Link>
           <span className="computer-apps__status computer-apps__status--line">
             <span
               aria-hidden

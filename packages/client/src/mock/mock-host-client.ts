@@ -2038,11 +2038,16 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess(hostApi["channels.get"].success.parse(await client.loadChannels())),
     "plugins.overview.get": async () => {
       const workspaceId = WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id);
+      client.settings.syncServices(workspaceId, await client.loadIntegrationPlatform());
       client.settings.syncPackages(workspaceId, await client.listPlugins(workspaceId));
       return rpcSuccess(client.settings.overview(workspaceId));
     },
     "plugins.detail.get": async ({ target }) => {
       try {
+        client.settings.syncServices(
+          WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
+          await client.loadIntegrationPlatform(),
+        );
         client.settings.syncPackages(
           WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
           await client.listPlugins(),
@@ -2057,21 +2062,20 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         return mockRefusal(error);
       }
     },
-    "plugins.directory.get": async () =>
-      rpcSuccess({
+    "plugins.directory.get": async () => {
+      const platform = await client.loadIntegrationPlatform();
+      return rpcSuccess({
         hasMoreRequests:
           client
             .getSnapshot()
             .waitingRequests.filter(({ request }) => request.payload.kind === "integration.access")
             .length > 100,
-        catalog: [
-          {
-            definitionId: "github",
-            title: "GitHub",
-            description: "Repositories and pull requests",
-            added: false,
-          },
-        ],
+        catalog: platform.catalog.map((item) => ({
+          definitionId: item.definition.id,
+          title: item.definition.name,
+          description: item.definition.description,
+          added: item.installationId !== null,
+        })),
         requests: client
           .getSnapshot()
           .waitingRequests.filter(({ request }) => request.payload.kind === "integration.access")
@@ -2081,7 +2085,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
             title: request.presentation.title,
             workspaceId: request.targetWorkspaceId,
           })),
-      }),
+      });
+    },
     "devices.overview.get": async () => rpcSuccess(client.settings.devices),
     "commands.dispatch": (command) =>
       client
@@ -4834,11 +4839,13 @@ class MockHostState {
     () => ({
       devices: this.snapshot.machines.filter(
         (machine) =>
-          machine.device !== null ||
-          machine.allowedModules.includes("agents") ||
-          !machine.allowedModules.includes("messaging"),
+          machine.ownership !== "deployment" || machine.allowedModules.includes("agents"),
       ),
     }),
+    (definitionId) =>
+      this.integrations.connections.filter(
+        (connection) => connection.definitionId === definitionId,
+      ),
   );
   private readonly plugins: MockPlugin[] = [];
   private readonly specialists: {

@@ -1,3 +1,8 @@
+// @vitest-environment happy-dom
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { MemoryRouter } from "react-router";
+import { AgentDevicesSection } from "./agent-devices.js";
 import { describe, expect, it, vi } from "vitest";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
@@ -26,4 +31,43 @@ describe("device disconnection", () => {
       "This device no longer has an active session.",
     );
   });
+});
+
+const shell = vi.hoisted(() => ({ value: null as unknown }));
+vi.mock("../../app-shell.js", () => ({ useShell: () => shell.value }));
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+it("opens inline device enrollment without leaving the device list", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  shell.value = {
+    hostClient: client,
+    snapshot: client.getSnapshot(),
+    desktopBridge: null,
+    desktopDeployment: null,
+    localExecutionStatus: null,
+    localExecutionAction: null,
+    localExecutionError: null,
+  };
+  const node = document.createElement("div");
+  document.body.append(node);
+  const root = createRoot(node);
+  try {
+    await act(async () =>
+      root.render(createElement(MemoryRouter, null, createElement(AgentDevicesSection))),
+    );
+    const add = [...node.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Add device",
+    )!;
+    await act(async () => add.click());
+    expect(node.textContent).toContain("Android Agent Phone");
+    const computer = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Computer",
+    )!;
+    await act(async () => computer.click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Add a computer");
+    expect(node.querySelector(".settings-device-list")).not.toBeNull();
+  } finally {
+    act(() => root.unmount());
+    node.remove();
+    client.dispose();
+  }
 });

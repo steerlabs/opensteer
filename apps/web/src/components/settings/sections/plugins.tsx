@@ -1,4 +1,11 @@
-import { useDeferredValue, useRef, useState } from "react";
+import {
+  completePluginConsent,
+  pluginConsentKey,
+  readPluginConsent,
+  storePluginConsent,
+  type PluginAddConsent,
+} from "./plugin-add-consent.js";
+import { useDeferredValue, useRef, useState, useLayoutEffect, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import type { PluginRow, PluginDetailView } from "@opensteer/protocol";
 import {
@@ -18,6 +25,7 @@ import { IntegrationsPage } from "../../integrations/integrations-page.js";
 import { SettingsError, SectionHeader, type SettingsView } from "../primitives.js";
 import { useSettingsRead } from "../use-settings-read.js";
 import { actionErrorMessage } from "../../../ui-utils.js";
+import { platformIntegrations } from "../../integrations/helpers.js";
 import { InstallPlugin } from "./install-plugin.js";
 
 function decodeTargetSegment(value: string) {
@@ -29,21 +37,46 @@ function decodeTargetSegment(value: string) {
 }
 export function PluginsSection({ view }: { readonly view: SettingsView }) {
   const { pathname, search } = useLocation();
+  const { hostClient, snapshot } = useShell();
+  const returnedAttempt = new URLSearchParams(search).get("integrationAttempt");
+  async function resumeConsent(connectionId: string) {
+    if (!returnedAttempt || !snapshot.homeWorkspaceId || !snapshot.user) return;
+    const key = pluginConsentKey(snapshot.homeWorkspaceId, snapshot.user.id, returnedAttempt);
+    const consent = readPluginConsent(key);
+    if (!consent) return;
+    await completePluginConsent(hostClient, consent, connectionId, (next) =>
+      storePluginConsent(key, next),
+    );
+    sessionStorage.removeItem(key);
+  }
+  const [handlingReturn] = useState(() =>
+    ["integrationAttempt", "provider", "workspace"].some((key) =>
+      new URLSearchParams(search).has(key),
+    ),
+  );
   const suffix = pathname.slice("/settings/plugins".length).split("/").filter(Boolean);
-  if (suffix[0] === "add") return <PluginDirectory />;
+  if (suffix[0] === "add") return <PluginDirectory view={view} />;
   if (suffix.length === 2) {
     const target = pluginTargetFromPath(
       suffix[0]!,
       (suffix[1] && decodeTargetSegment(suffix[1])) || "",
     );
-    if (target) return <PluginDetail key={pathname} target={target} view={view} />;
+    if (target)
+      return (
+        <PluginDetail
+          key={pathname}
+          target={target}
+          view={view}
+          onReturnConnected={resumeConsent}
+        />
+      );
   }
-  if (
-    new URLSearchParams(search).has("integrationAttempt") ||
-    new URLSearchParams(search).has("provider") ||
-    new URLSearchParams(search).has("workspace")
-  )
-    return <IntegrationsPage embedded />;
+  if (handlingReturn)
+    return (
+      <IntegrationsPage embedded onConnected={resumeConsent}>
+        <PluginOverview view={view} />
+      </IntegrationsPage>
+    );
   return <PluginOverview view={view} />;
 }
 function PluginOverview({ view }: { readonly view: SettingsView }) {
@@ -54,84 +87,107 @@ function PluginOverview({ view }: { readonly view: SettingsView }) {
   );
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<PluginRow["tags"][number] | "all">("all");
+  const focused = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (focused.current && (!document.activeElement || document.activeElement === document.body)) {
+      const element = document.querySelector<HTMLElement>(
+        `[aria-label=${JSON.stringify(focused.current)}]`,
+      );
+      const collapsed = element?.closest("details");
+      if (collapsed) collapsed.open = true;
+      element?.focus();
+    }
+  });
   const groups = pluginGroups(overview.data?.rows ?? [], useDeferredValue(query), filter);
   return (
     <>
-      <SectionHeader title="Plugins" lead={null} />
-      <Link className="btn btn--primary" to="/settings/plugins/add">
-        Add plugins
-      </Link>
-      <input
-        className="text-input"
-        type="search"
-        aria-label="Search plugins"
-        value={query}
-        onChange={(event) => setQuery(event.currentTarget.value)}
-      />
-      <div className="settings-plugin-filters" aria-label="Filter plugins">
-        {(["all", "accounts", "devices", "skills", "specialists"] as const).map((value) => (
-          <button
-            type="button"
-            className="btn"
-            aria-pressed={filter === value}
-            key={value}
-            onClick={() => setFilter(value)}
-          >
-            {
+      <div
+        className="settings-plugin-overview"
+        onFocusCapture={(event) => {
+          focused.current = event.target.getAttribute("aria-label");
+        }}
+      >
+        <SectionHeader title="Plugins" lead={null} />
+        <Link className="btn btn--primary" to="/settings/plugins/add">
+          Add plugins
+        </Link>
+        <input
+          className="text-input"
+          type="search"
+          placeholder="Search your plugins"
+          aria-label="Search plugins"
+          value={query}
+          onChange={(event) => setQuery(event.currentTarget.value)}
+        />
+        <div className="settings-plugin-filters" aria-label="Filter plugins">
+          {(["all", "accounts", "devices", "skills", "specialists"] as const).map((value) => (
+            <button
+              type="button"
+              className="btn"
+              aria-pressed={filter === value}
+              key={value}
+              onClick={() => setFilter(value)}
+            >
               {
-                all: "All",
-                accounts: "Accounts",
-                devices: "On your devices",
-                skills: "Skills",
-                specialists: "Specialists",
-              }[value]
-            }
-          </button>
-        ))}
-      </div>
-      <SettingsError message={overview.error ? actionErrorMessage(overview.error) : null} />
-      {!overview.data ? (
-        <p role="status">Loading plugins…</p>
-      ) : overview.data.rows.length === 0 ? (
-        <div className="card card__empty">
-          Add something your agents can use.{" "}
-          <Link to="/settings/plugins/add">Browse all plugins</Link>
+                {
+                  all: "All",
+                  accounts: "Accounts",
+                  devices: "On your devices",
+                  skills: "Skills",
+                  specialists: "Specialists",
+                }[value]
+              }
+            </button>
+          ))}
         </div>
-      ) : (
-        Object.entries(groups).map(([name, rows]) =>
-          rows.length ? (
-            name === "Turned off" ? (
-              <details key={name}>
-                <summary>Turned off · {rows.length}</summary>
-                <div className="card">
-                  {rows.map((row) => (
-                    <OverviewRow
-                      key={pluginPath(row.target)}
-                      row={row}
-                      view={view}
-                      reload={overview.reload}
-                    />
-                  ))}
-                </div>
-              </details>
-            ) : (
-              <section key={name} className="settings-group">
-                <h2 className="settings-group__title">{name}</h2>
-                <div className={`card${name === "Needs you" ? " settings-plugin-attention" : ""}`}>
-                  {rows.map((row) => (
-                    <OverviewRow
-                      key={pluginPath(row.target)}
-                      row={row}
-                      view={view}
-                      reload={overview.reload}
-                    />
-                  ))}
-                </div>
-              </section>
-            )
-          ) : null,
-        )
-      )}
+        <SettingsError message={overview.error ? actionErrorMessage(overview.error) : null} />
+        {!overview.data ? (
+          <p role="status">Loading plugins…</p>
+        ) : overview.data.rows.length === 0 ? (
+          <div className="card card__empty">
+            <Icon name="puzzle" />
+            <h2>Give your agents a starting point</h2>
+            <CatalogSuggestions />
+            <Link to="/settings/plugins/add">Browse all plugins</Link>
+          </div>
+        ) : (
+          Object.entries(groups).map(([name, rows]) =>
+            rows.length ? (
+              name === "Turned off" ? (
+                <details key={name}>
+                  <summary>Turned off · {rows.length}</summary>
+                  <div className="card" role="list">
+                    {rows.map((row) => (
+                      <OverviewRow
+                        key={pluginPath(row.target)}
+                        row={row}
+                        view={view}
+                        reload={overview.reload}
+                      />
+                    ))}
+                  </div>
+                </details>
+              ) : (
+                <section key={name} className="settings-group">
+                  <h2 className="settings-group__title">{name}</h2>
+                  <div
+                    className={`card${name === "Needs you" ? " settings-plugin-attention" : ""}`}
+                  >
+                    {rows.map((row) => (
+                      <OverviewRow
+                        key={pluginPath(row.target)}
+                        row={row}
+                        view={view}
+                        reload={overview.reload}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )
+            ) : null,
+          )
+        )}
+      </div>
     </>
   );
 }
@@ -142,49 +198,53 @@ function EnableSwitch({ row, reload }: { row: PluginRow; reload: () => void }) {
   const attempt = useRef<{ key: string; enabled: boolean; revision: number } | null>(null);
   return (
     <>
-      <input
-        className="switch"
-        type="checkbox"
-        role="switch"
-        aria-label={`Enable ${row.title}`}
-        aria-busy={pending}
-        checked={row.placement.enabled}
-        disabled={pending || !row.permissions.canEnable}
-        onChange={() => {
-          if (pending) return;
-          const operation = attempt.current ?? {
-            key: mutationIdempotencyKey("settings-enable"),
-            enabled: !row.placement.enabled,
-            revision: row.placement.revision,
-          };
-          attempt.current = operation;
-          setPending(true);
-          setError(null);
-          void hostClient
-            .dispatch({
-              type: "settings.plugin.enabled.set",
-              idempotencyKey: operation.key,
-              target: row.target,
-              expectedRevision: operation.revision,
-              enabled: operation.enabled,
-            })
-            .then(() => {
-              attempt.current = null;
-              reload();
-            })
-            .catch(async (reason: unknown) => {
-              // A lost response may have committed. Reconcile before offering the same operation again.
-              try {
-                unwrapRpcResult(await hostClient.rpc["plugins.detail.get"]({ target: row.target }));
+      <label className="settings-switch-target">
+        <input
+          className="switch"
+          type="checkbox"
+          role="switch"
+          aria-label={`Enable ${row.title}`}
+          aria-busy={pending}
+          checked={row.placement.enabled}
+          disabled={pending || !row.permissions.canEnable}
+          onChange={() => {
+            if (pending) return;
+            const operation = attempt.current ?? {
+              key: mutationIdempotencyKey("settings-enable"),
+              enabled: !row.placement.enabled,
+              revision: row.placement.revision,
+            };
+            attempt.current = operation;
+            setPending(true);
+            setError(null);
+            void hostClient
+              .dispatch({
+                type: "settings.plugin.enabled.set",
+                idempotencyKey: operation.key,
+                target: row.target,
+                expectedRevision: operation.revision,
+                enabled: operation.enabled,
+              })
+              .then(() => {
+                attempt.current = null;
                 reload();
-              } catch {
-                /* Keep the original operation for an idempotent retry. */
-              }
-              setError(actionErrorMessage(reason));
-            })
-            .finally(() => setPending(false));
-        }}
-      />
+              })
+              .catch(async (reason: unknown) => {
+                // A lost response may have committed. Reconcile before offering the same operation again.
+                try {
+                  unwrapRpcResult(
+                    await hostClient.rpc["plugins.detail.get"]({ target: row.target }),
+                  );
+                  reload();
+                } catch {
+                  /* Keep the original operation for an idempotent retry. */
+                }
+                setError(actionErrorMessage(reason));
+              })
+              .finally(() => setPending(false));
+          }}
+        />
+      </label>
       {pending ? <span role="status">Saving…</span> : null}
       <SettingsError message={error} />
     </>
@@ -201,9 +261,21 @@ function OverviewRow({
 }) {
   const state = pluginState(row);
   return (
-    <div className="card__row">
+    <div className="card__row" role="listitem">
       <span className="card__row-glyph">
-        <Icon name={state.group === "Needs you" ? "alert-circle" : "puzzle"} />
+        <Icon
+          name={
+            state.group === "Needs you"
+              ? "alert-circle"
+              : row.target.kind === "skill"
+                ? "code"
+                : row.target.kind === "specialist"
+                  ? "user"
+                  : row.target.kind === "device-app"
+                    ? "devices"
+                    : "puzzle"
+          }
+        />
       </span>
       <Link className="card__row-body" to={pluginPath(row.target)}>
         <span className="card__row-title">{row.title}</span>
@@ -234,7 +306,15 @@ function OverviewRow({
     </div>
   );
 }
-function PluginDetail({ target, view }: { target: PluginRow["target"]; view: SettingsView }) {
+function PluginDetail({
+  target,
+  view,
+  onReturnConnected,
+}: {
+  target: PluginRow["target"];
+  view: SettingsView;
+  onReturnConnected: (connectionId: string) => Promise<void>;
+}) {
   const { hostClient } = useShell();
   const detail = useSettingsRead(
     () => hostClient.rpc["plugins.detail.get"]({ target }).then(unwrapRpcResult),
@@ -243,23 +323,44 @@ function PluginDetail({ target, view }: { target: PluginRow["target"]; view: Set
   const data = detail.data;
   return (
     <>
-      <Link to="/settings/plugins">All plugins</Link>
+      {target.kind !== "service" && target.kind !== "device-app" ? (
+        <Link to="/settings/plugins">All plugins</Link>
+      ) : null}
       <SettingsError message={detail.error ? actionErrorMessage(detail.error) : null} />
       {data ? (
         <>
-          <SectionHeader
-            title={data.row.title}
-            lead={[data.row.source.kind, data.row.source.version].filter(Boolean).join(" · ")}
-          />
-          <EnableSwitch row={data.row} reload={detail.reload} />
-          <h2>Accounts</h2>
-          <ul>
-            {pluginAccountRows(data).map((account) => (
-              <li key={account.key}>
-                {account.label} · {account.status}
-              </li>
-            ))}
-          </ul>
+          {target.kind !== "service" && target.kind !== "device-app" ? (
+            <>
+              <SectionHeader
+                title={data.row.title}
+                lead={[data.row.source.kind, data.row.source.version].filter(Boolean).join(" · ")}
+              />
+            </>
+          ) : null}
+          {target.kind === "service" || target.kind === "device-app" ? (
+            <IntegrationsPage
+              embedded
+              initialDefinitionId={target.definitionId}
+              onConnected={onReturnConnected}
+              placementAnchor="plugin-placement"
+              headerAction={<EnableSwitch row={data.row} reload={detail.reload} />}
+            />
+          ) : null}
+          {target.kind !== "service" && target.kind !== "device-app" ? (
+            <EnableSwitch row={data.row} reload={detail.reload} />
+          ) : null}
+          {target.kind !== "service" && target.kind !== "device-app" ? (
+            <>
+              <h2>Accounts</h2>
+              <ul>
+                {pluginAccountRows(data).map((account) => (
+                  <li key={account.key}>
+                    {account.label} · {account.status}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
           <h2>What agents may do</h2>
           <ul>
             {data.permissions.map((fact) => (
@@ -278,9 +379,6 @@ function PluginDetail({ target, view }: { target: PluginRow["target"]; view: Set
           </ul>
           <Placement detail={data} reload={detail.reload} personal={view.kind === "personal"} />
           <PackageActions detail={data} reload={detail.reload} />
-          {target.kind === "service" || target.kind === "device-app" ? (
-            <IntegrationsPage embedded initialDefinitionId={target.definitionId} />
-          ) : null}
           {data.sourceFolder === null && data.row.target.kind === "plugin" ? (
             <p>Source folder unknown</p>
           ) : null}
@@ -351,7 +449,7 @@ function Placement({
     .filter((place) => place.selected)
     .map((place) => place.workspaceId);
   return (
-    <section>
+    <section id="plugin-placement">
       <h2>Where it’s on</h2>
       {personal && detail.row.target.kind !== "skill" && detail.row.source.kind !== "workspace" ? (
         <label className="card__row">
@@ -399,8 +497,268 @@ function Placement({
     </section>
   );
 }
-function PluginDirectory() {
+function CatalogSuggestions() {
+  const { hostClient } = useShell();
+  const directory = useSettingsRead(
+    () => hostClient.rpc["plugins.directory.get"]({}).then(unwrapRpcResult),
+    "plugin-suggestions",
+  );
+  return (
+    <div className="settings-suggestions">
+      {directory.data?.catalog
+        .filter((item) => !item.added)
+        .slice(0, 3)
+        .map((item) => (
+          <Link className="card card--padded" key={item.definitionId} to="/settings/plugins/add">
+            <Icon name="puzzle" />
+            <strong>{item.title}</strong>
+            <span>{item.description}</span>
+          </Link>
+        ))}
+    </div>
+  );
+}
+export function PluginAddSheet({
+  definitionId,
+  personal,
+}: {
+  definitionId: string;
+  personal: boolean;
+}) {
   const { hostClient, snapshot } = useShell();
+  const [consent, setConsent] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [everywhere, setEverywhere] = useState(personal);
+  const [places, setPlaces] = useState<string[]>([]);
+  const [access, setAccess] = useState<"read" | "read-write">("read");
+  const [saved, setSaved] = useState(false);
+  const [setupRunner, setSetupRunner] = useState<string | null>(null);
+  const [placementError, setPlacementError] = useState<string | null>(null);
+  const [placing, setPlacing] = useState(false);
+  const connectedAccount = useRef<string | null>(null);
+  const placementAttempt = useRef<PluginAddConsent | null>(null);
+  const consentStorageKey = useRef<string | null>(null);
+  const facts = useSettingsRead(
+    () => hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
+    `add:${definitionId}`,
+  );
+  const integration = facts.data
+    ? platformIntegrations(facts.data).integrations.find(
+        (item) => item.definition.id === definitionId,
+      )
+    : null;
+  const definition = integration?.definition;
+  function reviewedConsent(): PluginAddConsent {
+    return (
+      placementAttempt.current ?? {
+        target: { kind: definition?.computerApp ? "device-app" : "service", definitionId },
+        everywhere,
+        places,
+        access,
+        idempotencyKey: mutationIdempotencyKey("plugin-add-placement"),
+        command: null,
+      }
+    );
+  }
+  async function applyPlacement(connectionId: string) {
+    connectedAccount.current = connectionId;
+    setPlacing(true);
+    setPlacementError(null);
+    try {
+      const consent = reviewedConsent();
+      placementAttempt.current = consent;
+      await completePluginConsent(hostClient, consent, connectionId, (next) => {
+        placementAttempt.current = next;
+        if (consentStorageKey.current) storePluginConsent(consentStorageKey.current, next);
+      });
+      if (consentStorageKey.current) sessionStorage.removeItem(consentStorageKey.current);
+      setSaved(true);
+    } catch (reason) {
+      setPlacementError(actionErrorMessage(reason));
+      throw reason;
+    } finally {
+      setPlacing(false);
+    }
+  }
+  return (
+    <div className="settings-add-sheet">
+      {ready ? (
+        <>
+          <IntegrationsPage
+            embedded
+            initialDefinitionId={definitionId}
+            onAuthorizationStarted={(attemptId) => {
+              if (!snapshot.homeWorkspaceId || !snapshot.user)
+                throw new Error("This Opensteer is still loading.");
+              const key = pluginConsentKey(snapshot.homeWorkspaceId, snapshot.user.id, attemptId);
+              consentStorageKey.current = key;
+              const consent = reviewedConsent();
+              placementAttempt.current = consent;
+              storePluginConsent(key, consent);
+            }}
+            onComputerSetupRequested={setSetupRunner}
+            onConnected={applyPlacement}
+          />
+          {setupRunner && !saved ? (
+            <AwaitDevicePlacement
+              definitionId={definitionId}
+              runnerId={setupRunner}
+              onConnected={applyPlacement}
+            />
+          ) : null}
+          {saved ? <p role="status">Connected and turned on in your chosen places.</p> : null}
+          {placing ? <p role="status">Saving placement…</p> : null}
+          <SettingsError message={placementError} />
+          {placementError && connectedAccount.current ? (
+            <button
+              className="btn"
+              disabled={placing}
+              type="button"
+              onClick={() => void applyPlacement(connectedAccount.current!).catch(() => undefined)}
+            >
+              Retry placement
+            </button>
+          ) : null}
+        </>
+      ) : (
+        <>
+          <h2>{definition?.name ?? "Add plugin"}</h2>
+          <p>{definition?.description}</p>
+          <h3>Comes with</h3>
+          {integration?.entry?.tools.length ? (
+            <ul>
+              {integration.entry.tools.slice(0, 3).map((tool) => (
+                <li key={tool.id}>{tool.title}</li>
+              ))}
+            </ul>
+          ) : definition?.computerApp ? (
+            <ul>
+              {definition.computerApp.operations.slice(0, 3).map((operation) => (
+                <li key={operation.name}>{operation.name.replaceAll("_", " ")}</li>
+              ))}
+            </ul>
+          ) : (
+            <p>Service tools become available after installation.</p>
+          )}
+          <h3>What it’ll access</h3>
+          {definition?.computerApp ? (
+            <p>
+              {access === "read"
+                ? definition.computerApp.accessSummaries.read
+                : definition.computerApp.accessSummaries.readWrite}
+            </p>
+          ) : null}
+          <ul>
+            {definition?.authMethods
+              .flatMap((method) => (method.kind === "oauth" ? method.oauth.scopes : []))
+              .map((scope) => (
+                <li key={scope}>{scope}</li>
+              ))}
+          </ul>
+          <label className="card__row">
+            Agent access
+            <select
+              aria-label="Agent access"
+              value={access}
+              onChange={(event) =>
+                setAccess(event.currentTarget.value === "read-write" ? "read-write" : "read")
+              }
+            >
+              <option value="read">Read only</option>
+              <option value="read-write">Read and write</option>
+            </select>
+          </label>
+          <h3>Where it’s on</h3>
+          {personal ? (
+            <label className="card__row">
+              <input
+                type="checkbox"
+                checked={everywhere}
+                onChange={(event) => setEverywhere(event.currentTarget.checked)}
+              />
+              Everywhere, including future Projects
+            </label>
+          ) : null}
+          {!everywhere
+            ? snapshot.workspaces.map((place) => (
+                <label className="card__row" key={place.id}>
+                  <input
+                    type="checkbox"
+                    checked={places.includes(place.id)}
+                    onChange={(event) =>
+                      setPlaces(
+                        event.currentTarget.checked
+                          ? [...places, place.id]
+                          : places.filter((id) => id !== place.id),
+                      )
+                    }
+                  />
+                  {place.name}
+                </label>
+              ))
+            : null}
+          <label className="card__row">
+            <input
+              type="checkbox"
+              checked={consent}
+              onChange={(event) => setConsent(event.currentTarget.checked)}
+            />
+            {definition?.computerApp
+              ? "I allow agents to use this app with this access in the selected places."
+              : "I allow this plugin to use the account I connect with this access in the selected places."}
+          </label>
+          <button
+            className="btn btn--primary"
+            type="button"
+            disabled={!definition || !consent || (!everywhere && places.length === 0)}
+            onClick={() => setReady(true)}
+          >
+            {definition?.computerApp ? "Continue to setup" : "Continue to sign in"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+function AwaitDevicePlacement({
+  definitionId,
+  runnerId,
+  onConnected,
+}: {
+  definitionId: string;
+  runnerId: string;
+  onConnected: (connectionId: string) => Promise<void>;
+}) {
+  const { hostClient } = useShell();
+  const detail = useSettingsRead(
+    () =>
+      hostClient.rpc["plugins.detail.get"]({ target: { kind: "device-app", definitionId } }).then(
+        unwrapRpcResult,
+      ),
+    `device-consent:${definitionId}:${runnerId}`,
+  );
+  const applied = useRef<string | null>(null);
+  useEffect(() => {
+    const account = detail.data?.accounts.find(
+      (account) => account.runnerId === runnerId && account.status === "connected",
+    );
+    if (!account || applied.current === account.connectionId) return;
+    applied.current = account.connectionId;
+    void onConnected(account.connectionId).catch(() => undefined);
+  }, [detail.data, onConnected, runnerId]);
+  return (
+    <p role="status">
+      Waiting for this device’s approval before turning it on in your chosen places.
+    </p>
+  );
+}
+function PluginDirectory({ view }: { view: SettingsView }) {
+  const { hostClient, snapshot } = useShell();
+  const [category, setCategory] = useState("all");
+  const metadata = useSettingsRead(
+    () => hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
+    "directory-categories",
+  );
   const [adding, setAdding] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const directory = useSettingsRead(
@@ -415,12 +773,37 @@ function PluginDirectory() {
       <input
         type="search"
         className="text-input"
+        placeholder="Search plugins to add"
         aria-label="Search directory"
         value={query}
         onChange={(event) => setQuery(event.currentTarget.value)}
       />
+      <div className="settings-plugin-filters" aria-label="Directory categories">
+        {["all", "accounts", "devices"].map((value) => (
+          <button
+            className="btn"
+            type="button"
+            key={value}
+            aria-pressed={category === value}
+            onClick={() => setCategory(value)}
+          >
+            {value === "all" ? "All" : value === "accounts" ? "Accounts" : "On your devices"}
+          </button>
+        ))}
+      </div>
       <div className="card">
         {directory.data?.catalog
+          .filter(
+            (item) =>
+              category === "all" ||
+              metadata.data?.catalog.some(
+                (entry) =>
+                  entry.definition.id === item.definitionId &&
+                  (category === "devices"
+                    ? !!entry.definition.computerApp
+                    : !entry.definition.computerApp),
+              ),
+          )
           .filter((item) =>
             `${item.title} ${item.description}`
               .toLocaleLowerCase()
@@ -443,7 +826,9 @@ function PluginDirectory() {
             </div>
           ))}
       </div>
-      {directory.data?.requests.length ? <DirectoryRequests /> : null}
+      {directory.data?.requests.length || directory.data?.hasMoreRequests ? (
+        <DirectoryRequests />
+      ) : null}
       {adding ? (
         <Dialog
           labelledBy="add-plugin-title"
@@ -453,7 +838,7 @@ function PluginDirectory() {
             directory.reload();
           }}
         >
-          <IntegrationsPage embedded initialDefinitionId={adding} />
+          <PluginAddSheet definitionId={adding} personal={view.kind === "personal"} />
         </Dialog>
       ) : null}
       <InstallPlugin
@@ -467,23 +852,59 @@ function PluginDirectory() {
 
 function DirectoryRequests() {
   const { hostClient } = useShell();
+  const [showAll, setShowAll] = useState(false);
+  const [reviewing, setReviewing] = useState<string | null>(null);
+  const [before, setBefore] = useState<string | undefined>();
   const requests = useSettingsRead(
-    () => hostClient.rpc["requests.list"]({}).then(unwrapRpcResult),
-    "directory-requests",
+    () => hostClient.rpc["requests.list"](before ? { before } : {}).then(unwrapRpcResult),
+    `directory-requests:${before ?? "first"}`,
   );
   return (
     <section>
       <h2>Suggested by your agents</h2>
+      {!showAll ? (
+        <button className="btn" type="button" onClick={() => setShowAll(true)}>
+          View all Requests
+        </button>
+      ) : null}
       <SettingsError message={requests.error ? actionErrorMessage(requests.error) : null} />
       {requests.data?.requests
         .filter((entry) => entry.request.payload.kind === "integration.access")
+        .slice(0, showAll ? undefined : 3)
         .map((entry) => (
-          <ThreadIntegrationAction
-            key={entry.request.id}
-            request={entry.request}
-            threadId={entry.request.originatingThreadId}
-          />
+          <div className="card card__row" key={entry.request.id}>
+            <span className="card__row-body">
+              <strong>{entry.request.presentation.title}</strong>
+            </span>
+            <button className="btn" type="button" onClick={() => setReviewing(entry.request.id)}>
+              Review
+            </button>
+            {reviewing === entry.request.id ? (
+              <Dialog
+                title={entry.request.presentation.title}
+                labelledBy="review-plugin-request"
+                onClose={() => {
+                  setReviewing(null);
+                  requests.reload();
+                }}
+              >
+                <ThreadIntegrationAction
+                  request={entry.request}
+                  threadId={entry.request.originatingThreadId}
+                />
+              </Dialog>
+            ) : null}
+          </div>
         ))}
+      {showAll && requests.data?.window.hasMore && requests.data.window.nextBefore ? (
+        <button
+          className="btn"
+          type="button"
+          onClick={() => setBefore(requests.data!.window.nextBefore!)}
+        >
+          Next Requests
+        </button>
+      ) : null}
     </section>
   );
 }

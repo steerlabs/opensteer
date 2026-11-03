@@ -15,7 +15,7 @@ import {
 } from "@opensteer/client/mock";
 import { Outlet } from "react-router";
 import { installationRowId } from "./catalog-section.js";
-import { IntegrationsPage } from "./integrations-page.js";
+import { IntegrationControllerFixture as IntegrationsPage } from "./integration-controller.test-fixture.js";
 import { ToastProvider } from "../toast.js";
 
 const shellState = vi.hoisted(() => ({ current: null as unknown }));

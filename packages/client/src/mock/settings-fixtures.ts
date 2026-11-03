@@ -1,3 +1,7 @@
+import type {
+  IntegrationPlatformDashboardView,
+  IntegrationConnectionSummary,
+} from "@opensteer/integration-core";
 import { createId, RunnerIdSchema, type WorkspaceId } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core/ids";
 import {
@@ -67,13 +71,17 @@ export class MockSettingsFixtures {
     name: string;
     kind: "main" | "project";
   }[];
+  private readonly serviceAccounts:
+    ((definitionId: string) => readonly IntegrationConnectionSummary[]) | undefined;
   private readonly readDevices: (() => DevicesOverviewView) | undefined;
   constructor(
     changed: () => void,
     workspaces: MockSettingsFixtures["workspaces"],
     readDevices?: () => DevicesOverviewView,
+    serviceAccounts?: (definitionId: string) => readonly IntegrationConnectionSummary[],
   ) {
     this.readDevices = readDevices;
+    this.serviceAccounts = serviceAccounts;
     this.changed = changed;
     this.workspaces = workspaces;
   }
@@ -296,12 +304,96 @@ export class MockSettingsFixtures {
     this.packageIds = new Set(packages.map((plugin) => plugin.id));
     this.details = current;
   }
+  private readonly serviceIds = new Set<string>();
+  syncServices(workspaceId: WorkspaceId, platform: IntegrationPlatformDashboardView) {
+    const current = this.inventory(workspaceId).filter(
+      (detail) =>
+        (detail.row.target.kind !== "service" && detail.row.target.kind !== "device-app") ||
+        !this.serviceIds.has(detail.row.target.definitionId) ||
+        platform.catalog.some(
+          (item) =>
+            item.definition.id ===
+              (detail.row.target.kind === "service" || detail.row.target.kind === "device-app"
+                ? detail.row.target.definitionId
+                : "") && item.installationId !== null,
+        ),
+    );
+    this.details = current;
+    for (const item of platform.catalog)
+      if (item.installationId) this.serviceIds.add(item.definition.id);
+    const template = current[0];
+    if (!template) return;
+    for (const item of platform.catalog) {
+      if (
+        !item.installationId ||
+        current.some(
+          (detail) =>
+            (detail.row.target.kind === "service" || detail.row.target.kind === "device-app") &&
+            detail.row.target.definitionId === item.definition.id,
+        )
+      )
+        continue;
+      const installation = platform.installations.find(
+        (entry) => entry.installation.id === item.installationId,
+      );
+      const detail = structuredClone(template);
+      detail.row.target = {
+        kind: item.definition.computerApp ? "device-app" : "service",
+        definitionId: item.definition.id,
+      };
+      detail.row.title = item.definition.name;
+      detail.row.description = item.definition.description;
+      detail.row.tags = [item.definition.computerApp ? "devices" : "accounts"];
+      detail.row.issues =
+        installation?.installation.status === "active" ? [] : ["invalid-installation"];
+      detail.row.placement = {
+        enabled: true,
+        mainIncluded: true,
+        projectCount: 0,
+        personalEverywhere: false,
+        revision: 0,
+      };
+      detail.places = this.workspaces().map((place) => ({
+        ...place,
+        selected: place.kind === "main",
+        canSelect: true,
+        accounts: [],
+      }));
+      detail.personalEverywhere = null;
+      detail.row.accountCount = 0;
+      detail.accounts = [];
+      detail.installationIds = [item.installationId];
+      detail.permissions = [];
+      detail.contents = (installation?.tools ?? []).map((tool) => ({
+        kind: "tool",
+        name: tool.title,
+      }));
+      detail.row.contents = { skills: 0, specialists: 0, tools: detail.contents.length };
+      current.push(PluginDetailViewSchema.parse(detail));
+    }
+  }
+  private syncAccounts(workspaceId: WorkspaceId) {
+    for (const detail of this.inventory(workspaceId)) {
+      if (detail.row.target.kind !== "service" || !this.serviceAccounts) continue;
+      detail.accounts = this.serviceAccounts(detail.row.target.definitionId).map((account) => ({
+        connectionId: account.id,
+        displayName: account.displayName,
+        status: account.status,
+        statusReason: account.statusReason,
+        access: account.computer?.access ?? "read",
+        runnerId: account.computer?.runnerId ?? null,
+      }));
+      detail.row.accountCount = detail.accounts.length;
+    }
+  }
   overview(workspaceId: WorkspaceId) {
+    this.syncAccounts(workspaceId);
     return PluginsOverviewViewSchema.parse({
       rows: this.inventory(workspaceId).map(({ row }) => row),
     });
   }
   detail(workspaceId: WorkspaceId, target: PluginTarget) {
+    this.syncAccounts(workspaceId);
     const detail = this.inventory(workspaceId).find(
       ({ row }) => JSON.stringify(row.target) === JSON.stringify(target),
     );

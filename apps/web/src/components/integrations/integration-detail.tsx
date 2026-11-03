@@ -52,6 +52,7 @@ import { IntegrationIcon } from "./integration-icon.js";
  */
 export function IntegrationDetail({
   dashboard,
+  headerAction,
   error,
   hostConnected,
   hostName,
@@ -74,6 +75,7 @@ export function IntegrationDetail({
   platform,
   reconnectConnectionId,
 }: {
+  readonly headerAction?: ReactNode;
   readonly dashboard: IntegrationDashboard;
   readonly error: string | null;
   readonly hostConnected: boolean;
@@ -190,7 +192,7 @@ export function IntegrationDetail({
   return (
     <>
       <button className="page__back" disabled={pending} onClick={onBack} type="button">
-        <Icon name="arrow-left" /> All integrations
+        <Icon name="arrow-left" /> All plugins
       </button>
 
       <header className="intg-hero">
@@ -215,6 +217,7 @@ export function IntegrationDetail({
             </>
           ) : null}
         </div>
+        {headerAction}
       </header>
 
       {error ? (
