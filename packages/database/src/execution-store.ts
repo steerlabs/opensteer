@@ -1059,7 +1059,9 @@ export async function runCapabilityScope(
   runId: RunId,
 ): Promise<{
   readonly bindingGeneration: number;
-  readonly capabilityProfileId: DatabaseSchema["threads"]["capabilityProfileId"];
+  readonly inheritsMain: boolean;
+  readonly specialistId: string | null;
+  readonly lineageRootThreadId: ThreadId;
   readonly environmentId: EnvironmentId;
   readonly grantId: GrantId;
   readonly membershipGeneration: number;
@@ -1088,7 +1090,9 @@ export async function runCapabilityScope(
       "runs.membershipGeneration",
       "runs.requestedBy",
       "runs.threadId",
-      "threads.capabilityProfileId",
+      "threads.inheritsMain",
+      "threads.specialistId",
+      "threads.lineageRootThreadId",
       "threads.workspaceId",
     ])
     .where("runs.id", "=", runId)
@@ -1096,7 +1100,9 @@ export async function runCapabilityScope(
   if (!row) return null;
   return {
     bindingGeneration: row.bindingGeneration,
-    capabilityProfileId: row.capabilityProfileId,
+    inheritsMain: row.inheritsMain,
+    specialistId: row.specialistId,
+    lineageRootThreadId: row.lineageRootThreadId,
     environmentId: row.environmentId,
     grantId: row.grantId,
     membershipGeneration: safeGeneration(row.membershipGeneration),

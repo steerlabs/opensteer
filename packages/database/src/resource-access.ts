@@ -7,6 +7,7 @@ import {
   TriggerWatchActivationIdSchema,
   intersectResourceAccess,
   lineageCompatibleForReuse,
+  threadInReach,
   OpensteerError,
   type ResourceAccessLevel,
   type ThreadId,
@@ -86,7 +87,7 @@ export async function resolveResourceAccess(
     ? await database
         .selectFrom("threads as asking")
         .innerJoin("threads as root", "root.id", "asking.lineageRootThreadId")
-        .select(["root.capabilityProfileId", "asking.workspaceId", "asking.specialistId"])
+        .select(["root.inheritsMain", "asking.workspaceId", "asking.specialistId"])
         .where("asking.id", "=", threadId)
         .executeTakeFirst()
     : undefined;
@@ -94,7 +95,7 @@ export async function resolveResourceAccess(
   const inheritsMain =
     main &&
     (root
-      ? root.workspaceId === input.workspaceId && root.capabilityProfileId === "main"
+      ? root.workspaceId === input.workspaceId && root.inheritsMain
       : !input.threadId && !input.agentBindingId);
   let specialistAccess = input.specialistAccess;
   const specialistId = root?.specialistId ?? input.specialistId;
@@ -224,7 +225,13 @@ export async function assertLineageCompatibleReuse(
   const roots = await database
     .selectFrom("threads as asking")
     .innerJoin("threads as root", "root.id", "asking.lineageRootThreadId")
-    .select(["asking.id", "asking.specialistId", "root.capabilityProfileId"])
+    .select([
+      "asking.id",
+      "asking.specialistId",
+      "root.inheritsMain",
+      "asking.workspaceId",
+      "asking.lineageRootThreadId",
+    ])
     .where("asking.id", "in", [callerId, targetId])
     .execute();
   const caller = roots.find((row) => row.id === callerId);
@@ -236,13 +243,16 @@ export async function assertLineageCompatibleReuse(
         "Specialists may only send reports to Threads outside their registration. Start a new task instead.",
     });
   }
-  const inherits = (id: ThreadId) =>
-    roots.find((row) => row.id === id)?.capabilityProfileId === "main";
-  if (!lineageCompatibleForReuse(inherits(callerId), inherits(targetId))) {
+  if (
+    !caller ||
+    !target ||
+    !lineageCompatibleForReuse(caller, target) ||
+    !threadInReach(caller, target)
+  ) {
     throw new OpensteerError({
       code: "forbidden",
       message:
-        "This Thread inherits Main access that your lineage does not have. Start a new task instead.",
+        "This Thread's consent scope is incompatible with your lineage. Start a new task instead.",
     });
   }
 }

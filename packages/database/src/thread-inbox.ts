@@ -34,6 +34,7 @@ import {
   causalChainMaxAutonomousRuns,
   createId,
   moveQueueItem,
+  threadReachScope,
   threadReportMaxPendingEntries,
   threadReportMaxPendingSerializedBytes,
   threadReportBatchMaxEntries,
@@ -3972,7 +3973,7 @@ export async function delegateThreadInTransaction(
   // lock after the Workspaces are locked; this first read grants no authority.
   const observedParent = await transaction
     .selectFrom("threads")
-    .select(["id", "workspaceId", "capabilityProfileId"])
+    .select(["id", "workspaceId", "inheritsMain", "specialistId", "lineageRootThreadId"])
     .where("id", "=", input.origin.parentThreadId)
     .executeTakeFirst();
   if (!observedParent) {
@@ -3980,12 +3981,12 @@ export async function delegateThreadInTransaction(
   }
   if (
     observedParent.workspaceId !== input.workspaceId &&
-    observedParent.capabilityProfileId !== "main"
+    threadReachScope(observedParent).kind !== "user"
   ) {
     throw new OpensteerError({
       code: "forbidden",
       message:
-        "Only the main profile may delegate across Workspaces. Start a new task in this Workspace instead.",
+        "Only Main-inheriting work may delegate across Workspaces. Start a new task in this Workspace instead.",
     });
   }
   const observedTarget = input.threadId
@@ -4147,7 +4148,15 @@ export async function delegateThreadInTransaction(
   ]);
   const lockedThreads = await transaction
     .selectFrom("threads")
-    .select(["id", "lineageRootThreadId", "role", "workspaceId", "doneAt"])
+    .select([
+      "id",
+      "lineageRootThreadId",
+      "role",
+      "workspaceId",
+      "doneAt",
+      "inheritsMain",
+      "specialistId",
+    ])
     .where("id", "in", [input.origin.parentThreadId, ...(input.threadId ? [input.threadId] : [])])
     .orderBy("id", "asc")
     .forNoKeyUpdate()
@@ -4287,7 +4296,15 @@ export async function delegateThreadInTransaction(
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow()
     : null;
-  if (reusedRow) await assertLineageCompatibleReuse(transaction, parent.id, reusedRow.id);
+  if (reusedRow) {
+    await assertLineageCompatibleReuse(transaction, parent.id, reusedRow.id);
+    if (input.specialistId && input.specialistId !== reusedRow.specialistId) {
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "The worker has a different specialist binding",
+      });
+    }
+  }
   const listed = await delegationListsThread(transaction, parent.role, input.origin);
   // Delegation can promote a task; only a migration can take it off the list.
   const listedNow = reusedRow !== null && !reusedRow.listed && listed;
@@ -4302,8 +4319,8 @@ export async function delegateThreadInTransaction(
       : reusedRow
     : await insertThread({
         accessMode: ThreadAccessModeSchema.parse(input.accessMode),
-        capabilityProfileId: input.specialistId ? "specialist" : "delegated",
-        specialistId: input.specialistId ?? null,
+        inheritsMain: parent.inheritsMain,
+        specialistId: input.specialistId ?? parent.specialistId,
         role: "work",
         createdByPrincipalId: actorPrincipalId,
         id: threadId,

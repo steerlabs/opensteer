@@ -997,7 +997,7 @@ export async function createThread(
     const commandId = createId("command");
     const workspace = await transaction
       .selectFrom("workspaces")
-      .select(["homeThreadId", "id", "kind", "status"])
+      .select(["homeThreadId", "id", "kind", "status", "createdBy"])
       .where("id", "=", input.workspaceId)
       .forNoKeyUpdate()
       .executeTakeFirst();
@@ -1055,10 +1055,15 @@ export async function createThread(
     }
     let lineageRootThreadId = id;
     let listed = true;
+    let inheritsMain =
+      workspace.kind === "main" &&
+      workspace.createdBy === input.createdBy &&
+      membership.role === "owner";
+    let specialistId: string | null = null;
     if (input.parentThreadId) {
       const parent = await transaction
         .selectFrom("threads")
-        .select(["lineageRootThreadId", "role", "workspaceId"])
+        .select(["lineageRootThreadId", "role", "workspaceId", "inheritsMain", "specialistId"])
         .where("threads.id", "=", input.parentThreadId)
         .executeTakeFirst();
       if (!parent) {
@@ -1077,16 +1082,15 @@ export async function createThread(
         });
       }
       lineageRootThreadId = parent.lineageRootThreadId;
+      inheritsMain = parent.inheritsMain;
+      specialistId = parent.specialistId;
       listed = parent.role === "conversation";
     }
     const actorPrincipalId = await principalIdForUser(transaction, input.createdBy);
     const thread = await insertThread({
       accessMode: resolvedInput.accessMode,
-      capabilityProfileId: input.parentThreadId
-        ? "delegated"
-        : workspace.kind === "main" && membership.role === "owner"
-          ? "main"
-          : "workspace",
+      inheritsMain,
+      specialistId,
       createdByPrincipalId: actorPrincipalId,
       id,
       lineageRootThreadId,

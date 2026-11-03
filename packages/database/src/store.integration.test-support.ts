@@ -596,7 +596,7 @@ export async function createStoreFixture() {
       title: `Thread ${suffix}`,
       workspaceId: workspace.id,
     });
-    expect(thread.capabilityProfileId).toBe(workspaceKind === "main" ? "main" : "workspace");
+    expect(thread.inheritsMain).toBe(workspaceKind === "main");
     return { environmentId, harnessInstance, runnerId, thread, userId, workspace };
   }
 

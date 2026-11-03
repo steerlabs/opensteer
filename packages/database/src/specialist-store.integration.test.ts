@@ -101,12 +101,50 @@ describeStore("specialist registration", (test) => {
     const child = await delegate();
     expect(child.thread).toMatchObject({
       specialistId: ready.id,
-      capabilityProfileId: "specialist",
+      inheritsMain: true,
       lineageRootThreadId: run.thread.lineageRootThreadId,
     });
     await expect(
       assertLineageCompatibleReuse(fixture.database, child.thread.id, run.thread.id),
     ).rejects.toMatchObject({ code: "forbidden" });
+    const descendant = await fixture.store.createThread({
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      harnessInstanceId: run.harnessInstance.id,
+      modelSelection: run.thread.modelSelection,
+      workspaceId: workspace.id,
+      parentThreadId: child.thread.id,
+      idempotencyKey: "specialist-descendant",
+      title: "Invoice subtask",
+    });
+    expect(descendant.thread).toMatchObject({ specialistId: ready.id, inheritsMain: true });
+    expect(
+      (
+        await resolveResourceAccess(fixture.database, {
+          workspaceId: workspace.id,
+          ownerUserId: run.userId,
+          threadId: descendant.thread.id,
+          explicitAccess: "read-write",
+          resource,
+        })
+      ).access,
+    ).toBe("read");
+    const boundChild = await fixture.database
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", child.thread.id)
+      .executeTakeFirstOrThrow();
+    await expect(
+      fixture.database
+        .insertInto("threads")
+        .values({
+          ...boundChild,
+          id: createId("thread"),
+          parentThreadId: child.thread.id,
+          specialistId: null,
+        })
+        .execute(),
+    ).rejects.toThrow(/cannot escape its specialist binding/u);
     const sourceRunId = child.run.id;
     await fixture.database
       .updateTable("runs")
@@ -157,7 +195,7 @@ describeStore("specialist registration", (test) => {
         ...root,
         id: channelId,
         lineageRootThreadId: channelId,
-        capabilityProfileId: "workspace",
+        inheritsMain: false,
       })
       .execute();
     const specialistThreadId = createId("thread");
@@ -174,6 +212,7 @@ describeStore("specialist registration", (test) => {
         workspaceId: run.workspace.id,
         lineageRootThreadId: channelId,
         parentThreadId: channelId,
+        inheritsMain: false,
         specialistId: mainRegistration.id,
       })
       .execute();

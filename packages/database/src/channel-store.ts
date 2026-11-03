@@ -1928,17 +1928,15 @@ export class ChannelStore {
         // in their own Main that is their Home agent. Everyone else — an admitted
         // stranger, a channel, even the owner in a conversation others share —
         // runs as the route's creator without being them, below Main.
-        const capabilityProfileId =
+        const inheritsMain =
           event.conversation.type === "dm" &&
           identity.linkedUserId === authority.userId &&
           lockedWorkspace.kind === "main" &&
-          lockedWorkspace.createdBy === authority.userId
-            ? "main"
-            : "workspace";
+          lockedWorkspace.createdBy === authority.userId;
         const rotate =
           !thread ||
           thread.status === "archived" ||
-          thread.capabilityProfileId !== capabilityProfileId ||
+          thread.inheritsMain !== inheritsMain ||
           thread.environmentId !== placement.environmentId ||
           thread.harnessInstanceId !== selectedHarnessId;
         const events: AgentEvent[] = [];
@@ -1947,9 +1945,9 @@ export class ChannelStore {
           const threadRow = await insertThread({
             accessMode: thread?.accessMode ?? DEFAULT_THREAD_ACCESS_MODE,
             // A messaging context never inherits another Thread's history:
-            // every rotation, including a change of profile, is a fresh root.
-            capabilityProfileId,
-            role: capabilityProfileId === "main" ? "conversation" : "work",
+            // every rotation, including a change of consent, is a fresh root.
+            inheritsMain,
+            role: inheritsMain ? "conversation" : "work",
             createdByPrincipalId: identity.principalId,
             id: threadId,
             lineageRootThreadId: threadId,

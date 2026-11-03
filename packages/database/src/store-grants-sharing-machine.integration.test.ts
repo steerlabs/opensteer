@@ -1015,7 +1015,7 @@ describeStore("PostgreSQL store", (it) => {
       workspaceId: workspace.id,
     });
     expect(clientThread.thread).toMatchObject({
-      capabilityProfileId: "workspace",
+      inheritsMain: false,
       workspaceId: workspace.id,
     });
     await expect(
@@ -1029,7 +1029,7 @@ describeStore("PostgreSQL store", (it) => {
         workspaceId: workspace.id,
       }),
     ).resolves.toMatchObject({
-      thread: { capabilityProfileId: "workspace", workspaceId: workspace.id },
+      thread: { inheritsMain: false, workspaceId: workspace.id },
     });
     expect(await store.listWorkspacesForOwner(strangerId)).toEqual([]);
 
@@ -1057,7 +1057,7 @@ describeStore("PostgreSQL store", (it) => {
         title: "Client owner thread",
         workspaceId: workspace.id,
       }),
-    ).resolves.toMatchObject({ thread: { capabilityProfileId: "main" } });
+    ).resolves.toMatchObject({ thread: { inheritsMain: false } });
     await store.changeWorkspaceMembership({
       actorId: ownerId,
       role: "collaborator",

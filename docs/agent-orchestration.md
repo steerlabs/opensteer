@@ -233,14 +233,17 @@ input or fail a Run merely because its output exceeds storage limits. See
 ## Run tool authority
 
 Non-file resource access uses the [resource guard](../packages/database/src/resource-access.ts):
-Main inherits the requester's resources only when the Run's lineage root has the
-`main` profile. Projects require explicit grants belonging to the requester;
+Main inherits the requester's resources only when the Run's lineage root acts
+as that person in their own Main. Shared or external channel conversations
+withhold this consent even in the owner's Main. Projects require explicit grants
+belonging to the requester;
 browser consent additionally requires the grant creator's active membership.
 Connection ceilings and optional specialist restrictions can only narrow access.
 A caller cannot reuse, queue work to, or steer a Thread with Main lineage unless
-its own lineage has Main authority; start a new task instead. Cross-Workspace
-delegation still requires the caller's `main` profile. A specialist may send only
-reports to Threads outside its own registration, even when it shares their Main
+its own lineage has Main authority; start a new task instead. Delegated workers
+inherit their root's reach: Main reaches the person's
+Workspaces, other work stays in its Workspace, and specialists stay in their
+lineage. A specialist may send only reports to Threads outside its own registration, even when it shares their Main
 lineage. Reports grant no execution.
 
 Every capability names the current attempt's grant. Tool admission needs an
@@ -276,7 +279,7 @@ reconnect; unconfirmed steers are not. See
 ## Conversation roles and Assignments
 
 Role controls instructions and presentation, never access. Membership,
-capability profile, execution placement and tool admission remain independent.
+lineage consent, execution placement and tool admission remain independent.
 person_message addresses the Run's requester in the same Thread without ending
 work. Only a Run answering the person directly may use it or person_show: the
 Host refuses both for delegated Threads and for any Run on an Assignment, even
@@ -326,9 +329,8 @@ list changes outside subscribed Workspaces. See
 ### A person's task list
 
 Read positions are private; Done is shared. Done/Reopen require active membership
-and the task's creator or Workspace owner. Agent write reach is narrower than
-read reach: Main acts for the requester, Workspace stays local, and delegated
-agents can write themselves and their Assignment descendants. Chat and active
+and the task's creator or Workspace owner. Agent writes require the same consent reach and lineage-compatible reuse as
+actionable work; membership and ownership still apply. Chat and active
 channel conversations cannot be Done. The agent `thread_write` tool requires a Runner advertising `task-done-v1`.
 
 Done atomically revalidates and stops the task's open Assignment subtree,
@@ -391,7 +393,8 @@ See [Browser sessions](browser-sessions.md) and [Computer use](computer-use.md).
 ## Chat and native AI sessions
 
 Main and each Project have their own conversation at `homeThreadId`. Project chats
-use the `workspace` capability profile. The `home` alias resolves
+remain within their Workspace and require its explicit resource grants. The
+`home` alias resolves
 only the caller's Chat and preserves authorship. Cross-Workspace reports may
 reach it, but actionable work needs ordinary reach; the alias grants no read
 or execution authority. Reports never alert. Quotes are authorized published

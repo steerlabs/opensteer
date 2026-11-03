@@ -94,7 +94,8 @@ export class AppStore {
       .select([
         "threads.id",
         "threads.workspaceId",
-        "threads.capabilityProfileId",
+        "threads.inheritsMain",
+        "threads.specialistId",
         "threads.lineageRootThreadId",
         "threads.accessMode",
         "runs.status",
@@ -145,7 +146,12 @@ export class AppStore {
       )
       .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "apps.workspaceId")
       .selectAll("apps")
-      .select(["threads.capabilityProfileId", "threads.lineageRootThreadId", "appVersions.server"])
+      .select([
+        "threads.inheritsMain",
+        "threads.specialistId",
+        "threads.lineageRootThreadId",
+        "appVersions.server",
+      ])
       .where("workspaceMemberships.userId", "=", input.userId)
       .where("workspaceMemberships.state", "=", "active")
       .execute();
@@ -267,7 +273,7 @@ export class AppStore {
           if (!app) throw missing();
           const threads = await transaction
             .selectFrom("threads")
-            .select(["id", "capabilityProfileId", "lineageRootThreadId", "workspaceId"])
+            .select(["id", "inheritsMain", "specialistId", "lineageRootThreadId", "workspaceId"])
             .where("id", "in", [input.threadId, app.threadId])
             .execute();
           const publisher = threads.find((thread) => thread.id === input.threadId);

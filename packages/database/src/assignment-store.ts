@@ -6,6 +6,8 @@ import {
   OpensteerError,
   assignmentResultMaxBytes,
   createId,
+  threadInReach,
+  lineageCompatibleForReuse,
   nonTerminalRunStatuses,
   utf8Prefix,
   type AgentEvent,
@@ -550,11 +552,7 @@ async function requireCancelMembership(
   }
 }
 
-/**
- * An agent acts for its person, so the person's rule applies first. A
- * Main-profile Run may then stop anything that person could; any other Run
- * only work handed out from its own Thread, and what that work handed out.
- */
+/** Agent reach never replaces the person's membership and task ownership. */
 async function requireCancelScope(
   transaction: Transaction<DatabaseSchema>,
   input: CancelAssignmentInput,
@@ -563,7 +561,15 @@ async function requireCancelScope(
   const actor = await transaction
     .selectFrom("runs")
     .innerJoin("threads", "threads.id", "runs.threadId")
-    .select(["runs.requestedBy", "runs.status", "runs.threadId", "threads.capabilityProfileId"])
+    .select([
+      "runs.requestedBy",
+      "runs.status",
+      "runs.threadId",
+      "threads.inheritsMain",
+      "threads.specialistId",
+      "threads.lineageRootThreadId",
+      "threads.workspaceId",
+    ])
     .where("runs.id", "=", input.actorRunId)
     .executeTakeFirst();
   if (
@@ -573,21 +579,21 @@ async function requireCancelScope(
   ) {
     throw new OpensteerError({ code: "forbidden", message: "Cancelling Run is no longer active" });
   }
-  if (actor.capabilityProfileId === "main") return;
-  const handedOut = await sql<{ id: AssignmentId }>`
-    with recursive lineage as (
-      select id, parent_assignment_id, parent_thread_id
-        from public.delegations where id = ${input.assignmentId}
-      union all
-      select parent.id, parent.parent_assignment_id, parent.parent_thread_id
-        from public.delegations as parent
-        join lineage on parent.id = lineage.parent_assignment_id
-    ) select id from lineage where parent_thread_id = ${actor.threadId} limit 1
-  `.execute(transaction);
-  if (handedOut.rows.length === 0) {
+  const worker = await transaction
+    .selectFrom("delegations")
+    .innerJoin("threads", "threads.id", "delegations.childThreadId")
+    .select([
+      "threads.inheritsMain",
+      "threads.specialistId",
+      "threads.lineageRootThreadId",
+      "threads.workspaceId",
+    ])
+    .where("delegations.id", "=", input.assignmentId)
+    .executeTakeFirst();
+  if (!worker || !threadInReach(actor, worker) || !lineageCompatibleForReuse(actor, worker)) {
     throw new OpensteerError({
       code: "forbidden",
-      message: "This Thread can stop only tasks it started and the work they started",
+      message: "This task is outside the agent's consent scope",
     });
   }
 }

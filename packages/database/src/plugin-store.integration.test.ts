@@ -27,7 +27,7 @@ describeStore("plugin activation", (test) => {
     expect(chat).toMatchObject({
       workspaceId: project.id,
       role: "conversation",
-      capabilityProfileId: "workspace",
+      inheritsMain: false,
       title: "Chat",
     });
     const turn = await fixture.enqueueHumanTrigger({
@@ -49,7 +49,7 @@ describeStore("plugin activation", (test) => {
       threadId: project.homeThreadId!,
     });
     expect(await fixture.store.runCapabilityScope(turn.run.id)).toMatchObject({
-      capabilityProfileId: "workspace",
+      inheritsMain: false,
       workspaceId: project.id,
     });
     await fixture.database
@@ -68,7 +68,7 @@ describeStore("plugin activation", (test) => {
     expect(second.homeThreadId).toBe(first.homeThreadId);
     expect(await fixture.store.getThreadForOwner(first.homeThreadId!, f.userId)).toMatchObject({
       role: "conversation",
-      capabilityProfileId: "workspace",
+      inheritsMain: false,
     });
   });
 

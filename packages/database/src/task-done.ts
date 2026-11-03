@@ -1,6 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
 import {
   createId,
+  threadInReach,
+  lineageCompatibleForReuse,
   nonTerminalRunStatuses,
   OpensteerError,
   SequenceSchema,
@@ -51,7 +53,7 @@ export interface ThreadWriteActor {
   readonly actorRunId?: RunId;
 }
 
-/** Write reach is narrower than read reach, and never replaces the person's authority. */
+/** Consent reach never replaces the person's membership and task ownership. */
 export async function requireThreadWriteAuthority(
   transaction: Transaction<DatabaseSchema>,
   thread: Pick<ThreadRow, "id" | "workspaceId" | "createdBy">,
@@ -72,7 +74,9 @@ export async function requireThreadWriteAuthority(
           "runs.status",
           "runs.threadId",
           "threads.workspaceId",
-          "threads.capabilityProfileId",
+          "threads.inheritsMain",
+          "threads.specialistId",
+          "threads.lineageRootThreadId",
         ])
         .where("runs.id", "=", actor.actorRunId)
         .executeTakeFirst()
@@ -95,21 +99,16 @@ export async function requireThreadWriteAuthority(
       code: "forbidden",
       message: "Only the owner can stop another member's task",
     });
-  if (!run || self || run.capabilityProfileId === "main") return;
-  if (run.capabilityProfileId === "workspace" && run.workspaceId === thread.workspaceId) return;
-  if (run.capabilityProfileId === "delegated") {
-    const descendants = await sql<{ id: ThreadId }>`with recursive descendants as (
-      select id, child_thread_id from delegations where parent_thread_id = ${run.threadId}
-      union
-      select child.id, child.child_thread_id from delegations child join descendants parent on child.parent_assignment_id = parent.id
-    ) select child_thread_id as id from descendants where child_thread_id = ${thread.id}`.execute(
-      transaction,
-    );
-    if (descendants.rows.length) return;
-  }
+  if (!run || self) return;
+  const target = await transaction
+    .selectFrom("threads")
+    .select(["inheritsMain", "specialistId", "lineageRootThreadId", "workspaceId"])
+    .where("id", "=", thread.id)
+    .executeTakeFirstOrThrow();
+  if (threadInReach(run, target) && lineageCompatibleForReuse(run, target)) return;
   throw new OpensteerError({
     code: "forbidden",
-    message: "This agent can write only its own task and tasks it handed out",
+    message: "This task is outside the agent's consent scope",
   });
 }
 

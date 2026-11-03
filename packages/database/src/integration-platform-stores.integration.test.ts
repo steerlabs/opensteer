@@ -1559,7 +1559,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     }
     async function insertLineageThread(
       sibling: ThreadId,
-      profile: "workspace" | "delegated",
       parentThreadId: ThreadId | null,
     ): Promise<ThreadId> {
       const id = createId("thread");
@@ -1575,11 +1574,11 @@ integration.sequential("PostgreSQL computer app connections", () => {
       await sql`
       insert into threads (
         id, workspace_id, parent_thread_id, title, environment_id, harness_instance_id,
-        created_by, capability_profile_id, created_by_principal_id, model_selection,
+        created_by, inherits_main, created_by_principal_id, model_selection,
         access_mode, lineage_root_thread_id, listed, color
       )
       select ${id}, workspace_id, ${parentThreadId}, ${`Lineage ${id}`}, environment_id,
-        harness_instance_id, created_by, ${profile}, created_by_principal_id, model_selection,
+        harness_instance_id, created_by, ${parentThreadId ? sql`(select inherits_main from threads where id = ${parentThreadId})` : sql`false`}, created_by_principal_id, model_selection,
         access_mode, ${lineageRoot}, ${parentThreadId === null}, color
       from threads where id = ${sibling}
     `.execute(database);
@@ -4182,9 +4181,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     );
   });
 
-  it("inherits Main only in a lineage that starts from a Main-profile Thread", async ({
-    storeFixture,
-  }) => {
+  it("inherits Main only when the lineage root has consent", async ({ storeFixture }) => {
     const {
       store,
       fixture,
@@ -4205,11 +4202,11 @@ integration.sequential("PostgreSQL computer app connections", () => {
       tools: setup.tools("read"),
     });
     // A channel route runs as its creator without being them, so its root
-    // Thread takes `workspace` even in their own Main, and whatever it
+    // Thread withholds Main inheritance even in their own Main, and whatever it
     // delegates inherits that lineage.
-    const channelRoot = await insertLineageThread(run.threadId, "workspace", null);
-    const channelChild = await insertLineageThread(run.threadId, "delegated", channelRoot);
-    const homeChild = await insertLineageThread(run.threadId, "delegated", run.threadId);
+    const channelRoot = await insertLineageThread(run.threadId, null);
+    const channelChild = await insertLineageThread(run.threadId, channelRoot);
+    const homeChild = await insertLineageThread(run.threadId, run.threadId);
     const callable = async (threadId: ThreadId) =>
       (
         await platform.listCallableTools({

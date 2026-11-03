@@ -259,7 +259,7 @@ integration.sequential("Shared task Done", () => {
     expect((await store.getThreadForOwner(other.id, f.userId))?.doneAt).toBeNull();
   });
 
-  it("stops a child, pauses its Trigger and forbids a delegated agent from writing its assigner", async () => {
+  it("lets a Main worker write its assigner, stop its subtree and pause its Trigger", async () => {
     const f = await fixture("cascade");
     const parentRun = await running(f, "cascade");
     const child = await delegate(f, parentRun.id, "cascade-child");
@@ -268,24 +268,16 @@ integration.sequential("Shared task Done", () => {
       .set({ status: "running" })
       .where("id", "=", child.run.id)
       .execute();
-    await expect(
-      store.setThreadDone({
-        done: true,
-        actorRunId: child.run.id,
-        threadId: f.thread.id,
-        requestedBy: f.userId,
-        idempotencyKey: "child-cannot-stop-parent",
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      store.renameThread({
-        actorRunId: child.run.id,
-        threadId: f.thread.id,
-        requestedBy: f.userId,
-        idempotencyKey: "child-cannot-rename-parent",
-        title: "Forbidden",
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    await store.renameThread({
+      actorRunId: child.run.id,
+      threadId: f.thread.id,
+      requestedBy: f.userId,
+      idempotencyKey: "child-renames-parent",
+      title: "Renamed by a Main worker",
+    });
+    expect((await store.getThreadForOwner(f.thread.id, f.userId))?.title).toBe(
+      "Renamed by a Main worker",
+    );
     const triggers = new TriggerStore(database);
     const trigger = await triggers.create({
       actorThreadId: null,
@@ -303,7 +295,13 @@ integration.sequential("Shared task Done", () => {
         schedule: { kind: "at", at: new Date(Date.now() + 60_000).toISOString(), payload: null },
       },
     });
-    const done = await setDone(f, true, "cascade-done");
+    const done = await store.setThreadDone({
+      done: true,
+      actorRunId: child.run.id,
+      threadId: f.thread.id,
+      requestedBy: f.userId,
+      idempotencyKey: "child-stops-parent-subtree",
+    });
     expect((await store.getThreadForOwner(child.thread.id, f.userId))?.doneAt).not.toBeNull();
     expect(
       await database

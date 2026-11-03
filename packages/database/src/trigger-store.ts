@@ -2007,7 +2007,14 @@ async function lockTriggerAuthorityThreads(
   if (actorThreadId === null) return null;
   const rows = await transaction
     .selectFrom("threads")
-    .select(["accessMode", "capabilityProfileId", "id", "lineageRootThreadId", "workspaceId"])
+    .select([
+      "accessMode",
+      "inheritsMain",
+      "specialistId",
+      "id",
+      "lineageRootThreadId",
+      "workspaceId",
+    ])
     .where("id", "in", [actorThreadId, anchorThreadId])
     .orderBy("id", "asc")
     .forShare()
