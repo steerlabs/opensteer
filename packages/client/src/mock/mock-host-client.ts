@@ -1,3 +1,4 @@
+import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
 import type { PersonShowMessage } from "@opensteer/protocol";
@@ -2035,6 +2036,48 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess(await client.checkChannelConnection(input.connectionId)),
     "channels.get": async () =>
       rpcSuccess(hostApi["channels.get"].success.parse(await client.loadChannels())),
+    "plugins.overview.get": async () =>
+      rpcSuccess(
+        client.settings.overview(WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id)),
+      ),
+    "plugins.detail.get": async ({ target }) => {
+      try {
+        return rpcSuccess(
+          client.settings.detail(
+            WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
+            target,
+          ),
+        );
+      } catch (error) {
+        return mockRefusal(error);
+      }
+    },
+    "plugins.directory.get": async () =>
+      rpcSuccess({
+        hasMoreRequests:
+          client
+            .getSnapshot()
+            .waitingRequests.filter(({ request }) => request.payload.kind === "integration.access")
+            .length > 100,
+        catalog: [
+          {
+            definitionId: "github",
+            title: "GitHub",
+            description: "Repositories and pull requests",
+            added: false,
+          },
+        ],
+        requests: client
+          .getSnapshot()
+          .waitingRequests.filter(({ request }) => request.payload.kind === "integration.access")
+          .slice(0, 100)
+          .map(({ request }) => ({
+            requestId: request.id,
+            title: request.presentation.title,
+            workspaceId: request.targetWorkspaceId,
+          })),
+      }),
+    "devices.overview.get": async () => rpcSuccess(client.settings.devices),
     "commands.dispatch": (command) =>
       client
         .executeCommandOnce(command)
@@ -2383,6 +2426,14 @@ function placeMockMessage(
 
 async function executeMockCommand(client: MockHostState, command: HostApiCommand) {
   switch (command.type) {
+    case "settings.plugin.enabled.set":
+    case "settings.plugin.placement.set":
+      return rpcSuccess(
+        client.settings.mutate(
+          WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
+          command,
+        ),
+      );
     case "attachment.upload.create":
       return rpcSuccess({ type: command.type, attachment: client.createAttachment(command) });
     case "attachment.upload.discard":
@@ -3508,6 +3559,12 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
+  subscribePluginsChanged(
+    listener: (message: { type: "host.plugins-changed" }) => void,
+  ): () => void {
+    this.#state.settings.listeners.add(listener);
+    return () => this.#state.settings.listeners.delete(listener);
+  }
   readonly #personShowListeners = new Set<(message: PersonShowMessage) => void>();
   subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void {
     this.#personShowListeners.add(listener);
@@ -4761,6 +4818,15 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  readonly settings = new MockSettingsFixtures(
+    () => this.emit(),
+    () =>
+      this.snapshot.workspaces.map(({ id, name, kind }) => ({
+        workspaceId: WorkspaceIdSchema.parse(id),
+        name,
+        kind,
+      })),
+  );
   private readonly plugins: MockPlugin[] = [];
   private readonly specialists: {
     id: string;
@@ -5911,6 +5977,8 @@ class MockHostState {
   executeCommandOnce(input: HostApiCommand): ReturnType<typeof executeMockCommand> {
     const command = hostApi["commands.dispatch"].payload.parse(input);
     if (
+      command.type !== "settings.plugin.enabled.set" &&
+      command.type !== "settings.plugin.placement.set" &&
       command.type !== "thread.sendMessage" &&
       command.type !== "thread.icon.set" &&
       command.type !== "workspace.color.set"

@@ -1598,6 +1598,13 @@ export async function createHostServer(
     const session = requireRpcSession(context);
     const userId = session.user.id;
     switch (command.type) {
+      case "settings.plugin.enabled.set":
+      case "settings.plugin.placement.set":
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "settings-unsupported",
+          message: "This Host does not support plugin Settings mutations yet.",
+        });
       case "thread.read.mark": {
         const state = await dependencies.store.notificationState.markRead({
           threadId: command.threadId,

@@ -19,6 +19,10 @@ import { afterResponse } from "./after-response.js";
 import { requestAbortSignal } from "./request-abort-signal.js";
 
 const hostApiScopes = {
+  "plugins.overview.get": "session",
+  "plugins.detail.get": "session",
+  "plugins.directory.get": "session",
+  "devices.overview.get": "session",
   "apps.get": "session",
   "apps.view": "mutation",
   "agentPhone.target.get": "session",
