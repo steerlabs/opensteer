@@ -12614,7 +12614,7 @@ function createInitialSnapshot(): HostSnapshot {
     // its only identity is the implicit machine owner, so nothing about this
     // fixture names a person.
     identityConfig: {
-      deployment: { cloud: false, kind: "personal", name: "Mac mini" },
+      deployment: { kind: "personal", name: "Mac mini" },
       emailDeliveryAvailable: false,
       exposure: "loopback",
       localPasswordEnabled: false,

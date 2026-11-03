@@ -2,8 +2,8 @@ import type { ComputerGlyph } from "@opensteer/client/computers";
 import type { ReactNode } from "react";
 import type { IconName } from "../icon.js";
 
-/** What a place looks like: a computer's own shape, Opensteer Cloud, or a server. */
-export type PlaceArt = ComputerGlyph | "cloud";
+/** What a place looks like: a computer's own shape or a server. */
+export type PlaceArt = ComputerGlyph;
 
 /** The line icon a computer wears in a list. */
 export function computerIcon(glyph: ComputerGlyph): IconName {
@@ -103,16 +103,6 @@ const drawings: Readonly<Record<PlaceArt, ReactNode>> = {
       <path className="device-art__notch" d="M45 8.5h6" />
       <path className="device-art__glint" d="M39 22h12M39 27h18M39 32h8" />
       <path className="device-art__foot" d="M44 63.5h8" />
-    </>
-  ),
-  cloud: (
-    <>
-      <path
-        className="device-art__body"
-        d="M28 56h42a13 13 0 0 0 2.5-25.8A19 19 0 0 0 36.5 25.5 15 15 0 0 0 28 56Z"
-      />
-      <path className="device-art__glint" d="M38 38h12" />
-      <path className="device-art__accent" d="M38 44h20" />
     </>
   ),
 };

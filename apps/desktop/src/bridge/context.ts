@@ -21,7 +21,6 @@ import type {
 import type { DeploymentAccessService } from "../connections/deployment-access-service.js";
 import type { DesktopHostTransport } from "../connections/host-transport.js";
 import type { LocalRunnerService } from "../supervisor/local-runner-service.js";
-import type { AccountConnectClient } from "@opensteer/client/connections";
 import type { ComputerUsePermissions } from "@opensteer/protocol";
 import type { ComputerUseRunnerTargetResult } from "../supervisor/local-runner-authority.js";
 
@@ -143,13 +142,6 @@ export interface DesktopBridgeOptions {
       pane: DesktopComputerUseSettingsPane,
     ) => Promise<ComputerUsePermissions>;
   };
-  readonly cloud?: Pick<
-    AccountConnectClient,
-    | "createCloudDeployment"
-    | "deleteCloudDeployment"
-    | "listCloudDeployments"
-    | "retryCloudDeployment"
-  > | null;
   readonly fullDiskAccess: {
     readonly check: () => Promise<boolean>;
     readonly closePanel: () => Promise<void>;

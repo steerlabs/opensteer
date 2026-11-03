@@ -358,7 +358,6 @@ export function desktopPreviewBridge(
     },
 
     getDeploymentAccessSnapshot: async () => accessSnapshot(),
-    listCloudDeployments: async () => ({ available: false, deployments: [] }),
     getLocalExecutionStatus: async (input) => localExecutionFor(input),
 
     hostRequest: async (input) => {
@@ -697,12 +696,6 @@ export function desktopPreviewBridge(
         selectHost(created, "signed-in");
       });
     },
-    createCloudDeployment: async () => {
-      throw new Error("Opensteer Cloud is unavailable in Desktop preview.");
-    },
-    deleteCloudDeployment: async () => {
-      throw new Error("Opensteer Cloud is unavailable in Desktop preview.");
-    },
 
     stopLocalRunner: async (input) => {
       const parsed = DesktopLocalExecutionInputSchema.parse(input);
@@ -747,9 +740,6 @@ export function desktopPreviewBridge(
       if (selection.selectedDeploymentId) {
         await bridge.select({ deploymentId: selection.selectedDeploymentId });
       }
-    },
-    retryCloudDeployment: async () => {
-      throw new Error("Opensteer Cloud is unavailable in Desktop preview.");
     },
   } satisfies OpensteerDesktopBridge;
 

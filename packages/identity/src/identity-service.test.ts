@@ -13,7 +13,7 @@ it("joins the auth schema check before a rejected owner bootstrap can destroy it
   const check = Promise.withResolvers<void>();
   checkSchema.mockReturnValue(check.promise);
   const identity = new IdentityService({} as unknown as Kysely<DatabaseSchema>, {
-    deployment: { kind: "self-hosted", cloud: false, name: null },
+    deployment: { kind: "self-hosted", name: null },
     exposure: "networked",
     localPasswordEnabled: false,
     managedOwner: {

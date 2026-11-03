@@ -53,7 +53,6 @@ export function previewBootstrap(
     homeWorkspace: workspace,
     identityConfig: {
       deployment: {
-        cloud: false,
         kind: selected.kind === "self-hosted" ? "self-hosted" : "personal",
         name: selected.name,
       },

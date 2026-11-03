@@ -117,7 +117,6 @@ export function SettingsShell() {
     );
   const rail = settingsRail(view.kind);
   const place = settingsPlace({
-    cloud: identity?.deployment.cloud === true,
     facts: view.facts,
     homeIcon: home ? computerIcon(computerGlyph(home)) : null,
     kind: view.kind,

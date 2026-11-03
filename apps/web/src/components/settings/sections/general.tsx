@@ -21,10 +21,8 @@ import { SectionHeader, SettingsRow, StatusChip, type SettingsView } from "../pr
  */
 export function GeneralSection({ view }: { readonly view: SettingsView }) {
   const { snapshot } = useShell();
-  const cloud = snapshot.identityConfig?.deployment.cloud === true;
   const home = useHomeComputer();
   const place = settingsPlace({
-    cloud,
     facts: view.facts,
     homeIcon: home.name ? home.icon : null,
     kind: view.kind,
@@ -42,7 +40,6 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
           detail={settingsWhatThisIs({ facts: view.facts, kind: view.kind, name: view.name })}
           icon={place.icon}
           title={settingsWhereItRuns({
-            cloud,
             facts: view.facts,
             kind: view.kind,
             name: view.name,
