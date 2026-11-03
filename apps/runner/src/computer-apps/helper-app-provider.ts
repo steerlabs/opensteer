@@ -117,14 +117,19 @@ export function createHelperAppProvider(
       } catch (error) {
         if (!(error instanceof ComputerUseBridgeError)) throw error;
         if (error.code === "permission-required") {
-          // Asked again because the refusal does not say which grant it was.
+          // Asked again because the refusal does not say which grant it was;
+          // when that cannot be learned, the helper's own sentence stands.
+          const required = grants[invocation.effect];
           const states = await helper.dataGrants().catch(() => null);
-          const missing = grants[invocation.effect].find(
-            (grant) => states && states[grant] !== "granted" && states[grant] !== "unknown",
-          );
+          const missing =
+            required.length === 1
+              ? required[0]
+              : required.find(
+                  (grant) => states && states[grant] !== "granted" && states[grant] !== "unknown",
+                );
           throw new ComputerAppError(
             "permission-required",
-            grantSentences[missing ?? grants[invocation.effect][0]],
+            missing ? grantSentences[missing] : error.message,
           );
         }
         throw new ComputerAppError(computerAppCode(error.code), error.message);

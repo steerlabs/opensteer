@@ -71,6 +71,20 @@ final class MessagesReaderTests: XCTestCase {
     XCTAssertNil(names.name(for: "+15551234567"))
     // Messages shows a business contact by its company name.
     XCTAssertEqual(names.name(for: "+15550001111"), "Local Business")
+    // A contact with no name is still someone else sharing the number.
+    let shared = MessagesContacts([
+      ContactRecord(id: "mayank", name: "Mayank Patel", organization: nil, emails: [],
+        phones: [LabeledText(label: nil, value: "+15551234567")], birthday: nil),
+      ContactRecord(id: "unnamed", name: nil, organization: nil, emails: [],
+        phones: [LabeledText(label: nil, value: "+445551234567")], birthday: nil),
+    ])
+    XCTAssertNil(shared.name(for: "+445551234567"))
+    // The same person saved twice, say in iCloud and Google, is still one name.
+    let duplicated = MessagesContacts(["icloud", "google"].map {
+      ContactRecord(id: $0, name: "Mayank Patel", organization: nil, emails: [],
+        phones: [LabeledText(label: nil, value: "(555) 123-4567")], birthday: nil)
+    })
+    XCTAssertEqual(duplicated.name(for: "+15551234567"), "Mayank Patel")
     XCTAssertEqual(names.name(for: "work@EXAMPLE.com"), "One")
     XCTAssertNil(names.name(for: "not a handle"))
   }

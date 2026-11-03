@@ -131,6 +131,32 @@ describe("an app the helper serves", () => {
     expect((await provider.inspect())[0]?.remedy).toBe("full-disk-access");
   });
 
+  it("keeps the helper's own refusal when the grants cannot be read again", async () => {
+    const helper = port({ contacts: "denied" });
+    vi.mocked(helper.dataGrants).mockRejectedValue(
+      new ComputerUseBridgeError("failed", "The Opensteer desktop app is not running on this Mac."),
+    );
+    vi.mocked(helper.dataInvoke).mockRejectedValue(
+      new ComputerUseBridgeError(
+        "permission-required",
+        "Reading Contacts needs macOS access to Contacts for Opensteer Computer Use.",
+      ),
+    );
+    await expect(
+      createHelperAppProvider("apple-messages", helper).invoke(
+        "list_conversations",
+        {},
+        new AbortController().signal,
+        invocation,
+      ),
+    ).rejects.toEqual(
+      new ComputerAppError(
+        "permission-required",
+        "Reading Contacts needs macOS access to Contacts for Opensteer Computer Use.",
+      ),
+    );
+  });
+
   it("reads a grant macOS cannot report yet as ready, since the helper settles it before acting", async () => {
     // Automation is reported only while Messages runs; a send checks it first.
     const provider = createHelperAppProvider("apple-messages", port({ automation: "unknown" }));
