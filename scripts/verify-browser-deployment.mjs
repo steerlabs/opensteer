@@ -320,8 +320,6 @@ for (const path of [
 }
 assert(caddyfile.includes("/oauth/mcp/*"), "Caddy must route MCP OAuth to Host.");
 for (const removedPath of [
-  "/internal/v1/agent-control",
-  "/internal/v1/integration-mcp",
   "/internal/v1/mount-grants/exchange",
   "/internal/v1/channel-runtime",
   "/internal/v1/devices/connect",

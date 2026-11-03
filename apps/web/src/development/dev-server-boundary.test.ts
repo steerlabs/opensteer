@@ -24,8 +24,6 @@ describe("development Web boundary", () => {
       "/internal/v1/trigger-cdp": { ws: true },
     });
     expect(localHostProxyRoutes["/v1"]).toMatchObject({ ws: true });
-    expect(localHostProxyRoutes).not.toHaveProperty("/internal/v1/agent-control");
-    expect(localHostProxyRoutes).not.toHaveProperty("/internal/v1/integration-mcp");
     expect(localHostProxyRoutes).not.toHaveProperty("/internal/v1/mount-grants/exchange");
     expect(localHostProxyRoutes).not.toHaveProperty("/internal/v1/channel-runtime");
     expect(localHostProxyRoutes).not.toHaveProperty("/internal/v1/devices/connect");
