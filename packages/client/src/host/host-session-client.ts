@@ -5305,6 +5305,16 @@ export class HttpHostClient {
           (event.type === "run.status" && !isActiveRunStatus(event.data.status)))
       )
         this.#runPlaces.end(event.runId, false);
+      if (
+        [
+          "thread.state-changed",
+          "thread.input-queue-updated",
+          "thread.execution-updated",
+          "thread.access-mode-updated",
+        ].includes(event.type)
+      ) {
+        next = { ...next, triggerRevision: next.triggerRevision + 1 };
+      }
       const current = next.threads.find(({ id }) => id === event.threadId);
       const ownsState = this.#threadState.record(event);
       const retained =

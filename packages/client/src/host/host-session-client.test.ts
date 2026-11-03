@@ -1539,6 +1539,24 @@ describe("HttpHostClient durable realtime", () => {
 
     expect(client.getSnapshot().triggerRevision).toBe(before + 1);
     expect(listener).toHaveBeenCalled();
+    const hidden = { ...makeThread(workspace.id), listed: false };
+    const events = [
+      agentEvent(workspace.id, hidden.id, null, "1", "thread.state-changed", {
+        status: "idle",
+        inputQueuePaused: false,
+        pendingRequests: 0,
+        doneAt: "2026-11-03T10:00:00Z",
+      }),
+      agentEvent(workspace.id, hidden.id, null, "2", "thread.input-queue-updated", {
+        paused: true,
+      }),
+      agentEvent(workspace.id, hidden.id, null, "3", "thread.execution-updated", {
+        thread: hidden,
+      }),
+    ];
+    sockets[0]!.receive({ type: "host.events", events });
+    expect(client.getSnapshot().triggerRevision).toBe(before + 4);
+    expect(client.getSnapshot().threads.some(({ id }) => id === hidden.id)).toBe(false);
     client.dispose();
   });
 

@@ -11,7 +11,8 @@ export function requestsWaitingOn(
   threadId: string,
 ): WaitingRequest[] {
   return waiting.filter(
-    ({ assignments, request }) =>
+    ({ assignments, presentation, request }) =>
+      presentation?.threadId === threadId ||
       request.originatingThreadId === threadId ||
       assignments.some(({ parentThreadId }) => parentThreadId === threadId),
   );
@@ -40,6 +41,11 @@ export function waitingRequestSource(
   return waiting.assignments.find(({ parentThreadId }) => parentThreadId === threadId) ?? null;
 }
 
+/** A managed worker's question docks on Chat, while answers retain the worker's authority. */
+export function waitingRequestPresentationSource(waiting: WaitingRequest, threadId: string) {
+  return waiting.presentation?.threadId === threadId ? waiting.presentation.workerThread : null;
+}
+
 /**
  * Every Thread a question waits on: where it was asked, and each Thread that
  * handed out the work it holds up. A task's row says "Needs you" when a helper
@@ -47,7 +53,8 @@ export function waitingRequestSource(
  */
 export function threadsWaitingOnReader(waiting: readonly WaitingRequest[]): ReadonlySet<string> {
   const threadIds = new Set<string>();
-  for (const { assignments, request } of waiting) {
+  for (const { assignments, presentation, request } of waiting) {
+    if (presentation) threadIds.add(presentation.threadId);
     threadIds.add(request.originatingThreadId);
     for (const { parentThreadId } of assignments) threadIds.add(parentThreadId);
   }

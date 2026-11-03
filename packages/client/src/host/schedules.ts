@@ -9,7 +9,7 @@ import {
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { conversationName } from "./conversation-presentation.js";
-import { threadMark, type TaskMark } from "./task-marks.js";
+import { taskMark, threadMark, type TaskMark } from "./task-marks.js";
 import {
   describeEvent,
   describeRepeating,
@@ -30,6 +30,7 @@ export interface ScheduleItem {
   readonly id: string;
   readonly name: string;
   readonly kind: TriggerSummary["kind"];
+  readonly systemRole: TriggerSummary["systemRole"];
   readonly status: TriggerSummary["status"];
   readonly pauseReason: string | null;
   readonly statusWord: string;
@@ -62,13 +63,19 @@ export function scheduleTiming(source: TriggerSource): string {
     ? `${describeRepeating(source.schedule)} · ${source.schedule.timezone}`
     : `Once, ${formatFullMoment(source.schedule.at)} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
 }
-function scheduleItem(summary: TriggerSummary, snapshot: HostSnapshot): ScheduleItem {
-  const thread = threadInDirectory(summary.anchorThreadId, snapshot);
+function scheduleItem(
+  summary: TriggerSummary,
+  snapshot: HostSnapshot,
+  anchor?: TriggerDetail["anchorThread"],
+): ScheduleItem {
+  const thread =
+    anchor === undefined ? threadInDirectory(summary.anchorThreadId, snapshot) : anchor;
   const home = summary.anchorThreadId === snapshot.homeThreadId;
   return {
     id: summary.id,
     name: summary.name,
     kind: summary.kind,
+    systemRole: summary.systemRole,
     status: summary.status,
     pauseReason: summary.pauseReason,
     statusWord: scheduleStatusWord(summary.status, summary.pauseReason),
@@ -81,7 +88,7 @@ function scheduleItem(summary: TriggerSummary, snapshot: HostSnapshot): Schedule
       home,
       visible: home || thread !== null,
       title: home ? "Chat" : (thread?.title ?? "Unavailable thread"),
-      mark: threadMark(summary.anchorThreadId, snapshot),
+      mark: thread ? taskMark(thread) : threadMark(summary.anchorThreadId, snapshot),
     },
   };
 }
@@ -125,7 +132,7 @@ export function scheduleDetail(
       : null,
   };
   return {
-    item: scheduleItem(summary, snapshot),
+    item: scheduleItem(summary, snapshot, detail.anchorThread),
     definition: detail,
     occurrences: detail.occurrences.map((occurrence) => {
       const replies = detail.downstreamRuns.filter((reply) => reply.occurrenceId === occurrence.id);
@@ -225,7 +232,29 @@ export class ScheduleResource<Wire, Data> {
       s.network,
       s.triggerRevision,
       this.detail ? s.runQueue.map(({ id, status }) => [id, status]) : null,
-      this.detail ? s.threads.map(({ id, status }) => [id, status]) : null,
+      this.detail
+        ? s.threads.map(
+            ({
+              id,
+              status,
+              doneAt,
+              inputQueuePaused,
+              environmentId,
+              harnessInstanceId,
+              modelSelection,
+              accessMode,
+            }) => [
+              id,
+              status,
+              doneAt,
+              inputQueuePaused,
+              environmentId,
+              harnessInstanceId,
+              modelSelection,
+              accessMode,
+            ],
+          )
+        : null,
     ]);
     if (signature !== this.#signature) {
       this.#signature = signature;

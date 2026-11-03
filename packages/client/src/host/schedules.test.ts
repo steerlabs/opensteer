@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createId } from "@opensteer/core";
+import { createId, ModelSelectionSchema } from "@opensteer/core";
 import type { TriggerSummary } from "@opensteer/triggers";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { HostClientRequestError, type HostClient, type HostSnapshot } from "./client.js";
@@ -344,4 +344,91 @@ describe("schedules", () => {
       runOutcome({ status: "failed" } as Parameters<typeof runOutcome>[0], null, null, 0),
     ).toBe("Failed");
   });
+});
+
+it("uses authorized detail for a hidden managed anchor and refreshes when another device changes worker control state", async () => {
+  const f = fixture();
+  const summary = unwrapRpcResult(await f.mock.rpc["triggers.list"]({})).triggers[0]!;
+  const detail = unwrapRpcResult(await f.mock.rpc["triggers.get"]({ triggerId: summary.id }));
+  if (!detail.anchorThread) throw new Error("Mock anchor missing");
+  const worker = {
+    ...detail.anchorThread,
+    id: createId("thread"),
+    title: "Memory light pass",
+    listed: false,
+    doneAt: null,
+  };
+  const managed = {
+    ...detail,
+    trigger: { ...detail.trigger, systemRole: "memory-light" as const, anchorThreadId: worker.id },
+    anchorThread: worker,
+  };
+  f.get.mockResolvedValue({ ok: true, data: managed });
+  const resource = schedulesClient(f.client).detail(summary.id);
+  const stop = resource.subscribe(() => {});
+  try {
+    const shown = await ready(resource.getSnapshot);
+    expect(
+      scheduleDetail(
+        { ...managed, anchorThread: null },
+        {
+          ...f.snapshot(),
+          threads: [...f.snapshot().threads, { ...f.snapshot().threads[0]!, id: worker.id }],
+        },
+      ).item.anchor.visible,
+    ).toBe(false);
+    expect(shown.item).toMatchObject({
+      systemRole: "memory-light",
+      anchor: { visible: true, title: worker.title, threadId: worker.id },
+    });
+    expect(f.snapshot().threads.some(({ id }) => id === worker.id)).toBe(false);
+    f.get.mockResolvedValue({
+      ok: true,
+      data: {
+        ...managed,
+        anchorThread: { ...worker, doneAt: "2026-11-03T10:00:00Z", inputQueuePaused: true },
+      },
+    });
+    f.emit({ triggerRevision: f.snapshot().triggerRevision + 1 });
+    expect((await ready(resource.getSnapshot)).definition.anchorThread).toMatchObject({
+      doneAt: "2026-11-03T10:00:00Z",
+      inputQueuePaused: true,
+    });
+    const previous = f.get.mock.calls.length;
+    f.emit({
+      threads: f
+        .snapshot()
+        .threads.map((thread, index) =>
+          index === 0 ? { ...thread, doneAt: "2026-11-03T10:00:00Z" } : thread,
+        ),
+    });
+    await ready(resource.getSnapshot);
+    expect(f.get).toHaveBeenCalledTimes(previous + 1);
+    f.emit({
+      threads: f
+        .snapshot()
+        .threads.map((thread, index) =>
+          index === 0 ? { ...thread, inputQueuePaused: !thread.inputQueuePaused } : thread,
+        ),
+    });
+    await ready(resource.getSnapshot);
+    expect(f.get).toHaveBeenCalledTimes(previous + 2);
+    f.emit({
+      threads: f.snapshot().threads.map((thread, index) =>
+        index === 0
+          ? {
+              ...thread,
+              modelSelection: ModelSelectionSchema.parse({
+                ...thread.modelSelection,
+                modelId: "another",
+              }),
+            }
+          : thread,
+      ),
+    });
+    await ready(resource.getSnapshot);
+    expect(f.get).toHaveBeenCalledTimes(previous + 3);
+  } finally {
+    stop();
+  }
 });

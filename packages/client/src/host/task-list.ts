@@ -305,6 +305,7 @@ function attributedRequests(
   for (const waiting of snapshot.waitingRequests) {
     const threadId = [
       waiting.request.originatingThreadId,
+      ...(waiting.presentation ? [waiting.presentation.threadId] : []),
       ...waiting.assignments.map(({ parentThreadId }) => parentThreadId),
     ].find((candidate) => listed.has(candidate));
     if (threadId === undefined) continue;

@@ -1385,3 +1385,61 @@ it("offers transient Passwords choices and settles the pinned shared command in 
     client.dispose();
   }
 });
+
+it("models managed role discovery, hidden authorized detail, no-light pauses and store refusals", async () => {
+  const client = new MockHostClient({ latencyMs: 0, memoryPasses: "no-light-model" });
+  try {
+    const { triggers } = unwrap(await client.rpc["triggers.list"]({ systemRole: "memory-light" }));
+    expect(triggers).toHaveLength(1);
+    const light = triggers[0]!;
+    expect(light).toMatchObject({
+      systemRole: "memory-light",
+      status: "paused",
+      nextFireAt: null,
+      pauseReason:
+        "This engine has no light model. Choose a model for the light pass, then resume.",
+    });
+    const detail = unwrap(await client.rpc["triggers.get"]({ triggerId: light.id }));
+    expect(detail.anchorThread).toMatchObject({
+      id: light.anchorThreadId,
+      listed: false,
+      capabilityProfileId: "delegated",
+      title: "Memory light pass",
+      parentThreadId: client.getSnapshot().homeThreadId,
+    });
+    await expect(
+      client.dispatch({ type: "trigger.run", triggerId: light.id, idempotencyKey: "managed-run" }),
+    ).rejects.toThrow("Opensteer manages this memory pass");
+    await expect(
+      client.dispatch({
+        type: "trigger.status.set",
+        triggerId: light.id,
+        status: "archived",
+        idempotencyKey: "managed-delete",
+      }),
+    ).rejects.toThrow("Opensteer manages this memory pass");
+    await expect(
+      client.dispatch({
+        type: "trigger.update",
+        triggerId: light.id,
+        input: { expectedRevisionId: detail.revision.id, name: "Renamed" },
+        idempotencyKey: "managed-edit",
+      }),
+    ).rejects.toThrow("Opensteer manages this memory pass");
+    expect(
+      await client.dispatch({
+        type: "trigger.status.set",
+        triggerId: light.id,
+        status: "active",
+        idempotencyKey: "managed-resume",
+      }),
+    ).toMatchObject({
+      trigger: { systemRole: "memory-light", status: "active", pauseReason: null },
+    });
+    expect(
+      unwrap(await client.rpc["triggers.list"]({ systemRole: "memory-nightly" })).triggers,
+    ).toHaveLength(1);
+  } finally {
+    client.dispose();
+  }
+});

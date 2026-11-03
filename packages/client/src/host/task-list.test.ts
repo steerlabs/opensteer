@@ -552,3 +552,14 @@ it("moves only for a person's ask, ties by descending id, and merges freshest co
     "Edited",
   ]);
 });
+
+it("shows a managed unassigned worker's Request on Chat without loading its hidden Thread", () => {
+  const chat = entry(1, "Chat", "idle", 2, 1);
+  const waiting = asking(2, "Allow memory access");
+  waiting.presentation = {
+    threadId: ThreadIdSchema.parse(chat.thread.id),
+    workerThread: { id: ThreadIdSchema.parse(threadId(2)), title: "Memory light pass" },
+  };
+  const list = taskList(snapshot([chat], { chat: 1, waiting: [waiting] }));
+  expect(list.chat).toMatchObject({ tone: "needs-you", line: "Allow memory access" });
+});
