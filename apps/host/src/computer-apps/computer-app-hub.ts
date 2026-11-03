@@ -244,6 +244,11 @@ export interface PhoneDisplayCapabilityDiagnostic {
 }
 
 export interface ComputerAppHubOptions {
+  readonly packageSource?: (
+    serverId: IntegrationServerId,
+    runnerId: RunnerId,
+    launch: LocalMcpLaunch,
+  ) => { url: string; token: string } | undefined;
   readonly onPhoneDisplayCapability?: (status: PhoneDisplayCapabilityDiagnostic) => void;
   readonly onDisplayEvent?: (
     runnerId: RunnerId,
@@ -615,6 +620,7 @@ export class ComputerAppHub {
     try {
       const submission = await this.#submit(entry, {
         ...fence,
+        packageSource: this.#options.packageSource?.(input.serverId, input.runnerId, input.launch),
         launch: input.launch,
         serverId: input.serverId,
         sessionId,

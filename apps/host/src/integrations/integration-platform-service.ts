@@ -988,7 +988,7 @@ export class IntegrationPlatformService {
     const servers = await Promise.all(
       plugin.servers.map((server) =>
         runnerId !== null && runsOnComputer(server)
-          ? computerServer(server, runnerId, basename(plugin.root))
+          ? computerServer(server, runnerId, basename(plugin.root), pluginId)
           : this.#discoverServer(server),
       ),
     );
@@ -3416,11 +3416,28 @@ function computerLaunch(server: LoadedAgentPluginServer): LocalMcpLaunch {
     : { headers: { ...server.headers }, type: "streamable-http", url: server.url };
 }
 
+function portableComputerLaunch(server: LoadedAgentPluginServer): LocalMcpLaunch {
+  const launch = computerLaunch(server);
+  if (launch.type !== "stdio") return launch;
+  const root = launch.env.PLUGIN_ROOT!;
+  const data = launch.env.PLUGIN_DATA!;
+  const portable = (value: string) =>
+    value.replaceAll(root, "${PLUGIN_ROOT}").replaceAll(data, "${PLUGIN_DATA}");
+  return {
+    ...launch,
+    command: portable(launch.command),
+    cwd: portable(launch.cwd),
+    args: launch.args.map(portable),
+    env: Object.fromEntries(Object.entries(launch.env).map(([k, v]) => [k, portable(v)])),
+  };
+}
+
 /** A plugin server pinned to its computer, waiting for that computer's approval. */
 function computerServer(
   server: LoadedAgentPluginServer,
   runnerId: RunnerId,
   packageDigest: string,
+  pluginId: string,
 ): DiscoveredServerResult {
   return {
     authorizationRequired: false,
@@ -3431,7 +3448,7 @@ function computerServer(
     status: "needs-attention",
     statusDetail: "Waiting for approval on the computer that runs it.",
     transport: IntegrationServerTransportSchema.parse({
-      launch: { ...computerLaunch(server), packageDigest },
+      launch: { ...portableComputerLaunch(server), packageDigest, pluginId },
       runnerId,
       type: "runner",
     }),

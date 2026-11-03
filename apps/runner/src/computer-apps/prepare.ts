@@ -62,6 +62,7 @@ export function prepareIntegrationsModule(options: {
       ? {
           computerUse,
           localMcp: new LocalMcpServers({
+            stateDirectory: path.join(options.dataDirectory, "private", "harness-state"),
             approvals: new LocalMcpApprovals(
               path.join(options.dataDirectory, "integrations", "mcp-approvals.json"),
             ),

@@ -86,7 +86,7 @@ import type { RunWorkspace, WorkspaceAccessManager } from "../workspace/mount-ma
 import { HttpAgentControlClient } from "../agent/agent-control-client.js";
 import { planAgentSkills, type AgentSkillBundle } from "../skills/agent-skills.js";
 import type { RunnerLogger } from "../host/host-connection.js";
-import { materializeIntegrationSkills } from "../skills/integration-skills.js";
+import { cacheRunPlugins } from "../skills/plugin-cache.js";
 import { resolveSkillPlan } from "../skills/skill-plan.js";
 import { discoverWorkspaceSkills } from "../skills/workspace-skills.js";
 import { BrowserCdpRelay } from "../browser/browser-cdp-relay.js";
@@ -155,7 +155,7 @@ export interface RunnerRuntimeOptions {
   readonly harnesses: HarnessRegistry;
   /** Present exactly when {@link harnessSandboxRequired} says so for this Runner. */
   readonly harnessSandbox?: HarnessProcessSandbox;
-  readonly integrationSkills: typeof materializeIntegrationSkills;
+  readonly plugins: typeof cacheRunPlugins;
   readonly harnessRuntimeBoundary: HarnessRuntimeBoundary;
   readonly logger?: RunnerLogger;
   readonly maxConcurrentRuns: number;
@@ -354,7 +354,7 @@ export class RunnerRuntime {
   readonly #installationQueues = new Map<string, Promise<void>>();
   readonly #installationLifetime = new AbortController();
   readonly #installationTasks = new Set<Promise<void>>();
-  readonly #integrationSkills: typeof materializeIntegrationSkills;
+  readonly #plugins: typeof cacheRunPlugins;
   readonly #harnessRuntimeBoundary: HarnessRuntimeBoundary;
   readonly #ledger = new CommandLedger();
   readonly #logger: RunnerLogger | undefined;
@@ -417,7 +417,7 @@ export class RunnerRuntime {
     this.#deploymentShape = options.deploymentShape;
     this.#environmentId = options.environmentId;
     this.#harnesses = options.harnesses;
-    this.#integrationSkills = options.integrationSkills;
+    this.#plugins = options.plugins;
     this.#harnessRuntimeBoundary = options.harnessRuntimeBoundary;
     if (
       harnessSandboxRequired(platform(), options.harnessRuntimeBoundary) &&
@@ -2170,7 +2170,7 @@ export class RunnerRuntime {
     let credentialProxy: CredentialProxy | undefined;
     let machineAccessSetup: MachineAccessSetup | undefined;
     let agentControl: HttpAgentControlClient | undefined;
-    let integrationSkills: Awaited<ReturnType<typeof materializeIntegrationSkills>> | undefined;
+    let plugins: Awaited<ReturnType<typeof cacheRunPlugins>> | undefined;
     let terminal: HarnessDurableEvent | undefined;
     let consumptionError: unknown;
     let titleTask: Promise<void> | undefined;
@@ -2263,9 +2263,7 @@ export class RunnerRuntime {
         workspaceKind: context.workspaceKind,
         workspacePath: workspace.path,
       });
-      // The Thread's idle engine is this Run's to serve itself with or retire.
-      // Once taken, no idle timeout or eviction retires it — emptying the
-      // Thread's skills directory — while this Run writes its skills there.
+      // Once taken, the idle engine remains this Run’s to reuse or retire.
       warmEngine = await this.#warm.take(context.threadId);
       if (
         warmEngine &&
@@ -2277,13 +2275,13 @@ export class RunnerRuntime {
         await this.#retireWarmEngine(warmEngine);
         warmEngine = undefined;
       }
-      const runSkills = await this.#integrationSkills({
-        plan: context.integrationSkills,
+      const runSkills = await this.#plugins({
+        plan: context.plugins,
         signal: active.abort.signal,
         stateDirectory: this.#privateStateDirectory,
         threadId: context.threadId,
       });
-      integrationSkills = runSkills;
+      plugins = runSkills;
       const workspaceSkills = await discoverWorkspaceSkills(workspace.path);
       for (const warning of workspaceSkills.warnings) {
         this.#logger?.info(warning, {
@@ -2320,7 +2318,6 @@ export class RunnerRuntime {
           baseEnvironment,
           context,
           instructions,
-          integrationSkillsDigest: runSkills.digest,
           machineAccessLaunch,
           providerSessionReference,
           skills,
@@ -2339,8 +2336,7 @@ export class RunnerRuntime {
       if (warmEngine && warmEngine.key !== warmKey) {
         const retired = warmEngine;
         warmEngine = undefined;
-        // This Run's skills already replaced the engine's, and are its own to remove.
-        await this.#retireWarmEngine(retired, { keepSkills: true });
+        await this.#retireWarmEngine(retired);
       }
       // An engine that may live on keeps its Thread from running anything else.
       if (this.#uncontainedThreads.has(context.threadId)) {
@@ -2351,7 +2347,8 @@ export class RunnerRuntime {
         });
       }
       if (warmEngine) {
-        warmEngine = { ...warmEngine, integrationSkills: runSkills };
+        await warmEngine.plugins.cleanup();
+        warmEngine = { ...warmEngine, plugins: runSkills };
         warmEngine.authority.credentials = credentials;
         warmEngine.credentialProxy.resume();
         warmEngine.browserCdpRelay.resume();
@@ -2422,7 +2419,7 @@ export class RunnerRuntime {
       const sandboxPlan = {
         ...(attachmentDirectory ? { attachmentDirectory } : {}),
         environment: baseEnvironment,
-        integrationSkillsDirectory: runSkills.directory,
+        pluginCacheDirectory: runSkills.directory,
         providerState,
         threadStateDirectory,
         workspacePath: workspace.path,
@@ -2563,7 +2560,7 @@ export class RunnerRuntime {
             browserCdpUrl,
             credentialProxy,
             harnessInstanceId: context.harnessInstanceId,
-            integrationSkills: runSkills,
+            plugins: runSkills,
             // The next Run continues the conversation this session now holds.
             // A launch that failed its probe matches no Run's plan, so the
             // next Run with routes tries again on an engine of its own.
@@ -2714,7 +2711,7 @@ export class RunnerRuntime {
             withinStopGrace(active.session?.stop().catch(() => undefined)),
           )
           .catch(() => "unknown" as const);
-        await integrationSkills?.cleanup().catch(() => undefined);
+        await plugins?.cleanup().catch(() => undefined);
         await browserCdpRelay?.close().catch(() => undefined);
         await credentialProxy?.close().catch(() => undefined);
         await machineAccessSetup?.close().catch(() => undefined);
@@ -2845,17 +2842,14 @@ export class RunnerRuntime {
   }
 
   /** Ends a warm engine and everything it held, proving its processes gone. */
-  async #retireWarmEngine(
-    engine: WarmEngine,
-    options: { readonly keepSkills?: boolean } = {},
-  ): Promise<void> {
+  async #retireWarmEngine(engine: WarmEngine): Promise<void> {
     const termination = await this.#containment
       .terminate(engine.scope, () => {
         engine.lifetime.abort(new Error("Warm engine retired"));
         return withinStopGrace(engine.session.stop().catch(() => undefined));
       })
       .catch(() => "unknown" as const);
-    if (!options.keepSkills) await engine.integrationSkills.cleanup().catch(() => undefined);
+    await engine.plugins.cleanup().catch(() => undefined);
     await engine.browserCdpRelay.close().catch(() => undefined);
     await engine.credentialProxy.close().catch(() => undefined);
     await engine.machineAccess?.close().catch(() => undefined);
@@ -3403,12 +3397,11 @@ async function withinStopGrace(work: Promise<unknown> | undefined): Promise<void
  * differs gets an engine of its own. Per-Run facts — its tokens, its history,
  * its machine notice — are not in it; the session is rebound with them.
  */
-function warmEngineKey(input: {
+export function warmEngineKey(input: {
   readonly attachmentRoot: string | null;
   readonly baseEnvironment: Readonly<Record<string, string>>;
   readonly context: Extract<RunnerCommand, { readonly type: "run.execute" }>["context"];
   readonly instructions: string | null;
-  readonly integrationSkillsDigest: string;
   /** What the engine's launch directory for other computers was written from. */
   readonly machineAccessLaunch: string;
   readonly providerSessionReference: string | null;
@@ -3439,7 +3432,7 @@ function warmEngineKey(input: {
         context.agentTools.capabilityProfileId,
         context.threadRole,
         context.modelSelection,
-        input.integrationSkillsDigest,
+        [...context.plugins.versions].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
         input.skills,
         input.workspaceSkillsDigest,
         context.agentTools.url,

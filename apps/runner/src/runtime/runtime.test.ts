@@ -71,7 +71,7 @@ import { prepareHarnessProviderState } from "../harness/harness-provider-state.j
 import { createHarnessRegistry } from "../harness/harness-registry.js";
 import type { HarnessProcessSandbox, HarnessSandboxRunPlan } from "../sandbox/harness-sandbox.js";
 import { ExecutionContainment, executionScopeVariable } from "./execution-containment.js";
-import { RunnerRuntime, type RunnerMessageSink } from "./runtime.js";
+import { RunnerRuntime, warmEngineKey, type RunnerMessageSink } from "./runtime.js";
 import { providerContinuationIdentityProjector } from "@opensteer/runner-client";
 
 const testAgentSkills = {
@@ -99,7 +99,7 @@ const testServerDeploymentShape = {
   defaultWorkspaceBacking: "local-directory",
   kind: "server" as const,
 } as const;
-const noIntegrationSkills = async () => ({
+const noPlugins = async () => ({
   cleanup: async () => undefined,
   digest: "none",
   directory: undefined,
@@ -653,7 +653,7 @@ describe("RunnerRuntime", () => {
       environmentId: createId("environment"),
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       maxConcurrentRuns: 1,
       dataDirectory: temporaryRoot,
       privateStateDirectory: join(temporaryRoot, "private"),
@@ -765,7 +765,7 @@ describe("RunnerRuntime", () => {
       environmentId: createId("environment"),
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       maxConcurrentRuns: 1,
       dataDirectory: temporaryRoot,
       privateStateDirectory: join(temporaryRoot, "private"),
@@ -3003,7 +3003,7 @@ describe("RunnerRuntime", () => {
     let executions = 0;
     const runtime = runtimeWithLeaseGrants({
       agentSkills: testAgentSkills,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       bootId: "boot-trigger-test",
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: testDeploymentShape,
@@ -3085,7 +3085,7 @@ describe("RunnerRuntime", () => {
       environmentId,
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       maxConcurrentRuns: 1,
       dataDirectory: dirname(testPrivateStateRoot),
       privateStateDirectory: testPrivateStateRoot,
@@ -3178,7 +3178,7 @@ describe("RunnerRuntime", () => {
       environmentId,
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       maxConcurrentRuns: 2,
       dataDirectory: dirname(testPrivateStateRoot),
       privateStateDirectory: testPrivateStateRoot,
@@ -3286,7 +3286,7 @@ describe("RunnerRuntime", () => {
     const runtime = runtimeWithLeaseGrants({
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       bootId: "boot-test",
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: testDeploymentShape,
@@ -3435,7 +3435,7 @@ describe("RunnerRuntime", () => {
     const runtime = runtimeWithLeaseGrants({
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       bootId: "boot-claude-test",
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: testDeploymentShape,
@@ -3495,22 +3495,22 @@ describe("RunnerRuntime", () => {
       environmentId,
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
-      integrationSkills: async () => ({
+      plugins: async () => ({
         cleanup: async () => undefined,
         digest: "example",
-        directory: "/state/integration-skills/example",
+        directory: "/state/plugin-cache/example",
         skills: [
           {
             plugin: "example",
             localName: "research",
             fullName: "example:research",
-            path: "/state/integration-skills/example/research",
+            path: "/state/plugin-cache/example/research",
           },
           {
             plugin: "example",
             localName: "helper",
             fullName: "example:helper",
-            path: "/state/integration-skills/example/helper",
+            path: "/state/plugin-cache/example/helper",
           },
         ],
       }),
@@ -3587,13 +3587,13 @@ describe("RunnerRuntime", () => {
           plugin: "example",
           localName: "research",
           fullName: "example:research",
-          path: "/state/integration-skills/example/research",
+          path: "/state/plugin-cache/example/research",
         },
         {
           plugin: "example",
           localName: "helper",
           fullName: "example:helper",
-          path: "/state/integration-skills/example/helper",
+          path: "/state/plugin-cache/example/helper",
         },
         {
           plugin: null,
@@ -5501,9 +5501,10 @@ function executeCommand(
         token: "opaque-agent-tools-token",
         url: "https://host.example/internal/v1/integration-mcp",
       },
-      integrationSkills: {
-        token: "integration-skills-token",
-        url: "https://host.example/internal/v1/integration-skills",
+      plugins: {
+        versions: [],
+        token: "plugin-cache-token",
+        url: "https://host.example/internal/v1/plugin-cache",
       },
       bindingGeneration: 3,
       executionLeaseMs: 90_000,
@@ -5876,7 +5877,7 @@ function configuredRuntime(input: {
     {
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       bootId: "boot-control-test",
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: input.deploymentShape ?? testDeploymentShape,
@@ -5982,4 +5983,29 @@ it("refuses a Run while its Project is relocating and releases admission after f
     await failed;
     await runtime.close();
   }
+});
+
+it("invalidates warm engines when the pinned package set changes, regardless of order", () => {
+  const context = executeCommand(createId("environment")).context;
+  const input = {
+    context,
+    attachmentRoot: null,
+    baseEnvironment: {},
+    instructions: null,
+    machineAccessLaunch: "",
+    providerSessionReference: null,
+    runtimeBoundary: "native-user",
+    skills: undefined,
+    workspaceSkillsDigest: "",
+    workspacePath: "/workspace",
+    writableRoots: ["/workspace"],
+  };
+  const first = { pluginId: "a", name: "alpha", digest: "a".repeat(64) };
+  const second = { pluginId: "b", name: "beta", digest: "b".repeat(64) };
+  context.plugins.versions = [first, second];
+  const before = warmEngineKey(input);
+  context.plugins.versions = [second, first];
+  expect(warmEngineKey(input)).toBe(before);
+  context.plugins.versions = [{ ...first, digest: "c".repeat(64) }, second];
+  expect(warmEngineKey(input)).not.toBe(before);
 });

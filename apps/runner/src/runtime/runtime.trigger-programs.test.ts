@@ -126,7 +126,7 @@ function runtimeFixture(input: {
       listDrivers: () => [],
       state: () => ({ definition: { runtimeRevision: 1 }, status: "available" }),
     } as never,
-    integrationSkills: async () => {
+    plugins: async () => {
       throw new Error("A blocked Workspace preparation must not materialize integration skills");
     },
     maxConcurrentRuns: input.maxConcurrentRuns,

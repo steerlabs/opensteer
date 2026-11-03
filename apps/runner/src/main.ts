@@ -29,7 +29,7 @@ import {
   providerContinuationIdentityProjector,
   type RunnerIdentity,
 } from "@opensteer/runner-client";
-import { materializeIntegrationSkills } from "./skills/integration-skills.js";
+import { cacheRunPlugins, prunePluginCache } from "./skills/plugin-cache.js";
 import { JsonRunnerLogger } from "./runtime/logger.js";
 import { RunWorkspaceManager, type RunWorkspaceManagerOptions } from "./workspace/mount-manager.js";
 import { LocalWorkspaceService } from "./workspace/local-workspace-service.js";
@@ -316,6 +316,19 @@ async function startAgentsRunner(input: {
   if (earlierBoots === "unknown") {
     logger.error("An earlier Runner left processes that could not be ended");
   }
+  await prunePluginCache(resolve(config.dataDirectory, "private", "harness-state"));
+  const pluginPruner = setInterval(
+    () => {
+      void prunePluginCache(resolve(config.dataDirectory, "private", "harness-state")).catch(
+        (error: unknown) =>
+          logger.error("Plugin cache pruning failed", {
+            error: error instanceof Error ? error.message : String(error),
+          }),
+      );
+    },
+    24 * 60 * 60 * 1000,
+  );
+  pluginPruner.unref();
   const runtime = new RunnerRuntime({
     agentSkills,
     attachmentCache,
@@ -331,7 +344,7 @@ async function startAgentsRunner(input: {
     }),
     harnessRuntimeBoundary,
     ...(harnessSandbox ? { harnessSandbox } : {}),
-    integrationSkills: materializeIntegrationSkills,
+    plugins: cacheRunPlugins,
     logger,
     maxConcurrentRuns: config.maxConcurrentRuns,
     maxConcurrentTriggerPrograms: config.maxConcurrentTriggerPrograms,
@@ -364,6 +377,7 @@ async function startAgentsRunner(input: {
       workspaceBackings: advertisedBackings,
     },
     close: async () => {
+      clearInterval(pluginPruner);
       await messagingModule?.module.close();
       integrationsModule?.close?.();
       await runtime.close();

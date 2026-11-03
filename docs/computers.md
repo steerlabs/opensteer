@@ -119,11 +119,14 @@ missing an OS grant needs local settings, not another approval. See
 
 Program/loopback MCP servers run on the chosen computer, never with Host authority.
 Internet servers run through the Host over HTTPS; Host loopback is refused. On Personal,
-the default is Main, where plugin files exist; a Host-local program path cannot imply those
+the default is Main. Packages are verified and cached on the selected Runner; a Host-local program path cannot imply those
 files exist on a different computer.
 
 Show the program, arguments, working directory and environment—or URL—verbatim before
-approval. Pin approval to the exact launch digest. The local Runner learns approval only from the
+approval. Pin approval to the package digest and portable server definition on that computer.
+Resolve package and data paths on the Runner after approval, never against Host paths.
+Discovery can precede a Run: its package download capability is bound to the approved
+server and computer; the Run download endpoint accepts only that Run’s pinned digests. The local Runner learns approval only from the
 person's desktop answer over its local bridge, never from Host lists/outcomes. Missing local
 approval records refuse execution and require asking again. Reinstallation closes sessions;
 an unchanged digest keeps approval, a changed launch asks again. Protocol-incompatible

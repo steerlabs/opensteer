@@ -148,7 +148,7 @@ import {
   IntegrationService,
   type IntegrationConnectionConnected,
 } from "../integrations/integration-service.js";
-import { IntegrationSkillBundleService } from "../integrations/integration-skill-bundle-service.js";
+import { PluginPackageService } from "../integrations/plugin-package-service.js";
 import { IntegrationToolsMcpService } from "../integrations/integration-tools-mcp-service.js";
 import { McpOAuthService } from "../integrations/mcp-oauth-service.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
@@ -631,7 +631,10 @@ export async function createHostRuntime(
     let computerUse: ComputerUseService | undefined;
     let computerViews: ComputerViewService | undefined;
     let displayStreams: DisplayStreamHub | undefined;
+    let pluginPackages: PluginPackageService | undefined;
     const computerApps = new ComputerAppHub({
+      packageSource: (serverId, runnerId, launch) =>
+        pluginPackages?.computerSource(serverId, runnerId, launch),
       knownDefinitionIds: () => computerAppDefinitionIds,
       onPhoneDisplayCapability: (status) =>
         app.log.info(status, "Phone display capability changed"),
@@ -1479,7 +1482,6 @@ export async function createHostRuntime(
             credentials: {
               agentControl: agentControlTokens.issue(scope),
               attachments: attachmentRunTokens.issue(scope),
-              integrationSkills: integrationSkillsTokens.issue(scope),
               integrationTools: integrationToolsTokens.issue(scope),
             },
             status: "issued",
@@ -1824,8 +1826,8 @@ export async function createHostRuntime(
       tokens: runCapabilityTokens,
       ...runCapabilityLifetime,
     });
-    const integrationSkillsTokens = new RunCapabilityTokenService({
-      audience: "opensteer-integration-skills",
+    const pluginsTokens = new RunCapabilityTokenService({
+      audience: "opensteer-plugin-packages",
       authorizer: store,
       tokens: runCapabilityTokens,
       ...runCapabilityLifetime,
@@ -1884,7 +1886,11 @@ export async function createHostRuntime(
       browser,
       egress,
       executionLeaseMs: config.executionLeaseMs,
-      integrationSkillsTokens,
+      pluginVersions: async (workspaceId) =>
+        (await integrationPlatformStore.plugins.current(workspaceId)).map(
+          ({ id, name, digest }) => ({ pluginId: id, name, digest }),
+        ),
+      pluginsTokens,
       integrationToolsTokens,
       attachmentRunTokens,
       attachments: attachmentStore,
@@ -2116,11 +2122,12 @@ export async function createHostRuntime(
       triggerTokens: triggerIntegrationToolsTokens,
       watchTokens: watchIntegrationToolsTokens,
     });
-    const integrationSkills = new IntegrationSkillBundleService({
+    const plugins = new PluginPackageService({
+      computer: { tokens, store: integrationPlatformStore, publicUrl: config.runtimeOrigin },
       snapshotDirectory: resolve(dataDirectory, "plugins", "data", "packages"),
-      store: integrationPlatformStore,
-      tokens: integrationSkillsTokens,
+      tokens: pluginsTokens,
     });
+    pluginPackages = plugins;
     const discoveryEnvelope = signHostDiscovery(keys, {
       canonicalOrigin: deployment.canonicalOrigin,
       deploymentId: deployment.id,
@@ -2239,7 +2246,7 @@ export async function createHostRuntime(
           mcpOauth,
           platform: integrationPlatform,
           service: integrations,
-          skills: integrationSkills,
+          skills: plugins,
           tools: integrationTools,
         },
         ...(localBootstrap ? { localBootstrap: { service: localBootstrap } } : {}),

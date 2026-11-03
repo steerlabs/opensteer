@@ -341,13 +341,14 @@ async function loadSkills(
   return loaded;
 }
 
-interface SnapshotFile {
+export interface SnapshotFile {
   readonly bytes: Buffer;
   readonly mode: number;
   readonly path: string;
 }
 
-async function snapshotPackage(sourceRoot: string, snapshotRoot: string): Promise<string> {
+export async function readPluginSnapshot(sourceRoot: string): Promise<SnapshotFile[]> {
+  await requireRealDirectory(sourceRoot, "Agent Plugin snapshot");
   const files: SnapshotFile[] = [];
   let totalBytes = 0;
   const visit = async (directory: string, relativeDirectory: string): Promise<void> => {
@@ -377,11 +378,20 @@ async function snapshotPackage(sourceRoot: string, snapshotRoot: string): Promis
     }
   };
   await visit(sourceRoot, "");
+  return files;
+}
+
+export function pluginSnapshotDigest(files: readonly SnapshotFile[]): string {
   const hash = createHash("sha256");
   for (const file of files) {
     hash.update(file.path).update("\0").update(String(file.mode)).update("\0").update(file.bytes);
   }
-  const digest = hash.digest("hex");
+  return hash.digest("hex");
+}
+
+async function snapshotPackage(sourceRoot: string, snapshotRoot: string): Promise<string> {
+  const files = await readPluginSnapshot(sourceRoot);
+  const digest = pluginSnapshotDigest(files);
   await mkdir(snapshotRoot, { mode: 0o700, recursive: true });
   const destination = join(snapshotRoot, digest);
   try {

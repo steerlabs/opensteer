@@ -59,7 +59,7 @@ const testAgentSkills = {
   },
   rootPath: "/runner/agent-skills",
 } as const;
-const noIntegrationSkills = async () => ({
+const noPlugins = async () => ({
   cleanup: async () => undefined,
   digest: "none",
   directory: undefined,
@@ -659,7 +659,7 @@ describe("runnerWebSocketUrl", () => {
     const runtime = new RunnerRuntime({
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       bootId,
       deploymentShape: cloudDeploymentShape,
       environmentId,
@@ -1670,7 +1670,7 @@ describe("runnerWebSocketUrl", () => {
     const runtime = new RunnerRuntime({
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
-      integrationSkills: noIntegrationSkills,
+      plugins: noPlugins,
       bootId,
       deploymentShape: cloudDeploymentShape,
       environmentId,

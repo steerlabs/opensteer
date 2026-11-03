@@ -163,7 +163,7 @@ try {
   const freshProc = sandbox.layout.freshProc;
   const wrap = await sandbox.plan({
     environment: runnerEnvironment,
-    integrationSkillsDirectory: undefined,
+    pluginCacheDirectory: undefined,
     launchDirectory,
     providerState: {
       continuationKey: "smoke",

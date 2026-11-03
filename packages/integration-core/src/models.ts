@@ -602,7 +602,14 @@ export type IntegrationInstallation = z.infer<typeof IntegrationInstallationSche
 
 const localMcpLaunchShapes = {
   stdio: {
-    packageDigest: z.string().optional(),
+    pluginId: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]+$/u)
+      .optional(),
+    packageDigest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .optional(),
     args: z.array(z.string().max(32_768)).max(256),
     command: z.string().min(1).max(4_096),
     cwd: z.string().min(1).max(4_096),
@@ -610,7 +617,14 @@ const localMcpLaunchShapes = {
     type: z.literal("stdio"),
   },
   http: {
-    packageDigest: z.string().optional(),
+    pluginId: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]+$/u)
+      .optional(),
+    packageDigest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .optional(),
     headers: z.record(z.string().max(256), z.string().max(8_192)),
     type: z.literal("streamable-http"),
     url: z.url().refine((value) => {

@@ -393,7 +393,7 @@ export interface HostServerDependencies {
     readonly mcpOauth: McpOAuthService;
     readonly platform: IntegrationPlatformService;
     readonly service: IntegrationService;
-    readonly skills: import("./integrations/integration-skill-bundle-service.js").IntegrationSkillBundleService;
+    readonly skills: import("./integrations/plugin-package-service.js").PluginPackageService;
     readonly tools: IntegrationToolsMcpService;
   };
   /** Shared with Runner registration so live sign-in attempts resume on reconnect. */
@@ -2922,11 +2922,30 @@ export async function createHostServer(
     url: hostInternalRoutePaths.integrationMcp,
   });
 
-  app.get(hostInternalRoutePaths.integrationSkills, async (request, reply) => {
-    const token = requireBearerToken(request);
+  app.get("/internal/v1/computer-plugin-packages/:digest", async (request, reply) =>
+    reply
+      .header("cache-control", "no-store")
+      .type("application/json")
+      .send(
+        await dependencies.integrations.skills.stream(
+          requireBearerToken(request),
+          (request.params as { digest: string }).digest,
+          true,
+        ),
+      ),
+  );
+
+  app.get(`${hostInternalRoutePaths.plugins}/:digest`, async (request, reply) => {
+    const token = requireBearerToken(request, 16_000);
     return reply
       .header("cache-control", "no-store")
-      .send(await dependencies.integrations.skills.bundle(token));
+      .type("application/json")
+      .send(
+        await dependencies.integrations.skills.stream(
+          token,
+          (request.params as { digest: string }).digest,
+        ),
+      );
   });
 
   app.post(hostInternalRoutePaths.egress, { bodyLimit: 12 * 1_024 * 1_024 }, async (request) => {
@@ -4677,9 +4696,9 @@ function decorateWorkspaceView(
     : Promise.resolve(view);
 }
 
-function requireBearerToken(request: FastifyRequest): string {
+function requireBearerToken(request: FastifyRequest, maximumTokenLength = 4_096): string {
   const value = request.headers.authorization;
-  if (!value?.startsWith("Bearer ") || value.length > 4_103) {
+  if (!value?.startsWith("Bearer ") || value.length > maximumTokenLength + 7) {
     throw new OpensteerError({ code: "unauthorized", message: "Bearer token is required" });
   }
   const token = value.slice("Bearer ".length);

@@ -640,35 +640,14 @@ export const RunIntegrationToolsPlanSchema = z.strictObject({
 });
 export type RunIntegrationToolsPlan = z.infer<typeof RunIntegrationToolsPlanSchema>;
 
-export const RunIntegrationSkillsPlanSchema = z.strictObject({
-  token: z.string().min(1).max(4_096),
+export const PinnedPluginSchema = z.strictObject({
+  pluginId: z.string().min(1).max(256),
+  name: z.string().min(1).max(64),
+  digest: z.string().regex(/^[a-f0-9]{64}$/u),
+});
+export const RunPluginsPlanSchema = z.strictObject({
+  token: z.string().min(1).max(16_000),
   url: z.url(),
+  versions: z.array(PinnedPluginSchema).max(128),
 });
-export type RunIntegrationSkillsPlan = z.infer<typeof RunIntegrationSkillsPlanSchema>;
-
-export const IntegrationSkillBundleSchema = z.strictObject({
-  plugins: z
-    .array(
-      z.strictObject({
-        name: z.string().min(1).max(64),
-        skills: z
-          .array(
-            z.strictObject({
-              files: z
-                .array(
-                  z.strictObject({
-                    content: z.string().max(24 * 1_024 * 1_024),
-                    executable: z.boolean(),
-                    path: z.string().min(1).max(4_096),
-                  }),
-                )
-                .max(10_000),
-              name: z.string().min(1).max(64),
-            }),
-          )
-          .max(1_000),
-      }),
-    )
-    .max(128),
-});
-export type IntegrationSkillBundle = z.infer<typeof IntegrationSkillBundleSchema>;
+export type RunPluginsPlan = z.infer<typeof RunPluginsPlanSchema>;

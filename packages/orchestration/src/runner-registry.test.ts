@@ -1911,9 +1911,10 @@ function executeCommand(
         token: "agent-tools-token",
         url: "https://host.example.test/internal/v1/integration-mcp",
       },
-      integrationSkills: {
-        token: "integration-skills-token",
-        url: "https://host.example/internal/v1/integration-skills",
+      plugins: {
+        versions: [],
+        token: "plugin-cache-token",
+        url: "https://host.example/internal/v1/plugin-cache",
       },
       bindingGeneration: 1,
       executionLeaseMs: 90_000,

@@ -98,7 +98,7 @@ async function boot(input: Boot) {
       plan: async () => (launch) => launch,
       planProgram: async () => (launch) => launch,
     },
-    integrationSkills: async () => ({
+    plugins: async () => ({
       cleanup: async () => undefined,
       digest: "none",
       directory: undefined,

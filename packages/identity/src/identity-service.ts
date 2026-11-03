@@ -193,6 +193,10 @@ export class IdentityService {
   }
 
   async initialize(): Promise<void> {
+    // Better Auth starts this check in the background. Join it before a failed
+    // bootstrap can close the database underneath its schema query.
+    const context = await this.#auth.$context;
+    await context.checkSchema?.();
     await this.#ensureManagedOwner();
     await this.#ensureInitialOwnerEnrollment();
     await this.#ensureNativeOAuthClients();

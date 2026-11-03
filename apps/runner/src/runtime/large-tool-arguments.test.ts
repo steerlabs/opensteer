@@ -65,9 +65,10 @@ it("records a successful Codex command with large inline arguments without faili
         token: "test-tools",
         url: "https://host.example/internal/v1/integration-mcp",
       },
-      integrationSkills: {
+      plugins: {
+        versions: [],
         token: "test-skills",
-        url: "https://host.example/internal/v1/integration-skills",
+        url: "https://host.example/internal/v1/plugin-cache",
       },
       bindingGeneration: 1,
       executionLeaseMs: 90_000,
@@ -147,7 +148,7 @@ it("records a successful Codex command with large inline arguments without faili
         "opensteer:projects": skillPath("projects"),
       },
     },
-    integrationSkills: async () => ({
+    plugins: async () => ({
       cleanup: async () => undefined,
       digest: "none",
       directory: undefined,

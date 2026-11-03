@@ -35,7 +35,7 @@ it("matches the model-visible context byte budget", async () => {
     // The renderer reads real shipped metadata; only the machine-specific path
     // prefix is replaced with the same absolute fixture path on every platform.
     metrics[`skillsIndex.${id}.bytes`] = bytes(
-      (catalog ?? "").replaceAll(skillRoot, "/opensteer/skills"),
+      (catalog ?? "").replaceAll(resolve(skillRoot, ".."), "/opensteer"),
     );
   }
   await expect(`${JSON.stringify(metrics, null, 2)}\n`).toMatchFileSnapshot(

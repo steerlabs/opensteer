@@ -21,6 +21,10 @@ import { SignedTokenClaimsSchema, type SignedTokenService } from "../identity/ho
 export const runCapabilityLifetimeSeconds = 24 * 60 * 60;
 
 const RunCapabilityScopeSchema = z.strictObject({
+  pluginDigests: z
+    .array(z.string().regex(/^[a-f0-9]{64}$/u))
+    .max(128)
+    .optional(),
   bindingGeneration: z.number().int().positive(),
   capabilityProfileId: AgentCapabilityProfileIdSchema,
   environmentId: EnvironmentIdSchema,

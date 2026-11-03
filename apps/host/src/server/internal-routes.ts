@@ -9,7 +9,7 @@ export const hostInternalRoutePaths = {
   computerUseDisplay: "/internal/v1/computer-use/display",
   egress: "/internal/v1/egress",
   integrationMcp: "/internal/v1/integration-mcp",
-  integrationSkills: "/internal/v1/integration-skills",
+  plugins: "/internal/v1/plugin-cache",
   mcp: "/internal/v1/mcp",
   phoneUpdate: "/internal/v1/runners/agent-phone-update",
   runners: "/internal/v1/runners",

@@ -43,7 +43,7 @@ import {
   openRequestResponse,
   type RequestResponseVault,
 } from "../identity/request-response-vault.js";
-import type { IntegrationSkillsTokenService } from "../integrations/integration-skill-bundle-service.js";
+import type { PluginPackagesTokenService } from "../integrations/plugin-package-service.js";
 import type {
   IntegrationToolsTokenService,
   TriggerIntegrationToolsTokenService,
@@ -114,8 +114,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #agentToolsUrl: string;
   readonly #agentBrowserCdpUrl: string;
   readonly #integrationToolsUrl: string;
-  readonly #integrationSkillsTokens: IntegrationSkillsTokenService;
-  readonly #integrationSkillsUrl: string;
+  readonly #pluginVersions: (
+    workspaceId: WorkspaceId,
+  ) => Promise<import("@opensteer/protocol").RunPluginsPlan["versions"]>;
+  readonly #pluginsTokens: PluginPackagesTokenService;
+  readonly #pluginsUrl: string;
   readonly #integrationToolsTokens: IntegrationToolsTokenService;
   readonly #browser: Pick<BrowserService, "hasBrowserProfileAccess">;
   readonly #browserCdpUrl: string;
@@ -140,7 +143,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly browser: Pick<BrowserService, "hasBrowserProfileAccess">;
     readonly onWorkspaceEvent: (event: AgentEvent) => void;
     readonly onTriggerChanged?: (workspaceId: WorkspaceId) => void;
-    readonly integrationSkillsTokens: IntegrationSkillsTokenService;
+    readonly pluginVersions: (
+      workspaceId: WorkspaceId,
+    ) => Promise<import("@opensteer/protocol").RunPluginsPlan["versions"]>;
+    readonly pluginsTokens: PluginPackagesTokenService;
     readonly integrationToolsTokens: IntegrationToolsTokenService;
     readonly egress: EgressService;
     readonly executionLeaseMs: number;
@@ -165,11 +171,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       "/internal/v1/integration-mcp",
       options.publicUrl,
     ).toString();
-    this.#integrationSkillsTokens = options.integrationSkillsTokens;
-    this.#integrationSkillsUrl = new URL(
-      "/internal/v1/integration-skills",
-      options.publicUrl,
-    ).toString();
+    this.#pluginVersions = options.pluginVersions;
+    this.#pluginsTokens = options.pluginsTokens;
+    this.#pluginsUrl = new URL("/internal/v1/plugin-cache", options.publicUrl).toString();
     this.#integrationToolsTokens = options.integrationToolsTokens;
     this.#browser = options.browser;
     this.#browserCdpUrl = new URL("/internal/v1/trigger-cdp", options.publicUrl).toString();
@@ -470,7 +474,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       threadId: context.thread.id,
       workspaceId: context.workspace.id,
     });
-    const integrationSkillsToken = this.#integrationSkillsTokens.issue({
+    const pinnedPlugins = await this.#pluginVersions(context.workspace.id);
+    const pluginsToken = this.#pluginsTokens.issue({
+      pluginDigests: pinnedPlugins.map((plugin) => plugin.digest),
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
       capabilityProfileId: context.thread.capabilityProfileId,
@@ -552,9 +558,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           token: integrationToolsToken,
           url: this.#integrationToolsUrl,
         },
-        integrationSkills: {
-          token: integrationSkillsToken,
-          url: this.#integrationSkillsUrl,
+        plugins: {
+          versions: pinnedPlugins,
+          token: pluginsToken,
+          url: this.#pluginsUrl,
         },
         bindingGeneration: binding.bindingGeneration,
         // Half a token's life leaves the Runner room to retry before any expires.

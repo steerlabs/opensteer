@@ -4,7 +4,7 @@ import type { BrowserCdpRelay } from "../browser/browser-cdp-relay.js";
 import type { CredentialProxy } from "../credentials/credential-proxy.js";
 import type { RunCredentials } from "../credentials/run-credentials.js";
 import type { MachineAccessSetup } from "../shell/machine-access-setup.js";
-import type { MaterializedIntegrationSkills } from "../skills/integration-skills.js";
+import type { CachedRunPlugins } from "../skills/plugin-cache.js";
 
 /**
  * An engine kept running between the Runs of one Thread, with everything it
@@ -19,7 +19,7 @@ export interface WarmEngine {
   readonly browserCdpUrl: string;
   readonly credentialProxy: CredentialProxy;
   readonly harnessInstanceId: HarnessInstanceId;
-  readonly integrationSkills: MaterializedIntegrationSkills;
+  readonly plugins: CachedRunPlugins;
   /** What the engine was started with; a Run with any other key starts its own. */
   readonly key: string;
   /** The session's own lifetime, which outlasts each Run's. */

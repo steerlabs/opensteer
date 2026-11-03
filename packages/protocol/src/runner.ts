@@ -62,7 +62,7 @@ import {
   RunAgentControlPlanSchema,
   RunAgentToolsPlanSchema,
   RunBrowserCdpPlanSchema,
-  RunIntegrationSkillsPlanSchema,
+  RunPluginsPlanSchema,
   RunIntegrationToolsPlanSchema,
 } from "./agent-control.js";
 import { RunAttachmentPlanSchema } from "./attachments.js";
@@ -204,7 +204,7 @@ export const RunExecutionContextSchema = z.strictObject({
   agentTools: RunAgentToolsPlanSchema,
   browserCdp: RunBrowserCdpPlanSchema,
   integrationTools: RunIntegrationToolsPlanSchema,
-  integrationSkills: RunIntegrationSkillsPlanSchema,
+  plugins: RunPluginsPlanSchema,
   bindingGeneration: z.number().int().positive(),
   membershipGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   egress: RunEgressPlanSchema,
@@ -2019,7 +2019,6 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
         credentials: z.strictObject({
           agentControl: capabilityTokenSchema,
           attachments: capabilityTokenSchema.optional(),
-          integrationSkills: capabilityTokenSchema,
           integrationTools: capabilityTokenSchema,
         }),
         status: z.literal("issued"),
