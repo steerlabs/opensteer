@@ -198,7 +198,7 @@ integration.sequential("Thread title lifecycle", () => {
         kind: "local-directory",
         generation: 1,
         bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
+        ownerEnvironmentId: environmentId,
         storageAuthorityId: createId("storageAuthority"),
       },
 
@@ -806,7 +806,7 @@ integration.sequential("Thread title lifecycle", () => {
                   kind: "local-directory",
                   generation: 1,
                   bindingId: createId("workspaceBinding"),
-                  ownerEnvironmentId: createId("environment"),
+                  ownerEnvironmentId: f.environmentId,
                   storageAuthorityId: createId("storageAuthority"),
                 },
 
