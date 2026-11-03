@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { withWorkspacePluginPackage } from "../integrations/workspace-plugin-package.js";
 import {
   AesGcmSecretVault,
   createPublicHttpsFetch,
@@ -2066,6 +2068,27 @@ export async function createHostRuntime(
       tokens: watchControlTokens,
     });
     const agentTools = new AgentToolsMcpService({
+      pluginInstall: async (scope, directory) => {
+        const admission = await store.admitWorkspaceFiles(scope.workspaceId, scope.requestedBy);
+        if (!admission) throw new Error("Workspace is unavailable");
+        if (admission.workspace.backing.kind !== "local-directory")
+          throw new Error("Plugins require a local Workspace");
+        return withWorkspacePluginPackage({
+          directory,
+          admission,
+          files,
+          install: async (directory) => {
+            const result = await integrationPlatform.installAgentPlugin({
+              directory,
+              actorUserId: scope.requestedBy,
+              workspaceId: scope.workspaceId,
+              runnerId: scope.runnerId,
+              requestId: randomUUID(),
+            });
+            return { pluginId: result.installation.pluginId, issues: result.issues };
+          },
+        });
+      },
       // The Runner's stored advertisement, not its live connection: a Run's
       // engine keeps using its tools while that connection drops and returns.
       runnerCapabilities: async (scope) => {

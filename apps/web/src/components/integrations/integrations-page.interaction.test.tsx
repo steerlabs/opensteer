@@ -354,7 +354,7 @@ describe("Settings puts what the user has, and what needs them, first", () => {
       "Your accounts",
       "Apps on your computers",
       "Workspace access",
-      "Agent Plugins and MCP servers",
+      "MCP servers",
       "Add a service",
     ]);
 

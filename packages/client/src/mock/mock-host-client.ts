@@ -2083,6 +2083,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess({ appApproval: client.computerUseAppApproval(input.runnerId) }),
     "integration.computer.setup.list": async () =>
       rpcSuccess({ requests: client.listComputerAppSetupRequests() }),
+    "plugin.list": async () => rpcSuccess({ plugins: client.listPlugins() }),
     "integration.platform.get": async () =>
       rpcSuccess(
         hostApi["integration.platform.get"].success.parse(await client.loadIntegrationPlatform()),
@@ -2835,7 +2836,14 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "integration.mcp.disconnect":
       await client.disconnectMcpConnection(command.connectionId);
       return rpcSuccess({ type: command.type });
-    case "integration.agentPlugin.install": {
+    case "plugin.list":
+      return rpcSuccess({ type: command.type, plugins: client.listPlugins() });
+    case "plugin.update":
+    case "plugin.remove":
+    case "plugin.activation.set":
+      client.mutatePlugin(command);
+      return rpcSuccess({ type: command.type });
+    case "plugin.install": {
       const result = await client.installAgentPlugin(command.input.directory);
       return rpcSuccess({ ...result, type: command.type });
     }
@@ -4655,7 +4663,50 @@ export class MockHostClient implements HostClient {
   }
 }
 
+interface MockPlugin {
+  id: string;
+  name: string;
+  scope: string;
+  workspaceId: null;
+  currentVersionId: string;
+  versions: { id: string; digest: string }[];
+  activations: { workspaceId: string }[];
+}
 class MockHostState {
+  private readonly plugins: MockPlugin[] = [];
+  listPlugins(): Record<string, unknown>[] {
+    return this.plugins.map((p) => ({ ...p }));
+  }
+  mutatePlugin(
+    command: Extract<
+      HostApiCommand,
+      { type: "plugin.update" | "plugin.remove" | "plugin.activation.set" }
+    >,
+  ) {
+    const index = this.plugins.findIndex((p) => p.id === command.pluginId);
+    const plugin = this.plugins[index];
+    if (!plugin) throw new Error("Plugin not found");
+    if (command.type === "plugin.remove") this.plugins.splice(index, 1);
+    else if (command.type === "plugin.update") {
+      const id = crypto.randomUUID();
+      plugin.versions.push({ id, digest: id });
+      plugin.currentVersionId = id;
+    } else {
+      if (
+        command.active &&
+        this.plugins.some(
+          (p) =>
+            p.id !== plugin.id &&
+            p.name === plugin.name &&
+            p.activations.some((a) => a.workspaceId === command.workspaceId),
+        )
+      )
+        throw new Error("A plugin with that name is already active here");
+      plugin.activations = plugin.activations.filter((a) => a.workspaceId !== command.workspaceId);
+      if (command.active) plugin.activations.push({ workspaceId: command.workspaceId });
+    }
+  }
+
   readonly runPlaces = new RunPlaceStore();
   readonly searchSuggestionRequests: { readonly query: string; readonly at: number }[] = [];
   computerViews: MockComputerViews | undefined;
@@ -7976,7 +8027,20 @@ class MockHostState {
     );
   }
 
-  async installAgentPlugin(_directory: string) {
+  async installAgentPlugin(directory: string) {
+    const name = directory.split("/").filter(Boolean).at(-1) ?? "plugin";
+    if (name === "opensteer") throw new Error("The plugin name opensteer is reserved");
+    const id = crypto.randomUUID(),
+      versionId = crypto.randomUUID();
+    this.plugins.push({
+      id,
+      name,
+      scope: "deployment",
+      workspaceId: null,
+      currentVersionId: versionId,
+      versions: [{ id: versionId, digest: versionId }],
+      activations: [],
+    });
     return { issues: [] };
   }
 

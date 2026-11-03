@@ -51,6 +51,7 @@ export function createHostApiHandlers(
   integrationPlatformHandlers: Pick<
     HostApiHandlers,
     | "integration.grants.list"
+    | "plugin.list"
     | "integration.platform.get"
     | "integration.computer.apps.installed"
     | "integration.computer.session.stop"
@@ -233,7 +234,11 @@ function isIntegrationPlatformCommand(
   command: HostApiCommand,
 ): command is IntegrationPlatformCommand {
   switch (command.type) {
-    case "integration.agentPlugin.install":
+    case "plugin.update":
+    case "plugin.remove":
+    case "plugin.activation.set":
+    case "plugin.list":
+    case "plugin.install":
     case "integration.catalog.install":
     case "integration.computer.setup.request":
     case "integration.computer.setup.cancel":

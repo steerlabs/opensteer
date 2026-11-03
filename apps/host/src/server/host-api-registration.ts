@@ -64,6 +64,7 @@ const hostApiScopes = {
   "voice.stop": "mutation",
   "integration.authorization.get": "session",
   "integration.grants.list": "session",
+  "plugin.list": "session",
   "integration.platform.get": "session",
   "integration.computer.setup.list": "session",
   "integration.computer.policy.get": "session",
@@ -122,6 +123,7 @@ const hostApiScopes = {
 const exactOriginCommands: ReadonlySet<string> = new Set([
   "channel.connection.status.set",
   "integration.uninstall",
+  "plugin.remove",
   "session.revoke",
   "workspace.delete",
 ] satisfies readonly HostApiCommand["type"][]);

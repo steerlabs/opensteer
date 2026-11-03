@@ -1,3 +1,4 @@
+import { PluginManager } from "./plugin-manager.js";
 import { useIntegrationAuthorizationTracking } from "../../integrations/use-integration-authorization-tracking.js";
 import { RunnerIdSchema } from "@opensteer/core";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -470,9 +471,9 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
         const installed = await client.dispatch({
           idempotencyKey: mutationIdempotencyKey("integration-plugin"),
           input: { directory, ...(runnerId ? { runnerId } : {}) },
-          type: "integration.agentPlugin.install",
+          type: "plugin.install",
         });
-        if (installed.type !== "integration.agentPlugin.install") {
+        if (installed.type !== "plugin.install") {
           throw new Error("Integration plugin command mismatch.");
         }
         return installed;
@@ -835,8 +836,15 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
                   workspaceKind={workspaceKind}
                   workspaces={snapshot.workspaces}
                 />
+                {dashboard?.isAdministrator ? (
+                  <PluginManager
+                    client={client}
+                    workspaces={snapshot.workspaces}
+                    revision={pending}
+                  />
+                ) : null}
                 <PluginsAndMcpSection
-                  entries={otherInstallations}
+                  entries={otherInstallations.filter((e) => e.installation.sourceKind !== "plugin")}
                   isAdministrator={dashboard?.isAdministrator ?? false}
                   onInstall={() => {
                     setError(null);

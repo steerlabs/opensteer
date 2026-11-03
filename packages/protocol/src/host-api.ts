@@ -774,8 +774,31 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    type: z.literal("plugin.update"),
+    pluginId: z.string(),
     input: InstallAgentPluginSchema,
-    type: z.literal("integration.agentPlugin.install"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("plugin.remove"),
+    pluginId: z.string(),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("plugin.activation.set"),
+    pluginId: z.string(),
+    workspaceId: WorkspaceIdSchema,
+    active: z.boolean(),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("plugin.list"),
+    workspaceId: WorkspaceIdSchema.optional(),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    input: InstallAgentPluginSchema,
+    type: z.literal("plugin.install"),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1222,6 +1245,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("integration.authorization.cancel"),
   }),
   z.object({ type: z.literal("integration.mcp.disconnect") }),
+  z.object({ type: z.literal("plugin.update") }),
+  z.object({ type: z.literal("plugin.remove") }),
+  z.object({ type: z.literal("plugin.activation.set") }),
+  z.object({ type: z.literal("plugin.list"), plugins: z.array(z.record(z.string(), z.unknown())) }),
   z.object({
     issues: z
       .array(
@@ -1232,7 +1259,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
         }),
       )
       .max(1_000),
-    type: z.literal("integration.agentPlugin.install"),
+    type: z.literal("plugin.install"),
   }),
   z.object({
     installation: IntegrationInstallationViewSchema,
@@ -1588,6 +1615,11 @@ export const hostApi = defineRpc({
       total: z.number().int().nonnegative(),
       unavailableReason: z.enum(["offline", "not-ready"]).optional(),
     }),
+  ),
+  "plugin.list": declaration(
+    "GET",
+    z.strictObject({ workspaceId: WorkspaceIdSchema.optional() }),
+    z.object({ plugins: z.array(z.record(z.string(), z.unknown())) }),
   ),
   "integration.platform.get": declaration(
     "GET",

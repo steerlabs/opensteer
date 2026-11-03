@@ -79,6 +79,9 @@ export class AgentToolsMcpService {
   readonly #agentControl: Pick<AgentControlService, "handle">;
   readonly #allowedHost: string;
   readonly #allowedOrigin: string;
+  readonly #pluginInstall:
+    | ((scope: AgentControlRunScope, directory: string) => Promise<Record<string, unknown>>)
+    | undefined;
   readonly #sessions = new Map<string, McpSession>();
   readonly #tokens: AgentControlTokenService;
   readonly #runnerCapabilities:
@@ -97,6 +100,10 @@ export class AgentToolsMcpService {
      * What a Run's Runner advertised, which decides the tools its engine
      * accepts. Without it every Run gets the current inventory.
      */
+    readonly pluginInstall?: (
+      scope: AgentControlRunScope,
+      directory: string,
+    ) => Promise<Record<string, unknown>>;
     readonly runnerCapabilities?: (scope: AgentControlRunScope) => Promise<readonly string[]>;
     readonly store: Pick<OpensteerStore, "getThreadForOwner">;
     readonly tokens: AgentControlTokenService;
@@ -105,6 +112,7 @@ export class AgentToolsMcpService {
     readonly watchControl?: Pick<WatchControlService, "handle">;
     readonly watchTokens?: WatchControlTokenService;
   }) {
+    this.#pluginInstall = options.pluginInstall;
     this.#agentControl = options.agentControl;
     this.#allowedHost = options.publicUrl.host;
     this.#allowedOrigin = options.publicUrl.origin;
@@ -425,6 +433,11 @@ export class AgentToolsMcpService {
           projects: response.workspaces.filter(({ kind }) => kind === "project"),
           window: response.window,
         };
+      }
+      case "plugin_install": {
+        const scope = await this.#tokens.authenticate(token);
+        if (!this.#pluginInstall) throw new Error("Plugin installation is unavailable");
+        return this.#pluginInstall(scope, z.string().parse(input.directory));
       }
       case "project_create": {
         const response = await control.handle(token, {

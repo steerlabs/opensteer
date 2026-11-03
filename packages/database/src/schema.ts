@@ -1721,7 +1721,8 @@ export interface IntegrationInstallationTable {
   title: string;
   description: string;
   version: string | null;
-  sourceKind: "agent-plugin" | "built-in" | "proposed" | "remote-mcp";
+  pluginId: Generated<string | null>;
+  sourceKind: "plugin" | "built-in" | "proposed" | "remote-mcp";
   trust: "built-in" | "verified-publisher" | "administrator-approved";
   manifest: JsonColumn<Readonly<Record<string, unknown>>>;
   provenance: JsonColumn<Readonly<Record<string, unknown>>>;
@@ -2130,7 +2131,31 @@ export interface DatabaseSchema {
   integrationServers: IntegrationServerTable;
   integrationTools: IntegrationToolTable;
   integrationToolDefinitions: IntegrationToolDefinitionsTable;
-  integrationSkills: IntegrationSkillTable;
+  plugins: {
+    id: string;
+    name: string;
+    scope: "deployment" | "workspace";
+    workspaceId: string | null;
+    source: JsonColumn<Readonly<Record<string, unknown>>>;
+    installedBy: UserId | null;
+    currentVersionId: string | null;
+    createdAt: Timestamp;
+    updatedAt: Timestamp;
+  };
+  pluginVersions: {
+    id: string;
+    pluginId: string;
+    digest: string;
+    manifest: JsonColumn<Readonly<Record<string, unknown>>>;
+    specialistManifest: JsonColumn<Readonly<Record<string, unknown>>> | null;
+    createdAt: Timestamp;
+  };
+  pluginActivations: {
+    workspaceId: WorkspaceId;
+    pluginId: string;
+    createdBy: UserId | null;
+    createdAt: Timestamp;
+  };
   integrationGrants: IntegrationGrantTable;
   mcpOAuthCredentials: McpOAuthCredentialTable;
   channelAccounts: ChannelAccountTable;

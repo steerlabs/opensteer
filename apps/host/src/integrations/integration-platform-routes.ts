@@ -29,6 +29,7 @@ export function createIntegrationPlatformRpcHandlers(
 ): Pick<
   HostApiHandlers,
   | "integration.grants.list"
+  | "plugin.list"
   | "integration.platform.get"
   | "integration.computer.apps.installed"
   | "integration.computer.session.stop"
@@ -36,6 +37,10 @@ export function createIntegrationPlatformRpcHandlers(
   | "integration.computer.policy.get"
 > {
   return {
+    "plugin.list": async (input, context) => {
+      requireAdministrator(context);
+      return rpcSuccess({ plugins: await options.platform.store.plugins.list(input.workspaceId) });
+    },
     "integration.computer.policy.get": async (input, context) => {
       const { appApproval } = await options.platform.computerAppApprovals.computerUsePolicy({
         ...input,
@@ -92,7 +97,11 @@ export type IntegrationPlatformCommand = Extract<
   HostApiCommand,
   {
     readonly type:
-      | "integration.agentPlugin.install"
+      | "plugin.install"
+      | "plugin.update"
+      | "plugin.remove"
+      | "plugin.activation.set"
+      | "plugin.list"
       | "integration.catalog.install"
       | "integration.computer.setup.set"
       | "integration.computer.approval-key.set"
@@ -184,7 +193,42 @@ export async function handleIntegrationPlatformCommand(
         requestId: context.requestId,
       });
       return { type: command.type };
-    case "integration.agentPlugin.install": {
+    case "plugin.list":
+      requireAdministrator(context);
+      return {
+        type: command.type,
+        plugins: await options.platform.store.plugins.list(command.workspaceId),
+      };
+    case "plugin.activation.set":
+      await options.platform.store.plugins.setActivation({
+        ...command,
+        actorUserId: session.user.id,
+      });
+      return { type: command.type };
+    case "plugin.remove": {
+      requireAdministrator(context);
+      for (const installation of await options.platform.store.listInstallations()) {
+        if (installation.pluginId === command.pluginId)
+          await options.platform.uninstallIntegration({
+            installationId: installation.id,
+            actorUserId: session.user.id,
+            requestId: context.requestId,
+          });
+      }
+      await options.platform.store.plugins.remove(command.pluginId);
+      return { type: command.type };
+    }
+    case "plugin.update":
+      requireAdministrator(context);
+      await options.platform.installAgentPlugin({
+        actorUserId: session.user.id,
+        directory: command.input.directory,
+        pluginId: command.pluginId,
+        requestId: context.requestId,
+        ...(command.input.runnerId ? { runnerId: command.input.runnerId } : {}),
+      });
+      return { type: command.type };
+    case "plugin.install": {
       requireAdministrator(context);
       const result = await options.platform.installAgentPlugin({
         actorUserId: session.user.id,

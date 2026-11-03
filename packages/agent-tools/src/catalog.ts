@@ -27,6 +27,7 @@ export const AgentToolIdSchema = z.enum([
   "environment.list",
   "project.list",
   "project.create",
+  "plugin.install",
   "thread.read",
   "thread.list",
   "thread.delegate",
@@ -56,6 +57,7 @@ export const AgentToolNameSchema = z.enum([
   "environment_list",
   "project_list",
   "project_create",
+  "plugin_install",
   "thread_read",
   "thread_list",
   "thread_delegate",
@@ -214,6 +216,21 @@ const definitions = [
     }),
     name: "project_list",
   },
+  {
+    annotations: {
+      title: "Install plugin",
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+      readOnlyHint: false,
+    },
+    description:
+      "Install an Agent Plugins 1.0 folder inside your own Workspace and activate its skills here. Use a relative path; symlinks are refused. Installing grants no connection access. Local MCP servers require the computer owner's approval.",
+    id: "plugin.install",
+    inputSchema: z.strictObject({ directory: z.string().min(1).max(4096) }),
+    name: "plugin_install",
+  },
+
   {
     annotations: {
       destructiveHint: false,
@@ -691,6 +708,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
     [
       "project.list",
       "project.create",
+      "plugin.install",
       "thread.read",
       "thread.list",
       "environment.list",
@@ -721,6 +739,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
     AgentCapabilityProfileIdSchema.parse("workspace"),
     "Coordination within a Project",
     [
+      "plugin.install",
       "thread.read",
       "thread.list",
       "environment.list",
@@ -750,6 +769,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
     AgentCapabilityProfileIdSchema.parse("delegated"),
     "A delegated child with a narrow communication surface",
     [
+      "plugin.install",
       "thread.read",
       "thread.list",
       "environment.list",

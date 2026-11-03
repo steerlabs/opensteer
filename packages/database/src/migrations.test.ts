@@ -141,6 +141,7 @@ const releasedMigrationNames = [
   "0131_project_control_actions",
   "0132_local_directory_only",
   "0133_resource_access_levels",
+  "0134_plugins",
 ];
 
 describe("migration names", () => {

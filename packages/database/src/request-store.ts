@@ -3152,7 +3152,7 @@ function integrationInstallationFromRequestRow(row: {
   readonly name: string;
   readonly provenance: unknown;
   readonly revision: number;
-  readonly sourceKind: "agent-plugin" | "built-in" | "proposed" | "remote-mcp";
+  readonly sourceKind: "plugin" | "built-in" | "proposed" | "remote-mcp";
   readonly status: "active" | "disabled" | "needs-attention";
   readonly title: string;
   readonly trust: "administrator-approved" | "built-in" | "verified-publisher";
@@ -3666,22 +3666,12 @@ async function assertMainIntegrationAccessUsable(
           )
           .execute()
       : [];
-    const hasActiveSkill = installation
-      ? (await transaction
-          .selectFrom("integrationSkills")
-          .select("id")
-          .where("installationId", "=", input.installationId)
-          .where("status", "=", "active")
-          .limit(1)
-          .executeTakeFirst()) !== undefined
-      : false;
     if (
       installation &&
-      ((input.requestedServerId === null && hasActiveSkill) ||
-        servers.some(
-          ({ connectionRequirement }) =>
-            IntegrationConnectionRequirementSchema.parse(connectionRequirement).kind === "none",
-        ))
+      servers.some(
+        ({ connectionRequirement }) =>
+          IntegrationConnectionRequirementSchema.parse(connectionRequirement).kind === "none",
+      )
     ) {
       return;
     }

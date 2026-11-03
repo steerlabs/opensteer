@@ -213,6 +213,8 @@ export type LoadedAgentPluginServer =
  * symlink, junction, or reparse point.
  */
 export async function loadAgentPlugin(input: {
+  readonly pluginId: string;
+  readonly migrateLegacyData?: boolean;
   readonly dataDirectory: string;
   readonly directory: string;
 }): Promise<LoadedAgentPlugin> {
@@ -243,7 +245,17 @@ export async function loadAgentPlugin(input: {
     delete manifestInput.extensions;
   }
   const manifest = PluginManifestSchema.parse(manifestInput);
-  const pluginData = join(resolve(input.dataDirectory), manifest.name);
+  if (!/^[a-zA-Z0-9_-]+(?:-[a-zA-Z0-9_-]+)*$/u.test(input.pluginId))
+    throw new Error("Invalid plugin id");
+  const pluginData = join(resolve(input.dataDirectory), input.pluginId);
+  if (input.migrateLegacyData && !(await optionalLstat(pluginData))) {
+    const legacy = join(resolve(input.dataDirectory), manifest.name);
+    const legacyStat = await optionalLstat(legacy);
+    if (legacyStat) {
+      await requireRealDirectory(legacy, "Legacy plugin data");
+      await rename(legacy, pluginData);
+    }
+  }
   await mkdir(pluginData, { mode: 0o700, recursive: true });
   const resolvedData = await realpath(pluginData);
 

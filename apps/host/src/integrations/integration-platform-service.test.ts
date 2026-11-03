@@ -2886,7 +2886,6 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
             grant: { ...tool.grant, connectionId },
           },
         ]),
-        listGrantedSkills: vi.fn(async () => []),
         requests: {
           listPendingIntegrationAccessRequests: vi.fn(async () => [
             {
@@ -2990,7 +2989,6 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
         mainAccess,
         isConnectionUsableForAccessRequest: vi.fn(async () => false),
         listCallableTools: vi.fn(async () => []),
-        listGrantedSkills: vi.fn(async () => []),
         requests: {
           listPendingIntegrationAccessRequests: vi.fn(async () => [
             {

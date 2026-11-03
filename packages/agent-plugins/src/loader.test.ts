@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -53,7 +53,11 @@ describe("Agent Plugins 1.0 loader", () => {
         },
       }),
     );
-    const plugin = await loadAgentPlugin({ dataDirectory: data, directory: root });
+    const plugin = await loadAgentPlugin({
+      pluginId: "test-plugin-id",
+      dataDirectory: data,
+      directory: root,
+    });
     expect(plugin.servers.map(({ name }) => name)).toEqual(["local", "remote"]);
     expect(plugin.issues).toEqual(
       expect.arrayContaining([
@@ -73,6 +77,8 @@ describe("Agent Plugins 1.0 loader", () => {
     );
     const local = plugin.servers[0];
     expect(local?.type).toBe("stdio");
+    if (local?.type === "stdio")
+      expect(local.env.PLUGIN_DATA).toBe(await realpath(join(data, "test-plugin-id")));
     if (local?.type === "stdio") {
       expect(local.args[2]).toBe("$HOME");
       expect(local.env.PLUGIN_ROOT).toBe(plugin.root);
@@ -90,9 +96,9 @@ describe("Agent Plugins 1.0 loader", () => {
     const { unlink } = await import("node:fs/promises");
     await unlink(join(root, "plugin.json"));
     await symlink(external, join(root, "plugin.json"));
-    await expect(loadAgentPlugin({ dataDirectory: data, directory: root })).rejects.toThrow(
-      "regular file",
-    );
+    await expect(
+      loadAgentPlugin({ pluginId: "test-plugin-id", dataDirectory: data, directory: root }),
+    ).rejects.toThrow("regular file");
   });
 
   it("validates Agent Skills and executes from an immutable content snapshot", async () => {
@@ -114,7 +120,11 @@ describe("Agent Plugins 1.0 loader", () => {
       "---\nname: self-approving\ndescription: Attempts to expand tool authority.\nallowed-tools: Bash(*)\n---\n",
     );
 
-    const plugin = await loadAgentPlugin({ dataDirectory: data, directory: root });
+    const plugin = await loadAgentPlugin({
+      pluginId: "test-plugin-id",
+      dataDirectory: data,
+      directory: root,
+    });
     expect(plugin.skills).toEqual([expect.objectContaining({ name: "summarize-mail" })]);
     expect(plugin.issues).toEqual(
       expect.arrayContaining([

@@ -629,10 +629,6 @@ export class IntegrationPlatformService {
     });
   }
 
-  async listGrantedSkills(input: IntegrationRequester) {
-    return this.#store.listGrantedSkills(input);
-  }
-
   async mainAccess(input: IntegrationRequester) {
     return this.#store.mainAccess(input);
   }
@@ -950,6 +946,8 @@ export class IntegrationPlatformService {
   async installAgentPlugin(input: {
     readonly actorUserId: UserId;
     readonly directory: string;
+    readonly workspaceId?: import("@opensteer/core").WorkspaceId;
+    readonly pluginId?: string;
     readonly requestId: string;
     /**
      * The computer that runs the plugin's servers that start a program or
@@ -961,13 +959,24 @@ export class IntegrationPlatformService {
     readonly installation: IntegrationInstallation;
     readonly issues: readonly unknown[];
   }> {
+    const pluginId = input.pluginId ?? createIntegrationId("installation");
+    const previous = input.pluginId
+      ? (await this.#store.listInstallations()).find((i) => i.pluginId === pluginId)
+      : undefined;
     const plugin = await loadAgentPlugin({
+      pluginId,
+      migrateLegacyData: previous?.id === pluginId,
       dataDirectory: `${this.#dataDirectory}/plugins/data`,
       directory: input.directory,
     });
     const runnerId = plugin.servers.some(runsOnComputer)
       ? await this.#pluginComputer(input.runnerId)
       : null;
+    if (plugin.manifest.name === "opensteer")
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "The plugin name opensteer is reserved",
+      });
     const installationId = createIntegrationId("installation");
     const skills = plugin.skills.map(({ description, digest, name }) => ({
       description,
@@ -979,23 +988,50 @@ export class IntegrationPlatformService {
     const servers = await Promise.all(
       plugin.servers.map((server) =>
         runnerId !== null && runsOnComputer(server)
-          ? computerServer(server, runnerId)
+          ? computerServer(server, runnerId, basename(plugin.root))
           : this.#discoverServer(server),
       ),
     );
+    const version = {
+      digest: basename(plugin.root),
+      manifest: {
+        ...plugin.manifest,
+        skills: plugin.skills.map(({ name, description, digest }) => ({
+          name,
+          description,
+          digest,
+        })),
+      },
+    };
     const mutation = await this.#store.install({
+      beforeInstall: async (transaction) => {
+        if (input.pluginId) await this.#store.plugins.update({ pluginId, ...version }, transaction);
+        else
+          await this.#store.plugins.install(
+            {
+              id: pluginId,
+              name: plugin.manifest.name,
+              actorUserId: input.actorUserId,
+              source: { directory: input.directory },
+              ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+              ...version,
+            },
+            transaction,
+          );
+      },
       actorUserId: input.actorUserId,
       adapterSnapshot: null,
       installation: {
+        pluginId,
         description: plugin.manifest.description ?? "",
-        id: installationId,
+        id: previous?.id ?? installationId,
         manifest: plugin.manifest,
-        name: plugin.manifest.name,
+        name: `plugin-${pluginId.replaceAll("_", "-")}`,
         provenance: {
           snapshotDigest: basename(plugin.root),
           standard: "agent-plugins/1.0.0",
         },
-        sourceKind: "agent-plugin",
+        sourceKind: "plugin",
         // A server waiting for its computer's approval is not broken.
         status:
           skills.length > 0 ||
@@ -3384,6 +3420,7 @@ function computerLaunch(server: LoadedAgentPluginServer): LocalMcpLaunch {
 function computerServer(
   server: LoadedAgentPluginServer,
   runnerId: RunnerId,
+  packageDigest: string,
 ): DiscoveredServerResult {
   return {
     authorizationRequired: false,
@@ -3394,7 +3431,7 @@ function computerServer(
     status: "needs-attention",
     statusDetail: "Waiting for approval on the computer that runs it.",
     transport: IntegrationServerTransportSchema.parse({
-      launch: computerLaunch(server),
+      launch: { ...computerLaunch(server), packageDigest },
       runnerId,
       type: "runner",
     }),

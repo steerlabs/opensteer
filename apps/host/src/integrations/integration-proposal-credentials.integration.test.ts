@@ -882,11 +882,7 @@ integration("proposal credential guidance", () => {
             manifest,
             adapterSnapshot,
             sourceKind:
-              name === "plugin"
-                ? "agent-plugin"
-                : name === "missing-inline"
-                  ? "built-in"
-                  : "proposed",
+              name === "plugin" ? "plugin" : name === "missing-inline" ? "built-in" : "proposed",
             provenance:
               name === "missing-inline"
                 ? {

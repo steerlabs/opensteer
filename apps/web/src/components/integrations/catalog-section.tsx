@@ -181,7 +181,7 @@ export function PluginsAndMcpSection({
   return (
     <section className="section">
       <div className="section__head">
-        <h2 className="section__title">Agent Plugins and MCP servers</h2>
+        <h2 className="section__title">MCP servers</h2>
         <span className="section__hint">Added to this deployment.</span>
       </div>
       {entries.length > 0 ? (
@@ -213,7 +213,7 @@ export function PluginsAndMcpSection({
                     ) : null}
                   </span>
                   <span className="card__row-detail">
-                    {installation.sourceKind === "agent-plugin"
+                    {installation.sourceKind === "plugin"
                       ? "Agent Plugin 1.0"
                       : installation.sourceKind === "proposed"
                         ? "Agent-proposed"

@@ -45,3 +45,12 @@ version control; read it only to unlock that phone.
 Files grant no access and keep no process alive. Use ordinary access Requests for resources;
 use `opensteer-triggers` for requested recurring work and verify the returned state. Remove
 obsolete instructions when the person's requirements change.
+
+## Package a repeated procedure as a plugin
+
+When repeated work needs skills, scripts or MCP servers together, package it as an Agent Plugins
+1.0 folder inside this Workspace: `plugin.json`, `skills/<name>/SKILL.md`, scripts, and an optional
+`mcp.json`. Test the scripts on disposable inputs and run the skill's steps before calling
+`plugin_install` with the folder's path relative to this Workspace. Symlinks are refused. Its skills
+turn on here; connections still need grants, and local MCP servers need the computer owner's launch
+approval.

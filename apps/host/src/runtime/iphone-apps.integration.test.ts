@@ -798,7 +798,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     const mcp = await command(
       host,
       {
-        type: "integration.agentPlugin.install",
+        type: "plugin.install",
         idempotencyKey: randomUUID(),
         input: { directory: pluginDirectory, runnerId: phone.runnerId },
       },

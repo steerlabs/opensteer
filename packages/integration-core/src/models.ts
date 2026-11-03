@@ -589,7 +589,8 @@ export const IntegrationInstallationSchema = z.strictObject({
   name: IntegrationSlugSchema,
   provenance: JsonObjectSchema,
   revision: z.number().int().positive(),
-  sourceKind: z.enum(["agent-plugin", "built-in", "proposed", "remote-mcp"]),
+  pluginId: z.string().nullable().optional(),
+  sourceKind: z.enum(["plugin", "built-in", "proposed", "remote-mcp"]),
   status: z.enum(["active", "disabled", "needs-attention"]),
   title: z.string().trim().min(1).max(160),
   trust: IntegrationTrustSchema,
@@ -601,6 +602,7 @@ export type IntegrationInstallation = z.infer<typeof IntegrationInstallationSche
 
 const localMcpLaunchShapes = {
   stdio: {
+    packageDigest: z.string().optional(),
     args: z.array(z.string().max(32_768)).max(256),
     command: z.string().min(1).max(4_096),
     cwd: z.string().min(1).max(4_096),
@@ -608,6 +610,7 @@ const localMcpLaunchShapes = {
     type: z.literal("stdio"),
   },
   http: {
+    packageDigest: z.string().optional(),
     headers: z.record(z.string().max(256), z.string().max(8_192)),
     type: z.literal("streamable-http"),
     url: z.url().refine((value) => {

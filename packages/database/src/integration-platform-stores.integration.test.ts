@@ -819,7 +819,6 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     await expect(platform.listInstallations()).resolves.toEqual([]);
     await expect(countRows(database, "integrationServers")).resolves.toBe(0);
     await expect(countRows(database, "integrationTools")).resolves.toBe(0);
-    await expect(countRows(database, "integrationSkills")).resolves.toBe(0);
     await expect(countRows(database, "integrationGrants")).resolves.toBe(0);
     // The catalog definition still exists, so the account it authorizes stays usable.
     await expect(countRows(database, "integrationConnections")).resolves.toBe(1);
@@ -6824,7 +6823,6 @@ async function countRows(
     | "integrationConnections"
     | "integrationGrants"
     | "integrationServers"
-    | "integrationSkills"
     | "integrationTools"
     | "mcpOAuthCredentials",
 ): Promise<number> {

@@ -33,7 +33,6 @@ describe("IntegrationSkillBundleService", () => {
     await writeFile(join(root, "skills", "hidden", "SKILL.md"), "hidden instructions");
 
     const installationId = createIntegrationId("installation");
-    const skillId = createIntegrationId("skill");
     const requestedBy = createId("user");
     const workspaceId = createId("workspace");
     const installation = {
@@ -44,7 +43,7 @@ describe("IntegrationSkillBundleService", () => {
       name: "example-plugin",
       provenance: { snapshotDigest },
       revision: 1,
-      sourceKind: "agent-plugin" as const,
+      sourceKind: "plugin" as const,
       status: "active" as const,
       title: "Example Plugin",
       trust: "administrator-approved" as const,
@@ -52,33 +51,16 @@ describe("IntegrationSkillBundleService", () => {
       version: "1.0.0",
     };
     const store = {
-      listGrantedSkills: vi.fn(async () => [
-        {
-          grant: {
-            access: "read" as const,
-            alias: "Allowed research",
-            connectionId: null,
-            createdAt: new Date().toISOString(),
-            id: createIntegrationId("grant"),
-            installationId,
-            isDefault: true,
-            ownerUserId: requestedBy,
-            revokedAt: null,
-            status: "active" as const,
-            workspaceId,
+      plugins: {
+        current: vi.fn(async () => [
+          {
+            id: installationId,
+            name: installation.name,
+            digest: snapshotDigest,
+            manifest: { skills: [{ name: "allowed" }] },
           },
-          installation,
-          skill: {
-            description: "Allowed research",
-            digest: "a".repeat(43),
-            id: skillId,
-            installationId,
-            name: "allowed",
-            status: "active" as const,
-            updatedAt: new Date().toISOString(),
-          },
-        },
-      ]),
+        ]),
+      },
     };
     const tokens = {
       authenticate: vi.fn(async () => ({ requestedBy, workspaceId })),
@@ -91,7 +73,7 @@ describe("IntegrationSkillBundleService", () => {
 
     const bundle = await service.bundle("signed-run-token");
     expect(tokens.authenticate).toHaveBeenCalledWith("signed-run-token");
-    expect(store.listGrantedSkills).toHaveBeenCalledWith({ ownerUserId: requestedBy, workspaceId });
+    expect(store.plugins.current).toHaveBeenCalledWith(workspaceId);
     expect(bundle.plugins).toHaveLength(1);
     expect(bundle.plugins[0]?.skills.map(({ name }) => name)).toEqual(["allowed"]);
     expect(bundle.plugins[0]?.skills[0]?.files).toEqual(

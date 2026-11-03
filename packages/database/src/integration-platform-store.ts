@@ -1,3 +1,4 @@
+import { PluginStore } from "./plugin-store.js";
 import { ComputerOperationStore } from "./computer-operation-store.js";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -66,9 +67,10 @@ export class IntegrationPlatformStore {
   readonly getToolInvocation: IntegrationGrantStore["getToolInvocation"];
   readonly getToolSchemas: IntegrationGrantStore["getToolSchemas"];
   readonly listCallableTools: IntegrationGrantStore["listCallableTools"];
-  readonly listGrantedSkills: IntegrationGrantStore["listGrantedSkills"];
+  readonly plugins: PluginStore;
 
   constructor(database: Kysely<DatabaseSchema>) {
+    this.plugins = new PluginStore(database);
     this.computerOperations = new ComputerOperationStore(database);
     this.connections = new IntegrationConnectionAuthStore(database);
     this.grants = new IntegrationGrantStore(database);
@@ -149,6 +151,5 @@ export class IntegrationPlatformStore {
     this.getToolInvocation = this.grants.getToolInvocation.bind(this.grants);
     this.getToolSchemas = this.grants.getToolSchemas.bind(this.grants);
     this.listCallableTools = this.grants.listCallableTools.bind(this.grants);
-    this.listGrantedSkills = this.grants.listGrantedSkills.bind(this.grants);
   }
 }

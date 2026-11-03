@@ -6469,4 +6469,5 @@ ALTER TABLE ONLY public.request_continuations
 --
 -- PostgreSQL database dump complete
 --
+DROP TABLE integration_skills;
 `;

@@ -27,6 +27,7 @@ import {
   type MigrationResultSet,
 } from "kysely/migration";
 import { createHash } from "node:crypto";
+import { PLUGIN_SCHEMA_SQL } from "./plugin-schema.js";
 import { BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
@@ -690,8 +691,10 @@ const fixedIntegrationAuthorizationMigration: Migration = {
       )
     `.execute(database);
     await sql`
-      delete from public.integration_skills
-      where installation_id in (select id from retired_integration_installations)
+      DO $$ BEGIN
+      IF to_regclass('public.integration_skills') IS NOT NULL THEN
+        delete from public.integration_skills where installation_id in (select id from retired_integration_installations);
+      END IF; END $$;
     `.execute(database);
     await sql`
       delete from public.integration_servers
@@ -4683,6 +4686,7 @@ export function migrationProvider() {
         "0131_project_control_actions": projectControlActionsMigration,
         "0132_local_directory_only": localDirectoryOnlyMigration,
         "0133_resource_access_levels": resourceAccessLevelsMigration,
+        "0134_plugins": pluginsMigration,
       };
     },
   };
@@ -6818,5 +6822,27 @@ export const resourceAccessLevelsMigration: Migration = {
       update browser_profile_grants set access = 'read-write' where access = 'full-control';
       alter table browser_profile_grants add constraint browser_profile_grants_access_check check (access in ('read', 'read-write'));
     `.execute(database);
+  },
+};
+
+export const pluginsMigration: Migration = {
+  async up(database) {
+    await sql.raw(PLUGIN_SCHEMA_SQL).execute(database);
+    await sql`
+   INSERT INTO plugins(id,name,scope,source,installed_by,current_version_id,created_at,updated_at)
+   SELECT id, CASE WHEN name = 'opensteer' THEN 'imported-opensteer' ELSE name END, 'deployment', provenance, created_by, id || '-v1',created_at,updated_at
+   FROM integration_installations WHERE source_kind = 'agent-plugin';
+   INSERT INTO plugin_versions(id,plugin_id,digest,manifest,created_at)
+   SELECT i.id || '-v1',i.id,i.provenance->>'snapshotDigest',
+    i.manifest || jsonb_build_object('skills', COALESCE((SELECT jsonb_agg(jsonb_build_object('name',s.name,'description',s.description,'digest',s.digest)) FROM integration_skills s WHERE s.installation_id=i.id AND s.status='active'),'[]'::jsonb)),i.created_at
+   FROM integration_installations i WHERE i.source_kind='agent-plugin';
+   INSERT INTO plugin_activations(workspace_id,plugin_id,created_by)
+   SELECT DISTINCT w.id,i.id,i.created_by FROM integration_installations i CROSS JOIN workspaces w
+   WHERE i.source_kind='agent-plugin' AND i.status='active' AND (
+     w.kind='main' OR EXISTS(SELECT 1 FROM integration_grants g WHERE g.installation_id=i.id AND g.workspace_id=w.id AND g.revoked_at IS NULL AND EXISTS(SELECT 1 FROM workspace_memberships m WHERE m.workspace_id=w.id AND m.user_id=g.owner_user_id AND m.state='active'))
+   );
+   UPDATE integration_installations SET source_kind='plugin',plugin_id=id WHERE source_kind='agent-plugin';
+   DROP TABLE integration_skills;
+  `.execute(database);
   },
 };

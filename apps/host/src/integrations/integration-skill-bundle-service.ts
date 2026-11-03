@@ -30,33 +30,16 @@ export class IntegrationSkillBundleService {
 
   async bundle(token: string): Promise<IntegrationSkillBundle> {
     const scope = await this.#tokens.authenticate(token);
-    const granted = await this.#store.listGrantedSkills({
-      ownerUserId: scope.requestedBy,
-      threadId: scope.threadId,
-      workspaceId: scope.workspaceId,
-    });
-    const installations = new Map<
-      string,
-      { installation: (typeof granted)[number]["installation"]; skillNames: Set<string> }
-    >();
-    for (const item of granted) {
-      if (item.installation.sourceKind !== "agent-plugin") continue;
-      const current = installations.get(item.installation.id) ?? {
-        installation: item.installation,
-        skillNames: new Set<string>(),
-      };
-      current.skillNames.add(item.skill.name);
-      installations.set(item.installation.id, current);
-    }
+    const activated = await this.#store.plugins.current(scope.workspaceId);
     let totalBytes = 0;
     let totalFiles = 0;
     const plugins: Array<IntegrationSkillBundle["plugins"][number]> = [];
-    if (installations.size === 0) {
+    if (activated.length === 0) {
       return IntegrationSkillBundleSchema.parse({ plugins });
     }
     const snapshotDirectory = await realpath(this.#snapshotDirectory);
-    for (const { installation, skillNames } of installations.values()) {
-      const snapshotDigest = installation.provenance.snapshotDigest;
+    for (const installation of activated) {
+      const snapshotDigest = installation.digest;
       if (typeof snapshotDigest !== "string" || !/^[a-f0-9]{64}$/u.test(snapshotDigest)) {
         throw new Error(`Agent Plugin ${installation.name} has no immutable package snapshot`);
       }
@@ -76,6 +59,19 @@ export class IntegrationSkillBundleService {
       if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
         throw new Error(`Agent Plugin ${installation.name} has an invalid skills directory`);
       }
+      const metadata = installation.manifest.skills;
+      const skillNames = new Set(
+        Array.isArray(metadata)
+          ? metadata.flatMap((item) =>
+              typeof item === "object" &&
+              item !== null &&
+              "name" in item &&
+              typeof item.name === "string"
+                ? [item.name]
+                : [],
+            )
+          : [],
+      );
       const skills = [];
       for (const entry of (await readdir(skillsRoot, { withFileTypes: true })).sort((left, right) =>
         left.name.localeCompare(right.name),

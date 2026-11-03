@@ -35,7 +35,6 @@ import {
   IntegrationDefinitionSummarySchema,
   IntegrationInstallationSchema,
   IntegrationServerSchema,
-  IntegrationSkillSchema,
   IntegrationToolSchema,
   IntegrationToolMaterialSchema,
   type IntegrationToolMaterial,
@@ -92,7 +91,6 @@ import type {
   IntegrationInstallationTable,
   IntegrationServerTable,
   IntegrationToolTable,
-  IntegrationSkillTable,
 } from "./schema.js";
 import { cancelPending } from "./request-cancellation.js";
 import {
@@ -445,19 +443,13 @@ abstract class IntegrationPlatformStoreBase {
   protected async installationSkills(
     installationId: IntegrationInstallationId,
   ): Promise<readonly IntegrationSkill[]> {
-    const rows = await this.database
-      .selectFrom("integrationSkills")
-      .selectAll()
-      .where("installationId", "=", installationId)
-      .where("status", "=", "active")
-      .orderBy("name", "asc")
-      .limit(1_000)
-      .execute();
-    return rows.map(skillFromRow);
+    void installationId;
+    return [];
   }
 }
 
 export interface InstallIntegrationInput {
+  readonly beforeInstall?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
   readonly adapterSnapshot: IntegrationAdapterSnapshot | null;
   readonly actorUserId: UserId | null;
   readonly installation: Omit<IntegrationInstallation, "createdAt" | "revision" | "updatedAt">;
@@ -943,10 +935,6 @@ export async function uninstallIntegrationInTransaction(
     }
   }
   await transaction
-    .deleteFrom("integrationSkills")
-    .where("installationId", "=", installation.id)
-    .execute();
-  await transaction
     .deleteFrom("integrationServers")
     .where("installationId", "=", installation.id)
     .execute();
@@ -1072,7 +1060,12 @@ export async function installIntegrationInTransaction(
   const current = await transaction
     .selectFrom("integrationInstallations")
     .selectAll()
-    .where("name", "=", input.installation.name)
+    .$if(input.installation.sourceKind === "plugin", (q) =>
+      q.where("id", "=", input.installation.id),
+    )
+    .$if(input.installation.sourceKind !== "plugin", (q) =>
+      q.where("name", "=", input.installation.name),
+    )
     .forNoKeyUpdate()
     .executeTakeFirst();
   if (current && current.sourceKind !== input.installation.sourceKind) {
@@ -1114,6 +1107,7 @@ export async function installIntegrationInTransaction(
           manifest: jsonValue(input.installation.manifest),
           provenance: jsonValue(input.installation.provenance),
           revision: current.revision + 1,
+          pluginId: input.installation.pluginId ?? null,
           sourceKind: input.installation.sourceKind,
           status: input.installation.status,
           title: input.installation.title,
@@ -1137,6 +1131,7 @@ export async function installIntegrationInTransaction(
           name: input.installation.name,
           provenance: jsonValue(input.installation.provenance),
           revision: 1,
+          pluginId: input.installation.pluginId ?? null,
           sourceKind: input.installation.sourceKind,
           status: input.installation.status,
           title: input.installation.title,
@@ -1213,44 +1208,6 @@ export async function installIntegrationInTransaction(
       .where("id", "not in", retainedServerIds)
       .execute();
   }
-  const existingSkills = await transaction
-    .selectFrom("integrationSkills")
-    .selectAll()
-    .where("installationId", "=", installation.id)
-    .orderBy("id", "asc")
-    .forNoKeyUpdate()
-    .execute();
-  const skillByName = new Map(existingSkills.map((skill) => [skill.name, skill]));
-  const retainedSkillIds: IntegrationSkillId[] = [];
-  for (const discovered of input.skills ?? []) {
-    const current = skillByName.get(discovered.name);
-    const id = current?.id ?? discovered.id;
-    retainedSkillIds.push(id);
-    const values = {
-      description: discovered.description,
-      digest: discovered.digest,
-      status: discovered.status,
-      updatedAt: now,
-    };
-    if (current) {
-      await transaction
-        .updateTable("integrationSkills")
-        .set(values)
-        .where("id", "=", id)
-        .executeTakeFirstOrThrow();
-    } else {
-      await transaction
-        .insertInto("integrationSkills")
-        .values({ ...values, id, installationId: installation.id, name: discovered.name })
-        .executeTakeFirstOrThrow();
-    }
-  }
-  await transaction
-    .updateTable("integrationSkills")
-    .set({ status: "disabled", updatedAt: now })
-    .where("installationId", "=", installation.id)
-    .$if(retainedSkillIds.length > 0, (builder) => builder.where("id", "not in", retainedSkillIds))
-    .execute();
   if (input.computerConnectionTools) {
     const definition = IntegrationDefinitionSummarySchema.parse(
       input.installation.manifest.definition,
@@ -1315,7 +1272,10 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     return withRequestWorkspaceLocks(
       this.database,
       (transaction) => discoverInstallationRequestWorkspaces(transaction, input.installation),
-      (transaction) => installIntegrationInTransaction(transaction, input),
+      async (transaction) => {
+        await input.beforeInstall?.(transaction);
+        return installIntegrationInTransaction(transaction, input);
+      },
     );
   }
 
@@ -1894,15 +1854,8 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
   async listSkills(
     installationId: IntegrationInstallationId,
   ): Promise<readonly IntegrationSkill[]> {
-    const rows = await this.database
-      .selectFrom("integrationSkills")
-      .selectAll()
-      .where("installationId", "=", installationId)
-      .where("status", "=", "active")
-      .orderBy("name", "asc")
-      .limit(1_000)
-      .execute();
-    return rows.map(skillFromRow);
+    void installationId;
+    return [];
   }
 
   async listTools(
@@ -3536,48 +3489,6 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     });
     return resolved.tools.map(({ grant, tool }) => callableToolFromRow(byId.get(tool.id)!, grant));
   }
-
-  async listGrantedSkills(
-    input: IntegrationRequester,
-  ): Promise<readonly GrantedIntegrationSkill[]> {
-    const [storedGrants, mainAccess] = await Promise.all([
-      this.listGrants(input),
-      this.mainAccess(input),
-    ]);
-    const inheritedMainAccess = mainAccess === "inherited";
-    const grants = storedGrants.filter(({ status }) => status === "active");
-    const installations = await this.installationInventory();
-    const installationIds = [
-      ...new Set(
-        (inheritedMainAccess
-          ? installations.filter(({ status }) => status === "active")
-          : grants
-        ).map((record) => ("installationId" in record ? record.installationId : record.id)),
-      ),
-    ];
-    if (installationIds.length === 0) return [];
-    const skillGroups = await Promise.all(
-      installationIds.map((installationId) => this.installationSkills(installationId)),
-    );
-    const installationById = new Map(
-      installations.map((installation) => [installation.id, installation]),
-    );
-    const resolved = resolveEffectiveGrants({
-      connections: [],
-      inheritedMainAccess,
-      installations,
-      ownerUserId: input.ownerUserId,
-      skills: skillGroups.flat(),
-      storedGrants,
-      tools: [],
-      workspaceId: input.workspaceId,
-    });
-    return resolved.skills.map(({ grant, skill }) => ({
-      grant,
-      installation: installationById.get(skill.installationId)!,
-      skill,
-    }));
-  }
 }
 
 type CallableToolJoinedRow = IntegrationToolListingRow & {
@@ -3787,6 +3698,7 @@ function installationFromRow(
     createdAt: row.createdAt.toISOString(),
     description: row.description,
     id: row.id,
+    pluginId: row.pluginId,
     manifest: row.manifest,
     name: row.name,
     provenance: row.provenance,
@@ -3825,18 +3737,6 @@ function toolFromRow(row: IntegrationToolListingRow): IntegrationTool {
     serverId: row.serverId,
     status: row.status,
     title: row.title,
-  });
-}
-
-function skillFromRow(row: Selectable<IntegrationSkillTable>): IntegrationSkill {
-  return IntegrationSkillSchema.parse({
-    description: row.description,
-    digest: row.digest,
-    id: row.id,
-    installationId: row.installationId,
-    name: row.name,
-    status: row.status,
-    updatedAt: row.updatedAt.toISOString(),
   });
 }
 
