@@ -3492,9 +3492,8 @@ export function warmEngineKey(input: {
         context.accessMode,
         input.writableRoots,
         context.specialistId ?? null,
+        // Names the Host's whole tool inventory, guide and skills.
         context.agentTools.toolsRevision,
-        context.agentTools.tools,
-        context.agentTools.instructions,
         context.threadRole,
         context.modelSelection,
         [...context.plugins.versions].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),

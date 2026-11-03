@@ -6070,6 +6070,10 @@ it("invalidates warm engines when the pinned package set changes, regardless of 
   context.plugins.versions = [{ ...first, digest: "c".repeat(64) }, second];
   expect(warmEngineKey(input)).not.toBe(before);
   const current = warmEngineKey(input);
+  // The revision names the Host's whole inventory, guide and skills.
+  context.agentTools.tools = [...context.agentTools.tools].reverse();
+  context.agentTools.instructions = "Rephrased";
+  expect(warmEngineKey(input)).toBe(current);
   context.agentTools.toolsRevision = "changed-tools";
   expect(warmEngineKey(input)).not.toBe(current);
 });
