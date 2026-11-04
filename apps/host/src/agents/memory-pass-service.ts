@@ -1,9 +1,11 @@
 import {
+  automaticModelWants,
   OpensteerError,
   TimeZoneSchema,
   type AgentEvent,
   type Thread,
   type TriggerOccurrenceId,
+  type UserId,
   type WorkspaceId,
 } from "@opensteer/core";
 import {
@@ -17,13 +19,12 @@ import {
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import { MANAGED_MEMORY_WAKE_SKIPPED, type TriggerSystemRole } from "@opensteer/triggers";
 import type { WorkspaceFilesService } from "../workspace/files/workspace-files-service.js";
-import { readMemoryBackgroundResolutionInput } from "./background-model-settings.js";
-import { resolveBackgroundCandidates } from "./background-models.js";
+import { resolveAutomaticModels, workspaceExecution } from "./automatic-models.js";
 import { memoryPassProgram } from "./memory-pass-program.js";
 import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
 
 export const memoryPassWaitingReason =
-  "Waiting for a model it can use. Allow a provider for background work, or choose a model, in AI settings; it resumes by itself.";
+  "Waiting for an AI account it can use on Main's computer. Connect one there, or turn one on for automatic work in AI settings; it resumes by itself.";
 
 interface MemoryPassServiceOptions {
   readonly store: OpensteerStore;
@@ -148,20 +149,11 @@ export class MemoryPassService {
       .where("triggerOccurrences.id", "=", occurrenceId)
       .executeTakeFirst();
     if (!trigger?.systemRole || trigger.anchorThreadId !== worker.id) return undefined;
-    const main = await store.getWorkspace(worker.workspaceId);
-    const resolution = await readMemoryBackgroundResolutionInput(
-      this.#options,
+    const chosen = await this.#resolve(
       trigger.createdBy,
-      main,
       worker,
       trigger.systemRole === "memory-light" ? "light" : "deep",
     );
-    const [chosen] = resolution
-      ? resolveBackgroundCandidates(
-          trigger.systemRole === "memory-light" ? "light" : "deep",
-          resolution,
-        )
-      : [];
     if (
       await setMemoryPassWaiting(
         store.database,
@@ -172,7 +164,42 @@ export class MemoryPassService {
       this.#options.onChanged(trigger.workspaceId);
     if (!chosen)
       throw new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED });
-    return { harnessInstanceId: chosen.harnessInstanceId, modelSelection: chosen.modelSelection };
+    return {
+      harnessInstanceId: chosen.harnessInstanceId,
+      modelSelection: chosen.storedModelSelection,
+    };
+  }
+
+  /**
+   * Main's owner, with their current authority over Main and its files, on
+   * Main's computer in the worker's access mode. The light pass waits rather
+   * than run on Chat's model; the nightly pass ends with it.
+   */
+  async #resolve(ownerId: UserId, worker: Thread, role: "light" | "deep") {
+    const { store, runners } = this.#options;
+    const main = await store.getWorkspaceForOwner(worker.workspaceId, ownerId);
+    if (
+      main?.kind !== "main" ||
+      main.backing.kind !== "local-directory" ||
+      main.backing.ownerEnvironmentId !== worker.environmentId ||
+      !main.homeThreadId ||
+      !(await store.admitWorkspaceFiles(main.id, ownerId))
+    )
+      return undefined;
+    const chat = role === "deep" ? await store.getThreadForOwner(main.homeThreadId, ownerId) : null;
+    const { candidates } = await resolveAutomaticModels(
+      { store, runners },
+      {
+        userId: ownerId,
+        wants: (config) => automaticModelWants(config, role),
+        original: chat ?? undefined,
+        canRun: workspaceExecution(runners, {
+          environmentId: worker.environmentId,
+          accessMode: worker.accessMode,
+        }),
+      },
+    );
+    return candidates[0];
   }
 }
 

@@ -3,7 +3,12 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ModelSelectionSchema, type ModelSelection, type ThreadId } from "@opensteer/core";
+import {
+  ModelSelectionSchema,
+  type HarnessInstanceId,
+  type ModelSelection,
+  type ThreadId,
+} from "@opensteer/core";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -32,11 +37,6 @@ const taskModel = ModelSelectionSchema.parse({
   providerId: "openai",
 });
 const waitOptions = { timeout: 20_000, interval: 50 };
-const scoutModel = ModelSelectionSchema.parse({
-  modelId: "llama-4-scout",
-  options: { effort: "low" },
-  providerId: "meta",
-});
 
 interface Captured {
   readonly method?: string;
@@ -284,66 +284,53 @@ integration("Task naming through the Runner", () => {
     );
   });
 
-  it("skips another provider's model until the person allows it, then uses it", async () => {
+  it("never names on an account the person excluded, its own task's included, and uses it once allowed", async () => {
     const f = await start();
-    await f.script({
-      "gpt-6-luna": { reply: "Luna name\nplane" },
-      "llama-4-scout": { reply: "Scout name\nmail" },
-    });
-    const light = async () => {
-      const read = await f.active.api["backgroundModels.get"]({});
-      if (!read.ok) throw new Error(read.error.message);
-      return read.data.light;
-    };
-    const consent = async (acknowledged: boolean) => {
+    await f.script({ "gpt-6-luna": { reply: "Lease offers\nmail" } });
+    const config = async (excludedAccounts: readonly HarnessInstanceId[]) => {
       const result = await f.active.api["commands.dispatch"]({
-        type: "backgroundModels.consent.set",
-        providerId: ModelSelectionSchema.shape.providerId.parse("openai"),
-        acknowledged,
-        idempotencyKey: `consent-${randomUUID()}`,
+        type: "automaticModels.set",
+        config: { roles: {}, excludedAccounts: [...excludedAccounts] },
+        idempotencyKey: `automatic-${randomUUID()}`,
       });
       if (!result.ok) throw new Error(result.error.message);
     };
-    expect(
-      (await light()).candidates.find(
-        (candidate) => candidate.modelSelection.modelId === "gpt-6-luna",
-      )?.skipReason,
-    ).toBe("consent-required");
+    const preview = async () => {
+      const read = await f.active.api["automaticModels.get"]({});
+      if (!read.ok) throw new Error(read.error.message);
+      return read.data;
+    };
+    const account = (await preview()).accounts[0]!;
+    await config([account.harnessInstanceId]);
+    expect((await preview()).light.candidates).toEqual([]);
+    expect((await preview()).accounts[0]).toMatchObject({ eligible: false, reason: "excluded" });
 
-    // A task on Scout keeps its naming with Scout's provider.
-    const before = await f.task("Compare the two lease offers", scoutModel);
-    await f.send(before, "Compare the two lease offers");
-    await vi.waitFor(
-      async () => expect(await f.thread(before)).toMatchObject({ title: "Scout name" }),
-      waitOptions,
-    );
-    expect((await f.turns()).map((turn) => turn.model)).toEqual(["llama-4-scout"]);
+    const warn = vi.spyOn(console, "warn");
+    try {
+      const threadId = await f.task("Compare the two lease offers");
+      await f.send(threadId, "Compare the two lease offers");
+      // The task's own model is excluded too, so the job ends without asking anyone.
+      await vi.waitFor(
+        () =>
+          expect(warn).toHaveBeenCalledWith(
+            "Thread naming found no name",
+            expect.objectContaining({ threadId, candidates: 0 }),
+          ),
+        waitOptions,
+      );
+      expect(await f.turns()).toEqual([]);
+      expect(await f.thread(threadId)).toMatchObject({ titleSource: "provisional" });
 
-    await consent(true);
-    expect((await light()).effectivePick?.modelSelection.modelId).toBe("gpt-6-luna");
-    const after = await f.task("Plan the garden beds", scoutModel);
-    await f.send(after, "Plan the garden beds");
-    await vi.waitFor(
-      async () => expect(await f.thread(after)).toMatchObject({ title: "Luna name" }),
-      waitOptions,
-    );
-    expect((await f.turns()).map((turn) => turn.model)).toEqual(["llama-4-scout", "gpt-6-luna"]);
-
-    await consent(false);
-    expect(
-      (await light()).candidates.find(
-        (candidate) => candidate.modelSelection.modelId === "gpt-6-luna",
-      )?.skipReason,
-    ).toBe("consent-required");
-
-    // Settings speaks for Chat's provider, as memory does: no consent to ask for.
-    await f.active.createThread({
-      home: true,
-      modelSelection: taskModel,
-      title: "Chat",
-      workspaceId: f.active.mainWorkspaceId,
-    });
-    expect((await light()).effectivePick?.modelSelection.modelId).toBe("gpt-6-luna");
+      await config([]);
+      await f.send(threadId, "Start with the cheaper one");
+      await vi.waitFor(
+        async () => expect(await f.thread(threadId)).toMatchObject({ title: "Lease offers" }),
+        waitOptions,
+      );
+      expect((await f.turns()).map((turn) => turn.model)).toEqual(["gpt-6-luna"]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

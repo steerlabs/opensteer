@@ -2117,6 +2117,8 @@ export async function createHostRuntime(
       browser,
       canRunHarness: (environmentId, driverKind) =>
         runners.canRunHarness(environmentId, driverKind),
+      harnessAccessModes: (environmentId, driverKind) =>
+        runners.harnessAccessModes(environmentId, driverKind),
       commands,
       defaultWorkspaceBacking: config.workspace.shape.defaultWorkspaceBacking,
       environmentWorkspaceBackings: (environmentId) =>

@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type {
-  AgentEvent,
-  EnvironmentId,
-  ResolvedBackgroundCandidate,
-  ThreadId,
+import {
+  automaticModelWants,
+  type AgentEvent,
+  type EnvironmentId,
+  type ResolvedModelCandidate,
+  type ThreadId,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
@@ -13,21 +14,18 @@ import {
   type BackgroundTextFailure,
 } from "@opensteer/protocol";
 import { parseGeneratedThreadName, threadTitlePrompt } from "@opensteer/harness";
-import { backgroundCandidateKey, resolveBackgroundCandidates } from "./background-models.js";
-import { readBackgroundResolutionInput } from "./background-model-settings.js";
+import { backgroundTextSupport, resolveAutomaticModels } from "./automatic-models.js";
 import {
   harnessInspectionDefinition,
   inspectAndRecordInvalidatedHarnessCatalog,
 } from "./harness-catalogs.js";
 
-/** Three ranked attempts, followed by the task model if it was not already tried. */
-export function namingCandidates(resolved: readonly ResolvedBackgroundCandidate[]) {
-  const ranked = resolved.filter((candidate) => candidate.reason !== "task-model").slice(0, 3);
-  const fallback = resolved.find((candidate) => candidate.reason === "task-model");
-  const key = fallback && backgroundCandidateKey(fallback);
-  if (fallback && !ranked.some((candidate) => backgroundCandidateKey(candidate) === key))
-    ranked.push(fallback);
-  return ranked;
+/** Three automatic attempts, then the task's own model when it is still eligible. */
+export function namingCandidates(resolved: readonly ResolvedModelCandidate[]) {
+  return [
+    ...resolved.filter((candidate) => !candidate.original).slice(0, 3),
+    ...resolved.filter((candidate) => candidate.original),
+  ];
 }
 
 /** Failures that suggest the stored catalog is stale, so it is refreshed before the next job. */
@@ -108,30 +106,16 @@ export class ThreadNaming {
     const { store, runners, publish } = this.dependencies;
     const input = await store.getThreadNamingInput(threadId);
     if (!input) return;
-    const snapshot = await readBackgroundResolutionInput({ store, runners }, input.requestedBy);
-    const account = snapshot.accounts.find(
-      (account) =>
-        account.environmentId === input.environmentId &&
-        account.harnessInstanceId === input.harnessInstanceId,
+    const { candidates: resolved } = await resolveAutomaticModels(
+      { store, runners },
+      {
+        userId: input.requestedBy,
+        wants: (config) => automaticModelWants(config, "light"),
+        original: input,
+        canRun: backgroundTextSupport(runners),
+      },
     );
-    const candidates = namingCandidates(
-      resolveBackgroundCandidates("light", {
-        ...snapshot,
-        ownProviderId: input.modelSelection.providerId,
-        originatingEnvironmentId: input.environmentId,
-        ...(account
-          ? {
-              taskModelFallback: {
-                environmentId: input.environmentId,
-                harnessInstanceId: input.harnessInstanceId,
-                harnessRevision: account.harnessRevision,
-                modelSelection: input.modelSelection,
-                reason: "task-model",
-              },
-            }
-          : {}),
-      }),
-    );
+    const candidates = namingCandidates(resolved);
     const failures: AttemptFailure[] = [];
     // Content-free: the prompt, a title and credentials never reach this line.
     const unnamed = () =>
@@ -146,29 +130,29 @@ export class ThreadNaming {
     for (const candidate of candidates) {
       if (this.#shutdown.signal.aborted) return;
       if (deadline !== undefined && Date.now() >= deadline) break;
-      const identity = runners.identityForEnvironment(candidate.environmentId);
-      if (!identity) {
-        failures.push("offline");
-        continue;
-      }
-      const current = await store.getThreadNamingInput(threadId);
-      if (
-        !current ||
-        current.sourceMessageId !== input.sourceMessageId ||
-        current.principalId !== input.principalId
-      )
-        return;
-      const harness = await store.getHarnessInstance(candidate.harnessInstanceId);
-      if (
-        !harness?.enabled ||
-        harness.removedAt ||
-        harness.runtimeRevision !== candidate.harnessRevision ||
-        !(await store.environmentIsAvailableToUser(candidate.environmentId, input.requestedBy))
-      ) {
-        failures.push("account-changed");
-        continue;
-      }
       const attempt = await this.#whenRunnerFree(candidate.environmentId, async () => {
+        // Checked once a slot is free, just before sending: the wait can outlast an exclusion.
+        const identity = runners.identityForEnvironment(candidate.environmentId);
+        if (!identity) return { failure: "offline" as const };
+        const [current, harness, config] = await Promise.all([
+          store.getThreadNamingInput(threadId),
+          store.getHarnessInstance(candidate.harnessInstanceId),
+          store.getAutomaticModelConfig(input.requestedBy),
+        ]);
+        if (
+          !current ||
+          current.sourceMessageId !== input.sourceMessageId ||
+          current.principalId !== input.principalId
+        )
+          return { stale: true as const };
+        if (
+          !harness?.enabled ||
+          harness.removedAt ||
+          harness.runtimeRevision !== candidate.harnessRevision ||
+          config.excludedAccounts.includes(candidate.harnessInstanceId) ||
+          !(await store.environmentIsAvailableToUser(candidate.environmentId, input.requestedBy))
+        )
+          return { failure: "account-changed" as const };
         deadline ??= Date.now() + 120_000;
         const expiresAt = Math.min(deadline, Date.now() + 60_000);
         const result = await runners
@@ -179,7 +163,7 @@ export class ThreadNaming {
               environmentId: candidate.environmentId,
               harnessInstanceId: candidate.harnessInstanceId,
               harnessRevision: candidate.harnessRevision,
-              modelSelection: candidate.modelSelection,
+              modelSelection: candidate.runModelSelection,
               prompt: threadTitlePrompt(input.request, { icon: input.icon }),
               deadline: new Date(expiresAt).toISOString(),
             },
@@ -187,10 +171,15 @@ export class ThreadNaming {
           )
           // A dropped connection or a Host-side deadline: the next candidate goes on.
           .catch(() => undefined);
-        return { result, expiresAt };
+        return { result, expiresAt, identity, harness };
       });
+      if ("stale" in attempt) return;
+      if ("failure" in attempt) {
+        failures.push(attempt.failure);
+        continue;
+      }
       if (this.#shutdown.signal.aborted) return;
-      const { result, expiresAt } = attempt;
+      const { result, expiresAt, identity, harness } = attempt;
       if (!result?.ok) {
         failures.push(result?.failure ?? "no-result");
         // Catalog ownership remains here; generation never performs discovery.
@@ -214,7 +203,14 @@ export class ThreadNaming {
         threadId,
         ...(name.title ? { title: name.title } : {}),
         ...(name.icon ? { icon: name.icon } : {}),
-        namingAuthority: { ...input, ...candidate, expiresAt },
+        namingAuthority: {
+          ...input,
+          environmentId: candidate.environmentId,
+          harnessInstanceId: candidate.harnessInstanceId,
+          harnessRevision: candidate.harnessRevision,
+          modelSelection: candidate.runModelSelection,
+          expiresAt,
+        },
       });
       for (const event of applied?.events ?? []) publish(event);
       return;

@@ -1,5 +1,11 @@
 import { sql } from "kysely";
-import { createId, TimeZoneSchema, ThreadAccessModeSchema, type Thread } from "@opensteer/core";
+import {
+  createId,
+  TimeZoneSchema,
+  ThreadAccessModeSchema,
+  type HarnessInstanceId,
+  type Thread,
+} from "@opensteer/core";
 import { createMemoryPass, type MemoryPassExecution } from "@opensteer/database";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { HarnessIdSchema, ModelSelectionSchema } from "@opensteer/core";
@@ -967,14 +973,12 @@ describeStore("managed memory passes", (it) => {
     await instance.ensureForMain(base.workspace.id);
     const light = await role(f, base.userId);
     const nightly = await role(f, base.userId, "memory-nightly");
-    const consent = (providerId: string, acknowledged = true) =>
-      f.store.updateBackgroundModelPreferences(base.userId, {
-        providerId: ModelSelectionSchema.shape.providerId.parse(providerId),
-        acknowledged,
-      });
+    const exclude = (...excludedAccounts: HarnessInstanceId[]) =>
+      f.store.setAutomaticModelConfig(base.userId, { roles: {}, excludedAccounts });
 
-    // Light has no Chat fallback, and Haiku's provider is not Chat's and is
-    // not yet allowed: it waits.
+    // The Trigger's creator, Main's owner, is the principal. Light has no Chat
+    // fallback: with Claude excluded by them, it waits.
+    await exclude(claude.id);
     const lightTick = await tick(f, base, light.trigger);
     await expect(
       instance.admissionSelection(lightTick.occurrence.id, light.anchorThread!),
@@ -1002,7 +1006,7 @@ describeStore("managed memory passes", (it) => {
       triggerId: light.trigger.id,
       status: "paused",
     });
-    await consent("anthropic");
+    await exclude();
     expect(await instance.admissionSelection(lightTick.occurrence.id, light.anchorThread!)).toEqual(
       {
         harnessInstanceId: claude.id,
@@ -1025,13 +1029,46 @@ describeStore("managed memory passes", (it) => {
       }),
     ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
 
-    // Nightly ranks no usable deep model here, so it falls back to Chat's
-    // model; Chat's own provider needs no consent.
+    // Nightly ranks no usable deep model here, so it ends with Chat's model.
     const nightlyTick = await tick(f, base, nightly.trigger);
     expect(
       await instance.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!),
     ).toEqual({ harnessInstanceId: base.chat!.harnessInstanceId, modelSelection: chatModel });
     expect((await role(f, base.userId, "memory-nightly")).trigger.waitingReason).toBeNull();
+    // Chat's model is an original, never an override: excluding its account drops it.
+    await exclude(base.chat!.harnessInstanceId);
+    await expect(
+      instance.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!),
+    ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
+    expect((await role(f, base.userId, "memory-nightly")).trigger.waitingReason).toBe(
+      memoryPassWaitingReason,
+    );
+    await exclude();
+    // A person's deep list replaces the maintained one and comes before Chat.
+    await f.store.setAutomaticModelConfig(base.userId, {
+      roles: {
+        deep: [
+          {
+            engine: HarnessIdSchema.parse("claude"),
+            model: ModelSelectionSchema.shape.modelId.parse("claude-haiku-5-5"),
+          },
+        ],
+      },
+      excludedAccounts: [],
+    });
+    expect(
+      await instance.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!),
+    ).toEqual({
+      harnessInstanceId: claude.id,
+      // Options left out stay out, so the engine's default applies at dispatch.
+      modelSelection: {
+        providerId: "anthropic",
+        modelId: "claude-haiku-5-5",
+        nativeModelId: "claude-haiku-5-5",
+        options: {},
+      },
+    });
+    await f.store.setAutomaticModelConfig(base.userId, { roles: {}, excludedAccounts: [] });
 
     // Memory turned off stays off while models come and go.
     await f.database

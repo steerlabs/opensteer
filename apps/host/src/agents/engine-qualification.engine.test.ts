@@ -965,9 +965,9 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
       evidence.latencyMs = latencyMs;
       expect(first.assistantText).toMatch(/\bREADY\b/u);
       // The light model this account names with, as Settings reports it.
-      const background = await active.api["backgroundModels.get"]({});
-      if (!background.ok) throw new Error(background.error.message);
-      evidence.lightModel = background.data.light.effectivePick?.modelSelection ?? null;
+      const automatic = await active.api["automaticModels.get"]({});
+      if (!automatic.ok) throw new Error(automatic.error.message);
+      evidence.lightModel = automatic.data.light.candidates[0]?.storedModelSelection ?? null;
       // Naming is the Host's own job beside the Run; it settles within its deadline.
       const named = () =>
         active.host.store.database
