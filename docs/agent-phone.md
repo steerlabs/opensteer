@@ -261,7 +261,8 @@ replacement signatures. Journal attempts before install and bound retries across
 Equal versions remain installed; downgrades refuse. A committed Android install session
 outlives a network attempt; waiting for the person's confirmation is not an install failure.
 Consent blocks only the required update while the phone retries its update status.
-After compatible admission, the phone abandons any obsolete pending consent session.
+The phone abandons pending consent that became obsolete: after compatible admission, or when
+the Host offers a different release.
 An Android result wakes the update loop; declining consent does not consume a failed-install attempt. See
 [update](../apps/agent-phone/app/src/main/kotlin/com/opensteer/agentphone/update).
 

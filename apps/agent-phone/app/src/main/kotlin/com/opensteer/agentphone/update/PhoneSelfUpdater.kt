@@ -106,6 +106,8 @@ class PhoneSelfUpdater(
             check(socket.send(JsonText.stringify(RunnerWire.authenticate(challenge, descriptor, identity.runnerKey))))
             val offerText = text()
             release = UpdateOffer.decode(offerText)
+            // Consent for a release the Host no longer offers would install a build it may still refuse.
+            release?.let { if (journal.digest() != it.sha256) journal.clearObsoleteConsent(identity) }
             val pending = journal.pendingState(identity) != null
             updateDigest = if (pending) journal.digest() else release?.sha256
             status("Updating Agent Phone…")
