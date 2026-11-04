@@ -219,3 +219,30 @@ describe("browser editing transport", () => {
     store.dispose();
   });
 });
+
+it("negotiates committed-text mode honestly and sends an IME commit once without live composition or replacement", async () => {
+  const { store, commands } = setup();
+  store.negotiate(sessionId, 2, surfaceId, false, true);
+  const target = store.target(sessionId, surfaceId);
+  expect(target.get().abilities).toEqual({
+    composition: false,
+    rangeEdits: false,
+    commands: true,
+    clipboard: "text",
+  });
+  const contextId = crypto.randomUUID();
+  await target.send({ kind: "edit", edit: { contextId, text: "漢字", before: "", after: "" } });
+  expect(commands).toHaveLength(1);
+  expect(commands[0]).toMatchObject({ type: "input.text", edit: { text: "漢字" } });
+  await expect(
+    target.send({
+      kind: "compose",
+      composition: { contextId, text: "preedit", selectionStart: 0, selectionEnd: 7 },
+    }),
+  ).rejects.toThrow("Live composition");
+  await expect(
+    target.send({ kind: "edit", edit: { contextId, text: "new", before: "old", after: "" } }),
+  ).rejects.toThrow("replacements");
+  expect(commands).toHaveLength(1);
+  store.dispose();
+});

@@ -6,6 +6,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./browser-popup": "./src/browser-popup.ts",
     "./browser": "./src/browser.ts",
     "./browser-sources": "./src/browser-sources.ts",
     "./browser-relay": "./src/browser-relay.ts",

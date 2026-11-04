@@ -218,6 +218,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       sharedControl: browser.sharedControl === 1,
       passkeys: browser.passkeys === 1,
       editing: browser.editing,
+      popups: browser.popups,
       clipboard: browser.editing === 1 || browser.clipboard === true,
       targetControl: browser.targetControl === 1,
       navigationVersion: browser.navigationVersion === 1,

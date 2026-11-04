@@ -1,3 +1,5 @@
+import { BrowserInputBindingSchema, type BrowserClickRefusalReason } from "@opensteer/protocol";
+import { browserPrivateInput } from "./private-input.js";
 import { BrowserPresentationSession } from "./browser-presentation-session.js";
 import { encodeBrowserVideoFrame, type DisplayStreamId } from "@opensteer/protocol";
 import type { BrowserLocalVideoOperation } from "@opensteer/protocol/browser-relay";
@@ -390,10 +392,14 @@ export class BrowserController {
       const page = this.ledger.binding(surfaceId)?.page;
       if (!page?.presentation)
         throw new Error("This browser build lacks private H.264 presentation support.");
-      if (current) return;
+      if (current?.streamId === operation.streamId) return;
       const session = new BrowserPresentationSession(page.presentation);
       const entry = { streamId: operation.streamId, session, revision: 0 };
+      if (operation.controller && this.claims.popupVersion === 1)
+        session.bind(operation.controller);
       this.presentations.set(surfaceId, entry);
+      if (current) await current.session.stop();
+      if (this.presentations.get(surfaceId) !== entry) return;
       const state = (state: "starting" | "live" | "stopped" | "failed", extra: object = {}) => {
         if (this.presentations.get(surfaceId) !== entry) return;
         void this.send({
@@ -418,6 +424,32 @@ export class BrowserController {
               this.presentations.delete(surfaceId);
             },
             () => this.ledger.binding(surfaceId)?.surface.geometryRevision ?? 0,
+            (event, binding) => {
+              if (this.presentations.get(surfaceId) !== entry || !session.owns(binding)) return;
+              const target = { surfaceId, streamId: entry.streamId, ...binding };
+              const message =
+                event.type === "unavailable"
+                  ? { type: "browser.popup.unavailable" as const, ...target, reason: event.reason }
+                  : event.type === "closed"
+                    ? {
+                        type: "browser.popup.closed" as const,
+                        ...target,
+                        ...event.ref,
+                        reason: event.reason,
+                      }
+                    : {
+                        type:
+                          event.type === "opened"
+                            ? ("browser.popup.opened" as const)
+                            : ("browser.popup.updated" as const),
+                        ...target,
+                        ...event.ref,
+                        state: event.state,
+                      };
+              void this.send(message).catch(() => {
+                void this.stopVideo(entry.streamId);
+              });
+            },
           ),
           operation.timeoutMs,
           { timeoutError: () => new Error("Browser producer startup timed out.") },
@@ -547,6 +579,12 @@ export class BrowserController {
       surfaces,
       ...(surfaces.some((surface) => this.ledger.binding(surface.id)?.page.presentation)
         ? { videoVersion: 1 as const }
+        : {}),
+      ...(this.claims.popupVersion === 1 &&
+      surfaces.some(
+        (surface) => this.ledger.binding(surface.id)?.page.presentation?.popupVersion === 1,
+      )
+        ? { popupVersion: 1 as const }
         : {}),
       targetedStreamingVersion: 1,
       inputLanesVersion: 1,
@@ -825,7 +863,18 @@ export class BrowserController {
       (message.type === "cdp.command" && message.command.method === "Page.stopLoading")
     )
       return this.run(message, this.pageOf(message));
-    if (message.type === "input.cancel") return this.cancelProducer(message);
+    if (message.type === "popup.cancel" || message.type === "input.control")
+      return this.run(message, message.surfaceId);
+    if (message.type === "input.cancel") {
+      for (const [surface, entry] of this.presentations) {
+        if (
+          entry.session.binding?.producerId === message.producerId &&
+          (!message.surfaceId || message.surfaceId === surface)
+        )
+          void this.stopVideo(entry.streamId).catch(() => undefined);
+      }
+      return this.cancelProducer(message);
+    }
     const surfaceId = this.pageOf(message);
     // Resolve implicit targets now: a later activation cannot retarget admitted work.
     if (surfaceId && (!isCdpRequest(message) || isOrderedAgentMutation(message))) {
@@ -1002,6 +1051,7 @@ export class BrowserController {
   private async guardedResult(
     message: Extract<BrowserClientMessage, { type: "input.guarded-click" }>,
     outcome: "dispatched" | "refused" | "uncertain",
+    reason?: BrowserClickRefusalReason,
   ): Promise<void> {
     if (this.guardedTerminals.has(message)) return;
     this.guardedTerminals.add(message);
@@ -1010,6 +1060,7 @@ export class BrowserController {
       surfaceId: message.surfaceId,
       streamId: message.streamId,
       gestureId: message.gestureId,
+      ...(outcome === "refused" && reason ? { reason } : {}),
       ...(message.viewerSlot ? { viewerSlot: message.viewerSlot } : {}),
       outcome,
     });
@@ -1036,7 +1087,9 @@ export class BrowserController {
     await this.refuseClipboard(message);
     const error = new BrowserRuntimeError(
       "conflict",
-      "Browser input was not applied. Try the action again.",
+      reason === "browser-private-edit-unsupported"
+        ? "This editing action is not supported in this view."
+        : "Browser input was not applied. Try the action again.",
       { reason },
     );
     if (isCdpRequest(message)) {
@@ -1211,6 +1264,9 @@ export class BrowserController {
       case "clipboard.paste":
       case "input.key":
         return message.targeted ? message.surfaceId : (this.ledger.active()?.surface.id ?? null);
+      case "popup.answer":
+      case "popup.cancel":
+      case "input.control":
       case "input.guarded-click":
       case "input.pointer":
       case "input.wheel":
@@ -1340,6 +1396,52 @@ export class BrowserController {
     message: BrowserClientMessage,
     admittedSurface: BrowserSurfaceId | null,
   ): Promise<void> {
+    if (
+      message.type === "popup.answer" ||
+      message.type === "popup.cancel" ||
+      message.type === "input.control"
+    ) {
+      const entry = this.presentations.get(message.surfaceId);
+      const binding = BrowserInputBindingSchema.safeParse({
+        producerId: message.producerId,
+        viewerSlot: message.viewerSlot,
+        inputGeneration: message.inputGeneration,
+      });
+      if (
+        !entry ||
+        entry.streamId !== message.streamId ||
+        !binding.success ||
+        this.claims.popupVersion !== 1 ||
+        this.claims.access !== "read-write"
+      )
+        return this.refuseInput(message, "browser-control-ended");
+      if (message.type === "input.control") {
+        if (message.action === "release") {
+          if (entry.session.owns(binding.data)) await this.stopVideo(entry.streamId);
+        } else if (!entry.session.bind(binding.data))
+          await this.refuseInput(message, "browser-control-lost");
+        return;
+      }
+      const outcome = await entry.session.popupAction(
+        binding.data,
+        message,
+        message.operationId,
+        message.type === "popup.answer" ? message.answer : undefined,
+      );
+      await this.send({
+        type: "browser.popup.result",
+        surfaceId: message.surfaceId,
+        streamId: message.streamId,
+        documentGeneration: message.documentGeneration,
+        authorityEpoch: message.authorityEpoch,
+        popupId: message.popupId,
+        revision: message.revision,
+        ...binding.data,
+        operationId: message.operationId,
+        outcome,
+      });
+      return;
+    }
     if (message.type === "input.guarded-click") {
       const entry = this.presentations.get(message.surfaceId);
       if (
@@ -1351,6 +1453,16 @@ export class BrowserController {
         await this.guardedResult(message, "refused");
         return;
       }
+      if (this.claims.popupVersion === 1) {
+        const binding = BrowserInputBindingSchema.safeParse({
+          producerId: message.producerId,
+          viewerSlot: message.viewerSlot,
+          inputGeneration: message.inputGeneration,
+        });
+        if (!binding.success || !entry.session.bind(binding.data))
+          return this.guardedResult(message, "refused");
+      }
+      let reason: BrowserClickRefusalReason | undefined;
       let outcome: "dispatched" | "refused" | "uncertain" = "uncertain";
       try {
         const result = await entry.session.click(
@@ -1361,11 +1473,63 @@ export class BrowserController {
           message.modifiers,
         );
         outcome = result.dispatched ? "dispatched" : "refused";
+        reason = result.reason;
       } catch {
         /* A lost native answer never authorizes a retry. */
       }
-      await this.guardedResult(message, outcome);
+      await this.guardedResult(message, outcome, reason);
       return;
+    }
+    const privateSession = admittedSurface
+      ? this.presentations.get(admittedSurface)?.session
+      : undefined;
+    if (
+      privateSession &&
+      (message.type === "input.key" ||
+        message.type === "input.command" ||
+        message.type === "input.compose" ||
+        message.type === "input.text" ||
+        message.type === "clipboard.paste" ||
+        message.type === "clipboard.copy" ||
+        message.type === "clipboard.cut" ||
+        message.type === "clipboard.paste-data")
+    ) {
+      const binding = BrowserInputBindingSchema.safeParse({
+        producerId: message.producerId,
+        viewerSlot: message.viewerSlot,
+        inputGeneration: message.inputGeneration,
+      });
+      if (
+        this.claims.popupVersion !== 1 ||
+        !binding.success ||
+        message.streamId !== this.presentations.get(admittedSurface!)?.streamId ||
+        !privateSession.bind(binding.data)
+      )
+        return this.refuseInput(message, "browser-control-ended");
+      const edits = browserPrivateInput(message, this.platform);
+      if (!edits) return this.refuseInput(message, "browser-private-edit-unsupported");
+      let current = () => true;
+      if (message.type === "input.text") {
+        const observer = await this.editingObserver(admittedSurface!);
+        const contextId = message.edit.contextId;
+        current = () => observer.context.contextId === contextId;
+        if (!current() || !privateSession.owns(binding.data))
+          return this.refuseInput(message, "browser-input-context-changed");
+      }
+      for (const edit of edits) {
+        if (!(await privateSession.edit(binding.data, edit, current)).dispatched)
+          return this.refuseInput(message, "browser-private-edit-refused");
+      }
+      return;
+    }
+    if (privateSession && (message.type === "input.pointer" || message.type === "input.wheel")) {
+      if (
+        privateSession.popupKind &&
+        privateSession.popupKind !== "datalist" &&
+        !(message.type === "input.pointer" && message.action === "up")
+      )
+        return;
+      if (privateSession.popupKind === "datalist") await privateSession.dismissPopup();
     }
     await this.clipboard?.finish();
     if (admittedSurface) {

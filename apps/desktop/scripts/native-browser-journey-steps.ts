@@ -1,3 +1,4 @@
+import { browserPopupJourney } from "./native-browser-popup-journey.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { regionMeans } from "./native-browser-journey-image.js";
 import { delay } from "@opensteer/shared/delay";
@@ -31,11 +32,11 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
           await action();
           await kit.snapshot(id, "after");
         })(),
-        30_000,
+        id === "popups" ? 90_000 : 30_000,
         {
           timeoutError: () => {
             timedOut = true;
-            return new Error(`Journey step ${id} exceeded 30000ms`);
+            return new Error(`Journey step ${id} exceeded its deadline`);
           },
         },
       );
@@ -97,6 +98,18 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
       `composited ${name} page color`,
       5000,
     );
+  }
+  if (kit.artifacts.selected.has("popups")) {
+    await step("popups", () => browserPopupJourney(kit));
+    kit.artifacts.json("summary.json", {
+      status: steps.every((s) => s.status === "PASS") ? "PASS" : "FAIL",
+      steps,
+    });
+    assert(
+      steps.every((s) => s.status === "PASS"),
+      "Popup journey failed; see summary.json",
+    );
+    return;
   }
   const initial = kit.activeSurface().surfaceId;
   await step("mount", async () => {

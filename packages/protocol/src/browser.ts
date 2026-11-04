@@ -1,4 +1,8 @@
 import {
+  BrowserPopupClientMessageSchema,
+  BrowserPopupServerMessageSchema,
+} from "./browser-popup.js";
+import {
   BrowserVideoClickResultSchema,
   BrowserVideoClientMessageSchema,
   BrowserVideoAttachmentSchema,
@@ -194,6 +198,7 @@ export const BrowserAttachTicketClaimsSchema = z
     access: BrowserProfileAccessSchema,
     audience: z.literal("opensteer-browser-runtime"),
     passkeys: z.literal(1).optional(),
+    popupVersion: z.literal(1).optional(),
     navigationVersion: z.literal(1).optional(),
     wireVersion: z.literal(browserRuntimeWireVersion),
     operationExpiresAt: IsoDateTimeSchema,
@@ -735,6 +740,7 @@ const BaselineBrowserClientMessageSchema = z
   });
 export const BrowserClientMessageSchema = z.union([
   BrowserVideoClientMessageSchema,
+  BrowserPopupClientMessageSchema,
   BaselineBrowserClientMessageSchema,
   PasskeyCancelSchema,
 ]);
@@ -750,6 +756,7 @@ const BrowserSnapshotSchema = z
     passkeys: PasskeyModeSchema.optional(),
     passkeyConsumerToken: z.uuid().optional(),
     videoVersion: z.literal(1).optional(),
+    popupVersion: z.literal(1).optional(),
     targetedStreamingVersion: z.literal(1).optional(),
     inputLanesVersion: z.literal(1).optional(),
     /** Runtime → Host only; permits Host-issued navigationId on navigation commands. */
@@ -960,6 +967,7 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export const BrowserServerMessageSchema = z.union([
+  BrowserPopupServerMessageSchema,
   BrowserVideoClickResultSchema,
   BrowserVideoAttachmentSchema,
   BrowserVideoStateSchema,

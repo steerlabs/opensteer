@@ -1,3 +1,4 @@
+import { mockBrowserPopups } from "./mock-browser-frames.js";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
@@ -3624,6 +3625,7 @@ export class MockHostClient implements HostClient {
     string,
     Extract<import("@opensteer/protocol/browser").BrowserServerMessage, { type: "browser.cursor" }>
   >();
+  readonly browserPopupFixture = mockBrowserPopups();
   readonly browserFrames: BrowserFrameStore;
   readonly browserWatchFrames: BrowserFrameStore;
   readonly rpc: HostApiClient;
@@ -3773,7 +3775,11 @@ export class MockHostClient implements HostClient {
           listener,
         ),
     };
-    this.browserFrames = { ...frames, cursor: this.#browserCursor };
+    this.browserFrames = {
+      ...frames,
+      cursor: this.#browserCursor,
+      popups: this.browserPopupFixture.store,
+    };
     this.browserWatchFrames = frames;
     this.rpc = createInMemoryHostApiClient(mockHostApiHandlers(this.#state), mockRpcContext());
     this.#tabGroups = new BrowserTabGroupClient(
@@ -4604,6 +4610,7 @@ export class MockHostClient implements HostClient {
   }
 
   dispose(): void {
+    this.browserPopupFixture.dispose();
     this.#personShowListeners.clear();
     this.#pendingBrowserTabs.dispose();
     this.#workspaceTabActivations.dispose();

@@ -1,3 +1,4 @@
+import { BrowserInputBindingSchema } from "./browser-popup.js";
 import { IsoDateTimeSchema } from "@opensteer/core";
 import {
   BrowserVideoBudgetSchema,
@@ -93,6 +94,7 @@ export const BrowserVideoOperationSchema = z.discriminatedUnion("type", [
   z.strictObject({
     ...browserVideoBase,
     type: z.literal("browser.video.start"),
+    controller: BrowserInputBindingSchema.optional(),
     dataTicket: z.string().min(1).max(16384),
     budget: BrowserVideoBudgetSchema,
     creditWindow: z.number().int().min(1).max(8),

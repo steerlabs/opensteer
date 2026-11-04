@@ -243,6 +243,18 @@ platform software AVC decoder can retain pictures until more input arrives, and
 is optional. Continuous playback therefore does not qualify a lone or final still
 picture.
 
+Certified browser popups belong to the exact visible tab and its current control
+admission. iOS and Android present native pickers; datalist suggestions occupy app
+space above the typing proxy and keep its keyboard open. Backgrounding, hiding,
+switching tabs or Deployments, losing media or control, and sign-out dismiss both
+the native draft and shared state. Late native callbacks cannot answer a new
+admission. There is no saved picker or answer replay.
+
+This requires a rebuilt binary advertising the browser-popup presentation contract;
+an OTA update cannot opt an older binary in. Private editing commits text with
+local preedit and refuses unsupported composition/replacement operations. Choices
+can disclose more than the picture; see [remote editing](browser-sessions.md#remote-editing).
+
 Human and agent browser input remain concurrent; viewing and pinching scale a
 page on the phone alone, and only explicit Fit resizes it. Fit asks first when an
 agent sized the page. A place's bars sit beside the picture, never over it: a

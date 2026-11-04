@@ -44,6 +44,7 @@ export interface BrowserVideoBinding {
 export interface BrowserVideoViewer {
   readonly id: string;
   readonly input: boolean;
+  ended?(): void;
   readonly target: BrowserVideoTarget;
   readonly budget: BrowserVideoBudget;
   /** The existing admitted outlet checks login and current browser/profile authority. */
@@ -141,7 +142,12 @@ export class BrowserVideoHub {
     this.#timer = setInterval(() => this.sweep(), 100);
     this.#timer.unref();
   }
-  async add(binding: BrowserVideoBinding, owner: BrowserVideoViewer): Promise<void> {
+  async add(
+    binding: BrowserVideoBinding,
+    owner: BrowserVideoViewer,
+    controller?: { producerId: string; inputGeneration: number },
+  ): Promise<void> {
+    const slot = randomUUID();
     if (this.#closed) throw new Error("Browser media hub closed.");
     this.remove(owner.id);
     if (this.#closed || !binding.current() || !(await owner.authorized()))
@@ -224,6 +230,7 @@ export class BrowserVideoHub {
           target: owner.target,
           streamId: id,
           type: "browser.video.start",
+          ...(controller ? { controller: { ...controller, viewerSlot: slot } } : {}),
           dataTicket: ticket,
           budget: stream.budget,
           creditWindow: 2,
@@ -245,7 +252,6 @@ export class BrowserVideoHub {
       if (fresh) this.#end(stream, "revoked");
       throw new Error("Browser video authority ended.");
     }
-    const slot = randomUUID();
     const token = randomBytes(32).toString("base64url");
     // No socket exists until the one-use token is spent. It never receives media in this state.
     const viewer: Viewer = {
@@ -325,6 +331,34 @@ export class BrowserVideoHub {
   slot(id: string, streamId: DisplayStreamId): string | undefined {
     return this.#viewer(id, streamId)?.viewer.slot;
   }
+  inputSlot(id: string, streamId: DisplayStreamId): string | undefined {
+    const viewer = this.#viewer(id, streamId)?.viewer;
+    return viewer?.owner.input && viewer.attached && viewer.socket?.readyState === WebSocket.OPEN
+      ? viewer.slot
+      : undefined;
+  }
+  async replace(
+    streamId: DisplayStreamId,
+    controller?: { producerId: string; inputGeneration: number },
+  ): Promise<void> {
+    const stream = this.#streams.get(streamId);
+    if (!stream || stream.closed) return;
+    const owners = [...stream.viewers].map((v) => ({ ...v.owner, budget: v.budget }));
+    if (controller)
+      owners.sort(
+        (a, b) => Number(b.id === controller.producerId) - Number(a.id === controller.producerId),
+      );
+    this.#end(stream, "replaced");
+    for (const owner of owners) {
+      if (this.#closed || !stream.binding.current()) return;
+      if (await owner.authorized())
+        await this.add(
+          stream.binding,
+          owner,
+          owner.id === controller?.producerId ? controller : undefined,
+        );
+    }
+  }
   update(id: string, streamId: DisplayStreamId, budget: BrowserVideoBudget, focus: boolean): void {
     const found = this.#viewer(id, streamId);
     if (!found) return;
@@ -345,6 +379,7 @@ export class BrowserVideoHub {
       for (const viewer of stream.viewers)
         if (viewer.owner.id === id) {
           stream.viewers.delete(viewer);
+          viewer.owner.ended?.();
           this.#tokens.delete(viewer.token);
           if (viewer.attached) viewer.socket?.close(1000, "Browser outlet ended");
           if (stream.leader === viewer)
@@ -678,6 +713,7 @@ export class BrowserVideoHub {
     this.#media.clearCache(s);
     s.data?.close(1000, "Browser video ended");
     for (const v of s.viewers) {
+      v.owner.ended?.();
       this.#tokens.delete(v.token);
       void v.owner.send({ ...s.videoState, state: "stopped", reason }).catch(() => undefined);
       if (v.attached) v.socket?.close(1000, "Browser video ended");

@@ -164,14 +164,25 @@ export const BrowserVideoStateSchema = z.strictObject({
 });
 export type BrowserVideoState = z.infer<typeof BrowserVideoStateSchema>;
 export const BrowserVideoReplaySchema = z.strictObject({ replayThrough: DisplaySequenceSchema });
-export const BrowserVideoClickResultSchema = z.strictObject({
-  type: z.literal("browser.guarded-click.result"),
-  surfaceId: BrowserSurfaceIdSchema,
-  streamId: DisplayStreamIdSchema,
-  gestureId: z.uuid(),
-  viewerSlot: z.uuid().optional(),
-  outcome: z.enum(["dispatched", "refused", "uncertain"]),
-});
+export const BrowserVideoClickResultSchema = z
+  .strictObject({
+    type: z.literal("browser.guarded-click.result"),
+    surfaceId: BrowserSurfaceIdSchema,
+    streamId: DisplayStreamIdSchema,
+    gestureId: z.uuid(),
+    viewerSlot: z.uuid().optional(),
+    outcome: z.enum(["dispatched", "refused", "uncertain"]),
+    reason: z
+      .enum(["stale", "geometry", "obstructed", "busy", "pendingInput", "unsupported"])
+      .optional(),
+    hostReason: z.enum(["control-lost", "access-lost", "stream-ended", "unavailable"]).optional(),
+  })
+  .refine(
+    (result) =>
+      result.outcome === "refused" ||
+      (result.reason === undefined && result.hostReason === undefined),
+    "Only refusals carry admission reasons",
+  );
 export const BrowserVideoAttachmentSchema = z.strictObject({
   type: z.literal("browser.video.attached"),
   surfaceId: BrowserSurfaceIdSchema,

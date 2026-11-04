@@ -1,3 +1,4 @@
+import { BrowserPopup } from "./browser-popup.js";
 import {
   browserSiteForUrl,
   browserSiteLabel,
@@ -787,6 +788,14 @@ export function PlaceBrowserView({
                 targeted
                 visible={visible}
               />
+              {hostClient.browserFrames.popups && tabId ? (
+                <BrowserPopup
+                  store={hostClient.browserFrames.popups}
+                  sessionId={sessionId}
+                  surfaceId={tabId}
+                  visible={visible && pageReachable && !blocked}
+                />
+              ) : null}
               <AgentCursors
                 hostClient={hostClient}
                 placeKey={place?.key ?? `browser:${sessionId}:${tabId}`}

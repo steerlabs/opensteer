@@ -6,7 +6,7 @@ import {
   type RemoteEditingProxyHandle,
 } from "../remote-editing/remote-editing-proxy.js";
 import { BrowserEditingStore, type BrowserEditingState } from "@opensteer/client/host";
-import type { EditingCaret, EditingContext } from "@opensteer/protocol/editing";
+import type { EditingCaret, EditingContext, EditingKeystroke } from "@opensteer/protocol/editing";
 import { StreamedContextMenu, type StreamedMenuAction } from "./streamed-context-menu.js";
 import type { DesktopWindowRect } from "@opensteer/protocol/desktop";
 import { attachBrowserCanvas, sampleBrowserVideo } from "./browser-presenter.js";
@@ -589,18 +589,69 @@ export function BrowserViewport({
     if (point && canInputRef.current)
       onCommandRef.current({ action: "move", button: "none", ...point, type: "input.pointer" });
   }, []);
+  const heldPopupKeys = useRef(new Map<string, EditingKeystroke>());
+  const popupTarget = useMemo(
+    () => (activeSurfaceId ? frames.popups?.target(sessionId, activeSurfaceId) : undefined),
+    [frames.popups, sessionId, activeSurfaceId],
+  );
+  const modalPopup = useSyncExternalStore(popupTarget?.subscribe ?? noEditingSubscription, () => {
+    const p = popupTarget?.get().popup;
+    return !!p && p.state.kind !== "datalist";
+  });
+  const hadModalPopup = useRef(false);
+  useEffect(() => {
+    if (hadModalPopup.current && !modalPopup && viewportCanInput) textInputRef.current?.focus();
+    hadModalPopup.current = modalPopup;
+    if (!modalPopup) return;
+    const release = (event: KeyboardEvent) => {
+      const key = heldPopupKeys.current.get(event.code);
+      if (!key) return;
+      heldPopupKeys.current.delete(event.code);
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void editingTarget
+        ?.send({ kind: "key", keystroke: { ...key, action: "up", text: "" } })
+        .catch(() => undefined);
+    };
+    window.addEventListener("keyup", release, true);
+    return () => window.removeEventListener("keyup", release, true);
+  }, [modalPopup, viewportCanInput, editingTarget]);
+  useEffect(
+    () => () => {
+      heldPopupKeys.current.clear();
+    },
+    [sessionId, activeSurfaceId],
+  );
   const wire = useMemo(
     () =>
       editingTarget
         ? {
             send: (operation: EditingOperation) => {
-              flushMove();
+              const popup = activeSurfaceId
+                ? frames.popups?.target(sessionId, activeSurfaceId)
+                : undefined;
+              if (
+                operation.kind === "key" &&
+                popup?.consumeKey(
+                  operation.keystroke.key,
+                  operation.keystroke.code,
+                  operation.keystroke.action,
+                )
+              )
+                return Promise.resolve(undefined);
+              if (operation.kind === "key") {
+                if (operation.keystroke.action === "down")
+                  heldPopupKeys.current.set(operation.keystroke.code, operation.keystroke);
+                else heldPopupKeys.current.delete(operation.keystroke.code);
+              }
+              if (popup?.get().popup?.state.kind === "datalist") discardMove();
+              else flushMove();
               return editingTarget.send(operation);
             },
             subscribeClipboard: editingTarget.activate,
           }
         : null,
-    [editingTarget, flushMove],
+    [editingTarget, flushMove, discardMove, activeSurfaceId, frames.popups, sessionId],
   );
   useEffect(() => {
     const cancel = () => {
@@ -677,6 +728,11 @@ export function BrowserViewport({
     return cancelVideoGesture;
   }, [cancelVideoGesture, viewportCanInput]);
   function pointerDown(event: PointerEvent<HTMLDivElement>) {
+    const popup = activeSurfaceId ? frames.popups?.target(sessionId, activeSurfaceId) : undefined;
+    if (popup?.get().popup) {
+      if (popup.get().popup?.state.kind !== "datalist") return;
+      popup.cancel();
+    }
     if (
       frames.video?.selected() &&
       !dragSelect &&
@@ -789,6 +845,7 @@ export function BrowserViewport({
   }
 
   function pointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (activeSurfaceId && frames.popups?.target(sessionId, activeSurfaceId).get().popup) return;
     if (frames.video?.selected() && videoGesture.current) {
       const gesture = videoGesture.current;
       if (gesture.pointer !== event.pointerId || !activeSurfaceId) return;
@@ -1323,6 +1380,7 @@ function browserViewportFocused(): boolean {
 }
 
 interface BrowserFramePoint {
+  readonly streamId?: import("@opensteer/protocol").DisplayStreamId;
   readonly geometryRevision?: number;
   readonly captureRevision?: number;
   readonly surfaceId: BrowserFrameView["header"]["surfaceId"];
@@ -1355,6 +1413,7 @@ export function normalizedBrowserFramePoint(
       ? {}
       : { geometryRevision: frame.header.geometryRevision }),
     ...(frame.header.capture ? { captureRevision: frame.header.capture.revision } : {}),
+    ...(frame.video ? { streamId: frame.video.streamId } : {}),
     surfaceId: frame.header.surfaceId,
     viewportHeight: frame.header.viewportHeight,
     viewportWidth: frame.header.viewportWidth,

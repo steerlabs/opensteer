@@ -686,6 +686,7 @@ export interface BrowserRasterDemand {
 
 export interface BrowserFrameStore {
   readonly video?: import("./browser-video.js").BrowserVideoStore;
+  readonly popups?: import("./browser-popup.js").BrowserPopupStore;
   readonly cursor?: import("./browser-cursor.js").BrowserCursorStore;
   /** Changes only when previously displayed pixels lose authorization. */
   readonly invalidationKey?: (sessionId: string, surfaceId: string) => string | number;

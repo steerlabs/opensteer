@@ -488,6 +488,7 @@ export async function createHostServer(
       readonly mode: "control" | "watch";
       readonly editing: 1 | 2 | undefined;
       readonly passkeys: "native" | "notice" | undefined;
+      readonly popups: boolean;
     }
   >();
   const realtimeSocketSessions = new WeakMap<object, AuthenticatedSession>();
@@ -3197,7 +3198,7 @@ export async function createHostServer(
 
   app.get<{
     Params: { sessionId: string };
-    Querystring: { mode?: string; editing?: string; passkeys?: string };
+    Querystring: { mode?: string; editing?: string; passkeys?: string; popups?: string };
   }>(
     "/v1/browser-sessions/:sessionId/connect",
     {
@@ -3215,6 +3216,7 @@ export async function createHostServer(
         browserSocketSessions.set(request.raw, {
           mode,
           session,
+          popups: mode === "control" && request.query.popups === "1",
           passkeys:
             dependencies.passkeys === true &&
             (request.query.passkeys === "native" || request.query.passkeys === "notice")
@@ -3237,6 +3239,7 @@ export async function createHostServer(
         admitted.mode,
         admitted.editing,
         admitted.passkeys,
+        admitted.popups,
         async () => {
           try {
             const current = await dependencies.authenticator.authenticateSession(request.headers, {
@@ -3309,6 +3312,7 @@ export function advertisedCapabilities(
     "ownerViewWindows",
     "browser-target-control-v1",
     ...(dependencies.passkeys === true ? ["browser-passkeys-v1" as const] : []),
+    "browser-popups-v1",
     "browser-frame-window-v1",
     "browser-raster-demand-v1",
     "browser-capture-region-v1",
@@ -3334,6 +3338,7 @@ function attachBrowserSocket(
   mode: "control" | "watch",
   editing: 1 | 2 | undefined,
   passkeys: "native" | "notice" | undefined,
+  popups: boolean,
   signedIn: () => Promise<boolean>,
 ): void {
   installWebSocketLiveness(socket);
@@ -3387,6 +3392,7 @@ function attachBrowserSocket(
       mode,
       editing,
       passkeys,
+      popups,
       signedIn,
     });
     if (socket.readyState !== socket.OPEN) {

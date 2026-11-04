@@ -1,0 +1,11 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+group = 'com.opensteer.browserpopup'
+version = '1.0.0'
+android {
+  namespace 'com.opensteer.browserpopup'
+  defaultConfig { versionCode 1; versionName '1.0.0' }
+}
+dependencies { testImplementation 'junit:junit:4.13.2' }

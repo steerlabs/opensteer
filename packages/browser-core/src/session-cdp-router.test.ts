@@ -102,6 +102,45 @@ class FakeBackend implements BrowserCdpBackend {
 }
 
 describe("SessionCdpRouter", () => {
+  it("keeps private human popup/input traffic off the agent channel", async () => {
+    const backend = new FakeBackend();
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("session-a", "root-a", async () => true, "/opensteer-files/session-a");
+    const attached = (await router.send("session-a", {
+      method: "Target.attachToTarget",
+      parameters: { targetId: "root-a" },
+    })) as { sessionId: string };
+    const events: unknown[] = [];
+    router.onEvent("session-a", (event) => events.push(event));
+    for (const method of [
+      "OpensteerInput.enable",
+      "OpensteerInput.edit",
+      "OpensteerPopup.answer",
+      "OpensteerPopup.cancel",
+    ]) {
+      await expect(
+        router.send("session-a", {
+          method,
+          sessionId: attached.sessionId,
+          parameters: { value: "synthetic-agent-boundary-canary" },
+        }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+    }
+    for (const method of [
+      "OpensteerPopup.opened",
+      "OpensteerPopup.updated",
+      "OpensteerPopup.closed",
+    ]) {
+      backend.channels.get("root-a")!.emit(method, { label: "synthetic-agent-boundary-canary" });
+      backend.emit(method, { value: "synthetic-agent-boundary-canary" });
+    }
+    expect(events).toEqual([]);
+    expect(backend.commands).toEqual([]);
+    expect(backend.channels.get("root-a")!.commands.map(({ method }) => method)).toEqual([
+      "Runtime.enable",
+    ]);
+    await router.close();
+  });
   it("routes both activation commands to session selection without activating the engine", async () => {
     const backend = new FakeBackend();
     const router = new SessionCdpRouter(backend);

@@ -36,6 +36,7 @@ import { z } from "zod";
 const maxBrowserRelayChannels = 32;
 
 const LocalHealthSchema = z.object({
+  popups: z.literal(1).optional().catch(undefined),
   wireVersion: z.number().int().optional(),
   runtimeId: z.string().min(1).max(255),
   sessionId: z.string().max(255).nullable().optional(),
@@ -185,6 +186,7 @@ export class LocalBrowserRuntimeBridge {
     const health = await this.#readHealth();
     return {
       wireVersion: health.wireVersion,
+      ...(health.popups === 1 ? { popups: 1 as const } : {}),
       ...(health.localProfileStorage
         ? {
             localProfileStorage: health.localProfileStorage,

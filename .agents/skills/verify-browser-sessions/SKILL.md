@@ -132,3 +132,30 @@ including touch-down while a newer frame is being submitted. Keep real Connect,
 hardware/software encoders, text readability, popup exclusions, multi-device
 handover and native disposal/cleanup as explicit unqualified boundaries until the
 corresponding binary/device run passes.
+
+## Browser-owned popup qualification
+
+Use the reviewed private owner and a rebuilt native mobile presenter. There is no
+CDP, DOM-setter or native-window fallback for a refused remote picker or edit.
+Keep labels, values, IDs, typed text and schema errors out of diagnostics and
+artifacts; retain only enum/count evidence. See [the disclosure and input
+boundary](../../../docs/browser-sessions.md#remote-editing).
+
+For the integrated qualified Electron snapshot, stage the directory containing
+`Electron.app` and `SOURCE.txt` as read-only VM inputs. Select H.264 before payload
+build and use the guest wrapper so the npm Electron launcher resolves the guest
+copy before import:
+
+```sh
+VITE_BROWSER_PRESENTATION=h264 pnpm test:vm -- --inputs /absolute/qualified-snapshot --revision <commit> bash scripts/browser-popup-vm.sh
+```
+
+The selected `popups` journey uses the real Personal Host, the app's temporary
+profile/database roots and a separate Chromium viewer process. The wrapper installs
+the repository-pinned Playwright browser in the disposable guest; an explicit
+`OPENSTEER_POPUP_VIEWER_EXECUTABLE` may name another qualified viewer. Source hashes and the private
+owner are preflight requirements. Unit, native module or sheet-only evidence does
+not qualify real H.264 input. Run the fixture on an owned physical iPhone and a
+reserved Android device separately; the iOS Simulator cannot qualify Metal
+presentation identity. Keep server-Deployment/Connect and weak-cell acceptance
+explicitly unqualified until those actual routes pass.

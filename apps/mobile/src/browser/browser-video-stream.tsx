@@ -255,7 +255,11 @@ export function BrowserVideoStream(props: BrowserStreamProps) {
             (event.phase === "begin" && current.current.inputEnabled === false)
           )
             return;
-          if (event.phase === "begin") current.current.onPointerDown?.();
+          if (event.phase === "begin") {
+            const popup = hostClient.browserFrames.popups?.target(session.id, tabId);
+            if (popup?.get().popup?.state.kind === "datalist") popup.cancel();
+            current.current.onPointerDown?.();
+          }
         }}
         onVideoScroll={({ nativeEvent: event }) => {
           const header = identity(event);
@@ -263,6 +267,7 @@ export function BrowserVideoStream(props: BrowserStreamProps) {
             return;
           hostClient.sendBrowserCommand(session.id, {
             type: "input.wheel",
+            streamId: header.streamId,
             surfaceId: BrowserSurfaceIdSchema.parse(tabId),
             x: (event.x - header.presentation.rasterCrop.x) / header.presentation.rasterCrop.width,
             y: (event.y - header.presentation.rasterCrop.y) / header.presentation.rasterCrop.height,

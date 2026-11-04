@@ -1,0 +1,5 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": { "modules": ["BrowserPopupModule"] },
+  "android": { "modules": ["com.opensteer.browserpopup.BrowserPopupModule"] }
+}

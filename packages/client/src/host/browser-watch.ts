@@ -1,3 +1,4 @@
+import { browserClickStatus } from "./browser-popup.js";
 import {
   BrowserVideoReplaySchema,
   decodeBrowserVideoFrame,
@@ -31,6 +32,7 @@ export interface BrowserWatchState {
 }
 const empty: BrowserWatchState = { frame: null, status: "unavailable", error: null };
 interface Watch {
+  popups: boolean;
   documentId: string | null;
   video: {
     socket: WebSocketClient;
@@ -210,7 +212,8 @@ export class BrowserWatchStore {
   readonly rasterDemands: () => boolean;
   readonly onMessage:
     ((sessionId: string, message: BrowserServerMessage, surfaceId: string) => void) | undefined;
-  readonly onDisconnect: ((sessionId: string, surfaceId: string) => void) | undefined;
+  readonly onDisconnect:
+    ((sessionId: string, surfaceId: string, reason?: "media") => void) | undefined;
   constructor(
     connect: (sessionId: string, surfaceId: string) => WebSocketClient,
     mode: "watch" | "control",
@@ -218,7 +221,7 @@ export class BrowserWatchStore {
       ((sessionId: string, message: BrowserServerMessage, surfaceId: string) => void) | undefined,
     retryDelay: (attempt: number) => number,
     captureRegions: () => boolean = () => false,
-    onDisconnect?: (sessionId: string, surfaceId: string) => void,
+    onDisconnect?: (sessionId: string, surfaceId: string, reason?: "media") => void,
     frameWindows: () => boolean = () => false,
     rasterDemands: () => boolean = () => false,
     videoOptions?: { selected(): boolean; connect(token: string): WebSocketClient },
@@ -238,6 +241,20 @@ export class BrowserWatchStore {
   }
   send(sessionId: string, surfaceId: string, command: BrowserCommand): void {
     const target = this.#targets.get(this.#key(sessionId, surfaceId));
+    if (
+      target &&
+      this.video.selected() &&
+      !target.popups &&
+      (command.type.startsWith("input.") ||
+        command.type.startsWith("popup.") ||
+        command.type.startsWith("clipboard."))
+    ) {
+      this.#set(target, {
+        ...target.state,
+        inputError: "Update the Host, browser computer and app for private browser input.",
+      });
+      return;
+    }
     if (this.mode !== "control" || !target?.synchronized || target.socket?.readyState !== 1) {
       // A connecting socket has admitted no input; a departed socket's Host
       // producer cleanup releases its held state. Cleanup never needs to wait
@@ -265,6 +282,11 @@ export class BrowserWatchStore {
       JSON.stringify(
         TargetedBrowserClientMessageSchema.parse({
           ...command,
+          ...(this.video.selected() &&
+          target.video &&
+          (command.type.startsWith("input.") || command.type.startsWith("clipboard."))
+            ? { streamId: command.streamId ?? target.video.streamId }
+            : {}),
           inputSequence: ++target.sequence,
           inputGeneration: target.generation,
         }),
@@ -311,6 +333,7 @@ export class BrowserWatchStore {
         sessionId,
         surfaceId,
         holds: 0,
+        popups: false,
         pictureHolds: 0,
         captureRegionHolds: 0,
         frameWindowHolds: 0,
@@ -602,17 +625,14 @@ export class BrowserWatchStore {
       try {
         if (typeof data === "string") {
           if (data.length > 1024 * 1024) throw new Error("Browser message exceeds its byte limit.");
-          const message = BrowserServerMessageSchema.parse(JSON.parse(data));
+          const parsed = BrowserServerMessageSchema.safeParse(JSON.parse(data));
+          if (!parsed.success) throw new Error("Invalid browser control message.");
+          const message = parsed.data;
           if (message.type === "browser.guarded-click.result") {
             if (message.surfaceId === target.surfaceId)
               this.#set(target, {
                 ...target.state,
-                inputError:
-                  message.outcome === "dispatched"
-                    ? null
-                    : message.outcome === "refused"
-                      ? "The tap was refused. Observe again before a new gesture."
-                      : "The tap outcome is uncertain. Observe again before a new gesture.",
+                inputError: browserClickStatus(message),
               });
             return;
           }
@@ -626,9 +646,11 @@ export class BrowserWatchStore {
               return;
             }
             this.#openVideo(target, message);
+            this.onMessage?.(target.sessionId, message, target.surfaceId);
             return;
           }
           if (message.type === "browser.video.state") {
+            this.onMessage?.(target.sessionId, message, target.surfaceId);
             if (
               message.surfaceId !== target.surfaceId ||
               (target.video && message.streamId !== target.video.streamId)
@@ -682,6 +704,7 @@ export class BrowserWatchStore {
             }
             synchronized = true;
             target.synchronized = true;
+            target.popups = message.popupVersion === 1;
             target.documentId =
               message.surfaces.find((s) => s.id === target.surfaceId)?.documentId ?? null;
             target.attempt = 0;
@@ -839,6 +862,8 @@ export class BrowserWatchStore {
     target: Watch,
     message: Extract<BrowserServerMessage, { type: "browser.video.attached" }>,
   ): void {
+    if (target.timer) clearTimeout(target.timer);
+    target.timer = null;
     this.#closeVideo(target);
     const socket = this.videoOptions!.connect(message.mediaToken);
     socket.binaryType = "arraybuffer";
@@ -935,6 +960,7 @@ export class BrowserWatchStore {
     const video = target.video;
     target.video = null;
     if (!video) return;
+    this.onDisconnect?.(target.sessionId, target.surfaceId, "media");
     video.receiver.close();
     video.socket.close(1000, "Browser presentation ended");
     if (target.videoState)

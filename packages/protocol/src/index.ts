@@ -44,3 +44,5 @@ export * from "./apps.js";
 export * from "./settings.js";
 export * from "./runner-skill-metadata.js";
 export { validateBrowserH264 } from "./h264.js";
+
+export * from "./browser-popup.js";

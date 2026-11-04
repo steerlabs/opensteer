@@ -25,3 +25,8 @@ export {
   type BrowserPresentationPort,
   type BrowserProducerFrame,
 } from "./browser/browser-presentation-session.js";
+
+export type {
+  NativeBrowserPopupRef,
+  NativeBrowserPopupEvent,
+} from "./browser/browser-presentation-session.js";

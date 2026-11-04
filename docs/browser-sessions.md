@@ -130,6 +130,32 @@ Sources: `apps/host/src/browser/trigger-cdp-bridge.ts`,
 
 ## Remote editing
 
+Controlling a certified H.264 tab shares its displayed choices with that device.
+Select labels, displayed datalist suggestions and date/time/color values and
+constraints can include private information outside the streamed rectangle. They
+cross the authenticated Deployment Host and reach only the initiating controller.
+Other viewers receive the resulting page picture, never the picker, its answers or
+its choices. Select submission values and undisplayed datalist contents stay in
+Chromium. Account and Connect add no popup storage or semantic processing.
+
+Popup state lives only in bounded, transient memory, outside Workspace events,
+history, agent context, saved views and diagnostics. Answers use the exact live
+browser socket authority; no RPC or durable command can reconstruct or replay it.
+Disconnect, navigation, hiding or backgrounding a viewer revokes it. Taking control
+from another device replaces the private producer and briefly interrupts all
+viewers' video; it requires a fresh tap, and transfers no draft or input.
+
+This mode uses committed text with viewer-local preedit. Suggestions follow
+committed characters and IME commits. Live composition, verified replacements and
+unrepresented editing commands refuse visibly until a separately qualified native
+contract supplies them. Private keyboard input, including stock Space and Enter,
+never falls through to ordinary CDP. The supplied native guard also refuses pages
+containing child frames. Refused and uncertain input is never automatically retried.
+Only the qualified desktop framework advertises popup support; stock Electron and
+unqualified headless producers cannot enable it. Shipping another framework needs
+new native qualification and the matching admission in
+[the desktop adapter](../apps/desktop/src/browser/electron-popup-support.ts).
+
 Editing is an optional, three-way negotiation. A Runtime advertises
 `modules.browser.editing: 2` with an explicit `clipboard` boolean; the Host copies
 that version and capability into its attach ticket. V1 remains supported and
@@ -147,7 +173,7 @@ projections, and refuses their extension commands. An older Host that does not
 understand the v2 opt-in keeps the viewer on baseline. This changes no Host API
 epoch or binary image header. See [compatibility](host-boundaries.md#compatibility).
 
-On a session without an engine clipboard, editing viewers keep live composition,
+Outside the certified H.264 private-input mode, on a session without an engine clipboard, editing viewers keep live composition,
 verified replacements, commands and context, while copy/cut use the existing
 runtime-resolved `primary` chord plus `clipboard.data`, and paste uses `clipboard.paste` plain-text
 insertion. Context-menu clipboard actions use that same route. The Runtime keeps

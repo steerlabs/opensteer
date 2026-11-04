@@ -619,3 +619,61 @@ describe("H.264 browser lifecycle", () => {
     }
   });
 });
+it("does not re-subscribe over a Host-issued controller replacement", () => {
+  vi.useFakeTimers();
+  const socket = new TargetSocket();
+  const store = new BrowserWatchStore(
+    () => socket,
+    "control",
+    undefined,
+    () => 100,
+    () => false,
+    undefined,
+    () => false,
+    () => false,
+    { selected: () => true, connect: () => new TargetSocket() },
+  );
+  try {
+    store.retain(sessionId, surfaceId);
+    socket.open();
+    socket.receive({
+      type: "browser.snapshot",
+      sessionId,
+      state: "ready",
+      access: "read-write",
+      targetedStreamingVersion: 1,
+      videoVersion: 1,
+      popupVersion: 1,
+      dialog: null,
+      surfaces: [{ id: surfaceId, active: true, title: "", url: "about:blank" }],
+    });
+    const first = "dsp_00000000-0000-4000-8000-000000000001",
+      second = "dsp_00000000-0000-4000-8000-000000000002";
+    socket.receive({
+      type: "browser.video.attached",
+      surfaceId,
+      streamId: first,
+      mediaToken: "a".repeat(43),
+    });
+    socket.receive({
+      type: "browser.video.state",
+      surfaceId,
+      streamId: first,
+      state: "stopped",
+      reason: "replaced",
+    });
+    socket.receive({
+      type: "browser.video.attached",
+      surfaceId,
+      streamId: second,
+      mediaToken: "b".repeat(43),
+    });
+    vi.advanceTimersByTime(100);
+    expect(
+      socket.sent.map((s) => JSON.parse(s)).filter((m) => m.type === "video.subscribe"),
+    ).toHaveLength(1);
+  } finally {
+    store.dispose();
+    vi.useRealTimers();
+  }
+});

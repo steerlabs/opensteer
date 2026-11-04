@@ -1397,3 +1397,74 @@ button.browser-download__file:hover {
   transform-origin: calc(0px - var(--browser-frame-left, 0px))
     calc(0px - var(--browser-frame-top, 0px));
 }
+
+.browser-popup-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  background: #0005;
+}
+.browser-popup {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(420px, 94%);
+  max-height: 90%;
+  overflow: auto;
+  padding: 20px;
+  border-radius: 12px;
+  background: var(--surface, Canvas);
+  color: var(--text, CanvasText);
+  box-shadow: 0 8px 40px #0004;
+  font: inherit;
+}
+.browser-popup h3 {
+  margin: 0;
+  font: inherit;
+  font-weight: 600;
+}
+.browser-popup input,
+.browser-popup select,
+.browser-popup button {
+  font: inherit;
+  min-height: 44px;
+}
+.browser-popup input[type="text"],
+.browser-popup select {
+  width: 100%;
+  box-sizing: border-box;
+}
+.browser-popup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+.browser-popup-suggestions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  max-height: 160px;
+  padding: 8px;
+  background: Canvas;
+  color: CanvasText;
+}
+.browser-popup-suggestions button {
+  min-height: 44px;
+  flex-shrink: 0;
+  font: inherit;
+}
+.browser-popup-suggestions small {
+  display: block;
+}
+.browser-popup-status {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.browser-popup :focus-visible,
+.browser-popup-suggestions :focus-visible {
+  outline: 2px solid Highlight;
+  outline-offset: 2px;
+}

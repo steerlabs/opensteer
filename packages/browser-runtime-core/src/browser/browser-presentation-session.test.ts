@@ -62,6 +62,8 @@ function fixture() {
     frames,
     stopped,
     emit: (sequence: number) => source!.onFrame(frame(sequence)),
+    popup: (event: import("./browser-presentation-session.js").NativeBrowserPopupEvent) =>
+      source!.onPopup?.(event),
     start: () =>
       session.start(
         DisplayStreamIdSchema.parse("dsp_00000000-0000-4000-8000-000000000001"),
@@ -124,4 +126,50 @@ describe("native browser presentation ownership", () => {
     expect(f.session.resolvePoint(0.5, 0.25, 128, 128, 1)).toBeNull();
     await f.session.stop();
   });
+});
+
+it("binds before async input and admits only one answer while still allowing cancellation", async () => {
+  const f = fixture();
+  Object.assign(f.port, { popupVersion: 1 });
+  const answer = Promise.withResolvers<{ applied: boolean }>();
+  const nativeAnswer = vi.fn(() => answer.promise);
+  const cancel = vi.fn(async () => undefined);
+  Object.assign(f.port, { answerPopup: nativeAnswer, cancelPopup: cancel });
+  await f.start();
+  const binding = {
+    producerId: "00000000-0000-4000-8000-000000000001",
+    viewerSlot: "00000000-0000-4000-8000-000000000002",
+    inputGeneration: 1,
+  };
+  expect(f.session.bind(binding)).toBe(true);
+  expect(f.session.bind({ ...binding, producerId: "00000000-0000-4000-8000-000000000003" })).toBe(
+    false,
+  );
+  const native = {
+    documentGeneration: "document",
+    authorityEpoch: "epoch",
+    popupId: "p",
+    revision: "1",
+  };
+  f.popup({
+    type: "opened",
+    ref: native,
+    state: { kind: "select", multiple: true, rtl: false, items: [] },
+  });
+  const ref = {
+    ...native,
+    surfaceId: "page" as import("@opensteer/protocol").BrowserSurfaceId,
+    streamId: DisplayStreamIdSchema.parse("dsp_00000000-0000-4000-8000-000000000001"),
+  };
+  const first = f.session.popupAction(binding, ref, "operation", { itemIds: [] });
+  expect(f.session.popupAction(binding, ref, "operation", { itemIds: [] })).toBe(first);
+  await expect(f.session.popupAction(binding, ref, "different", { itemIds: [] })).resolves.toBe(
+    "refused",
+  );
+  await expect(f.session.popupAction(binding, ref, "cancel")).resolves.toBe("canceled");
+  expect(cancel).toHaveBeenCalledTimes(1);
+  answer.resolve({ applied: true });
+  await expect(first).resolves.toBe("applied");
+  expect(nativeAnswer).toHaveBeenCalledTimes(1);
+  await f.session.stop();
 });

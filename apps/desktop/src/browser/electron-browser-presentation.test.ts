@@ -30,6 +30,7 @@ function fixture() {
           "OpensteerVideo.ack",
           "OpensteerVideo.requestKeyframe",
           "OpensteerVideo.stop",
+          "OpensteerInput.disable",
         ].includes(method)
       )
         return {};
@@ -170,6 +171,101 @@ describe("private Electron browser presentation adapter", () => {
     expect(f.options.onFrame).not.toHaveBeenCalled();
     expect(f.options.onStopped).toHaveBeenCalledExactlyOnceWith("source-ended");
     expect(f.owner.detach).toHaveBeenCalledOnce();
+    await f.port.stop();
+  });
+});
+
+describe("private popup and committed keyboard bridge", () => {
+  it("preserves successor identity when an old close arrives and releases every listener on stop", async () => {
+    const f = fixture();
+    const onPopup = vi.fn();
+    await f.port.start({ ...f.options, onPopup });
+    const state = { kind: "select", multiple: false, rtl: false, items: [] };
+    const open = (popupId: string) =>
+      f.events.emit("message", {}, "OpensteerPopup.opened", {
+        documentGeneration: "document",
+        authorityEpoch: "epoch",
+        frameId: "main",
+        popupId,
+        revision: "9007199254740993",
+        state,
+      });
+    open("old");
+    open("next");
+    f.events.emit("message", {}, "OpensteerPopup.closed", { popupId: "old", reason: "applied" });
+    expect(onPopup.mock.calls.at(-1)?.[0]).toMatchObject({
+      type: "closed",
+      ref: { popupId: "old" },
+    });
+    f.events.emit("message", {}, "OpensteerPopup.updated", {
+      popupId: "next",
+      revision: "9007199254740994",
+      state,
+    });
+    expect(onPopup.mock.calls.at(-1)?.[0]).toMatchObject({
+      type: "updated",
+      ref: { popupId: "next", revision: "9007199254740994" },
+    });
+    await f.port.stop();
+    expect(f.events.listenerCount("message")).toBe(0);
+    const count = onPopup.mock.calls.length;
+    open("late");
+    expect(onPopup).toHaveBeenCalledTimes(count);
+  });
+  it("captures once, carries Space text exactly once, and never recaptures a refused action", async () => {
+    const f = fixture();
+    const original = f.commands.getMockImplementation()!;
+    f.commands.mockImplementation(async (method, p) =>
+      method === "OpensteerInput.edit"
+        ? {
+            dispatched: p?.type === "capture" || p?.seq !== "4",
+            focusToken: p?.seq === "4" ? "" : "focus",
+          }
+        : original(method, p),
+    );
+    await f.port.start(f.options);
+    let seq = 0;
+    const next = () => String(++seq);
+    await f.port.edit(
+      { type: "keyDown", key: " ", code: "Space", keyCode: 32, modifiers: 0, text: " " },
+      next,
+    );
+    await f.port.edit(
+      { type: "keyUp", key: " ", code: "Space", keyCode: 32, modifiers: 0, text: "" },
+      next,
+    );
+    expect(await f.port.edit({ type: "insertText", text: "commit" }, next)).toEqual({
+      dispatched: false,
+    });
+    const edits = f.commands.mock.calls
+      .filter((c) => c[0] === "OpensteerInput.edit")
+      .map((c) => c[1]);
+    expect(edits.map((p) => p?.seq)).toEqual(["1", "2", "3", "4"]);
+    expect(edits.map((p) => p?.text)).toEqual(["", " ", "", "commit"]);
+    await f.port.stop();
+  });
+  it("never logs synthetic secrets from labels, values, malformed state or native errors", async () => {
+    const log = vi.spyOn(console, "info").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const f = fixture();
+    await f.port.start({ ...f.options, onPopup: vi.fn() });
+    const canary = "synthetic-popup-secret-canary";
+    f.events.emit("message", {}, "OpensteerPopup.opened", {
+      documentGeneration: "document",
+      authorityEpoch: "epoch",
+      frameId: "main",
+      popupId: "p",
+      revision: "1",
+      state: {
+        kind: "color",
+        rtl: false,
+        items: [],
+        value: canary,
+        alpha: true,
+        colorSpace: "malformed-" + canary,
+      },
+    });
+    expect(JSON.stringify([...log.mock.calls, ...error.mock.calls])).not.toContain(canary);
     await f.port.stop();
   });
 });

@@ -1,3 +1,24 @@
+import {
+  sameInputBinding,
+  samePopup,
+  validatePopupAnswer,
+  type BrowserInputBinding,
+  type BrowserPopupRef,
+  type BrowserPopupState,
+  type BrowserPopupAnswer,
+  type BrowserPrivateEdit,
+  type BrowserPrivateCompositionPort,
+  type BrowserClickRefusalReason,
+} from "@opensteer/protocol";
+export type NativeBrowserPopupRef = Omit<BrowserPopupRef, "surfaceId" | "streamId">;
+export type NativeBrowserPopupEvent =
+  | { type: "opened" | "updated"; ref: NativeBrowserPopupRef; state: BrowserPopupState }
+  | {
+      type: "closed";
+      ref: NativeBrowserPopupRef;
+      reason: "canceled" | "applied" | "interrupted" | "unavailable" | "expired";
+    }
+  | { type: "unavailable"; reason: "limit" | "unsupported" | "unavailable" };
 import { z } from "zod";
 import {
   BrowserPresentedFrameSchema,
@@ -18,7 +39,10 @@ import {
 
 /** Only the native owner implements this port. Ordinary CDP has no access to it. */
 export interface BrowserPresentationPort {
+  readonly popupVersion?: 1;
+  readonly composition?: BrowserPrivateCompositionPort;
   start(options: {
+    onPopup?(event: NativeBrowserPopupEvent): void;
     budget: BrowserVideoBudget;
     creditWindow: number;
     onFrame(frame: BrowserProducerFrame): void;
@@ -32,7 +56,17 @@ export interface BrowserPresentationPort {
     seq: string;
     rootCssPoint: { x: number; y: number };
     modifiers: number;
-  }): Promise<{ dispatched: boolean }>;
+  }): Promise<{ dispatched: boolean; reason?: BrowserClickRefusalReason }>;
+  answerPopup?(
+    ref: NativeBrowserPopupRef,
+    answer: BrowserPopupAnswer,
+  ): Promise<{ applied: boolean }>;
+  cancelPopup?(ref: NativeBrowserPopupRef): Promise<void>;
+  edit?(
+    input: BrowserPrivateEdit,
+    nextSequence: () => string,
+    current?: () => boolean,
+  ): Promise<{ dispatched: boolean }>;
   stop(): Promise<void>;
 }
 export interface BrowserProducerFrame {
@@ -50,12 +84,104 @@ export interface BrowserProducerFrame {
 /** One rendition and immutable metadata ledger per exact live page. */
 export class BrowserPresentationSession {
   #closed = false;
+  #started = false;
+  #binding: BrowserInputBinding | null = null;
+  #popup: { ref: NativeBrowserPopupRef; state: BrowserPopupState } | null = null;
+  readonly #operations = new Map<
+    string,
+    { popupId: string; result: Promise<"applied" | "canceled" | "refused" | "uncertain"> }
+  >();
+  #pendingAnswer: string | null = null;
+  get popupKind(): BrowserPopupState["kind"] | null {
+    return this.#popup?.state.kind ?? null;
+  }
+  readonly #heldKeys = new Set<string>();
+  get popupVersion(): 1 | undefined {
+    return this.#port.popupVersion;
+  }
+  get binding(): BrowserInputBinding | null {
+    return this.#binding;
+  }
+  bind(binding: BrowserInputBinding): boolean {
+    if (this.#closed || this.#port.popupVersion !== 1) return false;
+    if (this.#binding) return sameInputBinding(this.#binding, binding);
+    this.#binding = { ...binding };
+    return true;
+  }
+  owns(binding: BrowserInputBinding): boolean {
+    return !this.#closed && sameInputBinding(this.#binding, binding);
+  }
+  async edit(
+    binding: BrowserInputBinding,
+    input: BrowserPrivateEdit,
+    current: () => boolean = () => true,
+  ): Promise<{ dispatched: boolean }> {
+    if (!this.owns(binding) || !this.#port.edit) return { dispatched: false };
+    if (
+      this.#popup &&
+      this.#popup.state.kind !== "datalist" &&
+      !(input.type === "keyUp" && this.#heldKeys.has(input.code))
+    )
+      return { dispatched: false };
+    if (input.type === "keyDown") this.#heldKeys.add(input.code);
+    if (input.type === "keyUp") this.#heldKeys.delete(input.code);
+    return this.#port.edit(
+      input,
+      () => this.#nextSequence(),
+      () => this.owns(binding) && current(),
+    );
+  }
+  popupAction(
+    binding: BrowserInputBinding,
+    ref: BrowserPopupRef,
+    operationId: string,
+    answer?: BrowserPopupAnswer,
+  ): Promise<"applied" | "canceled" | "refused" | "uncertain"> {
+    if (!this.owns(binding) || ref.streamId !== this.#streamId) return Promise.resolve("refused");
+    const previous = this.#operations.get(operationId);
+    if (previous)
+      return previous.popupId === ref.popupId ? previous.result : Promise.resolve("refused");
+    if (answer && this.#pendingAnswer === ref.popupId) return Promise.resolve("refused");
+    const popup = this.#popup;
+    if (
+      !popup ||
+      !samePopup({ ...popup.ref, surfaceId: ref.surfaceId, streamId: ref.streamId }, ref) ||
+      (answer && (popup.ref.revision !== ref.revision || !validatePopupAnswer(popup.state, answer)))
+    )
+      return Promise.resolve("refused");
+    if (this.#operations.size >= 128) return Promise.resolve("refused");
+    // Consume before native submission, including synchronous event delivery.
+    const terminal = Promise.withResolvers<"applied" | "canceled" | "refused" | "uncertain">();
+    this.#operations.set(operationId, { popupId: ref.popupId, result: terminal.promise });
+    if (answer) this.#pendingAnswer = ref.popupId;
+    void (async () => {
+      try {
+        if (answer)
+          return (await this.#port.answerPopup?.(ref, answer))?.applied
+            ? ("applied" as const)
+            : ("refused" as const);
+        await this.#port.cancelPopup?.(ref);
+        return "canceled" as const;
+      } catch {
+        return "uncertain" as const;
+      }
+    })().then((result) => {
+      if (answer && this.#pendingAnswer === ref.popupId) this.#pendingAnswer = null;
+      terminal.resolve(result);
+    });
+    return terminal.promise;
+  }
+  async dismissPopup(): Promise<void> {
+    const popup = this.#popup;
+    this.#popup = null;
+    if (popup) await this.#port.cancelPopup?.(popup.ref).catch(() => undefined);
+  }
   #streamId: DisplayStreamId | null = null;
   #producer: string | null = null;
   #sequence = -1;
   #generation = 0;
   #ptsUs = -1;
-  #gesture = 0;
+  #gesture = 0n;
   #stopped: ((reason: string) => void) | null = null;
   readonly #frames = new Map<number, BrowserVideoFrameHeader>();
   readonly #pending = new Set<number>();
@@ -73,14 +199,30 @@ export class BrowserPresentationSession {
     emit: (header: BrowserVideoFrameHeader, payload: Uint8Array) => void,
     stopped: (reason: string) => void,
     geometryRevision: () => number = () => 0,
+    popup?: (event: NativeBrowserPopupEvent, binding: BrowserInputBinding) => void,
   ) {
     if (this.#closed || this.#streamId) throw new Error("Browser presentation already started.");
     this.#streamId = streamId;
     this.#stopped = stopped;
     try {
+      this.#started = true;
       const result = await this.#port.start({
         budget,
         creditWindow,
+        onPopup: (event) => {
+          const binding = this.#binding;
+          if (this.#closed || !binding) return;
+          if (event.type === "opened" || event.type === "updated") {
+            if (event.type === "opened")
+              for (const [id, record] of this.#operations)
+                if (record.popupId !== event.ref.popupId && record.popupId !== this.#pendingAnswer)
+                  this.#operations.delete(id);
+            this.#popup = { ref: event.ref, state: event.state };
+          } else if (event.type === "unavailable") this.#popup = null;
+          else if (event.type === "closed" && this.#popup?.ref.popupId === event.ref.popupId)
+            this.#popup = null;
+          popup?.(event, binding);
+        },
         onStopped: (reason) => {
           if (this.#closed) return;
           this.#closed = true;
@@ -174,7 +316,7 @@ export class BrowserPresentationSession {
     ref: BrowserPresentationRef,
     point: { x: number; y: number },
     modifiers: number,
-  ): Promise<{ dispatched: boolean }> {
+  ): Promise<{ dispatched: boolean; reason?: BrowserClickRefusalReason }> {
     const key = `${slot}:${gestureId}`;
     const header = this.#frames.get(ref.sequence);
     if (
@@ -190,12 +332,12 @@ export class BrowserPresentationSession {
     } catch {
       return { dispatched: false };
     }
-    if (this.#gesture >= Number.MAX_SAFE_INTEGER) return { dispatched: false };
+    if (this.#gesture >= 18_446_744_073_709_551_615n) return { dispatched: false };
     this.#clicks.add(key);
     if (this.#clicks.size > 128) this.#clicks.delete(this.#clicks.values().next().value!);
     return this.#port.click({
       reference: ref,
-      seq: String(++this.#gesture),
+      seq: this.#nextSequence(),
       rootCssPoint,
       modifiers,
     });
@@ -223,7 +365,12 @@ export class BrowserPresentationSession {
     if (this.#closed) return;
     this.#closed = true;
     this.#clear();
-    await this.#port.stop();
+    if (this.#started) await this.#port.stop();
+  }
+  #nextSequence(): string {
+    if (this.#gesture >= 18_446_744_073_709_551_615n)
+      throw new Error("Private input sequence exhausted.");
+    return String(++this.#gesture);
   }
   #notifyStopped(reason: string): void {
     const notify = this.#stopped;
@@ -234,6 +381,11 @@ export class BrowserPresentationSession {
     if (this.#closed || !this.#streamId) throw new Error("Browser presentation ended.");
   }
   #clear(): void {
+    this.#binding = null;
+    this.#popup = null;
+    this.#pendingAnswer = null;
+    this.#operations.clear();
+    this.#heldKeys.clear();
     this.#frames.clear();
     this.#pending.clear();
     this.#clicks.clear();

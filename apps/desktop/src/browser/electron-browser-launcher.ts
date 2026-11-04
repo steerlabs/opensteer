@@ -1,3 +1,4 @@
+import { electronPopupVersion } from "./electron-popup-support.js";
 import { electronBrowserPresentation } from "./electron-browser-presentation.js";
 import {
   agentCdpAllowlist,
@@ -134,6 +135,11 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   #preparation: Promise<void> | undefined;
   #nativeProfilesAvailable = false;
 
+  #popupVersion: 1 | undefined;
+  get popupVersion(): 1 | undefined {
+    return this.#popupVersion;
+  }
+
   get nativeProfilesAvailable(): boolean {
     return this.#nativeProfilesAvailable;
   }
@@ -156,6 +162,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       await app.whenReady();
       // Engine support is stable. Keychain availability is checked on each explicit acquisition.
       this.#nativeProfilesAvailable = true;
+      this.#popupVersion = await electronPopupVersion();
     })();
     return this.#preparation;
   }

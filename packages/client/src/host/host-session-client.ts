@@ -1,3 +1,4 @@
+import { BrowserPopupStore } from "./browser-popup.js";
 import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
 import type { PersonShowMessage } from "@opensteer/protocol";
@@ -528,6 +529,7 @@ export type HostCapabilityReader = (options?: {
 
 export interface HttpHostClientOptions {
   readonly browserPresentation?: "jpeg" | "h264";
+  readonly browserPopupPresentationVersion?: 1;
   readonly passkeys?: BrowserPasskeyPort;
   /** The viewer's command platform for exact baseline shortcut projection. */
   readonly viewerPlatform?: "mac" | "pc";
@@ -642,20 +644,28 @@ export class HttpHostClient {
   readonly #placeActivity = new PlaceActivityStore();
   readonly #runPlaces = new RunPlaceStore();
   #browserPresentation: "jpeg" | "h264" = "jpeg";
+  #popupPresentationVersion: 1 | undefined;
   readonly #targetedControl = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "control"),
     "control",
     (sessionId, message, surfaceId) => {
+      this.#browserPopups.receive(sessionId, message);
       this.#browserCursor.receive(sessionId, message);
       this.browserPasskeys.receive(sessionId, surfaceId, message);
-      if (message.type === "browser.snapshot")
+      if (message.type === "browser.snapshot") {
+        this.#browserPopups.negotiate(
+          sessionId,
+          surfaceId,
+          message.popupVersion === 1 && this.#browserPresentation === "h264",
+        );
         this.#browserEditing.negotiate(
           sessionId,
           message.editingVersion,
           surfaceId,
           message.clipboard,
+          message.popupVersion === 1 && this.#browserPresentation === "h264",
         );
-      else this.#browserEditing.receive(sessionId, message);
+      } else this.#browserEditing.receive(sessionId, message);
       if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed")
         this.#patchBrowserSession(sessionId, {
           tabs: browserTabs(message.surfaces),
@@ -668,7 +678,9 @@ export class HttpHostClient {
     },
     (attempt) => this.#reconnectDelay(attempt),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
-    (sessionId, surfaceId) => {
+    (sessionId, surfaceId, reason) => {
+      if (reason === "media") this.#browserPopups.mediaEnded(sessionId, surfaceId);
+      else this.#browserPopups.disconnect(sessionId, surfaceId);
       this.#browserEditing.disconnect(sessionId, surfaceId);
       this.browserPasskeys.disconnect(sessionId, surfaceId);
     },
@@ -724,6 +736,13 @@ export class HttpHostClient {
     const passkeys = this.browserPasskeys.optIn(this.#capabilities);
     if (mode === "control" && passkeys) url.searchParams.set("passkeys", passkeys);
     url.searchParams.set("editing", "2");
+    if (
+      mode === "control" &&
+      this.#popupPresentationVersion === 1 &&
+      this.#browserPresentation === "h264" &&
+      this.#capabilities?.includes("browser-popups-v1")
+    )
+      url.searchParams.set("popups", "1");
     return this.#webSocketFactory(url.toString().replace(/^http/, "ws"));
   }
   readonly connectComputerDisplay = (
@@ -1191,6 +1210,7 @@ export class HttpHostClient {
   readonly #viewerPlatform: "mac" | "pc" | null;
   constructor(options: HttpHostClientOptions) {
     this.#browserPresentation = options.browserPresentation ?? "jpeg";
+    this.#popupPresentationVersion = options.browserPopupPresentationVersion;
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
     this.#viewerPlatform = options.viewerPlatform ?? null;
     this.#readCapabilities =
@@ -1345,6 +1365,9 @@ export class HttpHostClient {
   readonly getSnapshot = (): HostSnapshot => this.#snapshot;
 
   readonly #browserCursor = new BrowserCursorStore();
+  readonly #browserPopups = new BrowserPopupStore((sessionId, surfaceId, command) =>
+    this.#targetedControl.send(sessionId, surfaceId, command),
+  );
   readonly #browserEditing = new BrowserEditingStore(
     (sessionId, surfaceId, command) => {
       if (this.#targetedControl.has(sessionId, surfaceId))
@@ -1358,6 +1381,7 @@ export class HttpHostClient {
     video: this.#targetedControl.video,
     invalidationKey: this.#targetedControl.invalidationKey,
     editing: this.#browserEditing,
+    popups: this.#browserPopups,
     cursor: this.#browserCursor,
     scope: this.#browserPresentationScope,
     claim: (sessionId, surfaceId, token) => {
@@ -3631,6 +3655,7 @@ export class HttpHostClient {
     this.#runPlaces.dispose();
     this.#targetedWatch.dispose();
     this.#targetedControl.dispose();
+    this.#browserPopups.dispose();
     this.#browserEditing.dispose();
     this.#browserFrameListeners.clear();
     this.#browserWatchFrameListeners.clear();

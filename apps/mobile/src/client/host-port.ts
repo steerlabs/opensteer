@@ -69,6 +69,7 @@ export type MobileHostPortFactory = (input: {
 }) => MobileHostPort;
 
 export function createNetworkHostPort(options: {
+  readonly browserPopupPresentationVersion?: 1;
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
   readonly fetch: HostFetch;
   readonly lifecycle: ClientLifecycle;
@@ -92,6 +93,9 @@ export function createNetworkHostPort(options: {
         openWebSocket: options.openWebSocket,
       });
       return new HttpHostClient({
+        ...(options.browserPopupPresentationVersion === 1
+          ? { browserPopupPresentationVersion: 1 as const }
+          : {}),
         browserPresentation:
           process.env.EXPO_PUBLIC_BROWSER_PRESENTATION === "h264" ? "h264" : "jpeg",
         baseUrl: origin,

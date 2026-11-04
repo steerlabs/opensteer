@@ -13,6 +13,9 @@ export const journeySteps: Record<string, string> = {
   nativeFailure: "Failed native replacement shows unavailable without picture streaming",
   revoke: "Revoke authority and unmount synchronously",
 };
+export const popupJourneySteps = {
+  popups: "Controller-only native browser popups and private text input",
+};
 export const passkeyJourneySteps = {
   "passkeys-notice": "Personal browser passkeys on a notice-only Mac",
   passkeys: "Personal browser passkey registration, sign-in, Continue and refusal",

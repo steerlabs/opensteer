@@ -130,6 +130,9 @@ export function BrowserAccessBody({
 
   return (
     <>
+      <ActionNote>
+        Controlling a streamed tab shares its displayed choices with that device.
+      </ActionNote>
       <div className="action-rows">
         {view.profiles.map((profile) => {
           const selected = selection?.kind === "existing" && selection.profileId === profile.id;

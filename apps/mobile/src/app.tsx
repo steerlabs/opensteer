@@ -1,3 +1,4 @@
+import { browserPopupNative } from "../modules/browser-popup/index.js";
 import { createBrowsingChoiceStorage } from "./client/browsing-choice-storage.js";
 import { notificationPreviewNative } from "../modules/notification-preview/index.js";
 import { NotificationPreviews } from "./notifications/notification-preview.js";
@@ -230,6 +231,7 @@ function mobileClient(): MobileRoot {
           initialHome: configuration.mockHome,
         })
       : createNetworkHostPort({
+          ...(browserPopupNative() ? { browserPopupPresentationVersion: 1 as const } : {}),
           browserPreferencesStorage: createBrowsingChoiceStorage(
             new File(`${root}${storeName}/browsing-choices.json`),
           ),

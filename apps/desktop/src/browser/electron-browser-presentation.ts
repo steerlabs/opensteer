@@ -2,12 +2,18 @@ import type { WebContents } from "electron";
 import { z } from "zod";
 import {
   BrowserPresentedFrameSchema,
+  BrowserClickRefusalReasonSchema,
+  projectNativePopupState,
+  type BrowserPopupAnswer,
+  type BrowserPrivateEdit,
+  type BrowserClickRefusalReason,
   BrowserVideoU64Schema,
   type BrowserVideoBudget,
 } from "@opensteer/protocol";
 import type {
   BrowserPresentationPort,
   BrowserProducerFrame,
+  NativeBrowserPopupRef,
 } from "@opensteer/browser-runtime-core";
 
 /** Private main-process capability. Never expose this handle or a generic proxy over IPC. */
@@ -53,6 +59,11 @@ export function electronBrowserPresentation(contents: WebContents): BrowserPrese
 }
 
 export class ElectronBrowserPresentation implements BrowserPresentationPort {
+  readonly popupVersion = 1 as const;
+  #authority: z.infer<typeof enabledSchema> | null = null;
+  #focusToken = "";
+  #popup: NativeBrowserPopupRef | null = null;
+  readonly #popupRefs = new Map<string, NativeBrowserPopupRef>();
   readonly #create: () => OpensteerInputOwner;
   #owner: OpensteerInputOwner | null = null;
   #stream: string | null = null;
@@ -79,6 +90,10 @@ export class ElectronBrowserPresentation implements BrowserPresentationPort {
       this.#updating = null;
       ++this.#epoch;
       this.#owner = null;
+      this.#authority = null;
+      this.#focusToken = "";
+      this.#popup = null;
+      this.#popupRefs.clear();
       this.#remove?.();
       this.#remove = null;
       queueMicrotask(() => {
@@ -124,16 +139,89 @@ export class ElectronBrowserPresentation implements BrowserPresentationPort {
         stopped();
       }
     };
+    const message = (...args: unknown[]) => {
+      if (this.#owner !== owner || epoch !== this.#epoch || !authority) return;
+      const method = args[1];
+      if (
+        typeof method !== "string" ||
+        !["OpensteerPopup.opened", "OpensteerPopup.updated", "OpensteerPopup.closed"].includes(
+          method,
+        )
+      )
+        return;
+      try {
+        const raw = z.record(z.string(), z.unknown()).parse(args[2]);
+        if (method === "OpensteerPopup.closed") {
+          const id = z.string().min(1).max(512).parse(raw.popupId);
+          const ref = this.#popupRefs.get(id);
+          if (!ref) {
+            options.onPopup?.({
+              type: "unavailable",
+              reason:
+                raw.reason === "limit"
+                  ? "limit"
+                  : raw.reason === "unsupported"
+                    ? "unsupported"
+                    : "unavailable",
+            });
+            return;
+          }
+          if (this.#popup?.popupId === id) this.#popup = null;
+          this.#focusToken = "";
+          const reason = z.enum(["canceled", "applied", "expired"]).safeParse(raw.reason);
+          options.onPopup?.({
+            type: "closed",
+            ref,
+            reason: reason.success ? reason.data : "interrupted",
+          });
+          return;
+        }
+        const popupId = z.string().min(1).max(512).parse(raw.popupId);
+        const revision = BrowserVideoU64Schema.refine((v) => v !== "0").parse(raw.revision);
+        if (method === "OpensteerPopup.opened") {
+          // This private native API admits only the primary frame without children.
+          z.string().min(1).max(512).parse(raw.frameId);
+          if (
+            raw.documentGeneration !== authority.documentGeneration ||
+            raw.authorityEpoch !== authority.authorityEpoch
+          )
+            return;
+          this.#popup = { ...authority, popupId, revision };
+          this.#popupRefs.set(popupId, this.#popup);
+          if (this.#popupRefs.size > 32)
+            this.#popupRefs.delete(this.#popupRefs.keys().next().value!);
+        } else {
+          if (!this.#popup || this.#popup.popupId !== popupId) return;
+          this.#popup = { ...this.#popup, revision };
+          this.#popupRefs.set(popupId, this.#popup);
+        }
+        const state = projectNativePopupState(raw.state);
+        options.onPopup?.({
+          type: method === "OpensteerPopup.opened" ? "opened" : "updated",
+          ref: this.#popup!,
+          state,
+        });
+      } catch {
+        // Never attach schema/native errors: they can contain private labels and values.
+        const ref = this.#popup;
+        this.#popup = null;
+        if (ref) void this.cancelPopup(ref).catch(() => undefined);
+        options.onPopup?.({ type: "unavailable", reason: "limit" });
+      }
+    };
+    owner.on("message", message);
     owner.on("video-chunk", chunk);
     owner.on("video-stopped", stopped);
     owner.on("detach", stopped);
     this.#remove = () => {
+      owner.off("message", message);
       owner.off("video-chunk", chunk);
       owner.off("video-stopped", stopped);
       owner.off("detach", stopped);
     };
     try {
       authority = enabledSchema.parse(await owner.sendCommand("OpensteerInput.enable"));
+      this.#authority = authority;
       if (this.#owner !== owner || epoch !== this.#epoch)
         throw new Error("Browser owner ended during enable.");
       const { maxBitrate, ...budget } = options.budget;
@@ -193,11 +281,12 @@ export class ElectronBrowserPresentation implements BrowserPresentationPort {
   }
   async click(
     input: Parameters<BrowserPresentationPort["click"]>[0],
-  ): Promise<{ dispatched: boolean }> {
+  ): Promise<{ dispatched: boolean; reason?: BrowserClickRefusalReason }> {
     const owner = this.#owner;
     if (!owner || !this.#stream) throw new Error("Browser owner ended.");
     const { reference, seq, rootCssPoint, modifiers } = input;
-    return z.object({ dispatched: z.boolean() }).parse(
+    this.#focusToken = "";
+    const result = z.object({ dispatched: z.boolean(), reason: z.string().optional() }).safeParse(
       await owner.sendCommand("OpensteerInput.click", {
         documentGeneration: reference.documentGeneration,
         authorityEpoch: reference.authorityEpoch,
@@ -209,11 +298,100 @@ export class ElectronBrowserPresentation implements BrowserPresentationPort {
         modifiers,
       }),
     );
+    if (!result.success) throw new Error("Invalid private input result.");
+    const reason = BrowserClickRefusalReasonSchema.safeParse(result.data.reason);
+    return {
+      dispatched: result.data.dispatched,
+      ...(!result.data.dispatched && reason.success ? { reason: reason.data } : {}),
+    };
+  }
+  async answerPopup(
+    ref: NativeBrowserPopupRef,
+    answer: BrowserPopupAnswer,
+  ): Promise<{ applied: boolean }> {
+    const owner = this.#owner;
+    if (!owner) throw new Error("Browser owner ended.");
+    const { documentGeneration, authorityEpoch, popupId, revision } = ref;
+    const result = z.object({ applied: z.boolean() }).safeParse(
+      await owner.sendCommand("OpensteerPopup.answer", {
+        documentGeneration,
+        authorityEpoch,
+        popupId,
+        revision,
+        answer,
+      }),
+    );
+    if (!result.success) throw new Error("Invalid private popup result.");
+    return result.data;
+  }
+  async cancelPopup(ref: NativeBrowserPopupRef): Promise<void> {
+    const { documentGeneration, authorityEpoch, popupId, revision } = ref;
+    await this.#owner?.sendCommand("OpensteerPopup.cancel", {
+      documentGeneration,
+      authorityEpoch,
+      popupId,
+      revision,
+    });
+  }
+  async edit(
+    input: BrowserPrivateEdit,
+    nextSequence: () => string,
+    current: () => boolean = () => true,
+  ): Promise<{ dispatched: boolean }> {
+    const owner = this.#owner;
+    const authority = this.#authority;
+    const epoch = this.#epoch;
+    if (!owner || !authority) return { dispatched: false };
+    const response = z.object({ dispatched: z.boolean(), focusToken: z.string().max(512) });
+    const command = async (
+      type: "capture" | "keyDown" | "keyUp" | "insertText",
+      focusToken: string,
+    ) => {
+      const raw = await owner
+        .sendCommand("OpensteerInput.edit", {
+          ...authority,
+          seq: nextSequence(),
+          focusToken,
+          type,
+          key: "key" in input && type !== "capture" ? input.key : "",
+          code: "code" in input && type !== "capture" ? input.code : "",
+          keyCode: "keyCode" in input && type !== "capture" ? input.keyCode : 0,
+          modifiers: "modifiers" in input && type !== "capture" ? input.modifiers : 0,
+          text: type === "capture" || type === "keyUp" ? "" : input.text,
+        })
+        .catch(() => {
+          throw new Error("Private editing outcome is uncertain.");
+        });
+      const result = response.safeParse(raw);
+      if (!result.success) throw new Error("Invalid private editing result.");
+      return result.data;
+    };
+    if (
+      new TextEncoder().encode(input.text).byteLength > 4096 ||
+      (input.type === "keyDown" && input.text.length >= 4)
+    )
+      return { dispatched: false };
+    if (!this.#focusToken && input.type === "keyUp") return { dispatched: false };
+    if (!this.#focusToken) {
+      const captured = await command("capture", "");
+      if (this.#owner !== owner || this.#epoch !== epoch || !captured.focusToken || !current())
+        return { dispatched: false };
+      this.#focusToken = captured.focusToken;
+    }
+    if (!current()) return { dispatched: false };
+    const result = await command(input.type, this.#focusToken);
+    if (this.#owner !== owner || this.#epoch !== epoch) return { dispatched: false };
+    this.#focusToken = result.focusToken;
+    return { dispatched: result.dispatched };
   }
   stop(): Promise<void> {
     if (this.#stop) return this.#stop;
     const owner = this.#owner;
     this.#owner = null;
+    this.#authority = null;
+    this.#focusToken = "";
+    this.#popup = null;
+    this.#popupRefs.clear();
     this.#stream = null;
     ++this.#epoch;
     this.#desiredBudget = null;
@@ -223,7 +401,11 @@ export class ElectronBrowserPresentation implements BrowserPresentationPort {
     if (!owner) return Promise.resolve();
     this.#stop = (async () => {
       try {
-        await owner.sendCommand("OpensteerVideo.stop");
+        try {
+          await owner.sendCommand("OpensteerInput.disable");
+        } finally {
+          await owner.sendCommand("OpensteerVideo.stop");
+        }
       } finally {
         owner.detach();
       }
