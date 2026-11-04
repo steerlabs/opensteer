@@ -193,6 +193,39 @@ describe("automatic model resolver", () => {
     expect(result.candidates).toEqual([]);
     expect(result.skipped[0]?.reason).toBe(reason);
   });
+  it("matches a canonical provider/model pair for a lab outside the vendor table", () => {
+    const a = account("opencode");
+    const model = (providerId: string) => ({
+      ...a.catalog!.models[0]!,
+      providerId: ModelSelectionSchema.shape.providerId.parse(providerId),
+      modelId: ModelSelectionSchema.shape.modelId.parse("union-alpha"),
+      nativeModelId: `${providerId}/union-alpha@2`,
+      options: [],
+    });
+    const unlisted = { ...a, catalog: { status: "ready", models: [model("union-labs")] } };
+    const picked = (accounts: AuthorizedModelAccountSnapshot[], name: string) =>
+      resolve(accounts, { wants: [want("opencode", name)] }).candidates.map(
+        (c) => c.storedModelSelection,
+      );
+    for (const name of ["union-alpha", "union-labs/union-alpha"])
+      expect(picked([unlisted], name)).toEqual([
+        {
+          providerId: "union-labs",
+          modelId: "union-alpha",
+          nativeModelId: "union-labs/union-alpha@2",
+          options: {},
+        },
+      ]);
+    // Two labs serve the same ID: only the pair says which.
+    const shared = {
+      ...a,
+      catalog: { status: "ready", models: [model("union-labs"), model("opencode")] },
+    };
+    expect(picked([shared], "union-alpha")).toEqual([]);
+    expect(picked([shared], "opencode/union-alpha")).toEqual([
+      expect.objectContaining({ providerId: "opencode", nativeModelId: "opencode/union-alpha@2" }),
+    ]);
+  });
   it("requires explicit binding for each arbitrary endpoint", () => {
     const a = account("codex", { sourceId: "openai-compatible", sourceBoundary: "endpoint-a" });
     const b = account("codex", { sourceId: "openai-compatible", sourceBoundary: "endpoint-b" });
