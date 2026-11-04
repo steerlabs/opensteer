@@ -52,8 +52,6 @@ export interface AuthorizedModelAccountSnapshot {
   readonly harnessRevision: number;
   readonly driverKind: HarnessId;
   readonly sourceId: string;
-  /** Nonsecret endpoint identity; account revision must also change when this changes. */
-  readonly sourceBoundary: string;
   readonly isDefault: boolean;
   readonly enabled: boolean;
   readonly removed: boolean;
@@ -73,7 +71,6 @@ export const ModelCandidateSkipReasonSchema = z.enum([
   "model-unavailable",
   "options-unavailable",
   "endpoint-binding-required",
-  "endpoint-changed",
   "unauthorized",
 ]);
 export type ModelCandidateSkipReason = z.infer<typeof ModelCandidateSkipReasonSchema>;
@@ -83,9 +80,9 @@ export type ModelRunEligibility =
 export interface OriginalModelSelection {
   readonly environmentId: EnvironmentId;
   readonly harnessInstanceId: HarnessInstanceId;
-  readonly harnessRevision: number;
-  readonly sourceBoundary: string;
   readonly modelSelection: ModelSelection;
+  /** Runs record no account revision, so an arbitrary endpoint may have been replaced since. */
+  readonly fromPastRun?: boolean;
 }
 export interface ResolvedModelCandidate {
   readonly environmentId: EnvironmentId;
@@ -227,14 +224,11 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
         harnessInstanceId: own.harnessInstanceId,
         reason: "unauthorized",
       });
-    else if (
-      account.harnessRevision !== own.harnessRevision ||
-      account.sourceBoundary !== own.sourceBoundary
-    )
+    else if (own.fromPastRun && account.sourceId === "openai-compatible")
       skipped.push({
         want: null,
         harnessInstanceId: own.harnessInstanceId,
-        reason: "endpoint-changed",
+        reason: "endpoint-binding-required",
       });
     else original = inspect(account, own.modelSelection, null, true);
   }

@@ -24,10 +24,13 @@ memory and specialists choose before admission and freeze that choice. Admission
 revision it resolved under the account's row lock, and refuses a changed endpoint rather than adopt
 it: a specialist reports the error, and a memory pass resolves again at its next wake. From then on
 the account's queued Run holds the endpoint, because its config can't change under one. The person's
-list and
-excluded accounts are the only consent; an unbound entry never reaches an `openai-compatible`
-account, and a manifest can't bind one. This differs from T3, which reaches other accounts only
-after a known exhaustion: here declared order holds, default account first within each entry.
+list and excluded accounts are the only consent; an unbound entry never reaches an
+`openai-compatible` account, and a manifest can't bind one. Runs record no account revision, so
+naming's fallback to a task's own model skips such an account: it may no longer be the endpoint that
+saw the request. Client empty-choice defaults use only accounts bootstrap reports as
+`automaticEligible`, which the Host computes per viewer. This differs from T3, which reaches other
+accounts only after a known exhaustion: here declared order holds, default account first within each
+entry.
 
 ## What a driver declares
 

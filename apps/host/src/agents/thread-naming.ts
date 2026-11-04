@@ -110,7 +110,7 @@ export class ThreadNaming {
       {
         userId: input.requestedBy,
         wants: (config) => automaticModelWants(config, "light"),
-        original: input,
+        original: { ...input, fromPastRun: true },
         canRun: backgroundTextSupport(runners),
       },
     );

@@ -42,7 +42,6 @@ function account(
     harnessRevision: 1,
     driverKind: HarnessIdSchema.parse(engine),
     sourceId: engine,
-    sourceBoundary: engine,
     enabled: true,
     removed: false,
     available: true,
@@ -164,34 +163,45 @@ describe("automatic model resolver", () => {
     expect(result.candidates[1]?.runModelSelection.options).toEqual({ effort: "low" });
     expect(result.candidates[1]?.storedModelSelection.nativeModelId).toBe("gateway/gpt-6-luna");
   });
-  it.each([
-    "excluded",
-    "removed",
-    "disabled",
-    "unauthorized",
-    "endpoint-changed",
-    "unsupported-access-mode",
-  ] as const)("drops an ineligible original: %s", (reason) => {
-    const a = account();
-    const accounts =
-      reason === "unauthorized"
-        ? []
-        : [
-            {
-              ...a,
-              removed: reason === "removed",
-              enabled: reason !== "disabled",
-              sourceBoundary: reason === "endpoint-changed" ? "changed" : a.sourceBoundary,
-            },
-          ];
-    const result = resolve(accounts, {
-      wants: [],
-      original: own(a),
-      excludedAccounts: reason === "excluded" ? [a.harnessInstanceId] : [],
-      canRun: () => (reason === "unsupported-access-mode" ? { ok: false, reason } : { ok: true }),
-    });
-    expect(result.candidates).toEqual([]);
-    expect(result.skipped[0]?.reason).toBe(reason);
+  it.each(["excluded", "removed", "disabled", "unauthorized", "unsupported-access-mode"] as const)(
+    "drops an ineligible original: %s",
+    (reason) => {
+      const a = account();
+      const accounts =
+        reason === "unauthorized"
+          ? []
+          : [
+              {
+                ...a,
+                removed: reason === "removed",
+                enabled: reason !== "disabled",
+              },
+            ];
+      const result = resolve(accounts, {
+        wants: [],
+        original: own(a),
+        excludedAccounts: reason === "excluded" ? [a.harnessInstanceId] : [],
+        canRun: () => (reason === "unsupported-access-mode" ? { ok: false, reason } : { ok: true }),
+      });
+      expect(result.candidates).toEqual([]);
+      expect(result.skipped[0]?.reason).toBe(reason);
+    },
+  );
+  it("never trusts a past Run's arbitrary endpoint, unless the person bound it", () => {
+    const endpoint = account("codex", { sourceId: "openai-compatible" });
+    const past = { wants: [], original: { ...own(endpoint), fromPastRun: true } };
+    const refused = resolve([endpoint], past);
+    expect(refused.candidates).toEqual([]);
+    expect(refused.skipped[0]?.reason).toBe("endpoint-binding-required");
+    expect(resolve([endpoint], { ...past, original: own(endpoint) }).candidates).toHaveLength(1);
+    expect(
+      resolve([account()], { ...past, original: { ...own(account()), fromPastRun: true } })
+        .candidates,
+    ).toEqual([]);
+    const bound = { ...want(), harnessInstanceId: endpoint.harnessInstanceId };
+    expect(resolve([endpoint], { ...past, wants: [bound] }).candidates).toMatchObject([
+      { harnessInstanceId: endpoint.harnessInstanceId, original: false },
+    ]);
   });
   it("matches a canonical provider/model pair for a lab outside the vendor table", () => {
     const a = account("opencode");
@@ -227,8 +237,8 @@ describe("automatic model resolver", () => {
     ]);
   });
   it("requires explicit binding for each arbitrary endpoint", () => {
-    const a = account("codex", { sourceId: "openai-compatible", sourceBoundary: "endpoint-a" });
-    const b = account("codex", { sourceId: "openai-compatible", sourceBoundary: "endpoint-b" });
+    const a = account("codex", { sourceId: "openai-compatible" });
+    const b = account("codex", { sourceId: "openai-compatible" });
     expect(resolve([a, b]).skipped.map((s) => s.reason)).toEqual([
       "endpoint-binding-required",
       "endpoint-binding-required",

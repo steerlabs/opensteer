@@ -346,6 +346,19 @@ describe("Thread placement", () => {
     ).toMatchObject({ whereLabel: "Alex\u2019s Mac environment" });
   });
 
+  it("skips a default account the Host ruled out, and only for defaults", () => {
+    const environments = [
+      environment("environment-main", "main", "Hosted Runner", [
+        { driverKind: "codex", readiness: "runtime-check" },
+      ]),
+    ];
+    const main = harnesses.find(({ environmentId }) => environmentId === "environment-main")!;
+    const refused = [{ ...main, automaticEligible: false }];
+    expect(defaultThreadPlacement(environments, [main])).toBeDefined();
+    expect(defaultThreadPlacement(environments, refused)).toBeUndefined();
+    expect(compatibleThreadPlacements(environments, refused)).toHaveLength(1);
+  });
+
   it("never falls back from an unavailable Main to local execution implicitly", () => {
     const environments: EnvironmentSummary[] = [
       {

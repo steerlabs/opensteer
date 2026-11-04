@@ -45,6 +45,8 @@ export interface ThreadPlacementOption {
   readonly available: boolean;
   readonly availability: ThreadPlacementAvailability;
   readonly continuationIdentity: ProviderContinuationIdentity | null;
+  /** Whether nothing-chosen defaults may use it; only an explicit `false` says no. */
+  readonly automaticEligible?: boolean;
   /** The account new Threads and freshly picked models use for this engine here. */
   readonly defaultAccount: boolean;
   readonly detail: string;
@@ -127,8 +129,17 @@ export function defaultThreadPlacement(
   );
   return threadPlacementOptions(environments, harnesses, localRunner).find(
     (option) =>
-      option.available && option.defaultAccount && mainEnvironmentIds.has(option.environmentId),
+      automaticallyRunnable(option) &&
+      option.defaultAccount &&
+      mainEnvironmentIds.has(option.environmentId),
   );
+}
+
+/** Whether a default may land here when nobody chose: explicit choices don't consult this. */
+export function automaticallyRunnable(
+  placement: Pick<ThreadPlacementOption, "automaticEligible" | "available">,
+): boolean {
+  return placement.available && placement.automaticEligible !== false;
 }
 
 /**
@@ -233,6 +244,9 @@ function placementOption(
     accessModes:
       advertised && advertised.readiness !== "unavailable" ? advertised.accessModes : null,
     accountName: harness.name,
+    ...(harness.automaticEligible === undefined
+      ? {}
+      : { automaticEligible: harness.automaticEligible }),
     continuationIdentity: null,
     defaultAccount: harness.isDefault,
     driverKind: harness.driverKind,

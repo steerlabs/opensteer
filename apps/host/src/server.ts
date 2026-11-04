@@ -1130,16 +1130,23 @@ export async function createHostServer(
           return null;
         });
       const environments = await dependencies.store.listEnvironmentsForUser(ownerId);
-      const [workspacePage, visibleHarnesses, browser, identityConfig, executionPreferences] =
-        await Promise.all([
-          dependencies.store.workspacePageForOwner({ ownerId }),
-          dependencies.store.listHarnessInstances({
-            environmentIds: environments.map(({ id }) => id),
-          }),
-          dependencies.browser.bootstrap(ownerId),
-          dependencies.authenticator.identity.configuration(),
-          dependencies.store.getExecutionPreferences(ownerId),
-        ]);
+      const [
+        workspacePage,
+        visibleHarnesses,
+        browser,
+        identityConfig,
+        executionPreferences,
+        automaticModels,
+      ] = await Promise.all([
+        dependencies.store.workspacePageForOwner({ ownerId }),
+        dependencies.store.listHarnessInstances({
+          environmentIds: environments.map(({ id }) => id),
+        }),
+        dependencies.browser.bootstrap(ownerId),
+        dependencies.authenticator.identity.configuration(),
+        dependencies.store.getExecutionPreferences(ownerId),
+        dependencies.store.getAutomaticModelConfig(ownerId),
+      ]);
       const storedCatalogs = await dependencies.store.listHarnessCatalogs(
         environments.map((environment) => environment.id),
       );
@@ -1187,7 +1194,12 @@ export async function createHostServer(
           deploymentShape: dependencies.discovery.document.deploymentShape,
           environments: environmentSummaries,
           executionPreferences,
-          harnesses: visibleHarnesses.map(harnessView),
+          harnesses: visibleHarnesses.map((harness) => ({
+            ...harnessView(harness),
+            automaticEligible:
+              harness.sourceId !== "openai-compatible" &&
+              !automaticModels.excludedAccounts.includes(harness.id),
+          })),
           homeWorkspace: homeWorkspace
             ? await workspaceView(dependencies.workspaces, homeWorkspace)
             : null,

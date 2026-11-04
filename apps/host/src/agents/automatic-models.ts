@@ -9,7 +9,6 @@ import {
   type EnvironmentId,
   type HarnessInstanceId,
   type ModelRunEligibility,
-  type ModelSelection,
   type ModelUsageFact,
   type ModelWant,
   type OriginalModelSelection,
@@ -72,15 +71,6 @@ export function workspaceExecution(
           : { ok: false, reason: "unsupported-access-mode" };
 }
 
-/** Nonsecret: an endpoint URL carries no credentials, and changing it advances the revision. */
-function sourceBoundary(harness: HarnessInstanceRecord): string {
-  const config = harness.config as { readonly baseUrl?: unknown } | null;
-  return JSON.stringify([
-    harness.sourceId,
-    typeof config?.baseUrl === "string" ? config.baseUrl : null,
-  ]);
-}
-
 function usageFacts(catalog: HarnessInstanceCatalog | null): ModelUsageFact[] {
   if (!catalog) return [];
   const providers = new Set(catalog.models.map((model) => model.providerId));
@@ -137,7 +127,6 @@ export async function readAuthorizedModelAccounts(
       harnessRevision: harness.runtimeRevision,
       driverKind: harness.driverKind,
       sourceId: harness.sourceId,
-      sourceBoundary: sourceBoundary(harness),
       isDefault: harness.isDefault,
       enabled: harness.enabled,
       removed: harness.removedAt !== null,
@@ -149,33 +138,10 @@ export async function readAuthorizedModelAccounts(
   return { accounts, harnesses, environments };
 }
 
-/** A Thread's own model as an original: revalidated against the account as it is now. */
-export interface OriginalPlacement {
-  readonly environmentId: EnvironmentId;
-  readonly harnessInstanceId: HarnessInstanceId;
-  readonly modelSelection: ModelSelection;
-}
-function originalSelection(
-  accounts: readonly AuthorizedModelAccountSnapshot[],
-  placement: OriginalPlacement,
-): OriginalModelSelection {
-  const account = accounts.find(
-    (candidate) =>
-      candidate.environmentId === placement.environmentId &&
-      candidate.harnessInstanceId === placement.harnessInstanceId,
-  );
-  // An account outside this person's authority resolves as unauthorized.
-  return {
-    ...placement,
-    harnessRevision: account?.harnessRevision ?? 0,
-    sourceBoundary: account?.sourceBoundary ?? "",
-  };
-}
-
 export interface AutomaticModelRequest {
   readonly userId: UserId;
   readonly wants: (config: AutomaticModelConfig) => readonly ModelWant[];
-  readonly original?: OriginalPlacement | undefined;
+  readonly original?: OriginalModelSelection | undefined;
   readonly canRun: ModelRunPredicate;
 }
 export interface AutomaticModelResolution extends AuthorizedModelAccounts {
@@ -198,9 +164,7 @@ function resolveWithin(
 ): AutomaticModelResolution {
   const resolved = resolveModelCandidates({
     wants: request.wants(config),
-    ...(request.original
-      ? { original: originalSelection(snapshot.accounts, request.original) }
-      : {}),
+    ...(request.original ? { original: request.original } : {}),
     accounts: snapshot.accounts,
     excludedAccounts: config.excludedAccounts,
     canRun: request.canRun,

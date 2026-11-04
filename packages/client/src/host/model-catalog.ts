@@ -13,7 +13,11 @@ import {
   type UsageModelScope,
 } from "./connection-usage.js";
 import type { ExecutionSelection } from "./execution-preferences.js";
-import { selectionForModel, type ThreadPlacementOption } from "./thread-placement.js";
+import {
+  automaticallyRunnable,
+  selectionForModel,
+  type ThreadPlacementOption,
+} from "./thread-placement.js";
 
 /**
  * The composer's picker reads the way a choice is stored: an engine, one of its
@@ -398,7 +402,7 @@ export function composerExecutionSelection(options: {
 export function rankedChatExecutionSelection(
   placements: readonly ThreadPlacementOption[],
 ): ExecutionSelection | null {
-  const ranked = rankedChatModelSelection(placements.filter((placement) => placement.available));
+  const ranked = rankedChatModelSelection(placements.filter(automaticallyRunnable));
   return ranked
     ? {
         environmentId: ranked.placement.environmentId,
@@ -424,7 +428,7 @@ export function chatExecutionSelection(options: {
   if (decision) return resolveExecutionSelection(decision, options.placements);
   const ranked = rankedChatExecutionSelection(options.placements);
   if (ranked) return ranked;
-  const runnable = options.placements.filter(({ available }) => available);
+  const runnable = options.placements.filter(automaticallyRunnable);
   const placement = runnable.length === 1 ? runnable[0] : null;
   const modelSelection = placement
     ? catalogDefaultModelSelection({ status: "ready", models: placement.models })

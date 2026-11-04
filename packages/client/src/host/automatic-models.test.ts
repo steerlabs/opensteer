@@ -84,7 +84,6 @@ it("binds the account a person picks, so a non-default account is the one that r
           ...a.catalog!,
           models: a.catalog!.models.map((m) => ({ ...m, isDefault: false, options: [] })),
         },
-        sourceBoundary: a.sourceId,
         usage: [],
       })),
       excludedAccounts: [],

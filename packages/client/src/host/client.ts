@@ -246,6 +246,8 @@ export interface HarnessSummary {
    */
   endpoint?: { readonly baseUrl: string; readonly runtime?: string | undefined } | undefined;
   stateKind: "ambient" | "isolated";
+  /** The Host's word on whether this viewer's defaults may use it; absent means they may. */
+  automaticEligible?: boolean | undefined;
 }
 
 export interface ThreadSummary {

@@ -2753,6 +2753,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       return rpcSuccess({ type: command.type });
     case "automaticModels.set":
       client.automaticModelConfig = AutomaticModelConfigSchema.parse(command.config);
+      client.applyAutomaticEligibility();
       return rpcSuccess({
         type: command.type,
         config: structuredClone(client.automaticModelConfig),
@@ -4935,7 +4936,6 @@ function mockAutomaticModelsView(state: MockHostState): AutomaticModelsView {
       accounts: parsed.accounts.map((a, index) => ({
         ...a,
         catalog: accounts[index]!.catalog,
-        sourceBoundary: a.sourceId,
         usage: [],
       })),
       excludedAccounts: state.automaticModelConfig.excludedAccounts,
@@ -6083,6 +6083,7 @@ class MockHostState {
       : options.initialHome === "absent"
         ? withoutInitialHome(initial)
         : initial;
+    this.applyAutomaticEligibility();
     if (options.initialHome !== "absent" && !firstRun) this.seedHomeTask();
     for (const thread of this.snapshot.threads) {
       if (thread.icon === null && thread.id !== this.snapshot.homeThreadId)
@@ -7106,6 +7107,7 @@ class MockHostState {
         harness.isDefault ? harness.id : undefined,
       ),
     });
+    this.applyAutomaticEligibility();
     // A model server answers its first read the way a local one usually does:
     // one model loaded, one the server won't say the size of, one it can't run.
     if (source.modelSettings) {
@@ -11668,6 +11670,20 @@ class MockHostState {
       ...this.snapshot,
       transcripts: { ...this.snapshot.transcripts, [threadId]: entries },
     });
+  }
+
+  /** What a bootstrap tells this viewer about each account, as the Host computes it. */
+  applyAutomaticEligibility(): void {
+    const { excludedAccounts } = this.automaticModelConfig;
+    this.snapshot = {
+      ...this.snapshot,
+      harnesses: this.snapshot.harnesses.map(({ automaticEligible: _stale, ...harness }) =>
+        harness.sourceId === "openai-compatible" ||
+        excludedAccounts.includes(harness.id as (typeof excludedAccounts)[number])
+          ? { ...harness, automaticEligible: false }
+          : harness,
+      ),
+    };
   }
 
   private update(snapshot: HostSnapshot): void {

@@ -458,6 +458,23 @@ describe("Chat execution selection", () => {
     });
   });
 
+  it("keeps an account the Host ruled out of every empty-choice default", () => {
+    const refused = { ...gateway, automaticEligible: false };
+    expect(rankedChatExecutionSelection([claude, refused])?.harnessInstanceId).toBe(
+      "hin-claude-55",
+    );
+    const none = { chosen: null, existing: null };
+    expect(chatExecutionSelection({ ...none, placements: [refused] })).toBeNull();
+    const remembered = {
+      environmentId: refused.environmentId,
+      harnessInstanceId: refused.harnessInstanceId,
+      modelSelection: selectionForModel(terraOnGateway),
+    };
+    expect(
+      chatExecutionSelection({ ...none, placements: [refused], remembered })?.harnessInstanceId,
+    ).toBe("hin-gateway");
+  });
+
   it("keeps placement order as the tie breaker", () => {
     const other = { ...gateway, harnessInstanceId: "hin-gateway-2" };
     expect(rankedChatExecutionSelection([other, gateway])?.harnessInstanceId).toBe("hin-gateway-2");

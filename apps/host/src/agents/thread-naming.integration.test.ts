@@ -43,6 +43,7 @@ interface Captured {
   readonly captureProcessId?: number;
   readonly params?: { readonly clientInfo?: { readonly name?: string } };
   readonly fakeTitleTurn?: { readonly pid: number; readonly model: string };
+  readonly fakeOpensteerTokenEnvironment?: { readonly agentTools: boolean };
 }
 type TitleScript = Record<string, { reply?: string; error?: string; hold?: string }>;
 
@@ -160,6 +161,11 @@ integration("Task naming through the Runner", () => {
     const namingProcess = capture.filter((line) => line.captureProcessId === naming!.pid);
     expect(namingProcess.filter((line) => line.method === "initialize")).toHaveLength(1);
     expect(namingProcess.some((line) => line.method === "model/list")).toBe(false);
+    // Naming holds no agent-tools token, unlike the Run's own engine.
+    const toolTokens = (lines: readonly Captured[]) =>
+      lines.flatMap((line) => line.fakeOpensteerTokenEnvironment?.agentTools ?? []);
+    expect(toolTokens(namingProcess)).toEqual([false]);
+    expect(toolTokens(capture)).toContain(true);
     expect(
       capture.filter(
         (line) =>
@@ -304,6 +310,9 @@ integration("Task naming through the Runner", () => {
     await config([account.harnessInstanceId]);
     expect((await preview()).light.candidates).toEqual([]);
     expect((await preview()).accounts[0]).toMatchObject({ eligible: false, reason: "excluded" });
+    const bootstrap = await f.active.api["bootstrap.get"]({});
+    if (!bootstrap.ok) throw new Error(bootstrap.error.message);
+    expect(bootstrap.data.harnesses).toMatchObject([{ automaticEligible: false }]);
 
     const warn = vi.spyOn(console, "warn");
     try {
@@ -330,6 +339,31 @@ integration("Task naming through the Runner", () => {
       expect((await f.turns()).map((turn) => turn.model)).toEqual(["gpt-6-luna"]);
     } finally {
       warn.mockRestore();
+    }
+  });
+
+  it("won't fall back to a task's own arbitrary endpoint, which may not be the one its first Run used", async () => {
+    const f = await start();
+    await f.script({ "gpt-6-luna": { reply: "Lease offers\nmail" } });
+    const threadId = await f.task("Compare the two lease offers");
+    const source = (sourceId: string) =>
+      f.active.host.store.database.updateTable("harnessInstances").set({ sourceId }).execute();
+    const warn = vi.spyOn(console, "warn");
+    try {
+      await source("openai-compatible");
+      await f.active.queueMessage({ text: "Compare the two lease offers", threadId });
+      await vi.waitFor(
+        () =>
+          expect(warn).toHaveBeenCalledWith(
+            "Thread naming found no name",
+            expect.objectContaining({ threadId, candidates: 0 }),
+          ),
+        waitOptions,
+      );
+      expect(await f.turns()).toEqual([]);
+    } finally {
+      warn.mockRestore();
+      await source("openai");
     }
   });
 });

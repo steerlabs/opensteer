@@ -1524,6 +1524,7 @@ export class HttpHostClient {
           );
         }
         break;
+      case "automaticModels.set":
       case "harness.model.configure":
       case "harness.create":
         // The Host reports a new harness only through bootstrap, so without
@@ -4034,6 +4035,7 @@ export class HttpHostClient {
     }));
     const harnesses = payload.harnesses.map(
       ({
+        automaticEligible,
         config,
         driverKind,
         enabled,
@@ -4046,6 +4048,7 @@ export class HttpHostClient {
         sourceId,
         stateKind,
       }) => ({
+        automaticEligible,
         driverKind,
         enabled,
         environmentId,
