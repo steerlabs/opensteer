@@ -80,14 +80,12 @@ import {
 } from "./runner-identity.js";
 import { MachineAccessRunContextSchema, RunnerShellModuleSchema } from "./shell.js";
 import {
-  voiceAnswerMaxLength,
-  voiceContextMaxLength,
   VoiceRefusalReasonSchema,
+  VoiceSayIdSchema,
   VoiceSayTextSchema,
   VoiceSdpSchema,
   VoiceSessionIdSchema,
-  voiceToolCallIdSchema,
-  VoiceToolCallSchema,
+  VoiceViewSchema,
 } from "./voice.js";
 import {
   HostWorkspaceLocalRequestSchema,
@@ -262,6 +260,18 @@ export const RunExecutionContextSchema = z.strictObject({
   runId: RunIdSchema,
   threadId: ThreadIdSchema,
   threadRole: ThreadRoleSchema,
+  /**
+   * Present only for a voice call's one Run, sent only to a Runner advertising
+   * `voice-run-v1`. The execution holds the call until it ends and is never
+   * resumed or restarted; its offer arrives through the `start` voice command.
+   */
+  voiceCall: z
+    .strictObject({
+      sessionId: VoiceSessionIdSchema,
+      /** When the Host admitted the call; it ends at most `voiceMaxCallMs` later. */
+      admittedAt: IsoDateTimeSchema,
+    })
+    .optional(),
   threadState: RunThreadStateSchema,
   workspaceId: WorkspaceIdSchema,
   workspaceKind: WorkspaceKindSchema,
@@ -1662,65 +1672,31 @@ const watchLogTailSchema = z
   .max(16 * 1_024)
   .refine((value) => utf8ByteLength(value) <= 16 * 1_024, "Watch log tail exceeds 16 KiB");
 
+/**
+ * What the Host asks of a voice call. Every command names the call's Run, so a
+ * delayed command for a replaced call never reaches its successor. Stopping a
+ * call is `run.interrupt` on its Run, like any other Stop.
+ */
+const voiceCallAddress = { sessionId: VoiceSessionIdSchema, runId: RunIdSchema };
 export const RunnerVoiceCommandSchema = z.discriminatedUnion("action", [
+  /**
+   * Hands the client's offer to this Runner's execution of the Run, which
+   * creates the call and answers. The offer travels only here.
+   */
+  z.strictObject({ action: z.literal("start"), ...voiceCallAddress, offer: VoiceSdpSchema }),
+  z.strictObject({ action: z.literal("renew"), ...voiceCallAddress }),
+  /** Speaks once per id, in the order the call accepted them. */
   z.strictObject({
-    action: z.literal("start"),
-    sessionId: VoiceSessionIdSchema,
-    harnessInstanceId: HarnessInstanceIdSchema,
-    offer: VoiceSdpSchema,
-    /** Sent only to a Runner advertising `voice-agent-v1`. */
-    agent: z.literal(true).optional(),
-    /** Sent only to a Runner advertising `voice-find-v1`. */
-    find: z.literal(true).optional(),
-  }),
-  z.strictObject({
-    action: z.literal("renew"),
-    sessionId: VoiceSessionIdSchema,
-    harnessInstanceId: HarnessInstanceIdSchema,
-  }),
-  z.strictObject({
-    harnessInstanceId: HarnessInstanceIdSchema,
     action: z.literal("say"),
-    sessionId: VoiceSessionIdSchema,
+    ...voiceCallAddress,
+    id: VoiceSayIdSchema,
     text: VoiceSayTextSchema,
   }),
-  z.strictObject({
-    action: z.literal("stop"),
-    sessionId: VoiceSessionIdSchema,
-    harnessInstanceId: HarnessInstanceIdSchema,
-  }),
-  // The agent actions below reach only a Runner advertising `voice-agent-v1`.
-  z.strictObject({
-    action: z.literal("next"),
-    sessionId: VoiceSessionIdSchema,
-    harnessInstanceId: HarnessInstanceIdSchema,
-  }),
-  z.strictObject({
-    action: z.literal("answer"),
-    sessionId: VoiceSessionIdSchema,
-    harnessInstanceId: HarnessInstanceIdSchema,
-    callId: voiceToolCallIdSchema,
-    ok: z.boolean(),
-    text: z.string().trim().min(1).max(voiceAnswerMaxLength),
-  }),
-  z.strictObject({
-    action: z.literal("context"),
-    sessionId: VoiceSessionIdSchema,
-    harnessInstanceId: HarnessInstanceIdSchema,
-    text: z.string().trim().min(1).max(voiceContextMaxLength),
-  }),
+  z.strictObject({ action: z.literal("context"), ...voiceCallAddress, view: VoiceViewSchema }),
 ]);
 export type RunnerVoiceCommand = z.infer<typeof RunnerVoiceCommandSchema>;
-/** Optional results appear only when requested, so an older Host never sees new keys. */
 export const RunnerVoiceResultSchema = z.discriminatedUnion("ok", [
-  z.strictObject({
-    ok: z.literal(true),
-    answer: VoiceSdpSchema.optional(),
-    agent: z.boolean().optional(),
-    /** Included only in the answer to a start that requested find. */
-    find: z.boolean().optional(),
-    call: VoiceToolCallSchema.nullable().optional(),
-  }),
+  z.strictObject({ ok: z.literal(true), answer: VoiceSdpSchema.optional() }),
   z.strictObject({
     ok: z.literal(false),
     reason: VoiceRefusalReasonSchema,

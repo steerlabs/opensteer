@@ -218,7 +218,7 @@ function handleClientMethod(message) {
         result: {
           config: {
             log_dir:
-              scenario === "voice-policy"
+              scenario === "voice-log-elsewhere"
                 ? "/outside"
                 : JSON.parse(overrideValue("log_dir") ?? "null"),
             sqlite_home: JSON.parse(overrideValue("sqlite_home") ?? "null"),
@@ -686,18 +686,52 @@ function handleClientMethod(message) {
       send({ id: message.id, result: {} });
       break;
     case "thread/realtime/start":
-      if (scenario === "voice-unsupported") {
-        send({ id: message.id, error: { code: -32601, message: "Method not found" } });
-        break;
-      }
       send({ id: message.id, result: {} });
-      if (scenario === "voice-refused" || scenario === "voice-closed") {
-        send({
-          method: scenario === "voice-refused" ? "thread/realtime/error" : "thread/realtime/closed",
-          params: { threadId, message: "private voice payload" },
-        });
-      } else {
+      if (scenario !== "voice-no-answer") {
         send({ method: "thread/realtime/sdp", params: { threadId, sdp: "fake-answer" } });
+        if (scenario === "voice-run") {
+          for (const [id, text, status] of [
+            ["v1", "first answer", "completed"],
+            ["v2", "second answer", "completed"],
+            ["v3", null, "failed"],
+          ]) {
+            send({ method: "turn/started", params: { threadId, turn: { id } } });
+            if (status === "failed") {
+              // A turn that fails part way: streamed words, a thought and a tool never finished.
+              send({
+                method: "item/agentMessage/delta",
+                params: { threadId, turnId: id, itemId: `partial-${id}`, delta: "Let me che" },
+              });
+              send({
+                method: "item/reasoning/textDelta",
+                params: { threadId, turnId: id, itemId: `thought-${id}`, delta: "Looking" },
+              });
+              send({
+                method: "item/started",
+                params: {
+                  threadId,
+                  turnId: id,
+                  item: {
+                    type: "commandExecution",
+                    id: `tool-${id}`,
+                    command: "ls",
+                    status: "inProgress",
+                  },
+                },
+              });
+            }
+            if (text)
+              send({
+                method: "item/completed",
+                params: {
+                  threadId,
+                  turnId: id,
+                  item: { type: "agentMessage", id: `answer-${id}`, phase: "final_answer", text },
+                },
+              });
+            send({ method: "turn/completed", params: { threadId, turn: { id, status } } });
+          }
+        }
         send({ method: "turn/started", params: { threadId, turn: { id: "voice-handoff" } } });
       }
       break;
@@ -707,55 +741,6 @@ function handleClientMethod(message) {
     case "thread/realtime/appendText":
     case "thread/realtime/appendSpeech":
       send({ id: message.id, result: {} });
-      if (scenario === "voice-agent") {
-        const specs =
-          message.params.text === "find"
-            ? [["find", { query: "gmail", offset: 5 }]]
-            : message.params.text === "invalid"
-              ? [
-                  ["unknown", {}],
-                  ["show", { link: 4 }],
-                  ["send_to_chat", { messages: 6 }],
-                  ["show", { link: "x", extra: true }],
-                ]
-              : message.params.text === "queue"
-                ? Array.from({ length: 9 }, () => ["send_to_chat", {}])
-                : [["show", { link: "opensteer://chat" }]];
-        // The delegated speech that starts the agent's turn precedes its tool calls.
-        send({
-          method: "item/started",
-          params: {
-            threadId,
-            turnId: `voice-turn-${message.params.text}`,
-            item: {
-              id: "spoken",
-              type: "userMessage",
-              content: [
-                {
-                  type: "text",
-                  text: "<realtime_delegation>\n  <input>Book a flight &amp; hotel</input>\n  <transcript_delta>user: Book a flight &amp; hotel</transcript_delta>\n</realtime_delegation>",
-                },
-              ],
-            },
-          },
-        });
-        for (const [tool, args] of specs)
-          send({
-            id: randomUUID(),
-            method: "item/tool/call",
-            params: {
-              threadId,
-              turnId: `voice-turn-${message.params.text}`,
-              tool,
-              arguments: args,
-            },
-          });
-      }
-      if (scenario === "voice-exit") process.exit(1);
-      if (scenario === "voice-interaction")
-        send({ id: "voice-tool", method: "item/tool/call", params: { threadId } });
-      if (scenario === "voice-close-after-say")
-        send({ method: "thread/realtime/closed", params: { threadId } });
       break;
     case "thread/realtime/stop":
       send({ id: message.id, result: {} });

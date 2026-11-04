@@ -127,8 +127,8 @@ export function acquireElectronLocalProfile(input: {
 }
 
 /**
- * Electron 44.9.2 EmitChildProcessGone emits ChildProcessData.metrics_name.
- * Chromium 152.0.7977.167 service_process_host_impl.cc sets it to receiver.interface_name(),
+ * Electron 44.10.2 EmitChildProcessGone emits ChildProcessData.metrics_name.
+ * Chromium 152.0.7977.169 service_process_host_impl.cc sets it to receiver.interface_name(),
  * so this matches the Mojo interface, not the localized display name.
  */
 export function isNetworkService(details: { type: string; serviceName?: string }): boolean {

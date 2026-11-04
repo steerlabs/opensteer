@@ -263,6 +263,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     // for rather than taken for one that cannot run this engine.
     const identity = this.#runners.identityForEnvironment(command.environmentId);
     if (!identity) throw new CommandDispatchError("Runner is offline", "retry");
+    if (context.voiceCall && !identity.capabilities.includes("voice-run-v1"))
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "voice-runner-unsupported",
+        message: "Update this computer to run voice calls.",
+      });
     if (!identity.capabilities.includes("native-session-continuation-v1")) {
       throw new CommandDispatchError(
         "Update this Runner to support durable conversation sessions.",
@@ -550,6 +556,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const runnerCommandFor = (machineAccess: MachineAccessRunContext): RunnerCommand => ({
       commandId: command.id,
       context: {
+        ...(context.voiceCall ? { voiceCall: context.voiceCall } : {}),
         accessMode: context.run.accessMode,
         threadRole: context.thread.role,
         threadState,
@@ -563,6 +570,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           : null,
         ...(attachmentPlan ? { attachments: attachmentPlan } : {}),
         agentTools: agentToolsPlanForRun({
+          voiceCall: Boolean(context.voiceCall),
           token: toolsToken,
           url: this.#agentToolsUrl,
           role: context.thread.role,

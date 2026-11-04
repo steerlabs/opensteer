@@ -1813,6 +1813,8 @@ function makeService(options: {
     },
     findMainWorkspaceForOwner: async () =>
       workspaces.find((candidate) => candidate.homeThreadId != null) ?? null,
+    // These Runs are never voice calls, so no tool is withheld from them.
+    voiceCallForRun: async () => undefined,
     threadMessagePageForOwner: async (input: {
       maxItems: number;
       ownerId: typeof ownerId;

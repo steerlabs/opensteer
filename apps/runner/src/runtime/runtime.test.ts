@@ -359,6 +359,78 @@ describe("RunnerRuntime", () => {
     },
   );
 
+  it("pairs a voice relay with normal Run preparation and ends it on interrupt", async () => {
+    const driver = new FakeHarnessDriver("test-driver", () => new HeldHarnessSession());
+    const create = driver.create.bind(driver);
+    vi.spyOn(driver, "create").mockImplementation(async (input) => ({
+      ...(await create(input)),
+      capabilities: { ...fakeHarnessCapabilities, voiceCalls: true },
+    }));
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const plans: HarnessSandboxRunPlan[] = [];
+    const runtime = configuredRuntime({
+      environmentId,
+      harnessSandbox: {
+        plan: async (plan) => {
+          plans.push(plan);
+          return (launch) => launch;
+        },
+        planProgram: async () => (launch) => launch,
+      },
+      registry,
+    });
+    const base = executeCommand(environmentId);
+    const sessionId = randomUUID();
+    const execute = {
+      ...base,
+      context: { ...base.context, voiceCall: { sessionId, admittedAt: new Date().toISOString() } },
+    };
+    const command = {
+      action: "start" as const,
+      sessionId,
+      runId: execute.context.runId,
+      offer: "private-offer",
+    };
+    try {
+      await reconcile(registry, execute);
+      const relay = runtime.voice(execute.context.requestedBy, command);
+      await runtime.handleCommand(execute, { send: async () => undefined });
+      await vi.waitFor(() => expect(driver.context?.voiceCall).toBeDefined(), { timeout: 2000 });
+      const call = driver.context!.voiceCall!;
+      expect(await call.offer).toBe("private-offer");
+      expect(driver.context?.agentTools.token).not.toBe(execute.context.agentTools.token);
+      expect(driver.context?.threadStateDirectory).toContain(`call-${execute.context.runId}`);
+      // The call's own directory is writable in the sandbox: its engine logs there.
+      expect(plans[0]).toMatchObject({
+        threadStateDirectory: driver.context?.threadStateDirectory,
+        threadStateWritable: true,
+      });
+      call.answer("private-answer");
+      expect(await relay).toEqual({ ok: true, answer: "private-answer" });
+      await runtime.handleCommand(
+        {
+          type: "run.interrupt",
+          commandId: createId("command"),
+          correlationId: execute.correlationId,
+          environmentId,
+          runId: execute.context.runId,
+          threadId: execute.context.threadId,
+        },
+        { send: async () => undefined },
+      );
+      expect(call.signal.aborted).toBe(true);
+      expect(await runtime.voice(execute.context.requestedBy, command)).toMatchObject({
+        ok: false,
+        reason: "voice-ended",
+      });
+      expect(driver.resumedReferences).toEqual([]);
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("starts the harness through the Runner sandbox's plan for this Run", async () => {
     const driver = new FakeHarnessDriver();
     const registry = new HarnessRegistry();
@@ -390,6 +462,7 @@ describe("RunnerRuntime", () => {
         join(testPrivateStateRoot, "threads", execute.context.threadId),
       );
       expect(plans).toHaveLength(1);
+      expect(plans[0]?.threadStateWritable).toBeUndefined();
       expect(plans[0]).toMatchObject({
         launchDirectory: undefined,
         threadStateDirectory: context?.threadStateDirectory,

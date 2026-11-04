@@ -26,6 +26,7 @@ it("docks an active call above the latest task composer and floats only without 
     heard: null,
     spoken: null,
     since: null,
+    activity: null,
     notice: null,
   };
   const controller: VoiceControls = {
@@ -81,6 +82,69 @@ it("docks an active call above the latest task composer and floats only without 
     expect(container.querySelector(".voice-float")).toBeNull();
     await draw(true, false, true);
     expect(container.querySelector(".voice-float .voice-island")).not.toBeNull();
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
+it("shows the agent's step inside the orb and glints once when the call changes the screen", async () => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  let snapshot: VoiceSnapshot = {
+    available: true,
+    phase: "thinking",
+    muted: false,
+    heard: "Open my reading list",
+    spoken: null,
+    since: null,
+    activity: "browser",
+    notice: null,
+  };
+  const listeners = new Set<() => void>();
+  let shown: () => void = () => undefined;
+  const controller: VoiceControls = {
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    getSnapshot: () => snapshot,
+    subscribeLevel: () => () => undefined,
+    subscribeShown: (listener) => {
+      shown = listener;
+      return () => undefined;
+    },
+    start: vi.fn(async () => undefined),
+    stop: vi.fn(),
+    setMuted: vi.fn(),
+    dismissNotice: vi.fn(),
+  };
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () =>
+      root.render(
+        <VoiceContext value={controller}>
+          <VoiceIsland />
+        </VoiceContext>,
+      ),
+    );
+    const island = container.querySelector(".voice-island")!;
+    expect(island.getAttribute("data-phase")).toBe("thinking");
+    expect(island.querySelector(".voice-orb__glyph svg")).not.toBeNull();
+    expect(island.querySelector('[role="status"]')?.textContent).toBe("Working");
+    expect(island.querySelector(".voice-island__caption")?.textContent).toBe(
+      "Open my reading list",
+    );
+    const animate = vi.fn();
+    Object.assign(island.querySelector(".voice-island__glow")!, { animate });
+    shown();
+    expect(animate).toHaveBeenCalledTimes(1);
+
+    snapshot = { ...snapshot, phase: "listening", heard: null, activity: null };
+    await act(async () => listeners.forEach((listener) => listener()));
+    expect(island.querySelector(".voice-orb__glyph")).toBeNull();
+    expect(island.querySelector(".voice-island__caption")?.textContent).toBe("Listening");
   } finally {
     await act(async () => root.unmount());
     container.remove();

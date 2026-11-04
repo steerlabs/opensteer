@@ -61,3 +61,25 @@ describe("Host Run tools plan", () => {
     ).toBe(false);
   });
 });
+
+it("fences durable work from voice calls", () => {
+  const plan = agentToolsPlanForRun({
+    url: "https://host.test/mcp",
+    token: "token",
+    role: "work",
+    accessMode: "full-access",
+    reach: "user",
+    voiceCall: true,
+  });
+  for (const tool of [
+    "thread_delegate",
+    "person_message",
+    "app_publish",
+    "trigger_write",
+    "plugin_install",
+  ])
+    expect(plan.tools).not.toContain(tool);
+  expect(plan.tools).toContain("thread_message");
+  expect(plan.tools).toContain("person_show");
+  expect(plan.instructions).toContain("1–3 short sentences");
+});

@@ -17,7 +17,6 @@ import {
   workRows,
   traceWindow,
   workSummary,
-  type ActivityIcon,
   type ActivityStepHead,
   type ActivityTone,
   type MessageEntry,
@@ -38,6 +37,7 @@ import { Markdown, PlainProse } from "../markdown/markdown.js";
 import { color, material, radius, space, touchTarget, type } from "../theme.js";
 import { appear, exit } from "../ui/motion.js";
 import { AppText, StatusDot, TypingDots, monoFontFamily } from "../ui/primitives.js";
+import { activitySymbol } from "../ui/activity-symbol.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { AssignmentLines, DelegationLine, ThreadMark } from "./task-line.js";
 import { AppCard } from "./app-card.js";
@@ -764,7 +764,7 @@ function StepHead(props: {
     <>
       <View style={styles.icon}>
         <Symbol
-          name={props.compact === true ? toneSymbol(head) : iconSymbol[head.icon]}
+          name={props.compact === true ? toneSymbol(head) : activitySymbol[head.icon]}
           size={props.compact === true ? 12 : 14}
           tint={toneColor(head.tone)}
           weight="medium"
@@ -842,25 +842,6 @@ function ErrorCount(props: { readonly count: number }): ReactNode {
     </AppText>
   );
 }
-
-const iconSymbol: Record<ActivityIcon, SFSymbolName> = {
-  "alert-circle": "exclamationmark.circle",
-  asterisk: "lightbulb",
-  browser: "safari",
-  "check-circle": "checkmark.circle",
-  file: "doc.text",
-  folder: "folder",
-  globe: "globe",
-  laptop: "laptopcomputer",
-  list: "list.bullet",
-  pencil: "pencil",
-  puzzle: "puzzlepiece.extension",
-  search: "magnifyingglass",
-  share: "arrow.triangle.branch",
-  sparkles: "sparkles",
-  stop: "stop.circle",
-  terminal: "terminal",
-};
 
 /** A step inside a row already sits under its kind's glyph; its own mark says how it went. */
 function toneSymbol(head: ActivityStepHead): SFSymbolName {

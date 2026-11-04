@@ -181,6 +181,7 @@ async function recoverAbandonedRuns(
           "runs.status",
           "runs.threadId",
           "threads.workspaceId",
+          "threads.voiceSessionId",
         ])
         .where("runs.id", "=", candidate.id)
         .forNoKeyUpdate("runs")
@@ -541,6 +542,7 @@ export async function recoverCommandsAfterHostRestart(
           "runs.status",
           "runs.threadId",
           "threads.workspaceId",
+          "threads.voiceSessionId",
         ])
         .where("runs.id", "=", command.runId)
         .forNoKeyUpdate("runs")
@@ -561,6 +563,15 @@ export async function recoverCommandsAfterHostRestart(
         run.bindingGeneration === session.bindingGeneration
       )
         return null;
+      if (run.voiceSessionId)
+        return finalizeRunTransaction(transaction, {
+          runId: run.id,
+          completedAt: new Date(),
+          links,
+          source: "host",
+          status: "interrupted",
+          queuedInputCancellation: "seed-input",
+        });
       if (await runWasStopped(transaction, run.id)) {
         return endStoppedUnconfirmedRun(transaction, { links, runId: run.id });
       }
@@ -640,6 +651,7 @@ export async function attachRunnerExecutions(
           "runs.status",
           "runs.threadId",
           "threads.workspaceId",
+          "threads.voiceSessionId",
         ])
         .where("runs.id", "=", execution.runId)
         .forNoKeyUpdate("runs")
@@ -817,6 +829,7 @@ async function recoverLostExecutions(
           "runs.status",
           "runs.threadId",
           "threads.workspaceId",
+          "threads.voiceSessionId",
         ])
         .where("runs.id", "=", candidate.id)
         .forNoKeyUpdate("runs")
@@ -858,7 +871,7 @@ async function recoverLostExecutions(
         runStatus: run.status,
         sessionStatus: session.status,
       });
-      if (recovery.mayRequeue) {
+      if (recovery.mayRequeue && !run.voiceSessionId) {
         // The boot the Run was sent to is still running and does not hold
         // it, and never confirmed it or bound a native session for it: it
         // refused the Run or never received it. After expiry it may have
@@ -995,6 +1008,7 @@ export async function stopRunsPastBackgroundDeadline(
           "runs.status",
           "runs.threadId",
           "threads.workspaceId",
+          "threads.voiceSessionId",
         ])
         .where("runs.id", "=", candidate.id)
         .forNoKeyUpdate("runs")
@@ -1106,6 +1120,7 @@ export async function recoverRunsWithExpiredExecutionBindings(
           "runs.status",
           "runs.threadId",
           "threads.workspaceId",
+          "threads.voiceSessionId",
         ])
         .where("runs.id", "=", candidate.id)
         .forNoKeyUpdate("runs")

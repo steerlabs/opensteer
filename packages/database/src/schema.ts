@@ -776,6 +776,7 @@ interface SecurityEffectTable {
 }
 
 export interface ThreadTable {
+  voiceSessionId: Generated<string | null>;
   askedAt: Timestamp;
   doneAt: Generated<Date | null>;
   pendingRequestCount: Generated<number>;

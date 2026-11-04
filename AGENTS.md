@@ -259,7 +259,6 @@ decisions and constraints the code can't show.
 | Native browser profile identity and deletion                           | [Storage contract](packages/protocol/src/browser-profile-storage.ts)                                          |
 | Chrome sign-ins and the Chrome extension                               | [Chrome sign-ins](docs/browser-sources.md)                                                                    |
 | Voice dictation into the composer                                      | [Dictation](docs/dictation.md)                                                                                |
-| Voice mode and the voice agent                                         | [Voice](docs/voice.md)                                                                                        |
 | Saved-password sign-ins and Opensteer Passwords                        | [Opensteer Passwords](docs/passwords.md)                                                                      |
 | Desktop builds, signing and releases; Account service deploys          | [Releases](docs/releases.md)                                                                                  |
 | Tests, CI selection, integration databases and the VM                  | [Testing](docs/testing.md)                                                                                    |

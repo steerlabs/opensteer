@@ -16,10 +16,11 @@ import {
 import { voiceTimers, type VoiceTimer, type VoiceTimers } from "./timers.js";
 
 export interface CodexVoiceProviderInput extends VoiceTimers {
-  readonly rpc: Pick<HostApiClient, "voice.start" | "voice.renew" | "voice.say" | "voice.stop">;
+  readonly rpc: Pick<
+    HostApiClient,
+    "voice.start" | "voice.renew" | "voice.say" | "voice.context" | "voice.stop"
+  >;
   readonly media: VoiceMediaPort;
-  readonly agent?: boolean;
-  readonly find?: boolean;
   readonly environmentId: string;
   readonly harnessInstanceId: string;
   /** Fresh lowercase UUID v4 for each call. */
@@ -53,6 +54,8 @@ function startFailure(reason: string | undefined): VoiceStartFailure {
       return "update-codex";
     case "voice-account-unavailable":
       return "no-account";
+    case "voice-chat-required":
+      return "chat-required";
     case "voice-refused":
       return "refused";
     default:
@@ -70,12 +73,8 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
         throw new VoiceStartError(
           unavailable === "insecure-context" ? unavailable : "connection-failed",
         );
-      const sessionId = VoiceSessionIdSchema.parse(input.createId());
-      const address = {
-        environmentId: input.environmentId,
-        harnessInstanceId: input.harnessInstanceId,
-        sessionId,
-      };
+      // Every call after start names only the session; the Host knows the rest.
+      const address = { sessionId: VoiceSessionIdSchema.parse(input.createId()) };
       let local: MediaStream | null = null;
       let pc: RTCPeerConnection | null = null;
       let channel: RTCDataChannel | null = null;
@@ -199,7 +198,8 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
         try {
           const result = await input.rpc["voice.renew"](address);
           if (ended) return;
-          if (!result.ok) {
+          // A Host restarting answers retryably; the Runner's lease is the backstop.
+          if (!result.ok && !result.error.retryable) {
             await finish(
               result.error.reason === "voice-ended"
                 ? timers.now() - renewedAt >= voiceLeaseMs
@@ -209,7 +209,7 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
             );
             return;
           }
-          renewedAt = timers.now();
+          if (result.ok) renewedAt = timers.now();
         } catch {
           // A missed renewal has an unknown outcome; the Runner's lease is the backstop.
         }
@@ -320,10 +320,9 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
         const starting = input.rpc["voice.start"](
           {
             ...address,
+            environmentId: input.environmentId,
+            harnessInstanceId: input.harnessInstanceId,
             offer: sdp,
-            ...(input.agent
-              ? { agent: true as const, ...(input.find ? { find: true as const } : {}) }
-              : {}),
           },
           { signal },
         );
@@ -344,17 +343,22 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
         levelTimer = timers.set(() => {
           void levels();
         }, 100);
+        const { threadId, runId, workspaceId } = result.data;
+        // A refusal ends the call; a transport failure has an unknown outcome and is the caller's to retry.
+        const control = async (
+          send: () => ReturnType<CodexVoiceProviderInput["rpc"]["voice.say"]>,
+        ): Promise<void> => {
+          if (ended) throw new VoiceStartError("connection-failed");
+          const value = await send();
+          if (value.ok) return;
+          if (value.error.retryable) throw value.error;
+          void finish(value.error.reason === "voice-ended" ? "replaced" : "refused");
+          throw new VoiceStartError(startFailure(value.error.reason));
+        };
         return {
-          agent: result.data.agent === true,
-          find: input.find === true && result.data.agent === true && result.data.find === true,
-          async say(text) {
-            if (ended) throw new VoiceStartError("connection-failed");
-            const result = await input.rpc["voice.say"]({ ...address, text });
-            if (!result.ok) {
-              void finish(result.error.reason === "voice-ended" ? "replaced" : "refused");
-              throw new VoiceStartError(startFailure(result.error.reason));
-            }
-          },
+          identity: { threadId, runId, workspaceId },
+          say: (id, text) => control(() => input.rpc["voice.say"]({ ...address, id, text })),
+          view: (view) => control(() => input.rpc["voice.context"]({ ...address, view })),
           setMuted(muted) {
             if (!ended)
               local?.getAudioTracks().forEach((track) => {

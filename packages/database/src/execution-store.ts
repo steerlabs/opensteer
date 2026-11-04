@@ -70,6 +70,7 @@ import {
  * anything the sending model wrote.
  */
 export interface RunDispatchContext {
+  readonly voiceCall?: { readonly sessionId: string; readonly admittedAt: string };
   readonly command: CommandRow;
   readonly executionBinding: ThreadExecutionBinding | null;
   readonly providerSessionStateLayout: "thread" | "session";
@@ -517,6 +518,14 @@ export async function loadRunDispatchContext(
     membershipGeneration: safeGeneration(runRow.membershipGeneration),
     firstOrdinal: runRow.nextRunnerOrdinal,
     run: runFromRow(runRow),
+    ...(threadRow.voiceSessionId
+      ? {
+          voiceCall: {
+            sessionId: threadRow.voiceSessionId,
+            admittedAt: runRow.createdAt.toISOString(),
+          },
+        }
+      : {}),
     thread: threadFromRow(threadRow),
     workspace: workspaceFromRow(workspaceRow),
   };
