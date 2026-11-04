@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   BrowserVideoClickResultSchema,
   BrowserPopupServerMessageSchema,
+  BrowserVideoStateSchema,
 } from "@opensteer/protocol";
 import { session, app } from "electron";
 import { chromium, type Page } from "playwright-core";
@@ -97,6 +98,9 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
             if (typeof payload !== "string") return;
             try {
               const m: unknown = JSON.parse(payload);
+              const videoState = BrowserVideoStateSchema.safeParse(m);
+              if (videoState.success)
+                record(index, `video:${videoState.data.state}:${videoState.data.reason ?? "none"}`);
               const popup = BrowserPopupServerMessageSchema.safeParse(m);
               if (popup.success)
                 record(
@@ -278,6 +282,13 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     );
     kit.artifacts.json("cases/popups/inventory.json", { before, after });
     await kit.snapshot("popups", "opened");
+    const afterCapture = await kit.popupInventory();
+    kit.artifacts.json("cases/popups/after-capture.json", afterCapture);
+    assert.equal(
+      afterCapture.frontPid,
+      before.frontPid,
+      "Owned-window capture changed foreground focus",
+    );
     await a.getByRole("listbox", { name: "Choose an option" }).selectOption({ label: "Beta" });
     await kit.until(
       async () => {

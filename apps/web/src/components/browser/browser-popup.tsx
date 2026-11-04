@@ -161,7 +161,11 @@ function PopupForm({ target, state }: { target: BrowserPopupTarget; state: Brows
             {state.items.map((i) => {
               if (i.kind === "group") {
                 return (
-                  <optgroup key={i.id} label={i.label} disabled={!i.enabled}>
+                  <optgroup
+                    key={i.id}
+                    label={i.label}
+                    dir={i.directionOverride ? (i.rtl ? "rtl" : "ltr") : "auto"}
+                  >
                     {state.items.filter((o) => o.groupId === i.id).map(option)}
                   </optgroup>
                 );

@@ -51,7 +51,7 @@ it("shows groups and disabled rows and commits an empty editable multiple select
         id: "g",
         kind: "group",
         label: "Group",
-        enabled: true,
+        enabled: false,
         selected: false,
         rtl: true,
         directionOverride: false,
@@ -80,6 +80,7 @@ it("shows groups and disabled rows and commits an empty editable multiple select
   const select = f.div.querySelector("select")!;
   expect(select.multiple).toBe(true);
   expect(select.querySelector("optgroup")?.label).toBe("Group");
+  expect(select.querySelector("optgroup")?.disabled).toBe(false);
   expect(select.options[1]?.disabled).toBe(true);
   act(() => {
     for (const o of select.options) o.selected = false;
