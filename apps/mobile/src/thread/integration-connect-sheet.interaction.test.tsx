@@ -273,6 +273,11 @@ describe("IntegrationConnectCard", () => {
       );
       expect(client.dispatch).not.toHaveBeenCalled();
       expect(onResponded).not.toHaveBeenCalled();
+      // Try again repeats the sign-in for another account, never approval of the old one.
+      await click("Try again");
+      expect(beginIntegrationAuthorization).toHaveBeenCalledTimes(2);
+      expect(client.dispatch).not.toHaveBeenCalled();
+      expect(onResponded).not.toHaveBeenCalled();
     },
   );
 
@@ -494,6 +499,8 @@ describe("IntegrationConnectCard", () => {
       expect(client.dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([]);
       expect(onResponded).not.toHaveBeenCalled();
       expect(text()).not.toContain("✓ Slack connected");
+      // The key sheet closes so the saved account's Use is in front.
+      expect(text()).not.toContain("API token");
       await click("Use Account B");
     }
     expect(client.dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([

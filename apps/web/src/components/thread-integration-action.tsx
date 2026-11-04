@@ -85,6 +85,12 @@ export function ThreadIntegrationAction({
   const [reload, setReload] = useState(0);
   const [requestSettled, setRequestSettled] = useState(false);
   const [connected, setConnected] = useState<AccessRequestAccount | null>(null);
+  /**
+   * The last thing the person asked the card to do. Try again repeats exactly
+   * that: a failed sign-in for another account must never become approval of
+   * the account already selected.
+   */
+  const lastAction = useRef<"allow" | "connect" | null>(null);
   const answerAfterConnect = useRef<{
     requestId: string;
     connectionId: string;
@@ -897,6 +903,7 @@ export function ThreadIntegrationAction({
   };
 
   const connect = () => {
+    lastAction.current = "connect";
     const bridge = desktopBridge();
     repositoryCheck.current?.abort();
     if (provider && plan.definition) {
@@ -948,7 +955,8 @@ export function ThreadIntegrationAction({
     }
   };
 
-  const allow = () =>
+  const allow = () => {
+    lastAction.current = "allow";
     void run(async () => {
       await resolveIntegrationAccess(hostClient, {
         access: effectiveAccess,
@@ -963,12 +971,13 @@ export function ThreadIntegrationAction({
       if (plan.selectedAccount) setConnected(plan.selectedAccount);
       else setRequestSettled(true);
     });
+  };
 
   const primary = () => {
     if (card.primary?.kind === "retry") {
       setError(null);
       if (repositorySetup) setReload((value) => value + 1);
-      else if (plan.selectedAccount) allow();
+      else if (lastAction.current === "allow" && plan.selectedAccount) allow();
       else if (card.source || plan.requirement.kind === "mcp-oauth") connect();
       else setReload((value) => value + 1);
       return;

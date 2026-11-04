@@ -335,6 +335,23 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
       await act(async () => buttonWithText(container, "Connect another account")!.click());
       expect(container.textContent).not.toContain("connected ·");
       expect(dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toHaveLength(0);
+      // Try again repeats the sign-in for another account, never approval of the old one.
+      await vi.waitFor(() => expect(buttonWithText(container, "Try again")).toBeTruthy(), {
+        timeout: 2_000,
+      });
+      await act(async () => buttonWithText(container, "Try again")!.click());
+      await vi.waitFor(
+        () =>
+          expect(
+            dispatch.mock.calls.filter(([c]) => c.type === "integration.authorization.begin"),
+          ).toHaveLength(2),
+        { timeout: 2_000 },
+      );
+      expect(
+        dispatch.mock.calls.filter(([c]) =>
+          ["request.respond", "integration.grant.create"].includes(c.type),
+        ),
+      ).toHaveLength(0);
     },
   );
 

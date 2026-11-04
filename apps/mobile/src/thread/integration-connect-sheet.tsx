@@ -105,6 +105,12 @@ export function IntegrationConnectCard(props: {
   const operationGeneration = useRef(0);
   const responding = useRef(false);
   const presented = useRef(false);
+  /**
+   * The last thing the person asked the card to do. Try again repeats exactly
+   * that: a failed sign-in for another account must never become approval of
+   * the account already selected.
+   */
+  const lastAction = useRef<"allow" | "connect" | null>(null);
   const selectCardHostState = useMemo(
     () =>
       (snapshot: HostSnapshot): CardHostState => ({
@@ -490,6 +496,8 @@ export function IntegrationConnectCard(props: {
       if (result.type === "integration.apiKey.connect" && result.connectionId) {
         await finish(result.connectionId, generation);
       } else {
+        // Back to the card, where the saved account waits for Use.
+        close();
         setReload((value) => value + 1);
       }
     });
@@ -562,8 +570,9 @@ export function IntegrationConnectCard(props: {
       });
       if (generation === operationGeneration.current) props.onResponded();
     });
-  const allow = () =>
-    run(async (generation) => {
+  const allow = () => {
+    lastAction.current = "allow";
+    return run(async (generation) => {
       if (!plan || !workspace) return;
       if (plan.selectedAccount) await finish(plan.selectedAccount.id, generation);
       else {
@@ -578,8 +587,10 @@ export function IntegrationConnectCard(props: {
         if (generation === operationGeneration.current) props.onResponded();
       }
     });
+  };
   const openConnect = (): void => {
     if (!plan || !loaded) return;
+    lastAction.current = "connect";
     if (plan.apiKeyMethod) {
       if (reconnect) setApiKeyName(reconnect.account.displayName);
       showForm("api-key");
@@ -592,7 +603,7 @@ export function IntegrationConnectCard(props: {
       case "retry":
         setError(null);
         if (step === "repository-access") void recheckRepositories();
-        else if (plan?.selectedAccount) void allow();
+        else if (lastAction.current === "allow" && plan?.selectedAccount) void allow();
         else if (loaded?.request.installationId === null) void install();
         else if (plan) openConnect();
         else setReload((value) => value + 1);
