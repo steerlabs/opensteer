@@ -166,12 +166,12 @@ export function integrationInstallNextStep(input: {
 }
 
 /**
- * Said beside the connect action of a Request for Main, before anything is
- * connected: a person's own tasks in Main use every account they connect, so
- * the Host answers the Request as soon as a usable account is connected.
+ * What answering a Request for Main reaches: a person's own tasks in Main use
+ * every account they connect, so the Host answers the Request as soon as a
+ * usable account is connected.
  */
-export function mainConnectAllowsNote(workspaceName: string): string {
-  return `Your tasks in ${workspaceName} can read and make changes with every account you connect, so connecting also allows this request.`;
+export function mainAccessDetail(workspaceName: string, integrationName: string): string {
+  return `Your tasks in ${workspaceName} can read and make changes with every ${integrationName} account you connect.`;
 }
 
 export async function resolveIntegrationAccess(
