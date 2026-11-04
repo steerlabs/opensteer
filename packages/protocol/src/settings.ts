@@ -164,6 +164,18 @@ export const PluginsDirectoryViewSchema = z.object({
         added: z.boolean(),
         contents: PluginDetailViewSchema.shape.contents.optional(),
         access: z.array(z.string().max(512)).max(100).optional(),
+        // A Host before product listings sends neither: each entry is then its own product.
+        product: z
+          .object({
+            id: z.string().min(1).max(64),
+            title: name,
+            // Open-ended so a Host's new category never fails an older client's read.
+            category: z.string().min(1).max(40),
+            popular: z.boolean(),
+          })
+          .optional(),
+        /** How this entry reaches its product, when the product offers more than one way. */
+        variant: name.optional(),
       }),
     )
     .max(1000),
@@ -171,6 +183,7 @@ export const PluginsDirectoryViewSchema = z.object({
     .array(z.object({ requestId: RequestIdSchema, title: name, workspaceId: WorkspaceIdSchema }))
     .max(100),
 });
+export type PluginsDirectoryView = z.infer<typeof PluginsDirectoryViewSchema>;
 export const DevicesOverviewViewSchema = z.object({
   devices: z
     .array(

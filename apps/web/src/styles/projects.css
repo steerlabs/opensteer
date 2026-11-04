@@ -604,20 +604,6 @@
 }
 
 /* ---- Settings → Plugins ---- */
-.plugin-install {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-12);
-}
-
-.plugin-install__folder {
-  flex: 2 1 18rem;
-}
-
-.plugin-install__runs-on {
-  flex: 1 1 10rem;
-}
-
 .plugin-install__skipped {
   margin: var(--space-4) 0 0;
   padding-left: var(--space-16);

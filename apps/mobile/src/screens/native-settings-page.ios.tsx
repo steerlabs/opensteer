@@ -6,6 +6,8 @@ import {
   Picker,
   DisclosureGroup,
   Host,
+  HStack,
+  RNHostView,
   Section,
   SecureField,
   Text,
@@ -27,6 +29,7 @@ import {
 } from "@expo/ui/swift-ui/modifiers";
 import { useNavigation } from "@react-navigation/native";
 import { useEffect } from "react";
+import { IntegrationIcon } from "../ui/integration-icon.js";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
 export function NativeSettingsPage(props: NativeSettingsPageProps) {
   const query = useNativeState("");
@@ -98,7 +101,8 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
         label={row.label}
         selection={row.value}
         onSelectionChange={row.onChange}
-        modifiers={[pickerStyle("segmented")]}
+        // A few choices sit side by side; more than fit a row open as a menu.
+        modifiers={[pickerStyle(row.choices.length > 3 ? "menu" : "segmented")]}
       >
         {row.choices.map((choice) => (
           <Text key={choice.value} modifiers={[tag(choice.value)]}>
@@ -109,13 +113,23 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
     );
   if (row.kind === "text") return <Text>{row.label}</Text>;
   if (row.kind === "button") {
-    const button = (
+    const plain = (
       <Button
         label={row.label}
         role={row.destructive ? "destructive" : "default"}
         modifiers={[disabled(row.disabled ?? false), frame({ minHeight: 44 })]}
         onPress={row.onPress}
       />
+    );
+    const button = row.mark ? (
+      <HStack spacing={12}>
+        <RNHostView matchContents>
+          <IntegrationIcon definitionId={row.mark.definitionId} name={row.mark.name} size={28} />
+        </RNHostView>
+        {plain}
+      </HStack>
+    ) : (
+      plain
     );
     if (!row.actions?.length) return button;
     const actions = row.actions.map((action) => (

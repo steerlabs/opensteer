@@ -1,4 +1,3 @@
-import { catalogContents } from "@opensteer/integration-core";
 import { z } from "zod";
 import {
   ComputerReplService,
@@ -101,6 +100,7 @@ import {
   validateProposedOpenApiCheck,
 } from "@opensteer/integration-adapters";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
+import { settingsCatalogEntries } from "./catalog-presentation.js";
 import {
   type CallableIntegrationTool,
   type CreateIntegrationGrantInput,
@@ -466,14 +466,10 @@ export class IntegrationPlatformService {
   }
 
   async settingsCatalog() {
-    const added = new Set(await this.#store.installations.installedCatalogDefinitionIds());
-    return this.#definitions.map((definition) => ({
-      definitionId: definition.id,
-      title: definition.name,
-      description: definition.description,
-      added: added.has(definition.id),
-      ...catalogContents(definition),
-    }));
+    return settingsCatalogEntries(
+      this.#definitions,
+      new Set(await this.#store.installations.installedCatalogDefinitionIds()),
+    );
   }
 
   get store(): IntegrationPlatformStore {

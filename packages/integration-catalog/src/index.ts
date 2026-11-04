@@ -47,3 +47,11 @@ const definitionsById = new Map(
 export function getIntegrationDefinition(id: string): IntegrationDefinition | undefined {
   return definitionsById.get(id);
 }
+
+export {
+  catalogCategories,
+  catalogPresentation,
+  catalogProducts,
+  type CatalogCategory,
+  type CatalogPresentation,
+} from "./listing.js";

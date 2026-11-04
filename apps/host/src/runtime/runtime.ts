@@ -65,6 +65,7 @@ import {
 } from "@opensteer/integration-adapters";
 import { hostedOAuthDeploymentAuthorityDigest } from "@opensteer/integration-auth";
 import { computerAppIntegrations, integrationDefinitions } from "@opensteer/integration-catalog";
+import { listedDefinitionName } from "../integrations/catalog-presentation.js";
 import {
   resolveIntegrationDeploymentPosture,
   type ComputerAppPlatform,
@@ -1379,7 +1380,11 @@ export async function createHostRuntime(
       publishWorkspaceEvent(event);
     const integrationDashboard = new IntegrationDashboardService({
       definitions: integrationDefinitions,
-      summarizeDefinition: (definition) => integrationPlatform.definitionSummary(definition),
+      // A person reads the listing's name; the stored definition keeps its own.
+      summarizeDefinition: (definition) => ({
+        ...integrationPlatform.definitionSummary(definition),
+        name: listedDefinitionName(definition),
+      }),
       providers: integrations,
       repository: integrationPlatformStore,
     });
