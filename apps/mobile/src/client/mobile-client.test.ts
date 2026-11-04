@@ -13,6 +13,7 @@ import { createMemorySavedViews } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import {
   buildNativeIntegrationAuthorizationCallback,
+  IntegrationAuthorizationCancelledError,
   IntegrationOAuthAttemptIdSchema,
   IntegrationAuthorizationAttemptIdSchema,
 } from "@opensteer/client/integrations";
@@ -124,6 +125,10 @@ function testPort(options: {
           if (property === "getSnapshot") {
             return () => ({
               ...target.getSnapshot(),
+              integrationAppFinishAvailable:
+                typeof options.verification === "object" &&
+                "capabilities" in options.verification &&
+                options.verification.capabilities.includes("integration-app-finish-v1"),
               ...(refused ? { session: "authentication-required" as const } : {}),
               ...(workspaceRefused
                 ? {
@@ -475,9 +480,19 @@ const connectComputer = (generation: number): DeploymentConnectionInput =>
 
 describe("MobileClient integration authorization", () => {
   it("binds the native return to the started attempt and accepts only durable Host completion", async () => {
-    const port = testPort({ held: true });
+    const begins = vi.fn();
+    const providerPort = testPort({
+      held: true,
+      configureClient: (host) => {
+        const dispatch = host.dispatch.bind(host);
+        host.dispatch = async (command) => {
+          if (command.type === "integration.authorization.begin") begins(command.input);
+          return dispatch(command);
+        };
+      },
+    });
     let openedLaunch = "";
-    const { client } = open(port.factory, new MemoryPrivateFilesystem(), {
+    const { client } = open(providerPort.factory, new MemoryPrivateFilesystem(), {
       openIntegrationAuthorization: async (launchUrl) => {
         openedLaunch = launchUrl;
         const attemptId = new URL(launchUrl).pathname.split("/").at(-2)!;
@@ -499,77 +514,185 @@ describe("MobileClient integration authorization", () => {
     });
     expect(openedLaunch).toContain(`/v1/integration-authorizations/ioa_`);
     expect(openedLaunch).toContain("ticket=");
-    expect(port.commands).toContain("integration.authorization.begin");
+    expect(providerPort.commands).toContain("integration.authorization.begin");
+    expect(begins).toHaveBeenCalledWith(expect.not.objectContaining({ finish: "app" }));
     client.dispose();
   });
 
-  it("uses the same verified native return for MCP authorization", async () => {
-    const attemptId = IntegrationAuthorizationAttemptIdSchema.parse(
-      "imo_00000000-0000-4000-8000-000000000001",
-    );
-    const beginMcp = vi.fn(async (_input: { requestId: unknown; surface: string }) => ({
-      attemptId,
+  it("requests app finish on a capable Host and deduplicates session and deep-link delivery", async () => {
+    const returned = vi.fn(async (_command: { attemptId: unknown }) => ({
+      type: "integration.authorization.return" as const,
+      status: "completed" as const,
       expiresAt: new Date(Date.now() + 600_000).toISOString(),
-      launchTicket: "a".repeat(43),
-      type: "integration.mcp.authorization.begin" as const,
-    }));
-    const status = vi.fn(async (_attemptId: string) => ({
       connectionId: null,
-      expiresAt: new Date(Date.now() + 600_000).toISOString(),
-      failureCode: "provider-denied",
-      status: "denied" as const,
+      failureCode: null,
     }));
+    const begins: unknown[] = [];
     const port = testPort({
       held: true,
-      configureClient: (client) => {
-        const originalDispatch = client.dispatch.bind(client);
-        client.dispatch = async (command) =>
-          command.type === "integration.mcp.authorization.begin"
-            ? beginMcp(command.input)
-            : originalDispatch(command);
-        Object.defineProperty(client, "rpc", {
-          value: new Proxy(client.rpc, {
-            get(target, property, receiver) {
-              if (property === "integration.authorization.get") {
-                return async (input: { attemptId: string }) => ({
-                  ok: true,
-                  data: await status(input.attemptId),
-                });
-              }
-              return Reflect.get(target, property, receiver);
-            },
-          }),
-        });
+      verification: { status: "compatible", capabilities: ["integration-app-finish-v1"] },
+      configureClient: (host) => {
+        const dispatch = host.dispatch.bind(host);
+        host.dispatch = async (command) => {
+          if (command.type === "integration.authorization.return") return returned(command);
+          if (command.type === "integration.authorization.begin") begins.push(command.input);
+          return dispatch(command);
+        };
       },
     });
-    let opened = "";
     const { client } = open(port.factory, new MemoryPrivateFilesystem(), {
       openIntegrationAuthorization: async (url) => {
-        opened = url;
-        return buildNativeIntegrationAuthorizationCallback({
-          attemptId,
+        const callback = buildNativeIntegrationAuthorizationCallback({
           deploymentId: DeploymentIdSchema.parse(serverId),
+          attemptId: IntegrationOAuthAttemptIdSchema.parse(new URL(url).pathname.split("/").at(-2)),
+          returnProof: "r".repeat(43),
         });
+        const link = client.handleIntegrationAuthorizationCallback(callback);
+        await link;
+        return callback;
       },
     });
     await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
     await client.initialize();
     await client.select(serverId);
-    const requestId = createId("request");
     await expect(
-      client.beginMcpIntegrationAuthorization({
-        serverId: "isv_00000000-0000-4000-8000-000000000001",
-        requestId,
-        displayName: "My MCP account",
-      }),
-    ).resolves.toMatchObject({ status: "denied", failureCode: "provider-denied" });
-    expect(beginMcp).toHaveBeenCalledWith(
-      expect.objectContaining({ requestId, surface: "native" }),
-    );
-    expect(opened).toContain(`/v1/integration-authorizations/${attemptId}/launch`);
-    expect(status).toHaveBeenCalledWith(attemptId);
+      client.beginIntegrationAuthorization({ definitionId: "slack" }),
+    ).resolves.toMatchObject({ status: "completed" });
+    expect(begins).toEqual([expect.objectContaining({ finish: "app", surface: "native" })]);
+    expect(returned).toHaveBeenCalledOnce();
     client.dispose();
   });
+
+  it("resumes only a persisted started attempt after a cold start", async () => {
+    const records = createSecureRecordStore({
+      keyPrefix: "test",
+      secureStore: new MemorySecureStore(),
+    });
+    const files = new MemoryPrivateFilesystem();
+    let callback = "";
+    const port = testPort({
+      held: true,
+      verification: { status: "compatible", capabilities: ["integration-app-finish-v1"] },
+      configureClient: (host) => {
+        const dispatch = host.dispatch.bind(host);
+        host.dispatch = async (command) =>
+          command.type === "integration.authorization.return"
+            ? {
+                type: "integration.authorization.return",
+                status: "completed",
+                connectionId: null,
+                expiresAt: new Date(Date.now() + 600_000).toISOString(),
+                failureCode: null,
+              }
+            : dispatch(command);
+      },
+    });
+    const first = open(port.factory, files, {
+      records,
+      openIntegrationAuthorization: async (url) => {
+        callback = buildNativeIntegrationAuthorizationCallback({
+          deploymentId: DeploymentIdSchema.parse(serverId),
+          attemptId: IntegrationOAuthAttemptIdSchema.parse(new URL(url).pathname.split("/").at(-2)),
+          returnProof: "r".repeat(43),
+        });
+        throw new Error("browser unavailable");
+      },
+    }).client;
+    await first.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await first.initialize();
+    await first.select(serverId);
+    await expect(first.beginIntegrationAuthorization({ definitionId: "slack" })).rejects.toThrow(
+      "browser unavailable",
+    );
+    first.dispose();
+    const second = open(port.factory, files, { records }).client;
+    await second.initialize();
+    await expect(second.handleIntegrationAuthorizationCallback(callback)).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(
+      port.commands.filter((type) => type === "integration.authorization.return"),
+    ).toHaveLength(1);
+    second.dispose();
+  });
+
+  it.each([true, false])(
+    "uses the same verified native return for MCP authorization (app finish: %s)",
+    async (appFinish) => {
+      const attemptId = IntegrationAuthorizationAttemptIdSchema.parse(
+        "imo_00000000-0000-4000-8000-000000000001",
+      );
+      const beginMcp = vi.fn(async (_input: { requestId: unknown; surface: string }) => ({
+        attemptId,
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        launchTicket: "a".repeat(43),
+        type: "integration.mcp.authorization.begin" as const,
+      }));
+      const status = vi.fn(async (_attemptId: string) => ({
+        connectionId: null,
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        failureCode: "provider-denied",
+        status: "denied" as const,
+      }));
+      const port = testPort({
+        held: true,
+        verification: {
+          status: "compatible",
+          capabilities: appFinish ? ["integration-app-finish-v1"] : [],
+        },
+        configureClient: (client) => {
+          const originalDispatch = client.dispatch.bind(client);
+          client.dispatch = async (command) =>
+            command.type === "integration.mcp.authorization.begin"
+              ? beginMcp(command.input)
+              : originalDispatch(command);
+          Object.defineProperty(client, "rpc", {
+            value: new Proxy(client.rpc, {
+              get(target, property, receiver) {
+                if (property === "integration.authorization.get") {
+                  return async (input: { attemptId: string }) => ({
+                    ok: true,
+                    data: await status(input.attemptId),
+                  });
+                }
+                return Reflect.get(target, property, receiver);
+              },
+            }),
+          });
+        },
+      });
+      let opened = "";
+      const { client } = open(port.factory, new MemoryPrivateFilesystem(), {
+        openIntegrationAuthorization: async (url) => {
+          opened = url;
+          return buildNativeIntegrationAuthorizationCallback({
+            attemptId,
+            deploymentId: DeploymentIdSchema.parse(serverId),
+          });
+        },
+      });
+      await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+      await client.initialize();
+      await client.select(serverId);
+      const requestId = createId("request");
+      await expect(
+        client.beginMcpIntegrationAuthorization({
+          serverId: "isv_00000000-0000-4000-8000-000000000001",
+          requestId,
+          displayName: "My MCP account",
+        }),
+      ).resolves.toMatchObject({ status: "denied", failureCode: "provider-denied" });
+      expect(beginMcp).toHaveBeenCalledWith(
+        expect.objectContaining({ requestId, surface: "native" }),
+      );
+      if (appFinish)
+        expect(beginMcp).toHaveBeenCalledWith(expect.objectContaining({ finish: "app" }));
+      else expect(beginMcp).toHaveBeenCalledWith(expect.not.objectContaining({ finish: "app" }));
+      expect(opened).toContain(`/v1/integration-authorizations/${attemptId}/launch`);
+      expect(status).toHaveBeenCalledWith(attemptId);
+      client.dispose();
+    },
+  );
 
   it("rejects a browser return for another attempt before reading its status", async () => {
     const port = testPort({ held: true });
@@ -592,16 +715,54 @@ describe("MobileClient integration authorization", () => {
     client.dispose();
   });
 
-  it("refuses a cold callback for a Deployment outside the verified catalog", async () => {
-    const { client } = open(testPort({ held: true }).factory);
+  it("drops an unsolicited cold callback before selection or RPC", async () => {
+    const port = testPort({ held: true });
+    const { client } = open(port.factory);
+    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
     await client.initialize();
+    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: otherId })));
+    const previous = client.getSnapshot().selection.deploymentId;
+    const commands = port.commands.length;
     const callback = buildNativeIntegrationAuthorizationCallback({
       attemptId: IntegrationOAuthAttemptIdSchema.parse("ioa_00000000-0000-4000-8000-000000000099"),
-      deploymentId: DeploymentIdSchema.parse(serverId),
+      deploymentId: DeploymentIdSchema.parse(otherId),
+      returnProof: "r".repeat(43),
     });
-    await expect(client.handleIntegrationAuthorizationCallback(callback)).rejects.toThrow(
-      /unknown deployment/u,
-    );
+    const select = vi.spyOn(client, "select");
+    await expect(client.handleIntegrationAuthorizationCallback(callback)).resolves.toBeNull();
+    expect(select).not.toHaveBeenCalled();
+    expect(client.getSnapshot().selection.deploymentId).toBe(previous);
+    expect(port.commands).toHaveLength(commands);
+    client.dispose();
+  });
+  it.each(["cancel", "sign-out"] as const)("erases persisted authority on %s", async (action) => {
+    const records = createSecureRecordStore({
+      keyPrefix: "test",
+      secureStore: new MemorySecureStore(),
+    });
+    let callback = "";
+    const port = testPort({ held: true });
+    const { client } = open(port.factory, new MemoryPrivateFilesystem(), {
+      records,
+      openIntegrationAuthorization: async (url) => {
+        callback = buildNativeIntegrationAuthorizationCallback({
+          deploymentId: DeploymentIdSchema.parse(serverId),
+          attemptId: IntegrationOAuthAttemptIdSchema.parse(new URL(url).pathname.split("/").at(-2)),
+          returnProof: "r".repeat(43),
+        });
+        if (action === "cancel") throw new IntegrationAuthorizationCancelledError();
+        throw new Error("offline");
+      },
+    });
+    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.initialize();
+    await client.select(serverId);
+    await expect(client.beginIntegrationAuthorization({ definitionId: "slack" })).rejects.toThrow();
+    if (action === "sign-out") await client.signOut(serverId);
+    const commands = port.commands.length;
+    await expect(client.handleIntegrationAuthorizationCallback(callback)).resolves.toBeNull();
+    expect(port.commands).toHaveLength(commands);
+    expect(await records.read("integration-authorization-attempts")).toBeNull();
     client.dispose();
   });
 });

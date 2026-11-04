@@ -1,3 +1,8 @@
+import {
+  createIntegrationId,
+  buildIntegrationAuthorizationAppReturn,
+} from "@opensteer/integration-core";
+import { DesktopIntegrationAuthorizations } from "../app/integration-authorizations.js";
 import type { IpcMainInvokeEvent } from "electron";
 import { createId } from "@opensteer/core";
 import {
@@ -38,7 +43,19 @@ describe("desktop bridge", () => {
         return () => accessListeners.delete(listener);
       }),
     };
+    const event = ipcEvent("app://opensteer/workspaces");
+    const integrationAuthorizations = new DesktopIntegrationAuthorizations(
+      {
+        application: "desktop",
+        clientId: "opensteer-desktop",
+        accountCallback: "com.opensteer.opensteer:/oauth/account-callback",
+        hostCallback: "com.opensteer.opensteer:/oauth/host-callback",
+      },
+      () => {},
+    );
     const unregister = registerDesktopBridge({
+      integrationAuthorizations,
+      isWorkspaceContents: (sender) => sender === event.sender,
       updates: {
         state: () => ({
           status: "idle",
@@ -100,8 +117,42 @@ describe("desktop bridge", () => {
       portal: { openExternal: vi.fn(async () => undefined), pickFolder: vi.fn(async () => null) },
       runner,
     });
-    const event = ipcEvent("app://opensteer/workspaces");
     const envelope = { bridgeToken: "b".repeat(43) };
+
+    const started = {
+      deploymentId: createId("deployment"),
+      userId: createId("user"),
+      attemptId: createIntegrationId("oauthAttempt"),
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    };
+    await integrationAuthorizations.attempts.register(started);
+    const callback = {
+      deploymentId: started.deploymentId,
+      attemptId: started.attemptId,
+      returnProof: "r".repeat(43),
+    };
+    const url = buildIntegrationAuthorizationAppReturn("desktop", callback);
+    integrationAuthorizations.accept(url);
+    const subscribe = handlers.get(desktopBridgeChannels.integrationAuthorizationSubscription)!;
+    subscribe(event, {
+      ...envelope,
+      input: {
+        deploymentId: started.deploymentId,
+        userId: started.userId,
+        generation: crypto.randomUUID(),
+        ready: true,
+      },
+    });
+    await integrationAuthorizations.settled();
+    expect(event.sender.send).toHaveBeenCalledWith(
+      desktopBridgeChannels.integrationAuthorizationReturn,
+      callback,
+    );
+    await handlers.get(desktopBridgeChannels.finishIntegrationAuthorization)!(event, {
+      ...envelope,
+      input: { deploymentId: started.deploymentId, attemptId: started.attemptId },
+    });
+    expect(integrationAuthorizations.accept(url)).toBe(false);
 
     const setChannel = handlers.get(desktopBridgeChannels.setUpdateChannel)!;
     await expect(setChannel(event, { ...envelope, input: "beta" })).resolves.toMatchObject({
@@ -164,6 +215,7 @@ describe("desktop bridge", () => {
       Object.values(desktopBridgeChannels).filter((channel) => channel.includes(".access.")),
     ).toHaveLength(16);
     const notificationChannels = new Set<string>([
+      desktopBridgeChannels.integrationAuthorizationReturn,
       desktopBridgeChannels.dictationEvent,
       desktopBridgeChannels.downloadsChanged,
       desktopBridgeChannels.updateChanged,
@@ -569,6 +621,7 @@ function ipcEvent(url: string): IpcMainInvokeEvent {
       isDestroyed: () => false,
       mainFrame,
       once: vi.fn(),
+      removeListener: vi.fn(),
       send: vi.fn(),
     },
     senderFrame: mainFrame,

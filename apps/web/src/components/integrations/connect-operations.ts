@@ -12,6 +12,8 @@ import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opens
 import { desktopBridge } from "../../desktop/desktop-bridge.js";
 import {
   integrationAuthorizationSurface,
+  integrationAuthorizationFinish,
+  finishDesktopIntegrationAuthorization,
   beginIntegrationAuthorization,
   waitForIntegrationAuthorization,
 } from "../../integrations/integration-authorization.js";
@@ -70,12 +72,14 @@ export function createConnectOperations(
         expiresAt: started.expiresAt,
         signal,
       });
+      await finishDesktopIntegrationAuthorization(desktopBridge(), client, started.attemptId);
       tracking.finished(started.attemptId);
       return status;
     },
     beginAuthorization: ({ applicationSource, definitionId, returnPath }) =>
       beginIntegrationAuthorization({
         bridge: desktopBridge(),
+        client,
         onStarted: tracking.started,
         returnPath,
         begin: async (authorizationReturnPath) => {
@@ -86,6 +90,7 @@ export function createConnectOperations(
               definitionId,
               returnPath: authorizationReturnPath,
               surface: integrationAuthorizationSurface(desktopBridge()),
+              ...integrationAuthorizationFinish(desktopBridge(), client),
             },
             type: "integration.authorization.begin",
           });
@@ -104,6 +109,7 @@ export function createConnectOperations(
       if (cancelled.type !== "integration.authorization.cancel") {
         throw new Error("Integration authorization cancellation command mismatch.");
       }
+      await finishDesktopIntegrationAuthorization(desktopBridge(), client, attemptId);
       tracking.finished(attemptId);
       return cancelled;
     },

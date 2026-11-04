@@ -14,6 +14,8 @@ import { desktopBridge } from "../desktop/desktop-bridge.js";
 import {
   integrationAuthorizationError,
   integrationAuthorizationSurface,
+  integrationAuthorizationFinish,
+  finishDesktopIntegrationAuthorization,
   beginIntegrationAuthorization,
   waitForIntegrationAuthorization,
 } from "../integrations/integration-authorization.js";
@@ -140,6 +142,7 @@ export function ThreadIntegrationAction({
       .then(async (status) => {
         if (controller.signal.aborted) return;
         terminal = true;
+        await finishDesktopIntegrationAuthorization(desktopBridge(), hostClient, parsed.data);
         const outcome = integrationAuthorizationError(status.status, status.failureCode);
         if (outcome) setError(outcome);
         else {
@@ -585,6 +588,7 @@ export function ThreadIntegrationAction({
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
+      await finishDesktopIntegrationAuthorization(desktopBridge(), hostClient, started.attemptId);
       tracking.finished(started.attemptId);
       const outcome = integrationAuthorizationError(status.status, status.failureCode);
       if (outcome) throw new Error(outcome);
@@ -616,6 +620,11 @@ export function ThreadIntegrationAction({
       if (status.type !== "integration.authorization.cancel") {
         throw new Error("Integration authorization cancellation command mismatch.");
       }
+      await finishDesktopIntegrationAuthorization(
+        desktopBridge(),
+        hostClient,
+        authorization.attemptId,
+      );
       tracking.finished(authorization.attemptId);
       if (authorizationController.current !== controller) return;
       controller?.abort();
@@ -645,6 +654,7 @@ export function ThreadIntegrationAction({
       void run(async () => {
         const started = await beginIntegrationAuthorization({
           bridge,
+          client: hostClient,
           onStarted: tracking.started,
           returnPath: `/threads/${encodeURIComponent(threadId)}`,
           begin: async (returnPath) => {
@@ -658,6 +668,7 @@ export function ThreadIntegrationAction({
                 returnPath,
                 serverId: IntegrationServerIdSchema.parse(requestPayload.requestedServerId),
                 surface: integrationAuthorizationSurface(bridge),
+                ...integrationAuthorizationFinish(bridge, hostClient),
               },
               type: "integration.mcp.authorization.begin",
             });

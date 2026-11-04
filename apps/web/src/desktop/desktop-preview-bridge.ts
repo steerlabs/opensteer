@@ -436,6 +436,8 @@ export function desktopPreviewBridge(
 
     openExternalUrl: async () => ({ opened: true }),
     openIntegrationAuthorization: async () => ({ opened: true }),
+    onIntegrationAuthorizationReturn: () => () => undefined,
+    finishIntegrationAuthorization: async () => undefined,
 
     openHostWebSocket: async (input) => {
       const parsed = DesktopOpenHostWebSocketInputSchema.parse(input);

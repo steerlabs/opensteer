@@ -1,3 +1,4 @@
+import { DesktopIntegrationAuthorizations } from "./app/integration-authorizations.js";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import { autoUpdater } from "electron-updater";
 import { loadDesktopUpdatePreference } from "./app/desktop-update-preference.js";
@@ -159,6 +160,18 @@ const oauthDeepLinks = new OAuthDeepLinkBroker({
   ...embeddedRelease.oauth,
   application: "desktop",
 });
+let openIntegrationReturn: ((deploymentId: string) => Promise<void>) | null = null;
+const integrationAuthorizations = new DesktopIntegrationAuthorizations(
+  { ...embeddedRelease.oauth, application: "desktop" },
+  (deploymentId) => {
+    void openIntegrationReturn?.(deploymentId).catch(() =>
+      reportEvent("desktop.integration-return.failed", {}),
+    );
+  },
+);
+const desktopOAuthLinks = {
+  accept: (url: string) => integrationAuthorizations.accept(url) || oauthDeepLinks.accept(url),
+};
 const webLinks = new DesktopWebLinks((message) => {
   void app
     .whenReady()
@@ -173,7 +186,7 @@ let activeMainProcess: DesktopMainProcess | null = null;
 let desktopLog: RotatingPersonalLog | null = null;
 const shutdown = new DesktopShutdown({ application: app, power: powerMonitor, log: reportEvent });
 app.on("open-url", (event, url) => {
-  if (oauthDeepLinks.accept(url)) {
+  if (desktopOAuthLinks.accept(url)) {
     event.preventDefault();
     return;
   }
@@ -182,7 +195,7 @@ app.on("open-url", (event, url) => {
   event.preventDefault();
 });
 app.on("second-instance", (_event, argv) => {
-  for (const url of argv) routeDesktopUrl(url, oauthDeepLinks, webLinks);
+  for (const url of argv) routeDesktopUrl(url, desktopOAuthLinks, webLinks);
   if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
 });
 
@@ -232,7 +245,7 @@ async function startDesktop(): Promise<void> {
   // Only a build that updates itself needs to live in Applications.
   if (loaded.config.updates && (await offerMoveToApplications(reportEvent))) return;
   shutdown.signal.throwIfAborted();
-  for (const url of process.argv) routeDesktopUrl(url, oauthDeepLinks, webLinks);
+  for (const url of process.argv) routeDesktopUrl(url, desktopOAuthLinks, webLinks);
   await runDesktop(loaded, privateFiles);
 }
 
@@ -940,6 +953,7 @@ async function runDesktop(
       restart: () => restartToUpdate(),
     },
     webLinks,
+    integrationAuthorizations,
     isWorkspaceContents: (sender) => sender === workspaceContents,
     passkeys,
     localVisibility,
@@ -1124,6 +1138,12 @@ async function runDesktop(
     },
   });
   activeMainProcess = mainProcess;
+  openIntegrationReturn = async (deploymentId) => {
+    if (shutdown.requested) return;
+    if (access.snapshot().selectedDeploymentId !== deploymentId) await access.select(deploymentId);
+    await mainProcess.activate();
+  };
+
   const tray = new DesktopTrayService({
     catalog: deploymentCatalog,
     iconPath: path.join(import.meta.dirname, "trayTemplate.png"),
