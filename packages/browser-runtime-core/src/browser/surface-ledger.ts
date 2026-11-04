@@ -103,6 +103,8 @@ interface SurfaceRecord {
   navigationFailed: boolean;
   navigationAttempt: number;
   committedUrl: string;
+  /** What a failed navigation meant to reach; the document is Chromium's error page. */
+  unreachableUrl: string | null;
   /** The committed document's loader, from its commit or the first title sample. */
   loaderId: string | null;
   titleReader: PageTitleReader | null;
@@ -337,16 +339,16 @@ export class SurfaceLedger {
   durableSnapshot(): BrowserWorkspaceTabDescriptor[] {
     return [...this.records.values()]
       .filter((record) => record.announced)
-      .map((record) => ({
-        id: record.id,
-        title: record.title.slice(0, 256),
-        url:
-          record.committedUrl.length <= browserWorkspaceTabUrlMaxLength
-            ? record.committedUrl
-            : "opensteer:unavailable-url",
-        order: record.order,
-        openerId: record.openerId,
-      }));
+      .map((record) => {
+        const url = record.unreachableUrl ?? record.committedUrl;
+        return {
+          id: record.id,
+          title: record.title.slice(0, 256),
+          url: url.length <= browserWorkspaceTabUrlMaxLength ? url : "opensteer:unavailable-url",
+          order: record.order,
+          openerId: record.openerId,
+        };
+      });
   }
 
   /** Correlates only this Page.navigate with the document Chromium says it produced. */
@@ -842,7 +844,7 @@ export class SurfaceLedger {
   async refresh(surfaceId: BrowserSurfaceId): Promise<void> {
     const record = this.records.get(surfaceId);
     if (!record || record.page.isClosed()) return;
-    const url = normalizeUrl(record.committedUrl);
+    const url = surfaceAddress(record);
     if (url !== record.url) {
       record.url = url;
       this.emit({
@@ -851,7 +853,7 @@ export class SurfaceLedger {
         type: "changed",
       });
     }
-    record.faviconReader?.refresh(record.documentId, record.url);
+    record.faviconReader?.refresh(record.documentId, normalizeUrl(record.committedUrl));
     record.titleReader?.sample();
     await this.refreshNavigation(record);
   }
@@ -1049,7 +1051,12 @@ export class SurfaceLedger {
                   ? parameters.frame.urlFragment
                   : "";
               record.committedUrl = parameters.frame.url + fragment;
-              record.url = normalizeUrl(record.committedUrl);
+              record.unreachableUrl =
+                "unreachableUrl" in parameters.frame &&
+                typeof parameters.frame.unreachableUrl === "string"
+                  ? attemptedAddress(parameters.frame.unreachableUrl)
+                  : null;
+              record.url = surfaceAddress(record);
             }
             if (!parameters || typeof parameters !== "object" || !("frame" in parameters)) return;
             const frame = parameters.frame;
@@ -1062,9 +1069,9 @@ export class SurfaceLedger {
             // A new document has no title until its own document names one.
             record.title = "";
             record.favicon = null;
-            // Reload and history commit without navigate(); Chromium's error page is not a recovery.
-            if (!("unreachableUrl" in frame) && !record.committedUrl.startsWith("chrome-error://"))
-              record.navigationFailed = false;
+            // Reload, history and an agent's own navigation all commit without navigate().
+            record.navigationFailed =
+              record.unreachableUrl !== null || record.committedUrl.startsWith("chrome-error://");
             record.faviconReader?.refresh(record.documentId, normalizeUrl(record.committedUrl));
             record.geometryRevision++;
             if (record.announced)
@@ -1127,6 +1134,7 @@ export class SurfaceLedger {
           title: "",
           url: normalizeUrl(page.url()),
           committedUrl: page.url(),
+          unreachableUrl: null,
           onSameDocumentNavigation: (parameters) => {
             if (
               !parameters ||
@@ -1139,6 +1147,7 @@ export class SurfaceLedger {
               return;
             void this.refreshNavigation(record).catch(() => undefined);
             record.committedUrl = parameters.url;
+            record.unreachableUrl = null;
             record.url = normalizeUrl(record.committedUrl);
             if (record.announced)
               this.emit({
@@ -1722,6 +1731,23 @@ function sameMetrics(left: CdpParameters, right: CdpParameters): boolean {
 
 function normalizeTitle(value: string): string {
   return value.slice(0, 1_000);
+}
+
+/** Chromium reports what was typed, so credentials are kept out before it is shown or saved. */
+function attemptedAddress(address: string): string | null {
+  try {
+    const url = new URL(address);
+    if (!url.username && !url.password) return address;
+    url.username = "";
+    url.password = "";
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function surfaceAddress(record: Pick<SurfaceRecord, "committedUrl" | "unreachableUrl">): string {
+  return normalizeUrl(record.unreachableUrl ?? record.committedUrl);
 }
 
 function normalizeUrl(value: string): string {

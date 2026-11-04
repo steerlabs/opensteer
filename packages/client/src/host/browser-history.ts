@@ -99,6 +99,10 @@ export class BrowserHistoryClient {
     state.stale = true;
     if (this.#listeners.size > 0) void this.load(profileId);
   }
+  /** A change that could not name its profile may be to any held here. */
+  changedAll(): void {
+    for (const profileId of this.#profiles.keys()) this.changed(profileId);
+  }
   load(profileId: string | null): Promise<void> {
     if (!this.#scope || !profileId) return Promise.resolve();
     const state = this.#profile(profileId);

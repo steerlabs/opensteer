@@ -2,7 +2,6 @@ import { createDesktopHostFetch } from "../../../web/src/desktop/desktop-host-tr
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import type { DesktopHostWebSocketEvent } from "@opensteer/protocol/desktop";
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
-import { hostApiVersion } from "@opensteer/deployment-authority";
 import { describe, expect, it, vi } from "vitest";
 import {
   DeploymentCatalogSchema,
@@ -128,44 +127,6 @@ describe("DesktopHostTransport", () => {
       expect(JSON.stringify(log.mock.calls)).not.toMatch(
         /private\.test|access_token|PRIVATE-VALUE/,
       );
-    } finally {
-      transport.closeAllSockets();
-    }
-  });
-  it("persists realtime schema failure metadata before forwarding without payloads or credentials", async () => {
-    const selected = deployment("Home", "https://home.connect.opensteer.test");
-    const log = vi.fn();
-    let events: HostNetworkSocketEvents | undefined;
-    const received = vi.fn();
-    const transport = desktopHostTransport({
-      catalog: catalogStore([selected], selected.authority.document.deploymentId),
-      log,
-      network: {
-        openWebSocket: (_input, value) => {
-          events = value;
-          return socket();
-        },
-        request: async () => new Response("{}"),
-      },
-    });
-    await transport.openWebSocket(7, { path: "/v1/realtime" }, received);
-    try {
-      const data = JSON.stringify({
-        type: "host.events",
-        events: [{ type: "run.started", data: { status: "os_secret_PRIVATE-FRAME" } }],
-      });
-      events!.message(data);
-      expect(log).toHaveBeenCalledWith(
-        "desktop.host-socket.frame-unrecognized",
-        expect.objectContaining({
-          envelopeType: "host.events",
-          apiEpoch: hostApiVersion,
-          bytes: new TextEncoder().encode(data).byteLength,
-          issuePaths: expect.stringContaining("events.[]."),
-        }),
-      );
-      expect(JSON.stringify(log.mock.calls)).not.toMatch(/os_secret|PRIVATE-FRAME/);
-      expect(received).toHaveBeenCalledWith(expect.objectContaining({ type: "text", data }));
     } finally {
       transport.closeAllSockets();
     }

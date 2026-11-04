@@ -5,8 +5,10 @@ import {
   TargetedBrowserClientMessageSchema,
   decodeBrowserFrameEnvelope,
 } from "@opensteer/protocol";
+import { z } from "zod";
 import type { BrowserFrameView, BrowserCommand, BrowserRasterDemand } from "./client.js";
 import type { WebSocketClient } from "./host-session-client.js";
+import { healthySocketMs } from "./realtime-frames.js";
 export interface BrowserWatchState {
   /** The current socket has received its first authorized snapshot. */
   readonly admitted?: boolean;
@@ -34,6 +36,10 @@ interface Watch {
   readonly awaiting: Map<string, { readonly receivedAt: number; claimed: boolean }>;
   timer: ReturnType<typeof setTimeout> | null;
   attempt: number;
+  /** Frames this target could not read since a socket last stayed up. */
+  unreadableFrames: number;
+  /** While frames are unreadable, when the next attempt may start. */
+  unreadableRetryAt: number;
   terminal: boolean;
   sequence: number;
   generation: number;
@@ -87,7 +93,7 @@ export class BrowserWatchStore {
   };
   readonly connect: (sessionId: string, surfaceId: string) => WebSocketClient;
   readonly mode: "watch" | "control";
-  readonly retryDelay: (attempt: number) => number;
+  readonly retryDelay: (attempt: number, unreadableFrames: number) => number;
   readonly captureRegions: () => boolean;
   readonly frameWindows: () => boolean;
   readonly rasterDemands: () => boolean;
@@ -99,7 +105,7 @@ export class BrowserWatchStore {
     mode: "watch" | "control",
     onMessage:
       ((sessionId: string, message: BrowserServerMessage, surfaceId: string) => void) | undefined,
-    retryDelay: (attempt: number) => number,
+    retryDelay: (attempt: number, unreadableFrames: number) => number,
     captureRegions: () => boolean = () => false,
     onDisconnect?: (sessionId: string, surfaceId: string) => void,
     frameWindows: () => boolean = () => false,
@@ -200,6 +206,8 @@ export class BrowserWatchStore {
         awaiting: new Map(),
         timer: null,
         attempt: 0,
+        unreadableFrames: 0,
+        unreadableRetryAt: 0,
         terminal: false,
         sequence: 0,
         generation: 0,
@@ -439,6 +447,14 @@ export class BrowserWatchStore {
       !this.#authorized(target.sessionId, target.surfaceId)
     )
       return;
+    const wait = target.unreadableFrames > 0 ? target.unreadableRetryAt - Date.now() : 0;
+    if (wait > 0) {
+      target.timer ??= setTimeout(() => {
+        target.timer = null;
+        this.#open(target);
+      }, wait);
+      return;
+    }
     let socket: WebSocketClient;
     try {
       socket = this.connect(target.sessionId, target.surfaceId);
@@ -450,19 +466,39 @@ export class BrowserWatchStore {
       return;
     }
     target.socket = socket;
+    if (target.unreadableFrames > 0)
+      target.unreadableRetryAt =
+        Date.now() + this.retryDelay(target.attempt, target.unreadableFrames);
     const admissionId = crypto.randomUUID();
     socket.binaryType = "arraybuffer";
     this.#set(target, { ...this.#kept(target), status: "connecting" });
     let synchronized = false;
+    const openedAt = Date.now();
+    const forgetFailures = () => {
+      if (Date.now() - openedAt >= healthySocketMs) target.unreadableFrames = 0;
+    };
     // Until the Host answers the subscription for this surface, it treats the
     // socket as a viewer of the active surface; such events are not ours.
     let subscribed = false;
-    const fail = (error: unknown) => {
+    const fail = (
+      error: unknown,
+      unreadable = error instanceof z.ZodError || error instanceof SyntaxError,
+    ) => {
       if (target.socket !== socket) return;
       this.onDisconnect?.(target.sessionId, target.surfaceId);
       target.socket = null;
       target.synchronized = false;
       target.awaiting.clear();
+      // A new socket's snapshot and subscription replace everything a frame
+      // could have carried. Any other failure is a refusal or a wrong target.
+      if (unreadable) {
+        target.unreadableFrames += 1;
+        this.#diagnose({ stage: "unreadable-frame" });
+        socket.close(4002, "Invalid browser protocol frame");
+        this.#set(target, this.#kept(target));
+        this.#retry(target);
+        return;
+      }
       target.terminal = true;
       socket.close(4002, "Targeted browser protocol required");
       this.#set(target, {
@@ -474,8 +510,10 @@ export class BrowserWatchStore {
       if (target.socket !== socket) return;
       try {
         if (typeof data === "string") {
-          if (data.length > 1024 * 1024) throw new Error("Browser message exceeds its byte limit.");
+          if (data.length > 1024 * 1024)
+            return fail(new Error("Browser message exceeds its byte limit."), true);
           const message = BrowserServerMessageSchema.parse(JSON.parse(data));
+          forgetFailures();
           if (message.type === "browser.snapshot") {
             if (
               synchronized ||
@@ -557,7 +595,15 @@ export class BrowserWatchStore {
         }
         if (!synchronized || !(data instanceof ArrayBuffer))
           throw new Error("Unexpected browser frame.");
-        const frame = decodeBrowserFrameEnvelope(new Uint8Array(data), 8 * 1024 * 1024);
+        let frame: ReturnType<typeof decodeBrowserFrameEnvelope>;
+        try {
+          frame = decodeBrowserFrameEnvelope(new Uint8Array(data), 8 * 1024 * 1024);
+        } catch (error) {
+          // The decoder reports bad bytes as plain errors, and bad bytes refuse nothing.
+          fail(error, true);
+          return;
+        }
+        forgetFailures();
         if (
           frame.header.surfaceId !== target.surfaceId ||
           frame.header.geometryRevision === undefined ||
@@ -609,12 +655,17 @@ export class BrowserWatchStore {
         ...(revoked ? empty : this.#kept(target)),
         error: target.terminal ? "The browser target is no longer available." : null,
       });
-      if (!this.#paused(target) && target.holds && target.state.error === null)
-        target.timer = setTimeout(() => {
-          target.timer = null;
-          this.#open(target);
-        }, this.retryDelay(target.attempt++));
+      if (target.state.error === null) this.#retry(target);
     });
+  }
+  #retry(target: Watch): void {
+    if (this.#paused(target) || !target.holds) return;
+    const delay = this.retryDelay(target.attempt++, target.unreadableFrames);
+    if (target.unreadableFrames > 0) target.unreadableRetryAt = Date.now() + delay;
+    target.timer = setTimeout(() => {
+      target.timer = null;
+      this.#open(target);
+    }, delay);
   }
   #subscribeTarget(target: Watch): void {
     for (const token of target.awaiting.keys())

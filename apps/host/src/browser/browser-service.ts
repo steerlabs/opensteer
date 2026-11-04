@@ -4329,7 +4329,8 @@ class HostedBrowserBroker {
         this.#historyWrite((store) => store.retitle({ profileId, url, title }));
       }
       const icon = this.#surfaceIcon(surface);
-      if (!icon || !BrowserHistoryUrlSchema.safeParse(surface.url).success) continue;
+      if (!icon || surface.navigationFailed) continue;
+      if (!BrowserHistoryUrlSchema.safeParse(surface.url).success) continue;
       const origin = new URL(surface.url).origin;
       const fingerprint = `${origin}\0${icon.favicon}`;
       if (this.#historyIcons.get(surface.id) === fingerprint) continue;
@@ -4647,12 +4648,15 @@ class HostedBrowserBroker {
     return this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId)?.geometryRevision;
   }
 
-  /** What one tab shows now, as a conversation's use of it records it. */
+  /**
+   * What one tab shows now, as a conversation's use of it records it. A page
+   * that failed to load shows an address it never reached, so it records none.
+   */
   pageOf(surfaceId: string): BrowserUsePage | null {
     const surface = this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId);
     if (!surface) return null;
     return {
-      site: browserPageSite(surface.url).slice(0, 2048),
+      site: surface.navigationFailed ? "" : browserPageSite(surface.url).slice(0, 2048),
       title: surface.title.slice(0, 256),
     };
   }
