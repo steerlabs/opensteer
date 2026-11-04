@@ -25,6 +25,11 @@ const session: AuthenticatedSession = {
   },
 };
 const commands = [
+  {
+    type: "integration.authorization.return",
+    attemptId: createIntegrationId("oauthAttempt"),
+    returnProof: "r".repeat(43),
+  },
   { type: "session.revoke", sessionId: createId("authSession") },
   { type: "workspace.delete", workspaceId: createId("workspace") },
   { type: "integration.uninstall", installationId: createIntegrationId("installation") },

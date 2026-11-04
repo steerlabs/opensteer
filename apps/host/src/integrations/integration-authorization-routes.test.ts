@@ -131,6 +131,49 @@ describe("integration authorization transaction routes", () => {
     expect(status).toHaveBeenCalledWith({ id: attemptId, ownerUserId });
   });
 
+  it.each(["provider", "mcp"] as const)(
+    "routes %s app returns through the authenticated owner service",
+    async (kind) => {
+      const ownerUserId = createId("user");
+      const id = kind === "provider" ? attemptId : createIntegrationId("mcpOauthAttempt");
+      const returnAuthorization = vi.fn(async () => ({
+        connectionId: null,
+        expiresAt: new Date("2030-01-01T00:00:00Z"),
+        failureCode: null,
+        status: "launched",
+      }));
+      const options = {
+        [kind === "provider" ? "integrations" : "mcpOauth"]: { returnAuthorization },
+      };
+      const command = {
+        type: "integration.authorization.return" as const,
+        attemptId: id,
+        returnProof: "r".repeat(43),
+        idempotencyKey: "return-app",
+      };
+      const context = testHostApiContext(ownerUserId);
+      await expect(
+        handleIntegrationAuthorizationCommand(options as never, command, {
+          ...context,
+          session: null,
+        }),
+      ).rejects.toMatchObject({ code: "unauthorized" });
+      expect(returnAuthorization).not.toHaveBeenCalled();
+      await expect(
+        handleIntegrationAuthorizationCommand(options as never, command, context),
+      ).resolves.toMatchObject({ type: command.type, status: "launched" });
+      expect(returnAuthorization).toHaveBeenCalledExactlyOnceWith({
+        attemptId: id,
+        ownerUserId,
+        returnProof: command.returnProof,
+      });
+      returnAuthorization.mockResolvedValueOnce(null as never);
+      await expect(
+        handleIntegrationAuthorizationCommand(options as never, command, context),
+      ).rejects.toMatchObject({ code: "not_found" });
+    },
+  );
+
   it("returns web callbacks to the stored same-origin path with only the attempt id", async () => {
     const app = Fastify();
     apps.push(app);

@@ -14,6 +14,38 @@ afterEach(async () => {
 });
 
 describe("integration routes", () => {
+  it.each([undefined, "app"] as const)("forwards the requested finish mode: %s", async (finish) => {
+    const ownerUserId = createId("user");
+    const attemptId = createIntegrationId("oauthAttempt");
+    const beginAuthorization = vi.fn(async () => ({
+      attemptId,
+      expiresAt: new Date("2030-01-01T00:00:00Z"),
+      launchTicket: "t".repeat(43),
+    }));
+    await handleIntegrationCommand(
+      { integrations: { beginAuthorization } } as never,
+      {
+        type: "integration.authorization.begin",
+        idempotencyKey: "begin-app",
+        input: {
+          definitionId: "google",
+          returnPath: "/integrations",
+          surface: "desktop",
+          ...(finish ? { finish } : {}),
+        },
+      },
+      testHostApiContext(ownerUserId),
+    );
+    expect(beginAuthorization).toHaveBeenCalledWith({
+      definitionId: "google",
+      ownerUserId,
+      requestSurface: "canonical",
+      returnPath: "/integrations",
+      surface: "desktop",
+      ...(finish ? { finish } : {}),
+    });
+  });
+
   it("dispatches computer disconnects without opening provider credentials", async () => {
     const userId = createId("user");
     const connectionId = createIntegrationId("connection");
