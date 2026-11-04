@@ -136,13 +136,11 @@ interface AccountEligibilityInput<T> {
   readonly excludedAccounts: readonly HarnessInstanceId[];
   readonly canRun: (account: T) => ModelRunEligibility;
 }
-/** Each engine's default account first, then the person's other configured accounts. */
 export function automaticAccountOrder<T extends { readonly isDefault: boolean }>(
   accounts: readonly T[],
 ): T[] {
   return [...accounts].sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
 }
-/** Account-level eligibility every automatic site applies before anything about a model. */
 export function automaticAccountEligibility<T extends AccountEligibilityFacts>(
   account: T,
   input: AccountEligibilityInput<T>,
@@ -316,7 +314,6 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
   if (original) candidates.push(original);
   return { candidates, skipped };
 }
-/** The model a ready catalog runs when nobody names one. */
 export function catalogDefaultModel<T extends SelectionModelDescriptor>(
   catalog: (Omit<SelectionCatalog, "models"> & { readonly models: readonly T[] }) | null,
 ): T | null {

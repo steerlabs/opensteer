@@ -36,7 +36,6 @@ const staleCatalogFailures: ReadonlySet<BackgroundTextFailure> = new Set([
   "usage-limit",
 ]);
 
-/** Why one candidate gave no name: the Runner's typed failure, or why none was sent or came back. */
 type AttemptFailure = BackgroundTextFailure | "offline" | "account-changed" | "no-result";
 
 interface ThreadNamingDependencies {

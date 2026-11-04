@@ -44,7 +44,6 @@ type Runners = Pick<
 
 const ok: ModelRunEligibility = { ok: true };
 
-/** Naming runs outside any Run, so it needs only a Runner that generates background text. */
 export function backgroundTextSupport(
   runners: Pick<Runners, "canRunHarness" | "identityForEnvironment">,
 ): ModelRunPredicate {
@@ -57,7 +56,6 @@ export function backgroundTextSupport(
       : { ok: false, reason: "unsupported-capability" };
 }
 
-/** A Run in a Workspace: its owning computer, and an engine that enforces its access mode there. */
 export function workspaceExecution(
   runners: Pick<Runners, "canRunHarness" | "harnessAccessModes">,
   boundary: { readonly environmentId: EnvironmentId; readonly accessMode: ThreadAccessMode },
@@ -83,7 +81,6 @@ function sourceBoundary(harness: HarnessInstanceRecord): string {
   ]);
 }
 
-/** Exhausted windows only, per provider the connection serves; the resolver demotes on them. */
 function usageFacts(catalog: HarnessInstanceCatalog | null): ModelUsageFact[] {
   if (!catalog) return [];
   const providers = new Set(catalog.models.map((model) => model.providerId));
@@ -109,7 +106,6 @@ function usageFacts(catalog: HarnessInstanceCatalog | null): ModelUsageFact[] {
   );
 }
 
-/** The snapshot with the stored catalog's full type, which Settings shows. */
 export type HostModelAccount = AuthorizedModelAccountSnapshot & {
   readonly catalog: HarnessInstanceCatalog | null;
 };
@@ -119,7 +115,6 @@ export interface AuthorizedModelAccounts {
   readonly environments: readonly { readonly id: EnvironmentId; readonly name: string }[];
 }
 
-/** Every account on a computer this person may run work on, with its stored catalog. */
 export async function readAuthorizedModelAccounts(
   { store, runners }: AutomaticModelDependencies,
   userId: UserId,
@@ -258,7 +253,6 @@ export async function readAutomaticModelPreview(
     ...memory,
   });
   const { accounts, harnesses, environments } = snapshot;
-  // Display names only for this person's own accounts.
   const names = (environmentId?: EnvironmentId, harnessInstanceId?: HarnessInstanceId) => {
     const account = accounts.find(
       (candidate) =>

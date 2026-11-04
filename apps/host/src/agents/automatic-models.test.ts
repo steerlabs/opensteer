@@ -326,6 +326,7 @@ describe("specialist placement", () => {
     ];
     const offered = world([{ models: [haiku, sonnet] }], { config: light("claude-haiku-5-5") });
     await expect(place(offered.dependencies, { models, fallback: "none" })).resolves.toMatchObject({
+      harnessRevision: 1,
       modelSelection: { modelId: "claude-haiku-5-5" },
     });
     // The role's model unavailable: the next exact entry follows, nothing is appended.
@@ -374,6 +375,7 @@ describe("specialist placement", () => {
       place(dependencies, { models: [exact("claude-haiku-5-5")], fallback: "none" }),
     ).resolves.toEqual({
       harnessInstanceId: harnesses[0]!.id,
+      harnessRevision: 1,
       modelSelection: {
         providerId: "anthropic",
         modelId: "claude-haiku-5-5",

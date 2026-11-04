@@ -1274,7 +1274,6 @@ export class ProductToolHandlers {
       specialist,
     };
   }
-  /** Nobody named an account: the person's automatic default among those they left on. */
   async #automaticDefault(userId: UserId, environmentId: EnvironmentId) {
     const [{ excludedAccounts }, harnesses, catalogs] = await Promise.all([
       this.#store.getAutomaticModelConfig(userId),
