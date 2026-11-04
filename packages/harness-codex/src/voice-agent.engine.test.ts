@@ -1,5 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
+import { createServer, type Server as HttpServer } from "node:http";
+import { createRequire } from "node:module";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,11 +26,94 @@ const signedIn = await access(join(codexHome, "auth.json")).then(
   () => false,
 );
 const executable = findExecutableOnPath("codex", process.env.PATH);
-const qualify =
-  process.env.OPENSTEER_VOICE_QUALIFY === "1" &&
-  process.platform === "darwin" &&
-  signedIn &&
-  executable !== undefined;
+const qualify = process.platform === "darwin" && signedIn && executable !== undefined;
+
+/** The one fact only the stand-in Opensteer tool knows, so a spoken answer proves the tool ran. */
+const toolFact = "The meeting moved to 4:30 PM on Thursday.";
+
+/**
+ * A loopback stand-in for the Host's Opensteer MCP with one tool, so
+ * qualification proves a spoken request reaches a real MCP tool call without
+ * production credentials. The SDK is resolved through the Host, which owns it.
+ */
+async function startToolServer(token: string) {
+  const sdk = createRequire(
+    fileURLToPath(new URL("../../../apps/host/package.json", import.meta.url)),
+  );
+  const { Server } = (await import(sdk.resolve("@modelcontextprotocol/sdk/server/index.js"))) as {
+    Server: new (
+      info: object,
+      options: object,
+    ) => {
+      setRequestHandler(
+        schema: unknown,
+        handler: (request: { params: { name: string } }) => unknown,
+      ): void;
+      connect(transport: unknown): Promise<void>;
+      close(): Promise<void>;
+    };
+  };
+  const { StreamableHTTPServerTransport } = (await import(
+    sdk.resolve("@modelcontextprotocol/sdk/server/streamableHttp.js")
+  )) as {
+    StreamableHTTPServerTransport: new (options: object) => {
+      handleRequest(request: unknown, response: unknown, body: unknown): Promise<void>;
+    };
+  };
+  const { CallToolRequestSchema, ListToolsRequestSchema } = (await import(
+    sdk.resolve("@modelcontextprotocol/sdk/types.js")
+  )) as { CallToolRequestSchema: unknown; ListToolsRequestSchema: unknown };
+  const calls: string[] = [];
+  const http: HttpServer = createServer((request, response) => {
+    if (request.headers.authorization !== `Bearer ${token}`) {
+      response.writeHead(401).end();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      void (async () => {
+        const server = new Server(
+          { name: "opensteer", version: "1.0.0" },
+          { capabilities: { tools: {} } },
+        );
+        server.setRequestHandler(ListToolsRequestSchema, () => ({
+          tools: [
+            {
+              name: "thread_read",
+              description: "Read the person's latest note.",
+              inputSchema: { type: "object", properties: {}, additionalProperties: false },
+            },
+          ],
+        }));
+        server.setRequestHandler(CallToolRequestSchema, (call) => {
+          calls.push(call.params.name);
+          return { content: [{ type: "text", text: toolFact }] };
+        });
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined,
+          enableJsonResponse: true,
+        });
+        await server.connect(transport);
+        const body = chunks.length
+          ? (JSON.parse(Buffer.concat(chunks).toString()) as unknown)
+          : undefined;
+        await transport.handleRequest(request, response, body);
+        await server.close();
+      })().catch(() => {
+        if (!response.headersSent) response.writeHead(500).end();
+      });
+    });
+  });
+  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+  const address = http.address();
+  if (!address || typeof address === "string") throw new Error("Tool server did not bind");
+  return {
+    url: `http://127.0.0.1:${address.port}/mcp`,
+    calls,
+    close: () => new Promise<void>((resolve) => http.close(() => resolve())),
+  };
+}
 
 // Uses shipped and installed CLIs with the person’s own login. Audio and call state live only in
 // a disposable directory; the browser has no connection to an installed app.
@@ -44,7 +129,7 @@ describe.skipIf(!qualify).each([
   },
   { label: "installed", launch: { executable: executable!, arguments: [] } },
 ])("$label Codex voice agent", ({ launch }) => {
-  it("adopts an audio handoff, speaks its final answer and ends its one Run", async () => {
+  it("hands a spoken request to a tool-using turn, speaks its answer and ends its one Run", async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-voice-engine-"));
     const adapter = await new CodexHarnessDriver({ launch }).create({
       instanceId: createId("harnessInstance"),
@@ -54,6 +139,8 @@ describe.skipIf(!qualify).each([
     let session: HarnessSession | undefined;
     const lifetime = new AbortController();
     let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    const token = createId("run");
+    const tools = await startToolServer(token);
     try {
       expect(adapter.capabilities.voiceCalls).toBe(true);
       browser = await chromium.launch({
@@ -115,16 +202,11 @@ describe.skipIf(!qualify).each([
       );
       const threadId = createId("thread"),
         runId = createId("run");
-      // Qualification supplies a disposable, Run-scoped Host MCP plan, never production credentials.
-      const url = process.env.OPENSTEER_VOICE_TEST_MCP_URL;
-      const token = process.env.OPENSTEER_VOICE_TEST_MCP_TOKEN;
-      if (!url || !token)
-        throw new Error("Supply the disposable Host MCP URL and token for qualification");
       session = await adapter.startSession({
         accessMode: "approval-required",
         voiceCall: call,
         agentTools: {
-          url,
+          url: tools.url,
           token,
           instructions: "Use Opensteer tools when needed. Speak briefly.",
           tools: ["thread_read"],
@@ -197,7 +279,7 @@ describe.skipIf(!qualify).each([
           "-o",
           wav,
           "--data-format=LEI16@24000",
-          "Use your agent to calculate the sum of 237 and 419 and tell me the answer.",
+          "Read my latest note with your tools and tell me what it says.",
         ],
         { timeout: 15000 },
       );
@@ -211,6 +293,8 @@ describe.skipIf(!qualify).each([
       await withTimeout(spoken.promise, 30000, {
         timeoutError: () => new Error("No spoken final answer"),
       });
+      expect(tools.calls).toContain("thread_read");
+      expect(events.map((event) => event.text).join(" ")).toMatch(/4:30|four[- ]thirty/iu);
       expect(terminal).toBe(0);
       lifetime.abort();
       await withTimeout(Promise.all([execution, consume]), 10000, {
@@ -223,6 +307,7 @@ describe.skipIf(!qualify).each([
         session?.stop(),
         adapter.close(),
         browser?.close(),
+        tools.close(),
       ]);
       await rm(directory, { recursive: true, force: true });
       const errors = cleanup.flatMap((result) =>
