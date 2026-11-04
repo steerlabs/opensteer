@@ -1376,18 +1376,20 @@ export type IntegrationPlatformDashboardView = z.infer<
   typeof IntegrationPlatformDashboardViewSchema
 >;
 
-export const BeginMcpAuthorizationSchema = z.strictObject({
-  requestId: RequestIdSchema,
-  displayName: z.string().trim().min(1).max(160),
-  returnPath: z
-    .string()
-    .regex(/^\/(?!\/)(?!.*\\)[^\p{Cc}]*$/u)
-    .max(2_048)
-    .default("/"),
-  serverId: IntegrationServerIdSchema,
-  surface: z.enum(["desktop", "native", "web"]),
-  finish: IntegrationAuthorizationFinishSchema.optional(),
-}).superRefine(refineIntegrationAuthorizationFinish);
+export const BeginMcpAuthorizationSchema = z
+  .strictObject({
+    requestId: RequestIdSchema,
+    displayName: z.string().trim().min(1).max(160),
+    returnPath: z
+      .string()
+      .regex(/^\/(?!\/)(?!.*\\)[^\p{Cc}]*$/u)
+      .max(2_048)
+      .default("/"),
+    serverId: IntegrationServerIdSchema,
+    surface: z.enum(["desktop", "native", "web"]),
+    finish: IntegrationAuthorizationFinishSchema.optional(),
+  })
+  .superRefine(refineIntegrationAuthorizationFinish);
 
 export const InstallAgentPluginSchema = z.strictObject({
   directory: z.string().trim().min(1).max(4_096),

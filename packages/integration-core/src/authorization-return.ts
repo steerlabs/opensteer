@@ -9,7 +9,10 @@ import { IntegrationAuthorizationAttemptIdSchema } from "./models.js";
 
 export type IntegrationAuthorizationReturnSurface = "desktop" | "native" | "web";
 /** The surfaces whose consent finishes in the app that started it. */
-export type IntegrationAuthorizationAppSurface = Exclude<IntegrationAuthorizationReturnSurface, "web">;
+export type IntegrationAuthorizationAppSurface = Exclude<
+  IntegrationAuthorizationReturnSurface,
+  "web"
+>;
 
 /**
  * The one-use proof an app-finished consent returns to the app that started it.
@@ -50,7 +53,10 @@ export function buildIntegrationAuthorizationAppReturn(
 ): string {
   const url = new URL(integrationAuthorizationAppReturnBase(surface));
   url.searchParams.set("deployment_id", DeploymentIdSchema.parse(input.deploymentId));
-  url.searchParams.set("attempt_id", IntegrationAuthorizationAttemptIdSchema.parse(input.attemptId));
+  url.searchParams.set(
+    "attempt_id",
+    IntegrationAuthorizationAttemptIdSchema.parse(input.attemptId),
+  );
   if (input.returnProof !== null) {
     url.searchParams.set(
       "return",
@@ -140,7 +146,9 @@ export function integrationAuthorizationBrowserReturn(input: {
     deploymentId: DeploymentIdSchema.parse(input.deploymentId),
     returnProof: input.returnProof ?? null,
   });
-  return input.surface === "desktop" ? { kind: "open-app", location } : { kind: "redirect", location };
+  return input.surface === "desktop"
+    ? { kind: "open-app", location }
+    : { kind: "redirect", location };
 }
 
 function webReturn(input: {
