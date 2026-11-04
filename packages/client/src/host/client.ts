@@ -886,6 +886,8 @@ export interface HostSnapshot {
   /** The Host serves `task-marks-v1`: task icons and project colours can be chosen. */
   taskMarksAvailable: boolean;
   integrationAppFinishAvailable?: boolean;
+  /** The Host accepts a desktop app's return port on integration sign-in. */
+  integrationAppReturnPortAvailable?: boolean;
   sharedTaskDoneAvailable?: boolean;
   /** The Host accepts installed-engine update commands. */
   harnessUpdateAvailable?: boolean;

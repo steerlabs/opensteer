@@ -1317,6 +1317,21 @@ describe("IntegrationService hosted OAuth failures", () => {
     { requestSurface: "personal-remote", abandonedClaim: false, finish: "app", surface: "native" },
     { requestSurface: "canonical", abandonedClaim: false, finish: "app", oldAccount: true },
     { requestSurface: "canonical", abandonedClaim: false, finish: "app", changedLink: true },
+    {
+      requestSurface: "canonical",
+      abandonedClaim: false,
+      finish: "app",
+      surface: "desktop",
+      appReturnPort: 48_203,
+    },
+    {
+      requestSurface: "canonical",
+      abandonedClaim: false,
+      finish: "app",
+      surface: "desktop",
+      appReturnPort: 48_203,
+      portlessAccount: true,
+    },
   ] as const)(
     "honors the saved custom app through the Account relay (%j)",
     async (scenario): Promise<void> => {
@@ -1433,6 +1448,7 @@ describe("IntegrationService hosted OAuth failures", () => {
             issuer: "https://account.example.test",
             metadata: vi.fn(async () => ({
               ...("oldAccount" in scenario ? {} : { appFinish: 1 }),
+              ...("portlessAccount" in scenario ? {} : { appReturnPort: 1 }),
               callbackRelayProviders: ["example"],
               providerRevisions: { example: 1 },
             })),
@@ -1489,6 +1505,7 @@ describe("IntegrationService hosted OAuth failures", () => {
           returnPath: "/integrations",
           surface: "surface" in scenario ? scenario.surface : "desktop",
           ...(finish ? { finish } : {}),
+          ...("appReturnPort" in scenario ? { appReturnPort: scenario.appReturnPort } : {}),
         });
       if ("oldAccount" in scenario) {
         await expect(begin()).rejects.toMatchObject({
@@ -1500,6 +1517,11 @@ describe("IntegrationService hosted OAuth failures", () => {
       }
       await begin();
       expect(createCallbackRelay.mock.calls[0]?.[0]).toMatchObject(finish ? { finish: "app" } : {});
+      // An older Account's strict schema would refuse the port, so Connect goes on without it.
+      expect(
+        (createCallbackRelay.mock.calls[0]?.[0] as { appReturnPort?: number }).appReturnPort,
+      ).toBe("appReturnPort" in scenario && !("portlessAccount" in scenario) ? 48_203 : undefined);
+      expect(attemptPayload.payload).not.toContain("appReturnPort");
       expect(Object.hasOwn(createCallbackRelay.mock.calls[0]![0], "finish")).toBe(!!finish);
       expect(JSON.parse(attemptPayload.payload!).callbackRelay.finish).toBe(finish);
       if ("changedLink" in scenario) {
@@ -1606,6 +1628,27 @@ describe("IntegrationService hosted OAuth failures", () => {
       surface: "desktop",
       oldAccount: true,
     },
+    {
+      identity: "userinfo",
+      ackFails: false,
+      persists: true,
+      pullFailure: null,
+      remote: false,
+      finish: "app",
+      surface: "desktop",
+      appReturnPort: 48_203,
+    },
+    {
+      identity: "userinfo",
+      ackFails: false,
+      persists: true,
+      pullFailure: null,
+      remote: false,
+      finish: "app",
+      surface: "desktop",
+      appReturnPort: 48_203,
+      portlessAccount: true,
+    },
     // A phone or another computer: the same sign-in, finished by its status poll.
     { identity: "userinfo", ackFails: false, persists: true, pullFailure: null, remote: true },
   ] as const)(
@@ -1687,6 +1730,7 @@ describe("IntegrationService hosted OAuth failures", () => {
         issuer: "https://account.example.test",
         metadata: vi.fn(async () => ({
           ...("oldAccount" in scenario ? {} : { appFinish: 1 }),
+          ...("portlessAccount" in scenario ? {} : { appReturnPort: 1 }),
           callbackRelayProviders: [],
           providerRevisions: { example: 1 },
         })),
@@ -1782,6 +1826,7 @@ describe("IntegrationService hosted OAuth failures", () => {
           returnPath: "/integrations",
           surface: "surface" in scenario ? scenario.surface : "web",
           ...(finish ? { finish } : {}),
+          ...("appReturnPort" in scenario ? { appReturnPort: scenario.appReturnPort } : {}),
         });
       if ("oldAccount" in scenario) {
         await expect(begin()).rejects.toMatchObject({
@@ -1794,6 +1839,10 @@ describe("IntegrationService hosted OAuth failures", () => {
       await begin();
       expect(Object.hasOwn(brokerRequest, "finish")).toBe(!!finish);
       expect(JSON.parse(storedPayload.payload!).finish).toBe(finish);
+      expect(brokerRequest.appReturnPort).toBe(
+        "appReturnPort" in scenario && !("portlessAccount" in scenario) ? 48_203 : undefined,
+      );
+      expect(storedPayload.payload).not.toContain("appReturnPort");
       const returnInput = { attemptId, ownerUserId, returnProof: "r".repeat(43) };
       if (finish) {
         await expect(

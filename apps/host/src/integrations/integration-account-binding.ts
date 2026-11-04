@@ -26,6 +26,18 @@ export function validateIntegrationAccountBinding(
   return parsed.data;
 }
 
+/**
+ * The return port to send the Account. It is a delivery hint, so an Account that
+ * does not yet accept one gets none and Connect goes on through the app link.
+ */
+export function accountReturnPort(
+  metadata: { readonly appReturnPort?: 1 | undefined } | null,
+  finish: "app" | undefined,
+  port: number | undefined,
+): number | undefined {
+  return finish === "app" && metadata?.appReturnPort === 1 ? port : undefined;
+}
+
 export async function resolveIntegrationAccountBinding(input: {
   readonly database: Kysely<DatabaseSchema>;
   readonly accountAttached: boolean;
