@@ -4708,6 +4708,7 @@ export function migrationProvider() {
         "0154_agent_connections": agentConnectionsMigration,
         "0155_connection_message_authors": connectionMessageAuthorsMigration,
         "0156_specialist_auto_bind": specialistAutoBindMigration,
+        "0157_voice_calls": voiceCallsMigration,
       };
     },
   };
@@ -7374,6 +7375,32 @@ const connectionMessageAuthorsMigration: Migration = {
 const specialistAutoBindMigration: Migration = {
   async up(database) {
     await sql`ALTER TABLE specialists ADD COLUMN auto_bind boolean NOT NULL DEFAULT true`.execute(
+      database,
+    );
+  },
+};
+
+const voiceCallsMigration: Migration = {
+  async up(database) {
+    await sql`ALTER TABLE threads ADD COLUMN voice_session_id text UNIQUE;
+      CREATE UNIQUE INDEX threads_one_live_voice_per_person ON threads(created_by)
+        WHERE voice_session_id IS NOT NULL AND status <> 'archived';
+      CREATE FUNCTION refuse_voice_thread_input() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM threads WHERE id = NEW.thread_id AND voice_session_id IS NOT NULL) THEN
+          RAISE EXCEPTION 'Voice Threads do not accept input';
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER voice_thread_input_fence BEFORE INSERT ON thread_inputs FOR EACH ROW EXECUTE FUNCTION refuse_voice_thread_input();
+      CREATE FUNCTION refuse_voice_trigger_anchor() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM threads WHERE id = NEW.anchor_thread_id AND voice_session_id IS NOT NULL) THEN
+          RAISE EXCEPTION 'Voice Threads cannot anchor Triggers';
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER voice_trigger_anchor_fence BEFORE INSERT OR UPDATE OF anchor_thread_id ON triggers FOR EACH ROW EXECUTE FUNCTION refuse_voice_trigger_anchor();`.execute(
       database,
     );
   },

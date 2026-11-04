@@ -57,11 +57,14 @@ export async function projectThreadState(
     .orderBy("runOrdinal", "desc")
     .limit(1)
     .executeTakeFirst();
-  const status = deriveThreadStatus({
-    earliestActiveRunStatus: active?.status ?? null,
-    inputQueuePaused: thread.inputQueuePaused,
-    lastRunFailed: last?.status === "failed",
-  });
+  const status =
+    thread.status === "archived"
+      ? "archived"
+      : deriveThreadStatus({
+          earliestActiveRunStatus: active?.status ?? null,
+          inputQueuePaused: thread.inputQueuePaused,
+          lastRunFailed: last?.status === "failed",
+        });
   const pending = await transaction
     .selectFrom("requests")
     .select(({ fn }) => fn.countAll<string>().as("count"))

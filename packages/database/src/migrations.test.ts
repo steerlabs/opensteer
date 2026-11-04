@@ -164,6 +164,7 @@ const releasedMigrationNames = [
   "0154_agent_connections",
   "0155_connection_message_authors",
   "0156_specialist_auto_bind",
+  "0157_voice_calls",
 ];
 
 describe("migration names", () => {
