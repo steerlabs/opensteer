@@ -108,6 +108,67 @@ describe("Product tool handlers", () => {
     }
   });
 
+  it("continues an existing specialist Thread on its own model, never re-resolving its manifest", async () => {
+    const current = thread(currentThreadId, nativeHarnessId, "Main");
+    const existing = thread(targetThreadId, codexHarnessId, "Invoices", null, {
+      specialistId: "ready-specialist",
+    });
+    const existingRun = run(existing);
+    const existingMessage = message(existing.id, existingRun.id, "Next batch");
+    const delegateThread = vi.fn(async () => ({
+      assignment: { id: createId("delegation") },
+      input: inboxInput(existingMessage, existingRun, "queue"),
+      message: existingMessage,
+      run: existingRun,
+      thread: existing,
+      wasDuplicate: false,
+    }));
+    const { service } = makeService({
+      threads: [current, existing],
+      messages: [],
+      commands: { delegateThread, enqueueThreadInput: vi.fn() },
+    });
+    const listing = vi.spyOn(SpecialistStore.prototype, "list").mockResolvedValue([
+      {
+        id: "ready-specialist",
+        workspaceId,
+        pluginId: "plugin",
+        pluginVersionId: "version",
+        ownerUserId: ownerId,
+        ownerName: "Alice",
+        canUse: true,
+        plugin: "invoices",
+        version: "a".repeat(64),
+        status: "ready",
+        models: [{ role: "light" }],
+        fallback: "none",
+        access: [],
+      },
+    ]);
+    const runnable = vi
+      .spyOn(SpecialistStore.prototype, "assertRunnable")
+      .mockResolvedValue(undefined as never);
+    try {
+      await service.handle("run-token", {
+        type: "thread.delegate",
+        requestId: crypto.randomUUID(),
+        threadId: existing.id,
+        task: "Next batch",
+      });
+      expect(delegateThread).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: existing.id,
+          specialistId: "ready-specialist",
+          harnessInstanceId: existing.harnessInstanceId,
+          modelSelection: existing.modelSelection,
+        }),
+      );
+    } finally {
+      listing.mockRestore();
+      runnable.mockRestore();
+    }
+  });
+
   it.each([
     ["Main", true],
     ["Project", false],

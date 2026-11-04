@@ -9,6 +9,7 @@ import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import { SpecialistStore } from "@opensteer/database";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import {
+  catalogDefaultModelSelection,
   isPlaceContentPart,
   zeroSequence,
   OpensteerError,
@@ -21,6 +22,7 @@ import {
   type HarnessId,
   type Message,
   type Thread,
+  type ThreadAccessMode,
   type Workspace,
   type WorkspaceBackingKind,
 } from "@opensteer/core";
@@ -96,6 +98,10 @@ export class ProductToolHandlers {
   >;
   readonly #browserTabs: BrowserTabGroupService | undefined;
   readonly #canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
+  readonly #harnessAccessModes: (
+    environmentId: EnvironmentId,
+    driverKind: HarnessId,
+  ) => readonly ThreadAccessMode[] | undefined;
   readonly #commands: CommandService;
   readonly #environmentWorkspaceBackings: (
     environmentId: EnvironmentId,
@@ -132,6 +138,11 @@ export class ProductToolHandlers {
     >;
     readonly browserTabs?: BrowserTabGroupService;
     readonly canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
+    /** The access modes an engine enforces on a computer; undefined when it cannot run there. */
+    readonly harnessAccessModes: (
+      environmentId: EnvironmentId,
+      driverKind: HarnessId,
+    ) => readonly ThreadAccessMode[] | undefined;
     readonly commands: CommandService;
     readonly defaultWorkspaceBacking: WorkspaceBackingKind;
     readonly environmentWorkspaceBackings: (
@@ -157,6 +168,7 @@ export class ProductToolHandlers {
     this.#browser = options.browser;
     this.#browserTabs = options.browserTabs;
     this.#canRunHarness = options.canRunHarness;
+    this.#harnessAccessModes = options.harnessAccessModes;
     this.#commands = options.commands;
     this.#environmentWorkspaceBackings = options.environmentWorkspaceBackings;
     this.#isEnvironmentConnected = options.isEnvironmentConnected;
@@ -703,11 +715,12 @@ export class ProductToolHandlers {
     }
     const placement =
       specialist && !existingThread
-        ? await specialistPlacement(this.#store, {
-            environment,
-            parent: currentThread,
+        ? await this.#specialistPlacement({
+            userId: claims.requestedBy,
+            environmentId: environment.id,
+            accessMode: caller.accessMode,
             specialist,
-            canRun: (engine) => this.#canRunHarness(environment.id, engine),
+            caller: currentThread,
           })
         : await delegationPlacement(this.#store, {
             environment,
@@ -1203,10 +1216,11 @@ export class ProductToolHandlers {
     if (specialist && !existing) {
       const environment = await this.#store.getEnvironment(environmentId);
       if (!environment) throw badRequest("Selected execution environment does not exist");
-      const placement = await specialistPlacement(this.#store, {
-        environment,
+      const placement = await this.#specialistPlacement({
+        userId: caller.userId,
+        environmentId: environment.id,
+        accessMode: caller.accessMode,
         specialist,
-        canRun: (engine) => this.#canRunHarness(environmentId, engine),
       });
       return { existing, workspace, environmentId, ...placement, specialist };
     }
@@ -1219,18 +1233,28 @@ export class ProductToolHandlers {
         (h) => h.enabled && h.isDefault,
       )?.id;
     if (!harnessInstanceId) throw badRequest("Choose harnessInstanceId for the new task");
-    const catalog = await this.#store.getHarnessCatalog(environmentId, harnessInstanceId);
-    const defaultModel =
-      catalog?.status === "ready" ? catalog.models.find((model) => model.isDefault) : undefined;
     const modelSelection =
       existing?.modelSelection ??
       input.model ??
       (preferred?.harnessInstanceId === harnessInstanceId ? preferred.modelSelection : undefined) ??
-      (defaultModel
-        ? { modelId: defaultModel.modelId, providerId: defaultModel.providerId, options: {} }
-        : undefined);
+      catalogDefaultModelSelection(
+        await this.#store.getHarnessCatalog(environmentId, harnessInstanceId),
+      );
     if (!modelSelection) throw badRequest("Choose a model for the new task");
     return { existing, workspace, environmentId, harnessInstanceId, modelSelection, specialist };
+  }
+  #specialistPlacement(request: Parameters<typeof specialistPlacement>[1]) {
+    return specialistPlacement(
+      {
+        store: this.#store,
+        runners: {
+          isAvailable: this.#isEnvironmentConnected,
+          canRunHarness: this.#canRunHarness,
+          harnessAccessModes: this.#harnessAccessModes,
+        },
+      },
+      request,
+    );
   }
   async thread_configure({ caller, input, operationKey }: ToolCall<"thread_configure">) {
     const target = await this.#threads.assertTarget(caller, input.threadId);

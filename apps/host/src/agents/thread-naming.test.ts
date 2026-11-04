@@ -1,41 +1,47 @@
-import { createId, ModelSelectionSchema, type ResolvedBackgroundCandidate } from "@opensteer/core";
+import {
+  createId,
+  emptyAutomaticModelConfig,
+  ModelSelectionSchema,
+  type HarnessInstanceId,
+  type ResolvedModelCandidate,
+} from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import { describe, expect, it, vi } from "vitest";
 import { ThreadNaming, namingCandidates } from "./thread-naming.js";
 
-const mocks = vi.hoisted(() => ({ resolve: vi.fn(), snapshot: vi.fn(), refresh: vi.fn() }));
-vi.mock("./background-models.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./background-models.js")>()),
-  resolveBackgroundCandidates: mocks.resolve,
-}));
-vi.mock("./background-model-settings.js", () => ({
-  readBackgroundResolutionInput: mocks.snapshot,
+const mocks = vi.hoisted(() => ({ resolve: vi.fn(), refresh: vi.fn() }));
+vi.mock("./automatic-models.js", () => ({
+  backgroundTextSupport: () => () => ({ ok: true }),
+  resolveAutomaticModels: async () => ({ candidates: mocks.resolve() }),
 }));
 vi.mock("./harness-catalogs.js", () => ({
   harnessInspectionDefinition: (value: unknown) => value,
   inspectAndRecordInvalidatedHarnessCatalog: mocks.refresh,
 }));
 
-function candidate(
-  modelId: string,
-  reason: ResolvedBackgroundCandidate["reason"] = "ranked",
-): ResolvedBackgroundCandidate {
+function candidate(modelId: string, original = false): ResolvedModelCandidate {
+  const modelSelection = ModelSelectionSchema.parse({ providerId: "openai", modelId, options: {} });
   return {
     environmentId: createId("environment"),
     harnessInstanceId: createId("harnessInstance"),
     harnessRevision: 1,
-    modelSelection: ModelSelectionSchema.parse({ providerId: "openai", modelId, options: {} }),
-    reason,
+    account: {} as ResolvedModelCandidate["account"],
+    storedModelSelection: modelSelection,
+    runModelSelection: modelSelection,
+    usageLimited: false,
+    original,
   };
 }
 function fixture() {
   vi.clearAllMocks();
-  const fallback = candidate("task", "task-model");
+  const fallback = candidate("task", true);
   const ranked = [candidate("a"), candidate("b"), candidate("c"), candidate("d")];
   const threadId = createId("thread");
   const input = {
-    ...fallback,
+    environmentId: fallback.environmentId,
+    harnessInstanceId: fallback.harnessInstanceId,
+    modelSelection: fallback.storedModelSelection,
     threadId,
     sourceMessageId: createId("message"),
     principalId: "principal",
@@ -48,6 +54,7 @@ function fixture() {
   const store = {
     getThreadNamingInput: vi.fn(async () => input),
     getHarnessInstance: vi.fn(async () => ({ enabled: true, removedAt: null, runtimeRevision: 1 })),
+    getAutomaticModelConfig: vi.fn(async () => structuredClone(emptyAutomaticModelConfig)),
     environmentIsAvailableToUser: vi.fn(async () => true),
     applyGeneratedThreadName: vi.fn(async () => ({ events: [] })),
     listThreadNamingCandidates: vi.fn(async () => [{ id: threadId }]),
@@ -56,7 +63,6 @@ function fixture() {
     identityForEnvironment: vi.fn(() => identity),
     backgroundText: vi.fn(async () => ({ ok: true, text: "Report review\nplane" })),
   };
-  mocks.snapshot.mockResolvedValue({ accounts: [{ ...fallback }], preferences: {} });
   mocks.resolve.mockReturnValue([...ranked, fallback]);
   mocks.refresh.mockResolvedValue([]);
   const naming = new ThreadNaming({
@@ -67,18 +73,20 @@ function fixture() {
   });
   return { naming, store, runners, input, fallback, ranked, threadId };
 }
+const sentModels = (runners: ReturnType<typeof fixture>["runners"]) =>
+  runners.backgroundText.mock.calls.map(
+    (call) =>
+      (call as unknown as [{ modelSelection: { modelId: string } }])[0].modelSelection.modelId,
+  );
 
 describe("Host naming jobs", () => {
-  it("caps ranking at three and retains a deduplicated final task model", () => {
+  it("caps automatic attempts at three and keeps the task's own model last", () => {
     const f = fixture();
     expect(namingCandidates([...f.ranked, f.fallback])).toEqual([
       ...f.ranked.slice(0, 3),
       f.fallback,
     ]);
     expect(namingCandidates(f.ranked)).toEqual(f.ranked.slice(0, 3));
-    expect(
-      namingCandidates([{ ...f.fallback, reason: "ranked" }, ...f.ranked, f.fallback]),
-    ).toHaveLength(3);
   });
   it("shares one pending job and refreshes the catalog on typed failure before advancing", async () => {
     const f = fixture();
@@ -100,24 +108,11 @@ describe("Host naming jobs", () => {
     );
     await f.naming.stop();
   });
-  it("tries only three ranked models and the task fallback on repeated typed failures", async () => {
+  it("tries only three automatic models and the task's own on repeated typed failures", async () => {
     const f = fixture();
-    // Resolution states the task model as its catalog runs it, defaults included.
-    mocks.resolve.mockReturnValue([
-      ...f.ranked,
-      {
-        ...f.fallback,
-        modelSelection: { ...f.fallback.modelSelection, options: { effort: "low" } },
-      },
-    ]);
     f.runners.backgroundText.mockResolvedValue({ ok: false, failure: "usage-limit" } as never);
     await f.naming.request(f.threadId);
-    expect(
-      f.runners.backgroundText.mock.calls.map(
-        (call) =>
-          (call as unknown as [{ modelSelection: { modelId: string } }])[0].modelSelection.modelId,
-      ),
-    ).toEqual(["a", "b", "c", "task"]);
+    expect(sentModels(f.runners)).toEqual(["a", "b", "c", "task"]);
     expect(mocks.refresh).toHaveBeenCalledTimes(4);
     expect(f.store.applyGeneratedThreadName).not.toHaveBeenCalled();
     await f.naming.stop();
@@ -242,6 +237,64 @@ it.each(["refused", "unavailable"])(
     f.runners.backgroundText.mockResolvedValueOnce({ ok: false, failure } as never);
     await f.naming.request(f.threadId);
     expect(mocks.refresh).toHaveBeenCalledOnce();
+    await f.naming.stop();
+  },
+);
+
+it.each(["excluded", "revoked"])(
+  "re-checks an account %s while its attempt waited for a Runner slot",
+  async (change) => {
+    const f = fixture();
+    const shared = f.ranked[0]!.environmentId;
+    const first = { ...f.ranked[0]!, environmentId: shared };
+    mocks.resolve.mockReturnValue([first, f.ranked[1]!, f.fallback]);
+    const releases: (() => void)[] = [];
+    f.runners.backgroundText.mockImplementation((async () => {
+      await new Promise<void>((resolve) => releases.push(resolve));
+      return { ok: true, text: "Named" };
+    }) as never);
+    const held = [f.naming.request(createId("thread")), f.naming.request(createId("thread"))];
+    await vi.waitFor(
+      () => expect(releases, "two attempts never filled the Runner's slots").toHaveLength(2),
+      {
+        timeout: 2_000,
+      },
+    );
+    const queued = f.naming.request(f.threadId);
+    // Resolved and queued behind the held attempts before anything changes.
+    await vi.waitFor(
+      () =>
+        expect(mocks.resolve, "the queued job never resolved its candidates").toHaveBeenCalledTimes(
+          3,
+        ),
+      {
+        timeout: 2_000,
+      },
+    );
+    if (change === "excluded")
+      f.store.getAutomaticModelConfig.mockResolvedValue({
+        roles: {},
+        excludedAccounts: [first.harnessInstanceId as HarnessInstanceId],
+      });
+    else f.store.environmentIsAvailableToUser.mockResolvedValue(false as never);
+    releases.splice(0).forEach((release) => release());
+    await Promise.all(held);
+    if (change === "revoked") {
+      // Every account was revoked, so nothing more is sent at all.
+      await queued;
+      expect(sentModels(f.runners)).toEqual(["a", "a"]);
+    } else {
+      await vi.waitFor(
+        () => expect(releases, "the next candidate was never sent").toHaveLength(1),
+        {
+          timeout: 2_000,
+        },
+      );
+      releases.splice(0).forEach((release) => release());
+      await queued;
+      // The excluded account was skipped once a slot was free; the next one was asked.
+      expect(sentModels(f.runners)).toEqual(["a", "a", "b"]);
+    }
     await f.naming.stop();
   },
 );

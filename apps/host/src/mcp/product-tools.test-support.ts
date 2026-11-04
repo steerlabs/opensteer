@@ -38,6 +38,7 @@ import {
   WorkspaceKindSchema,
   readableRequestList,
   type Workspace,
+  ThreadAccessModeSchema,
 } from "@opensteer/core";
 import { TriggerControlInputSchema } from "@opensteer/triggers";
 import { z } from "zod";
@@ -669,6 +670,7 @@ export class ProductToolsTestClient {
       browserSources: unavailableDefaults as never,
       machineFullDiskAccess: unavailableDefaults as never,
       canRunHarness: () => true,
+      harnessAccessModes: () => ThreadAccessModeSchema.options,
       defaultWorkspaceBacking: "local-directory",
       environmentWorkspaceBackings: () => ["local-directory"],
       isEnvironmentConnected: () => true,

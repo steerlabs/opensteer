@@ -32,9 +32,11 @@ export interface SelectionCatalog {
   /** Nonsecret display text for a catalog that isn't ready, such as a sign-in prompt. */
   readonly detail?: string | undefined;
   readonly models: readonly SelectionModelDescriptor[];
-  readonly lightModel?: Pick<ModelSelection, "providerId" | "modelId"> & {
-    readonly options?: ModelSelection["options"] | undefined;
-  };
+  readonly lightModel?:
+    | (Pick<ModelSelection, "providerId" | "modelId"> & {
+        readonly options?: ModelSelection["options"] | undefined;
+      })
+    | undefined;
 }
 /** Usage is normalized by the catalog owner to the connections serving each provider. */
 export interface ModelUsageFact {

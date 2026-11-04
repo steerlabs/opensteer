@@ -9,9 +9,9 @@ reprogram them; Opensteer refuses.
 
 Use `trigger_write` action `set_status` with each `triggerId` and status `paused`, or `active` to
 resume. To keep memory but turn the passes off, pause both; they stay paused until the person asks.
-A pass already running finishes its turn. Opensteer picks each pass's model; an active pass with a
-`waitingReason` has no model it can use yet and resumes by itself, so tell the person the reason
-rather than pausing or resuming it.
+A pass already running finishes its turn. Opensteer picks each pass's model from the person's
+automatic models in AI settings; an active pass with a `waitingReason` has no model it can use yet
+and resumes by itself, so tell the person the reason rather than pausing or resuming it.
 
 ## Stop remembering
 
