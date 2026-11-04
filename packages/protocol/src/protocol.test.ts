@@ -992,32 +992,37 @@ describe("wire protocol", () => {
       threadId,
     };
     const readWindow = { ...window, byteCount: 300 * 1_024, itemCount: 1, threadId };
-    expect(
-      thread_read.output.safeParse({
-        assignments: [],
-        assignmentWindow: {
-          byteCount: 2,
-          hasMore: false,
-          itemCount: 0,
-          nextBefore: null,
-          totalItems: 0,
-        },
-        messages: [largeMessage],
-        requestId,
-        thread,
-        type: "thread.read.result",
-        window: readWindow,
-      }).success,
-    ).toBe(true);
-    expect(
-      thread_read.output.safeParse({
-        messages: [largeMessage, { ...largeMessage, id: createId("message") }],
-        requestId,
-        thread,
-        type: "thread.read.result",
-        window: { ...readWindow, byteCount: 600 * 1_024, itemCount: 2 },
-      }).success,
-    ).toBe(false);
+    const readPage = {
+      execution: {
+        threadId,
+        environmentId: createId("environment"),
+        harnessInstanceId: createId("harnessInstance"),
+        modelSelection: { modelId: "gpt-5", providerId: "openai", options: {} },
+      },
+      queue: { paused: false, items: [] },
+      assignments: [],
+      assignmentWindow: {
+        byteCount: 2,
+        hasMore: false,
+        itemCount: 0,
+        nextBefore: null,
+        totalItems: 0,
+      },
+      messages: [largeMessage],
+      requestId,
+      thread,
+      type: "thread.read.result",
+      window: readWindow,
+    };
+    expect(thread_read.output.safeParse(readPage).success).toBe(true);
+    const oversized = thread_read.output.safeParse({
+      ...readPage,
+      messages: [largeMessage, { ...largeMessage, id: createId("message") }],
+      window: { ...readWindow, byteCount: 600 * 1_024, itemCount: 2 },
+    });
+    expect(oversized.error?.issues.map(({ message }) => message)).toEqual([
+      "Thread history exceeds the agent output byte limit",
+    ]);
   });
 
   it("fits a full Thread listing page and requires explicit agent message delivery", () => {
