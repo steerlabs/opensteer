@@ -221,7 +221,9 @@ describe.skipIf(!qualify).each([
         history: [],
         historyWindow: { byteCount: 0, itemCount: 0, hasEarlier: false },
         instructions: "Answer in one or two short sentences.",
-        platformGuide: "You are the voice call's agent.",
+        // The Runner delivers the Host's Run plan instructions as the platform guide.
+        platformGuide:
+          "Voice call: replies are spoken. Use 1–3 short sentences. Mostly do things yourself with your tools. For the person's notes, call thread_read.",
         machineAccessNotice: "No other computers are reachable.",
         machineAccessPlatform: undefined,
         machineAccessRelaySocket: undefined,
@@ -295,12 +297,7 @@ describe.skipIf(!qualify).each([
       const wav = join(directory, "speech.wav");
       await promisify(execFile)(
         "say",
-        [
-          "-o",
-          wav,
-          "--data-format=LEI16@24000",
-          "Read my latest note with your tools and tell me what it says.",
-        ],
+        ["-o", wav, "--data-format=LEI16@24000", "What does my latest note say?"],
         { timeout: 15000 },
       );
       await page.evaluate(
