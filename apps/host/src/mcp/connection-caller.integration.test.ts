@@ -1181,7 +1181,12 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     await vi.waitFor(() => expect(subscribed).toHaveBeenCalledOnce(), { timeout: 2000 });
     await new AgentConnectionStore(storeFixture.database).revoke(createId("user"), agent.id);
     expect(unsubscribed).not.toHaveBeenCalled();
-    const ended = expect(waiting).rejects.toThrow();
+    // Revocation closes the session, unless a Thread change wakes the wait first:
+    // its recheck then answers with an error. Either way the wait fails.
+    const ended = waiting.then(
+      (result) => expect(result.isError).toBe(true),
+      (error: unknown) => expect(error).toBeInstanceOf(Error),
+    );
     await agent.revoke();
     notify.current?.();
     await ended;
