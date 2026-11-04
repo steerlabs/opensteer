@@ -123,6 +123,17 @@ it("limits only the relevant provider and model windows until reset", () => {
   expect(resolveBackgroundCandidates("light", value).map((c) => c.modelSelection.modelId)).toEqual([
     "claude-haiku-4-5",
   ]);
+  // Usage is an observation: the task's own model runs its work regardless,
+  // so it still closes the list.
+  expect(
+    resolveBackgroundCandidates("light", {
+      ...value,
+      taskModelFallback: { ...current, modelSelection: selection, reason: "task-model" },
+    }).map((c) => [c.modelSelection.modelId, c.reason]),
+  ).toEqual([
+    ["claude-haiku-4-5", "ranked"],
+    ["claude-haiku-5-5", "task-model"],
+  ]);
   expect(
     resolveBackgroundCandidates(
       "light",

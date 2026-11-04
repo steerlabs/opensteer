@@ -123,7 +123,9 @@ export function inspectBackgroundCandidates(
               : selection.providerId !== input.ownProviderId &&
                   !input.preferences.backgroundProviderConsent.includes(selection.providerId)
                 ? "consent-required"
-                : usageLimited(account, selection, input.now)
+                : // Observed usage never gates the task's own model, as it never
+                  // gates the task's work on it: a plan's credits can outlast its windows.
+                  reason !== "task-model" && usageLimited(account, selection, input.now)
                   ? "usage-limit"
                   : null;
     decisions.push({
