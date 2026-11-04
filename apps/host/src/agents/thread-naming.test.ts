@@ -5,7 +5,10 @@ import { describe, expect, it, vi } from "vitest";
 import { ThreadNaming, namingCandidates } from "./thread-naming.js";
 
 const mocks = vi.hoisted(() => ({ resolve: vi.fn(), snapshot: vi.fn(), refresh: vi.fn() }));
-vi.mock("./background-models.js", () => ({ resolveBackgroundCandidates: mocks.resolve }));
+vi.mock("./background-models.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./background-models.js")>()),
+  resolveBackgroundCandidates: mocks.resolve,
+}));
 vi.mock("./background-model-settings.js", () => ({
   readBackgroundResolutionInput: mocks.snapshot,
 }));
@@ -99,6 +102,14 @@ describe("Host naming jobs", () => {
   });
   it("tries only three ranked models and the task fallback on repeated typed failures", async () => {
     const f = fixture();
+    // Resolution states the task model as its catalog runs it, defaults included.
+    mocks.resolve.mockReturnValue([
+      ...f.ranked,
+      {
+        ...f.fallback,
+        modelSelection: { ...f.fallback.modelSelection, options: { effort: "low" } },
+      },
+    ]);
     f.runners.backgroundText.mockResolvedValue({ ok: false, failure: "usage-limit" } as never);
     await f.naming.request(f.threadId);
     expect(

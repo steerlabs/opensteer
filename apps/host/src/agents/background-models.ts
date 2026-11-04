@@ -47,6 +47,21 @@ export interface BackgroundCandidateDecision {
   readonly candidate: ResolvedBackgroundCandidate;
   readonly skipReason: BackgroundCandidateSkipReason | null;
 }
+/** One account's one model with its options: what a repeated attempt would run again. */
+export function backgroundCandidateKey(
+  candidate: Pick<
+    ResolvedBackgroundCandidate,
+    "environmentId" | "harnessInstanceId" | "modelSelection"
+  >,
+) {
+  return JSON.stringify([
+    candidate.environmentId,
+    candidate.harnessInstanceId,
+    candidate.modelSelection.providerId,
+    candidate.modelSelection.modelId,
+    Object.entries(candidate.modelSelection.options).sort(),
+  ]);
+}
 function usageLimited(account: BackgroundAccountSnapshot, model: ModelSelection, now: number) {
   return (account.usageByProvider[model.providerId] ?? []).some((usage) => {
     const windows = usage.windows.filter(
@@ -91,14 +106,9 @@ export function inspectBackgroundCandidates(
     );
     const modelSelection =
       match.kind === "offered" ? runModelSelection(selection, match.model) : selection;
-    const key = JSON.stringify([
-      account.environmentId,
-      account.harnessInstanceId,
-      modelSelection.providerId,
-      modelSelection.modelId,
-      Object.entries(modelSelection.options).sort(),
-    ]);
-    if (seen.has(key)) return;
+    const key = backgroundCandidateKey({ ...account, modelSelection });
+    // The task's own model always closes the list; its user drops repeats of what it tried.
+    if (seen.has(key) && reason !== "task-model") return;
     seen.add(key);
     const skipReason: BackgroundCandidateSkipReason | null = !account.enabled
       ? "disabled"
