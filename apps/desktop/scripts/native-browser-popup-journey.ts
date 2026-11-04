@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { access, appendFile } from "node:fs/promises";
+import { appendFileSync } from "node:fs";
+import { access } from "node:fs/promises";
 import path from "node:path";
 import {
   BrowserVideoClickResultSchema,
@@ -107,6 +108,22 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         "rate budget cannot sustain video",
         "encode failed",
         "rate update failed",
+        "renderer_gone",
+        "presentation_not_current",
+        "recovery_deadline",
+        "geometry_changed",
+        "start_deadline",
+        "ack_deadline",
+        "gpu_lost",
+        "hardware_unavailable",
+        "encoder_capacity",
+        "encoder_unavailable",
+        "encoder_failure",
+        "capture_identity",
+        "capture_buffer",
+        "capture_geometry",
+        "empty_capture",
+        "capture_stopped",
       ];
       const reason = args[2];
       if (nativeStops.length < 32)
@@ -131,19 +148,25 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   });
   const browser = await chromium.connect(server.wsEndpoint());
   const startupTrace = await browser.newBrowserCDPSession();
+  kit.artifacts.json("cases/popups/startup-trace-status.json", { complete: false });
+  let traceBytes = 0;
+  startupTrace.on("Tracing.dataCollected", ({ value }) => {
+    if (traceBytes >= 8 * 1024 * 1024) return;
+    const data = value.map((row) => JSON.stringify(row)).join("\n") + "\n";
+    traceBytes += Buffer.byteLength(data);
+    appendFileSync(path.join(kit.run, "cases/popups/startup-native-trace.jsonl"), data);
+  });
   await startupTrace.send("Tracing.start", {
-    transferMode: "ReturnAsStream",
+    transferMode: "ReportEvents",
     traceConfig: {
       recordMode: "recordContinuously",
-      traceBufferSizeInKb: 32768,
+      traceBufferSizeInKb: 4096,
       includedCategories: [
         "toplevel",
         "cc",
         "viz",
         "gpu",
         "renderer.scheduler",
-        "devtools.timeline",
-        "disabled-by-default-cc.debug",
         "disabled-by-default-renderer.scheduler",
       ],
     },
@@ -151,29 +174,15 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   let traceCompletion: Promise<void> | undefined;
   const stopStartupTrace = () => {
     traceCompletion ??= (async () => {
-      const complete = Promise.withResolvers<{ stream: string }>();
-      startupTrace.once("Tracing.tracingComplete", complete.resolve);
-      const timer = setTimeout(
-        () => complete.reject(new Error("Startup native trace did not finish")),
-        4000,
-      );
-      void complete.promise.catch(() => undefined);
+      const complete = Promise.withResolvers<boolean>();
+      startupTrace.once("Tracing.tracingComplete", () => complete.resolve(true));
+      const timer = setTimeout(() => complete.resolve(false), 4000);
       try {
-        await startupTrace.send("Tracing.end");
-        const { stream } = await complete.promise;
-        try {
-          let eof = false;
-          while (!eof) {
-            const chunk = await startupTrace.send("IO.read", { handle: stream, size: 1048576 });
-            await appendFile(
-              path.join(kit.run, "cases/popups/startup-native-trace.json"),
-              chunk.base64Encoded ? Buffer.from(chunk.data, "base64") : chunk.data,
-            );
-            eof = chunk.eof;
-          }
-        } finally {
-          await startupTrace.send("IO.close", { handle: stream });
-        }
+        void startupTrace.send("Tracing.end").catch(() => complete.resolve(false));
+        kit.artifacts.json("cases/popups/startup-trace-status.json", {
+          complete: await complete.promise,
+          bytes: traceBytes,
+        });
       } finally {
         clearTimeout(timer);
       }
@@ -231,7 +240,45 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
           await stopProfile();
         });
         await page.addInitScript(() => {
-          Object.assign(window, { popupPresented: 0 });
+          const diagnostic = {
+            started: performance.now(),
+            raf: 0,
+            timers: 0,
+            maxRafGap: 0,
+            longTasks: [] as number[],
+            samples: [] as unknown[],
+          };
+          Object.assign(window, { popupPresented: 0, startupDiagnostic: diagnostic });
+          let last = performance.now();
+          const tick = (now: number) => {
+            diagnostic.raf++;
+            diagnostic.maxRafGap = Math.max(diagnostic.maxRafGap, now - last);
+            last = now;
+            if (diagnostic.samples.length < 256)
+              diagnostic.samples.push({
+                now,
+                visible: document.visibilityState,
+                focus: document.hasFocus(),
+                bounds: [
+                  ...document.querySelectorAll('button[aria-label="Hide the conversation"]'),
+                ].map((e) => {
+                  const r = e.getBoundingClientRect();
+                  return [r.x, r.y, r.width, r.height];
+                }),
+              });
+            if (now - diagnostic.started < 30000) requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+          const timer = setInterval(() => {
+            diagnostic.timers++;
+            if (performance.now() - diagnostic.started >= 30000) clearInterval(timer);
+          }, 100);
+          const observer = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries())
+              if (diagnostic.longTasks.length < 128) diagnostic.longTasks.push(entry.duration);
+          });
+          observer.observe({ type: "longtask", buffered: true });
+          setTimeout(() => observer.disconnect(), 30000);
           document.addEventListener("browser-picture-presented", (event) => {
             const canvas = event.target;
             if (
@@ -352,7 +399,20 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
             { timeout: 4000 },
           );
           record(index, "startup.pixel-presented");
+        } catch (error) {
+          kit.artifacts.json(`cases/popups/startup-${index}-failure.json`, {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
         } finally {
+          const diagnostic = await profiler
+            .send("Runtime.evaluate", {
+              expression: "JSON.stringify(window.startupDiagnostic)",
+              returnByValue: true,
+              timeout: 1000,
+            })
+            .catch(() => null);
+          kit.artifacts.json(`cases/popups/startup-${index}-cadence.json`, diagnostic);
           clearTimeout(profileDeadline);
           await stopProfile();
         }
