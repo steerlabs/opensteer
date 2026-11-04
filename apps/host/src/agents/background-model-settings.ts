@@ -32,15 +32,21 @@ export async function readBackgroundModels(
   dependencies: Pick<HostServerDependencies, "store" | "runners">,
   userId: UserId,
 ): Promise<BackgroundModelsView> {
-  const { accounts, preferences, environments, harnesses } = await readBackgroundResolutionInput(
-    dependencies,
-    userId,
-  );
+  const [{ accounts, preferences, environments, harnesses }, main] = await Promise.all([
+    readBackgroundResolutionInput(dependencies, userId),
+    dependencies.store.findMainWorkspaceForOwner(userId),
+  ]);
+  // Chat's provider is the person's own, as it is for memory passes: Main's
+  // memory and most tasks already reach it, so it needs no consent here.
+  const chat = main?.homeThreadId
+    ? await dependencies.store.getThreadForOwner(main.homeThreadId, userId)
+    : undefined;
   const roleView = (role: "light" | "deep") => {
     const candidates = inspectBackgroundCandidates(role, {
       accounts,
       preferences,
       now: Date.now(),
+      ...(chat ? { ownProviderId: chat.modelSelection.providerId } : {}),
     }).map(({ candidate, skipReason }) => {
       const harness = harnesses.find((harness) => harness.id === candidate.harnessInstanceId);
       const catalog = accounts.find(

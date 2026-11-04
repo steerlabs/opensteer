@@ -334,6 +334,15 @@ integration("Task naming through the Runner", () => {
         (candidate) => candidate.modelSelection.modelId === "gpt-6-luna",
       )?.skipReason,
     ).toBe("consent-required");
+
+    // Settings speaks for Chat's provider, as memory does: no consent to ask for.
+    await f.active.createThread({
+      home: true,
+      modelSelection: taskModel,
+      title: "Chat",
+      workspaceId: f.active.mainWorkspaceId,
+    });
+    expect((await light()).effectivePick?.modelSelection.modelId).toBe("gpt-6-luna");
   });
 });
 
