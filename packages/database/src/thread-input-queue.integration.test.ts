@@ -377,6 +377,313 @@ integration.sequential("thread input queue promotion", () => {
     },
   });
 
+  it("admits one fenced voice Run, replays, replaces, and never recovers it", async ({
+    storeFixture,
+  }) => {
+    const { fixture, store, database } = storeFixture;
+    const f = await fixture("voice-call");
+    const input = {
+      ownerId: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      sessionId: randomUUID(),
+    };
+    await expect(store.startVoiceCall(input)).rejects.toMatchObject({
+      reason: "voice-chat-required",
+    });
+    await store.createThread({
+      createdBy: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      idempotencyKey: "voice-home",
+      modelSelection,
+      title: "Chat",
+      workspaceId: f.workspace.id,
+      home: true,
+    });
+    const call = await store.startVoiceCall(input);
+    expect(await store.startVoiceCall(input)).toMatchObject({
+      threadId: call.threadId,
+      runId: call.runId,
+      workspaceId: call.workspaceId,
+      admittedAt: call.admittedAt,
+    });
+    expect(
+      await database
+        .selectFrom("threads")
+        .select(["listed", "parentThreadId"])
+        .where("id", "=", call.threadId)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ listed: false });
+    for (const policy of ["queue", "steer", "report"] as const)
+      await expect(
+        store.enqueueThreadInput({
+          threadId: call.threadId,
+          requestedBy: f.ownerId,
+          source: { kind: "human" },
+          content: [{ type: "text", text: "extra" }],
+          policy,
+          idempotencyKey: `voice-${policy}`,
+        }),
+      ).rejects.toThrow("Voice Threads do not accept input");
+    const replacement = await store.startVoiceCall({ ...input, sessionId: randomUUID() });
+    expect(replacement.runId).not.toBe(call.runId);
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("status")
+          .where("id", "=", call.threadId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("archived");
+    const command = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", replacement.runId)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
+    await store.claimCommand(command.id, "voice-dispatcher");
+    await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() - 1000),
+      continuationIdentity,
+      harnessInstanceId: f.harness.id,
+      leaseTokenHash: "voice-lease",
+      membershipGeneration: 1,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      runId: replacement.runId,
+      threadId: replacement.threadId,
+    });
+    const home = await database
+      .selectFrom("workspaces")
+      .select("homeThreadId")
+      .where("id", "=", f.workspace.id)
+      .executeTakeFirstOrThrow();
+    const handoff = await store.enqueueThreadInput({
+      threadId: home.homeThreadId!,
+      requestedBy: f.ownerId,
+      source: { kind: "agent", runId: replacement.runId },
+      content: [{ type: "text", text: "Handle this work" }],
+      policy: "queue",
+      idempotencyKey: "voice-handoff",
+    });
+    if (!handoff.run || !handoff.command) throw new Error("Expected Chat admission");
+    await store.claimCommand(handoff.command.id, "voice-chat-dispatcher");
+    const chatBinding = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60000),
+      continuationIdentity,
+      harnessInstanceId: f.harness.id,
+      leaseTokenHash: "voice-chat-lease",
+      membershipGeneration: 1,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      runId: handoff.run.id,
+      threadId: home.homeThreadId!,
+    });
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      runnerId: f.runnerId,
+      runnerBootId: f.runnerBootId,
+      event: pendingEvent({
+        bindingGeneration: chatBinding.bindingGeneration,
+        environmentId: f.environmentId,
+        ordinal: 0,
+        runId: handoff.run.id,
+        threadId: home.homeThreadId!,
+        workspaceId: f.workspace.id,
+        type: "run.started",
+        data: { status: "running" },
+      }),
+    });
+    const delegated = await store.delegateThread({
+      accessMode: f.thread.accessMode,
+      createdBy: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      idempotencyKey: "voice-chat-task",
+      modelSelection,
+      origin: { kind: "run", parentRunId: handoff.run.id, parentThreadId: home.homeThreadId! },
+      task: [{ type: "text", text: "Do the work" }],
+      title: "Voice handoff task",
+      workspaceId: f.workspace.id,
+    });
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("listed")
+          .where("id", "=", delegated.thread.id)
+          .executeTakeFirstOrThrow()
+      ).listed,
+    ).toBe(true);
+    await store.recoverRunsWithExpiredExecutionBindings();
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("status")
+          .where("id", "=", replacement.threadId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("archived");
+    const runs = await database
+      .selectFrom("runs")
+      .select("status")
+      .where("threadId", "=", replacement.threadId)
+      .execute();
+    expect(runs).toEqual([{ status: "failed" }]);
+    const lost = await store.startVoiceCall({ ...input, sessionId: randomUUID() });
+    const lostCommand = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", lost.runId)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
+    await store.claimCommand(lostCommand.id, "voice-dispatcher");
+    const binding = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60000),
+      continuationIdentity,
+      harnessInstanceId: f.harness.id,
+      leaseTokenHash: "voice-lost-lease",
+      membershipGeneration: 1,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      runId: lost.runId,
+      threadId: lost.threadId,
+    });
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      runnerId: f.runnerId,
+      runnerBootId: f.runnerBootId,
+      event: pendingEvent({
+        bindingGeneration: binding.bindingGeneration,
+        environmentId: f.environmentId,
+        ordinal: 0,
+        runId: lost.runId,
+        threadId: lost.threadId,
+        workspaceId: f.workspace.id,
+        type: "run.interrupted",
+        data: { status: "interrupted", cause: "lease-lost" },
+      }),
+    });
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("status")
+        .where("threadId", "=", lost.threadId)
+        .execute(),
+    ).toEqual([{ status: "failed" }]);
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("status")
+          .where("id", "=", lost.threadId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("archived");
+  });
+
+  it("ends an unconfirmed voice dispatch at Host restart and preserves a still-held call", async ({
+    storeFixture,
+  }) => {
+    const { fixture, store, database } = storeFixture;
+    const f = await fixture("voice-restart");
+    await store.createThread({
+      createdBy: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      idempotencyKey: "restart-home",
+      modelSelection,
+      title: "Chat",
+      workspaceId: f.workspace.id,
+      home: true,
+    });
+    const input = {
+      ownerId: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      sessionId: randomUUID(),
+    };
+    const call = await store.startVoiceCall(input);
+    const command = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", call.runId)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
+    await store.claimCommand(command.id, "voice-restart-dispatcher");
+    await store.recoverCommandsAfterHostRestart();
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("status")
+          .where("id", "=", call.threadId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("archived");
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("status")
+        .where("threadId", "=", call.threadId)
+        .execute(),
+    ).toEqual([{ status: "interrupted" }]);
+    const held = await store.startVoiceCall({ ...input, sessionId: randomUUID() });
+    const heldCommand = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", held.runId)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
+    await store.claimCommand(heldCommand.id, "voice-restart-dispatcher");
+    await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60000),
+      continuationIdentity,
+      harnessInstanceId: f.harness.id,
+      leaseTokenHash: "voice-restart-lease",
+      membershipGeneration: 1,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      runId: held.runId,
+      threadId: held.threadId,
+    });
+    await store.restartExecutionLeases(new Date(Date.now() + 120000));
+    await store.recoverCommandsAfterHostRestart();
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("status")
+        .where("threadId", "=", held.threadId)
+        .execute(),
+    ).toEqual([{ status: "starting" }]);
+    await store.attachRunnerExecutions({
+      dispatchingRunIds: [],
+      executions: [],
+      leaseExpiresAt: new Date(Date.now() + 120000),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("status")
+        .where("threadId", "=", held.threadId)
+        .execute(),
+    ).toEqual([{ status: "failed" }]);
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("status")
+          .where("id", "=", held.threadId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("archived");
+  });
+
   it("claims a ready upload once and replays the exact accepted send after binding", async ({
     storeFixture,
   }) => {

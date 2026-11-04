@@ -95,8 +95,6 @@ export function createHostApiHandlers(
     | "harness.modelServers.discover"
     | "voice.start"
     | "voice.renew"
-    | "voice.next"
-    | "voice.answer"
     | "voice.context"
     | "voice.say"
     | "voice.stop"

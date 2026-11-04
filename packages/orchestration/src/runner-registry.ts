@@ -1331,31 +1331,12 @@ export class RunnerRegistry {
         message: "This computer is not connected",
         retryable: true,
       });
-    const agentSupported = connection.identity.capabilities.includes("voice-agent-v1");
-    const requestedAgent = command.action === "start" && command.agent === true;
-    const requestedFind = command.action === "start" && command.find === true;
-    const findSupported =
-      agentSupported && connection.identity.capabilities.includes("voice-find-v1");
-    if (!agentSupported && ["next", "answer", "context"].includes(command.action))
-      throw new OpensteerError({
-        code: "conflict",
-        reason: "voice-ended",
-        message: "This computer does not support voice agents.",
-      });
-    if (!connection.identity.capabilities.includes("voice-v1"))
+    if (!connection.identity.capabilities.includes("voice-run-v1"))
       throw new OpensteerError({
         code: "conflict",
         reason: "voice-runner-unsupported",
         message: "Update Opensteer on this computer to use voice.",
       });
-    if (command.action === "start" && !agentSupported) {
-      const { agent: _agent, find: _find, ...legacy } = command;
-      command = legacy;
-    }
-    if (command.action === "start" && (!findSupported || !requestedAgent)) {
-      const { find: _find, ...withoutFind } = command;
-      command = withoutFind;
-    }
     const requestId = CorrelationIdSchema.parse(`voice:${randomUUID()}`);
     const pending = deferred<RunnerVoiceResult>();
     connection.pendingVoice.set(requestId, pending);
@@ -1375,15 +1356,7 @@ export class RunnerRegistry {
         signal,
         "This computer didn't answer the voice request in time.",
       );
-      return requestedAgent && result.ok
-        ? {
-            ...result,
-            agent: agentSupported && result.agent === true,
-            ...(requestedFind
-              ? { find: findSupported && result.agent === true && result.find === true }
-              : {}),
-          }
-        : result;
+      return result;
     } finally {
       connection.pendingVoice.delete(requestId);
     }

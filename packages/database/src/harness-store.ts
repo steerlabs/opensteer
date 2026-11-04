@@ -484,7 +484,7 @@ export async function updateHarnessInstance(
         throw new OpensteerError({
           code: "conflict",
           message:
-            "This AI engine is still running work; wait for it to finish before changing its configuration or turning it off",
+            "This AI engine is still running work (including any voice call); stop it or wait for it to finish before changing its configuration or turning it off",
           retryable: true,
         });
       }

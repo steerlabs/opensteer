@@ -120,6 +120,7 @@ function fixture() {
     handlers,
 
     store: {
+      voiceCallForRun: async () => undefined,
       getThreadForOwner: async (id: Thread["id"]) => targets.get(id) ?? null,
       findMainWorkspaceForOwner: async () => undefined,
       getAssignmentForOwner: async () => null,
@@ -605,4 +606,24 @@ describe("Opensteer MCP spine", () => {
         );
     }
   });
+});
+
+it("refuses voice durable-work tools at invocation before their handlers", async () => {
+  const f = fixture();
+  const service = new OpensteerMcpService({
+    ...f.options,
+    store: {
+      ...f.options.store,
+      voiceCallForRun: async () => ({ sessionId: "voice", admittedAt: new Date() }),
+    },
+  });
+  await expect(
+    service.callTool(
+      "run",
+      "plugin_install",
+      { directory: "plugin" },
+      { operationKey: "voice-install" },
+    ),
+  ).rejects.toThrow("Hand durable work to Chat");
+  expect(f.handlers.plugin_install).not.toHaveBeenCalled();
 });

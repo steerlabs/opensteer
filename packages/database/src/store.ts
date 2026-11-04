@@ -1,3 +1,4 @@
+import * as voiceStore from "./voice-store.js";
 import * as workspaceSkillInventoryStore from "./workspace-skill-inventory-store.js";
 import {
   replayAdministrationCommand,
@@ -246,6 +247,22 @@ export class OpensteerStore {
     );
   }
 
+  async startVoiceCall(input: Parameters<typeof voiceStore.startVoiceCall>[2]) {
+    return this.#announceRevokedGrants(
+      await voiceStore.startVoiceCall(this.#database, this.#links, input),
+    );
+  }
+  resolveVoiceCall(ownerId: UserId, sessionId: string) {
+    return voiceStore.resolveVoiceCall(this.#database, ownerId, sessionId);
+  }
+  voiceCallForRun(runId: RunId) {
+    return voiceStore.voiceCallForRun(this.#database, runId);
+  }
+  async stopVoiceCall(ownerId: UserId, sessionId: string) {
+    const result = await voiceStore.stopVoiceCall(this.#database, this.#links, ownerId, sessionId);
+    if (result) this.#announceRevokedGrants(result);
+    return result;
+  }
   get database(): Kysely<DatabaseSchema> {
     return this.#database;
   }

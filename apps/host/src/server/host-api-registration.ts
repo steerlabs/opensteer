@@ -65,8 +65,6 @@ const hostApiScopes = {
   "voice.start": "mutation",
   "voice.renew": "mutation",
   "voice.say": "mutation",
-  "voice.next": "mutation",
-  "voice.answer": "mutation",
   "voice.context": "mutation",
   "voice.stop": "mutation",
   "integration.authorization.get": "session",

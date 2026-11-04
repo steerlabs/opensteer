@@ -1,145 +1,166 @@
-import { OpensteerError, type EnvironmentId } from "@opensteer/core";
+import { OpensteerError, type AgentEvent } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import {
   rpcSuccess,
+  VoiceRefusalReasonSchema,
   type HostApiHandlers,
-  type RunnerVoiceCommand,
   type HostApiServerContext,
+  type RunnerVoiceCommand,
 } from "@opensteer/protocol";
 
+const ended = () =>
+  new OpensteerError({
+    code: "conflict",
+    reason: "voice-ended",
+    message: "This voice call has ended.",
+  });
 const unavailable = () =>
   new OpensteerError({
     code: "forbidden",
     reason: "voice-account-unavailable",
     message: "Voice requires your signed-in ChatGPT account on this computer.",
   });
-
 export function createVoiceHandlers(dependencies: {
   readonly store: Pick<
     OpensteerStore,
-    "environmentIsAvailableToUser" | "listAgentHarnessInstancesForUser" | "getHarnessCatalog"
+    | "environmentIsAvailableToUser"
+    | "listAgentHarnessInstancesForUser"
+    | "getHarnessCatalog"
+    | "startVoiceCall"
+    | "resolveVoiceCall"
+    | "stopVoiceCall"
   >;
   readonly runners: Pick<RunnerRegistry, "voice">;
+  readonly publishWorkspaceEvent?: (event: AgentEvent) => void;
 }): Pick<
   HostApiHandlers,
-  | "voice.start"
-  | "voice.renew"
-  | "voice.say"
-  | "voice.stop"
-  | "voice.next"
-  | "voice.answer"
-  | "voice.context"
+  "voice.start" | "voice.renew" | "voice.say" | "voice.context" | "voice.stop"
 > {
+  const owner = (context: HostApiServerContext) => {
+    const id = context.session?.user.id;
+    if (!id) throw new OpensteerError({ code: "unauthorized", message: "Sign in to use voice." });
+    return id;
+  };
+  const stop = async (sessionId: string, context: HostApiServerContext) => {
+    const result = await dependencies.store.stopVoiceCall(owner(context), sessionId);
+    for (const event of result?.events ?? []) dependencies.publishWorkspaceEvent?.(event);
+  };
+  const callFor = async (sessionId: string, context: HostApiServerContext) => {
+    const call = await dependencies.store.resolveVoiceCall(owner(context), sessionId);
+    if (
+      !call ||
+      call.threadStatus === "archived" ||
+      !["queued", "starting", "running", "waiting"].includes(call.status)
+    )
+      throw ended();
+    return call;
+  };
   const relay = async (
-    environmentId: EnvironmentId,
-    command: RunnerVoiceCommand,
+    sessionId: string,
     context: HostApiServerContext,
+    command:
+      | Omit<Extract<RunnerVoiceCommand, { action: "renew" }>, "runId" | "sessionId">
+      | { action: "say"; id: string; text: string }
+      | { action: "context"; view: Extract<RunnerVoiceCommand, { action: "context" }>["view"] },
   ) => {
-    const userId = context.session?.user.id;
-    if (!userId)
-      throw new OpensteerError({ code: "unauthorized", message: "Sign in to use voice." });
-    if (!(await dependencies.store.environmentIsAvailableToUser(environmentId, userId)))
-      throw unavailable();
-    const [profile] = await dependencies.store.listAgentHarnessInstancesForUser(userId, {
-      id: command.harnessInstanceId,
-      limit: 1,
-    });
-    if (
-      !profile ||
-      profile.id !== command.harnessInstanceId ||
-      profile.environmentId !== environmentId ||
-      !profile.enabled ||
-      profile.removedAt ||
-      profile.driverKind !== "codex"
-    )
-      throw unavailable();
-    const catalog = await dependencies.store.getHarnessCatalog(
-      environmentId,
-      command.harnessInstanceId,
+    const call = await callFor(sessionId, context);
+    const result = await dependencies.runners.voice(
+      call.environmentId,
+      owner(context),
+      { ...command, sessionId, runId: call.runId },
+      context.signal,
     );
-    if (
-      !catalog?.connections.some(
-        (connection) => connection.authKind === "subscription" && connection.status === "connected",
-      )
-    )
-      throw unavailable();
-    const result = await dependencies.runners.voice(environmentId, userId, command, context.signal);
     if (!result.ok)
       throw new OpensteerError({
         code: "conflict",
         reason: result.reason,
         message: result.message,
       });
-    return result;
+    return rpcSuccess({});
   };
   return {
     "voice.start": async (input, context) => {
-      const result = await relay(
+      const ownerId = owner(context);
+      if (!(await dependencies.store.environmentIsAvailableToUser(input.environmentId, ownerId)))
+        throw unavailable();
+      const [profile] = await dependencies.store.listAgentHarnessInstancesForUser(ownerId, {
+        id: input.harnessInstanceId,
+        limit: 1,
+      });
+      if (
+        !profile ||
+        profile.id !== input.harnessInstanceId ||
+        profile.environmentId !== input.environmentId ||
+        !profile.enabled ||
+        profile.removedAt ||
+        profile.driverKind !== "codex"
+      )
+        throw unavailable();
+      const catalog = await dependencies.store.getHarnessCatalog(
         input.environmentId,
-        {
-          action: "start",
-          sessionId: input.sessionId,
-          harnessInstanceId: input.harnessInstanceId,
-          offer: input.offer,
-          ...(input.agent ? { agent: true, ...(input.find ? { find: true } : {}) } : {}),
-        },
-        context,
+        input.harnessInstanceId,
       );
-      if (!result.answer)
+      if (
+        !catalog?.connections.some((c) => c.authKind === "subscription" && c.status === "connected")
+      )
+        throw unavailable();
+      const call = await dependencies.store.startVoiceCall({
+        ownerId,
+        sessionId: input.sessionId,
+        environmentId: input.environmentId,
+        harnessInstanceId: input.harnessInstanceId,
+      });
+      for (const event of call.events) dependencies.publishWorkspaceEvent?.(event);
+      try {
+        if (
+          call.threadStatus === "archived" ||
+          !["queued", "starting", "running", "waiting"].includes(call.status)
+        )
+          throw ended();
+        const result = await dependencies.runners.voice(
+          call.environmentId,
+          ownerId,
+          { action: "start", sessionId: input.sessionId, runId: call.runId, offer: input.offer },
+          context.signal,
+        );
+        if (!result.ok)
+          throw new OpensteerError({
+            code: "conflict",
+            reason: result.reason,
+            message: "The computer could not start this voice call.",
+          });
+        if (!result.answer)
+          throw new OpensteerError({
+            code: "conflict",
+            reason: "voice-refused",
+            message: "Codex returned no voice answer.",
+          });
+        return rpcSuccess({
+          answer: result.answer,
+          threadId: call.threadId,
+          runId: call.runId,
+          workspaceId: call.workspaceId,
+        });
+      } catch (error) {
+        const reason = VoiceRefusalReasonSchema.safeParse(
+          error instanceof OpensteerError ? error.reason : undefined,
+        );
+        await stop(input.sessionId, context);
         throw new OpensteerError({
           code: "conflict",
-          reason: "voice-refused",
-          message: "Codex returned no voice answer.",
+          reason: reason.success ? reason.data : "voice-refused",
+          message: "The voice call could not start.",
         });
-      return rpcSuccess({
-        answer: result.answer,
-        ...(input.agent ? { agent: result.agent === true } : {}),
-        ...(input.find ? { find: result.agent === true && result.find === true } : {}),
-      });
+      }
     },
-    "voice.next": async (input, context) => {
-      const { environmentId, ...address } = input;
-      const result = await relay(environmentId, { ...address, action: "next" }, context);
-      return rpcSuccess({ call: result.call ?? null });
-    },
-    "voice.answer": async (input, context) => {
-      const { environmentId, ...address } = input;
-      await relay(environmentId, { ...address, action: "answer" }, context);
-      return rpcSuccess({});
-    },
-    "voice.context": async (input, context) => {
-      const { environmentId, ...address } = input;
-      await relay(environmentId, { ...address, action: "context" }, context);
-      return rpcSuccess({});
-    },
-    "voice.renew": async (input, context) => {
-      await relay(
-        input.environmentId,
-        { action: "renew", sessionId: input.sessionId, harnessInstanceId: input.harnessInstanceId },
-        context,
-      );
-      return rpcSuccess({});
-    },
-    "voice.say": async (input, context) => {
-      await relay(
-        input.environmentId,
-        {
-          action: "say",
-          sessionId: input.sessionId,
-          harnessInstanceId: input.harnessInstanceId,
-          text: input.text,
-        },
-        context,
-      );
-      return rpcSuccess({});
-    },
+    "voice.renew": (input, context) => relay(input.sessionId, context, { action: "renew" }),
+    "voice.say": (input, context) =>
+      relay(input.sessionId, context, { action: "say", id: input.id, text: input.text }),
+    "voice.context": (input, context) =>
+      relay(input.sessionId, context, { action: "context", view: input.view }),
     "voice.stop": async (input, context) => {
-      await relay(
-        input.environmentId,
-        { action: "stop", sessionId: input.sessionId, harnessInstanceId: input.harnessInstanceId },
-        context,
-      );
+      await stop(input.sessionId, context);
       return rpcSuccess({});
     },
   };
