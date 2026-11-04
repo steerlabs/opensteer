@@ -54,6 +54,56 @@ describe("HostedOAuthBrokerService authority", () => {
     expect(broker.metadata(false)).not.toHaveProperty("installationUrls");
   });
 
+  it.each(["provider", "mcp"] as const)(
+    "rejects app finish from a web %s relay before accessing a Deployment",
+    async (mode) => {
+      const broker = new HostedOAuthBrokerService({
+        applications: [],
+        attemptContextEncryptionKey: Buffer.alloc(32, 6).toString("base64url"),
+        issuer: new URL("https://accounts.opensteer.test"),
+        store: {} as never,
+      });
+      const serverId = `isv_${crypto.randomUUID()}`;
+      await expect(
+        broker.createCallbackRelay(
+          {
+            credentialHash: "unused",
+            deploymentId: createId("deployment"),
+            hostInstanceId: createId("hostInstance"),
+          },
+          {
+            accountSubject: {
+              issuer: "https://accounts.opensteer.test",
+              subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
+            },
+            attemptId: HostedOAuthAttemptIdSchema.parse(`hoa_${crypto.randomUUID()}`),
+            authorizationDigest: "d".repeat(43),
+            authorizationUrl: "https://provider.example.test/authorize",
+            clientId: "client",
+            clientSurface: "web",
+            finish: "app",
+            definitionId: mode === "mcp" ? serverId : "slack",
+            deploymentAuthorityDigest: "d".repeat(43),
+            expiresAt: "2026-11-04T18:00:00Z",
+            hostPublicKey: "k".repeat(43),
+            provider: mode === "mcp" ? "mcp" : "slack",
+            providerApplicationRevision: 1,
+            ...(mode === "mcp"
+              ? {
+                  mcp: {
+                    serverId,
+                    issuer: "https://provider.example.test",
+                    authorizationEndpoint: "https://provider.example.test/authorize",
+                    authorizationResponseIssuerParameterSupported: false,
+                  },
+                }
+              : { providerApplicationId: `ipa_${crypto.randomUUID()}` }),
+          },
+        ),
+      ).rejects.toMatchObject({ code: "bad_request" });
+    },
+  );
+
   it("rejects link mismatch even when an email could be equal", () => {
     const presentedAccount = {
       email: "same-person@example.test",
@@ -216,6 +266,7 @@ describe("HostedOAuthBrokerService authorization session", () => {
         deploymentBinding: vi.fn(async () => binding),
         failAttempt,
         hasDeploymentAccess: vi.fn(async () => true),
+        inspectLaunchAttempt: vi.fn(async () => row),
         launchAttempt,
         sealAttempt,
       } as never,
@@ -409,6 +460,7 @@ describe("HostedOAuthBrokerService Microsoft authorization", () => {
       deploymentBinding: vi.fn(async () => binding),
       failAttempt,
       hasDeploymentAccess: vi.fn(async () => true),
+      inspectLaunchAttempt: vi.fn(async () => row),
       launchAttempt: vi.fn(
         async (input: {
           accountId: string;
@@ -1127,6 +1179,7 @@ describe("HostedOAuthBrokerService GitHub user tokens", () => {
         deploymentBinding: vi.fn(async () => binding),
         failAttempt,
         hasDeploymentAccess: vi.fn(async () => true),
+        inspectLaunchAttempt: vi.fn(async () => row),
         launchAttempt: vi.fn(
           async (input: {
             accountId: string;
@@ -1604,6 +1657,7 @@ describe("HostedOAuthBrokerService Discord tokens", () => {
         failAttempt: vi.fn(async () => undefined),
         failRefresh: vi.fn(async () => undefined),
         hasDeploymentAccess: vi.fn(async () => true),
+        inspectLaunchAttempt: vi.fn(async () => attemptRow),
         launchAttempt: vi.fn(
           async (input: {
             accountId: string;

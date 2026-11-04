@@ -1,6 +1,7 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
+import { HostedOAuthAttemptIdSchema } from "@opensteer/control-plane-protocol";
 import type {
   ConnectOperationCompletion,
   ControlPlaneErrorReason,
@@ -48,6 +49,7 @@ const strictTransportSecurity = "max-age=31536000; includeSubDomains";
 const UiFormSchema = z
   .strictObject({
     oauth_query: z.string().max(maximumOAuthQueryLength).optional(),
+    switch_account: z.literal("1").optional(),
     return_to: z.string().min(1).max(262_656).optional(),
   })
   .refine((value) => !(value.oauth_query && value.return_to), {
@@ -179,6 +181,7 @@ export async function createControlPlaneServer(
   if (dependencies.hostedOAuthBroker) {
     registerHostedOAuthBrokerRoutes(app, {
       authenticator: dependencies.authenticator,
+      auth: dependencies.auth,
       broker: dependencies.hostedOAuthBroker,
       fonts,
       store: dependencies.store,
@@ -239,6 +242,7 @@ function registerAccountPages(
   dependencies: {
     readonly auth: ControlPlaneAuth;
     readonly fonts: BrowserPageFonts;
+    readonly hostedOAuthBroker?: HostedOAuthBrokerService;
     readonly publicOrigin: URL;
     readonly store: ControlPlaneStore;
   },
@@ -284,6 +288,7 @@ function registerAccountPages(
           ? `<input type="hidden" name="return_to" value="${escapeHtml(returnTo.toString())}">`
           : `<input type="hidden" name="oauth_query" value="${escapeHtml(oauthQuery)}">`,
         reauthorization,
+        ...(returnTo ? { hostedOAuth: true } : {}),
       }),
     );
   });
@@ -304,12 +309,34 @@ function registerAccountPages(
     requireExactOrigin(request, publicOrigin.origin);
     const form = UiFormSchema.parse(parseForm(request.body));
     const returnTo = hostedOAuthLaunchReturnTo(form.return_to, publicOrigin);
+    if (form.switch_account) {
+      if (!returnTo || !dependencies.hostedOAuthBroker)
+        throw new ControlPlaneError("bad_request", "Hosted OAuth sign-in return is invalid");
+      const attemptId = HostedOAuthAttemptIdSchema.parse(returnTo.pathname.split("/").at(-1));
+      const inspection = await dependencies.hostedOAuthBroker.inspectLaunch(
+        attemptId,
+        returnTo.searchParams.get("ticket")!,
+      );
+      if (inspection.status !== "ready" || inspection.finish === "app")
+        throw new ControlPlaneError("bad_request", "Hosted OAuth sign-in return is invalid");
+      const signedOut = await callAuth(auth, request, publicOrigin, "/sign-out", {});
+      copySetCookies(reply, signedOut);
+      if (!signedOut.ok) throw new ControlPlaneError("unauthorized", "Sign out failed");
+    }
     const body = {
       provider: "google",
+      ...(form.switch_account ? { additionalParams: { prompt: "select_account" } } : {}),
       callbackURL: returnTo?.toString() ?? publicOrigin.origin,
       ...(form.oauth_query ? { oauth_query: form.oauth_query } : {}),
     };
-    const response = await callAuth(auth, request, publicOrigin, "/sign-in/social", body);
+    const response = await callAuth(
+      auth,
+      request,
+      publicOrigin,
+      "/sign-in/social",
+      body,
+      Boolean(form.switch_account),
+    );
     copySetCookies(reply, response);
     const payload = AuthRedirectResponseSchema.parse(await response.json());
     if (!response.ok || !payload.url) {
@@ -381,8 +408,10 @@ async function callAuth(
   publicOrigin: URL,
   path: string,
   body: unknown,
+  omitCookies = false,
 ): Promise<Response> {
   const headers = toWebHeaders(request.headers);
+  if (omitCookies) headers.delete("cookie");
   headers.set("content-type", "application/json");
   headers.delete("content-length");
   headers.set("origin", publicOrigin.origin);

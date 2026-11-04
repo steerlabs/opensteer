@@ -120,6 +120,63 @@ export class HostedOAuthBrokerStore {
     });
   }
 
+  async inspectLaunchAttempt(attemptId: HostedOAuthAttemptId, launchTicketHash: string) {
+    return (
+      (await this.#database
+        .selectFrom("hostedOAuthBrokerAttempts")
+        .selectAll()
+        .where("attemptId", "=", attemptId)
+        .where((builder) =>
+          builder.or([
+            builder("launchTicketHash", "=", launchTicketHash),
+            builder("browserBindingHash", "=", launchTicketHash),
+          ]),
+        )
+        .executeTakeFirst()) ?? null
+    );
+  }
+
+  async returnAttempt(input: {
+    readonly deploymentId: DeploymentId;
+    readonly attemptId: HostedOAuthAttemptId;
+    readonly returnProofHash: string;
+    readonly binding: NonNullable<Awaited<ReturnType<HostedOAuthBrokerStore["deploymentBinding"]>>>;
+    readonly now: Date;
+  }) {
+    return (
+      (await this.#database
+        .updateTable("hostedOAuthBrokerAttempts as attempt")
+        .from("deployments as deployment")
+        .set({ status: "sealed", updatedAt: input.now })
+        .whereRef("deployment.id", "=", "attempt.deploymentId")
+        .where("attempt.deploymentId", "=", input.deploymentId)
+        .where("attempt.attemptId", "=", input.attemptId)
+        .where("attempt.status", "=", "held")
+        .where("deployment.activeHostInstanceId", "=", input.binding.activeHostInstanceId)
+        .where("deployment.canonicalOrigin", "=", input.binding.canonicalOrigin)
+        .where("deployment.hostKeyFingerprint", "=", input.binding.hostKeyFingerprint)
+        .where("deployment.ownerAccountId", "=", input.binding.ownerAccountId)
+        .where("deployment.reachability", "=", input.binding.reachability)
+        .where("attempt.returnProofHash", "=", input.returnProofHash)
+        .where("attempt.expiresAt", ">", input.now)
+        .where((builder) =>
+          builder.or([
+            builder("deployment.ownerAccountId", "=", builder.ref("attempt.accountSubject")),
+            builder.exists(
+              builder
+                .selectFrom("deploymentDirectoryEntries as member")
+                .select("member.deploymentId")
+                .whereRef("member.deploymentId", "=", "attempt.deploymentId")
+                .whereRef("member.accountId", "=", "attempt.accountSubject")
+                .where("member.present", "=", true),
+            ),
+          ]),
+        )
+        .returning("attempt.status as status")
+        .executeTakeFirst()) ?? null
+    );
+  }
+
   async launchAttempt(input: {
     readonly accountId: string;
     readonly attemptId: HostedOAuthAttemptId;
@@ -171,6 +228,15 @@ export class HostedOAuthBrokerStore {
     );
   }
 
+  async callbackAttemptId(stateHash: string): Promise<HostedOAuthAttemptId | null> {
+    const row = await this.#database
+      .selectFrom("hostedOAuthBrokerAttempts")
+      .select("attemptId")
+      .where("stateHash", "=", stateHash)
+      .executeTakeFirst();
+    return row?.attemptId ?? null;
+  }
+
   async claimCallback(input: {
     readonly stateHash: string;
     readonly provider: string;
@@ -181,7 +247,8 @@ export class HostedOAuthBrokerStore {
     return (
       (await this.#database
         .updateTable("hostedOAuthBrokerAttempts")
-        .set({ status: "exchanging", browserBindingHash: null, updatedAt: input.now })
+        // The status spends the cookie; its digest still verifies used launch links.
+        .set({ status: "exchanging", updatedAt: input.now })
         .where("stateHash", "=", input.stateHash)
         .where("provider", "=", input.provider)
         .where((builder) =>
@@ -205,6 +272,11 @@ export class HostedOAuthBrokerStore {
     attemptId: HostedOAuthAttemptId,
     sealedCiphertext: OAuthBrokerSealedEnvelope,
     now: Date,
+    held?: {
+      readonly returnProofHash: string;
+      readonly contextKeyVersion: number;
+      readonly encryptedContext: Buffer;
+    },
   ): Promise<void> {
     assertHostedOAuthBrokerDurableRecord({
       attemptId,
@@ -216,20 +288,23 @@ export class HostedOAuthBrokerStore {
       requestedScopeDigest: "derived",
       sealedCiphertext,
     });
-    await this.#database
+    const result = await this.#database
       .updateTable("hostedOAuthBrokerAttempts")
       .set({
-        contextKeyVersion: null,
-        encryptedContext: null,
+        contextKeyVersion: held?.contextKeyVersion ?? null,
+        encryptedContext: held?.encryptedContext ?? null,
         launchTicketHash: null,
-        browserBindingHash: null,
         sealedCiphertext,
-        status: "sealed",
+        status: held ? "held" : "sealed",
+        returnProofHash: held?.returnProofHash ?? null,
         updatedAt: now,
       })
       .where("attemptId", "=", attemptId)
       .where("status", "=", "exchanging")
-      .executeTakeFirstOrThrow();
+      .where("expiresAt", ">", now)
+      .executeTakeFirst();
+    if (result.numUpdatedRows !== 1n)
+      throw new ControlPlaneError("forbidden", "Hosted OAuth attempt expired during completion");
   }
 
   async failAttempt(
@@ -245,13 +320,13 @@ export class HostedOAuthBrokerStore {
         encryptedContext: null,
         failureCode,
         launchTicketHash: null,
-        browserBindingHash: null,
         sealedCiphertext: null,
+        returnProofHash: null,
         status,
         updatedAt: now,
       })
       .where("attemptId", "=", attemptId)
-      .where("status", "in", ["pending", "launched", "exchanging"])
+      .where("status", "in", ["pending", "launched", "exchanging", "held"])
       .execute();
   }
 
@@ -274,7 +349,12 @@ export class HostedOAuthBrokerStore {
   ): Promise<boolean> {
     const result = await this.#database
       .updateTable("hostedOAuthBrokerAttempts")
-      .set({ sealedCiphertext: null, status: "acknowledged", updatedAt: now })
+      .set({
+        sealedCiphertext: null,
+        returnProofHash: null,
+        status: "acknowledged",
+        updatedAt: now,
+      })
       .where("attemptId", "=", attemptId)
       .where("deploymentId", "=", deploymentId)
       .where("status", "=", "sealed")
@@ -474,14 +554,24 @@ export class HostedOAuthBrokerStore {
         .set({
           contextKeyVersion: null,
           encryptedContext: null,
+          // Retain only the spent ticket digest for safe expired/used-link diagnostics.
+          browserBindingHash: sql`coalesce(browser_binding_hash, launch_ticket_hash)`,
           launchTicketHash: null,
-          browserBindingHash: null,
           sealedCiphertext: null,
-          status: "expired",
+          returnProofHash: null,
+          status: sql<
+            "acknowledged" | "denied" | "failed" | "expired"
+          >`case when status in ('acknowledged', 'denied', 'failed') then status else 'expired' end`,
           updatedAt: now,
         })
         .where("expiresAt", "<=", now)
-        .where("status", "not in", ["acknowledged", "denied", "failed", "expired"])
+        .where((builder) =>
+          builder.or([
+            builder("status", "not in", ["acknowledged", "denied", "failed", "expired"]),
+            builder("returnProofHash", "is not", null),
+            builder("encryptedContext", "is not", null),
+          ]),
+        )
         .execute(),
       this.#database
         .updateTable("hostedOAuthBrokerRefreshes")
