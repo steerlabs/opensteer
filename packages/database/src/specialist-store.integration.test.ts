@@ -368,6 +368,32 @@ describeStore("specialist registration", (test) => {
         threadId: created.thread.id,
       }),
     ).rejects.toMatchObject({ reason: "harness-revision-changed" });
+    const setPaused = (inputQueuePaused: boolean) =>
+      fixture.database
+        .updateTable("threads")
+        .set({ inputQueuePaused, inputQueuePausedBy: inputQueuePaused ? run.userId : null })
+        .where("id", "=", created.thread.id)
+        .execute();
+    await setPaused(true);
+    await expect(
+      fixture.store.enqueueThreadInput({
+        content: [{ type: "text", text: "Read invoices" }],
+        expectedHarnessRevision: moved.runtimeRevision,
+        idempotencyKey: "paused-specialist-input",
+        policy: "queue",
+        requestedBy: run.userId,
+        source: { kind: "human" },
+        threadId: created.thread.id,
+      }),
+    ).rejects.toMatchObject({ reason: "thread-not-accepting-work" });
+    await setPaused(false);
+    expect(
+      await fixture.database
+        .selectFrom("threadInputs")
+        .select("messageId")
+        .where("threadId", "=", created.thread.id)
+        .execute(),
+    ).toEqual([]);
     await fixture.store.recordHarnessCatalogs({
       environmentId: run.environmentId,
       expectedRevisions: new Map([[moved.id, moved.runtimeRevision]]),

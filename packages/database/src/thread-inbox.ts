@@ -2577,6 +2577,13 @@ export async function enqueueThreadInputInTransaction(
   }
   const queued =
     executionValid && policy === "queue" ? await ensureQueuedRun(transaction, thread) : null;
+  // Only a live Run stops the account's endpoint moving, so a waiting input can't keep this fence.
+  if (request.expectedHarnessRevision !== undefined && !queued?.run)
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "thread-not-accepting-work",
+      message: "This task isn't taking new work right now, so nothing was sent.",
+    });
   const finalInputRow =
     queued?.run || inputRow.state === "cancelled"
       ? inputRow
