@@ -226,6 +226,9 @@ describe("TriggerControlService", () => {
         idempotencyKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "trigger_write")}:trigger.create`,
       }),
       threadId,
+      {
+        operationKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "trigger_write")}:trigger.write`,
+      },
     );
   });
 });

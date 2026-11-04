@@ -317,6 +317,18 @@ export class AppService {
     return { apps: await this.#options.apps.list({ ...scope, userId: scope.requestedBy }) };
   }
 
+  async listForCaller(scope: {
+    readonly requestedBy: UserId;
+    readonly reach: import("@opensteer/core").ThreadReachScope;
+  }) {
+    return {
+      apps: await this.#options.apps.listReachable({
+        userId: scope.requestedBy,
+        reach: scope.reach,
+      }),
+    };
+  }
+
   async fetch(scope: RunToolScope, input: z.infer<typeof AppFetchInputSchema>) {
     input = AppFetchInputSchema.parse(input);
     await this.#options.apps.authorize({

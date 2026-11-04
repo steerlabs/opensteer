@@ -620,7 +620,6 @@ import { AgentCallerResolver } from "./agent-caller.js";
 import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import type { WatchControlTokenService } from "../triggers/watch-capability.js";
-import { MemoryOperationReceipts } from "./receipts.test-support.js";
 type ProductOptions = ConstructorParameters<typeof ProductToolHandlers>[0];
 type TestOptions = Partial<Omit<ProductOptions, "workspaces">> & {
   readonly store: ProductOptions["store"];
@@ -739,7 +738,6 @@ export class ProductToolsTestClient {
         ...(kind === "watch" ? { watches: options.tokens as WatchControlTokenService } : {}),
       }),
       handlers,
-      receipts: new MemoryOperationReceipts(),
       publicUrl: new URL("https://host.test"),
     });
   }

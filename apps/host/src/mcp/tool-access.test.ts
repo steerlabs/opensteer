@@ -21,7 +21,7 @@ function authority() {
   return { caller, target };
 }
 describe("MCP access kinds", () => {
-  it.each(["read", "self", "thread", "work", "settings"] as const)(
+  it.each(["read", "write", "settings"] as const)(
     "refuses an out-of-reach target for %s",
     (kind) => {
       const { caller, target } = authority();
@@ -32,7 +32,7 @@ describe("MCP access kinds", () => {
       ).toThrow("outside the caller's reach");
     },
   );
-  it.each(["thread", "work"] as const)("refuses access-mode escalation for %s", (kind) => {
+  it.each(["write"] as const)("refuses access-mode escalation for %s", (kind) => {
     const { caller, target } = authority();
     expect(() => toolAccess[kind](caller, [target])).toThrow("stronger access mode");
   });

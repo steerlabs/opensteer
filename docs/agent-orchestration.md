@@ -4,8 +4,7 @@
 
 Runs, Trigger/Watch programs and connected external agents use the same
 `opensteer` MCP server. The [registry](../packages/agent-tools/src/tools/index.ts)
-selects tools by caller kind; neither conversation role nor consent reach chooses
-a separate tool inventory. Run-bound surfaces require a live Run. A connected
+filters tools by caller kind, access ceiling and consent reach. Run-bound surfaces require a live Run. A connected
 agent starts a managed task when it needs those surfaces; the Host records its
 messages as that connection, never as the person who approved it.
 
@@ -16,32 +15,29 @@ that root's reach. Shared channel conversations withhold Main inheritance.
 A connection instead uses the user or Workspace reach its owner approved.
 Membership, live resource grants and the caller's access ceiling still apply.
 
-Access kinds distinguish observation (`read`), caller-owned actions (`self`),
-Thread mutations (`thread`), actionable work (`work`) and administration
-(`settings`). Thread/work admission checks every target's reach and access mode;
-settings require full access. Full access never substitutes for ownership or a
+Reads stay within consent reach; writes also respect the caller's access-mode
+ceiling for targets and new work. Settings require full access. Full access never substitutes for ownership or a
 resource grant. Domain services recheck authority when the effect commits,
 including after a wait. Agents may reduce existing access, but never grant
 access, approve consent, pair/enroll devices, manage account sign-in sessions,
 reveal credentials or raise their own power. Creating work cannot raise its access mode.
 
-Mutating calls use caller-scoped operation receipts. Reuse a stable `operationKey`
-when retrying across MCP reconnects; otherwise identity follows the MCP session,
-request ID and tool. A key reused with different input conflicts. Replay checks
-live authority before returning the stored result, so an old receipt cannot
-bypass revocation. An unfinished external effect stays unconfirmed unless its
-domain has an atomic recovery receipt; never repeat it under a fresh key merely
-because the response was lost. Watch observation IDs retain their activation-wide
-deduplication and explicit hourly observation limit. See
-[receipts](../packages/database/src/agent-control-admission-receipts.ts).
+Mutating calls pass caller/tool-scoped keys into their domain's idempotency or
+admission receipt. Reuse a stable `operationKey` across MCP reconnects; otherwise
+identity follows the session, request ID and tool. Domain commands reject a key
+reused with different input. Every call runs live resource authorization, including
+retries. The Host never automatically repeats uncertain external effects; an engine
+retry is a new call under the person's current authority. Watch observations retain
+activation-wide deduplication and the hourly observation limit; person messages
+replay their domain result.
 
 Runs receive Assignment results through the Inbox. Programs and connected agents
-can wait on a Thread's current Run or messages after a known message. Each wait
+can wait on a Thread's current Run, a pending Request, or messages after a known message. Each wait
 pins the observed Run, rechecks live authority on wake-up and returns within
-100 seconds with settled, running, offline or timed-out status. A later Run does
+100 seconds (50 by default) with settled, running, offline or timed-out status. A later Run does
 not replace the pinned one. Disconnecting cancels only the wait, never the task;
-revoking a connection prevents further calls without cancelling work it already
-started. Stop and queue resume remain explicit operations. See
+revoking a connection ends open waits and prevents further calls without
+cancelling work it already started. Stop and queue resume remain explicit operations. See
 [Thread waits](../apps/host/src/threads/thread-wait.ts).
 
 ## Inbox authority and delivery

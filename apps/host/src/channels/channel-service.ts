@@ -446,11 +446,11 @@ export class ChannelService {
   }
 
   async revokeBinding(bindingId: string, ownerUserId: UserId): Promise<void> {
-    await this.#channels.revokeBinding({
+    const changed = await this.#channels.revokeBinding({
       bindingId: ChannelBindingIdSchema.parse(bindingId),
       ownerUserId,
     });
-    this.#onChanged();
+    if (changed) this.#onChanged();
   }
 
   updateBinding(input: {

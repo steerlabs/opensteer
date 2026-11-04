@@ -58,6 +58,7 @@ export class IntegrationPlatformStore {
   readonly markMcpOAuthConnectionNeedsAttention: IntegrationConnectionAuthStore["markMcpOAuthConnectionNeedsAttention"];
   readonly createGrant: IntegrationGrantStore["createGrant"];
   readonly listGrants: IntegrationGrantStore["listGrants"];
+  readonly connectionDiscoveryScope: IntegrationGrantStore["connectionDiscoveryScope"];
   readonly mainAccess: IntegrationGrantStore["mainAccess"];
   readonly isConnectionUsableForAccessRequest: IntegrationGrantStore["isConnectionUsableForAccessRequest"];
   readonly revokeGrant: IntegrationGrantStore["revokeGrant"];
@@ -133,6 +134,7 @@ export class IntegrationPlatformStore {
       this.connections.markMcpOAuthConnectionNeedsAttention.bind(this.connections);
     this.createGrant = this.grants.createGrant.bind(this.grants);
     this.listGrants = this.grants.listGrants.bind(this.grants);
+    this.connectionDiscoveryScope = this.grants.connectionDiscoveryScope.bind(this.grants);
     this.mainAccess = this.grants.mainAccess.bind(this.grants);
     this.isConnectionUsableForAccessRequest = this.grants.isConnectionUsableForAccessRequest.bind(
       this.grants,

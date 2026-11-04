@@ -19,28 +19,22 @@ export function assertCallerReach(
 export function read(caller: AgentCaller, targets: readonly Thread[]): void {
   for (const target of targets) assertCallerReach(caller, target);
 }
-export function self(caller: AgentCaller, targets: readonly Thread[]): void {
-  read(caller, targets);
-}
-export function thread(caller: AgentCaller, targets: readonly Thread[]): void {
+export function write(caller: AgentCaller, targets: readonly Thread[]): void {
   read(caller, targets);
   for (const target of targets) {
     if (!threadAccessModeAtMost(target.accessMode, caller.accessMode))
       throw forbidden("Target Thread has a stronger access mode than this caller");
   }
 }
-export function work(caller: AgentCaller, targets: readonly Thread[]): void {
-  thread(caller, targets);
-}
 export function settings(caller: AgentCaller, targets: readonly Thread[]): void {
   if (caller.accessMode !== "full-access")
     throw forbidden("Changing settings requires full-access");
-  thread(caller, targets);
+  write(caller, targets);
 }
 export const toolAccess: Record<
   AgentToolAccess,
   (caller: AgentCaller, targets: readonly Thread[]) => void
-> = { read, self, thread, work, settings };
+> = { read, write, settings };
 function forbidden(message: string) {
   return new OpensteerError({ code: "forbidden", message });
 }

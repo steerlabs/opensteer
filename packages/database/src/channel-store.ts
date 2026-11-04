@@ -745,8 +745,8 @@ export class ChannelStore {
   async revokeBinding(input: {
     readonly bindingId: ChannelBindingId;
     readonly ownerUserId: UserId;
-  }): Promise<void> {
-    await withDatabaseTransaction(this.#database, async (transaction) => {
+  }): Promise<boolean> {
+    return withDatabaseTransaction(this.#database, async (transaction) => {
       const binding = await transaction
         .selectFrom("channelBindings")
         .innerJoin("channelAccounts", "channelAccounts.id", "channelBindings.accountId")
@@ -755,20 +755,21 @@ export class ChannelStore {
           "integrationConnections.id",
           "channelAccounts.connectionId",
         )
-        .select("channelBindings.id")
+        .select(["channelBindings.id", "channelBindings.status"])
         .where("channelBindings.id", "=", input.bindingId)
-        .where("channelBindings.status", "!=", "revoked")
         .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
         .forNoKeyUpdate("channelBindings")
         .executeTakeFirst();
       if (!binding) {
         throw new OpensteerError({ code: "not_found", message: "Channel route not found" });
       }
+      if (binding.status === "revoked") return false;
       await transaction
         .updateTable("channelBindings")
         .set({ status: "revoked", updatedAt: new Date() })
         .where("id", "=", input.bindingId)
         .executeTakeFirstOrThrow();
+      return true;
     });
   }
 

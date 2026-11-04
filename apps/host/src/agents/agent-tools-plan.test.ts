@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentTools, opensteerAgentSkillNames } from "@opensteer/agent-tools";
+import { toolsFor, opensteerAgentSkillNames } from "@opensteer/agent-tools";
 import { RunAgentToolsPlanSchema } from "@opensteer/protocol";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 
@@ -9,14 +9,23 @@ describe("Host Run tools plan", () => {
       url: "https://host.test/internal/v1/mcp",
       token: "run-token",
       role: "work" as const,
+      accessMode: "full-access" as const,
       reach: "workspace" as const,
     };
     const plan = agentToolsPlanForRun(input);
     expect(RunAgentToolsPlanSchema.parse(plan)).toEqual(plan);
     expect(plan.tools).toEqual(
-      agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
+      toolsFor({ kind: "run", accessMode: input.accessMode, reach: { kind: input.reach } }).map(
+        ({ name }) => name,
+      ),
     );
     expect(plan.tools).toContain("integration_call");
+    const cautious = agentToolsPlanForRun({ ...input, accessMode: "approval-required" });
+    expect(cautious.tools).not.toContain("settings_write");
+    expect(cautious.toolsRevision).not.toBe(plan.toolsRevision);
+    expect(agentToolsPlanForRun({ ...input, reach: "lineage" }).tools).not.toContain(
+      "computer_list",
+    );
     expect(plan.skills).toEqual([...opensteerAgentSkillNames]);
     expect(plan.instructions).toContain("Role: work");
     expect(plan.instructions).not.toContain("opensteer:projects");

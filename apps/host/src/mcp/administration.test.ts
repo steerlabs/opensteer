@@ -12,7 +12,6 @@ import {
 import type { AgentToolHandlers } from "./handlers/index.js";
 import type { AgentCaller } from "./agent-caller.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
-import { MemoryOperationReceipts } from "./receipts.test-support.js";
 
 function fixture() {
   const userId = createId("user"),
@@ -127,7 +126,6 @@ function fixture() {
     callers: { authenticate: async () => caller },
     handlers: handlers as AgentToolHandlers,
     publicUrl: new URL("http://127.0.0.1"),
-    receipts: new MemoryOperationReceipts(),
     store: {} as never,
   });
   const inputs = {
@@ -254,9 +252,6 @@ describe("administration through the MCP service", () => {
       operationKey: "run",
     });
     expect(f.deps.store.renameRunner).toHaveBeenCalledOnce();
-  });
-  it("keeps a scoped connection inside its Workspace and away from global profile changes", async () => {
-    const f = fixture();
     f.setCaller({
       ...f.caller(),
       reach: { kind: "workspace", workspaceId: createId("workspace") },
@@ -272,7 +267,7 @@ describe("administration through the MCP service", () => {
     expect(f.deps.workspaces.setIcon).not.toHaveBeenCalled();
     expect(f.deps.browser.renameProfile).not.toHaveBeenCalled();
   });
-  it("replays an effect once, rejects changed input and rechecks reach on replay", async () => {
+  it("passes stable retry identity to the domain and rechecks reach before every retry", async () => {
     const f = fixture();
     await f.mcp.callTool("token", "computer_write", f.inputs.computer_write, {
       operationKey: "once",
@@ -280,18 +275,14 @@ describe("administration through the MCP service", () => {
     await f.mcp.callTool("token", "computer_write", f.inputs.computer_write, {
       operationKey: "once",
     });
-    expect(f.deps.store.renameRunner).toHaveBeenCalledOnce();
-    await expect(
-      f.mcp.callTool(
-        "token",
-        "computer_write",
-        { ...f.inputs.computer_write, name: "Other" },
-        { operationKey: "once" },
-      ),
-    ).rejects.toThrow("different input");
+    expect(f.deps.store.renameRunner).toHaveBeenCalledTimes(2);
+    expect(f.deps.store.renameRunner.mock.calls[0]).toEqual(
+      f.deps.store.renameRunner.mock.calls[1],
+    );
     f.setCaller({ ...f.caller(), reach: { kind: "workspace", workspaceId: f.workspaceId } });
     await expect(
       f.mcp.callTool("token", "computer_write", f.inputs.computer_write, { operationKey: "once" }),
-    ).rejects.toThrow("user-wide reach");
+    ).rejects.toThrow("unavailable to this caller");
+    expect(f.deps.store.renameRunner).toHaveBeenCalledTimes(2);
   });
 });

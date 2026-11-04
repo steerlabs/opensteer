@@ -43,7 +43,6 @@ import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js"
 import { type RunToolScope, type RunToolTokenService } from "./run-tool-tokens.js";
 import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import { AgentCallerResolver } from "../mcp/agent-caller.js";
-import { AgentOperationReceipts } from "@opensteer/database";
 
 const evidenceRoot = join(tmpdir(), "opensteer-title-review", randomUUID());
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -330,8 +329,8 @@ integration("agent-to-agent messaging round trip", () => {
       ]);
       expect(legacyFrames.some((message) => message.type === "host.show")).toBe(false);
       await expect(service.handle(f.tokenA, request)).resolves.toMatchObject({
-        status: "sent-unconfirmed",
-        connectedDevices: 1,
+        status: "already-requested",
+        connectedDevices: 0,
       });
       expect(frames.filter((message) => message.type === "host.show")).toHaveLength(1);
       await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({
@@ -1228,7 +1227,7 @@ integration("agent-to-agent messaging round trip", () => {
       publicUrl: new URL("http://localhost"),
       store: store,
       handlers: service.service.options.handlers,
-      receipts: new AgentOperationReceipts(store.database),
+
       callers: new AgentCallerResolver({
         store: store,
         runs: { authenticate: async () => claims } as unknown as RunToolTokenService,

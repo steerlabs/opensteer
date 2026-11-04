@@ -9,7 +9,7 @@ import type {
 } from "@opensteer/database";
 import { callerThread, type AgentCaller, type RunCaller } from "./agent-caller.js";
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
-import { assertCallerReach, thread as assertThreadAccess } from "./tool-access.js";
+import { assertCallerReach, write as assertThreadAccess } from "./tool-access.js";
 
 export function fingerprint(input: unknown): string {
   const value =
@@ -159,14 +159,14 @@ export function assertMutableTarget(caller: AgentCaller, target: Thread) {
   assertThreadAccess(caller, [target]);
 }
 
-export function mutationOperationKey(
-  caller: AgentCaller,
-  input: { readonly observationId?: string | undefined },
-  operationKey: string,
-): string {
-  return caller.kind === "program" && caller.program.kind === "watch"
-    ? (input.observationId ?? operationKey)
-    : operationKey;
+export function toolOperationKey(caller: AgentCaller, input: object, fallback: string): string {
+  if ("operationKey" in input && typeof input.operationKey === "string") return input.operationKey;
+  return caller.kind === "program" &&
+    caller.program.kind === "watch" &&
+    "observationId" in input &&
+    typeof input.observationId === "string"
+    ? input.observationId
+    : fallback;
 }
 
 export function threadCallerAuthority(caller: AgentCaller): ThreadCallerAuthority {

@@ -13,12 +13,13 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   agentTools,
+  toolsFor,
   agentToolAnnotations,
   connectionInstructions,
   type AgentTool,
 } from "@opensteer/agent-tools";
-import { OpensteerError, AssignmentIdSchema, ThreadIdSchema, type Thread } from "@opensteer/core";
-import type { OpensteerStore, AgentOperationReceipts } from "@opensteer/database";
+import { OpensteerError, ThreadIdSchema, type Thread } from "@opensteer/core";
+import type { OpensteerStore } from "@opensteer/database";
 import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { randomUUID } from "node:crypto";
@@ -28,12 +29,15 @@ import { mcpToolCallId } from "../integrations/mcp-call-id.js";
 import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
 import { AgentCallerResolver, type AgentCaller } from "./agent-caller.js";
 import { toolAccess } from "./tool-access.js";
-import { fingerprint } from "./operations.js";
+import { toolOperationKey } from "./operations.js";
+import type { RealtimeHub } from "@opensteer/orchestration";
 import type { AgentToolHandlers, ToolCall } from "./handlers/index.js";
 
 const maximumSessions = 256;
 const sessionIdleLifetimeMs = 30 * 60 * 1_000;
 interface McpSession {
+  readonly responses: Set<ServerResponse>;
+  readonly token: string;
   readonly origin: string;
   readonly key: string;
   readonly kind: AgentCaller["kind"];
@@ -44,29 +48,28 @@ interface McpSession {
 export class OpensteerMcpService {
   readonly #runtimeOrigin: URL;
   readonly #sessions = new Map<string, McpSession>();
-  #sessionsBeingCreated = 0;
+  readonly #activeSessions = new Set<McpSession>();
+  readonly #reservations = new Map<string, number>();
+  readonly #detachObserve: (() => void) | undefined;
   readonly options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: AgentToolHandlers;
-    readonly receipts: Pick<AgentOperationReceipts, "execute">;
-    readonly store: Pick<
-      OpensteerStore,
-      "getThreadForOwner" | "findMainWorkspaceForOwner" | "getAssignmentForOwner"
-    >;
+    readonly realtime?: Pick<RealtimeHub, "observe">;
+    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner">;
     readonly publicUrl: URL;
   };
   constructor(options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: AgentToolHandlers;
-    readonly receipts: Pick<AgentOperationReceipts, "execute">;
-    readonly store: Pick<
-      OpensteerStore,
-      "getThreadForOwner" | "findMainWorkspaceForOwner" | "getAssignmentForOwner"
-    >;
+    readonly realtime?: Pick<RealtimeHub, "observe">;
+    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner">;
     readonly publicUrl: URL;
   }) {
     this.options = options;
     this.#runtimeOrigin = options.publicUrl;
+    this.#detachObserve = options.realtime?.observe((change) => {
+      if (change.type.startsWith("host.")) void this.#revalidateConnections();
+    });
   }
   /**
    * `connectionOrigin` is the approved connection route this request arrived
@@ -89,7 +92,9 @@ export class OpensteerMcpService {
     }
     let authorization: AgentCaller;
     try {
-      authorization = await this.options.callers.authenticate(token);
+      authorization =
+        ((request as IncomingMessage & { auth?: AuthInfo }).auth?.extra?.caller as
+          AgentCaller | undefined) ?? (await this.options.callers.authenticate(token));
     } catch {
       response.setHeader(
         "www-authenticate",
@@ -113,7 +118,7 @@ export class OpensteerMcpService {
       clientId: authorization.key,
       scopes: [],
       token,
-      extra: { disconnected: disconnected.signal },
+      extra: { disconnected: disconnected.signal, caller: authorization },
     };
     const sessionId = singleHeader(request.headers["mcp-session-id"]);
     let session: McpSession;
@@ -130,6 +135,7 @@ export class OpensteerMcpService {
         await this.#serveDetached(request, response, body, {
           ...authorization,
           origin,
+          token,
           sessionId,
         });
         return;
@@ -141,41 +147,50 @@ export class OpensteerMcpService {
         sendJsonRpcError(response, 400, "A valid MCP initialization request is required");
         return;
       }
-      if (this.#sessions.size + this.#sessionsBeingCreated >= maximumSessions) {
+      if (!this.#reserve(authorization)) {
         sendJsonRpcError(response, 503, "The Host has reached its MCP session limit");
         return;
       }
-      this.#sessionsBeingCreated += 1;
       try {
-        session = await this.#createSession({ ...authorization, origin });
+        session = await this.#createSession({ ...authorization, origin, token });
         createdSession = true;
       } catch (error) {
-        this.#sessionsBeingCreated -= 1;
+        this.#release(authorization.key);
         sendJsonRpcError(response, 500, safeMessage(error, safeMessageOptions));
         return;
       }
     }
 
+    session.responses.add(response);
     try {
       await session.transport.handleRequest(request, response, body);
     } catch (error) {
       if (createdSession) {
         const initializedId = session.transport.sessionId;
         if (initializedId) this.#sessions.delete(initializedId);
+        this.#activeSessions.delete(session);
         await session.server.close().catch(() => undefined);
       }
       if (!response.headersSent) {
         sendJsonRpcError(response, 500, safeMessage(error, safeMessageOptions));
       }
     } finally {
-      if (createdSession) this.#sessionsBeingCreated -= 1;
+      session.responses.delete(response);
+      if (createdSession) this.#release(authorization.key);
     }
   }
 
   async close(): Promise<void> {
-    const sessions = [...this.#sessions.values()];
+    this.#detachObserve?.();
+    const sessions = [...this.#activeSessions];
+    this.#activeSessions.clear();
     this.#sessions.clear();
-    await Promise.allSettled(sessions.map(({ server }) => server.close()));
+    await Promise.allSettled(
+      sessions.map(async (session) => {
+        for (const response of session.responses) response.destroy();
+        await session.server.close();
+      }),
+    );
   }
 
   /**
@@ -191,7 +206,11 @@ export class OpensteerMcpService {
     request: IncomingMessage,
     response: ServerResponse,
     body: unknown,
-    input: AgentCaller & { readonly origin: URL; readonly sessionId: string },
+    input: AgentCaller & {
+      readonly token: string;
+      readonly origin: URL;
+      readonly sessionId: string;
+    },
   ): Promise<void> {
     if (request.method === "DELETE") {
       response.writeHead(204).end();
@@ -202,7 +221,17 @@ export class OpensteerMcpService {
       response.writeHead(405, { allow: "POST, DELETE" }).end();
       return;
     }
-    const session = await this.#createSession(input);
+    if (!this.#reserve(input)) {
+      sendJsonRpcError(response, 503, "The Host has reached its MCP session limit");
+      return;
+    }
+    let session: McpSession | undefined;
+    try {
+      session = await this.#createSession(input);
+    } finally {
+      this.#release(input.key);
+    }
+    session.responses.add(response);
     try {
       await session.transport.handleRequest(request, response, body);
     } catch (error) {
@@ -210,6 +239,8 @@ export class OpensteerMcpService {
         sendJsonRpcError(response, 500, safeMessage(error, safeMessageOptions));
       }
     } finally {
+      session.responses.delete(response);
+      this.#activeSessions.delete(session);
       await session.server.close().catch(() => undefined);
     }
   }
@@ -219,7 +250,11 @@ export class OpensteerMcpService {
    * serves an id it no longer holds.
    */
   async #createSession(
-    input: AgentCaller & { readonly origin: URL; readonly sessionId?: string },
+    input: AgentCaller & {
+      readonly token: string;
+      readonly origin: URL;
+      readonly sessionId?: string;
+    },
   ): Promise<McpSession> {
     let session!: McpSession;
     const transport = new StreamableHTTPServerTransport(
@@ -254,6 +289,8 @@ export class OpensteerMcpService {
       throw error;
     }
     session = {
+      responses: new Set(),
+      token: input.token,
       origin: input.origin.origin,
       key: input.key,
       kind: input.kind,
@@ -261,7 +298,9 @@ export class OpensteerMcpService {
       server,
       transport,
     };
+    this.#activeSessions.add(session);
     transport.onclose = () => {
+      this.#activeSessions.delete(session);
       const id = transport.sessionId;
       if (id) this.#sessions.delete(id);
     };
@@ -277,9 +316,7 @@ export class OpensteerMcpService {
       },
     );
     const advertisedTools: Tool[] = [];
-    for (const tool of agentTools.filter((spec) =>
-      spec.callers.some((kind) => kind === caller.kind),
-    )) {
+    for (const tool of toolsFor(caller)) {
       const annotations = agentToolAnnotations(tool);
       const registration = {
         annotations,
@@ -300,7 +337,9 @@ export class OpensteerMcpService {
         try {
           const token = extra.authInfo?.token;
           if (!token) throw new Error("MCP authorization is missing");
+          const resolvedCaller = extra.authInfo?.extra?.caller as AgentCaller | undefined;
           const result = await this.callTool(token, tool.name, args, {
+            ...(resolvedCaller ? { caller: resolvedCaller } : {}),
             operationKey: mcpToolCallId(
               caller.key,
               detachedSessionId ?? extra.sessionId,
@@ -348,24 +387,25 @@ export class OpensteerMcpService {
     bearer: string,
     name: string,
     value: unknown,
-    identity: { readonly operationKey: string; readonly signal?: AbortSignal },
+    identity: {
+      readonly operationKey: string;
+      readonly signal?: AbortSignal;
+      readonly caller?: AgentCaller;
+    },
   ): Promise<Record<string, unknown>> {
     const found = agentTools.find((spec) => spec.name === name);
     if (!found) throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
     const tool = found;
     const input = tool.input.parse(value);
-    let caller = await this.options.callers.authenticate(bearer);
-    let key =
-      "operationKey" in input && typeof input.operationKey === "string"
-        ? input.operationKey
-        : identity.operationKey;
+    let caller = identity.caller ?? (await this.options.callers.authenticate(bearer));
+    const key = toolOperationKey(caller, input, identity.operationKey);
     const check = async () => {
-      if (!tool.callers.some((kind) => kind === caller.kind))
+      toolAccess[tool.access](caller, await this.#targets(caller, tool, input));
+      if (!toolsFor(caller).some((spec) => spec.name === tool.name))
         throw new OpensteerError({
           code: "forbidden",
           message: "This tool is unavailable to this caller",
         });
-      toolAccess[tool.access](caller, await this.#targets(caller, tool, input));
       const authorize = this.options.handlers[tool.name].authorize as
         ((call: ToolCall<typeof tool.name>) => Promise<void>) | undefined;
       await authorize?.({
@@ -375,16 +415,7 @@ export class OpensteerMcpService {
         ...(identity.signal ? { signal: identity.signal } : {}),
       });
     };
-    if (
-      caller.kind === "program" &&
-      caller.program.kind === "watch" &&
-      (tool.name === "thread_delegate" || tool.name === "thread_message") &&
-      "observationId" in input &&
-      input.observationId &&
-      !("operationKey" in input && input.operationKey)
-    )
-      key = `observation:${input.observationId}`;
-    const invoke = async (recover = false) => {
+    const invoke = async () => {
       const call: ToolCall<typeof tool.name> = {
         checkLive: async () => {
           caller = await this.options.callers.authenticate(bearer);
@@ -397,28 +428,15 @@ export class OpensteerMcpService {
       };
       // A registry key fixes both schemas and the handler. Parsing above supplies
       // the corresponding member of the input union to the exhaustive map.
-      const handler = (
-        recover ? this.options.handlers[tool.name].recover : this.options.handlers[tool.name]
-      ) as (call: ToolCall<typeof tool.name>) => Promise<unknown>;
+      const handler = this.options.handlers[tool.name] as (
+        call: ToolCall<typeof tool.name>,
+      ) => Promise<unknown>;
       return tool.output.parse(await handler(call)) as Record<string, unknown>;
     };
-    if (tool.access === "read") {
-      await check();
-      return invoke();
-    }
-    const result = await this.options.receipts.execute({
-      callerKey: caller.key,
-      operationKey: key,
-      tool: tool.name,
-      fingerprint: fingerprint(input),
-      check: async () => {
-        await check();
-      },
-      invoke: () => invoke(),
-      ...(this.options.handlers[tool.name].recover ? { recover: () => invoke(true) } : {}),
-    });
-    return tool.output.parse(result) as Record<string, unknown>;
+    await check();
+    return invoke();
   }
+
   async #targets(caller: AgentCaller, tool: AgentTool, input: object): Promise<Thread[]> {
     const ids: Thread["id"][] = [];
     const record = input as Record<string, unknown>;
@@ -433,24 +451,12 @@ export class OpensteerMcpService {
         if (id.success) ids.push(id.data);
       }
     };
-    await add(record.threadId);
-    await add(record.anchorThreadId);
-    if (
-      tool.name === "person_show" &&
-      record.target &&
-      typeof record.target === "object" &&
-      "threadId" in record.target
-    )
-      await add(record.target.threadId);
-    if (tool.name === "assignment_cancel") {
-      const assignment = await this.options.store.getAssignmentForOwner({
-        assignmentId: AssignmentIdSchema.parse(record.assignmentId),
-        ownerId: caller.userId,
-      });
-      if (!assignment)
-        throw new OpensteerError({ code: "forbidden", message: "Assignment is unavailable" });
-      ids.push(assignment.workerThreadId);
-    }
+    for (const field of tool.targetFields ?? []) await add(record[field]);
+    const targets = this.options.handlers[tool.name].targets as
+      ((call: ToolCall<typeof tool.name>) => Promise<readonly string[]>) | undefined;
+    if (targets)
+      for (const value of await targets({ caller, input } as ToolCall<typeof tool.name>))
+        await add(value);
     return Promise.all(
       [...new Set(ids)].map(async (id) => {
         const thread = await this.options.store.getThreadForOwner(id, caller.userId);
@@ -460,11 +466,50 @@ export class OpensteerMcpService {
       }),
     );
   }
+  #reserve(caller: AgentCaller): boolean {
+    const reserved = [...this.#reservations.values()].reduce((sum, count) => sum + count, 0);
+    const count = this.#activeSessions.size + reserved;
+    const own =
+      [...this.#activeSessions].filter((s) => s.key === caller.key).length +
+      (this.#reservations.get(caller.key) ?? 0);
+    if (
+      count >= maximumSessions ||
+      (caller.kind === "connection" && (own >= 8 || count >= maximumSessions - 32))
+    )
+      return false;
+    this.#reservations.set(caller.key, (this.#reservations.get(caller.key) ?? 0) + 1);
+    return true;
+  }
+  #release(key: string) {
+    const reservation = this.#reservations.get(key);
+    if (reservation === 1) this.#reservations.delete(key);
+    else if (reservation) this.#reservations.set(key, reservation - 1);
+  }
+  async #revalidateConnections() {
+    await Promise.allSettled(
+      [...this.#activeSessions]
+        .filter((s) => s.kind === "connection")
+        .map(async (session) => {
+          try {
+            await this.options.callers.authenticate(session.token);
+          } catch {
+            this.#activeSessions.delete(session);
+            for (const [id, held] of this.#sessions)
+              if (held === session) this.#sessions.delete(id);
+            for (const response of session.responses) response.destroy();
+            await session.server.close();
+          }
+        }),
+    );
+  }
   async #sweep(now = Date.now()): Promise<void> {
     const expired = [...this.#sessions.entries()].filter(
       ([, session]) => now - session.lastSeenAt > sessionIdleLifetimeMs,
     );
-    for (const [id] of expired) this.#sessions.delete(id);
+    for (const [id, session] of expired) {
+      this.#sessions.delete(id);
+      this.#activeSessions.delete(session);
+    }
     await Promise.allSettled(expired.map(([, session]) => session.server.close()));
   }
 }

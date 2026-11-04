@@ -1,13 +1,8 @@
 import { ThreadService } from "../../threads/thread-service.js";
 import { ThreadWaitService } from "../../threads/thread-wait.js";
-import {
-  readThreadWaitSnapshot,
-  AgentOperationReceipts,
-  AgentConnectionStore,
-} from "@opensteer/database";
+import { readThreadWaitSnapshot } from "@opensteer/database";
 import { withDatabaseTransaction } from "@opensteer/database";
 import { assertThreadCaller } from "@opensteer/database";
-import { thread_write as threadWriteSpec } from "@opensteer/agent-tools/tools";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import { SpecialistStore } from "@opensteer/database";
@@ -59,7 +54,6 @@ import {
   fingerprint,
   idempotencyKey,
   mutationAdmission,
-  mutationOperationKey,
   operationId,
   requireRun,
   runAdmission,
@@ -292,13 +286,13 @@ export class ProductToolHandlers {
   }
 
   async environment_list({ caller, input }: ToolCall<"environment_list">) {
-    const currentThread = callerThread(caller);
+    const currentThread = caller.kind === "connection" ? undefined : callerThread(caller);
     const claims = { requestedBy: caller.userId };
 
     const result = await environmentDiscovery({
       store: this.#store,
       userId: claims.requestedBy,
-      parent: currentThread,
+      ...(currentThread ? { parent: currentThread } : {}),
       input,
       connected: this.#isEnvironmentConnected,
       canRun: this.#canRunHarness,
@@ -438,7 +432,7 @@ export class ProductToolHandlers {
       ...(input.aroundMessageId ? { aroundMessageId: input.aroundMessageId } : {}),
       ...(input.before ? { before: input.before } : {}),
       maxItems: input.maxMessages,
-      maxBytes: 400 * 1_024,
+      maxBytes: 256 * 1_024,
       ownerId: claims.requestedBy,
       threadId: input.threadId,
     });
@@ -459,52 +453,80 @@ export class ProductToolHandlers {
         page.messages.map(({ addressedToUserId: _addressedToUserId, ...message }) => message),
       ),
       thread,
+      execution: {
+        threadId: thread.id,
+        environmentId: thread.environmentId,
+        harnessInstanceId: thread.harnessInstanceId,
+        modelSelection: thread.modelSelection,
+      },
+      queue: await this.#queue(caller, thread.id),
       window: page.window,
     };
   }
 
   async thread_write({ caller, input, operationKey }: ToolCall<"thread_write">) {
+    if (caller.kind === "connection" && !input.threadId)
+      throw badRequest("Connected agents must name threadId");
     if (input.action === "interrupt") {
-      if (caller.kind === "connection" && !input.threadId)
-        throw badRequest("Connected agents must name threadId");
       const threadId = input.threadId ?? callerThread(caller).id;
-      const target = await this.#threads.assertTarget(caller, threadId);
-      const active = await this.#store.database
-        .selectFrom("runs")
-        .select("id")
-        .where("threadId", "=", threadId)
-        .where("status", "in", ["queued", "starting", "running", "waiting"])
-        .orderBy("runOrdinal", "asc")
-        .limit(1)
+      await this.#threads.assertTarget(caller, threadId);
+      const interruptKey = idempotencyKey(
+        caller,
+        operationId(caller, operationKey, "thread_write"),
+        "interrupt",
+      );
+      const previous = await this.#store.database
+        .selectFrom("commands")
+        .select("runId")
+        .where("requestedBy", "=", caller.userId)
+        .where("idempotencyKey", "=", interruptKey)
+        .where("type", "=", "run.interrupt")
         .executeTakeFirst();
-      const result = threadWriteSpec.output.parse({
-        thread: await this.#writtenThreadSummary(target, caller.userId),
+      const active = previous?.runId
+        ? { id: previous.runId }
+        : await this.#store.database
+            .selectFrom("runs")
+            .select("id")
+            .where("threadId", "=", threadId)
+            .where("status", "in", ["queued", "starting", "running", "waiting"])
+            .orderBy("runOrdinal", "asc")
+            .limit(1)
+            .executeTakeFirst();
+      if (active)
+        await this.#threads.interrupt(caller, {
+          type: "run.interrupt",
+          threadId,
+          runId: active.id,
+          idempotencyKey: interruptKey,
+        });
+      const updated = await this.#threads.assertTarget(caller, threadId);
+      return {
+        thread: await this.#writtenThreadSummary(updated, caller.userId),
         doneWhenRunEnds: false,
         ...(active ? { interruptedRunId: active.id } : {}),
-      });
-      if (active)
-        await this.#threads.interrupt(
+      };
+    }
+    if (caller.kind !== "run") {
+      const threadId = input.threadId ?? callerThread(caller).id;
+      const shared = {
+        threadId,
+        idempotencyKey: idempotencyKey(
           caller,
-          {
-            type: "run.interrupt",
-            threadId,
-            runId: active.id,
-            idempotencyKey: idempotencyKey(
-              caller,
-              operationId(caller, operationKey, "thread_write"),
-              "interrupt",
-            ),
-          },
-          (tx) =>
-            AgentOperationReceipts.completeInTransaction(tx, {
-              callerKey: caller.key,
-              operationKey,
-              tool: "thread_write",
-              fingerprint: fingerprint(input),
-              result,
-            }),
-        );
-      return result;
+          operationId(caller, operationKey, "thread_write"),
+          "thread.write",
+        ),
+      };
+      const write =
+        input.action === "rename"
+          ? { ...shared, action: input.action, title: input.title! }
+          : input.action === "set_icon"
+            ? { ...shared, action: input.action, icon: input.icon! }
+            : { ...shared, action: input.action };
+      const result = await this.#threads.write(caller, write);
+      return {
+        thread: await this.#writtenThreadSummary(result.thread, caller.userId),
+        doneWhenRunEnds: result.doneWhenRunEnds,
+      };
     }
     const claims = requireRun(caller).claims;
     const requestId = operationId(caller, operationKey, "thread_write");
@@ -549,6 +571,14 @@ export class ProductToolHandlers {
     };
   }
 
+  async assignmentTargets({ caller, input }: ToolCall<"assignment_cancel">) {
+    const assignment = await this.#store.getAssignmentForOwner({
+      assignmentId: input.assignmentId,
+      ownerId: caller.userId,
+    });
+    if (!assignment) throw forbidden("Assignment is unavailable");
+    return [assignment.workerThreadId];
+  }
   async assignment_cancel({ caller, input, operationKey }: ToolCall<"assignment_cancel">) {
     const claims = requireRun(caller).claims;
     const requestId = operationId(caller, operationKey, "assignment_cancel");
@@ -574,6 +604,13 @@ export class ProductToolHandlers {
   }
 
   async request_list({ caller, input }: ToolCall<"request_list">) {
+    if (caller.kind === "connection")
+      return this.#store.requests.connectionPage({
+        userId: caller.userId,
+        limit: input.limit,
+        ...(input.before ? { before: input.before } : {}),
+        ...(caller.reach.kind === "workspace" ? { workspaceId: caller.reach.workspaceId } : {}),
+      });
     const claims = callerContext(caller);
 
     const page = await this.#store.requests.visiblePage({
@@ -715,7 +752,7 @@ export class ProductToolHandlers {
       });
       return {
         assignmentId: null,
-        thread: created,
+        thread: await this.#store.getThreadForOwner(created.id, caller.userId),
         input: delivered.input,
         message: delivered.message,
         run: delivered.run,
@@ -732,11 +769,7 @@ export class ProductToolHandlers {
           return forwarded;
         }),
       };
-    const requestId = operationId(
-      caller,
-      mutationOperationKey(caller, input, operationKey),
-      "thread_delegate",
-    );
+    const requestId = operationId(caller, operationKey, "thread_delegate");
 
     if (caller.kind !== "run" && input.places?.length)
       throw badRequest("Program delegation cannot forward place references");
@@ -1022,11 +1055,7 @@ export class ProductToolHandlers {
 
   async thread_message({ caller, input, operationKey }: ToolCall<"thread_message">) {
     const anchor = caller.kind === "connection" ? null : callerThread(caller);
-    const requestId = operationId(
-      caller,
-      mutationOperationKey(caller, input, operationKey),
-      "thread_message",
-    );
+    const requestId = operationId(caller, operationKey, "thread_message");
     const observationId = input.observationId ?? requestId;
     const destination =
       input.threadId === "home"
@@ -1064,7 +1093,7 @@ export class ProductToolHandlers {
       input: delivered.input,
       message: delivered.message,
       run: delivered.run,
-      thread,
+      thread: await this.#store.getThreadForOwner(thread.id, caller.userId),
     };
   }
   async #prepareConnectionDelegation(
@@ -1146,23 +1175,20 @@ export class ProductToolHandlers {
   }
   async thread_configure({ caller, input, operationKey }: ToolCall<"thread_configure">) {
     const target = await this.#threads.assertTarget(caller, input.threadId);
-    const thread =
-      input.action === "read"
-        ? target
-        : (
-            await this.#threads.configure(caller, {
-              type: "thread.execution.update",
-              threadId: target.id,
-              harnessInstanceId: input.harnessInstanceId ?? target.harnessInstanceId,
-              modelSelection: input.modelSelection ?? target.modelSelection,
-              ...(input.continuation ? { continuation: input.continuation } : {}),
-              idempotencyKey: idempotencyKey(
-                caller,
-                operationId(caller, operationKey, "thread_configure"),
-                "configure",
-              ),
-            })
-          ).thread;
+    const thread = (
+      await this.#threads.configure(caller, {
+        type: "thread.execution.update",
+        threadId: target.id,
+        harnessInstanceId: input.harnessInstanceId ?? target.harnessInstanceId,
+        modelSelection: input.modelSelection ?? target.modelSelection,
+        ...(input.continuation ? { continuation: input.continuation } : {}),
+        idempotencyKey: idempotencyKey(
+          caller,
+          operationId(caller, operationKey, "thread_configure"),
+          "configure",
+        ),
+      })
+    ).thread;
     return {
       threadId: thread.id,
       environmentId: thread.environmentId,
@@ -1208,11 +1234,15 @@ export class ProductToolHandlers {
       case "resume":
         await this.#threads.resume(caller, { ...command, type: "thread.inputQueue.resume" });
         break;
-      case "list":
-        break;
     }
+    return {
+      ...(await this.#queue(caller, input.threadId)),
+      ...(changed ? { input: changed.input } : {}),
+    };
+  }
+  async #queue(caller: AgentCaller, threadId: Thread["id"]) {
     const queue = await this.#store.getThreadInputQueue({
-      threadId: input.threadId,
+      threadId,
       requestedBy: caller.userId,
       authority: threadCallerAuthority(caller),
     });
@@ -1237,12 +1267,10 @@ export class ProductToolHandlers {
           },
         };
       }),
-      ...(changed ? { input: changed.input } : {}),
     };
   }
   async thread_wait(call: ToolCall<"thread_wait">) {
     const { caller, input } = call;
-    const revoked = new AbortController();
     let runId: import("@opensteer/core").RunId | undefined;
     let afterSequence: import("@opensteer/core").Sequence | undefined;
     const wait = new ThreadWaitService({
@@ -1252,6 +1280,7 @@ export class ProductToolHandlers {
           if (
             ("threadId" in change &&
               (change.threadId === input.threadId || change.threadId === anchorId)) ||
+            (caller.kind === "connection" && change.type.startsWith("host.")) ||
             change.type === "host.machines.changed" ||
             (caller.kind === "program" && change.type === "host.triggers-changed")
           )
@@ -1260,14 +1289,9 @@ export class ProductToolHandlers {
         const detachMembership = this.#store.onWorkspaceMembershipChanged((membership) => {
           if (membership.userId === caller.userId) wake();
         });
-        const detachConnection = new AgentConnectionStore(this.#store.database).onRevoked((id) => {
-          if (caller.kind === "connection" && id === caller.connectionId)
-            revoked.abort(forbidden("The connected agent credential is invalid or expired."));
-        });
         return () => {
           detach();
           detachMembership();
-          detachConnection();
         };
       },
       read: async () => {
@@ -1306,7 +1330,7 @@ export class ProductToolHandlers {
     });
     return wait.wait({
       timeoutMs: input.timeoutMs,
-      signal: call.signal ? AbortSignal.any([call.signal, revoked.signal]) : revoked.signal,
+      ...(call.signal ? { signal: call.signal } : {}),
     });
   }
   async #writtenThreadSummary(thread: Thread, requestedBy: RunToolScope["requestedBy"]) {

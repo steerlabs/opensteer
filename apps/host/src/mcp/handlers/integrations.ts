@@ -17,7 +17,7 @@ import {
   integrationSchemaDigest,
 } from "@opensteer/integration-core/digest";
 import { integrationToolEffect } from "@opensteer/integration-core/effect";
-import type { CallableIntegrationTool } from "@opensteer/database";
+import type { IntegrationRequester, CallableIntegrationTool } from "@opensteer/database";
 import { androidPhoneDefinitionId, computerUseToolRequiredSentence } from "@opensteer/protocol";
 import {
   computerUseDefinitionId,
@@ -81,6 +81,20 @@ type AnyIntegrationToolsScope = (IntegrationToolsScope | IntegrationToolsWatchSc
   readonly reach?: import("@opensteer/core").ThreadReachScope;
 };
 
+type IntegrationReadScope =
+  | AnyIntegrationToolsScope
+  | {
+      readonly requestedBy: UserId;
+      readonly workspaceId: WorkspaceId;
+      readonly connectionId: string;
+      readonly threadId?: never;
+    };
+function discoveryRequester(scope: IntegrationReadScope): IntegrationRequester {
+  const common = { ownerUserId: scope.requestedBy, workspaceId: scope.workspaceId };
+  return "connectionId" in scope
+    ? { ...common, connectionId: scope.connectionId }
+    : { ...common, threadId: scope.threadId };
+}
 type DiscoveryInventoryEntry = Awaited<
   ReturnType<IntegrationPlatformService["listDiscoveryInventory"]>
 >[number];
@@ -109,6 +123,11 @@ export class IntegrationToolHandlers {
     this.#platform = options.platform;
   }
 
+  async #readScope(caller: AgentCaller): Promise<IntegrationReadScope> {
+    return caller.kind === "connection"
+      ? this.#platform.store.connectionDiscoveryScope(caller.userId, caller.connectionId)
+      : integrationScope(caller);
+  }
   async authorizeCall(call: ToolCall<"integration_call">): Promise<void> {
     await this.#resolveCallableTool(integrationScope(call.caller), call.input.toolRef, true);
   }
@@ -116,7 +135,7 @@ export class IntegrationToolHandlers {
     const input = call.input;
     return structured(
       await this.#search(
-        integrationScope(call.caller),
+        await this.#readScope(call.caller),
         input.query,
         input.limit,
         input.offset,
@@ -126,7 +145,7 @@ export class IntegrationToolHandlers {
     );
   }
   async integration_describe(call: ToolCall<"integration_describe">) {
-    const result = await this.#describe(integrationScope(call.caller), call.input);
+    const result = await this.#describe(await this.#readScope(call.caller), call.input);
     return { description: result.content.map((c) => c.text).join("\n") };
   }
   async integration_call(call: ToolCall<"integration_call">) {
@@ -168,7 +187,7 @@ export class IntegrationToolHandlers {
       call.signal ?? AbortSignal.timeout(100_000),
     );
   }
-  async #describe(scope: AnyIntegrationToolsScope, input: z.infer<typeof DescribeInputSchema>) {
+  async #describe(scope: IntegrationReadScope, input: z.infer<typeof DescribeInputSchema>) {
     const callable = await this.#resolveCallableTool(scope, input.toolRef);
     const stored = await this.#platform.store.getToolSchemas(callable.tool.id);
     if (
@@ -227,15 +246,13 @@ export class IntegrationToolHandlers {
   }
 
   async #resolveCallableTool(
-    scope: AnyIntegrationToolsScope,
+    scope: IntegrationReadScope,
     toolRef: string,
     computerCall = false,
   ): Promise<CallableIntegrationTool> {
     const reference = IntegrationToolRefSchema.parse(toolRef);
     const callable = await this.#platform.listCallableTools({
-      ownerUserId: scope.requestedBy,
-      threadId: scope.threadId,
-      workspaceId: scope.workspaceId,
+      ...discoveryRequester(scope),
     });
     const selected = callable.find(
       ({ grant, tool }) => grant.id === reference.grantId && tool.id === reference.toolId,
@@ -243,9 +260,7 @@ export class IntegrationToolHandlers {
     if (!selected) {
       const [inventory, grants] = await Promise.all([
         this.#platform.listDiscoveryInventory({
-          ownerUserId: scope.requestedBy,
-          threadId: scope.threadId,
-          workspaceId: scope.workspaceId,
+          ...discoveryRequester(scope),
         }),
         this.#platform.store.listGrants({
           ownerUserId: scope.requestedBy,
@@ -329,7 +344,7 @@ export class IntegrationToolHandlers {
    * Workspace, by requested connection. Discovery reads them so it never tells
    * the model to ask a second time.
    */
-  async #pendingComputerApprovals(scope: AnyIntegrationToolsScope) {
+  async #pendingComputerApprovals(scope: IntegrationReadScope) {
     const [setupRequests, accessRequests] = await Promise.all([
       this.#platform.store.listComputerAppSetupRequests(scope.requestedBy),
       this.#platform.store.requests.listPendingIntegrationAccessRequests(scope.requestedBy),
@@ -363,7 +378,7 @@ export class IntegrationToolHandlers {
   }
 
   async #search(
-    scope: AnyIntegrationToolsScope,
+    scope: IntegrationReadScope,
     query: string,
     limit: number,
     offset: number,
@@ -416,9 +431,7 @@ export class IntegrationToolHandlers {
           inventory.machines,
         ),
         this.#platform.listCallableTools({
-          ownerUserId: scope.requestedBy,
-          threadId: scope.threadId,
-          workspaceId: scope.workspaceId,
+          ...discoveryRequester(scope),
         }),
         this.#pendingComputerApprovals(scope),
       ]);
@@ -484,14 +497,10 @@ export class IntegrationToolHandlers {
     }
     const [inventory, callable] = await Promise.all([
       this.#platform.listDiscoveryInventory({
-        ownerUserId: scope.requestedBy,
-        threadId: scope.threadId,
-        workspaceId: scope.workspaceId,
+        ...discoveryRequester(scope),
       }),
       this.#platform.listCallableTools({
-        ownerUserId: scope.requestedBy,
-        threadId: scope.threadId,
-        workspaceId: scope.workspaceId,
+        ...discoveryRequester(scope),
       }),
     ]);
     const definitionById = new Map(

@@ -1,18 +1,8 @@
 import { z } from "zod";
 
-/**
- * What a tool does to Opensteer, which decides the checks every call passes
- * before its handler runs and again when its effect commits:
- *
- * - `read` reads records within the caller's reach.
- * - `self` acts only on the caller's own Thread, Run or person.
- * - `thread` changes an existing Thread within reach whose access mode does
- *   not exceed the caller's.
- * - `work` starts or redirects work, which must not exceed the caller's
- *   access mode or resources.
- * - `settings` changes the Deployment or a Workspace, and needs full access.
- */
-export const AgentToolAccessSchema = z.enum(["read", "self", "thread", "work", "settings"]);
+/** Reads stay within reach; writes also enforce the caller's access ceiling.
+ * Settings require full access as well as write authority. */
+export const AgentToolAccessSchema = z.enum(["read", "write", "settings"]);
 export type AgentToolAccess = z.infer<typeof AgentToolAccessSchema>;
 
 /**
@@ -35,6 +25,7 @@ export interface AgentToolSpec<
   Output extends z.ZodType = z.ZodType,
 > {
   readonly access: AgentToolAccess;
+  readonly minimumReach?: "workspace" | "user";
   /** Overrides the schema derived from `input` when a union reads poorly to models. */
   readonly advertisedInputSchema?: Readonly<Record<string, unknown>>;
   readonly callers: readonly AgentCallerKind[];
@@ -46,6 +37,7 @@ export interface AgentToolSpec<
   readonly openWorld?: true;
   readonly output: Output;
   readonly title: string;
+  readonly targetFields?: readonly string[];
 }
 
 export type AnyAgentToolSpec = AgentToolSpec<string, z.ZodObject, z.ZodType>;

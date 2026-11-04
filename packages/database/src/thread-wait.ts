@@ -83,8 +83,17 @@ export function readThreadWaitSnapshot(
           ? runQuery.where("id", "=", input.runId)
           : runQuery.orderBy("runOrdinal", "desc").limit(1)
       ).executeTakeFirst();
+      const pendingRequest = await tx
+        .selectFrom("requests")
+        .select(["id", "kind"])
+        .where("originatingThreadId", "=", input.threadId)
+        .where("status", "=", "pending")
+        .orderBy("createdAt", "asc")
+        .limit(1)
+        .executeTakeFirst();
       return {
         ...(run ? { run } : {}),
+        ...(pendingRequest ? { pendingRequest } : {}),
         messages: boundedSerializedPrefix(messages.map(messageFromRow), 100, 400 * 1024).items,
         lastSequence: latest ? SequenceSchema.parse(latest.sequence) : undefined,
       };

@@ -36,5 +36,5 @@ export const environment_list = defineAgentTool({
   input: EnvironmentListInputSchema,
   output: EnvironmentDiscoverySchema,
   access: "read",
-  callers: ["run", "program"] as const,
+  callers: ["run", "program", "connection"] as const,
 });

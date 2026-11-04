@@ -12,16 +12,17 @@ export const trigger_read = defineAgentTool({
   input: TriggerReadInputSchema,
   output: TriggerOutputSchema,
   access: "read",
-  callers: ["run", "program"] as const,
+  callers: ["run", "program", "connection"] as const,
 });
 
 export const trigger_write = defineAgentTool({
   name: "trigger_write",
+  targetFields: ["anchorThreadId"],
   title: "Manage Triggers",
   description:
     "Create or control schedules, webhooks and watches. Before writing or changing a program, load opensteer:triggers. Timing controls require anchor access no higher than yours. Creation, code changes, manual runs and archiving require full-access within reach. create: name, anchorThreadId (home is Chat), program, source. update: triggerId, expectedRevisionId, changed fields. set_status: triggerId, status. set_next_fire: triggerId, future ISO nextFireAt; moves the next unclaimed cron run, then cadence resumes. run: non-archived schedule/webhook triggerId, optional payload. cancel: triggerId, optional occurrenceId (omit for all pending). Started work keeps running. Returns Trigger/occurrence state. Tell the person when changing what runs.",
   input: TriggerWriteInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: TriggerOutputSchema,
-  access: "work",
+  access: "write",
   callers: ["run", "program"] as const,
 });

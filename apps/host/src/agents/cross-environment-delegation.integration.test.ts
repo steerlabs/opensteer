@@ -47,7 +47,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { type RunToolScope, type RunToolTokenService } from "./run-tool-tokens.js";
 import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import { AgentCallerResolver } from "../mcp/agent-caller.js";
-import { AgentOperationReceipts } from "@opensteer/database";
 import { ContinuationService } from "./continuation-service.js";
 import { HostCommandDispatcher } from "./dispatcher.js";
 
@@ -2686,7 +2685,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       publicUrl: url,
       store: store,
       handlers: controlService.service.options.handlers,
-      receipts: new AgentOperationReceipts(store.database),
+
       callers: new AgentCallerResolver({
         store: store,
         runs: {

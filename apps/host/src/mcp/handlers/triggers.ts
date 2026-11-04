@@ -13,6 +13,10 @@ export interface AgentTriggerManager {
     ownerId: UserId,
     input: TriggerControlInput,
     actorThreadId: ThreadId | null,
+    context?: {
+      readonly reach?: import("@opensteer/core").ThreadReachScope;
+      readonly operationKey?: string;
+    },
   ): Promise<unknown>;
 }
 
@@ -36,7 +40,8 @@ export class TriggerToolHandlers {
             triggerId: requiredTriggerToolField(input.triggerId, "triggerId", context),
             occurrenceLimit: input.occurrenceLimit,
           },
-      callerThread(caller).id,
+      caller.kind === "connection" ? null : callerThread(caller).id,
+      { reach: caller.reach },
     );
   }
   async trigger_write({ caller, input, operationKey }: ToolCall<"trigger_write">) {
@@ -46,7 +51,9 @@ export class TriggerToolHandlers {
       write,
       idempotencyKey(caller, requestId, "trigger.create"),
     );
-    return this.triggers.manage(caller.userId, operation, callerThread(caller).id);
+    return this.triggers.manage(caller.userId, operation, callerThread(caller).id, {
+      operationKey: idempotencyKey(caller, requestId, "trigger.write"),
+    });
   }
 }
 function triggerWriteOperation(write: TriggerWriteInput, requestId: string): TriggerControlInput {

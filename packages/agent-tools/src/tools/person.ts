@@ -14,7 +14,7 @@ export const person_message = defineAgentTool({
     .strictObject({ message: PersonMessageSchema })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: PersonMessageOutputSchema,
-  access: "self",
+  access: "write",
   callers: ["run"] as const,
 });
 
@@ -27,6 +27,6 @@ export const person_show = defineAgentTool({
     .strictObject({ target: PersonShowTargetSchema })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: PersonShowOutputSchema,
-  access: "self",
+  access: "write",
   callers: ["run"] as const,
 });

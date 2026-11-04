@@ -8,7 +8,6 @@ import {
 } from "./handlers/integrations.js";
 import { agentToolHandlers } from "./handlers/index.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
-import { MemoryOperationReceipts } from "./receipts.test-support.js";
 
 type IntegrationOptions = ConstructorParameters<typeof IntegrationToolHandlers>[0];
 export function createIntegrationMcpFixture(
@@ -50,7 +49,6 @@ export function createIntegrationMcpFixture(
       handlers,
       publicUrl: options.publicUrl,
       store: unavailable as never,
-      receipts: new MemoryOperationReceipts(),
       callers: {
         authenticate: async (token: string): Promise<AgentCaller> => {
           const run = await options.runTokens.authenticate(token).catch(() => null);

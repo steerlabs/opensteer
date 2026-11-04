@@ -24,6 +24,7 @@ export const project_list = defineAgentTool({
 
 export const project_create = defineAgentTool({
   name: "project_create",
+  minimumReach: "user",
   title: "Create a Project",
   description:
     "Create a durable Project in the owner’s Main folder. Full-access; Main’s computer must be online. Returns id, immutable slug and absolute path. Write AGENTS.md there before first delegation. Grants no integration/browser access.",

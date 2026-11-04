@@ -155,9 +155,8 @@ const releasedMigrationNames = [
   "0145_specialist_lifecycle",
   "0146_consent_scope",
   "0147_agent_connections",
-  "0148_agent_tool_operations",
-  "0149_connection_message_authors",
-  "0150_specialist_auto_bind",
+  "0148_connection_message_authors",
+  "0149_specialist_auto_bind",
 ];
 
 describe("migration names", () => {
