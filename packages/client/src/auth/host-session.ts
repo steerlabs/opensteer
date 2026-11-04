@@ -131,6 +131,7 @@ type HostOAuth = Pick<
   | "hostCredentialState"
   | "recoverHostAuthorization"
   | "signOutHost"
+  | "subscribe"
   | "subscribeHostCredentials"
 >;
 
@@ -171,6 +172,7 @@ export class HostSession implements HostSessionRecovery {
     string,
     { readonly at: number; readonly outcome: HostSessionRecoveryOutcome }
   >();
+  readonly #unsubscribeAccount: () => void;
   readonly #unsubscribeOAuth: () => void;
   #disposed = false;
 
@@ -195,8 +197,11 @@ export class HostSession implements HostSessionRecovery {
       options.recoveryCooldownMs ?? defaultRecoveryCooldownMs,
     );
     this.#unsubscribeOAuth = options.oauth.subscribeHostCredentials((state) => {
+      this.#recoveryFailures.clear();
       this.#publishOAuthStateIfCurrent(state);
     });
+    // A failure says nothing about the credential a new sign-in brought.
+    this.#unsubscribeAccount = options.oauth.subscribe(() => this.#recoveryFailures.clear());
   }
 
   subscribe(listener: HostSessionListener): () => void {
@@ -299,6 +304,7 @@ export class HostSession implements HostSessionRecovery {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#unsubscribeOAuth();
+    this.#unsubscribeAccount();
     this.#listeners.clear();
     this.#establishments.clear();
     this.#recoveries.clear();
@@ -566,7 +572,7 @@ function recoveryFailure(error: unknown): HostSessionRecoveryOutcome {
 }
 
 function boundedRecoveryCooldown(value: number): number {
-  if (!Number.isSafeInteger(value) || value < 0 || value > 300_000) {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 300_000) {
     throw new TypeError("Host session recovery cooldown is invalid.");
   }
   return value;

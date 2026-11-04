@@ -584,7 +584,6 @@ async function runDesktop(
       network: hostNetwork,
       sessions: (attachment) => {
         const sessions = new HostSession({
-          recoveryCooldownMs: 0,
           attachment,
           clearDeploymentSession: (id) => hostNetwork.clearDeploymentSession(id),
           exchange: hostSessionExchange,

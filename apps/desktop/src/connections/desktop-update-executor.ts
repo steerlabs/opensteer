@@ -1,7 +1,7 @@
 import type { DesktopUpdateOperation } from "@opensteer/protocol/maintenance";
 import type { DesktopUpdateProgress } from "@opensteer/protocol/desktop-supervisor";
 import type { DesktopUpdater } from "../app/desktop-updater.js";
-import type { DesktopSupervisor } from "./desktop-supervisor.js";
+import { DesktopSupervisorRefusal, type DesktopSupervisor } from "./desktop-supervisor.js";
 
 export const desktopUpdateResultRetryMs = 5_000;
 
@@ -37,6 +37,19 @@ export class DesktopUpdateExecutor {
     this.#unsubscribe();
     this.#unsubscribeState();
   }
+  /** Delivers the settled message itself: a retry never runs the operation again. */
+  #retryResult(message: DesktopUpdateProgress): void {
+    clearTimeout(this.#retry);
+    this.#retry = setTimeout(() => {
+      if (this.#stopped || this.#results.get(message.operationId) !== message) return;
+      this.#supervisor
+        .acknowledge({ ...message, messageId: crypto.randomUUID() })
+        .catch((error: unknown) => {
+          if (!(error instanceof DesktopSupervisorRefusal)) this.#retryResult(message);
+        });
+    }, desktopUpdateResultRetryMs);
+    this.#retry.unref?.();
+  }
   #dropQueued(id: string): void {
     if (this.#queued?.id === id) this.#queued = null;
   }
@@ -48,6 +61,7 @@ export class DesktopUpdateExecutor {
     let phase = operation.state;
     let targetVersion = operation.targetVersion;
     let delivered = false;
+    let refused = false;
     const fromVersion = operation.fromVersion ?? this.#updater.state().currentVersion;
     const progress = async (
       state: DesktopUpdateProgress["state"],
@@ -63,6 +77,7 @@ export class DesktopUpdateExecutor {
         detail,
       };
       if (state === "failed" || state === "succeeded") {
+        clearTimeout(this.#retry);
         this.#results.clear();
         this.#results.set(operation.id, message);
       }
@@ -74,6 +89,7 @@ export class DesktopUpdateExecutor {
       const result = this.#results.get(operation.id);
       if (result) {
         await this.#supervisor.acknowledge({ ...result, messageId: crypto.randomUUID() });
+        clearTimeout(this.#retry);
         delivered = true;
         return;
       }
@@ -106,27 +122,22 @@ export class DesktopUpdateExecutor {
         if (phase === "staged") await progress("installing");
         await action.restart(this.#install);
       });
-    } catch {
+    } catch (error) {
+      refused = error instanceof DesktopSupervisorRefusal;
       // A settled result stands: the store accepts only it, so a failed delivery must not replace it.
       if (!this.#results.has(operation.id)) {
         try {
           await progress("failed", phase === "installing" ? "handoff-failed" : "update-failed");
-        } catch {
-          /* Retried below from the cached result. */
+        } catch (failure) {
+          refused = failure instanceof DesktopSupervisorRefusal;
         }
       }
     } finally {
       this.#running = false;
       // Intermediate publications for this action are obsolete after its acknowledged completion.
       this.#dropQueued(operation.id);
-      if (!delivered && this.#results.has(operation.id) && !this.#stopped) {
-        clearTimeout(this.#retry);
-        this.#retry = setTimeout(() => {
-          this.#queued ??= operation;
-          void this.#drain();
-        }, desktopUpdateResultRetryMs);
-        this.#retry.unref?.();
-      }
+      const result = this.#results.get(operation.id);
+      if (result && !delivered && !refused && !this.#stopped) this.#retryResult(result);
       void this.#drain();
     }
   }

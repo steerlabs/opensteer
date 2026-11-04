@@ -107,8 +107,7 @@ export function createNetworkHostPort(options: {
         network: maintenanceNetwork,
         sessions: (attachment) =>
           new HostSession({
-            recoveryCooldownMs: 0,
-            attachment,
+              attachment,
             clearDeploymentSession: (id) => sessions.clear(DeploymentIdSchema.parse(id)),
             exchange: {
               supports: (resolved) => sessionExchange.supports(resolved),

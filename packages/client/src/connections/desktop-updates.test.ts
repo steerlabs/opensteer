@@ -110,7 +110,10 @@ function fixture(epoch = hostApiVersion - 1, scoped = false) {
               },
             },
             localOwner: { ownsHostSession: () => false, recoverOwnerSession: async () => false },
-            oauth: { subscribeHostCredentials: () => () => {} } as unknown as NativeOAuthManager,
+            oauth: {
+              subscribe: () => () => {},
+              subscribeHostCredentials: () => () => {},
+            } as unknown as NativeOAuthManager,
           })
         : { recoverUnauthorized },
   });

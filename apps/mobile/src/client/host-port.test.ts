@@ -63,6 +63,7 @@ it.each([false, true])(
       },
     } as Awaited<ReturnType<HostSessionExchange["establish"]>>);
     const oauth = {
+      subscribe: () => () => {},
       subscribeHostCredentials: () => () => {},
       authorizationHeader: vi.fn(),
     } as unknown as NativeOAuthManager;

@@ -12,6 +12,8 @@ import type {
 } from "../supervisor/personal-host-runtime.js";
 
 export const supervisorAcknowledgementMs = 30_000;
+/** The Host answered and said no, unlike a timeout or a lost socket. */
+export class DesktopSupervisorRefusal extends Error {}
 interface DesktopSupervisorOptions {
   network: Pick<HostNetwork, "openWebSocket">;
   runtime: PersonalHostRuntimeSource;
@@ -147,7 +149,10 @@ export class DesktopSupervisor {
               clearTimeout(pending.timer);
               this.#pending.delete(message.messageId);
               if (message.accepted) pending.resolve();
-              else pending.reject(new Error("Desktop supervisor refused the operation phase"));
+              else
+                pending.reject(
+                  new DesktopSupervisorRefusal("Desktop supervisor refused the operation phase"),
+                );
             } else for (const listener of this.#listeners) listener(message);
           } catch {
             socket.close(1008, "Invalid supervisor message");
