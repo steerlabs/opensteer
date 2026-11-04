@@ -140,7 +140,7 @@ jobs:
       - run: |
           test "$(uname -m)" = arm64
           pnpm install --frozen-lockfile
-          node -e 'require("./scripts/release-version.cjs").stampReleaseVersion(process.cwd(), process.env.OPENSTEER_SOURCE_REVISION, process.env.OPENSTEER_RELEASE_VERSION, process.env.OPENSTEER_RELEASE_TRACK)'
+          node -e 'require("./scripts/release-version.cjs").stampReleaseVersion(process.cwd(), process.env.OPENSTEER_SOURCE_REVISION, process.env.OPENSTEER_RELEASE_VERSION)'
       - name: Fingerprint release cache inputs
         id: release-cache
         run: |

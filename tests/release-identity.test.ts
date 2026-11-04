@@ -22,11 +22,13 @@ const { desktopReleaseMetadata, verifyPackagedDesktopRelease } =
     ) => {
       readonly builderArguments: readonly string[];
       readonly identity: { readonly sourceRevision: string; readonly version: string };
+      readonly packageVersion: string;
     };
     readonly verifyPackagedDesktopRelease: (
       manifest: unknown,
       appInfo: unknown,
       identity: { readonly sourceRevision: string; readonly version: string },
+      packageVersion: string,
     ) => void;
   };
 const temporaryDirectories: string[] = [];
@@ -131,18 +133,19 @@ describe("canonical release identity", () => {
         "-c.buildVersion=1.2.3",
         "-c.extraMetadata.version=1.2.3",
         "-c.productName=Opensteer",
-        "-c.mac.executableName=Opensteer",
         "-c.mac.bundleShortVersion=1.2.3",
         "-c.extraMetadata.opensteerBuild.version=1.2.3",
         `-c.extraMetadata.opensteerBuild.sourceRevision=${sourceRevision}`,
       ],
       identity: { sourceRevision, version: "1.2.3" },
+      packageVersion: "1.2.3",
     });
     expect(() =>
       verifyPackagedDesktopRelease(
         { opensteerBuild: { sourceRevision, version: "1.2.3" }, version: "1.2.3" },
         { buildVersion: "1.2.3", version: "1.2.3" },
         metadata.identity,
+        metadata.packageVersion,
       ),
     ).not.toThrow();
     expect(() =>
@@ -150,6 +153,7 @@ describe("canonical release identity", () => {
         { opensteerBuild: { sourceRevision, version: "1.2.3" }, version: "0.0.0" },
         { buildVersion: "1.2.3", version: "1.2.3" },
         metadata.identity,
+        metadata.packageVersion,
       ),
     ).toThrow(/canonical source/u);
     expect(() =>
@@ -157,6 +161,7 @@ describe("canonical release identity", () => {
         { opensteerBuild: { sourceRevision, version: "1.2.3" }, version: "1.2.3" },
         { buildVersion: "0.0.0", version: "1.2.3" },
         metadata.identity,
+        metadata.packageVersion,
       ),
     ).toThrow(/canonical source/u);
   });
@@ -191,21 +196,28 @@ function git(repository: string, ...arguments_: string[]): string {
   }).trim();
 }
 
-it("builds Beta branding with fixed paths and numeric native versions", async () => {
-  const repository = await fixtureRepository("1.2.3-insider");
+it("keeps the source stamp numeric and applies the Beta track only to the package", async () => {
+  const repository = await fixtureRepository("1.2.3");
   const result = desktopReleaseMetadata(
     repository,
-    { OPENSTEER_SOURCE_REVISION: "a".repeat(40) },
+    { OPENSTEER_RELEASE_TRACK: "beta", OPENSTEER_SOURCE_REVISION: "a".repeat(40) },
     { verifyRepository: false },
   );
   expect(result.identity.version).toBe("1.2.3");
+  expect(result.packageVersion).toBe("1.2.3-insider");
   expect(result.builderArguments).toEqual(
     expect.arrayContaining([
       "-c.extraMetadata.version=1.2.3-insider",
       "-c.productName=Opensteer (Beta)",
-      "-c.mac.executableName=Opensteer",
       "-c.buildVersion=1.2.3",
       "-c.mac.bundleShortVersion=1.2.3",
     ]),
   );
+  expect(() =>
+    desktopReleaseMetadata(
+      repository,
+      { OPENSTEER_RELEASE_TRACK: "nightly", OPENSTEER_SOURCE_REVISION: "a".repeat(40) },
+      { verifyRepository: false },
+    ),
+  ).toThrow("Unknown release track.");
 });

@@ -45,7 +45,7 @@ which verifies the immutable insider source provenance before Stable publication
 
 ```sh
 pnpm desktop:public-release prepare --channel beta --app-zip /absolute/app.zip --version X.Y.Z --source-sha FULL_40_CHARACTER_SHA --out /absolute/new-insider --launch-check-passed
-pnpm desktop:public-release promote --repo steerlabs/opensteer --tag vX.Y.Z-insider --version X.Y.Z --source-sha FULL_40_CHARACTER_SHA --app-zip /absolute/rebuilt-stable.zip --launch-check-passed --out /absolute/new-stable
+pnpm desktop:public-release prepare --channel stable --app-zip /absolute/rebuilt-stable.zip --version X.Y.Z --source-sha FULL_40_CHARACTER_SHA --out /absolute/new-stable --launch-check-passed
 ```
 
 ## Previous-release baseline

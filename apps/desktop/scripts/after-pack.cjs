@@ -31,12 +31,17 @@ async function verifyPackagedDesktopContents(context) {
   const archivePath = join(resources, "app.asar");
   if (isDesktopRelease()) {
     const repositoryRoot = resolve(__dirname, "../../..");
-    const { identity } = desktopReleaseMetadata(repositoryRoot, process.env);
+    const { identity, packageVersion } = desktopReleaseMetadata(repositoryRoot, process.env);
     const asar = require("@electron/asar");
     const packagedManifest = JSON.parse(
       asar.extractFile(archivePath, "package.json").toString("utf8"),
     );
-    verifyPackagedDesktopRelease(packagedManifest, context.packager.appInfo, identity);
+    verifyPackagedDesktopRelease(
+      packagedManifest,
+      context.packager.appInfo,
+      identity,
+      packageVersion,
+    );
   }
   const desktop = readPackagedDesktopPolicy(archivePath);
   verifyAppUpdateConfig(resources, desktop);

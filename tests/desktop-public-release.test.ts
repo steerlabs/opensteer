@@ -25,7 +25,7 @@ import {
   prepare,
   publicFeedURL,
   publish,
-  promote,
+  verifyInsiderProvenance,
   requireNewerStable,
 } from "../scripts/desktop-public-release.js";
 import type { runBounded } from "../scripts/command-runner.js";
@@ -163,38 +163,27 @@ it.skipIf(process.platform !== "darwin").each(["stable", "beta"] as const)(
         exe === "/usr/libexec/PlistBuddy" && args.includes("Print :CFBundleName")
           ? Promise.resolve("Opensteer")
           : promotionRun(exe, args, options);
-      const promotedDir = path.join(root, "promoted");
-      const stable = await promote(
+      const provenance = await verifyInsiderProvenance(
+        { repo: "steerlabs/opensteer", tag: manifest.tag, sourceSha, version },
+        promotionRun,
+      );
+      expect(provenance.sourceSha).toBe(sourceSha);
+      const stableDir = path.join(root, "stable");
+      const stable = await prepare(
         {
-          repo: "steerlabs/opensteer",
-          tag: manifest.tag,
-          sourceSha,
-          version,
-          out: promotedDir,
+          channel: "stable",
           appZip: zip,
+          version,
+          sourceSha,
+          out: stableDir,
           launchCheckPassed: true,
         },
         stableRun,
       );
-      expect(stable.assets[zipName]).toBe(manifest.assets[zipName]);
-      expect(stable.assets[zipName + ".blockmap"]).toBe(manifest.assets[zipName + ".blockmap"]);
       expect(stable.launchCheck).toBe("passed");
-      expect(
-        parseYaml(await readFile(path.join(promotedDir, "latest-mac.yml"), "utf8")).releaseDate,
-      ).toEqual(expect.any(String));
-      const again = await promote(
-        {
-          repo: "steerlabs/opensteer",
-          tag: manifest.tag,
-          sourceSha,
-          version,
-          out: path.join(root, "promoted-again"),
-          appZip: zip,
-          launchCheckPassed: true,
-        },
-        stableRun,
-      );
-      expect(again.sourceSha).toBe(stable.sourceSha);
+      const feed = parseYaml(await readFile(path.join(stableDir, "latest-mac.yml"), "utf8"));
+      expect(feed.version).toBe(version);
+      expect(feed.releaseDate).toEqual(expect.any(String));
     }
     cache = "wrong-cache";
     await expect(prepare(input, run)).rejects.toThrow();
@@ -435,7 +424,7 @@ it("binds publication to the verified ZIP and requires certification for Stable"
   await writeFile(path.join(stable.dir, "release.json"), JSON.stringify(stable.manifest));
   await expect(
     publish("steerlabs/opensteer", stable.manifest.tag, provider(stable)),
-  ).rejects.toThrow(/published insider/);
+  ).rejects.toThrow(/published immutable insider/);
   await publish("steerlabs/opensteer", stable.manifest.tag, await withInsider(provider(stable)), {
     channel: "stable",
     certifiedZipSha256: certifiedZip(stable.manifest),
@@ -771,16 +760,13 @@ it("refuses older/equal Stable, permits the first Stable and ignores concurrent 
   ).not.toThrow();
 });
 
-it("promotion rejects drafts, missing blockmaps and mismatched source evidence before preparing", async () => {
+it("Stable refuses a draft, mutable or incomplete insider and mismatched source evidence", async () => {
   const fixture = await releaseFixture("beta");
   const input = {
     repo: "steerlabs/opensteer",
     tag: fixture.manifest.tag,
     sourceSha,
     version,
-    out: path.join(await scratch(), "promoted"),
-    appZip: "/unused.zip",
-    launchCheckPassed: true,
   };
   let missing = false;
   const run: typeof runBounded = async (exe, args) => {
@@ -795,13 +781,14 @@ it("promotion rejects drafts, missing blockmaps and mismatched source evidence b
     }
     return JSON.stringify([[fixture.release]]);
   };
-  await expect(promote(input, run)).rejects.toThrow(/published insider/);
+  await expect(verifyInsiderProvenance(input, run)).rejects.toThrow(/published immutable insider/);
   fixture.release.draft = false;
+  await expect(verifyInsiderProvenance(input, run)).rejects.toThrow(/published immutable insider/);
   Object.assign(fixture.release, { immutable: true });
   missing = true;
-  await expect(promote(input, run)).rejects.toThrow(/ENOENT/);
+  await expect(verifyInsiderProvenance(input, run)).rejects.toThrow(/ENOENT/);
   missing = false;
-  await expect(promote({ ...input, sourceSha: "b".repeat(40) }, run)).rejects.toThrow(
-    /source\/version/,
-  );
+  await expect(
+    verifyInsiderProvenance({ ...input, sourceSha: "b".repeat(40) }, run),
+  ).rejects.toThrow(/source\/version/);
 });

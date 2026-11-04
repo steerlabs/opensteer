@@ -1,6 +1,6 @@
 /** Build all package inputs from this checkout and pinned public upstream sources. */
 import { createRequire } from "node:module";
-import { appendFile, copyFile, mkdir, readdir, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
@@ -66,16 +66,19 @@ async function download(url: string, filename: string, digest: string) {
     throw Error(`Upstream digest mismatch: ${path.basename(filename)}`);
 }
 await mkdir(out, { recursive: true });
+const { version } = z
+  .object({ version: z.string().regex(/^\d+\.\d+\.\d+$/u) })
+  .parse(JSON.parse(await readFile(path.join(root, "package.json"), "utf8")));
+if (process.env.OPENSTEER_RELEASE_VERSION && process.env.OPENSTEER_RELEASE_VERSION !== version)
+  throw Error("Requested version differs from checkout");
 const sha = (await run("git", ["rev-parse", "HEAD"], root, true)).trim();
 const { requireCanonicalReleaseIdentity } = require("./release-identity.cjs") as {
-  requireCanonicalReleaseIdentity(
-    root: string,
-    environment: NodeJS.ProcessEnv,
-  ): { version: string };
+  requireCanonicalReleaseIdentity(root: string, environment: NodeJS.ProcessEnv): unknown;
 };
-const { version } = requireCanonicalReleaseIdentity(root, {
+requireCanonicalReleaseIdentity(root, {
   ...env,
   OPENSTEER_SOURCE_REVISION: sha,
+  OPENSTEER_RELEASE_VERSION: version,
 });
 if (process.env.OPENSTEER_SOURCE_REVISION && process.env.OPENSTEER_SOURCE_REVISION !== sha)
   throw Error("Source revision differs from checkout");

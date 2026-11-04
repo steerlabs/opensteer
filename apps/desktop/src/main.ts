@@ -74,7 +74,7 @@ import {
   desktopWindowForContents,
   ElectronWindowFactory,
 } from "./app/electron-window.js";
-import { resolveDesktopAppBranding } from "./app/DesktopEnvironment.js";
+import { resolveDesktopAppBranding } from "./app/app-branding.js";
 import { createDesktopApplicationMenu, showDesktopUpdateMenuItem } from "./app/application-menu.js";
 import { DesktopTrayService } from "./app/desktop-tray.js";
 import { AgentPhoneAdbServer } from "./app/agent-phone-adb-server.js";

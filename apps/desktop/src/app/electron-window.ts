@@ -1,4 +1,4 @@
-import { resolveDesktopAppBranding } from "./DesktopEnvironment.js";
+import { resolveDesktopAppBranding } from "./app-branding.js";
 import { isAppPrefixNavigation } from "@opensteer/shared/appFrame";
 import { configureDesktopPermissions } from "./media-permissions.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";

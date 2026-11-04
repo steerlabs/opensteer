@@ -469,8 +469,8 @@ export async function verifyInsiderProvenance(
   const tag = tagSchema.parse(input.tag);
   const release = await findRelease(repo, tag, run);
   if (!release || release.draft || !release.prerelease || release.immutable !== true)
-    throw new Error("Promotion requires a published insider");
-  const temp = await mkdtemp(path.join(tmpdir(), "opensteer-promote-"));
+    throw new Error("Stable requires a published immutable insider");
+  const temp = await mkdtemp(path.join(tmpdir(), "opensteer-provenance-"));
   try {
     await run("gh", ["release", "download", tag, "--repo", repo, "--dir", temp], {
       timeoutMs: 610_000,
@@ -493,32 +493,6 @@ export async function verifyInsiderProvenance(
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
-}
-
-export async function promote(
-  input: {
-    repo: string;
-    tag: string;
-    sourceSha: string;
-    version: string;
-    out: string;
-    appZip: string;
-    launchCheckPassed: boolean;
-  },
-  run: Run = runBounded,
-) {
-  await verifyInsiderProvenance(input, run);
-  return prepare(
-    {
-      channel: "stable",
-      appZip: input.appZip,
-      version: input.version,
-      sourceSha: input.sourceSha,
-      out: input.out,
-      launchCheckPassed: input.launchCheckPassed,
-    },
-    run,
-  );
 }
 
 export async function publish(
@@ -650,24 +624,7 @@ export async function main(args = process.argv.slice(2)) {
       allowPrivateFeed: values["allow-private-feed"] ?? false,
       ...(values["notes-file"] ? { notesFile: values["notes-file"] } : {}),
     });
-  else if (subcommand === "promote") {
-    const manifest = await promote({
-      repo: required("repo"),
-      tag: required("tag"),
-      sourceSha: required("source-sha"),
-      version: required("version"),
-      out: required("out"),
-      appZip: required("app-zip"),
-      launchCheckPassed: values["launch-check-passed"] === true,
-    });
-    if (process.env.GITHUB_OUTPUT) {
-      const { appendFile } = await import("node:fs/promises");
-      await appendFile(
-        process.env.GITHUB_OUTPUT,
-        `zipSha256=${manifest.assets["Opensteer-mac-arm64.zip"]}\n`,
-      );
-    }
-  } else if (subcommand === "draft")
+  else if (subcommand === "draft")
     await draft(required("dir"), required("repo"), runBounded, values.channel);
   else if (subcommand === "publish")
     await publish(required("repo"), required("tag"), runBounded, {

@@ -57,16 +57,9 @@ function deriveVersion(root, sha) {
   if (!derived) throw Error("Missing release history");
   return derived.join(".");
 }
-function stampedManifest(root, sha, track = "stable") {
-  if (!["beta", "stable"].includes(track)) throw Error("Unknown release track");
+function stampedManifest(root, sha) {
   const base = committedManifest(root, sha);
-  return (
-    JSON.stringify(
-      { ...base, version: deriveVersion(root, sha) + (track === "beta" ? "-insider" : "") },
-      null,
-      2,
-    ) + "\n"
-  );
+  return JSON.stringify({ ...base, version: deriveVersion(root, sha) }, null, 2) + "\n";
 }
 /** Preserve clean-source verification, with one byte-exact generated manifest exception. */
 function verifyReleaseWorkspace(root, sha) {
@@ -80,18 +73,16 @@ function verifyReleaseWorkspace(root, sha) {
     sourceGit(root, "diff", "--summary") ||
     !lstatSync(manifest).isFile() ||
     lstatSync(manifest).isSymbolicLink() ||
-    !["stable", "beta"].some(
-      (track) => readFileSync(manifest, "utf8") === stampedManifest(root, sha, track),
-    )
+    readFileSync(manifest, "utf8") !== stampedManifest(root, sha)
   )
     throw Error("A release requires a clean source checkout or exactly its derived version stamp");
 }
-function stampReleaseVersion(root, sha, expected, track = "stable") {
+function stampReleaseVersion(root, sha, expected) {
   verifyReleaseWorkspace(root, sha);
   const version = deriveVersion(root, sha);
   if (expected !== undefined && expected !== version)
     throw Error("Requested version differs from derived source version");
-  writeFileSync(path.join(root, "package.json"), stampedManifest(root, sha, track));
+  writeFileSync(path.join(root, "package.json"), stampedManifest(root, sha));
   verifyReleaseWorkspace(root, sha);
   return version;
 }

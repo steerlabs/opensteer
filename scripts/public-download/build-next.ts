@@ -127,7 +127,7 @@ try {
     values.version ?? deriveReleaseVersion({ repositoryRoot: source, revision }),
   );
   assert(compareStableVersions(version, baseVersion) > 0);
-  stampReleaseVersion(source, revision, version, channel);
+  stampReleaseVersion(source, revision, version);
   await run("pnpm", ["install", "--frozen-lockfile", "--prefer-offline"], {
     cwd: source,
     timeoutMs: 300_000,
@@ -153,6 +153,7 @@ try {
     timeoutMs: 45 * 60_000,
     outputFile: path.join(directory, "ci-build.log"),
     env: {
+      OPENSTEER_RELEASE_TRACK: channel,
       OPENSTEER_RELEASE_VERSION: version,
       OPENSTEER_SOURCE_REVISION: revision,
     },
