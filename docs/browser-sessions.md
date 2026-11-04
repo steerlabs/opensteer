@@ -144,6 +144,11 @@ rechecks authority just before import. Automatic delivery waits for the grant's 
 never another account, and inspection never sends cookie values. Any agent with a signed-in browser
 can act as the person on that site.
 
+When a Chrome connects while a Request nobody has allowed waits, and every paired Chrome is
+connected without the site, the Request ends as `not-signed-in`: the check `agentSignIn` makes
+before opening one. Left pending, its card offers only Don't allow, which tells the agent the
+person refused; ending it lets the agent offer signing in by hand or Opensteer Passwords.
+
 ## Files and downloads
 
 Page uploads name only files staged in the session's private folder. Desktop downloads appear only

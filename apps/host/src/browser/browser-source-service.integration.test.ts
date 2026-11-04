@@ -552,7 +552,10 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     );
   }
 
-  async function connectChrome(paired: { sourceId: string; token: string }): Promise<FakeChrome> {
+  async function connectChrome(
+    paired: { sourceId: string; token: string },
+    status: BrowserSourceStatus = "available",
+  ): Promise<FakeChrome> {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Expected socket server port");
     const socket = new WebSocket(`ws://127.0.0.1:${address.port}`);
@@ -577,6 +580,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       });
     });
     const chrome = new FakeChrome(socket);
+    chrome.status = status;
     socket.send(
       JSON.stringify({
         ...sourceDestination,
@@ -2274,6 +2278,31 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     ).toBeNull();
     expect(await sourceStore.getGrant({ ownerId, site, workspaceId })).not.toBeNull();
     expect(serviceErrors).toEqual([]);
+  });
+
+  it("ends an unallowed Request when Chrome connects without the site's sign-in", async () => {
+    const { agent, connection, ownerId } = await scene();
+    const site = "https://example.test";
+    const callId = randomUUID();
+    const asked = await service.agentSignIn({ ...agent, callId, site });
+    if (asked.status !== "pending") throw new Error("Expected a pending Request");
+
+    const chrome = await connectChrome(await pairChrome(ownerId, "Chrome"), "no-state");
+    await waitFor(async () => (await store.requests.get(asked.requestId))?.status === "fulfilled");
+    expect(await store.requests.get(asked.requestId)).toMatchObject({
+      response: { kind: "external", value: { outcome: "not-signed-in" } },
+    });
+    expect(
+      (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
+    ).toContain(asked.requestId);
+    expect(await service.agentSignIn({ ...agent, callId, site })).toEqual({
+      site,
+      status: "not-signed-in",
+    });
+    expect(chrome.exports).toBe(0);
+    expect(connection.imports()).toHaveLength(0);
+    expect(serviceErrors).toEqual([]);
+    await chrome.close();
   });
 
   it("answers without a Request when it can, and refuses what Chrome or the runtime cannot do", async () => {
