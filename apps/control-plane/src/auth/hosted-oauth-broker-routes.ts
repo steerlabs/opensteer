@@ -11,6 +11,8 @@ import {
   OAuthBrokerProviderSchema,
   ReturnHostedOAuthAttemptRequestSchema,
 } from "@opensteer/control-plane-protocol";
+import { randomBytes } from "node:crypto";
+import type { IntegrationAuthorizationAppHandoff } from "@opensteer/integration-core";
 import type { FastifyInstance } from "fastify";
 import { escapeHtml, statusPageBody, type BrowserPageFonts } from "@opensteer/shared/browserPage";
 import { z } from "zod";
@@ -23,7 +25,7 @@ import {
 } from "./hosted-oauth-broker-service.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import { toWebHeaders } from "../portal/routes.js";
-import { sendBrowserPage } from "../portal/pages.js";
+import { browserPagePolicyWithScript, sendBrowserPage } from "../portal/pages.js";
 
 const AttemptParamsSchema = z.strictObject({ attemptId: HostedOAuthAttemptIdSchema });
 const RefreshParamsSchema = z.strictObject({
@@ -239,6 +241,7 @@ export function registerHostedOAuthBrokerRoutes(
         completed = result.status === "sealed";
         if (result.returnKind === "open-app" && result.returnUrl) {
           const held = result.status === "held";
+          const handoff = held ? result.returnHandoff : undefined;
           const title = held
             ? "Finishing in Opensteer"
             : result.status === "denied"
@@ -249,11 +252,27 @@ export function registerHostedOAuthBrokerRoutes(
             mark: held ? "check" : "alert",
             tone: held ? "ok" : "warn",
             title,
-            detail: held
-              ? "Open Opensteer to finish connecting."
-              : "Open Opensteer to see the result and try again.",
+            detail: handoff
+              ? "Returning you to Opensteer. If nothing happens, choose Open Opensteer."
+              : held
+                ? "Open Opensteer to finish connecting."
+                : "Open Opensteer to see the result and try again.",
             action: { href: result.returnUrl, label: "Open Opensteer" },
           }).replace('class="btn"', 'class="btn btn--primary"');
+          if (handoff) {
+            const nonce = randomBytes(16).toString("base64");
+            return reply.code(200).send(
+              sendBrowserPage(reply, {
+                body: `${body}${handoffForm(handoff, nonce)}`,
+                fonts: dependencies.fonts,
+                layout: "plain",
+                policy: browserPagePolicyWithScript(nonce, [
+                  `form-action ${new URL(handoff.action).origin}`,
+                ]),
+                title,
+              }),
+            );
+          }
           const html = sendBrowserPage(reply, {
             body,
             fonts: dependencies.fonts,
@@ -493,6 +512,20 @@ export function hostedOAuthLaunchReturnTo(
 
 function firstHeader(value: string | readonly string[] | undefined): string | undefined {
   return typeof value === "string" ? value : value?.[0];
+}
+
+/**
+ * The page's automatic return to the app that started the consent. Without
+ * scripts it never submits and the page's app button still finishes the consent.
+ */
+function handoffForm(handoff: IntegrationAuthorizationAppHandoff, nonce: string): string {
+  const fields = Object.entries(handoff.fields)
+    .map(
+      ([name, value]) =>
+        `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`,
+    )
+    .join("");
+  return `<form id="app-return" method="post" action="${escapeHtml(handoff.action)}">${fields}</form><script nonce="${nonce}">document.getElementById("app-return").submit()</script>`;
 }
 
 /**

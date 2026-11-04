@@ -57,6 +57,8 @@ import {
 import { integrationDefinitions } from "@opensteer/integration-catalog";
 import {
   integrationAuthorizationBrowserReturn,
+  IntegrationAuthorizationReturnPortSchema,
+  type IntegrationAuthorizationAppHandoff,
   type IntegrationDefinition,
   type IntegrationAuthorizationBrowserReturn,
 } from "@opensteer/integration-core";
@@ -84,6 +86,7 @@ interface BrokerAuthorizationContext {
   readonly codeVerifier: string | null;
   readonly clientSurface: "desktop" | "native" | "web";
   readonly finish?: "app" | undefined;
+  readonly appReturnPort?: number | undefined;
   readonly definitionId: string;
   readonly authorizationDigest: string;
   readonly deploymentAuthorityDigest: string;
@@ -103,6 +106,7 @@ const BrokerAuthorizationContextSchema = z
     codeVerifier: z.string().min(43).max(256).nullable(),
     clientSurface: z.enum(["desktop", "native", "web"]).default("web"),
     finish: z.literal("app").optional(),
+    appReturnPort: IntegrationAuthorizationReturnPortSchema.optional(),
     definitionId: z.string().min(1).max(64),
     authorizationDigest: OAuthBrokerDigestSchema,
     deploymentAuthorityDigest: OAuthBrokerDigestSchema,
@@ -206,7 +210,9 @@ export class HostedOAuthBrokerService {
             .map((definition) => definition.provider),
         ),
       ],
-      ...(includeInstallationUrls ? { mcpCallbackRelay: 1, appFinish: 1 } : {}),
+      ...(includeInstallationUrls
+        ? { mcpCallbackRelay: 1, appFinish: 1, appReturnPort: 1 }
+        : {}),
       providerRevisions: Object.fromEntries(
         [...this.#applications.values()].map(({ provider, revision }) => [provider, revision]),
       ),
@@ -252,6 +258,7 @@ export class HostedOAuthBrokerService {
       codeVerifier: authorization.codeVerifier ?? null,
       clientSurface: input.clientSurface,
       ...(input.finish ? { finish: input.finish } : {}),
+      ...(input.appReturnPort === undefined ? {} : { appReturnPort: input.appReturnPort }),
       definitionId: definition.id,
       authorizationDigest: input.authorizationDigest,
       deploymentAuthorityDigest: input.deploymentAuthorityDigest,
@@ -287,6 +294,7 @@ export class HostedOAuthBrokerService {
       durableContext.accountSubject.issuer !== input.accountSubject.issuer ||
       durableContext.accountSubject.subject !== input.accountSubject.subject ||
       durableContext.finish !== input.finish ||
+      durableContext.appReturnPort !== input.appReturnPort ||
       durableContext.clientSurface !== input.clientSurface ||
       durableContext.definitionId !== definition.id ||
       durableContext.authorizationDigest !== input.authorizationDigest ||
@@ -353,6 +361,7 @@ export class HostedOAuthBrokerService {
       clientId: input.clientId,
       clientSurface: input.clientSurface,
       ...(input.finish ? { finish: input.finish } : {}),
+      ...(input.appReturnPort === undefined ? {} : { appReturnPort: input.appReturnPort }),
       codeVerifier: null,
       definitionId: input.definitionId,
       authorizationDigest: input.authorizationDigest,
@@ -391,6 +400,7 @@ export class HostedOAuthBrokerService {
     if (
       durable.mode !== "callback-relay" ||
       durable.finish !== input.finish ||
+      durable.appReturnPort !== input.appReturnPort ||
       durable.clientSurface !== input.clientSurface ||
       durable.accountSubject.subject !== input.accountSubject.subject ||
       durable.providerApplicationId !==
@@ -542,6 +552,7 @@ export class HostedOAuthBrokerService {
     readonly providerError?: string | null;
     readonly status: "denied" | "failed" | "sealed" | "held";
     readonly returnKind?: "open-app";
+    readonly returnHandoff?: IntegrationAuthorizationAppHandoff;
   }> {
     const now = this.#now();
     let state: string;
@@ -871,6 +882,7 @@ export class HostedOAuthBrokerService {
       row.attemptId,
       "held",
       callbackReturnUrl({
+        appReturnPort: context.appReturnPort,
         attemptId: row.attemptId,
         canonicalOrigin: this.#issuer,
         clientSurface: context.clientSurface,
@@ -1223,6 +1235,7 @@ export class HostedOAuthBrokerService {
         clientSurface: context.clientSurface,
         codeVerifier: context.codeVerifier ?? "",
         finish: context.finish ?? "",
+        appReturnPort: context.appReturnPort === undefined ? "" : String(context.appReturnPort),
         definitionId: context.definitionId,
         authorizationDigest: context.authorizationDigest,
         deploymentAuthorityDigest: context.deploymentAuthorityDigest,
@@ -1269,6 +1282,7 @@ export class HostedOAuthBrokerService {
       clientId: opened.clientId || undefined,
       clientSurface: opened.clientSurface || undefined,
       finish: opened.finish || undefined,
+      appReturnPort: opened.appReturnPort ? Number(opened.appReturnPort) : undefined,
       codeVerifier: opened.codeVerifier || null,
       definitionId: opened.definitionId,
       authorizationDigest: opened.authorizationDigest,
@@ -1396,6 +1410,7 @@ function validateCallbackRelayAuthorizationUrl(input: {
 }
 
 function callbackReturnUrl(input: {
+  readonly appReturnPort?: number | undefined;
   readonly attemptId: HostedOAuthAttemptId;
   readonly mcp?: boolean;
   readonly canonicalOrigin: string;
@@ -1410,6 +1425,7 @@ function callbackReturnUrl(input: {
     canonicalOrigin: input.canonicalOrigin,
     surface: input.clientSurface,
     deploymentId: input.deploymentId,
+    ...(input.appReturnPort === undefined ? {} : { appReturnPort: input.appReturnPort }),
     ...(input.finish ? { finish: input.finish } : {}),
     ...(input.returnProof ? { returnProof: input.returnProof } : {}),
     ...(input.returnPath === undefined ? {} : { returnPath: input.returnPath }),
@@ -1430,6 +1446,9 @@ function authorizationCompletion(
     attemptId,
     ...(returnUrl ? { returnUrl } : {}),
     ...(browserReturn?.kind === "open-app" ? { returnKind: "open-app" as const } : {}),
+    ...(browserReturn?.kind === "open-app" && browserReturn.handoff
+      ? { returnHandoff: browserReturn.handoff }
+      : {}),
     ...(failureCode ? { failureCode } : {}),
     status,
   };
@@ -1621,6 +1640,7 @@ function validateMcpRelayAuthorizationUrl(
 }
 
 function assertAppFinishSurface(input: {
+  readonly appReturnPort?: number | undefined;
   readonly clientSurface: string;
   readonly finish?: "app" | undefined;
 }) {
@@ -1630,6 +1650,12 @@ function assertAppFinishSurface(input: {
     input.clientSurface !== "native"
   ) {
     throw new ControlPlaneError("bad_request", "App finish requires a desktop or native client");
+  }
+  if (
+    input.appReturnPort !== undefined &&
+    (input.finish !== "app" || input.clientSurface !== "desktop")
+  ) {
+    throw new ControlPlaneError("bad_request", "A return port requires a desktop app finish");
   }
 }
 

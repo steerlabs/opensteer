@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { integrationAuthorizationBrowserReturn } from "./authorization-return.js";
+import {
+  integrationAuthorizationAppReturnBase,
+  integrationAuthorizationBrowserReturn,
+} from "./authorization-return.js";
+import { BeginIntegrationAuthorizationSchema, BeginMcpAuthorizationSchema } from "./models.js";
 
 const attemptId = "ioa_00000000-0000-4000-8000-000000000001";
 const deploymentId = "dep_00000000-0000-4000-8000-000000000001";
@@ -98,5 +102,69 @@ describe("integrationAuthorizationBrowserReturn", () => {
         surface: "native",
       }),
     ).toThrow("Deployment identity");
+  });
+});
+
+describe("desktop loopback handoff", () => {
+  const proof = "P".repeat(43);
+  const held = {
+    attemptId,
+    canonicalOrigin: "https://accounts.example.test",
+    deploymentId,
+    finish: "app",
+    returnProof: proof,
+    surface: "desktop",
+  } as const;
+
+  it("carries the proof in the form, never in the address it posts to", () => {
+    const result = integrationAuthorizationBrowserReturn({ ...held, appReturnPort: 48_200 });
+    expect(result).toEqual({
+      kind: "open-app",
+      location: `${integrationAuthorizationAppReturnBase("desktop")}?deployment_id=${deploymentId}&attempt_id=${attemptId}&return=${proof}`,
+      handoff: {
+        action: "http://127.0.0.1:48200/oauth/integration-callback",
+        fields: { attempt_id: attemptId, deployment_id: deploymentId, return: proof },
+      },
+    });
+  });
+
+  it("offers no handoff without a port or a proof, or to a phone", () => {
+    expect(integrationAuthorizationBrowserReturn(held)).not.toHaveProperty("handoff");
+    const { returnProof: _none, ...failed } = held;
+    expect(
+      integrationAuthorizationBrowserReturn({ ...failed, appReturnPort: 48_200 }),
+    ).not.toHaveProperty("handoff");
+    expect(
+      integrationAuthorizationBrowserReturn({ ...held, appReturnPort: 48_200, surface: "native" }),
+    ).not.toHaveProperty("handoff");
+  });
+
+  it("refuses to address a port outside the reserved block", () => {
+    expect(() => integrationAuthorizationBrowserReturn({ ...held, appReturnPort: 3_000 })).toThrow();
+  });
+
+  it.each([
+    ["provider", BeginIntegrationAuthorizationSchema, { definitionId: "google-gmail" }],
+    [
+      "MCP",
+      BeginMcpAuthorizationSchema,
+      {
+        displayName: "Linear",
+        requestId: `req_${crypto.randomUUID()}`,
+        serverId: `isv_${crypto.randomUUID()}`,
+      },
+    ],
+  ] as const)("admits a %s port only for a desktop app finish", (_flow, schema, base) => {
+    const begin = { ...base, finish: "app", surface: "desktop" };
+    expect(schema.safeParse({ ...begin, appReturnPort: 48_200 }).success).toBe(true);
+    expect(schema.safeParse({ ...begin, appReturnPort: 48_215 }).success).toBe(true);
+    for (const port of [47_999, 48_199, 48_216, 3_000, 48_200.5, "48200"])
+      expect(schema.safeParse({ ...begin, appReturnPort: port }).success).toBe(false);
+    expect(schema.safeParse({ ...begin, appReturnPort: 48_200, surface: "native" }).success).toBe(
+      false,
+    );
+    expect(schema.safeParse({ ...base, appReturnPort: 48_200, surface: "desktop" }).success).toBe(
+      false,
+    );
   });
 });
