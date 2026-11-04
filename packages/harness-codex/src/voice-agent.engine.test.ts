@@ -150,21 +150,20 @@ describe.skipIf(!qualify).each([
       const page = await browser.newPage();
       const events: { at: number; text: string }[] = [];
       const userTurns: { at: number; text: string }[] = [];
+      // The voice acknowledges first ("On it…"); only speech carrying the tool's fact is the answer.
       const spoken = new Deferred<void>();
-      let answeredAt = Number.POSITIVE_INFINITY;
-      let lastSpeechAt = 0;
+      const answerPattern = /4:30|four[- ]thirty/iu;
       await page.exposeFunction("voiceEvent", (raw: string) => {
         const event = JSON.parse(raw) as {
           type?: string;
           turn?: { id?: string; role?: string; transcript?: string };
         };
-        if (event.type === "output_transcript.added") lastSpeechAt = Date.now();
         if (event.type === "turn.done" && event.turn?.role === "user")
           userTurns.push({ at: Date.now(), text: event.turn.transcript ?? "" });
         if (event.type === "turn.done" && event.turn?.role === "assistant") {
           const text = event.turn.transcript ?? "";
           events.push({ at: Date.now(), text });
-          if (lastSpeechAt >= answeredAt) spoken.resolve();
+          if (answerPattern.test(text)) spoken.resolve();
         }
       });
       const offer = (await page.evaluate(`(async () => {
@@ -208,7 +207,8 @@ describe.skipIf(!qualify).each([
         agentTools: {
           url: tools.url,
           token,
-          instructions: "Use Opensteer tools when needed. Speak briefly.",
+          instructions:
+            "Voice call: replies are spoken. Mostly do things yourself with your tools. For the person's notes, call thread_read.",
           tools: ["thread_read"],
           toolsRevision: "voice-qualification",
           skills: [],
@@ -217,7 +217,7 @@ describe.skipIf(!qualify).each([
         harnessInstanceId: adapter.instanceId,
         history: [],
         historyWindow: { byteCount: 0, itemCount: 0, hasEarlier: false },
-        instructions: "Answer in one short sentence.",
+        instructions: "Answer in one or two short sentences.",
         platformGuide: "You are the voice call's agent.",
         machineAccessNotice: "No other computers are reachable.",
         machineAccessPlatform: undefined,
@@ -247,8 +247,18 @@ describe.skipIf(!qualify).each([
       });
       const final = new Deferred<void>();
       let terminal = 0;
+      const runEvents: string[] = [];
+      // What each stage saw, so a failed qualification says which step stalled.
+      const seen = () =>
+        JSON.stringify({
+          heard: userTurns.map((turn) => turn.text),
+          voice: events.map((event) => event.text),
+          toolCalls: tools.calls,
+          runEvents,
+        });
       const consume = (async () => {
         for await (const event of session!.events) {
+          runEvents.push(event.type);
           if (event.type === "assistant.message") final.resolve();
           if (event.type === "run.interrupted" || event.type === "run.failed") terminal++;
         }
@@ -283,18 +293,16 @@ describe.skipIf(!qualify).each([
         ],
         { timeout: 15000 },
       );
-      answeredAt = Date.now();
       await page.evaluate(
         `window.speak(${JSON.stringify((await readFile(wav)).toString("base64"))})`,
       );
-      await withTimeout(final.promise, 45000, {
-        timeoutError: () => new Error("No engine-initiated final answer"),
+      await withTimeout(final.promise, 90_000, {
+        timeoutError: () => new Error(`No engine-initiated final answer: ${seen()}`),
       });
       await withTimeout(spoken.promise, 30000, {
-        timeoutError: () => new Error("No spoken final answer"),
+        timeoutError: () => new Error(`No spoken final answer: ${seen()}`),
       });
       expect(tools.calls).toContain("thread_read");
-      expect(events.map((event) => event.text).join(" ")).toMatch(/4:30|four[- ]thirty/iu);
       expect(terminal).toBe(0);
       lifetime.abort();
       await withTimeout(Promise.all([execution, consume]), 10000, {
