@@ -20,14 +20,15 @@ it.runIf(Boolean(process.env.OPENSTEER_TEST_DATABASE_URL))(
         const author = { kind: "platform", cause: "assignment-result" };
         await sql`
           create temporary table messages (id text primary key, author jsonb not null, run_id text, kind text) on commit drop;
-          create temporary table runs (id text primary key, seed_input_id text not null, created_at timestamptz not null, person_waited boolean not null default false) on commit drop;
+          create temporary table runs (id text primary key, seed_input_id text not null, created_at timestamptz not null, person_waited boolean not null default false, thread_id text, authority_source jsonb) on commit drop;
+          create temporary table requests (id text, originating_run_id text, originating_thread_id text, mode text, status text, resolved_by text, settlement_provenance jsonb) on commit drop;
           create temporary table workspace_events (run_id text, type text, data jsonb not null) on commit drop;
 
         `.execute(tx);
         await sql`insert into messages values (${messageId}, ${JSON.stringify(author)}::jsonb, ${runId}, 'input')`.execute(
           tx,
         );
-        await sql`insert into runs values (${runId}, ${messageId}, '2026-01-01T00:00:00Z')`.execute(
+        await sql`insert into runs (id, seed_input_id, created_at) values (${runId}, ${messageId}, '2026-01-01T00:00:00Z')`.execute(
           tx,
         );
         const kinds = [
@@ -173,6 +174,14 @@ it.runIf(Boolean(process.env.OPENSTEER_TEST_DATABASE_URL))(
         await sql`insert into runs (id, seed_input_id, status) values (${runId}, 'waiting-seed', 'running')`.execute(
           tx,
         );
+        // The historical migration uses its original schema; the current lifecycle
+        // stamper also records authenticated Request participation.
+        await sql`
+          alter table runs add column thread_id text, add column authority_source jsonb;
+          alter table requests add column id text, add column originating_thread_id text,
+            add column mode text, add column status text, add column resolved_by text,
+            add column settlement_provenance jsonb;
+        `.execute(tx);
         await sql`update messages set run_id = ${runId} where id = 'human'`.execute(tx);
         expect(await stampRunContext(tx, "run.status", runId, {})).toMatchObject({
           personWaiting: true,

@@ -174,6 +174,19 @@ integration(
         workspaceId,
       });
       expect(turn.assistantText).toBe("Completed by Codex.");
+      // Background memory provisioning reads this file too. Exercise the native
+      // response before hydration, so even a fast run catches a broken storage service.
+      const missingInstructions = await within(
+        testRpcRequest(
+          stack.hostOrigin,
+          "workspace.files.preview",
+          { fileKey: Buffer.from("AGENTS.md").toString("base64url"), workspaceId },
+          { headers: { cookie: stack.sessionCookie } },
+        ),
+        "native AGENTS.md read",
+      );
+      expect(missingInstructions.status, await missingInstructions.text()).toBe(404);
+
       const milestones: Array<{ count: number; initialThreads: number; hasMore: boolean }> = [];
       let created = 1;
       for (const target of [82, 83, 100, 101, 251]) {
