@@ -3,57 +3,28 @@ import {
   hostKeyFingerprint,
   personalHostAccessRouteEnvelopeSha256,
 } from "@opensteer/deployment-authority";
-import { readBoundedJson, readBoundedText } from "@opensteer/shared/boundedJson";
+import { readBoundedText } from "@opensteer/shared/boundedJson";
 import {
   DesktopUpdateStatusSchema,
   DesktopUpdateOperationSchema,
   DesktopUpdateRequestSchema,
-  desktopUpdateLongPollMs,
-  desktopUpdateMaximumBytes,
   type DesktopUpdateStatus,
   type DesktopUpdateOperation,
   type DesktopUpdateRequest,
 } from "@opensteer/protocol/maintenance";
+import {
+  DesktopUpdatesError,
+  desktopUpdatePath,
+  desktopUpdateRequestTimeoutMs,
+  followDesktopUpdates,
+  readDesktopUpdateResponse,
+  type DesktopUpdates,
+} from "./desktop-updates-contract.js";
 import { HostTransportError } from "./host-transport-error.js";
 import { HostTransport, type HostTransportOptions } from "./host-transport.js";
 import { verifyAccessEndpoint, verifyPersonalAccessEndpoint } from "./deployment-catalog.js";
 
-export interface DesktopUpdates {
-  status(options?: { after?: string; signal?: AbortSignal }): Promise<DesktopUpdateStatus>;
-  request(
-    request: DesktopUpdateRequest,
-    options?: { signal?: AbortSignal },
-  ): Promise<DesktopUpdateOperation>;
-  subscribeWhileVisible(
-    listener: (status: DesktopUpdateStatus) => void,
-    options: { signal: AbortSignal; onError: (error: unknown) => void },
-  ): () => void;
-}
-export type DesktopUpdatesFailure =
-  | "unsupported"
-  | "unauthorized"
-  | "forbidden"
-  | "conflict"
-  | "offline"
-  | "unavailable"
-  | "invalid-response";
-export class DesktopUpdatesError extends Error {
-  readonly reason: DesktopUpdatesFailure;
-  constructor(reason: DesktopUpdatesFailure) {
-    super(
-      {
-        unsupported: "Update Opensteer locally once to enable remote updates.",
-        unauthorized: "Sign in to update this computer.",
-        forbidden: "Only this computer's owner can update it.",
-        conflict: "A desktop update is already in progress.",
-        offline: "Could not reach this computer.",
-        unavailable: "Could not read or change this computer’s updates.",
-        "invalid-response": "This computer returned an invalid update response.",
-      }[reason],
-    );
-    this.reason = reason;
-  }
-}
+export * from "./desktop-updates-contract.js";
 
 /** Own transport lifetime: usable before attachment and after an epoch refusal. */
 export class DesktopUpdatesService implements DesktopUpdates {
@@ -84,30 +55,7 @@ export class DesktopUpdatesService implements DesktopUpdates {
     listener: (status: DesktopUpdateStatus) => void,
     options: { signal: AbortSignal; onError: (error: unknown) => void },
   ): () => void {
-    const controller = new AbortController();
-    const stop = () => controller.abort(new Error("Updates view closed"));
-    options.signal.addEventListener("abort", stop, { once: true });
-    if (options.signal.aborted) stop();
-    void (async () => {
-      let after: string | undefined;
-      try {
-        while (!controller.signal.aborted) {
-          const status = await this.status({
-            ...(after === undefined ? {} : { after }),
-            signal: controller.signal,
-          });
-          if (controller.signal.aborted) break;
-          listener(status);
-          if (!status.supported) break;
-          after = status.revision;
-        }
-      } catch (error) {
-        if (!controller.signal.aborted) options.onError(error);
-      } finally {
-        options.signal.removeEventListener("abort", stop);
-      }
-    })();
-    return stop;
+    return followDesktopUpdates(this, listener, options);
   }
   async #verify(signal?: AbortSignal) {
     signal?.throwIfAborted();
@@ -183,37 +131,16 @@ export class DesktopUpdatesService implements DesktopUpdates {
           method,
           expectedDeploymentId: verified.deploymentId,
           expectedAttachmentKey: verified.key,
-          path: `/maintenance/v1/desktop-update${query}`,
+          path: `${desktopUpdatePath}${query}`,
           headers: {
             accept: "application/json",
             ...(body ? { contentType: "application/json" } : {}),
           },
           ...(body ? { body: JSON.stringify(body) } : {}),
           ...(signal === undefined ? {} : { signal }),
-          timeoutMs: desktopUpdateLongPollMs + 5_000,
+          timeoutMs: desktopUpdateRequestTimeoutMs,
         },
-        async (response, progress) => {
-          if (!response.ok)
-            throw new DesktopUpdatesError(
-              (
-                {
-                  401: "unauthorized",
-                  403: "forbidden",
-                  404: "unsupported",
-                  409: "conflict",
-                } as const
-              )[response.status as 401 | 403 | 404 | 409] ?? "unavailable",
-            );
-          const value = await readBoundedJson(response, {
-            maximumBytes: desktopUpdateMaximumBytes,
-            signal: progress.signal,
-            onProgress: progress.onProgress,
-            sizeError: () => new DesktopUpdatesError("invalid-response"),
-          });
-          const parsed = schema.safeParse(value);
-          if (!parsed.success) throw new DesktopUpdatesError("invalid-response");
-          return parsed.data;
-        },
+        (response, progress) => readDesktopUpdateResponse(response, schema, progress),
       );
     } catch (error) {
       if (signal?.aborted) throw signal.reason;

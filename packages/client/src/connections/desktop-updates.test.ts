@@ -1,7 +1,8 @@
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
-import { DesktopUpdatesService } from "./desktop-updates.js";
+import { hostApiVersionHeader } from "@opensteer/protocol";
+import { DesktopUpdatesService, OriginDesktopUpdates } from "./desktop-updates.js";
 import {
   DeploymentCatalogSchema,
   DeploymentConnectionSchema,
@@ -199,4 +200,42 @@ it("does not send a credential when selection moves during identity verification
   });
   await expect(service.status()).rejects.toMatchObject({ reason: "invalid-response" });
   expect(request.mock.calls.every(([input]) => input.authorization === null)).toBe(true);
+});
+
+describe("OriginDesktopUpdates", () => {
+  it("speaks the maintenance contract with the page's own session and no epoch", async () => {
+    const status = { supported: true, state: null, operation: null, revision: "host:0" };
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(status));
+    const updates = new OriginDesktopUpdates("https://studio.example", fetch);
+    await expect(updates.status({ after: "a b" })).resolves.toEqual(status);
+    const [url, init] = fetch.mock.calls[0]!;
+    expect(url).toBe("https://studio.example/maintenance/v1/desktop-update?after=a%20b");
+    expect(init).toMatchObject({ method: "GET", credentials: "include" });
+    expect(new Headers(init?.headers).has(hostApiVersionHeader)).toBe(false);
+  });
+
+  it.each([
+    [401, "unauthorized"],
+    [403, "forbidden"],
+    [404, "unsupported"],
+    [409, "conflict"],
+    [503, "unavailable"],
+  ] as const)("reports %i as %s", async (code, reason) => {
+    const updates = new OriginDesktopUpdates(
+      "https://studio.example",
+      async () => new Response("", { status: code }),
+    );
+    await expect(updates.status()).rejects.toMatchObject({ reason });
+  });
+
+  it("reports a Host it can't reach as offline, and a closed view as itself", async () => {
+    const updates = new OriginDesktopUpdates("https://studio.example", async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    await expect(updates.status()).rejects.toMatchObject({ reason: "offline" });
+    const closed = new AbortController();
+    const reason = new Error("Updates view closed");
+    closed.abort(reason);
+    await expect(updates.status({ signal: closed.signal })).rejects.toBe(reason);
+  });
 });

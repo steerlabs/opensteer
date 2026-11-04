@@ -58,9 +58,10 @@ which clients read only while Settings or first-run setup is open.
 
 Desktop updates reach only the installation supervising its own Personal Host, never a borrowed
 Runner or a server Deployment. The epoch-independent [maintenance v1 contract](../packages/protocol/src/maintenance.ts)
-is its sole browser API; clients verify identity and reuse session authentication below ordinary
-attachment, and long-poll only while Updates is visible. An already-shipped desktop without this
-contract needs one local update first. The target is journaled before native staging, since any
+is its sole browser API. A page its Host served calls it same-origin. Phones and the desktop's main
+process verify identity and reuse session authentication below ordinary attachment, so they can
+update a Host they can't attach to. All of them long-poll only while Updates is visible. An
+already-shipped desktop without this contract needs one local update first. The target is journaled before native staging, since any
 quit can apply it; only a new desktop process incarnation reconciles the installed version.
 Failed install handoff relaunches the desktop to restore the Personal stack and reconcile the journal.
 

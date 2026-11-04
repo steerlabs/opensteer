@@ -67,7 +67,10 @@ import { registerDesktopBridge } from "./bridge/registration.js";
 import { DeploymentAccessService } from "./connections/deployment-access-service.js";
 import { DesktopAccessProjection } from "./connections/access-projection.js";
 import { DesktopDeploymentProbe } from "./connections/deployment-probe.js";
-import { DeploymentCatalogStore } from "@opensteer/client/connections";
+import { DeploymentCatalogStore, DesktopUpdatesService } from "@opensteer/client/connections";
+import type { DeploymentId } from "@opensteer/core";
+import { resolveDesktopAppBranding } from "@opensteer/protocol/desktop";
+import { desktopLocalHostRuntime } from "./connections/access-projection.js";
 import { ElectronHostNetwork } from "./app/electron-host-network.js";
 import { ElectronServiceNetwork } from "./app/electron-service-network.js";
 import {
@@ -76,7 +79,6 @@ import {
   desktopWindowForContents,
   ElectronWindowFactory,
 } from "./app/electron-window.js";
-import { resolveDesktopAppBranding } from "./app/app-branding.js";
 import { createDesktopApplicationMenu, showDesktopUpdateMenuItem } from "./app/application-menu.js";
 import { DesktopTrayService } from "./app/desktop-tray.js";
 import { AgentPhoneAdbServer } from "./app/agent-phone-adb-server.js";
@@ -570,6 +572,21 @@ async function runDesktop(
     projection: accessProjection,
     sessions: hostSessions,
   });
+  const deploymentUpdates = new Map<DeploymentId, DesktopUpdatesService>();
+  const deploymentUpdatesFor = (deploymentId: DeploymentId): DesktopUpdatesService => {
+    const existing = deploymentUpdates.get(deploymentId);
+    if (existing) return existing;
+    const created = new DesktopUpdatesService({
+      catalog: deploymentCatalog,
+      credentials: nativeAuth,
+      deploymentId,
+      localRuntime: { current: async () => desktopLocalHostRuntime(await personal.current()) },
+      network: hostNetwork,
+      sessions: hostSessions,
+    });
+    deploymentUpdates.set(deploymentId, created);
+    return created;
+  };
   const uninstallPublishedAppProtocol = installPublishedAppProtocol(protocol, hostTransport);
   const nativePasskeys = createMacosNativePasskeys();
   const browserPresentation = new DesktopBrowserPresentationManager({
@@ -1037,6 +1054,7 @@ async function runDesktop(
       requestPermissions: (pane) => computerUse.requestPermissions(pane),
     },
     browserPresentation,
+    deploymentUpdates: deploymentUpdatesFor,
     hostTransport,
     log: reportEvent,
     ipcMain,

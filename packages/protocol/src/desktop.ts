@@ -511,9 +511,19 @@ export interface DesktopDownloadsBridge {
  * This app's own release updates. Electron main checks on its own; the person
  * starts the download and the restart that installs it.
  */
-export { DesktopUpdateChannelSchema, DesktopUpdateStateSchema } from "./desktop-update-state.js";
+export {
+  DesktopUpdateChannelSchema,
+  DesktopUpdateStateSchema,
+  resolveDesktopAppBranding,
+} from "./desktop-update-state.js";
 export type { DesktopUpdateChannel, DesktopUpdateState } from "./desktop-update-state.js";
 import type { DesktopUpdateChannel, DesktopUpdateState } from "./desktop-update-state.js";
+import {
+  DesktopUpdateOperationSchema,
+  DesktopUpdateRequestSchema,
+  DesktopUpdateStatusQuerySchema,
+  DesktopUpdateStatusSchema,
+} from "./maintenance.js";
 
 /** This app's updates, app-wide; every app window sees the same state. */
 export interface DesktopUpdatesBridge {
@@ -524,6 +534,58 @@ export interface DesktopUpdatesBridge {
   download(): Promise<void>;
   /** Quits and relaunches into the downloaded version. */
   restart(): Promise<void>;
+}
+
+export const DesktopDeploymentUpdateStatusInputSchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  after: DesktopUpdateStatusQuerySchema.shape.after,
+  /** Names this wait so a closed view can cancel it. */
+  waitId: z.uuid(),
+});
+export type DesktopDeploymentUpdateStatusInput = z.infer<
+  typeof DesktopDeploymentUpdateStatusInputSchema
+>;
+export const DesktopDeploymentUpdateRequestInputSchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  request: DesktopUpdateRequestSchema,
+});
+export type DesktopDeploymentUpdateRequestInput = z.infer<
+  typeof DesktopDeploymentUpdateRequestInputSchema
+>;
+const DesktopDeploymentUpdateFailureSchema = z.strictObject({
+  ok: z.literal(false),
+  failure: z.enum([
+    "unsupported",
+    "unauthorized",
+    "forbidden",
+    "conflict",
+    "offline",
+    "unavailable",
+    "invalid-response",
+  ]),
+});
+export const DesktopDeploymentUpdateStatusResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true), data: DesktopUpdateStatusSchema }),
+  DesktopDeploymentUpdateFailureSchema,
+]);
+export type DesktopDeploymentUpdateStatusResult = z.infer<
+  typeof DesktopDeploymentUpdateStatusResultSchema
+>;
+export const DesktopDeploymentUpdateRequestResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true), data: DesktopUpdateOperationSchema }),
+  DesktopDeploymentUpdateFailureSchema,
+]);
+export type DesktopDeploymentUpdateRequestResult = z.infer<
+  typeof DesktopDeploymentUpdateRequestResultSchema
+>;
+
+/** Another computer's updates, held by main so they work where this app can't attach. */
+export interface DesktopDeploymentUpdatesBridge {
+  status(input: DesktopDeploymentUpdateStatusInput): Promise<DesktopDeploymentUpdateStatusResult>;
+  request(
+    input: DesktopDeploymentUpdateRequestInput,
+  ): Promise<DesktopDeploymentUpdateRequestResult>;
+  cancel(waitId: string): Promise<void>;
 }
 
 /**
@@ -1541,6 +1603,7 @@ export interface OpensteerDesktopBridge {
   downloads?: DesktopDownloadsBridge;
   /** Present only in the desktop app. */
   updates?: DesktopUpdatesBridge;
+  deploymentUpdates?: DesktopDeploymentUpdatesBridge;
   /** On-device dictation on this Mac. Present only in the desktop app. */
   dictation?: DictationPort;
   webLinkDelivery?(input: DesktopWebLinkDelivery): Promise<DesktopWebLink | null>;

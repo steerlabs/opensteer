@@ -1,4 +1,5 @@
 import type { PersonShowMessage } from "@opensteer/protocol";
+import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
 import type {
   ChannelAccessPolicy,
   ChannelAccount,
@@ -1061,6 +1062,8 @@ export type MachineAccessUpdateOutcome =
   { readonly outcome: "conflict" } | { readonly outcome: "updated"; readonly revision: number };
 
 export interface HostClient {
+  /** A Host without a network supplies its own; every other client reaches updates by route. */
+  readonly desktopUpdates?: DesktopUpdates;
   readonly browserPasskeys?: BrowserPasskeys;
   readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;

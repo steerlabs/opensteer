@@ -28,3 +28,11 @@ export const DesktopUpdateStateSchema = z.object({
   failed: z.enum(["check", "download"]).nullable(),
 });
 export type DesktopUpdateState = z.infer<typeof DesktopUpdateStateSchema>;
+
+export function resolveDesktopAppBranding(version: string): {
+  displayName: string;
+  track: "beta" | "stable";
+} {
+  const track = version.endsWith("-insider") ? "beta" : "stable";
+  return { displayName: track === "beta" ? "Opensteer (Beta)" : "Opensteer", track };
+}
