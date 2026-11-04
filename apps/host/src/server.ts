@@ -2416,7 +2416,6 @@ export async function createHostServer(
           profile: await dependencies.browser.createProfile({
             name: command.input.name,
             idempotencyKey: command.idempotencyKey,
-            workspaceId: null,
             ownerId: userId,
           }),
           type: command.type,

@@ -16,7 +16,7 @@ export const BrowserAccessSuggestionInputSchema = z
     z.strictObject({
       kind: z.literal("existing"),
       profileId: BrowserProfileIdSchema.describe(
-        "Existing owner profile to suggest; only the person grants it.",
+        "Existing owner profile to suggest; the person decides.",
       ),
     }),
     z.strictObject({
@@ -27,7 +27,7 @@ export const BrowserAccessSuggestionInputSchema = z
         .min(1)
         .max(120)
         .optional()
-        .describe("Short name for the proposed empty profile."),
+        .describe("One or two plain words, such as Personal, Work or Finance."),
     }),
     z.strictObject({ kind: z.literal("user_choice") }),
   ])

@@ -1,6 +1,6 @@
 # Website sign-in
 
-Prefer an intended saved profile that is already signed in. If the profile limit is reached, ask the owner to manage saved profiles; never delete one to make room automatically.
+Prefer an intended saved profile that is already signed in.
 
 When a page you need shows the user signed out, open its sign-in form in the Browser Session of the profile that should keep the sign-in, then call `sign_in` with `sessionId`, `site`, and a short task reason. It covers the whole site (`github.com` covers `gist.github.com`). An identity provider such as Google or Microsoft may need its own authorization. Saved logins work in fresh and profile-backed sessions; a profile can keep the signed-in state.
 

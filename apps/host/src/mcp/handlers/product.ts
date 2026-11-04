@@ -935,23 +935,6 @@ export class ProductToolHandlers {
     );
   }
 
-  async browser_profile_create({
-    caller,
-    input,
-    operationKey,
-  }: ToolCall<"browser_profile_create">) {
-    const claims = callerContext(caller);
-    const requestId = operationId(caller, operationKey, "browser_profile_create");
-
-    const profile = await this.#browser.createProfile({
-      name: input.name,
-      ownerId: claims.requestedBy,
-      idempotencyKey: idempotencyKey(caller, requestId, "browserProfile"),
-      workspaceId: claims.workspaceId,
-    });
-    return { profile: { id: profile.id, name: profile.name } };
-  }
-
   async browser_profile_list({ caller }: ToolCall<"browser_profile_list">) {
     const claims = callerContext(caller);
 
@@ -999,17 +982,17 @@ export class ProductToolHandlers {
     });
   }
 
-  async browser_access_request({
+  async browser_profile_request({
     caller,
     input,
     operationKey,
-  }: ToolCall<"browser_access_request">) {
+  }: ToolCall<"browser_profile_request">) {
     const claims = requireRun(caller).claims;
-    const requestId = operationId(caller, operationKey, "browser_access_request");
+    const requestId = operationId(caller, operationKey, "browser_profile_request");
 
     const workspaceId = input.workspaceId ?? claims.workspaceId;
     if (caller.reach.kind !== "user" && workspaceId !== claims.workspaceId) {
-      throw forbidden("Caller can request browser access only for its Workspace");
+      throw forbidden("Caller can request a browser profile only for its Workspace");
     }
 
     return await this.#browser.requestAccess({

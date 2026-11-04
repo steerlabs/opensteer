@@ -513,6 +513,28 @@ label.action-row input {
   color: var(--muted);
 }
 
+/* One-tap starting values for the field above; the field stays the source of truth. */
+.action-field__suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+.action-field__suggestions .chip {
+  background: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.action-field__suggestions .chip:hover:not(:disabled, .chip--accent) {
+  color: var(--text);
+}
+
+.action-field__suggestions .chip:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 /* A field that is a step to take rather than a value to read: "Reconnect …". */
 .action-field__title {
   font-weight: var(--weight-strong);

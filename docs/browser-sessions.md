@@ -466,12 +466,17 @@ Profile listing, opening, CDP and tab reach follow the shared
 [Run resource authority rule](agent-orchestration.md#run-tool-authority).
 Browser grants use `read` or `read-write`; driving a browser requires `read-write`.
 
-Profiles are durable identities, not account names. Runs and programs can create
-empty profiles; creation grants no access to an existing profile or website
-account. Projects still need a browser-access Request for a profile grant.
-Delegated work keeps its root's consent reach; delegation alone neither removes
-Main inheritance nor grants it. Connected agents use managed Runs for browser
-sessions and new profile creation, and cannot approve browser access. Choose the
+Profiles are durable identities, not account names, and only people create
+them. An agent that needs a profile it cannot use asks with one browser-access
+Request in Main or a Project; the person picks an existing profile or names a
+new one, and approving in a Project also grants it there. Main already reaches
+every owner profile, so it never holds grants. Delegated work keeps its root's
+consent reach; delegation alone neither removes Main inheritance nor grants it.
+Connected agents use managed Runs for browser sessions and cannot approve
+browser access.
+
+Grants decide which Workspaces' agents may use a profile, never whether its
+owner may watch it: a person can always view sessions on their own profiles. Choose the
 profile before signing in: Guest state is ephemeral and cannot be promoted.
 The profile list provides identities and grants, never proof of a website login.
 Inspect the website only when the task actually needs that sign-in.

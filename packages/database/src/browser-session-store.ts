@@ -148,6 +148,52 @@ function inheritedMainBrowserGrantId(
   );
 }
 
+/**
+ * Adds one profile within the owner's slots: the person's own command and an
+ * approved browser-access Request both create profiles through here.
+ */
+export async function insertBrowserProfile(
+  transaction: Transaction<DatabaseSchema>,
+  input: { readonly name: string; readonly ownerId: UserId },
+): Promise<BrowserProfileRecord> {
+  await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${input.ownerId}`}, 0))`.execute(
+    transaction,
+    databaseOperationOptions(),
+  );
+  const existing = await transaction
+    .selectFrom("browserProfiles")
+    .select("id")
+    .where("ownerId", "=", input.ownerId)
+    // Deletion transfers a slot until the owning computer confirms erasure.
+    .where((eb) =>
+      eb.or([
+        eb("archivedAt", "is", null),
+        eb.exists(
+          eb
+            .selectFrom("browserProfileDeletions")
+            .select("profileId")
+            .whereRef("profileId", "=", "browserProfiles.id")
+            .where("state", "!=", "deleted"),
+        ),
+      ]),
+    )
+    .limit(128)
+    .execute(databaseOperationOptions());
+  if (existing.length >= 128) {
+    throw new OpensteerError({ code: "conflict", message: "Browser profile limit reached" });
+  }
+  return await transaction
+    .insertInto("browserProfiles")
+    .values({
+      archivedAt: null,
+      id: createId("browserProfile"),
+      name: input.name,
+      ownerId: input.ownerId,
+    })
+    .returning(["id", "name", "ownerId"])
+    .executeTakeFirstOrThrow(databaseOperationOptions());
+}
+
 export async function createBrowserProfile(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -186,45 +232,7 @@ export async function createBrowserProfile(
       }
       return profile;
     }
-    await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${input.ownerId}`}, 0))`.execute(
-      transaction,
-      databaseOperationOptions(),
-    );
-    const existing = await transaction
-      .selectFrom("browserProfiles")
-      .select("id")
-      .where("ownerId", "=", input.ownerId)
-      // Deletion transfers a slot until the owning computer confirms erasure.
-      .where((eb) =>
-        eb.or([
-          eb("archivedAt", "is", null),
-          eb.exists(
-            eb
-              .selectFrom("browserProfileDeletions")
-              .select("profileId")
-              .whereRef("profileId", "=", "browserProfiles.id")
-              .where("state", "!=", "deleted"),
-          ),
-        ]),
-      )
-      .limit(128)
-      .execute(databaseOperationOptions());
-    if (existing.length >= 128) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Browser profile limit reached",
-      });
-    }
-    const profile = await transaction
-      .insertInto("browserProfiles")
-      .values({
-        archivedAt: null,
-        id: createId("browserProfile"),
-        name: input.name,
-        ownerId: input.ownerId,
-      })
-      .returning(["id", "name", "ownerId"])
-      .executeTakeFirstOrThrow(databaseOperationOptions());
+    const profile = await insertBrowserProfile(transaction, input);
     await transaction
       .insertInto("commands")
       .values({

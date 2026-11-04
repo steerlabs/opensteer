@@ -1109,19 +1109,14 @@ export class BrowserService {
     await this.#flushCatalogNotice(sessionId, workspaceId, broker);
   }
 
+  /** Only people create profiles; every device of theirs learns of it, not just the one that asked. */
   async createProfile(input: {
     readonly name: string;
     readonly ownerId: UserId;
     readonly idempotencyKey: string;
-    /**
-     * The Workspace the change was made from, which addresses the owner's
-     * notice. The person's own command names none: their client applies the
-     * command's result itself.
-     */
-    readonly workspaceId: WorkspaceId | null;
   }): Promise<BrowserProfile> {
     const profile = await this.#repository.createBrowserProfile(input);
-    if (input.workspaceId) this.#onProfilesChanged(input.ownerId, input.workspaceId);
+    await this.#ownerProfilesChanged(input.ownerId);
     return publicProfile(profile);
   }
 
@@ -3087,16 +3082,9 @@ export class BrowserService {
     if (!workspace) {
       throw new OpensteerError({ code: "not_found", message: "Workspace not found." });
     }
-    if (workspace.kind === "main") {
-      throw new OpensteerError({
-        code: "bad_request",
-        message:
-          "browser_access_request grants a browser profile only to a project Workspace. From Main, pass that Workspace's workspaceId. To browse in Main, open a session with an inherited profile from browser_profile_list, or with fresh: true for signed-out browsing.",
-      });
-    }
-    // Asking the owner for access the Workspace already holds would only put a
-    // question in front of them whose answer is already yes. A replayed call
-    // still returns the Request it made.
+    // Asking for a profile the Workspace can already use would only put a question
+    // in front of the owner whose answer is already yes. Main reaches every owner
+    // profile. A replayed call still returns the Request it made.
     if (
       input.suggestion.kind === "existing" &&
       !(await this.#repository.requests.findByCallIdentity({
@@ -3105,11 +3093,16 @@ export class BrowserService {
       }))
     ) {
       const profileId = input.suggestion.profileId;
-      const grants = await this.#repository.listActiveBrowserProfileGrantsForWorkspace(
-        input.workspaceId,
-        input.ownerId,
-      );
-      if (grants.some((grant) => grant.profileId === profileId)) {
+      const usable =
+        workspace.kind === "main"
+          ? (await this.#repository.getBrowserProfile(profileId, input.ownerId)) !== null
+          : (
+              await this.#repository.listActiveBrowserProfileGrantsForWorkspace(
+                input.workspaceId,
+                input.ownerId,
+              )
+            ).some((grant) => grant.profileId === profileId);
+      if (usable) {
         throw new OpensteerError({
           code: "conflict",
           message: `This Workspace can already use browser profile ${profileId}; no Request is needed. Open it with browser_session_open {"profileId":"${profileId}"}. If the website shows you signed out, use sign_in.`,
@@ -3128,7 +3121,7 @@ export class BrowserService {
         detail: input.reason,
         kind: "external",
         subject: { id: input.workspaceId, kind: "workspace" },
-        title: "Browser profile access",
+        title: "Browser profile",
       },
       requestedBy: input.ownerId,
       requiredActor: "requester",

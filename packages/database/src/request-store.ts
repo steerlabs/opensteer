@@ -102,6 +102,7 @@ import {
   lockRequestWorkspaces,
   withRequestWorkspaceLocks,
 } from "./request-workspace-locks.js";
+import { insertBrowserProfile } from "./browser-session-store.js";
 import { runHasActiveGrant } from "./run-grants.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue, safeGeneration } from "./store-primitives.js";
@@ -2249,17 +2250,10 @@ export class RequestStore {
               });
             }
           } else if ("createProfile" in decision) {
-            await assertBrowserProfileCapacity(transaction, input.resolvedBy);
-            profile = await transaction
-              .insertInto("browserProfiles")
-              .values({
-                archivedAt: null,
-                id: createId("browserProfile"),
-                name: decision.createProfile.name,
-                ownerId: input.resolvedBy,
-              })
-              .returning(["id", "name", "ownerId"])
-              .executeTakeFirstOrThrow();
+            profile = await insertBrowserProfile(transaction, {
+              name: decision.createProfile.name,
+              ownerId: input.resolvedBy,
+            });
           } else {
             throw new OpensteerError({
               code: "bad_request",
@@ -2271,7 +2265,8 @@ export class RequestStore {
             .select("kind")
             .where("id", "=", request.targetWorkspaceId)
             .executeTakeFirstOrThrow();
-          if (request.kind === "browser.access" || targetWorkspace.kind === "project") {
+          // Main already reaches every profile its owner has; only a Project needs a grant.
+          if (targetWorkspace.kind === "project") {
             grant = await ensureBrowserGrant(transaction, {
               createdBy: input.resolvedBy,
               profileId: profile.id,
@@ -3078,12 +3073,6 @@ async function createRequestInTransaction(
     !(await runAssignmentAcceptsRequests(transaction, input.originatingRunId))
   ) {
     throw new OpensteerError({ code: "conflict", message: assignmentClosedToRequestsMessage });
-  }
-  if (input.kind === "browser.access" && authority.targetWorkspace.kind !== "project") {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Browser access Requests must target a project Workspace",
-    });
   }
   if (input.kind === "browser.sign-in") {
     if (input.payload.kind !== "browser.sign-in") {
@@ -4379,25 +4368,6 @@ async function lockActiveDurableRequestAuthority(
   const authority = await lockRequestWorkspaceAuthorities(transaction, request);
   assertActiveRequestAuthority(authority);
   return authority;
-}
-
-async function assertBrowserProfileCapacity(
-  transaction: Transaction<DatabaseSchema>,
-  ownerId: UserId,
-): Promise<void> {
-  await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${ownerId}`}, 0))`.execute(
-    transaction,
-  );
-  const active = await transaction
-    .selectFrom("browserProfiles")
-    .select("id")
-    .where("ownerId", "=", ownerId)
-    .where("archivedAt", "is", null)
-    .limit(128)
-    .execute();
-  if (active.length >= 128) {
-    throw new OpensteerError({ code: "conflict", message: "Browser profile limit reached" });
-  }
 }
 
 async function ensureBrowserGrant(

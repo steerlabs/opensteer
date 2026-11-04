@@ -255,10 +255,10 @@ export async function continuationMessage(
       if (!outcome.success)
         return `Request ${request.id} was fulfilled. Browser profile access is now available; browser_profile_list shows the profiles this Workspace can use. Continue the task.`;
       const { id: profileId, name } = outcome.data.profile;
-      return `Request ${request.id} was fulfilled. Browser profile ${JSON.stringify(name)} (${profileId}) is now available to this Workspace. Open it with browser_session_open and profileId ${profileId}, then continue the task.`;
+      return `Request ${request.id} was fulfilled. The person chose browser profile ${JSON.stringify(name)} (${profileId}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${profileId}, then continue the task.`;
     }
     case "browser.profile.save":
-      return `Request ${request.id} is historical. Create a browser profile before signing in; Guest sign-ins cannot be saved.`;
+      return `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`;
     case "browser.profile.import":
       return request.status === "declined" &&
         request.response.kind === "external" &&

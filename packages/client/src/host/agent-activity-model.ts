@@ -1997,6 +1997,10 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     said(["Looking up browser profiles", "Looked up browser profiles"], "browser"),
   ],
   [
+    "browser_profile_request",
+    said(["Asking for a browser profile", "Asked for a browser profile"], "browser"),
+  ],
+  [
     "browser_profile_save",
     said(["Saving the browser profile", "Saved the browser profile"], "browser"),
   ],

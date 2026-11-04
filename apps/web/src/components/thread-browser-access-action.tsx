@@ -1,18 +1,19 @@
 import {
-  browserAccessAvailableLabel,
+  browserAccessChoices,
   browserAccessGrantable,
   browserAccessGrantLabel,
   browserAccessInitialName,
   browserAccessInitialSelection,
+  browserAccessProfileNote,
   browserAccessResponse,
   browserAccessWarning,
   mutationIdempotencyKey,
+  type BrowserAccessChoices,
   type BrowserAccessSelection,
-  type BrowserProfileSummary,
   type HostClient,
 } from "@opensteer/client/host";
 import type { Request } from "@opensteer/core";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { ActionNote } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
 
@@ -21,13 +22,6 @@ import { useShell } from "./app-shell.js";
  * advisory: the profile inventory comes from the Host snapshot, never from
  * agent-authored content, and the owner can always choose another profile.
  */
-
-export type BrowserAccessView = {
-  readonly kind: "pending";
-  readonly profiles: readonly BrowserProfileSummary[];
-  readonly grantedProfileIds: readonly string[];
-  readonly workspaceName: string;
-};
 
 /** No selection resolves the request as declined; a selection grants full control. */
 export async function resolveBrowserAccess(
@@ -79,14 +73,7 @@ export function ThreadBrowserRequestAction({
   if (request.payload.kind !== "browser.access") {
     return <ActionNote alert>This Browser Request is invalid.</ActionNote>;
   }
-  const view: BrowserAccessView = {
-    kind: "pending",
-    profiles: snapshot.browserProfiles,
-    grantedProfileIds: snapshot.browserProfileGrants
-      .filter((grant) => grant.workspaceId === request.targetWorkspaceId)
-      .map((grant) => grant.profileId),
-    workspaceName: workspaceName(snapshot.workspaces, request.targetWorkspaceId),
-  };
+  const choices = browserAccessChoices(snapshot, request.targetWorkspaceId);
 
   return (
     <>
@@ -99,13 +86,14 @@ export function ThreadBrowserRequestAction({
         onSelect={setChosen}
         pending={pending || disabled}
         selection={selection}
-        view={view}
+        choices={choices}
       />
     </>
   );
 }
 
 export function BrowserAccessBody({
+  choices,
   name,
   onChangeName,
   onDecline,
@@ -113,8 +101,8 @@ export function BrowserAccessBody({
   onSelect,
   pending,
   selection,
-  view,
 }: {
+  readonly choices: BrowserAccessChoices;
   readonly name: string;
   readonly onChangeName: (name: string) => void;
   readonly onDecline: () => void;
@@ -122,17 +110,17 @@ export function BrowserAccessBody({
   readonly onSelect: (selection: BrowserAccessSelection) => void;
   readonly pending: boolean;
   readonly selection: BrowserAccessSelection | null;
-  readonly view: BrowserAccessView;
 }) {
-  const grantable = browserAccessGrantable(selection, name, view.profiles);
-  const alreadyGranted =
-    selection?.kind === "existing" && view.grantedProfileIds.includes(selection.profileId);
+  const groupId = useId();
+  const nameId = `${groupId}-name`;
+  const grantable = browserAccessGrantable(selection, name, choices.profiles);
 
   return (
     <>
       <div className="action-rows">
-        {view.profiles.map((profile) => {
+        {choices.profiles.map((profile) => {
           const selected = selection?.kind === "existing" && selection.profileId === profile.id;
+          const note = browserAccessProfileNote(choices, profile);
           return (
             <label
               className={selected ? "action-row action-row--selected" : "action-row"}
@@ -141,7 +129,7 @@ export function BrowserAccessBody({
               <input
                 disabled={pending}
                 checked={selected}
-                name="browser-access-profile"
+                name={groupId}
                 onChange={() => onSelect({ kind: "existing", profileId: profile.id })}
                 type="radio"
               />
@@ -149,11 +137,7 @@ export function BrowserAccessBody({
                 <span className="action-row__label browser-profile-name" title={profile.name}>
                   {profile.name}
                 </span>
-                {view.grantedProfileIds.includes(profile.id) ? (
-                  <span className="action-row__desc">
-                    {browserAccessAvailableLabel(view.workspaceName)}
-                  </span>
-                ) : null}
+                {note ? <span className="action-row__desc">{note}</span> : null}
               </span>
             </label>
           );
@@ -164,28 +148,46 @@ export function BrowserAccessBody({
           <input
             disabled={pending}
             checked={selection?.kind === "new"}
-            name="browser-access-profile"
+            name={groupId}
             onChange={() => onSelect({ kind: "new" })}
             type="radio"
           />
-          <span className="action-row__label">Create a new profile</span>
+          <span className="action-row__label">New profile</span>
         </label>
       </div>
       {selection?.kind === "new" ? (
-        <label className="action-field">
-          <span>Profile name</span>
+        <div className="action-field">
+          <label htmlFor={nameId}>Name</label>
           <input
+            autoComplete="off"
             className="text-input browser-profile-name"
-            title={name}
             disabled={pending}
+            id={nameId}
             maxLength={120}
             onChange={(event) => onChangeName(event.target.value)}
-            placeholder="New browser profile"
+            placeholder="Personal, Work, Finance…"
+            title={name}
             value={name}
           />
-        </label>
+          {choices.nameSuggestions.length > 0 ? (
+            <div aria-label="Suggested names" className="action-field__suggestions" role="group">
+              {choices.nameSuggestions.map((suggestion) => (
+                <button
+                  aria-pressed={name.trim() === suggestion}
+                  className={name.trim() === suggestion ? "chip chip--accent" : "chip"}
+                  disabled={pending}
+                  key={suggestion}
+                  onClick={() => onChangeName(suggestion)}
+                  type="button"
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
       ) : null}
-      <ActionNote>{browserAccessWarning(view.workspaceName)}</ActionNote>
+      <ActionNote>{browserAccessWarning(choices)}</ActionNote>
       <div className="action-buttons">
         <button className="btn" disabled={pending} onClick={onDecline} type="button">
           Not now
@@ -196,18 +198,11 @@ export function BrowserAccessBody({
           onClick={onGrant}
           type="button"
         >
-          {pending ? "Continuing…" : browserAccessGrantLabel(alreadyGranted)}
+          {pending ? "Continuing…" : browserAccessGrantLabel(selection, choices)}
         </button>
       </div>
     </>
   );
-}
-
-function workspaceName(
-  workspaces: readonly { readonly id: string; readonly name: string }[],
-  workspaceId: string,
-): string {
-  return workspaces.find(({ id }) => id === workspaceId)?.name ?? "this Workspace";
 }
 
 function errorMessage(reason: unknown): string {

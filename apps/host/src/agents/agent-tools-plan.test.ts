@@ -44,9 +44,9 @@ describe("Host Run tools plan", () => {
       "opensteer:memory",
     );
     expect(main.toolsRevision).not.toBe(plan.toolsRevision);
-    // Profiles belong to the person: only work acting as them in Main creates one.
-    expect(main.tools).toContain("browser_profile_create");
-    expect(plan.tools).not.toContain("browser_profile_create");
+    // Profiles belong to the person: agents ask for one and never create it themselves.
+    expect(main.tools).toContain("browser_profile_request");
+    expect(main.tools).not.toContain("browser_profile_create");
     expect(agentToolsPlanForRun({ ...input, reach: "lineage" }).instructions).toContain(
       "PLUGIN_DATA",
     );

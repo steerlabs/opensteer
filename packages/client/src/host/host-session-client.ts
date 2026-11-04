@@ -5951,13 +5951,10 @@ export class HttpHostClient {
     const authority = this.#browserTargetAuthorities.get(sessionId);
     if (!authority) return true;
     if (this.#forbiddenWorkspaces.has(authority.workspaceId)) return false;
+    // People view sessions on profiles they own; grants only decide which Workspaces' agents may use them.
     return (
       authority.profileId === null ||
-      (snapshot.browserProfiles.some((profile) => profile.id === authority.profileId) &&
-        snapshot.browserProfileGrants.some(
-          (grant) =>
-            grant.profileId === authority.profileId && grant.workspaceId === authority.workspaceId,
-        ))
+      snapshot.browserProfiles.some((profile) => profile.id === authority.profileId)
     );
   }
 
@@ -6140,7 +6137,6 @@ export class HttpHostClient {
         snapshot.connection !== this.#snapshot.connection ||
         snapshot.workspaceTabs !== this.#snapshot.workspaceTabs ||
         snapshot.browserProfiles !== this.#snapshot.browserProfiles ||
-        snapshot.browserProfileGrants !== this.#snapshot.browserProfileGrants ||
         snapshot.workspaces !== this.#snapshot.workspaces
       ) {
         const places = placeList(snapshot);

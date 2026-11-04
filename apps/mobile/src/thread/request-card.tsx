@@ -3,11 +3,12 @@ import { authenticatePasswordApproval } from "./password-approval-auth.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { HostClient, SurfaceModel } from "@opensteer/client/host";
 import {
-  browserAccessAvailableLabel,
+  browserAccessChoices,
   browserAccessGrantable,
   browserAccessGrantLabel,
   browserAccessInitialName,
   browserAccessInitialSelection,
+  browserAccessProfileNote,
   browserAccessResponse,
   browserAccessWarning,
   browserSignInProblemCopy,
@@ -83,6 +84,7 @@ import {
 } from "../theme.js";
 import {
   AppText,
+  Chip,
   monoFontFamily,
   Notice,
   PrimaryButton,
@@ -980,47 +982,55 @@ function BrowserAccessBody(props: {
         ? browserAccessInitialSelection(suggestion, profiles)
         : null;
   const name = props.state.name ?? (suggestion ? browserAccessInitialName(suggestion) : "");
-  const workspaceName =
-    snapshot.workspaces.find((workspace) => workspace.id === props.request.targetWorkspaceId)
-      ?.name ?? "this Workspace";
-  const available = new Set(
-    snapshot.browserProfileGrants
-      .filter((grant) => grant.workspaceId === props.request.targetWorkspaceId)
-      .map((grant) => grant.profileId),
-  );
+  const choices = browserAccessChoices(snapshot, props.request.targetWorkspaceId);
   const busy = props.pendingId !== null;
   const disabled = !props.canRespond || busy;
-  const alreadyAvailable = selection?.kind === "existing" && available.has(selection.profileId);
   const choose = (next: BrowserAccessSelection): void => {
     void Haptics.selectionAsync();
     props.state.onSelect(next);
   };
   const nameField = (
-    <TextInput
-      accessibilityLabel="Profile name"
-      autoCapitalize="words"
-      cursorColor={color.ember}
-      editable={!busy}
-      maxFontSizeMultiplier={controlFontScaleLimit}
-      maxLength={120}
-      onChangeText={props.state.onChangeName}
-      placeholder="New browser profile"
-      placeholderTextColor={color.muted}
-      selectionColor={color.ember}
-      style={[type.body, styles.input, busy && styles.disabled]}
-      value={name}
-    />
+    <View style={styles.nameField}>
+      <TextInput
+        accessibilityLabel="Profile name"
+        autoCapitalize="words"
+        cursorColor={color.ember}
+        editable={!busy}
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        maxLength={120}
+        onChangeText={props.state.onChangeName}
+        placeholder="Personal, Work, Finance…"
+        placeholderTextColor={color.muted}
+        selectionColor={color.ember}
+        style={[type.body, styles.input, busy && styles.disabled]}
+        value={name}
+      />
+      {choices.nameSuggestions.length > 0 ? (
+        <View accessibilityLabel="Suggested names" style={styles.nameSuggestions}>
+          {choices.nameSuggestions.map((suggestion) => (
+            <Chip
+              accessibilityLabel={`Name it ${suggestion}`}
+              disabled={busy}
+              key={suggestion}
+              label={suggestion}
+              onPress={() => {
+                void Haptics.selectionAsync();
+                props.state.onChangeName(suggestion);
+              }}
+            />
+          ))}
+        </View>
+      ) : null}
+    </View>
   );
   return (
     <View style={styles.choices}>
       {
         <>
           <RowGroup>
-            {profiles.map((profile) => (
+            {choices.profiles.map((profile) => (
               <FormChoiceRow
-                description={
-                  available.has(profile.id) ? browserAccessAvailableLabel(workspaceName) : undefined
-                }
+                description={browserAccessProfileNote(choices, profile) ?? undefined}
                 disabled={busy}
                 hint="Choose one"
                 key={profile.id}
@@ -1034,7 +1044,7 @@ function BrowserAccessBody(props: {
               description={undefined}
               disabled={busy}
               hint="Choose one"
-              label="Create a new profile"
+              label="New profile"
               mode="one"
               onPress={() => choose({ kind: "new" })}
               selected={selection?.kind === "new"}
@@ -1042,7 +1052,7 @@ function BrowserAccessBody(props: {
           </RowGroup>
           {selection?.kind === "new" ? nameField : null}
           <AppText role="caption" tone="muted">
-            {browserAccessWarning(workspaceName)}
+            {browserAccessWarning(choices)}
           </AppText>
         </>
       }
@@ -1050,7 +1060,7 @@ function BrowserAccessBody(props: {
       <PrimaryButton
         busy={props.pendingId === browserAccessGrantId}
         disabled={disabled || !browserAccessGrantable(selection, name, profiles)}
-        label={browserAccessGrantLabel(alreadyAvailable)}
+        label={browserAccessGrantLabel(selection, choices)}
         onPress={() => props.state.onRespond(selection, name)}
       />
       <SecondaryButton
@@ -1838,6 +1848,8 @@ const styles = StyleSheet.create({
     textAlignVertical: "top",
   },
   mediumRisk: { color: color.amber },
+  nameField: { gap: space[8] },
+  nameSuggestions: { flexDirection: "row", flexWrap: "wrap", gap: space[6] },
   monoDetail: {
     backgroundColor: color.surfaceCode,
     borderColor: color.line,

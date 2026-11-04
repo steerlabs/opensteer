@@ -254,7 +254,6 @@ export const BrowserProfileOutputSchema = z.object({
   grantId: z.string().optional(),
   access: z.enum(["read", "read-write"]).optional(),
 });
-export const BrowserProfileCreateOutputSchema = z.object({ profile: BrowserProfileOutputSchema });
 export const BrowserProfileListOutputSchema = z.object({
   profiles: z.array(BrowserProfileOutputSchema),
 });
