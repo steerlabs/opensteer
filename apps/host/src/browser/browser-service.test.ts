@@ -256,6 +256,15 @@ describe("BrowserService", () => {
     await Promise.all(
       media.map((socket) => once(socket, "open", { signal: AbortSignal.timeout(2000) })),
     );
+    const beforeRelease = f.operations.length;
+    await send(1, {
+      type: "input.control",
+      action: "release",
+      surfaceId: "page-1",
+      streamId: admissions[1]!.streamId,
+    });
+    expect(f.operations.slice(beforeRelease)).toEqual([]);
+    expect(runtime.receivedCommands().filter((m) => m.type === "input.control")).toEqual([]);
     await send(0, {
       type: "input.control",
       action: "acquire",
@@ -309,6 +318,14 @@ describe("BrowserService", () => {
       "producerId",
     );
     for (const peer of peers.slice(1)) expect(JSON.stringify(peer.text())).not.toContain(canary);
+    const beforeOtherRelease = f.operations.length;
+    await send(1, {
+      type: "input.control",
+      action: "release",
+      surfaceId: "page-1",
+      streamId: admissions[1]!.streamId,
+    });
+    expect(f.operations).toHaveLength(beforeOtherRelease);
     const before = runtime.receivedCommands().length;
     await send(1, {
       ...ref,

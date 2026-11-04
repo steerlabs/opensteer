@@ -6089,14 +6089,9 @@ class HostedBrowserBroker {
       message.type === "popup.answer" ||
       message.type === "popup.cancel"
     ) {
-      if (
-        !(await this.#admitPrivateInput(
-          outlet,
-          message.surfaceId,
-          message.streamId,
-          message.type === "input.control" && message.action === "acquire",
-        ))
-      )
+      const acquiring = message.type === "input.control" && message.action === "acquire";
+      if (!acquiring && this.#controllers.get(message.surfaceId)?.outlet !== outlet) return;
+      if (!(await this.#admitPrivateInput(outlet, message.surfaceId, message.streamId, acquiring)))
         return;
       if (message.type === "input.control" && message.action === "release") {
         this.#revokeController(outlet);
