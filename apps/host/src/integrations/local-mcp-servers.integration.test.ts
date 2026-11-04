@@ -252,18 +252,18 @@ integration("MCP servers on a computer", () => {
         async () => toolReadiness(await search(), "echo").code === "READY",
         30_000,
       );
-      expect(toolText(await call("echo", { text: "hello" }))).toBe("echo: hello");
-      expect(toolText(await call("note", { text: "buy milk" }))).toBe("noted");
+      expect(said(await call("echo", { text: "hello" }))).toBe("echo: hello");
+      expect(said(await call("note", { text: "buy milk" }))).toBe("noted");
       expect(await readFile(fixture.notesFile, "utf8")).toBe("buy milk\n");
       record("called through the gateway", { notes: await readFile(fixture.notesFile, "utf8") });
 
       // 6. Too large for the stream: that call fails, and the next one works.
       const huge = await call("huge", {});
       expect(huge.isError).toBe(true);
-      expect(toolText(huge)).toBe(
+      expect(said(huge)).toBe(
         "notes-fixture's answer was too large to carry from Studio Mac; ask for less.",
       );
-      expect(toolText(await call("echo", { text: "still here" }))).toBe("echo: still here");
+      expect(said(await call("echo", { text: "still here" }))).toBe("echo: still here");
 
       for (const name of ["unframed", "malformed"]) {
         const pid = await readPid(fixture.pidFile);
@@ -273,36 +273,36 @@ integration("MCP servers on a computer", () => {
         expect(result.isError).toBe(true);
         expect(Date.now() - started).toBeLessThan(15_000);
         await waitForCondition(async () => !alive(pid), 5_000);
-        expect(toolText(await call("echo", { text: name }))).toBe(`echo: ${name}`);
+        expect(said(await call("echo", { text: name }))).toBe(`echo: ${name}`);
         record(`${name} output ended its process and session`, {
           elapsedMs: Date.now() - started,
           pid,
-          result: toolText(result),
+          result: said(result),
         });
       }
 
       // 7. A write whose answer was lost is unconfirmed, not failed.
       const crashed = await call("crash", {});
       expect(crashed.isError).toBe(true);
-      expect(toolText(crashed)).toBe(
+      expect(said(crashed)).toBe(
         "Studio Mac did not confirm this. Check whether it happened before trying again.",
       );
-      expect(toolText(await call("echo", { text: "again" }))).toBe("echo: again");
+      expect(said(await call("echo", { text: "again" }))).toBe("echo: again");
       // The program exits cleanly, but a process it started still holds its
       // output: the session ends with the program, well before the call's
       // deadline, and takes that process with it.
       const orphaned = Date.now();
-      expect(toolText(await call("orphan", {}))).toBe(
+      expect(said(await call("orphan", {}))).toBe(
         "Studio Mac did not confirm this. Check whether it happened before trying again.",
       );
       expect(Date.now() - orphaned).toBeLessThan(15_000);
       const orphan = await readPid(`${fixture.pidFile}.orphan`);
       if (orphan === null) throw new Error("The program started a process");
       await waitForCondition(async () => !alive(orphan), 15_000);
-      expect(toolText(await call("echo", { text: "after" }))).toBe("echo: after");
+      expect(said(await call("echo", { text: "after" }))).toBe("echo: after");
       record("large and lost answers", {
-        crashed: toolText(crashed),
-        huge: toolText(huge),
+        crashed: said(crashed),
+        huge: said(huge),
         orphan,
       });
 
@@ -319,7 +319,7 @@ integration("MCP servers on a computer", () => {
         async () => toolReadiness(await search(), "echo").code === "READY",
         30_000,
       );
-      expect(toolText(await call("echo", { text: "back" }))).toBe("echo: back");
+      expect(said(await call("echo", { text: "back" }))).toBe("echo: back");
       record("offline and back", offline);
 
       // Host-held exact-launch consent survives a fresh Runner instance.
@@ -358,7 +358,7 @@ integration("MCP servers on a computer", () => {
         );
       }
       await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
-      expect(toolText(await call("echo", { text: "reinstalled" }))).toBe("echo: reinstalled");
+      expect(said(await call("echo", { text: "reinstalled" }))).toBe("echo: reinstalled");
       const reasked = await host.store.database
         .selectFrom("computerAppSetupRequests")
         .select("id")
@@ -369,7 +369,7 @@ integration("MCP servers on a computer", () => {
 
       // 11. Installed with a changed launch: what ran ends, and the new launch
       // runs only once the Mac is asked about it and allows it.
-      const previous = Number(toolText(await call("pid", {})));
+      const previous = Number(said(await call("pid", {})));
       expect(alive(previous)).toBe(true);
       await fixture.changeLaunch();
       await testRpcData(
@@ -409,11 +409,11 @@ integration("MCP servers on a computer", () => {
       });
       expect(allowedChange.kind).toBe("allowed");
       await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
-      expect(toolText(await call("echo", { text: "changed" }))).toBe("echo: changed");
+      expect(said(await call("echo", { text: "changed" }))).toBe("echo: changed");
       record("installed with a changed launch", { previous, request: askedChanged.id });
 
       // 12. Uninstalled: nothing waits on the Mac and nothing runs.
-      const last = Number(toolText(await call("pid", {})));
+      const last = Number(said(await call("pid", {})));
       expect(alive(last)).toBe(true);
       await testRpcData(
         host.origin,
@@ -631,6 +631,12 @@ integration("MCP servers on a computer", () => {
     ).toEqual([]);
   }, 180_000);
 });
+
+type GatewayResult = Awaited<ReturnType<Awaited<ReturnType<typeof integrationGateway>>["callRaw"]>>;
+/** What a call answered: integration_call carries the server's own result as structured content. */
+function said(result: GatewayResult): string {
+  return toolText(result.structuredContent ?? result);
+}
 
 async function readText(file: string): Promise<string | null> {
   try {
