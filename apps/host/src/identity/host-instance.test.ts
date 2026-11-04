@@ -44,8 +44,8 @@ describe("Host instance identity", () => {
     );
   });
 
-  it("pins a managed provisioning identity on first start and every restart", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-host-instance-managed-"));
+  it("pins a configured identity on first start and every restart", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-host-instance-pinned-"));
     directories.push(dataDirectory);
     const expected = createId("hostInstance");
 

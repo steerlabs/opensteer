@@ -28,9 +28,7 @@ interface AddDeploymentProps {
   readonly error: string | null;
   readonly onBack: () => void;
   readonly onConnect: (input: DesktopConnectPrivateDeploymentInput) => void;
-  readonly onCreateCloud?: (() => void) | null;
   readonly onCreatePersonal?: (() => void) | null;
-  readonly onManageCloud?: (() => void) | null;
   /** Present when this app can sign in to the Account and is not signed in. */
   readonly onSignIn?: (() => void) | null;
 }
@@ -41,9 +39,7 @@ export function AddDeployment({
   error,
   onBack,
   onConnect,
-  onCreateCloud = null,
   onCreatePersonal = null,
-  onManageCloud = null,
   onSignIn = null,
 }: AddDeploymentProps) {
   const [option, setOption] = useState<AddOption>(null);
@@ -60,7 +56,6 @@ export function AddDeployment({
 
   function choose(choice: DeploymentChoice) {
     if (choice === "local") return onCreatePersonal?.();
-    if (choice === "cloud") return onCreateCloud?.();
     open(choice);
   }
 
@@ -81,11 +76,7 @@ export function AddDeployment({
   return (
     <OnboardingCard
       bare
-      description={
-        onCreateCloud
-          ? "Your agents can also work on your other computers, a server, or Opensteer Cloud."
-          : "Your agents can also work on your other computers or a server."
-      }
+      description="Your agents can also work on your other computers or a server."
       live
       title="Add a computer or server"
     >
@@ -95,7 +86,6 @@ export function AddDeployment({
         onChoose={choose}
         options={deploymentChoiceOrder({
           canConnect: true,
-          canCreateCloud: onCreateCloud !== null,
           canCreateLocal: onCreatePersonal !== null,
         })}
         renderExpanded={(choice) =>
@@ -206,13 +196,6 @@ export function AddDeployment({
           ) : null
         }
       />
-      {onManageCloud ? (
-        <p className="onboarding__switch">
-          <button disabled={busy} onClick={onManageCloud} type="button">
-            Manage Opensteer Cloud
-          </button>
-        </p>
-      ) : null}
       <ErrorNotice message={formError ?? error} />
       <button className="btn btn--ghost onboarding__back" onClick={onBack} type="button">
         <Icon name="arrow-left" />

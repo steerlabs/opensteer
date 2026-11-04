@@ -12,9 +12,7 @@ const assets = new Set([
   "Opensteer-mac-arm64.zip",
   "latest-mac.yml",
   "insider-mac.yml",
-  "Opensteer-Beta-mac-arm64.zip",
   "Opensteer-mac-arm64.zip.blockmap",
-  "Opensteer-Beta-mac-arm64.zip.blockmap",
 ]);
 const server = createServer({ cert: readFileSync(cert), key: readFileSync(key) }, (req, res) => {
   const url = new URL(req.url!, github);

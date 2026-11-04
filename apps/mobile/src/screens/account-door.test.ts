@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { DeploymentRow } from "../client/deployment-rows.js";
 import {
   accountFlowCanContinue,
+  accountDoorPresentation,
   deploymentCanOpen,
   deploymentOpenLabel,
   eligibleSingletonDeployment,
@@ -69,5 +70,24 @@ describe("Account flow continuation", () => {
     ["selection changed", { currentSelection: "deployment-b" }],
   ] as const)("stops when the flow is %s", (_reason, change) => {
     expect(accountFlowCanContinue({ ...current, ...change })).toBe(false);
+  });
+});
+
+it("keeps secure-storage sign-in failures readable", () => {
+  expect(
+    accountDoorPresentation(
+      {
+        available: false,
+        detail: "SecureStore unavailable",
+        identity: null,
+        status: "error",
+      },
+      false,
+    ),
+  ).toMatchObject({
+    disabled: true,
+    title: "Sign in",
+    description:
+      "This app cannot access this device’s secure credential storage. Sign-in is unavailable.",
   });
 });

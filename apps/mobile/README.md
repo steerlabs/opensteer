@@ -13,6 +13,11 @@ inputs. Every `EXPO_PUBLIC_*` value is public. Never put secrets there or set a
 development/preview profile on a build distributed beyond developers: those
 profiles permit simulated authentication and Host behavior in Release bundles.
 
+`pnpm ios`, `pnpm android` and `pnpm export` set
+`EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN=https://accounts.opensteer.com`. Supply that
+same public input for direct Expo/Xcode/Gradle builds on either platform. A bundle
+without an Account origin cannot register Account push or use Connect.
+
 Android push requires the build's private `google-services.json`, supplied through
 `OPENSTEER_MOBILE_GOOGLE_SERVICES_FILE` at prebuild. It binds the app to a Firebase
 project and is never committed. Builds without it cannot obtain an FCM token;

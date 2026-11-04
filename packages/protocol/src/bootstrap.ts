@@ -67,8 +67,6 @@ export const IdentityConfigViewSchema = z.object({
   ...IdentityConfigSchema.shape,
   deployment: z.object({
     ...IdentityConfigSchema.shape.deployment.shape,
-    // A Host from before Opensteer Cloud said so describes itself as a server.
-    cloud: z.boolean().default(false),
   }),
   oidcProviders: z.array(z.object(IdentityConfigSchema.shape.oidcProviders.element.shape)).max(16),
 });

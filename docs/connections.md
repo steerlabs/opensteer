@@ -6,10 +6,10 @@ platform ports; it cannot depend on Node APIs. Start at
 Credential authority belongs in [Host boundaries](host-boundaries.md).
 Focused checks: [check-client-connections](../.agents/skills/check-client-connections/SKILL.md).
 
-The public stable Mac app has no Account issuer: Account discovery, adoption and
-Connect are unavailable, but private HTTPS and one-use pairing still work. Beta
-retains staging Account and Connect. See
-[Stable channel without an Account](releases.md#stable-channel-without-an-account).
+Both desktop update channels use the Account at `https://accounts.opensteer.com`
+and portal at `https://app.opensteer.com`. Personal Hosts run on the person's
+computer; self-hosted servers can attach to an Account. Connect routes remain
+under `opensteerapp.com`. The Account does not provision or host Deployments.
 
 ## Route selection and lifetime
 
@@ -93,10 +93,18 @@ Connector credentials stay on the Host computer. Only the supervisor's private
 executor channel can obtain them; owner sessions request durable intents and
 read status.
 
-Administration status is observed only while Settings is open, invalidated by the
-Host event stream and reread after reconnect. It adds no attach round trips or
-initial-screen dependencies. Stable retains private access and pairing without
-acquiring an Account/Connect path.
+Administration status is observed only while Settings or first-run setup is
+open, invalidated by the Host event stream and reread after reconnect. It adds no
+attach round trips or initial-screen dependencies.
+
+First-run setup's Phone row composes these same steps; it adds no authority. It
+reads live state, skips what is already true, links through the desktop's
+Account-link operation and settles a Connect request on that operation's own
+result. Cancelling stops later steps and never undoes a finished link or route.
+Its QR code is `<portal>/open#d=<DeploymentId>`: a destination in the fragment,
+never a pairing code, Host origin or grant. The phone still signs in to its own
+Account and opens only that id from its authenticated directory. See
+`apps/web/src/components/first-run/phone-setup.ts`.
 
 ## Durable stream and live progress
 
@@ -188,18 +196,11 @@ survives history boundaries. See
 
 ## Conversation history
 
-A conversation's turns are mostly automatic Runs it never draws, so its pages
-(`view: "conversation"`) count and send only turns that can show. The Host's
-quiet set must stay strictly inside what clients hide: a Run is quiet only once
-terminal, from facts frozen then, and a person who ever waited on it keeps it
-shown even after their input moves elsewhere. Getting this backwards hides a
-reply; the reverse only costs a row the client filters. Pages are sparse, so a
-page's coverage is its `readState.asOfSequence`, never its last event: replaying
-buffered events against the last event resurrects what was omitted. Message
-jumps (`aroundMessageId`) stay unfiltered so every search or notification target
-opens. Automatic inputs never count as unread in a conversation, for the same
-reason they are never drawn. See
-[`run-visibility.ts`](../packages/database/src/run-visibility.ts) and
+Conversations page by whole turns like any Thread. Every settled turn draws its
+reply or an outcome, including silent automatic work, so a page shows the turns
+it counts without the Host predicting client visibility. Oversized turns can be
+split by the page budget. Automatic input messages remain hidden behind their
+turn's source and never count as unread. See
 [`snapshot-store.ts`](../packages/database/src/snapshot-store.ts).
 
 ## Personal process recovery and diagnostics

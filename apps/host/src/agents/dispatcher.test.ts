@@ -3,7 +3,11 @@ import { ModelSelectionSchema, OpensteerError, createId, type Message } from "@o
 import { SpecialistStore } from "@opensteer/database";
 import type { CommandRow, OpensteerStore } from "@opensteer/database";
 import { CommandDispatchError } from "@opensteer/orchestration";
-import { HarnessModelDescriptorSchema, type RunnerCommand } from "@opensteer/protocol";
+import {
+  HarnessModelDescriptorSchema,
+  RunExecutionContextSchema,
+  type RunnerCommand,
+} from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { sealRequestResponse } from "../identity/request-response-vault.js";
 import { HostCommandDispatcher } from "./dispatcher.js";
@@ -669,7 +673,30 @@ describe("HostCommandDispatcher model selection", () => {
     expect(current.dispatch).toHaveBeenCalledOnce();
   });
 
+  it("dispatches a specialist through the Runner wire schema", async () => {
+    const admit = vi
+      .spyOn(SpecialistStore.prototype, "assertRunnable")
+      .mockResolvedValue(undefined as never);
+    try {
+      const { dispatch, run } = dispatchRun({
+        specialistId: "registration",
+        models: [gpt5],
+        modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+      });
+      await run();
+      const command = dispatch.mock.calls[0]![0];
+      if (command.type !== "run.execute") throw new Error("Expected run.execute");
+      expect(command.context.specialistId).toBe("registration");
+      expect(
+        RunExecutionContextSchema.shape.agentTools.parse(command.context.agentTools).instructions,
+      ).toContain("specialist lineage");
+    } finally {
+      admit.mockRestore();
+    }
+  });
+
   function dispatchRun(input: {
+    readonly specialistId?: string;
     readonly capabilities?: readonly string[];
     readonly role?: "conversation" | "work";
     readonly supportsAttachments?: boolean;
@@ -687,6 +714,13 @@ describe("HostCommandDispatcher model selection", () => {
     const threadId = createId("thread");
     const dispatch = vi.fn(async (_command: RunnerCommand, _signal: AbortSignal) => undefined);
     const timeZoneFor = vi.fn(async () => input.requesterTimeZone ?? null);
+    const specialistQuery = {
+      selectFrom: () => specialistQuery,
+      innerJoin: () => specialistQuery,
+      select: () => specialistQuery,
+      where: () => specialistQuery,
+      executeTakeFirst: async () => ({ pluginId: "plugin", name: "proof", digest: "a".repeat(64) }),
+    };
     const dispatcher = new HostCommandDispatcher({
       executionLeaseMs: 90_000,
       attachmentRunTokens: { issue: () => "attachment-token" } as never,
@@ -725,6 +759,7 @@ describe("HostCommandDispatcher model selection", () => {
         ],
       } as never,
       store: {
+        database: specialistQuery,
         acquireExecutionBinding: async () => ({
           bindingGeneration: 1,
           continuationEvent: null,
@@ -759,7 +794,12 @@ describe("HostCommandDispatcher model selection", () => {
             modelSelection,
             requestedBy,
           },
-          thread: { inheritsMain: false, id: threadId, role: input.role ?? "work" },
+          thread: {
+            inheritsMain: false,
+            ...(input.specialistId ? { specialistId: input.specialistId } : {}),
+            id: threadId,
+            role: input.role ?? "work",
+          },
           workspace: { id: createId("workspace"), kind: "project", status: "ready" },
         }),
         notificationState: { timeZoneFor },

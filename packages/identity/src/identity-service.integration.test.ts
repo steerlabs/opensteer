@@ -81,7 +81,7 @@ integration("IdentityService", () => {
 
   it("creates a token-free password session with idle and absolute policy", async () => {
     const identity = new IdentityService(database, {
-      deployment: { cloud: false, kind: "self-hosted", name: null },
+      deployment: { kind: "self-hosted", name: null },
       localPasswordEnabled: true,
       oidcProviders: [],
       publicOrigin: new URL("http://127.0.0.1:4310"),
@@ -168,7 +168,7 @@ integration("IdentityService", () => {
   it("lets the local operator issue one-use browser recovery and revokes every session", async () => {
     const endedSessions: string[] = [];
     const identity = new IdentityService(database, {
-      deployment: { cloud: false, kind: "self-hosted", name: null },
+      deployment: { kind: "self-hosted", name: null },
       localPasswordEnabled: true,
       onSessionEnded: (sessionId) => endedSessions.push(sessionId),
       oidcProviders: [],
@@ -253,7 +253,7 @@ integration("IdentityService", () => {
 
   it("requires a browser-bound admission when signup is invite-only", async () => {
     const identity = new IdentityService(database, {
-      deployment: { cloud: false, kind: "self-hosted", name: null },
+      deployment: { kind: "self-hosted", name: null },
       localPasswordEnabled: true,
       oidcProviders: [],
       publicOrigin: new URL("http://127.0.0.1:4310"),
@@ -381,18 +381,12 @@ integration("IdentityService", () => {
       expect(configuredIssuer.status).toBe(200);
       expect(new URL(configuredIssuer.data.redirectUrl).origin).toBe(issuerOrigin);
 
-      const managedProviderId = `oidc.enterprise.${createHash("sha256")
+      const configuredProviderId = `oidc.enterprise.${createHash("sha256")
         .update(issuerOrigin)
         .digest("base64url")
         .slice(0, 22)}`;
       const identity = identityService({
         localPasswordEnabled: false,
-        managedOwner: {
-          accountId: "fixture-oidc-subject",
-          displayName: "OIDC User",
-          email: "oidc-user@example.com",
-          providerId: managedProviderId,
-        },
         oidcProviders: [
           {
             allowPrivateNetwork: true,
@@ -407,17 +401,34 @@ integration("IdentityService", () => {
         nativeOAuth: {
           clients: [
             nativeClient({
-              clientId: "opensteer-desktop-beta",
-              redirectUris: ["com.steerlabs.opensteer.beta:/oauth/host-callback"],
+              clientId: "opensteer-desktop",
+              redirectUris: ["com.opensteer.opensteer:/oauth/host-callback"],
             }),
           ],
         },
         exposure: "networked",
         signupPolicy: "invite-only",
       });
+      const userId = await new OpensteerStore(database).createUser("OIDC User");
+      await database
+        .updateTable("users")
+        .set({ email: "oidc-user@example.com", emailVerified: true, instanceRole: "administrator" })
+        .where("id", "=", userId)
+        .execute();
+      await database
+        .insertInto("authAccounts")
+        .values({
+          id: createId("authAccount"),
+          userId,
+          accountId: "fixture-oidc-subject",
+          providerId: configuredProviderId,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .execute();
       await identity.initialize();
       const nativeAuthorization = new URL("/v1/auth/native/oauth2/authorize", publicOrigin);
-      nativeAuthorization.searchParams.set("client_id", "opensteer-desktop-beta");
+      nativeAuthorization.searchParams.set("client_id", "opensteer-desktop");
       nativeAuthorization.searchParams.set(
         "code_challenge",
         createHash("sha256")
@@ -427,7 +438,7 @@ integration("IdentityService", () => {
       nativeAuthorization.searchParams.set("code_challenge_method", "S256");
       nativeAuthorization.searchParams.set(
         "redirect_uri",
-        "com.steerlabs.opensteer.beta:/oauth/host-callback",
+        "com.opensteer.opensteer:/oauth/host-callback",
       );
       nativeAuthorization.searchParams.set("response_type", "code");
       nativeAuthorization.searchParams.set(
@@ -481,7 +492,7 @@ integration("IdentityService", () => {
       expect(nativeConsentUrl.origin).toBe(publicOrigin);
       expect(nativeConsentUrl.pathname).toBe("/");
       expect(nativeConsentUrl.searchParams.get("sig")).toBeTruthy();
-      expect(nativeConsentUrl.searchParams.get("client_id")).toBe("opensteer-desktop-beta");
+      expect(nativeConsentUrl.searchParams.get("client_id")).toBe("opensteer-desktop");
       expect(tokenRequest?.authorization).toBe(
         `Basic ${Buffer.from("opensteer-test-client:opensteer-test-client-secret").toString("base64")}`,
       );
@@ -505,7 +516,7 @@ integration("IdentityService", () => {
         .executeTakeFirstOrThrow();
       expect(account).toMatchObject({
         accountId: "fixture-oidc-subject",
-        providerId: managedProviderId,
+        providerId: configuredProviderId,
         refreshToken: null,
       });
       expect(account.accessToken).toMatch(/^(?:\$ba\$|[a-f0-9]{96,})/u);
@@ -545,65 +556,12 @@ integration("IdentityService", () => {
 
   it("publishes the apex portal origin only when the Deployment declares one", async () => {
     await expect(identityService().configuration()).resolves.toMatchObject({
-      deployment: { cloud: false, kind: "self-hosted", name: null },
+      deployment: { kind: "self-hosted", name: null },
       portalOrigin: null,
     });
     await expect(
       identityService({ portalOrigin: new URL("https://beta.opensteer.com") }).configuration(),
     ).resolves.toMatchObject({ portalOrigin: "https://beta.opensteer.com" });
-  });
-
-  it("pins managed owner bootstrap to the durable upstream account", async () => {
-    const managedOwner = {
-      accountId: "acct_00000000-0000-4000-8000-000000000001",
-      displayName: "Managed Owner",
-      email: "managed-owner@example.com",
-      providerId: "oidc.opensteer-account.fixture",
-    } as const;
-    const identity = identityService({ managedOwner });
-    await identity.initialize();
-    await expect(identity.initialize()).resolves.toBeUndefined();
-
-    await expect(identity.configuration()).resolves.toMatchObject({ setupState: "complete" });
-    await expect(
-      database
-        .selectFrom("authAccounts")
-        .innerJoin("users", "users.id", "authAccounts.userId")
-        .select([
-          "authAccounts.accountId",
-          "authAccounts.providerId",
-          "users.email",
-          "users.instanceRole",
-        ])
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({
-      accountId: managedOwner.accountId,
-      email: managedOwner.email,
-      instanceRole: "administrator",
-      providerId: managedOwner.providerId,
-    });
-    await expect(
-      database
-        .selectFrom("securityAudit")
-        .select("action")
-        .where("action", "=", "instance.managed-owner-provisioned")
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ action: "instance.managed-owner-provisioned" });
-
-    await expect(
-      identityService({
-        managedOwner: { ...managedOwner, accountId: "acct_other-durable-owner" },
-      }).initialize(),
-    ).rejects.toThrow(/does not match durable Host authority/u);
-    await expect(
-      identityService({
-        initialOwnerEnrollment: {
-          expiresAt: new Date(Date.now() + 60_000),
-          token: "managed-owner-must-not-also-have-a-setup-token",
-        },
-        managedOwner,
-      }).initialize(),
-    ).rejects.toThrow(/cannot be combined/u);
   });
 
   it("issues and consumes one Account adoption proof bound to live Host authority", async () => {
@@ -817,7 +775,7 @@ integration("IdentityService", () => {
 
   it("replaces stale browser session cookies when signing in again", async () => {
     const identity = new IdentityService(database, {
-      deployment: { cloud: false, kind: "self-hosted", name: null },
+      deployment: { kind: "self-hosted", name: null },
       localPasswordEnabled: true,
       oidcProviders: [],
       publicOrigin: new URL("http://127.0.0.1:4310"),
@@ -1121,31 +1079,31 @@ integration("IdentityService", () => {
     });
   });
 
-  it("keeps the signed Beta desktop registration active across the mobile registry upgrade", async () => {
+  it("keeps the desktop registration active across the mobile registry upgrade", async () => {
     const origin = "http://127.0.0.1:4310";
-    const beta: NativeOAuthClient = {
+    const desktop: NativeOAuthClient = {
       application: "desktop",
-      clientId: "opensteer-desktop-beta",
-      displayName: "Opensteer Beta",
-      redirectUris: ["com.steerlabs.opensteer.beta:/oauth/host-callback"],
+      clientId: "opensteer-desktop",
+      displayName: "Opensteer",
+      redirectUris: ["com.opensteer.opensteer:/oauth/host-callback"],
       softwareId: "opensteer-native",
     };
-    const before = identityService({ nativeOAuth: { clients: [beta] }, signupPolicy: "open" });
+    const before = identityService({ nativeOAuth: { clients: [desktop] }, signupPolicy: "open" });
     await before.initialize();
     await before.signUpPassword(
       {
-        displayName: "Beta User",
-        email: "beta@example.com",
+        displayName: "Desktop User",
+        email: "desktop@example.com",
         password: "correct horse battery staple",
       },
       new Headers({ origin }),
     );
     const login = await nativeOAuthLogin(before, {
-      clientId: beta.clientId,
-      email: "beta@example.com",
+      clientId: desktop.clientId,
+      email: "desktop@example.com",
       origin,
-      redirectUri: beta.redirectUris[0]!,
-      state: "beta-state",
+      redirectUri: desktop.redirectUris[0]!,
+      state: "desktop-state",
     });
 
     const after = identityService({
@@ -1156,23 +1114,20 @@ integration("IdentityService", () => {
 
     await expect(
       after.authenticateNativeAccessToken(login.tokens.access_token),
-    ).resolves.toMatchObject({ application: "desktop", clientId: beta.clientId });
+    ).resolves.toMatchObject({ application: "desktop", clientId: desktop.clientId });
     await expect(
       database
         .selectFrom("hostOAuthClients")
         .select(["clientId", "disabled"])
-        .where("clientId", "=", beta.clientId)
+        .where("clientId", "=", desktop.clientId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ clientId: beta.clientId, disabled: false });
+    ).resolves.toEqual({ clientId: desktop.clientId, disabled: false });
   });
 
   it("retires an application that leaves configuration and revokes what it still holds", async () => {
     const origin = "http://127.0.0.1:4310";
     const desktop = opensteerHostNativeOAuthClients.find(
       (client) => client.application === "desktop",
-    )!;
-    const beta = opensteerHostNativeOAuthClients.find(
-      (client) => client.clientId === "opensteer-desktop-beta",
     )!;
     const mobile = opensteerHostNativeOAuthClients.find(
       (client) => client.application === "mobile",
@@ -1212,7 +1167,6 @@ integration("IdentityService", () => {
         .execute(),
     ).resolves.toEqual([
       { clientId: desktop.clientId, disabled: false },
-      { clientId: beta.clientId, disabled: true },
       { clientId: mobile.clientId, disabled: true },
     ]);
     await expect(
@@ -1370,49 +1324,44 @@ integration("IdentityService", () => {
     ).resolves.toMatchObject({ application: "desktop", clientId: desktop.clientId });
   });
 
-  it("registers a release-isolated reverse-domain native OAuth callback", async () => {
-    const stableIdentity = identityService({
+  it("disables a native OAuth client removed from the release registry", async () => {
+    const retiredIdentity = identityService({
       nativeOAuth: {
         clients: [
           nativeClient({
-            clientId: "opensteer-desktop",
-            redirectUris: ["com.opensteer.opensteer:/oauth/host-callback"],
+            clientId: "retired-desktop",
+            redirectUris: ["com.example.retired:/oauth/host-callback"],
           }),
         ],
       },
       signupPolicy: "open",
     });
-    await stableIdentity.initialize();
+    await retiredIdentity.initialize();
 
-    const redirectUri = "com.steerlabs.opensteer.beta:/oauth/host-callback";
-    const betaIdentity = identityService({
+    const redirectUri = "com.opensteer.opensteer:/oauth/host-callback";
+    const currentIdentity = identityService({
       nativeOAuth: {
-        clients: [
-          nativeClient({ clientId: "opensteer-desktop-beta", redirectUris: [redirectUri] }),
-        ],
+        clients: [nativeClient({ clientId: "opensteer-desktop", redirectUris: [redirectUri] })],
       },
       signupPolicy: "open",
     });
-    await betaIdentity.initialize();
+    await currentIdentity.initialize();
 
     await expect(
       database
         .selectFrom("hostOAuthClients")
         .select(["clientId", "disabled", "redirectUris", "referenceId"])
-        .where("clientId", "in", ["opensteer-desktop", "opensteer-desktop-beta"])
+        .where("clientId", "in", ["opensteer-desktop", "retired-desktop"])
         .orderBy("clientId")
         .execute(),
     ).resolves.toEqual([
       expect.objectContaining({
         clientId: "opensteer-desktop",
-        disabled: true,
-      }),
-      expect.objectContaining({
-        clientId: "opensteer-desktop-beta",
         disabled: false,
         redirectUris: [redirectUri],
-        referenceId: "opensteer-native-client:opensteer-desktop-beta",
+        referenceId: "opensteer-native-client:opensteer-desktop",
       }),
+      expect.objectContaining({ clientId: "retired-desktop", disabled: true }),
     ]);
   });
 
@@ -2221,7 +2170,7 @@ function identityService(
   overrides: Partial<ConstructorParameters<typeof IdentityService>[1]> = {},
 ): IdentityService {
   return new IdentityService(database, {
-    deployment: { cloud: false, kind: "self-hosted", name: null },
+    deployment: { kind: "self-hosted", name: null },
     hostKeyFingerprint,
     localPasswordEnabled: true,
     oidcProviders: [],

@@ -960,3 +960,31 @@ describe("page rail", () => {
     }
   });
 });
+
+it("draws a silent automatic turn with its source and elapsed work", () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  roots.push(root);
+  act(() =>
+    root.render(
+      <MemoryRouter>
+        <AgentTranscript
+          conversation
+          entries={[
+            {
+              ...run,
+              status: "completed",
+              replyMessageId: null,
+              startedBy: { kind: "platform", cause: "automatic" },
+              startedAt: run.createdAt,
+              endedAt: "2026-08-16T10:02:00.000Z",
+            },
+          ]}
+        />
+      </MemoryRouter>,
+    ),
+  );
+  expect(container.textContent).toContain("Worked for 2m");
+  expect(container.querySelector(".turn-source")).not.toBeNull();
+});

@@ -46,7 +46,7 @@ async function fixture() {
   });
   const enrollment = randomBytes(32).toString("base64url");
   const identity = new IdentityService(database, {
-    deployment: { cloud: false, kind: "personal", name: null },
+    deployment: { kind: "personal", name: null },
     exposure: "loopback",
     localPasswordEnabled: false,
     oidcProviders: [],

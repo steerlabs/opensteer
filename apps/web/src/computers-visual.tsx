@@ -24,8 +24,8 @@ import { ToastProvider } from "./components/toast.js";
 /**
  * Visual QA for Computers, Remote access (or Signed-in devices) and the page
  * about this Opensteer: every way a person meets these
- * pages — on the Mac a Personal Opensteer runs on, from another Mac, on
- * Opensteer Cloud, on a team's own server as an administrator or a member,
+ * pages — on the Mac a Personal Opensteer runs on, from another Mac,
+ * on a team's own server as an administrator or a member,
  * in a browser — rendered from fixtures so each can be looked at, and
  * screenshotted, the same way every time.
  *
@@ -160,7 +160,6 @@ const officeMini: MachineSummary = {
 interface Scenario {
   readonly admin: boolean;
   readonly bridge: boolean;
-  readonly cloud: boolean;
   readonly deployment: {
     readonly access: "connect" | "native" | "owner";
     readonly kind: "personal" | "self-hosted";
@@ -241,20 +240,18 @@ function localStatus(input: {
 
 const personal = {
   admin: true,
-  cloud: false,
   kind: "personal",
   name: "Mac mini",
   origin: "http://127.0.0.1:43100",
 } as const;
-const cloudBase = {
+const serverBase = {
   admin: true,
-  cloud: true,
   kind: "server",
   name: "Acme Research",
-  origin: "https://acme-research.opensteer.cloud",
+  origin: "https://acme.example.com",
   remoteAccess: "ready",
 } as const;
-const cloudMachines = [
+const serverMachines = [
   serverComputer({
     id: "rnr_66666666-6666-4666-8666-666666666666",
     name: "Main computer",
@@ -264,7 +261,6 @@ const cloudMachines = [
   messagingService,
 ];
 const teamBase = {
-  cloud: false,
   kind: "server",
   name: "Acme",
   origin: "https://acme.example.com",
@@ -427,8 +423,8 @@ const scenarios: Readonly<Record<string, Scenario>> = {
     machines: [macMiniMessagesUnfinished, macbook, studio, messagingService],
     remoteAccess: "ready",
   },
-  "cloud-desktop-offer": {
-    ...cloudBase,
+  "server-desktop-offer": {
+    ...serverBase,
     sessions: serverSessions,
     bridge: true,
     deployment: {
@@ -438,10 +434,10 @@ const scenarios: Readonly<Record<string, Scenario>> = {
       onThisComputer: false,
     },
     local: localStatus({ enrolled: false, mayRunAgents: true }),
-    machines: cloudMachines,
+    machines: serverMachines,
   },
-  "cloud-desktop-added": {
-    ...cloudBase,
+  "server-desktop-added": {
+    ...serverBase,
     sessions: serverSessions,
     bridge: true,
     deployment: {
@@ -451,15 +447,15 @@ const scenarios: Readonly<Record<string, Scenario>> = {
       onThisComputer: false,
     },
     local: localStatus({ enrolled: true, mayRunAgents: true, runAgents: true }),
-    machines: [...cloudMachines, macbookWorking, officeMini],
+    machines: [...serverMachines, macbookWorking, officeMini],
   },
-  "cloud-browser": {
-    ...cloudBase,
+  "server-browser": {
+    ...serverBase,
     sessions: serverSessions,
     bridge: false,
     deployment: null,
     local: null,
-    machines: [...cloudMachines, macbookWorking, officeMini],
+    machines: [...serverMachines, macbookWorking, officeMini],
   },
   "team-admin": {
     ...teamBase,
@@ -515,7 +511,6 @@ const snapshot: ShellContext["snapshot"] = {
   identityConfig: base.identityConfig && {
     ...base.identityConfig,
     deployment: {
-      cloud: scenario.cloud,
       kind: scenario.kind === "personal" ? "personal" : "self-hosted",
       name: scenario.name,
     },

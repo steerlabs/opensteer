@@ -186,3 +186,57 @@ class TestResponse extends EventEmitter {
     return this;
   }
 }
+
+it("forwards opaque app preflights through Vite to the Host's capability route", async () => {
+  const { once } = await import("node:events");
+  const { createServer } = await import("node:http");
+  const { createServer: createViteServer } = await import("vite");
+  const { closeHttpServerNow } = await import("@opensteer/shared/httpServer");
+  const { withTimeout } = await import("@opensteer/shared/withTimeout");
+  const upstream = createServer((_request, response) => {
+    response.writeHead(204, { "access-control-allow-origin": "*" });
+    response.end();
+  });
+  let vite: Awaited<ReturnType<typeof createViteServer>> | undefined;
+  try {
+    const listening = once(upstream, "listening", { signal: AbortSignal.timeout(3_000) });
+    upstream.listen(0, "127.0.0.1");
+    await listening;
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing upstream listener");
+    vite = await createViteServer({
+      configFile: new URL("../../vite.config.ts", import.meta.url).pathname,
+      server: {
+        host: "127.0.0.1",
+        port: 0,
+        strictPort: false,
+        proxy: { "/v1": { target: `http://127.0.0.1:${address.port}` } },
+      },
+    });
+    await withTimeout(vite.listen(), 3_000, {
+      timeoutError: () => new Error("Development viewer did not start"),
+    });
+    const viewer = vite.httpServer?.address();
+    if (!viewer || typeof viewer === "string") throw new Error("Missing viewer listener");
+    const response = await fetch(
+      `http://127.0.0.1:${viewer.port}/v1/apps/test/dark/token/api/items`,
+      {
+        method: "OPTIONS",
+        headers: {
+          origin: "null",
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "content-type",
+        },
+        signal: AbortSignal.timeout(3_000),
+      },
+    );
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+  } finally {
+    if (vite)
+      await withTimeout(vite.close(), 3_000, {
+        timeoutError: () => new Error("Development viewer did not stop"),
+      });
+    await closeHttpServerNow(upstream);
+  }
+});

@@ -236,6 +236,7 @@ export class AppStore {
           throw new OpensteerError({
             code: "workspace_unavailable",
             message: "Workspace is awaiting deletion",
+            reason: "workspace-deleting",
           });
         const run = await transaction
           .selectFrom("runs")

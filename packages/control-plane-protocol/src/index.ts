@@ -28,7 +28,6 @@ import {
 import { ControlPlaneAccountIdSchema, prefixedIdSchema } from "./account-id.js";
 export * from "./account-id.js";
 export * from "./connect.js";
-export * from "./cloud.js";
 export * from "./notifications.js";
 export * from "./oauth-broker.js";
 
@@ -117,7 +116,7 @@ export const HostOidcClientSchema = z
   .strict();
 export type HostOidcClient = z.infer<typeof HostOidcClientSchema>;
 
-/** Verified Account identity persisted by a managed Host as its first owner. */
+/** Verified Account identity used to bind server adoption. */
 export const VerifiedDeploymentOwnerProfileSchema = z
   .object({
     subject: ControlPlaneAccountIdSchema,
@@ -281,7 +280,7 @@ export type AccountDeploymentDirectoryEntry = z.infer<typeof AccountDeploymentDi
  * An Account directory record for a Personal Host, narrowed to the case where
  * the Account link is present. Whether such a record is reachable right now is
  * not decided here: that rule is `deploymentStatusFromPersonalConnect` in
- * `@opensteer/protocol/deployment-status`, which the Cloud portal and the
+ * `@opensteer/protocol/deployment-status`, which the Account portal and the
  * Desktop directory both answer with, so one computer is never ready in one
  * Directory and offline in the other.
  */
@@ -858,8 +857,7 @@ export const CompleteHostAccountAdoptionResponseSchema = z
   .strict();
 
 /**
- * Attaches an independently self-hosted Deployment to an Account. Initial
- * managed registration cannot stand in for this proof-bearing operation.
+ * Attaches an independently self-hosted Deployment to an Account using Host proof.
  */
 export const AdoptExistingDeploymentRequestSchema = z
   .object({
@@ -936,7 +934,7 @@ export type ConnectProjectionInput = z.input<typeof ConnectProjectionRequestSche
 
 export const ConnectProjectionResponseSchema = DeploymentConnectSchema;
 
-const ManagedHostProvisioningBundleBaseSchema = z
+const HostAccountAdoptionBundleBaseSchema = z
   .object({
     controlApiOrigin: DeploymentOriginSchema,
     deployment: z
@@ -954,17 +952,10 @@ const ManagedHostProvisioningBundleBaseSchema = z
   })
   .strict();
 
-export const ManagedHostProvisioningBundleSchema = z
-  .discriminatedUnion("provisioningMode", [
-    ManagedHostProvisioningBundleBaseSchema.extend({
-      initialRunnerEnrollmentToken: z.string().min(32).max(4_096),
-      provisioningMode: z.literal("managed"),
-      owner: VerifiedDeploymentOwnerProfileSchema,
-    }).strict(),
-    ManagedHostProvisioningBundleBaseSchema.extend({
-      provisioningMode: z.literal("adoption"),
-    }).strict(),
-  ])
+export const HostAccountAdoptionBundleSchema = HostAccountAdoptionBundleBaseSchema.extend({
+  provisioningMode: z.literal("adoption"),
+})
+  .strict()
   .superRefine((value, context) => {
     if (value.oidc.issuer !== value.controlApiOrigin) {
       context.addIssue({
@@ -982,7 +973,7 @@ export const ManagedHostProvisioningBundleSchema = z
       });
     }
   });
-export type ManagedHostProvisioningBundle = z.infer<typeof ManagedHostProvisioningBundleSchema>;
+export type HostAccountAdoptionBundle = z.infer<typeof HostAccountAdoptionBundleSchema>;
 
 /**
  * The adoption API returns restart-safe Host configuration plus a separately
@@ -992,10 +983,7 @@ export type ManagedHostProvisioningBundle = z.infer<typeof ManagedHostProvisioni
 export const AdoptExistingDeploymentResponseSchema = z
   .object({
     proofId: HostAccountAdoptionProofIdSchema,
-    provisioningBundle: ManagedHostProvisioningBundleSchema.refine(
-      (bundle) => bundle.provisioningMode === "adoption",
-      { message: "Existing Host adoption requires an adoption provisioning bundle" },
-    ),
+    provisioningBundle: HostAccountAdoptionBundleSchema,
     completionGrant: HostAccountAdoptionCompletionGrantSchema,
     resultExpiresAt: IsoDateTimeSchema,
   })
@@ -1015,7 +1003,7 @@ export function adoptedHostProvisioningBundle(
   controlApiOrigin: string | URL,
   request: AdoptExistingDeploymentRequest,
   response: DeploymentProvisioningResult,
-): ManagedHostProvisioningBundle {
+): HostAccountAdoptionBundle {
   const parsedRequest = AdoptExistingDeploymentRequestSchema.parse(request);
   const parsedResponse = DeploymentProvisioningResultSchema.parse(response);
   const { authority } = parsedRequest;
@@ -1023,7 +1011,7 @@ export function adoptedHostProvisioningBundle(
   if (deployment.id !== authority.deploymentId) {
     throw new TypeError("Adoption response does not match the proved Host authority");
   }
-  return ManagedHostProvisioningBundleSchema.parse({
+  return HostAccountAdoptionBundleSchema.parse({
     provisioningMode: "adoption",
     controlApiOrigin: controlApiOrigin instanceof URL ? controlApiOrigin.origin : controlApiOrigin,
     deployment: { ...authority, reachability: deployment.reachability },

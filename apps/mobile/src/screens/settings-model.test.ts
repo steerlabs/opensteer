@@ -131,7 +131,7 @@ describe("computers in settings", () => {
     }) as MachineSummary;
   const personal = {
     apps: { connections: [], definitions: [] },
-    cloud: false,
+
     deploymentKind: "personal" as const,
     deploymentName: "Mac mini",
     hostConnected: true,
@@ -190,7 +190,7 @@ describe("this iPhone in settings", () => {
   const runnerId = "rnr_77777777-7777-4777-8777-777777777777";
   const server = {
     apps: { connections: [], definitions: [] },
-    cloud: false,
+
     deploymentKind: "server" as const,
     deploymentName: "Studio",
     hostConnected: true,

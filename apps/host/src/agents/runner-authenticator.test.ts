@@ -162,34 +162,6 @@ describe("RunnerAuthenticator enrollment issuance", () => {
     ).rejects.toMatchObject({ code: "conflict" });
   });
 
-  it("stores a configured Main token only as a digest with a stable request fingerprint", async () => {
-    const pair = generateKeyPairSync("ed25519");
-    const createRunnerEnrollment = vi.fn(async (input) => input);
-    const authenticator = new RunnerAuthenticator({
-      issuancePrivateKey: pair.privateKey,
-      store: { createRunnerEnrollment } as never,
-    });
-    const token = "provider-held-runner-enrollment-token";
-
-    await authenticator.ensureConfiguredInitialMainEnrollment({
-      allowedModules: ["agents"],
-      idempotencyKey: "deployment-managed-main-runner",
-      lifetimeSeconds: 600,
-      token,
-    });
-
-    expect(createRunnerEnrollment).toHaveBeenCalledWith(
-      expect.objectContaining({
-        createdBy: null,
-        idempotencyKey: "deployment-managed-main-runner",
-        mainEnrollmentPurpose: "initial",
-        runnerKind: "main",
-        tokenHash: hashRunnerEnrollmentToken(token),
-      }),
-    );
-    expect(JSON.stringify(createRunnerEnrollment.mock.calls)).not.toContain(token);
-  });
-
   it("refuses an auxiliary ticket for a module the enrollment never granted", () => {
     const pair = generateKeyPairSync("ed25519");
     const authenticator = new RunnerAuthenticator({

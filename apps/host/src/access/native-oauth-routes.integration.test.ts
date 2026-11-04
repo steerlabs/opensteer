@@ -510,7 +510,7 @@ function endSessionUrl(clientId: string, idToken: string): string {
  */
 async function hostWithNativeOAuth(onSessionEnded?: (sessionId: string) => void) {
   const identity = new IdentityService(database, {
-    deployment: { cloud: false, kind: "self-hosted", name: null },
+    deployment: { kind: "self-hosted", name: null },
     localPasswordEnabled: true,
     nativeOAuth: { clients: opensteerHostNativeOAuthClients },
     ...(onSessionEnded ? { onSessionEnded } : {}),

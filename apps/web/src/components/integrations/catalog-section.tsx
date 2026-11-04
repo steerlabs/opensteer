@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router";
 import type {
   IntegrationDashboard,
   IntegrationPlatformDashboardView,
@@ -226,7 +227,13 @@ export function PluginsAndMcpSection({
                   </span>
                   {inactive ? <span className="card__row-detail">{inactive.detail}</span> : null}
                 </div>
-                {isAdministrator ? (
+                {installation.sourceKind === "plugin" ? (
+                  <div className="card__row-actions">
+                    <Link className="btn btn--small" to="/settings/plugins">
+                      Manage plugin
+                    </Link>
+                  </div>
+                ) : isAdministrator ? (
                   <div className="card__row-actions">
                     <button
                       className={`btn btn--small ${

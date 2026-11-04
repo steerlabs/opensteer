@@ -358,7 +358,6 @@ export function desktopPreviewBridge(
     },
 
     getDeploymentAccessSnapshot: async () => accessSnapshot(),
-    listCloudDeployments: async () => ({ available: false, deployments: [] }),
     getLocalExecutionStatus: async (input) => localExecutionFor(input),
 
     hostRequest: async (input) => {
@@ -623,15 +622,18 @@ export function desktopPreviewBridge(
         });
         emitPersonal();
       });
+      // The same order the supervisor runs them: the owner and browser come
+      // up before the local agents, and Main is created last.
       schedule(3, () => {
         if (generation !== personalGeneration) return;
         personal = DesktopPersonalDeploymentStatusSchema.parse({
           ...personal,
           components: {
             ...personal.components,
+            browser: { state: "starting", version: null },
             host: { state: "ready", version: "preview" },
           },
-          step: "creating-main",
+          step: "connecting-computer",
         });
         emitPersonal();
       });
@@ -654,10 +656,9 @@ export function desktopPreviewBridge(
           ...personal,
           components: {
             ...personal.components,
-            browser: { state: "starting", version: null },
             runner: { state: "ready", version: "preview" },
           },
-          step: "connecting-computer",
+          step: "creating-main",
         });
         emitPersonal();
       });
@@ -696,12 +697,6 @@ export function desktopPreviewBridge(
         emitPersonal();
         selectHost(created, "signed-in");
       });
-    },
-    createCloudDeployment: async () => {
-      throw new Error("Opensteer Cloud is unavailable in Desktop preview.");
-    },
-    deleteCloudDeployment: async () => {
-      throw new Error("Opensteer Cloud is unavailable in Desktop preview.");
     },
 
     stopLocalRunner: async (input) => {
@@ -747,9 +742,6 @@ export function desktopPreviewBridge(
       if (selection.selectedDeploymentId) {
         await bridge.select({ deploymentId: selection.selectedDeploymentId });
       }
-    },
-    retryCloudDeployment: async () => {
-      throw new Error("Opensteer Cloud is unavailable in Desktop preview.");
     },
   } satisfies OpensteerDesktopBridge;
 

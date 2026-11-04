@@ -399,6 +399,21 @@ integration.sequential("Shared task Done", () => {
         workspaceId: f.workspace.id,
       }),
     });
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      event: pendingEvent({
+        bindingGeneration: binding.bindingGeneration,
+        data: { content: [{ type: "text", text: "Checked." }], messageId: createId("message") },
+        environmentId: f.environmentId,
+        ordinal: childFixture.ordinal++,
+        runId: child.run.id,
+        threadId: child.thread.id,
+        type: "assistant.message",
+        workspaceId: f.workspace.id,
+      }),
+    });
     await finish(childFixture, child.run.id);
     await setDone(f, true, "parent-done");
     await store.drainPendingAssignmentReturns();

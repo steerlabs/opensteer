@@ -516,7 +516,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       });
       if (url.pathname === "/v1/rpc/auth.config") {
         return json({
-          deployment: { cloud: false, kind: "self-hosted" as const, name: null },
+          deployment: { kind: "self-hosted" as const, name: null },
           emailDeliveryAvailable: false,
           localPasswordEnabled: true,
           machineOwner: false,
@@ -584,7 +584,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       paths.push(url.pathname);
       if (url.pathname === "/v1/rpc/auth.config") {
         return json({
-          deployment: { cloud: false, kind: "self-hosted" as const, name: null },
+          deployment: { kind: "self-hosted" as const, name: null },
           emailDeliveryAvailable: false,
           exposure: "networked",
           localPasswordEnabled: false,
@@ -2675,17 +2675,7 @@ describe("HttpHostClient durable realtime", () => {
         runId: earlier.runId,
       };
       const silentRun = createId("run");
-      const startedBy = { cause: "task-return", kind: "platform" as const };
-      const silent = [
-        agentEvent(workspace.id, thread.id, silentRun, "4", "run.started", {
-          status: "running",
-          startedBy,
-        }),
-        agentEvent(workspace.id, thread.id, silentRun, "5", "run.completed", {
-          status: "completed",
-          replyMessageId: null,
-        }),
-      ];
+      const silent: AgentEvent[] = [];
       const visible = [
         agentEvent(workspace.id, thread.id, earlier.runId, "1", "message.created", {
           input: makeThreadInput(earlier),
@@ -3150,7 +3140,7 @@ describe("HttpHostClient durable realtime", () => {
     });
 
     it("stops at the first added work trace", async () => {
-      const { client, requests, thread } = await setupHistory({ role: "work" });
+      const { client, requests, thread } = await setupHistory({ role: "work", steps: true });
       try {
         await client.loadEarlierTranscript(thread.id);
         expect(requests).toHaveLength(1);
@@ -3174,7 +3164,7 @@ describe("HttpHostClient durable realtime", () => {
       "stops if a snapshot replaces the window during a read (cursor %s)",
       async (cursor) => {
         const { client, requests, thread, secondAsked, secondAnswer, replaceWindow } =
-          await setupHistory({ holdSecond: true });
+          await setupHistory({ holdSecond: true, steps: true });
         try {
           const loading = client.loadEarlierTranscript(thread.id);
           await withTimeout(secondAsked.promise, 1000, {
@@ -3196,7 +3186,7 @@ describe("HttpHostClient durable realtime", () => {
       "stops a pending page after %s changes",
       async (change) => {
         const { client, requests, thread, secondAsked, secondAnswer, changeViewer, removeThread } =
-          await setupHistory({ holdSecond: true });
+          await setupHistory({ holdSecond: true, steps: true });
         try {
           const loading = client.loadEarlierTranscript(thread.id);
           const concurrent = client.loadEarlierTranscript(thread.id);
@@ -3205,7 +3195,9 @@ describe("HttpHostClient durable realtime", () => {
           });
           expect(client.getSnapshot().transcriptWindows[thread.id]?.nextBefore).toBe("silent");
           expect(
-            client.getSnapshot().transcripts[thread.id]?.some((entry) => entry.kind === "run"),
+            client
+              .getSnapshot()
+              .transcripts[thread.id]?.some((entry) => entry.kind === "reasoning"),
           ).toBe(true);
           if (change === "dispose") client.dispose();
           else if (change === "viewer") await changeViewer();
@@ -3226,16 +3218,15 @@ describe("HttpHostClient durable realtime", () => {
   describe("opening a Thread", () => {
     async function openThread(
       role: "conversation" | "work",
-      capabilities: readonly ("history-turns-v1" | "history-conversation-v1")[],
+      capabilities: readonly "history-turns-v1"[],
       options: {
-        empty?: boolean;
+        hold?: boolean;
+        silentTurns?: number;
+        tail?: boolean;
         stuck?: boolean;
-        earlier?: boolean;
         conversation?: boolean;
         conversationRows?: number;
         asOf?: string;
-        budget?: number;
-        scan?: boolean;
       } = {},
     ) {
       const workspace = makeWorkspace();
@@ -3280,21 +3271,38 @@ describe("HttpHostClient durable realtime", () => {
           nextBefore: null,
         },
       };
-      if (options.empty || options.stuck) pages["4"]!.events = [];
-      if (options.stuck) pages["4"]!.nextBefore = "4";
-      if (options.earlier) {
-        pages["4"]!.nextBefore = "1";
-        const oldest = makeMessage(thread.id, "input", "Oldest question");
-        pages["1"] = {
-          events: [
-            agentEvent(workspace.id, thread.id, oldest.runId, "0", "message.created", {
-              input: makeThreadInput(oldest),
-              message: oldest,
+      if (options.silentTurns) {
+        pages.newest!.events = Array.from({ length: options.silentTurns }, (_, index) => {
+          const runId = createId("run");
+          const emptyReply = { ...makeMessage(thread.id, "assistant", ""), runId };
+          return [
+            agentEvent(workspace.id, thread.id, runId, String(4 + index * 3), "run.started", {
+              status: "running",
+              startedBy,
             }),
-          ],
-          nextBefore: null,
-        };
+            agentEvent(workspace.id, thread.id, runId, String(5 + index * 3), "message.created", {
+              message: emptyReply,
+              input: null,
+            }),
+            agentEvent(workspace.id, thread.id, runId, String(6 + index * 3), "run.completed", {
+              status: "completed",
+              replyMessageId: null,
+            }),
+          ];
+        }).flat();
       }
+      if (options.tail) {
+        // The newest page holds only the end of the earlier turn: its reply is older.
+        pages.newest!.events = [
+          agentEvent(workspace.id, thread.id, question.runId, "4", "run.completed", {
+            status: "completed",
+            replyMessageId: reply.id,
+          }),
+        ];
+        pages["4"]!.events = pages["4"]!.events.slice(0, 2);
+      }
+      if (options.stuck) pages["4"]!.events = [];
+      if (options.stuck) pages["4"]!.nextBefore = "4";
       if (options.conversation) {
         pages.newest = {
           events: Array.from({ length: options.conversationRows ?? 10 }, (_, index) => {
@@ -3330,15 +3338,14 @@ describe("HttpHostClient durable realtime", () => {
           const request = rpcPayload(url, init);
           requests.push(request);
           const before = typeof request.before === "string" ? request.before : "newest";
-          if (before !== "newest") {
+          const capturedPage = pages[before];
+          if (before !== "newest" || (options.hold && requests.length === 1)) {
             olderAsked.resolve();
             await withTimeout(olderAnswer.promise, 1000, {
               timeoutError: () => new Error("The held opening page was never released."),
             });
           }
-          const page = options.scan
-            ? { events: [], nextBefore: requests.length < 30 ? String(requests.length) : null }
-            : pages[before]!;
+          const page = capturedPage!;
           return json({
             thread,
             threadId: thread.id,
@@ -3348,7 +3355,7 @@ describe("HttpHostClient durable realtime", () => {
               asOfSequence: options.asOf ?? page.events.at(-1)?.sequence ?? "5",
             },
             window: {
-              byteCount: options.budget ?? 256,
+              byteCount: 256,
               itemCount: page.events.length,
               totalItems: 5,
               threadId: thread.id,
@@ -3383,28 +3390,27 @@ describe("HttpHostClient durable realtime", () => {
       };
     }
 
-    it("requests a conversation view and fills ten rows in one read", async () => {
-      const f = await openThread("conversation", ["history-turns-v1", "history-conversation-v1"], {
+    it("requests whole turns and draws ten rows in one read", async () => {
+      const f = await openThread("conversation", ["history-turns-v1"], {
         conversation: true,
       });
       try {
         await finishOpening(f);
         expect(f.requests).toHaveLength(1);
-        expect(f.requests[0]).toMatchObject({ turns: 10, view: "conversation" });
+        expect(f.requests[0]).toMatchObject({ turns: 10 });
         expect(openingRows(f)).toHaveLength(10);
       } finally {
         f.client.dispose();
       }
     });
 
-    it("installs a conversation view's first page that draws less than a screen", async () => {
-      const f = await openThread("conversation", ["history-turns-v1", "history-conversation-v1"], {
+    it("installs a first page that draws less than a screen", async () => {
+      const f = await openThread("conversation", ["history-turns-v1"], {
         conversation: true,
         conversationRows: 3,
       });
       try {
-        // The Host already counted only turns that show; reading on would cost
-        // a round trip each time before anything paints.
+        // An opening needs just the first page.
         await finishOpening(f);
         expect(f.requests).toHaveLength(1);
         expect(openingRows(f)).toHaveLength(3);
@@ -3413,85 +3419,6 @@ describe("HttpHostClient durable realtime", () => {
         f.client.dispose();
       }
     });
-
-    it.each([[["history-turns-v1"] as const], [[] as const]])(
-      "bounds empty advancing pages on older Hosts (%j)",
-      async (capabilities) => {
-        const f = await openThread("conversation", capabilities, {
-          scan: true,
-          budget: 700 * 1024,
-        });
-        try {
-          await finishOpening(f);
-          expect(f.requests).toHaveLength(3);
-          expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBe("3");
-          expect(f.client.getSnapshot().savedViewReadiness?.home).toMatchObject({
-            status: "window",
-            latest: false,
-          });
-          expect(projectSavedHome(f.client.getSnapshot())).toBeUndefined();
-        } finally {
-          f.client.dispose();
-        }
-      },
-    );
-
-    it("does not certify saved Home from an older Host's opening that stopped short of a screen", async () => {
-      const f = await openThread("conversation", ["history-turns-v1"]);
-      try {
-        f.pages["4"]!.nextBefore = "x";
-        f.pages.x = { events: [], nextBefore: "y" };
-        f.pages.y = { events: [], nextBefore: "z" };
-        await finishOpening(f);
-        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4", "x", "y"]);
-        expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply"]);
-        expect(f.client.getSnapshot().savedViewReadiness?.home).toMatchObject({
-          status: "window",
-          latest: false,
-        });
-        expect(projectSavedHome(f.client.getSnapshot())).toBeUndefined();
-      } finally {
-        f.client.dispose();
-      }
-    });
-
-    it("caps a scan of small empty pages by page count", async () => {
-      const f = await openThread("conversation", [], { scan: true });
-      try {
-        await finishOpening(f);
-        expect(f.requests).toHaveLength(20);
-        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBe("20");
-        expect(projectSavedHome(f.client.getSnapshot())).toBeUndefined();
-      } finally {
-        f.client.dispose();
-      }
-    });
-
-    it.each([[["history-turns-v1"] as const], [[] as const]])(
-      "continues after an older Host returns some visible rows until history ends (%j)",
-      async (capabilities) => {
-        const f = await openThread("conversation", capabilities);
-        try {
-          f.pages["4"]!.nextBefore = "1";
-          const message = makeMessage(f.thread.id, "input", "Oldest visible");
-          f.pages["1"] = {
-            events: [
-              agentEvent(f.workspace.id, f.thread.id, message.runId, "0", "message.created", {
-                input: makeThreadInput(message),
-                message,
-              }),
-            ],
-            nextBefore: null,
-          };
-          await finishOpening(f);
-          expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4", "1"]);
-          expect(openingRows(f)).toEqual(["Oldest visible", "Earlier question", "Earlier reply"]);
-        } finally {
-          f.olderAnswer.resolve();
-          f.client.dispose();
-        }
-      },
-    );
 
     it("does not replay deliberately omitted events at the snapshot cut", async () => {
       const f = await heldOpening({ asOf: "8" });
@@ -3509,7 +3436,7 @@ describe("HttpHostClient durable realtime", () => {
           });
         }
         await finishOpening(f);
-        expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply", "Buffered 9"]);
+        expect(openingRows(f)).toEqual([undefined, "Buffered 9"]);
       } finally {
         f.olderAnswer.resolve();
         f.client.dispose();
@@ -3517,51 +3444,39 @@ describe("HttpHostClient durable realtime", () => {
     });
 
     it.each([[["history-turns-v1"] as const], [[] as const]])(
-      "shows Chat's latest exchange behind its silent background Runs (capabilities %j)",
+      "opens Chat with its newest silent automatic turn, then Earlier reveals the next page (%j)",
       async (capabilities) => {
-        const { client, olderAnswer, olderAsked, requests, thread } = await openThread(
-          "conversation",
-          capabilities,
-        );
+        const f = await openThread("conversation", capabilities, { silentTurns: 10 });
         try {
-          await withTimeout(olderAsked.promise, 1000, {
-            timeoutError: () => new Error("Opening Chat never read past its silent page."),
-          });
-          // Still loading, never an empty Chat with only Earlier messages to press.
-          expect(client.getSnapshot().threadLookups[thread.id]).toBe("loading");
-          olderAnswer.resolve();
-          await vi.waitFor(
-            () => expect(client.getSnapshot().threadLookups[thread.id]).toBeUndefined(),
-            { timeout: 1000 },
-          );
-          expect(requests.map(({ before }) => before)).toEqual([undefined, "4"]);
-          const rows = conversationRows(
-            groupTranscriptEntries(
-              visibleTranscript(client.getSnapshot().transcripts[thread.id] ?? [], null, {
-                conversation: true,
-              }),
-            ),
-            { live: false, atComputer: () => false },
-          );
-          expect(
-            rows.map(({ group }) =>
-              group.kind === "turn"
-                ? group.turn.reply?.body
-                : group.kind === "message"
-                  ? group.entry.body
-                  : null,
-            ),
-          ).toEqual(["Earlier question", "Earlier reply"]);
-          expect(client.getSnapshot().transcriptWindows[thread.id]).toMatchObject({
-            hasMore: false,
-            nextBefore: null,
-          });
+          await finishOpening(f);
+          expect(f.requests.map(({ before }) => before)).toEqual([undefined]);
+          expect(openingRows(f)).toHaveLength(10);
+          expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBe("4");
+          await f.client.loadEarlierTranscript(f.thread.id);
+          expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
+          expect(openingRows(f)).toEqual([
+            "Earlier question",
+            "Earlier reply",
+            ...Array(10).fill(undefined),
+          ]);
         } finally {
-          olderAnswer.resolve();
-          client.dispose();
+          f.olderAnswer.resolve();
+          f.client.dispose();
         }
       },
     );
+
+    it("reads back past the tail of a long turn until the opening draws", async () => {
+      const f = await openThread("conversation", ["history-turns-v1"], { tail: true });
+      try {
+        await finishOpening(f);
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
+        expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply"]);
+      } finally {
+        f.olderAnswer.resolve();
+        f.client.dispose();
+      }
+    });
 
     it("reads one page of a task whose newest Run draws its work", async () => {
       const { client, requests, thread } = await openThread("work", ["history-turns-v1"]);
@@ -3581,7 +3496,7 @@ describe("HttpHostClient durable realtime", () => {
     });
 
     async function heldOpening(options: Parameters<typeof openThread>[2] = {}) {
-      const f = await openThread("conversation", ["history-turns-v1"], options);
+      const f = await openThread("conversation", ["history-turns-v1"], { ...options, hold: true });
       try {
         await withTimeout(f.olderAsked.promise, 1000, {
           timeoutError: () => new Error("Opening never requested the older page."),
@@ -3634,11 +3549,11 @@ describe("HttpHostClient durable realtime", () => {
         f.socket.receive({ type: "host.events", events: [...f.pages.newest!.events, event] });
         f.socket.receive({ type: "host.events", events: [event] });
         await finishOpening(f);
-        expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply", "Live question"]);
+        expect(openingRows(f)).toEqual([undefined, "Live question"]);
         expect(
           f.client.getSnapshot().transcripts[f.thread.id]?.filter((entry) => entry.kind === "run"),
-        ).toHaveLength(2);
-        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
+        ).toHaveLength(1);
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined]);
       } finally {
         f.olderAnswer.resolve();
         f.client.dispose();
@@ -3663,7 +3578,7 @@ describe("HttpHostClient durable realtime", () => {
           snapshot: { ...workspaceSnapshot(f.workspace, "6"), threads: [f.thread] },
         });
         await finishOpening(f);
-        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4", undefined]);
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined, undefined]);
         expect(openingRows(f)).toEqual(["Fresh question"]);
         expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBeNull();
       } finally {
@@ -3687,60 +3602,7 @@ describe("HttpHostClient durable realtime", () => {
         expect(f.client.getSnapshot().transcripts[f.thread.id]).toBeUndefined();
         expect(f.client.getSnapshot().transcriptWindows[f.thread.id]).toBeUndefined();
         expect(f.client.getSnapshot().threadLookups[f.thread.id]).toBeUndefined();
-        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
-      } finally {
-        f.olderAnswer.resolve();
-        f.client.dispose();
-      }
-    });
-
-    it("opening fills through the oldest page before Earlier is needed", async () => {
-      const f = await heldOpening({ earlier: true });
-      try {
-        await finishOpening(f);
-        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBeNull();
-        await withTimeout(f.client.loadEarlierTranscript(f.thread.id), 1000, {
-          timeoutError: () => new Error("Earlier did not finish."),
-        });
-        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4", "1"]);
-        expect(openingRows(f)).toEqual(["Oldest question", "Earlier question", "Earlier reply"]);
-        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.hasMore).toBe(false);
-      } finally {
-        f.olderAnswer.resolve();
-        f.client.dispose();
-      }
-    });
-
-    it("settles an entirely invisible history as an exhausted empty Chat", async () => {
-      const f = await heldOpening({ empty: true });
-      try {
-        await finishOpening(f);
-        expect(openingRows(f)).toEqual([]);
-        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]).toMatchObject({
-          hasMore: false,
-          nextBefore: null,
-        });
-        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
-      } finally {
-        f.olderAnswer.resolve();
-        f.client.dispose();
-      }
-    });
-
-    it("fails opening when an invisible page repeats its continuation cursor", async () => {
-      const f = await heldOpening({ stuck: true });
-      try {
-        f.olderAnswer.resolve();
-        await vi.waitFor(
-          () =>
-            expect(
-              f.client.getSnapshot().threadLookups[f.thread.id],
-              "Opening remained loading after a stuck cursor",
-            ).toBe("failed"),
-          { timeout: 1000 },
-        );
-        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
-        expect(f.client.getSnapshot().transcripts[f.thread.id]).toEqual([]);
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined]);
       } finally {
         f.olderAnswer.resolve();
         f.client.dispose();
@@ -13631,7 +13493,7 @@ function bootstrap(
     machines: [],
     homeWorkspace: workspaces.find((workspace) => workspace.kind === "main") ?? null,
     identityConfig: {
-      deployment: { cloud: false, kind: "self-hosted" as const, name: null },
+      deployment: { kind: "self-hosted" as const, name: null },
       emailDeliveryAvailable: false,
       localPasswordEnabled: true,
       machineOwner: false,

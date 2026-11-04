@@ -70,7 +70,8 @@ import {
 
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
+import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -5257,6 +5258,9 @@ async function createWorld(
     adapters: [],
     authorizationSource: { providerAuthorizations: async () => ({}) },
     listConnections: (ownerUserId) => connections.listConnections(ownerUserId),
+    secretVault: new AesGcmSecretVault(
+      new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
+    ),
     computerApps: hub,
     computerUse: options.withoutComputerUse ? null : computerUse,
     credentialMaterializer: {

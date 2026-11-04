@@ -439,7 +439,8 @@ async function finalReplyOfRun(
     .flatMap((part) => (part.type === "text" ? [part.text] : []))
     .join("\n")
     .trim();
-  return text.length > 0 ? text : null;
+  // Null means no substantive reply; an empty string preserves a non-text reply.
+  return text;
 }
 
 /**
@@ -475,7 +476,7 @@ export async function settleAssignmentAfterRun(
   const reply = await finalReplyOfRun(transaction, input.run);
   const resultText =
     outcome === "completed"
-      ? boundedResult(reply ?? "The task ended without a written reply.")
+      ? boundedResult(reply === null ? "" : reply || "The task ended without a written reply.")
       : boundedResult(
           `${input.failureSummary ? `The task stopped because of an error: ${input.failureSummary}` : "The task stopped because of an error."}${reply ? `\n\nLast reply before the error:\n${reply}` : ""}`,
         );

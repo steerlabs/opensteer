@@ -159,8 +159,6 @@ const defaultRefreshIntervalMs = 15_000;
 const historyPageTurns = 10;
 const historyScanMaxPages = 20;
 const historyScanMaxBytes = 2 * 1024 * 1024;
-/** Pages an older Host's opening may read to fill a screen once something draws. */
-const historyFillMaxPages = 4;
 const defaultReconnectBaseDelayMs = 300;
 /** How long a missed live frame waits before its Thread's streams are reread. */
 const liveRefreshDelayMs = 250;
@@ -2778,11 +2776,7 @@ export class HttpHostClient {
     }
   }
 
-  /**
-   * Fill Chat's opening window despite silent automatic Runs, within a bounded
-   * scan. A capped window remains readable but cannot certify saved Home.
-   * Null once the viewer has changed.
-   */
+  /** Read one opening page; even a silent settled turn has a row. */
   async #readLatestHistory(threadId: string, generation: number, userId: string | undefined) {
     const page = await this.#readThreadHistory(threadId);
     if (!this.#viewerStillCurrent(generation, userId)) return null;
@@ -2793,27 +2787,18 @@ export class HttpHostClient {
     );
     let history = page.events;
     let window = page.window;
-    // Each older page is folded alone and merged, as Earlier does, so a long
-    // silent stretch is not folded again for every page read.
     let entries = history.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
     let assignments = withAssignmentsFrom(this.#snapshot.assignments, history);
-    // A conversation view already counts only turns that can show, so it reads
-    // on only while nothing draws. An older Host pages every turn: it also fills
-    // a screen, within a few pages so the first paint never waits long.
-    const conversationView = this.#capabilities?.includes("history-conversation-v1") === true;
-    const fillRows = thread.role === "conversation" && !conversationView ? historyPageTurns : 1;
+    // A page can hold only the tail of one long turn, such as background work
+    // after its reply, so read back until the Thread draws something.
     let pages = 1;
     let bytes = window.byteCount;
     const cursors = new Set<string>();
-    const wantsMore = () => {
-      const drawn = this.#drawnRowCount(thread, entries, assignments);
-      return drawn === 0 || (drawn < fillRows && pages < historyFillMaxPages);
-    };
     while (
       window.hasMore &&
       pages < historyScanMaxPages &&
       bytes < historyScanMaxBytes &&
-      wantsMore()
+      this.#drawnRowCount(thread, entries, assignments) === 0
     ) {
       const before = window.nextBefore;
       if (!before || cursors.has(before))
@@ -2821,8 +2806,6 @@ export class HttpHostClient {
       cursors.add(before);
       const older = await this.#readThreadHistory(threadId, before);
       if (!this.#viewerStillCurrent(generation, userId)) return null;
-      if (older.window.hasMore && older.window.nextBefore === before)
-        throw new Error("Thread event page is missing its continuation cursor.");
       pages += 1;
       bytes += older.window.byteCount;
       history = [...older.events, ...history];
@@ -2839,9 +2822,8 @@ export class HttpHostClient {
       history,
       page,
       window,
-      // Only a window that reached its target may stand in for the Thread in
-      // the saved Home; a budget-capped scan must not replace a fuller one.
-      complete: !window.hasMore || this.#drawnRowCount(thread, entries, assignments) >= fillRows,
+      // A capped read that still draws nothing must not replace a saved Home.
+      complete: !window.hasMore || this.#drawnRowCount(thread, entries, assignments) > 0,
     };
   }
 
@@ -2867,15 +2849,7 @@ export class HttpHostClient {
           : {}),
         ...(before ? { before } : {}),
         threadId,
-        ...(this.#capabilities?.includes("history-turns-v1") ||
-        this.#capabilities?.includes("history-conversation-v1")
-          ? {
-              turns: historyPageTurns,
-              ...(this.#capabilities?.includes("history-conversation-v1")
-                ? { view: "conversation" as const }
-                : {}),
-            }
-          : {}),
+        ...(this.#capabilities?.includes("history-turns-v1") ? { turns: historyPageTurns } : {}),
       }),
     );
     if (page.threadId !== threadId || page.thread.id !== threadId)
@@ -5798,8 +5772,8 @@ export class HttpHostClient {
       this.#update(merged);
       if (page.window.hasMore && (!page.window.nextBefore || cursors.has(page.window.nextBefore)))
         throw new Error("Thread event page is missing its continuation cursor.");
-      // Rows are counted, not named: an older page can rename the turn it
-      // reaches into without drawing anything new.
+      // A byte/item budget can split one turn across pages. Its older steps
+      // can merge into the existing row without adding a row to read.
       if (!page.window.hasMore || drawnAfter > drawnBefore) return;
     }
   }

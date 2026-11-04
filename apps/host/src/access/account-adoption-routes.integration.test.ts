@@ -62,7 +62,7 @@ integration("Host Account adoption routes", () => {
       use: "sig",
     };
     const identity = new IdentityService(database, {
-      deployment: { cloud: false, kind: "self-hosted", name: null },
+      deployment: { kind: "self-hosted", name: null },
       accountAdoption: {
         grantVerifier: new RemoteAccountAdoptionGrantVerifier({
           audience: origin,

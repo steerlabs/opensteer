@@ -152,9 +152,6 @@ spec:
                 if (typeof value !== "string" || value.length === 0) throw new Error(`Missing ${key}`);
                 writeFileSync(`/var/run/opensteer-runtime/secrets/${key}`, value, { mode: 0o600 });
               }
-              for (const name of ["template.json", "operation-key"]) {
-                writeFileSync(`/var/run/opensteer-runtime/${name}`, readFileSync(`/var/run/opensteer-cloud/${name}`), { mode: 0o600 });
-              }
               writeFileSync(
                 "/var/run/opensteer-runtime/secrets/OPENSTEER_CONTROL_PLANE_AUTH_SECRET",
                 readFileSync("/var/run/opensteer-raw/account-auth"),
@@ -168,7 +165,6 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
           volumeMounts:
-            - { name: cloud-hosting, mountPath: /var/run/opensteer-cloud, readOnly: true }
             - { name: raw-secrets, mountPath: /var/run/opensteer-raw, readOnly: true }
             - { name: runtime-secrets, mountPath: /var/run/opensteer-runtime }
       containers:
@@ -177,14 +173,6 @@ spec:
           envFrom:
             - configMapRef: { name: account-env }
           env:
-            - {
-                name: OPENSTEER_CLOUD_TEMPLATE_PATH,
-                value: /var/run/opensteer-runtime/template.json,
-              }
-            - {
-                name: OPENSTEER_CLOUD_OPERATION_KEY_FILE,
-                value: /var/run/opensteer-runtime/operation-key,
-              }
             - {
                 name: OPENSTEER_CONTROL_PLANE_AUTH_SECRET_FILE,
                 value: /var/run/opensteer-runtime/secrets/OPENSTEER_CONTROL_PLANE_AUTH_SECRET,
@@ -301,8 +289,6 @@ spec:
             - { name: runtime-secrets, mountPath: /var/run/opensteer-runtime, readOnly: true }
             - { name: tmp, mountPath: /tmp }
       volumes:
-        - name: cloud-hosting
-          secret: { secretName: cloud-hosting, defaultMode: 0440 }
         - name: raw-secrets
           csi:
             driver: secrets-store-gke.csi.k8s.io

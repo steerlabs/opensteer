@@ -117,7 +117,7 @@ describe("hosted OAuth browser launch", () => {
       } as never,
       authenticator: {} as never,
       connectLifecycle: {} as never,
-      managedDeploymentDomain: "managed.opensteer.test",
+      portalOrigin: new URL("https://managed.opensteer.test"),
       publicOrigin,
       store: {} as never,
     });

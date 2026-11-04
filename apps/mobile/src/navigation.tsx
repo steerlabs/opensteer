@@ -111,7 +111,7 @@ const RootStack = createNativeStackNavigator({
           },
         }),
         headerLargeTitle: true,
-        title: "Deployments",
+        title: "Computers",
       }),
     },
     // Chat: the one conversation a Deployment opens into, and the root every

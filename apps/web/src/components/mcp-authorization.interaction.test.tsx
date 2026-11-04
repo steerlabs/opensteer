@@ -124,7 +124,7 @@ describe("signed-in MCP connection consent", () => {
       ),
     );
     const links = [...container.querySelectorAll("a")];
-    expect(links).toHaveLength(2);
+    expect(links).toHaveLength(1);
     expect(links[0]!.getAttribute("href")).toContain(`deploymentId=${deploymentId}`);
     expect(links[0]!.getAttribute("href")).not.toMatch(/token|code|verifier/);
     expect(container.querySelector("input")).toBeNull();

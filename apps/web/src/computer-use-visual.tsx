@@ -454,7 +454,7 @@ if (panel === "transcript") {
         : [step("full-disk-access", "settings", "current"), step("automation", "ask", "waiting")];
   const setup: DesktopComputerAppSetup = {
     appIconPng: null,
-    appName: "Opensteer Beta",
+    appName: "Opensteer",
     definitionId: contacts ? "apple-contacts" : "apple-messages",
     helperReachable: state !== "away",
     phase: state === "offer" ? "offer" : state === "done" ? "done" : "steps",

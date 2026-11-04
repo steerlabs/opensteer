@@ -386,6 +386,17 @@ describe("Claude Agent SDK harness", () => {
       status: "authentication-required",
     });
 
+    const noKeySource = await new ClaudeHarnessDriver({
+      executable: fakeClaudeExecutable,
+      sdk: new FakeSdk(() => scriptedQuery([]), models, {
+        apiProvider: "firstParty",
+        apiKeySource: "none",
+        tokenSource: "none",
+        subscriptionType: "none",
+      }),
+    }).inspect({ ...inspection, config: {} });
+    expect(noKeySource.status).toBe("authentication-required");
+
     const apiKey = await new ClaudeHarnessDriver({
       executable: fakeClaudeExecutable,
       sdk: new FakeSdk(() => scriptedQuery([]), models, {

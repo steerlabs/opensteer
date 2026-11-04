@@ -14,19 +14,19 @@ License Agreement accepted. This installs a signed Release app directly, using t
 `com.opensteer.mobile` identity.
 
 The app reaches a loopback-only Personal Host only through Connect, which needs the Account origin
-baked into the bundle. Use the `accountUrl` of the desktop channel the phone pairs with, for example
-`apps/desktop/src/releases/desktop-release.beta.json` for Beta. A build without it lists computers
+baked into the bundle. Use `https://accounts.opensteer.com`, the `accountUrl` in
+`apps/desktop/src/releases/desktop-release.json`. A build without it lists computers
 but cannot reach them.
 
 From that checkout, with an absolute `MOBILE_EVIDENCE_DIR` and the private `MOBILE_DEVICE_ID` and
 `MOBILE_SIGNING_TEAM` supplied by the operator, and `EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN` set to that
-channel's `accountUrl`:
+release's `accountUrl`:
 
 ```sh
 mkdir -p "$MOBILE_EVIDENCE_DIR"
 pnpm install --frozen-lockfile
 unset EXPO_PUBLIC_OPENSTEER_MOCK EXPO_PUBLIC_OPENSTEER_MOCK_HOME
-export EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN="${EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN:?Set the channel accountUrl}"
+export EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN="https://accounts.opensteer.com"
 # Prebuilt React Native dependencies leave folly, glog and double-conversion unresolved
 # when a Release build links, so build React Native from source.
 export RCT_USE_RN_DEP=0 RCT_USE_PREBUILT_RNCORE=0

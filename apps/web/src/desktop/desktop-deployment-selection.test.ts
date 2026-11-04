@@ -13,14 +13,14 @@ import {
 } from "./desktop-deployment-selection.js";
 
 function deployment(overrides: Partial<DesktopDeploymentSummary> = {}): DesktopDeploymentSummary {
-  const origin = overrides.canonicalOrigin ?? "https://cloud.example.com";
+  const origin = overrides.canonicalOrigin ?? "https://server.example.com";
   return DesktopDeploymentSummarySchema.parse({
     activeOrigin: origin,
     canonicalOrigin: origin,
     id: createId("deployment"),
     kind: "self-hosted",
     lastUsedAt: null,
-    name: "Opensteer Cloud",
+    name: "Team server",
     access: "native",
     onThisComputer: false,
     routes: [{ kind: "canonical", origin, selected: true }],

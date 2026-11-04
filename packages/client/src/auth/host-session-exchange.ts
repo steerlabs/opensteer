@@ -376,7 +376,7 @@ function accountFailure(error: unknown): HostSessionExchangeError {
   }
   return new HostSessionExchangeError(
     "unavailable",
-    "Opensteer Cloud could not authorize this Opensteer right now.",
+    "The Opensteer Account could not authorize this Opensteer right now.",
   );
 }
 

@@ -304,6 +304,17 @@ export class AppService {
       if (input.signal.aborted) throw error;
       if (error && typeof error === "object" && "statusCode" in error && error.statusCode === 413)
         return this.#errorResponse(413, "App request exceeds the 32 MiB limit", input.theme, false);
+      // Workspace admission refuses deleted or deleting apps before a tunnel is opened.
+      if (
+        error instanceof OpensteerError &&
+        (error.code === "not_found" || error.reason === "workspace-deleting")
+      )
+        return this.#errorResponse(
+          404,
+          "This app is no longer available. Its Project may have been deleted.",
+          input.theme,
+          input.headers.accept?.includes("text/html") ?? input.path === "/",
+        );
       return this.#errorResponse(
         503,
         "This app's server is unavailable. Try again after its computer reconnects or the app is republished.",

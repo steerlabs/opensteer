@@ -44,7 +44,7 @@ import {
   NativePersonalUserEnvironment,
   type PersonalUserEnvironmentPort,
 } from "./personal-user-environment.js";
-import { localExecutionStatus, unavailableLocalExecutionStatus } from "./local-execution-status.js";
+import { localExecutionStatus } from "./local-execution-status.js";
 
 const startupTimeoutMs = 90_000;
 const gracefulStopTimeoutMs = 5_000;
@@ -311,13 +311,10 @@ export class LocalRunnerService {
     };
     this.#targets = dependencies.targets;
     this.#userEnvironment = dependencies.userEnvironment ?? new NativePersonalUserEnvironment();
-    this.#unsubscribeTargets = config.localExecution.enabled
-      ? this.#targets.subscribe(() => void this.reconcile())
-      : () => undefined;
+    this.#unsubscribeTargets = this.#targets.subscribe(() => void this.reconcile());
   }
 
   async assertComputerAppSetupTarget(requestInput: ComputerAppSetupRequest): Promise<void> {
-    this.#assertEnabled();
     const request = ComputerAppSetupRequestSchema.parse(requestInput);
     const target = await this.checkComputerUseRunnerTarget(request.deploymentId, request.runnerId);
     if (!target.local)
@@ -328,7 +325,6 @@ export class LocalRunnerService {
     deploymentId: string,
     runnerId: string,
   ): Promise<ComputerUseRunnerTargetResult> {
-    if (!this.#config.localExecution.enabled) return { local: false, reason: "not-local" };
     const parsedDeploymentId = DeploymentIdSchema.parse(deploymentId);
     let target: DesktopLocalRunnerTarget;
     try {
@@ -350,9 +346,6 @@ export class LocalRunnerService {
 
   async status(deploymentIdInput: DeploymentId | string): Promise<DesktopLocalExecutionStatus> {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
-    if (!this.#config.localExecution.enabled) {
-      return unavailableLocalExecutionStatus(deploymentId, await this.#computerName());
-    }
     const slot = this.#slot(deploymentId);
     if (!slot.child && !slot.stopPromise && slot.state !== "failed") {
       let target: DesktopLocalRunnerTarget | null = null;
@@ -397,7 +390,6 @@ export class LocalRunnerService {
    * exactly where they are.
    */
   async start(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus> {
-    this.#assertEnabled();
     const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
     this.#cancelRestart(parsed.deploymentId);
     const slot = this.#slot(parsed.deploymentId);
@@ -442,7 +434,6 @@ export class LocalRunnerService {
   }
 
   async startIfEnabled(): Promise<void> {
-    if (!this.#config.localExecution.enabled) return;
     await this.reconcile();
   }
 
@@ -454,7 +445,6 @@ export class LocalRunnerService {
    */
   async remove(deploymentIdInput: DeploymentId | string): Promise<DesktopLocalExecutionStatus> {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
-    if (!this.#config.localExecution.enabled) return this.status(deploymentId);
     const slot = this.#slot(deploymentId);
     this.#disableIntent(slot);
     this.#cancelRestart(deploymentId);
@@ -481,7 +471,7 @@ export class LocalRunnerService {
   }
 
   async reconcile(): Promise<void> {
-    if (this.#shuttingDown || !this.#config.localExecution.enabled) return;
+    if (this.#shuttingDown) return;
     const operation = this.#reconcileTail.then(() => this.#reconcileEnabled());
     this.#reconcileTail = operation.catch((error: unknown) => {
       for (const slot of this.#runners.values()) {
@@ -521,12 +511,6 @@ export class LocalRunnerService {
     this.#unsubscribeTargets();
     for (const deploymentId of this.#restartPolicies.keys()) this.#cancelRestart(deploymentId);
     this.#listeners.clear();
-  }
-
-  #assertEnabled(): void {
-    if (!this.#config.localExecution.enabled) {
-      throw new Error("This Opensteer release does not include local agent support.");
-    }
   }
 
   async #reconcileEnabled(): Promise<void> {

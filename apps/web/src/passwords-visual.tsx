@@ -87,7 +87,7 @@ function useShellContext(): ShellContext {
           },
           identityConfig: live.identityConfig && {
             ...live.identityConfig,
-            deployment: { cloud: true, kind: "self-hosted" as const, name: "Design Cloud" },
+            deployment: { kind: "self-hosted" as const, name: "Design server" },
             publicOrigin: "https://design.example.test",
           },
         }

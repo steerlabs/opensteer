@@ -12,13 +12,17 @@ export const AgentConnectionReachSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("workspace"), workspaceId: WorkspaceIdSchema }),
 ]);
 export type AgentConnectionReach = z.infer<typeof AgentConnectionReachSchema>;
+const AgentConnectionReachViewSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("user") }),
+  z.object({ kind: z.literal("workspace"), workspaceId: WorkspaceIdSchema }),
+]);
 export const AgentConnectionSchema = z.object({
   id: AgentConnectionIdSchema,
   userId: UserIdSchema,
   label: z.string().min(1).max(120),
   clientName: z.string().min(1).max(100),
   accessMode: ThreadAccessModeSchema,
-  reach: AgentConnectionReachSchema,
+  reach: AgentConnectionReachViewSchema,
   createdAt: z.iso.datetime({ offset: true }),
   lastUsedAt: z.iso.datetime({ offset: true }).nullable(),
   expiresAt: z.iso.datetime({ offset: true }),

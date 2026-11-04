@@ -12,23 +12,12 @@ function appleTeamId() {
   const mode = loadSigningMode();
   return mode.mode === "signed" ? mode.signing.teamId : "";
 }
-const releaseIdentities = Object.freeze({
-  beta: Object.freeze({
-    bundleId: "com.steerlabs.opensteer.beta",
-    channel: "beta",
-    productName: "Opensteer Beta",
-  }),
-  stable: Object.freeze({
+function desktopReleaseIdentity() {
+  return Object.freeze({
     bundleId: "com.opensteer.opensteer",
-    channel: "stable",
     productName: "Opensteer",
-  }),
-});
-
-function desktopReleaseIdentity(channel) {
-  const release = releaseIdentities[channel];
-  if (!release) throw new Error("The macOS release channel must be beta or stable.");
-  return Object.freeze({ ...release, teamId: appleTeamId() });
+    teamId: appleTeamId(),
+  });
 }
 
 function validateReleaseEntitlements(entitlements, passkeyIdentity) {

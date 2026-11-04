@@ -1,5 +1,7 @@
+import { randomBytes } from "node:crypto";
 import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
 import { createServer } from "node:http";
+import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -4445,6 +4447,9 @@ function platform(input: {
 }): IntegrationPlatformService {
   return new IntegrationPlatformService({
     listConnections: input.listConnections ?? (async () => []),
+    secretVault: new AesGcmSecretVault(
+      new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
+    ),
     adapters: input.adapters,
     authorizationSource: { providerAuthorizations: vi.fn(async () => ({})) },
     computerApps: {

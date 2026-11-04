@@ -22,16 +22,12 @@ describe("DesktopAppOriginPolicy", () => {
 
 describe("ServiceOriginPolicy", () => {
   it("allows only HTTP requests to its exact service origin", () => {
-    const policy = new ServiceOriginPolicy(new URL("https://accounts.beta.opensteer.com"));
+    const policy = new ServiceOriginPolicy(new URL("https://accounts.opensteer.com"));
 
-    expect(policy.allowsNetworkRequest("https://accounts.beta.opensteer.com/oauth/token")).toBe(
-      true,
-    );
-    expect(policy.allowsNetworkRequest("https://accounts.beta.opensteer.com.evil.test/")).toBe(
-      false,
-    );
+    expect(policy.allowsNetworkRequest("https://accounts.opensteer.com/oauth/token")).toBe(true);
+    expect(policy.allowsNetworkRequest("https://accounts.opensteer.com.evil.test/")).toBe(false);
     expect(policy.allowsNetworkRequest("https://beta.opensteer.com/")).toBe(false);
-    expect(policy.allowsNetworkRequest("wss://accounts.beta.opensteer.com/socket")).toBe(false);
+    expect(policy.allowsNetworkRequest("wss://accounts.opensteer.com/socket")).toBe(false);
     expect(policy.allowsNetworkRequest("data:text/plain,secret")).toBe(false);
   });
 });

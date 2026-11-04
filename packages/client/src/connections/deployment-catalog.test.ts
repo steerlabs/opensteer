@@ -61,7 +61,7 @@ describe("DeploymentCatalogStore", () => {
     const cloud = deploymentInput({
       canonicalOrigin: "https://cloud.opensteer.example",
       kind: "self-hosted",
-      name: "Opensteer Cloud",
+      name: "Team server",
     });
 
     await expect(store.load()).resolves.toEqual(emptyDeploymentCatalog());

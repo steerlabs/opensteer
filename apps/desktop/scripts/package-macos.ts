@@ -43,8 +43,7 @@ if (process.argv.includes("--unsigned")) {
   const targetArchitecture = macosArchitecture(
     process.env.OPENSTEER_DESKTOP_TARGET_ARCH ?? hostArchitecture(),
   );
-  const releaseChannel = desktopReleaseChannel(process.env.OPENSTEER_DESKTOP_RELEASE_CHANNEL);
-  const builderConfig = desktopBuilderConfig(releaseChannel);
+  const builderConfig = "electron-builder.yml";
   const releaseMetadata = desktopReleaseMetadata(repositoryRoot, process.env);
   const deferNotarization = process.env.OPENSTEER_DESKTOP_DEFER_NOTARIZATION === "1";
   const releaseEnvironment = {
@@ -72,14 +71,12 @@ if (process.argv.includes("--unsigned")) {
   const { preparePasskeySigning } =
     require("./passkeys-signing.cjs") as typeof import("./passkeys-signing.cjs");
   const { desktopReleaseIdentity } = require("./macos-release-identity.cjs") as {
-    desktopReleaseIdentity(
-      channel: "stable" | "beta",
-    ): import("./passkeys-signing.cjs").PasskeySigningIdentity;
+    desktopReleaseIdentity(): import("./passkeys-signing.cjs").PasskeySigningIdentity;
   };
   const passkeySigningArguments = preparePasskeySigning(
     desktopDirectory,
     releaseEnvironment,
-    desktopReleaseIdentity(releaseChannel),
+    desktopReleaseIdentity(),
   );
   if (!deferNotarization) requireNotarizationAuthority(releaseEnvironment);
 
@@ -136,21 +133,8 @@ if (process.argv.includes("--unsigned")) {
     ),
   );
   await timePhase("package.final-verification", () =>
-    verifyPackagedApplication(
-      releaseChannel,
-      targetArchitecture.manifest,
-      releaseMetadata.identity.version,
-    ),
+    verifyPackagedApplication(targetArchitecture.manifest, releaseMetadata.identity.version),
   );
-
-  function desktopReleaseChannel(channel: string | undefined): "beta" | "stable" {
-    if (channel === "beta" || channel === "stable") return channel;
-    throw new Error("OPENSTEER_DESKTOP_RELEASE_CHANNEL must be beta or stable.");
-  }
-
-  function desktopBuilderConfig(channel: "beta" | "stable"): string {
-    return channel === "beta" ? "electron-builder.beta.yml" : "electron-builder.yml";
-  }
 
   function macosArchitecture(value: string): {
     readonly builderFlag: "--arm64" | "--x64";
@@ -232,19 +216,14 @@ if (process.argv.includes("--unsigned")) {
   }
 
   async function verifyPackagedApplication(
-    channel: "beta" | "stable",
     architecture: "amd64" | "arm64",
     releaseVersion: string,
   ): Promise<void> {
-    const outputDirectory = path.join(
-      desktopDirectory,
-      "release",
-      channel === "beta" ? "beta" : "",
-    );
+    const outputDirectory = path.join(desktopDirectory, "release");
     const applicationDirectory = path.join(
       outputDirectory,
       architecture === "arm64" ? "mac-arm64" : "mac",
-      channel === "beta" ? "Opensteer Beta.app" : "Opensteer.app",
+      "Opensteer.app",
     );
     const infoPlist = path.join(applicationDirectory, "Contents", "Info.plist");
     for (const key of ["CFBundleShortVersionString", "CFBundleVersion"] as const) {

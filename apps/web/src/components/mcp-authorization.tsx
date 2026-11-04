@@ -2,7 +2,7 @@ import {
   AgentConnectionAuthorizationTargetSchema,
   agentConnectionDeepLink,
 } from "@opensteer/protocol";
-import { opensteerDesktopClient, opensteerBetaDesktopClient } from "@opensteer/core";
+import { opensteerDesktopClient } from "@opensteer/core";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { useEffect, useRef, useState } from "react";
 import type { AgentConnectionConsent } from "@opensteer/protocol";
@@ -209,15 +209,12 @@ export function McpAuthorizationLaunch({
             permissions. This link carries no login credential and approves nothing.
           </p>
           {target.success ? (
-            [opensteerDesktopClient, opensteerBetaDesktopClient].map((client) => (
-              <a
-                className="btn"
-                key={client.applicationId}
-                href={agentConnectionDeepLink(client.applicationId, target.data)}
-              >
-                Open {client.name}
-              </a>
-            ))
+            <a
+              className="btn"
+              href={agentConnectionDeepLink(opensteerDesktopClient.applicationId, target.data)}
+            >
+              Open {opensteerDesktopClient.name}
+            </a>
           ) : (
             <p role="alert">This connection request is invalid. Start again from the agent.</p>
           )}

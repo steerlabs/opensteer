@@ -5,9 +5,13 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 out='/Volumes/My Shared Files/artifacts'
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/Xcode.app/Contents/version.plist)" = '27.1'
 test "$(/usr/libexec/PlistBuddy -c 'Print :ProductBuildVersion' /Applications/Xcode.app/Contents/version.plist)" = '27A9275'
+printf 'mobile-inventory xcode-version start elapsed=%ss\n' "$SECONDS"
 xcodebuild -version
+printf 'mobile-inventory runtimes start elapsed=%ss\n' "$SECONDS"
 xcrun simctl list runtimes -j > "$out/mobile-runtimes.json"
+printf 'mobile-inventory device-types start elapsed=%ss\n' "$SECONDS"
 xcrun simctl list devicetypes -j > "$out/mobile-device-types.json"
+printf 'mobile-inventory validate-runtime start elapsed=%ss\n' "$SECONDS"
 runtime=$(node - "$out/mobile-runtimes.json" <<'JS'
 const fs = require('node:fs');
 const r = JSON.parse(fs.readFileSync(process.argv[2])).runtimes.find(r => r.isAvailable && r.version === '27.1' && r.buildversion === '24A94425' && r.identifier.startsWith('com.apple.CoreSimulator.SimRuntime.iOS-'));
@@ -15,6 +19,7 @@ if (!r) throw new Error('Required final iOS 27.1 build 24A94425 runtime unavaila
 console.log(r.identifier);
 JS
 )
+printf 'mobile-inventory complete elapsed=%ss\n' "$SECONDS"
 if [ "${1:-}" = '--inventory' ]; then exit 0; fi
 # One private simulator proves nested simulator viability after a cold boot.
 device=$(node - "$out/mobile-device-types.json" "$out/mobile-runtimes.json" "$runtime" "$out/mobile-selected-device.json" <<'JS'

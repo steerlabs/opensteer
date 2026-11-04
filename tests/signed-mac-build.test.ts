@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { buildSignedMac, type MacContext } from "../scripts/release-beta-mac.js";
+import { buildSignedMac, type MacContext } from "../scripts/release-mac.js";
 import { signedMacHelpers } from "../scripts/signed-mac-helpers.js";
 
 vi.mock("../apps/desktop/scripts/personal-runtime-provenance.js", () => ({
@@ -48,7 +48,7 @@ it("builds each signed helper before packaging a prebuilt Personal runtime", asy
         {
           id: "local",
           stagingDirectory: path.join(root, "stage"),
-          applicationPath: path.join(root, "Opensteer Beta.app"),
+          applicationPath: path.join(root, "Opensteer.app"),
           runtimeStatusUrl: "http://localhost/healthz",
         },
       ],

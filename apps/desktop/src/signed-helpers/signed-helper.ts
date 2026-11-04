@@ -161,7 +161,7 @@ export interface InstalledSignedHelper {
  * older. Older is decided by the newest protocol each bundle declares first
  * and its version second. Development also replaces equal-version bytes when
  * their code hash changed. A release helper of the same protocol and version
- * is kept whatever its hash: Stable and Beta each build and sign their own
+ * is kept whatever its hash: Desktop releases can build and sign their own
  * copy of one release, so two valid bundles of one version are the same
  * helper to this app.
  *
@@ -172,7 +172,7 @@ export interface InstalledSignedHelper {
  * before its bundle is renamed. This whole transition holds the same lock
  * every launch holds through socket readiness, so two Opensteers cannot launch
  * the outgoing helper or interleave installs. A valid newer helper is never
- * replaced by an older one: Stable and Beta share this path, and the newest
+ * replaced by an older one: Desktop releases share this path, and the newest
  * installed app is the one that decides which helper it holds. An invalid
  * bundle has no version authority and is replaced.
  */
@@ -618,7 +618,7 @@ function shouldKeepInstalled(input: {
   const order = compareBundleVersions(input.current.version, input.bundled.version);
   if (order > 0) return true;
   if (order < 0) return false;
-  // A release helper is replaced only by a strictly newer one: Stable and Beta
+  // A release helper is replaced only by a strictly newer one: Desktop releases
   // sign their own builds of the same version, so a different hash at an equal
   // version is the other channel's copy, valid and just as current. Replacing
   // it would make the two apps swap the helper on every launch. Development

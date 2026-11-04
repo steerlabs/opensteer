@@ -20,12 +20,11 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-test("release without channel inputs does not invoke the addon toolchain", async () => {
+test("release without passkey inputs does not invoke the addon toolchain", async () => {
   vi.stubEnv("OPENSTEER_DESKTOP_TARGET_OS", "darwin");
   vi.stubEnv("OPENSTEER_DESKTOP_RELEASE", "1");
-  vi.stubEnv("OPENSTEER_DESKTOP_RELEASE_CHANNEL", "stable");
-  vi.stubEnv("OPENSTEER_PASSKEYS_STABLE_PROFILE", "");
-  vi.stubEnv("OPENSTEER_PASSKEYS_STABLE_ENTITLEMENTS", "");
+  vi.stubEnv("OPENSTEER_PASSKEYS_PROFILE", "");
+  vi.stubEnv("OPENSTEER_PASSKEYS_ENTITLEMENTS", "");
   const staged = path.join(stageDirectory, "opensteer-passkeys.node");
   writeFileSync(staged, "stale");
   await expect(stagePasskeysAddon(stageDirectory)).resolves.toBeUndefined();
@@ -33,22 +32,20 @@ test("release without channel inputs does not invoke the addon toolchain", async
   expect(execFileSync).not.toHaveBeenCalled();
 });
 
-test("release with channel inputs invokes the pinned addon toolchain", async () => {
+test("release with passkey inputs invokes the pinned addon toolchain", async () => {
   vi.stubEnv("OPENSTEER_DESKTOP_TARGET_OS", "darwin");
   vi.stubEnv("OPENSTEER_DESKTOP_RELEASE", "1");
-  vi.stubEnv("OPENSTEER_DESKTOP_RELEASE_CHANNEL", "stable");
-  vi.stubEnv("OPENSTEER_PASSKEYS_STABLE_PROFILE", "/profile");
-  vi.stubEnv("OPENSTEER_PASSKEYS_STABLE_ENTITLEMENTS", "/entitlements");
+  vi.stubEnv("OPENSTEER_PASSKEYS_PROFILE", "/profile");
+  vi.stubEnv("OPENSTEER_PASSKEYS_ENTITLEMENTS", "/entitlements");
   await expect(stagePasskeysAddon(stageDirectory)).rejects.toThrow("toolchain invoked");
   expect(execFileSync).toHaveBeenCalled();
 });
 
-test("incomplete channel inputs fail closed before invoking the toolchain", async () => {
+test("incomplete passkey inputs fail closed before invoking the toolchain", async () => {
   vi.stubEnv("OPENSTEER_DESKTOP_TARGET_OS", "darwin");
   vi.stubEnv("OPENSTEER_DESKTOP_RELEASE", "1");
-  vi.stubEnv("OPENSTEER_DESKTOP_RELEASE_CHANNEL", "stable");
-  vi.stubEnv("OPENSTEER_PASSKEYS_STABLE_PROFILE", "/profile");
-  vi.stubEnv("OPENSTEER_PASSKEYS_STABLE_ENTITLEMENTS", "");
+  vi.stubEnv("OPENSTEER_PASSKEYS_PROFILE", "/profile");
+  vi.stubEnv("OPENSTEER_PASSKEYS_ENTITLEMENTS", "");
   await expect(stagePasskeysAddon(stageDirectory)).rejects.toThrow(/profile and entitlement/i);
   expect(execFileSync).not.toHaveBeenCalled();
 });

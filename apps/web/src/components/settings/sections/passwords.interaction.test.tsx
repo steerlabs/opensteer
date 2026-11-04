@@ -21,7 +21,7 @@ import { SettingsSectionRoute, SettingsShell } from "../settings-shell.js";
  * - a browser tab, a phone-sized window or the desktop app on another computer
  *   draws controls that only work on the Mac that runs this Opensteer, or asks
  *   that Mac's bridge for a status it does not have;
- * - a server or cloud Opensteer points at a Mac it does not have;
+ * - a server Opensteer points at a Mac it does not have;
  * - a Mac that can never keep Passwords is offered Set up;
  * - the status read fails, or the Mac says Passwords is unavailable, and the
  *   page offers no way to read it again;
@@ -226,7 +226,7 @@ describe("Settings → Passwords anywhere else", () => {
     expect(fake.listeners.size).toBe(0);
   });
 
-  it("says a server or cloud Opensteer has none yet", async () => {
+  it("says a server Opensteer has none yet", async () => {
     const page = await mount({ server: true });
     expect(text(page)).toContain(
       "Saved-password sign-ins are available on a Personal Opensteer for now.",
@@ -306,7 +306,7 @@ function page(
         deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
         identityConfig: base.identityConfig && {
           ...base.identityConfig,
-          deployment: { cloud: true, kind: "self-hosted", name: "Design Cloud" },
+          deployment: { kind: "self-hosted", name: "Design server" },
           publicOrigin: "https://design.example.test",
         },
       }

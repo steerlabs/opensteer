@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@opensteer/core": "workspace:*",
+    "@opensteer/integration-core": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "yaml": "catalog:",
     "zod": "catalog:"

@@ -106,7 +106,7 @@ export async function withComputerUseHelperLifecycleLock<T>(
 
 /**
  * Puts this build's helper at the canonical path when it is absent, invalid or
- * older; see `ensureSignedHelperInstalled`. Stable and Beta share this path,
+ * older; see `ensureSignedHelperInstalled`. Desktop releases share this path,
  * which is what lets the two apps share one pair of macOS grants.
  */
 export async function ensureHelperInstalled(

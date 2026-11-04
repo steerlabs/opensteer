@@ -6,9 +6,9 @@ import {
   type ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
 import {
+  opensteerAccountNativeOAuthClients,
   DeploymentIdSchema,
   HostInstanceIdSchema,
-  opensteerAccountNativeOAuthClients,
 } from "@opensteer/core";
 import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -29,7 +29,7 @@ import { ControlPlaneError } from "./errors.js";
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const publicOrigin = new URL("https://beta.front-door.test.invalid");
-const managedDeploymentDomain = "managed.front-door.test.invalid";
+const testDomain = "managed.front-door.test.invalid";
 const accountId = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
 const config: ControlPlaneConfig = {
   adoptionOperationKey: "A".repeat(43),
@@ -49,7 +49,7 @@ const config: ControlPlaneConfig = {
   googleClientSecret: "test-google-secret",
   listenHost: "127.0.0.1",
   listenPort: 41_142,
-  managedDeploymentDomain,
+  portalOrigin: new URL(`https://${testDomain}`),
   nativeOAuthClients: opensteerAccountNativeOAuthClients,
   publicOrigin,
 };
@@ -59,7 +59,9 @@ integration("Opensteer Account host", () => {
     connectionString: databaseUrl ?? "postgresql://unconfigured",
     maxConnections: 4,
   });
-  const store = new ControlPlaneStore(database, publicOrigin, { managedDeploymentDomain });
+  const store = new ControlPlaneStore(database, publicOrigin, {
+    portalOrigin: new URL(`https://${testDomain}`),
+  });
   const portalSessions = new PortalSessionStore(database);
   const connectLifecycle = new ConnectLifecycleService(database, {
     delete: async () => undefined,
@@ -77,7 +79,7 @@ integration("Opensteer Account host", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      managedDeploymentDomain,
+      portalOrigin: new URL(`https://${testDomain}`),
       portalSessions,
       publicOrigin,
       store,
@@ -109,7 +111,7 @@ integration("Opensteer Account host", () => {
   it("sends the front door to the portal instead of serving one", async () => {
     const signedOut = await server.inject({ method: "GET", url: "/" });
     expect(signedOut.statusCode).toBe(302);
-    expect(signedOut.headers.location).toBe(`https://${managedDeploymentDomain}/`);
+    expect(signedOut.headers.location).toBe(`https://${testDomain}/`);
 
     const signedIn = await server.inject({
       headers: { cookie: await signedSessionCookie(auth, accountId) },
@@ -117,7 +119,7 @@ integration("Opensteer Account host", () => {
       url: "/",
     });
     expect(signedIn.statusCode).toBe(302);
-    expect(signedIn.headers.location).toBe(`https://${managedDeploymentDomain}/`);
+    expect(signedIn.headers.location).toBe(`https://${testDomain}/`);
     expect(signedIn.headers["cache-control"]).toBe("no-store");
     expect(signedIn.headers["strict-transport-security"]).toBe(
       "max-age=31536000; includeSubDomains",
@@ -145,48 +147,32 @@ integration("Opensteer Account host", () => {
     expect(invalidPost.body).toContain("Start authorization again");
   });
 
-  it("authorizes only the public hostname and active canonical origins for edge TLS", async () => {
-    const deployment = await registerDeployment("TLS Cloud", "tls-cloud");
-    const own = await server.inject({
+  it("answers a browser with a page and an API client with JSON when a request fails", async () => {
+    const page = await server.inject({
+      headers: { "sec-fetch-mode": "navigate" },
       method: "GET",
-      url: "/v1/edge/tls-allow?domain=BETA.FRONT-DOOR.TEST.INVALID.",
+      url: "/no-such-page",
     });
-    expect(own.statusCode).toBe(200);
-    expect(own.body).toBe("ok");
+    expect(page.statusCode).toBe(404);
+    expect(page.headers["content-type"]).toContain("text/html");
+    expect(page.body).toContain("Nothing here");
+    // An Account-host failure still offers a way on, to the portal.
+    expect(page.body).toContain(`href="https://${testDomain}/"`);
+    expect(page.headers["content-security-policy"]).toContain("default-src 'none'");
 
-    const edgeRoot = await server.inject({
-      method: "GET",
-      url: `/v1/edge/tls-allow?domain=${managedDeploymentDomain.toUpperCase()}.`,
-    });
-    expect(edgeRoot.statusCode).toBe(200);
-    expect(edgeRoot.body).toBe("ok");
+    const api = await server.inject({ method: "GET", url: "/no-such-page" });
+    expect(api.statusCode).toBe(404);
+    expect(api.json()).toMatchObject({ error: "Not Found", statusCode: 404 });
 
-    const active = await server.inject({
-      method: "GET",
-      url: "/v1/edge/tls-allow?domain=tls-cloud.managed.front-door.test.invalid",
-    });
-    expect(active.statusCode).toBe(200);
-
-    await database.deleteFrom("deployments").where("id", "=", deployment).executeTakeFirstOrThrow();
-    expect(
-      (
-        await server.inject({
-          method: "GET",
-          url: "/v1/edge/tls-allow?domain=tls-cloud.managed.front-door.test.invalid",
-        })
-      ).statusCode,
-    ).toBe(404);
-    expect((await server.inject({ method: "GET", url: "/v1/edge/tls-allow" })).statusCode).toBe(
-      400,
-    );
-    expect(
-      (
-        await server.inject({
-          method: "GET",
-          url: "/v1/edge/tls-allow?domain=https%3A%2F%2Fexample.test",
-        })
-      ).statusCode,
-    ).toBe(400);
+    const font = page.body.match(/href="(\/fonts\/sans-[0-9a-f]{16}\.woff2)"/u)?.[1];
+    if (!font) throw new Error("The page does not preload its font");
+    const served = await server.inject({ method: "GET", url: font });
+    expect(served.statusCode).toBe(200);
+    expect(served.headers["content-type"]).toBe("font/woff2");
+    expect(served.headers["cache-control"]).toContain("immutable");
+    expect(served.rawPayload.subarray(0, 4).toString("latin1")).toBe("wOF2");
+    const unknown = await server.inject({ method: "GET", url: "/fonts/sans-0.woff2" });
+    expect(unknown.statusCode).toBe(404);
   });
 
   it("forwards sign-out cookies and redirects to the front door", async () => {
@@ -248,31 +234,6 @@ integration("Opensteer Account host", () => {
       revoke.mockRestore();
     }
   });
-
-  async function registerDeployment(name: string, slug: string) {
-    const deploymentId = DeploymentIdSchema.parse(`dep_${crypto.randomUUID()}`);
-    const now = new Date();
-    await database
-      .insertInto("deployments")
-      .values({
-        id: deploymentId,
-        ownerAccountId: accountId,
-        canonicalOrigin: `https://${slug}.${managedDeploymentDomain}`,
-        name,
-        activeHostInstanceId: HostInstanceIdSchema.parse(`hst_${crypto.randomUUID()}`),
-        hostKeyFingerprint: `sha256:${"a".repeat(43)}`,
-        reachability: "canonical",
-        lifecycle: "active",
-        oidcClientId: null,
-        authorityEnvelope: null,
-        directoryGeneration: 1,
-        accountLink: null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .executeTakeFirstOrThrow();
-    return deploymentId;
-  }
 });
 
 async function signedSessionCookie(

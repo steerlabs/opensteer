@@ -156,7 +156,7 @@ test("guest checks under containment never need Apple's network", () => {
 });
 
 test("the offline Gatekeeper check requires an accepted, stapled notarization", () => {
-  const app = "/Applications/Opensteer Beta.app";
+  const app = "/Applications/Opensteer.app";
   expect(() =>
     assertOfflineNotarized(
       `${app}: accepted\nsource=Notarized Developer ID\norigin=Developer ID Application: X (TEAM)`,

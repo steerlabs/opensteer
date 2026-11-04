@@ -1,7 +1,11 @@
 import { useEffect, type CSSProperties } from "react";
 import type { DesktopUpdateState } from "@opensteer/protocol/desktop";
 import { desktopBridge } from "../desktop/desktop-bridge.js";
-import { subscribeUpdateDownloaded, useDesktopUpdate } from "../desktop/update-store.js";
+import {
+  desktopUpdateMessage,
+  subscribeUpdateDownloaded,
+  useDesktopUpdate,
+} from "../desktop/update-store.js";
 import { Icon } from "./icon.js";
 import { useToast } from "./toast.js";
 
@@ -38,6 +42,14 @@ export function desktopUpdateButton(state: DesktopUpdateState): {
         label: `Restart to update${version}`,
         action: "restart",
         tone: "ready",
+        icon: "arrow-up",
+        progress: null,
+      };
+    case "ahead":
+      return {
+        label: desktopUpdateMessage(state),
+        action: null,
+        tone: "quiet",
         icon: "arrow-up",
         progress: null,
       };

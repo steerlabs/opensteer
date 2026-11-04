@@ -55,14 +55,15 @@ export function useComputerAppApproval(hostClient: HostClient) {
       pending.current = resolve;
     });
   }
-  async function answer(decision: "allow" | "deny") {
+  /** `secrets`: allowing a server, what was entered for the secrets it asks for. */
+  async function answer(decision: "allow" | "deny", secrets?: Readonly<Record<string, string>>) {
     if (!review || submitting.current) return;
     const current = generation.current;
     submitting.current = true;
     setBusy(true);
     setError(null);
     try {
-      await respondComputerAppApproval(hostClient, review.request.id, decision);
+      await respondComputerAppApproval(hostClient, review.request.id, decision, secrets);
       if (current !== generation.current) return;
       pending.current?.(decision === "allow");
       pending.current = null;

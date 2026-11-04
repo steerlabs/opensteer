@@ -16,7 +16,7 @@ const validEnvironment = {
   OPENSTEER_PERSONAL_ACCOUNT_LINK_OPERATION_KEY: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
   OPENSTEER_GOOGLE_CLIENT_ID: "google-client",
   OPENSTEER_GOOGLE_CLIENT_SECRET: "google-secret",
-  OPENSTEER_MANAGED_DEPLOYMENT_DOMAIN: "connect.opensteer.com",
+  OPENSTEER_PORTAL_ORIGIN: "https://app.opensteer.com",
   OPENSTEER_CONNECT_DOMAIN: "connect-route.opensteer.com",
   OPENSTEER_CONNECT_CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
   OPENSTEER_CONNECT_CLOUDFLARE_API_TOKEN: "cloudflare-api-token-secret",
@@ -46,34 +46,6 @@ describe("control-plane configuration", () => {
     );
   });
 
-  it("enables Cloud only with its complete independent configuration", () => {
-    expect(loadControlPlaneConfig(validEnvironment).cloud).toBeUndefined();
-    const operationKey = Buffer.alloc(32, 9).toString("base64url");
-    expect(() =>
-      loadControlPlaneConfig({ ...validEnvironment, OPENSTEER_CLOUD_OPERATION_KEY: operationKey }),
-    ).toThrow(/both/u);
-    expect(() =>
-      loadControlPlaneConfig({
-        ...validEnvironment,
-        OPENSTEER_CLOUD_TEMPLATE_PATH: "/run/cloud.json",
-      }),
-    ).toThrow(/both/u);
-    expect(() =>
-      loadControlPlaneConfig({
-        ...validEnvironment,
-        OPENSTEER_CLOUD_OPERATION_KEY: validEnvironment.OPENSTEER_ADOPTION_OPERATION_KEY,
-        OPENSTEER_CLOUD_TEMPLATE_PATH: "/run/cloud.json",
-      }),
-    ).toThrow(/own key/u);
-    expect(
-      loadControlPlaneConfig({
-        ...validEnvironment,
-        OPENSTEER_CLOUD_OPERATION_KEY: operationKey,
-        OPENSTEER_CLOUD_TEMPLATE_PATH: "/run/cloud.json",
-      }).cloud,
-    ).toEqual({ operationKey, templatePath: "/run/cloud.json" });
-  });
-
   it("loads a migration-only database configuration", () => {
     expect(
       loadControlPlaneMigrationConfig({
@@ -100,9 +72,9 @@ describe("control-plane configuration", () => {
     ).toThrow();
   });
 
-  it("keeps the Connect route domain independent from managed Deployment origins", () => {
+  it("keeps the Connect route domain independent from the portal origin", () => {
     const config = loadControlPlaneConfig(validEnvironment);
-    expect(config.managedDeploymentDomain).toBe("connect.opensteer.com");
+    expect(config.portalOrigin.origin).toBe("https://app.opensteer.com");
     expect(config.connectDomain).toBe("connect-route.opensteer.com");
     expect(config.connectCloudflare.workersRouteBypass).toBe(true);
 
@@ -372,19 +344,26 @@ describe("control-plane configuration", () => {
     ).toThrow();
   });
 
-  it("requires one normalized managed Deployment DNS domain", () => {
+  it("requires an explicit bare secure portal origin", () => {
     for (const value of [
-      "https://connect.opensteer.com",
-      "connect.opensteer.com/path",
-      "connect.opensteer.com:443",
-      "Connect.Opensteer.com",
+      undefined,
+      "https://app.opensteer.com/path",
+      "https://app.opensteer.com?x=1",
+      "https://user@app.opensteer.com",
+      "http://app.opensteer.com",
+      "http://localhost:4143",
+      validEnvironment.OPENSTEER_CONTROL_PLANE_PUBLIC_URL,
     ]) {
       expect(() =>
-        loadControlPlaneConfig({
-          ...validEnvironment,
-          OPENSTEER_MANAGED_DEPLOYMENT_DOMAIN: value,
-        }),
-      ).toThrow(/domain/iu);
+        loadControlPlaneConfig({ ...validEnvironment, OPENSTEER_PORTAL_ORIGIN: value }),
+      ).toThrow();
     }
+    expect(
+      loadControlPlaneConfig({
+        ...validEnvironment,
+        NODE_ENV: "development",
+        OPENSTEER_PORTAL_ORIGIN: "http://localhost:4143",
+      }).portalOrigin.origin,
+    ).toBe("http://localhost:4143");
   });
 });

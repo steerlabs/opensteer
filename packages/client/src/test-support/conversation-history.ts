@@ -3,12 +3,12 @@ import { hostApi } from "@opensteer/protocol";
 import { HttpHostClient } from "../host/host-session-client.js";
 import type { MockHostClient } from "../mock/mock-host-client.js";
 
-/** A filtered Home page whose snapshot covers hundreds of omitted automatic Runs. */
+/** A Home page whose read cut is newer than its last message. */
 export function conversationHistoryHost(source: MockHostClient) {
   const requests: unknown[] = [];
   const client = new HttpHostClient({
     baseUrl: "http://mock-host",
-    capabilities: ["history-turns-v1", "history-conversation-v1"],
+    capabilities: ["history-turns-v1"],
     refreshIntervalMs: 0,
     webSocketFactory: () => ({
       binaryType: "arraybuffer",
@@ -64,6 +64,7 @@ export function conversationHistoryHost(source: MockHostClient) {
           window: {
             byteCount: 4096,
             itemCount: 10,
+            totalItems: 1000,
             hasMore: true,
             nextBefore: "older",
             threadId: page.threadId,

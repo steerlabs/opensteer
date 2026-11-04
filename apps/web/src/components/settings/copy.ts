@@ -33,7 +33,6 @@ export function settingsDeploymentName(input: {
 
 /** Where this Opensteer runs, as the title of the first fact about it. */
 export function settingsWhereItRuns(input: {
-  readonly cloud: boolean;
   readonly facts: SettingsFacts;
   readonly kind: DeploymentDisplayKind;
   readonly name: string;
@@ -43,7 +42,6 @@ export function settingsWhereItRuns(input: {
     return input.facts.onThisComputer ? "Runs on this computer" : `Runs on ${input.name}`;
   }
   if (input.kind === "development") return "Runs in development";
-  if (input.cloud) return "Runs in Opensteer Cloud";
   const host = originHostname(input.publicOrigin);
   return host ? `Runs on ${host}` : "Runs on a server";
 }
@@ -209,10 +207,9 @@ export function settingsSectionForPath(pathname: string): SettingsSectionId | nu
 /**
  * Where this Opensteer is, relative to the reader, for the chip in the corner
  * of Settings: the icon says what kind of place it is — the Mac it runs on,
- * Opensteer Cloud, a server — and the line says where that is from here.
+ * a server — and the line says where that is from here.
  */
 export function settingsPlace(input: {
-  readonly cloud: boolean;
   readonly facts: SettingsFacts;
   /** The icon of the Mac a Personal Opensteer runs on, once it has said. */
   readonly homeIcon: IconName | null;
@@ -226,7 +223,6 @@ export function settingsPlace(input: {
     };
   }
   if (input.kind === "development") return { detail: "Development", icon: "code" };
-  if (input.cloud) return { detail: "Opensteer Cloud", icon: "cloud" };
   return { detail: originHostname(input.publicOrigin) ?? "Server", icon: "server" };
 }
 

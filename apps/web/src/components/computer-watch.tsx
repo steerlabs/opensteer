@@ -347,7 +347,7 @@ function WatchStatusLine({
               {mark}
             </span>
           ) : null}
-          {status.busy ? <span aria-hidden className="browser-waiting__spinner" /> : null}
+          {status.busy ? <span aria-hidden className="spinner" /> : null}
           <span className="computer-watch__words">{status.words}</span>
         </>
       ) : null}

@@ -1059,27 +1059,6 @@ describe("LocalRunnerService", () => {
     });
   });
 
-  it("keeps a release-disabled registry inert", async () => {
-    const directory = await temporaryDirectory();
-    const targets = mutableTargetAuthority();
-    const target = targets.add("https://first.opensteer.test");
-    const running = fixture(await configuration(directory, false), targets);
-
-    await expect(running.service.status(target.deploymentId)).resolves.toMatchObject({
-      available: false,
-      deploymentId: target.deploymentId,
-      computerName: "Studio Mac",
-      mayRunAgents: false,
-      runAgents: false,
-      runner: { state: "disabled" },
-      schemaVersion: 4,
-    });
-    await expect(running.service.start(startInput(target.deploymentId))).rejects.toThrow(
-      "does not include local agent support",
-    );
-    expect(running.fork).not.toHaveBeenCalled();
-  });
-
   it("gives every enrolled slot a computer-use bridge, agents or not", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
@@ -1350,10 +1329,7 @@ function childAt(children: readonly FakeUtilityProcess[], index: number): FakeUt
   return child;
 }
 
-async function configuration(
-  directory: string,
-  localExecutionEnabled = true,
-): Promise<DesktopConfiguration> {
+async function configuration(directory: string): Promise<DesktopConfiguration> {
   const helper = path.join(directory, "opensteer-native-fs");
   const browserHarness = path.join(directory, "browser-harness");
   const node = path.join(directory, "node");
@@ -1383,7 +1359,6 @@ async function configuration(
     hostUrl: null,
     localExecution: {
       dataDirectory: path.join(directory, "runner"),
-      enabled: localExecutionEnabled,
       nativeFsHelperBinary: helper,
       runnerWorkerPath: worker,
     },
@@ -1394,7 +1369,6 @@ async function configuration(
     },
     portalUrl: null,
     release: {
-      channel: "stable",
       id: "com.opensteer.opensteer",
       name: "Opensteer",
       oauth: {

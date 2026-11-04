@@ -11,6 +11,11 @@ import {
   type SpecialistManifest,
   isLoopbackHostname,
 } from "@opensteer/core";
+import {
+  LocalMcpSecretSchema,
+  localMcpMaxSecrets,
+  type LocalMcpSecret,
+} from "@opensteer/integration-core";
 import { z } from "zod";
 import { parse as parseYaml } from "yaml";
 
@@ -53,6 +58,29 @@ const PluginManifestSchema = z
     version: z.string().optional(),
   })
   .strip();
+
+/**
+ * Opensteer's own manifest data (Agent Plugins §8). `secrets` names, per
+ * stdio server, the environment variables its computer's owner enters when
+ * approving it, because Agent Plugins leaves credentials to the client and
+ * forbids them in `env`.
+ */
+export const opensteerExtensionNamespace = "com.opensteer";
+const OpensteerExtensionSchema = z.strictObject({
+  secrets: z
+    .record(
+      z.string().min(1).max(128),
+      z
+        .array(LocalMcpSecretSchema)
+        .min(1)
+        .max(localMcpMaxSecrets)
+        .refine(
+          (secrets) => new Set(secrets.map(({ name }) => name)).size === secrets.length,
+          "Each secret needs its own name",
+        ),
+    )
+    .optional(),
+});
 
 const AgentSkillFrontmatterSchema = z
   .object({
@@ -141,7 +169,7 @@ const StdioServerSchema = z.strictObject({
         if (isSecretBearingName(name.toLowerCase())) {
           context.addIssue({
             code: "custom",
-            message: `Secret-bearing environment variable ${name} is not stored in Agent Plugin manifests; use client-managed authorization`,
+            message: `Secret-bearing environment variable ${name} is not stored in Agent Plugin manifests; declare it in extensions["${opensteerExtensionNamespace}"].secrets so the computer's owner enters it`,
           });
         }
       }
@@ -203,6 +231,8 @@ export type LoadedAgentPluginServer =
       readonly cwd: string;
       readonly env: Readonly<Record<string, string>>;
       readonly name: string;
+      /** What its computer's owner enters when approving it; see `opensteerExtensionNamespace`. */
+      readonly secrets?: readonly LocalMcpSecret[];
       readonly type: "stdio";
     }
   | {
@@ -250,6 +280,14 @@ export async function loadAgentPlugin(input: {
     delete manifestInput.extensions;
   }
   const manifest = PluginManifestSchema.parse(manifestInput);
+  const extension = OpensteerExtensionSchema.safeParse(
+    manifest.extensions?.[opensteerExtensionNamespace] ?? {},
+  );
+  if (!extension.success) {
+    throw new Error(
+      `Invalid extensions["${opensteerExtensionNamespace}"]: ${safeIssue(extension.error)}`,
+    );
+  }
   let specialistManifest: SpecialistManifest | null = null;
   const specialistPath = join(root, "specialist.json");
   if (await optionalLstat(specialistPath)) {
@@ -283,7 +321,7 @@ export async function loadAgentPlugin(input: {
 
   const [skills, servers] = await Promise.all([
     loadSkills(root, issues),
-    loadMcpServers(root, resolvedData, issues),
+    loadMcpServers(root, resolvedData, extension.data.secrets ?? {}, issues),
   ]);
   return Object.freeze({
     issues: Object.freeze(issues),
@@ -481,11 +519,24 @@ function parseSkillFrontmatter(content: string): z.infer<typeof AgentSkillFrontm
 async function loadMcpServers(
   root: string,
   pluginData: string,
+  secrets: Readonly<Record<string, readonly LocalMcpSecret[]>>,
   issues: AgentPluginIssue[],
 ): Promise<LoadedAgentPluginServer[]> {
   const mcpPath = join(root, "mcp.json");
   const stat = await optionalLstat(mcpPath);
-  if (!stat) return [];
+  const undeclared = (names: readonly string[]) => {
+    for (const name of Object.keys(secrets).filter((server) => !names.includes(server))) {
+      issues.push({
+        component: "manifest",
+        entry: null,
+        message: `Ignored secrets for ${name}: mcp.json declares no server by that name`,
+      });
+    }
+  };
+  if (!stat) {
+    undeclared([]);
+    return [];
+  }
   if (!stat.isFile() || stat.isSymbolicLink()) {
     issues.push({ component: "mcp", entry: null, message: "mcp.json must be a regular file" });
     return [];
@@ -498,6 +549,7 @@ async function loadMcpServers(
     return [];
   }
   const entries = Object.entries(document.mcpServers);
+  undeclared(entries.map(([name]) => name));
   if (entries.length > maximumServers) {
     issues.push({
       component: "mcp",
@@ -513,9 +565,13 @@ async function loadMcpServers(
       if (parsed.type === "sse") {
         throw new Error("Legacy HTTP+SSE is not supported by this client");
       }
+      const declared = secrets[name];
+      if (declared && parsed.type !== "stdio") {
+        throw new Error("Only a server that starts a program can take secrets");
+      }
       servers.push(
         parsed.type === "stdio"
-          ? await materializeStdio(name, parsed, root, pluginData)
+          ? await materializeStdio(name, parsed, root, pluginData, declared)
           : materializeRemote(name, parsed),
       );
     } catch (error) {
@@ -530,7 +586,13 @@ async function materializeStdio(
   server: z.infer<typeof StdioServerSchema>,
   root: string,
   pluginData: string,
+  secrets: readonly LocalMcpSecret[] | undefined,
 ): Promise<LoadedAgentPluginServer> {
+  for (const { name } of secrets ?? []) {
+    if (server.env && Object.hasOwn(server.env, name)) {
+      throw new Error(`Secret ${name} is also set in env; declare it only as a secret`);
+    }
+  }
   if (/\s/u.test(server.command)) {
     throw new Error("stdio command must be one executable token; put arguments in args");
   }
@@ -557,6 +619,7 @@ async function materializeStdio(
     cwd: resolvedCwd,
     env: Object.freeze({ ...env, PLUGIN_DATA: pluginData, PLUGIN_ROOT: root }),
     name,
+    ...(secrets ? { secrets: Object.freeze(secrets.map((secret) => Object.freeze(secret))) } : {}),
     type: "stdio" as const,
   });
 }

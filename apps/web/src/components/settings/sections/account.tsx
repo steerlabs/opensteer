@@ -3,7 +3,7 @@ import type {
   DeploymentAccessSnapshot,
   DesktopAccountAuthStatus,
 } from "@opensteer/protocol/desktop";
-import { cloudPortalHref } from "../../../portal/cloud-portal.js";
+import { accountPortalHref } from "../../../portal/account-portal.js";
 import { actionErrorMessage } from "../../../ui-utils.js";
 import { useShell } from "../../app-shell.js";
 import { deploymentMutationsBlockedReason } from "../../deployment-operation.js";
@@ -12,7 +12,7 @@ import { SignOutDialog } from "../../places/place-account.js";
 import { SectionHeader, SettingsError, SettingsRow } from "../primitives.js";
 
 const accountCaption =
-  "Opensteer works fully without an account. An account lets you open your other computers and servers from any device, and use Opensteer Cloud.";
+  "Opensteer works fully without an account. An account lets you open your other computers and servers from any device.";
 
 /**
  * The Opensteer Account: the one thing in the product anybody signs in to.
@@ -22,7 +22,7 @@ const accountCaption =
  */
 export function AccountSection() {
   const { deploymentAccess, desktopBridge, snapshot } = useShell();
-  const portalHref = cloudPortalHref({
+  const portalHref = accountPortalHref({
     desktop: desktopBridge !== null,
     identityConfig: snapshot.identityConfig,
   });
@@ -135,9 +135,8 @@ function AccountSessionCard({
 }
 
 /**
- * A browser session has no Account session of its own — the Account lives in
- * the portal one hierarchical step above this Deployment, so the card links
- * there instead of offering a control this origin cannot honour.
+ * A browser session holds Host credentials. Account management opens the
+ * Host-advertised Account portal, which owns its own sign-in.
  */
 function BrowserAccountCard({ portalHref }: { readonly portalHref: string | null }) {
   if (!portalHref) {
@@ -152,8 +151,8 @@ function BrowserAccountCard({ portalHref }: { readonly portalHref: string | null
             <Icon name="external-link" />
           </a>
         }
-        detail="Manage your computers, servers, members and billing in your Opensteer account."
-        icon="cloud"
+        detail="Manage your computers, servers and members in your Opensteer account."
+        icon="user"
         title="Opensteer Account"
       />
     </div>

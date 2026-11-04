@@ -1275,7 +1275,11 @@ function claudeAuthKind(
   if (account?.subscriptionType !== undefined && account.subscriptionType !== "none") {
     return "subscription";
   }
-  if (account?.apiKeySource !== undefined || account?.tokenSource !== undefined) return "api-key";
+  if (
+    claudeCredentialSourcePresent(account?.apiKeySource) ||
+    claudeCredentialSourcePresent(account?.tokenSource)
+  )
+    return "api-key";
   return undefined;
 }
 
@@ -1326,6 +1330,10 @@ function claudeAuthenticationRequired(
   };
 }
 
+function claudeCredentialSourcePresent(source: string | undefined): boolean {
+  return source !== undefined && source.trim() !== "" && source !== "none";
+}
+
 /**
  * Claude reports authentication structurally rather than through error prose. A
  * first-party profile that is not signed in carries no account identity and no
@@ -1339,8 +1347,8 @@ function isClaudeAccountAuthenticated(account: AccountInfo | undefined): boolean
     account.email !== undefined ||
     account.organization !== undefined ||
     (account.subscriptionType !== undefined && account.subscriptionType !== "none") ||
-    account.tokenSource !== undefined ||
-    account.apiKeySource !== undefined
+    claudeCredentialSourcePresent(account.tokenSource) ||
+    claudeCredentialSourcePresent(account.apiKeySource)
   );
 }
 

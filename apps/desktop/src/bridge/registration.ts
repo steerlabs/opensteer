@@ -47,12 +47,6 @@ import {
   handleRequestComputerUsePermissions,
 } from "./methods/computer-use.js";
 import {
-  handleCreateCloudDeployment,
-  handleDeleteCloudDeployment,
-  handleListCloudDeployments,
-  handleRetryCloudDeployment,
-} from "./methods/cloud.js";
-import {
   handleAddDirect,
   handleCancel,
   handleConnectPrivate,
@@ -267,11 +261,7 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.agentPhoneAdbClose, handleAgentPhoneAdbClose(context));
   register(desktopBridgeChannels.chooseUsbDevice, handleChooseUsbDevice(context));
   register(desktopBridgeChannels.closeFullDiskAccessPanel, handleCloseFullDiskAccessPanel(context));
-  register(desktopBridgeChannels.createCloudDeployment, handleCreateCloudDeployment(context));
-  register(desktopBridgeChannels.deleteCloudDeployment, handleDeleteCloudDeployment(context));
   register(desktopBridgeChannels.closeHostWebSocket, handleCloseHostWebSocket(context));
-  register(desktopBridgeChannels.listCloudDeployments, handleListCloudDeployments(context));
-  register(desktopBridgeChannels.retryCloudDeployment, handleRetryCloudDeployment(context));
   register(desktopBridgeChannels.connectPrivate, handleConnectPrivate(context));
   register(desktopBridgeChannels.createPersonalDeployment, handleCreatePersonalDeployment(context));
   register(

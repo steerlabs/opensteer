@@ -40,14 +40,14 @@ export function DesktopWelcome({
   return (
     <OnboardingCard
       bare
-      description={`Your agents work on a computer. Start with ${here}: no account needed, and your files stay here.`}
+      description="Agents that work on your computer, steered from anywhere. Your files stay here."
       live
       title="Welcome to Opensteer"
     >
       <ErrorNotice message={actionError ?? error} />
       {onStart ? (
         <button className="btn btn--primary onboarding__primary" onClick={onStart} type="button">
-          Start on {here}
+          Set up {here}
           <Icon name="arrow-right" />
         </button>
       ) : null}
@@ -60,12 +60,12 @@ export function DesktopWelcome({
               onSignIn={() => run(() => bridge.signIn())}
             />
           ) : (
-            <>
-              <p className="onboarding__note">Already use Opensteer on another computer?</p>
-              <button className="btn" onClick={() => run(() => bridge.signIn())} type="button">
+            <p className="onboarding__switch">
+              Already use Opensteer?{" "}
+              <button onClick={() => run(() => bridge.signIn())} type="button">
                 Sign in
               </button>
-            </>
+            </p>
           )}
         </div>
       ) : null}
@@ -132,13 +132,13 @@ export function DesktopPlaceChooser({
   readonly onSetUpThisComputer: (() => void) | null;
   readonly places: DesktopPlaces;
 }) {
-  const { bridge, cloudDeploymentIds, onAddPlace, snapshot } = places;
+  const { bridge, onAddPlace, snapshot } = places;
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   usePlaceChecks(bridge, true);
   const here = thisComputerLabel();
-  const rows = placeRows(snapshot, { cloudDeploymentIds, thisComputer: here });
+  const rows = placeRows(snapshot, { thisComputer: here });
   const run = (operation: () => Promise<void>) => {
     setPending(true);
     setActionError(null);

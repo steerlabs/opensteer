@@ -87,7 +87,7 @@ import { App, startHostOidcSignIn } from "./app.js";
 import { MockHostClient } from "@opensteer/client/mock";
 
 const identityConfig = {
-  deployment: { cloud: false, kind: "self-hosted" as const, name: null },
+  deployment: { kind: "self-hosted" as const, name: null },
   emailDeliveryAvailable: false,
   localPasswordEnabled: false,
   machineOwner: false,
@@ -212,6 +212,48 @@ describe("Host OIDC sign-in surface", () => {
       returnPath: "/",
     });
     expect(navigate).toHaveBeenCalledWith("https://host.opensteer.test/authorize");
+  });
+});
+
+describe("App setup continuation", () => {
+  it("keeps setup on screen through the session and workspace waits, then hands back", async () => {
+    installWindow();
+    const client = createClient();
+    const onSetupOpened = vi.fn();
+    const render = () => {
+      hooks.beginRender();
+      return renderToStaticMarkup(
+        <App
+          desktopDeployment={{ name: "Studio Mac" } as never}
+          hostClient={client}
+          onSetupOpened={onSetupOpened}
+          openSetup
+        />,
+      );
+    };
+    snapshot = { ...snapshot, session: "checking" };
+    expect(render()).toContain("Set up Opensteer");
+    expect(vi.mocked(window.history.replaceState)).toHaveBeenCalledWith(
+      undefined,
+      "",
+      "/get-started",
+    );
+    await runEffectsTwice();
+    // Still loading: setup must not hand back, or the window flips to a spinner.
+    expect(onSetupOpened).not.toHaveBeenCalled();
+    snapshot = { ...snapshot, session: "authenticated", workspaces: [] };
+    expect(render()).toContain("Set up Opensteer");
+    await runEffectsTwice();
+    expect(onSetupOpened).not.toHaveBeenCalled();
+    snapshot = { ...snapshot, workspaces: client.getSnapshot().workspaces };
+    hooks.beginRender();
+    try {
+      renderToStaticMarkup(<App hostClient={client} onSetupOpened={onSetupOpened} openSetup />);
+    } catch {
+      // The shell itself needs a browser; only the hand-back is under test.
+    }
+    await runEffectsTwice();
+    expect(onSetupOpened).toHaveBeenCalled();
   });
 });
 

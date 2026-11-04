@@ -1,14 +1,57 @@
 import { Dialog } from "../dialog.js";
 import { useComputerAppApproval as useOwnerComputerAppApproval } from "@opensteer/client/react";
-import { computerAppApprovalDetails } from "@opensteer/client/integrations";
+import {
+  computerAppApprovalDetails,
+  computerAppApprovalSecretFields,
+  localMcpSecretsToSend,
+  type ComputerAppApprovalReview,
+} from "@opensteer/client/integrations";
 import type { HostClient } from "@opensteer/client/host";
 import { useState } from "react";
+import { LocalMcpSecretFields } from "./local-mcp-secret-fields.js";
 
 /** Details live only while this owner is reviewing; no native approval bridge. */
 export function useComputerAppApproval(hostClient: HostClient) {
   const { ask, review, error, busy, close, answer } = useOwnerComputerAppApproval(hostClient);
   const dialog = review ? (
-    <Dialog title="Allow agent access?" onClose={close}>
+    <ApprovalDialog
+      // A new review starts with empty fields.
+      key={review.request.id}
+      answer={answer}
+      busy={busy}
+      close={close}
+      error={error}
+      review={review}
+    />
+  ) : null;
+  return { ask, dialog };
+}
+
+function ApprovalDialog(props: {
+  readonly answer: (
+    decision: "allow" | "deny",
+    secrets?: Readonly<Record<string, string>>,
+  ) => Promise<void>;
+  readonly busy: boolean;
+  readonly close: () => void;
+  readonly error: string | null;
+  readonly review: ComputerAppApprovalReview;
+}) {
+  const fields = computerAppApprovalSecretFields(props.review);
+  const [values, setValues] = useState<Readonly<Record<string, string>>>({});
+  const [invalid, setInvalid] = useState<string | null>(null);
+  const allow = () => {
+    const entered = localMcpSecretsToSend(fields, values);
+    if (!entered.ok) {
+      setInvalid(entered.message);
+      return;
+    }
+    setInvalid(null);
+    void props.answer("allow", entered.secrets);
+  };
+  const error = invalid ?? props.error;
+  return (
+    <Dialog title="Allow agent access?" onClose={props.close}>
       <pre
         style={{
           whiteSpace: "pre-wrap",
@@ -17,25 +60,30 @@ export function useComputerAppApproval(hostClient: HostClient) {
           overflowY: "auto",
         }}
       >
-        {computerAppApprovalDetails(review)}
+        {computerAppApprovalDetails(props.review)}
       </pre>
+      <LocalMcpSecretFields
+        disabled={props.busy}
+        fields={fields}
+        onChange={(name, value) => setValues((current) => ({ ...current, [name]: value }))}
+        values={values}
+      />
       {error ? <p role="alert">{error}</p> : null}
       <div className="form-actions">
-        <button className="btn" disabled={busy} onClick={() => void answer("deny")} type="button">
-          Don't allow
-        </button>
         <button
-          className="btn btn--primary"
-          disabled={busy}
-          onClick={() => void answer("allow")}
+          className="btn"
+          disabled={props.busy}
+          onClick={() => void props.answer("deny")}
           type="button"
         >
+          Don't allow
+        </button>
+        <button className="btn btn--primary" disabled={props.busy} onClick={allow} type="button">
           Allow
         </button>
       </div>
     </Dialog>
-  ) : null;
-  return { ask, dialog };
+  );
 }
 
 export function ComputerSetupApprovals(props: {

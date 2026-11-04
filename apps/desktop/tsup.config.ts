@@ -23,15 +23,17 @@ export default defineConfig([
       const releaseTarget = path.join("dist", "desktop-release.json");
       // Release builds copy the manifest prepare-release-resources staged and
       // validated. This config loads without the workspace's TypeScript sources,
-      // so it never imports them; development builds simply drop the feed and
-      // never update themselves.
+      // so it never imports them; development builds drop the feed and the
+      // production services, so they never update or reach the real Account.
       if (process.env.OPENSTEER_DESKTOP_RELEASE === "1") {
         await copyFile(path.join("generated-resources", "desktop", "release.json"), releaseTarget);
       } else {
         const release = JSON.parse(
-          await readFile(path.join("src", "releases", "desktop-release.source.json"), "utf8"),
+          await readFile(path.join("src", "releases", "desktop-release.json"), "utf8"),
         ) as Record<string, unknown>;
         delete release.updates;
+        delete release.accountUrl;
+        delete release.portalUrl;
         await writeFile(releaseTarget, JSON.stringify(release, null, 2) + "\n");
       }
       await copyFile("resources/trayTemplate.png", path.join("dist", "trayTemplate.png"));

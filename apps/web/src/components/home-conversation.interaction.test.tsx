@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createId, EnvironmentIdSchema, HarnessInstanceIdSchema } from "@opensteer/core";
+import { createId } from "@opensteer/core";
 import { HarnessModelDescriptorSchema } from "@opensteer/protocol";
 import type {
   HostSnapshot,
@@ -534,13 +534,12 @@ describe("Home conversation", () => {
     expect(node.querySelector(".voice-dock")).not.toBeNull();
   });
 
-  it("shows the ranked Chat model without reading the task execution history", async () => {
+  it("shows the ranked Chat model when no AI was ever picked", async () => {
     stubLayoutApis();
     const client = new MockHostClient({ latencyMs: 0 });
     clients.push(client);
     const base = client.getSnapshot();
     const home = base.threads.find(({ id }) => id === base.homeThreadId)!;
-    const taskChoice = home;
     const terra = HarnessModelDescriptorSchema.parse({
       displayName: "GPT-6.1-Terra",
       isDefault: false,
@@ -572,16 +571,7 @@ describe("Home conversation", () => {
             : catalog,
         ),
       })),
-      executionPreferences: {
-        ...base.executionPreferences,
-        history: [
-          {
-            environmentId: EnvironmentIdSchema.parse(taskChoice.environmentId),
-            harnessInstanceId: HarnessInstanceIdSchema.parse(taskChoice.harnessInstanceId),
-            modelSelection: taskChoice.modelSelection,
-          },
-        ],
-      },
+      executionPreferences: { ...base.executionPreferences, history: [] },
       homeThreadId: null,
       threads: base.threads.filter(({ id }) => id !== home.id),
       workspaces: base.workspaces.map((workspace) =>
@@ -738,10 +728,7 @@ describe("Home conversation", () => {
         ...snapshot,
         transcripts: {
           ...snapshot.transcripts,
-          [home]: [
-            { ...homeRun, startedBy: report.author },
-            { ...recent, ...(moved ? { body: "Streaming update", streaming: true } : {}) },
-          ],
+          [home]: [{ ...recent, ...(moved ? { body: "Streaming update", streaming: true } : {}) }],
         },
       };
     await draw();
@@ -1063,7 +1050,7 @@ function stubLayoutApis(): void {
   );
 }
 
-it("quiet Chat hides non-human work, names its reply source and opens homeRun human Activity", async () => {
+it("Chat shows automatic work by its source, names its reply source and opens homeRun human Activity", async () => {
   const { node, root } = setup();
   const open = vi.fn();
   const waking = { ...report, runId: homeRun.runId, policy: "queue" as const };
@@ -1099,9 +1086,13 @@ it("quiet Chat hides non-human work, names its reply source and opens homeRun hu
       ),
     );
   await render([waking, { ...automated, status: "running" }]);
-  expect(node.textContent).toBe("");
+  expect(node.textContent).toContain("Mattress research");
+  expect(node.textContent).not.toContain("FINAL SOURCE");
+  // A silent automatic turn still has a row: its source and how long it worked.
   await render([waking, automated]);
-  expect(node.textContent).toBe("");
+  expect(node.textContent).toContain("Mattress research");
+  expect(node.textContent).toContain("Worked");
+  expect(node.textContent).not.toContain("FINAL SOURCE");
   await render([waking, { ...automated, replyMessageId: answer.id }, answer]);
   expect(node.textContent).toContain(answer.body);
   expect(node.querySelector(".update-line")).toBeNull();

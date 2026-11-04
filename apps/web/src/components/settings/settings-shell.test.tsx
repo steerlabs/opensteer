@@ -162,7 +162,7 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
     ...base,
     identityConfig: {
       ...base.identityConfig,
-      deployment: { cloud: false, kind: "self-hosted", name: null },
+      deployment: { kind: "self-hosted", name: null },
       machineOwner: false,
       publicOrigin: "https://steer.example.test",
     } as HostSnapshot["identityConfig"],
@@ -224,7 +224,7 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
 
 function placementFixtures(): Readonly<Record<SettingsScenario, Partial<ShellContext>>> {
   const personal = personalDeployment();
-  const server = { ...cloudDeployment(), kind: "self-hosted" as const, name: "home-server" };
+  const server = { ...serverDeployment(), kind: "self-hosted" as const, name: "home-server" };
   return {
     browser: {},
     "personal-remote": {
@@ -264,7 +264,7 @@ function personalSnapshot(machineOwner: boolean): HostSnapshot {
     ...base,
     identityConfig: {
       ...base.identityConfig,
-      deployment: { cloud: false, kind: "personal" as const, name: "Mac mini" },
+      deployment: { kind: "personal" as const, name: "Mac mini" },
       machineOwner,
     } as HostSnapshot["identityConfig"],
     user: base.user ? { ...base.user, email: placeholderEmail } : null,
@@ -285,17 +285,17 @@ function personalDeployment(): DesktopDeploymentSummary {
   });
 }
 
-function cloudDeployment(): DesktopDeploymentSummary {
+function serverDeployment(): DesktopDeploymentSummary {
   return DesktopDeploymentSummarySchema.parse({
-    activeOrigin: "https://cloud.example.test",
-    canonicalOrigin: "https://cloud.example.test",
+    activeOrigin: "https://server.example.test",
+    canonicalOrigin: "https://server.example.test",
     id: createId("deployment"),
     kind: "self-hosted",
     lastUsedAt: "2026-08-12T22:00:00.000Z",
-    name: "Design Cloud",
+    name: "Design server",
     access: "native",
     onThisComputer: false,
-    routes: [{ kind: "canonical", origin: "https://cloud.example.test", selected: true }],
+    routes: [{ kind: "canonical", origin: "https://server.example.test", selected: true }],
   });
 }
 

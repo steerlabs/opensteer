@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
-import { main } from "../scripts/install-beta-mac-local.js";
-import { prepareLocalMac, type MacContext } from "../scripts/release-beta-mac.js";
+import { main } from "../scripts/install-mac-local.js";
+import { prepareLocalMac, type MacContext } from "../scripts/release-mac.js";
 
-vi.mock("../scripts/release-beta-mac.js", async (original) => ({
-  ...(await original<typeof import("../scripts/release-beta-mac.js")>()),
+vi.mock("../scripts/release-mac.js", async (original) => ({
+  ...(await original<typeof import("../scripts/release-mac.js")>()),
   preflightLocalMac: vi.fn(),
   prepareLocalMac: vi.fn(),
   installLocalMac: vi.fn(),
@@ -72,7 +72,7 @@ it("builds and resumes the exact source's derived version through the canonical 
           {
             id: "local",
             stagingDirectory: path.join(directory, "staging"),
-            applicationPath: path.join(applications, "Opensteer Beta.app"),
+            applicationPath: path.join(applications, "Opensteer.app"),
             runtimeStatusUrl: "http://127.0.0.1:1/healthz",
           },
         ],

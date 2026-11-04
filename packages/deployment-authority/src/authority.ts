@@ -278,11 +278,6 @@ export const HostCapabilitySchema = z.enum([
   "snapshot-messages-omit-v1",
   /** `thread.events.list` takes `turns`: a page of whole turns rather than a count of events. */
   "history-turns-v1",
-  /**
-   * `thread.events.list` takes `view: "conversation"`: a conversation's turn page
-   * counts and carries only turns its reader can be shown (see `thread.events.list`).
-   */
-  "history-conversation-v1",
   "place-events-v1",
   "person-show-v1",
   "shared-task-done-v1",

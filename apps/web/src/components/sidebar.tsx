@@ -65,7 +65,11 @@ import {
   type Highlight,
   type WorkspaceState,
 } from "./workspace/workspace-context.js";
-import { destinationPlaceKey, type WorkspaceNavigation } from "./workspace/navigation.js";
+import {
+  destinationPlaceKey,
+  setupPath,
+  type WorkspaceNavigation,
+} from "./workspace/navigation.js";
 import { revealInList, useScrollEdges, useWholeRows } from "./workspace/scroll-edges.js";
 import { useTabCloser } from "./workspace/tab-closer.js";
 import { TabGroupHeader, tabGroupStyle } from "./workspace/tab-group.js";
@@ -1489,6 +1493,10 @@ function SidebarFooter({
     readonly label: string;
     readonly onSelect: () => void;
   }[] = [
+    // Setup is this computer's, so it is offered only on it.
+    ...(onThisComputer && places
+      ? [{ icon: "check-circle" as const, label: "Setup", onSelect: () => go(setupPath, false) }]
+      : []),
     { icon: "folder", label: "Projects", onSelect: () => go("/projects", true) },
     { icon: "bolt", label: "Automations", onSelect: () => go("/automations", true) },
     { icon: "settings", label: "Settings", onSelect: () => go("/settings", false) },
