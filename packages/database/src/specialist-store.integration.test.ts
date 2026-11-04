@@ -9,6 +9,103 @@ import { assertLineageCompatibleReuse, resolveResourceAccess } from "./resource-
 import { describeStore } from "./store.integration.test-support.js";
 
 describeStore("specialist registration", (test) => {
+  test("repins every owner's bindings and makes removed specialist manifests pending", async ({
+    storeFixture: fixture,
+  }) => {
+    const owner = await fixture.createRunFixture("repin-owners");
+    const other = await fixture.store.createUser("Other specialist owner");
+    const workspace = await fixture.createProjectWorkspace(owner.userId, "repin");
+    await fixture.database
+      .insertInto("workspaceMemberships")
+      .values({
+        workspaceId: workspace.id,
+        userId: other,
+        id: createId("workspaceMembership"),
+        role: "collaborator",
+        generation: 1,
+        invitedBy: owner.userId,
+        revokedAt: null,
+        revokedBy: null,
+        state: "active",
+        joinedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .execute();
+    const platform = new IntegrationPlatformStore(fixture.database),
+      pluginId = randomUUID();
+    const manifest = SpecialistManifestSchema.parse({
+      version: 1,
+      models: [{ engine: "codex", model: "fast" }],
+      access: [],
+    });
+    await platform.plugins.install({
+      id: pluginId,
+      name: "repin",
+      actorUserId: owner.userId,
+      source: {},
+      digest: "old",
+      manifest: { name: "repin" },
+      specialistManifest: manifest,
+    });
+    for (const actorUserId of [owner.userId, other])
+      await platform.specialists.add({ workspaceId: workspace.id, pluginId, actorUserId });
+    await platform.plugins.setActivation({
+      pluginId,
+      workspaceId: workspace.id,
+      actorUserId: owner.userId,
+      active: false,
+    });
+    await platform.specialists.add({
+      pluginId,
+      workspaceId: workspace.id,
+      actorUserId: owner.userId,
+      activate: false,
+    });
+    expect((await platform.plugins.list()).find((p) => p.id === pluginId)?.activations).toEqual([]);
+    const bindings = [{ requirement: 0, resourceId: "chosen", level: "read" as const }];
+    await fixture.database
+      .updateTable("specialists")
+      .set({ bindings: sql`${JSON.stringify(bindings)}::jsonb` })
+      .where("pluginId", "=", pluginId)
+      .execute();
+    const update = (digest: string, specialistManifest: typeof manifest | null) =>
+      platform.plugins.update({
+        pluginId,
+        digest,
+        manifest: { name: "repin" },
+        specialistManifest,
+      });
+    await update("same-access", { ...manifest, models: [{ engine: "claude", model: "haiku" }] });
+    const rows = () =>
+      fixture.database
+        .selectFrom("specialists")
+        .selectAll()
+        .where("pluginId", "=", pluginId)
+        .execute();
+    for (const row of await rows()) expect(row.bindings).toEqual(bindings);
+    expect(new Set((await rows()).map((r) => r.pluginVersionId)).size).toBe(1);
+    await update("changed-access", {
+      ...manifest,
+      access: [{ type: "browser-profile", level: "read", reason: "Research" }],
+    });
+    expect((await rows()).every((r) => r.status === "pending" && r.bindings.length === 0)).toBe(
+      true,
+    );
+    await update("not-specialist", null);
+    expect(
+      (await platform.specialists.list(workspace.id, owner.userId)).every(
+        (r) => r.status === "pending" && r.models.length === 0,
+      ),
+    ).toBe(true);
+    await expect(
+      platform.specialists.assertRunnable(
+        (await rows()).find((r) => r.ownerUserId === owner.userId)!.id,
+        workspace.id,
+        owner.userId,
+      ),
+    ).rejects.toThrow("no longer provides a specialist");
+  });
+
   test("pins versions, binds consent, narrows access and removes registration", async ({
     storeFixture: fixture,
   }) => {
@@ -366,9 +463,17 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "researcher" },
       specialistManifest: { ...manifest, models: [{ engine: "codex", model: "fast" }] },
     });
-    expect((await platform.specialists.list(workspace.id, run.userId))[0]?.pluginVersionId).toBe(
-      version.id,
-    );
+    expect(
+      (await platform.specialists.list(workspace.id, run.userId))[0]?.pluginVersionId,
+    ).not.toBe(version.id);
+    const repinned = await fixture.database
+      .selectFrom("specialists")
+      .selectAll()
+      .where("pluginId", "=", pluginId)
+      .execute();
+    expect(repinned).toHaveLength(2);
+    expect(new Set(repinned.map((r) => r.pluginVersionId)).size).toBe(1);
+    expect(repinned.find((r) => r.id === ready.id)?.bindings).toEqual(beforeOff.bindings);
     const updated = await add();
     expect(updated.id).toBe(pending.id);
     expect(updated.pluginVersionId).not.toBe(version.id);

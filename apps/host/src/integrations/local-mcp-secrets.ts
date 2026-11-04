@@ -64,6 +64,21 @@ export class LocalMcpSecrets {
     };
   }
 
+  prune(serverId: IntegrationServerId, launch: LocalMcpLaunch): LocalMcpSecretsUpdate {
+    return async (current) => {
+      if (!current) return null;
+      const stored = await this.open(serverId, current);
+      const next = Object.fromEntries(
+        localMcpLaunchSecrets(launch).flatMap(({ name }) =>
+          stored[name] === undefined ? [] : [[name, stored[name]]],
+        ),
+      );
+      return Object.keys(next).length
+        ? (await this.#vault.seal(next, context(serverId))).envelope
+        : null;
+    };
+  }
+
   /** Which declared secrets have a value stored. */
   async saved(
     serverId: IntegrationServerId,

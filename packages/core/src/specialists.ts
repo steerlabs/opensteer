@@ -64,7 +64,7 @@ export const SpecialistRegistrationViewSchema = z.object({
   plugin: z.string(),
   version: z.string(),
   status: z.enum(["pending", "ready", "removing", "removal-failed"]),
-  models: z.array(SpecialistManifestSchema.shape.models.element.strip()).min(1).max(8),
+  models: z.array(SpecialistManifestSchema.shape.models.element.strip()).max(8),
   fallback: z.enum(["none", "caller"]),
   access: z.array(
     z.intersection(
