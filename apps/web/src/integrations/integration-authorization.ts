@@ -1,6 +1,7 @@
 import { DeploymentIdSchema } from "@opensteer/core";
 import { isHostRefusal, type HostClient } from "@opensteer/client/host";
 import {
+  integrationAuthorizationReturnMayHaveFailed,
   integrationAuthorizationStatusReturned,
   integrationAuthorizationTerminalStatuses,
   waitForIntegrationAuthorization,
@@ -77,11 +78,35 @@ export async function beginIntegrationAuthorization(input: {
   }
 }
 
-export function integrationAuthorizationFinish(
+/** `app-button`: the person chose to return by the page's button, so no listener opens. */
+export type IntegrationAuthorizationReturnRoute = "app-button";
+
+export async function integrationAuthorizationFinish(
+  bridge: Pick<OpensteerDesktopBridge, "prepareIntegrationAuthorizationReturn"> | null,
+  client: Pick<HostClient, "getSnapshot">,
+  route?: IntegrationAuthorizationReturnRoute,
+): Promise<{ readonly appReturnPort?: number; readonly finish?: "app" }> {
+  const snapshot = client.getSnapshot();
+  if (!bridge || !snapshot.integrationAppFinishAvailable) return {};
+  if (route === "app-button" || !snapshot.integrationAppReturnPortAvailable)
+    return { finish: "app" };
+  const { port } = await bridge
+    .prepareIntegrationAuthorizationReturn()
+    .catch(() => ({ port: null }));
+  return port === null ? { finish: "app" } : { appReturnPort: port, finish: "app" };
+}
+
+/** A sign-in that ended here could have lost an automatic return, so the person may choose. */
+export function integrationAppButtonOffered(
   bridge: object | null,
   client: Pick<HostClient, "getSnapshot">,
-): { readonly finish?: "app" } {
-  return bridge && client.getSnapshot().integrationAppFinishAvailable ? { finish: "app" } : {};
+  status: IntegrationAuthorizationStatus["status"],
+): boolean {
+  return (
+    bridge !== null &&
+    client.getSnapshot().integrationAppReturnPortAvailable === true &&
+    integrationAuthorizationReturnMayHaveFailed(status)
+  );
 }
 
 type ReturnBridge = Pick<

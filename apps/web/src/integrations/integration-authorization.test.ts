@@ -24,6 +24,60 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("integrationAuthorizationFinish", () => {
+  const capable = {
+    getSnapshot: () => ({
+      integrationAppFinishAvailable: true,
+      integrationAppReturnPortAvailable: true,
+    }),
+  } as unknown as HostClient;
+  const prepared = (port: number | null) => ({
+    prepareIntegrationAuthorizationReturn: vi.fn(async () => ({ port })),
+  });
+
+  it("asks a capable app for its port before the attempt begins", async () => {
+    await expect(integrationAuthorizationFinish(prepared(48_203), capable)).resolves.toEqual({
+      appReturnPort: 48_203,
+      finish: "app",
+    });
+  });
+
+  it("sends no port to a Host that would refuse it, and opens no listener", async () => {
+    const bridge = prepared(48_203);
+    const finishOnly = {
+      getSnapshot: () => ({ integrationAppFinishAvailable: true }),
+    } as unknown as HostClient;
+    await expect(integrationAuthorizationFinish(bridge, finishOnly)).resolves.toEqual({
+      finish: "app",
+    });
+    expect(bridge.prepareIntegrationAuthorizationReturn).not.toHaveBeenCalled();
+  });
+
+  it("goes on through the app link when no port is free", async () => {
+    await expect(integrationAuthorizationFinish(prepared(null), capable)).resolves.toEqual({
+      finish: "app",
+    });
+    await expect(
+      integrationAuthorizationFinish(
+        { prepareIntegrationAuthorizationReturn: vi.fn(async () => Promise.reject(new Error("x"))) },
+        capable,
+      ),
+    ).resolves.toEqual({ finish: "app" });
+  });
+
+  it("opens no listener for a person who chose the app button", async () => {
+    const bridge = prepared(48_203);
+    await expect(integrationAuthorizationFinish(bridge, capable, "app-button")).resolves.toEqual({
+      finish: "app",
+    });
+    expect(bridge.prepareIntegrationAuthorizationReturn).not.toHaveBeenCalled();
+  });
+
+  it("asks nothing of a browser", async () => {
+    await expect(integrationAuthorizationFinish(null, capable)).resolves.toEqual({});
+  });
+});
+
 describe("integration authorization client", () => {
   it("opens the completion tab synchronously before beginning web authorization", async () => {
     const events: string[] = [];
@@ -258,15 +312,16 @@ function installWindow(
   return { href: () => href, open };
 }
 
-it("opts only a capable desktop into app finish", () => {
+it("opts only a capable desktop into app finish", async () => {
+  const bridge = { prepareIntegrationAuthorizationReturn: vi.fn(async () => ({ port: null })) };
   const client = {
     getSnapshot: () => ({ integrationAppFinishAvailable: true }),
   } as unknown as HostClient;
-  expect(integrationAuthorizationFinish({}, client)).toEqual({ finish: "app" });
-  expect(integrationAuthorizationFinish(null, client)).toEqual({});
-  expect(
-    integrationAuthorizationFinish({}, { getSnapshot: () => ({}) } as unknown as HostClient),
-  ).toEqual({});
+  await expect(integrationAuthorizationFinish(bridge, client)).resolves.toEqual({ finish: "app" });
+  await expect(integrationAuthorizationFinish(null, client)).resolves.toEqual({});
+  await expect(
+    integrationAuthorizationFinish(bridge, { getSnapshot: () => ({}) } as unknown as HostClient),
+  ).resolves.toEqual({});
 });
 it("dispatches a desktop return to its exact attachment once and wakes its waiter", async () => {
   const { createId } = await import("@opensteer/core");

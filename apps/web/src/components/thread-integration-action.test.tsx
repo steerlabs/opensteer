@@ -1029,6 +1029,96 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
   });
 });
 
+describe("ThreadIntegrationAction on a desktop app that returns by itself", () => {
+  const label = "Use the Open Opensteer button";
+  const attemptId = createIntegrationId("oauthAttempt");
+
+  async function signIn(answer: (attempt: number) => Promise<unknown>) {
+    const prepare = vi.fn(async () => ({ port: 48_203 }));
+    Object.assign(window, {
+      opensteerDesktop: {
+        finishIntegrationAuthorization: vi.fn(async () => undefined),
+        openIntegrationAuthorization: vi.fn(async () => ({ opened: true })),
+        prepareIntegrationAuthorizationReturn: prepare,
+      },
+    });
+    const loaded = oauthRequest();
+    const snapshot = {
+      ...shellSnapshot(),
+      deploymentId: "dep_00000000-0000-4000-8000-000000000001",
+      integrationAppFinishAvailable: true,
+      integrationAppReturnPortAvailable: true,
+      user: { id: "usr_00000000-0000-4000-8000-000000000001" },
+    };
+    const dispatch = vi.fn(async (command: { type: string }) => ({
+      attemptId,
+      connectionId: null,
+      expiresAt: "2099-01-01T00:00:00Z",
+      failureCode: null,
+      launchTicket: "t".repeat(43),
+      status: command.type === "integration.authorization.cancel" ? "cancelled" : undefined,
+      type: command.type,
+    }));
+    let attempts = 0;
+    shellState.current = {
+      snapshot,
+      hostClient: {
+        dispatch,
+        getSnapshot: () => snapshot,
+        rpc: {
+          "integrations.get": async () => ({ ok: true, data: loaded.dashboard }),
+          "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+          "integration.authorization.get": () => answer(++attempts),
+        },
+      },
+      reportActionError: vi.fn(),
+    };
+    const container = await mountThreadAction(requestRecord(loaded, "Connect Linear"));
+    await act(async () => container.querySelector<HTMLButtonElement>(".btn--primary")?.click());
+    const begun = () =>
+      dispatch.mock.calls
+        .map(([command]) => command as { type: string; input?: Record<string, unknown> })
+        .filter(({ type }) => type === "integration.authorization.begin")
+        .map(({ input }) => input!);
+    return { begun, container, prepare };
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, "opensteerDesktop");
+  });
+
+  it("says what to do while it waits", async () => {
+    const { container } = await signIn(() => new Promise(() => {}));
+    await vi.waitFor(() => expect(container.textContent).toContain("choose it"));
+  });
+
+  it("sends its port, and after Cancel offers a fresh sign-in with none", async () => {
+    const { begun, container, prepare } = await signIn(() => new Promise(() => {}));
+    await vi.waitFor(() => expect(buttonWithText(container, "Cancel")).not.toBeNull());
+    expect(begun()[0]).toMatchObject({ appReturnPort: 48_203, finish: "app" });
+    await act(async () => buttonWithText(container, "Cancel")?.click());
+    await vi.waitFor(() => expect(buttonWithText(container, label)).not.toBeNull());
+    await act(async () => buttonWithText(container, label)?.click());
+    await vi.waitFor(() => expect(begun()).toHaveLength(2));
+    expect(begun()[1]).toMatchObject({ finish: "app" });
+    expect(begun()[1]).not.toHaveProperty("appReturnPort");
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["expired", true],
+    ["failed", true],
+    ["denied", false],
+  ] as const)("after a sign-in that %s, offers the button: %s", async (status, offered) => {
+    const { container } = await signIn(async () => ({
+      ok: true,
+      data: { connectionId: null, expiresAt: "2099-01-01T00:00:00Z", failureCode: null, status },
+    }));
+    await vi.waitFor(() => expect(buttonWithText(container, "Try again")).not.toBeNull());
+    expect(buttonWithText(container, label) !== null).toBe(offered);
+  });
+});
+
 describe("ThreadIntegrationAction finding its target Workspace", () => {
   // The ways it could fail: the card asks for earlier Workspaces because its
   // target is not loaded, a newer snapshot brings the target meanwhile, and

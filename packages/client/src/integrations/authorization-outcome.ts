@@ -5,6 +5,27 @@ export const integrationAuthorizationTerminalStatuses: ReadonlySet<
 > = new Set(["completed", "denied", "failed", "cancelled", "expired"]);
 
 /**
+ * What a person does while an attempt waits in the browser. An app also has to
+ * say what to do if its automatic return never arrives.
+ */
+export function integrationAuthorizationWaitingDetail(surface: "desktop" | "web"): string {
+  return surface === "desktop"
+    ? "This updates by itself. If you see Open Opensteer, choose it. If you get stuck, cancel and try again."
+    : "Use the sign-in page that opened. This updates by itself when you’re done.";
+}
+
+/**
+ * Whether an attempt could have ended this way because its browser return never
+ * arrived. The app cannot tell that from a closed tab or an abandoned consent, so
+ * this only decides whether to offer a person the choice; declining is their answer.
+ */
+export function integrationAuthorizationReturnMayHaveFailed(
+  status: IntegrationAuthorizationStatus["status"],
+): boolean {
+  return status === "cancelled" || status === "expired" || status === "failed";
+}
+
+/**
  * What a finished authorization attempt says, in one sentence a person can act
  * on. Every surface reads the same durable status, so they say the same thing;
  * `null` is the only success, and it is only ever returned for an attempt the
