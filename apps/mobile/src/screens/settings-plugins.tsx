@@ -153,7 +153,11 @@ function Plugins({
   };
   const command = (key: string, value: HostApiCommandInput) =>
     run(key, async () => {
-      const intent = JSON.stringify({ ...value, idempotencyKey: "" });
+      const intent = JSON.stringify(
+        (value.type === "settings.plugin.enabled.set" || value.type === "settings.plugin.placement.set")
+          ? { type: value.type, target: value.target }
+          : { ...value, idempotencyKey: "" },
+      );
       const prior = attempts.current.get(intent);
       if (prior) {
         await host.rpc["plugins.overview.get"]({}).then(unwrapRpcResult);
