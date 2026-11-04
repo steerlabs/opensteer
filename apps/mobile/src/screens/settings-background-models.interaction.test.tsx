@@ -81,7 +81,7 @@ describe("Settings → AI → Background models on a phone", () => {
   it("asks about the provider next in line, then names what runs each role", async () => {
     const { host } = await open();
     expect(roles()).toEqual([
-      "Task names and quick memory, Automatic. Waiting for you to allow a provider.",
+      "Task names (for Chat’s provider), Automatic. Waiting for you to allow a provider.",
       "Nightly memory, Automatic. Waiting for you to allow a provider.",
     ]);
     expect(document.body.textContent).toContain(
@@ -90,7 +90,7 @@ describe("Settings → AI → Background models on a phone", () => {
     await press(button("Allow"));
     await vi.waitFor(() =>
       expect(roles()).toEqual([
-        "Task names and quick memory, Automatic (currently Claude Haiku 5.5 via Claude Code)",
+        "Task names (for Chat’s provider), Automatic (currently Claude Haiku 5.5 via Claude Code)",
         "Nightly memory, Automatic (currently Claude Opus 5.5 via Claude Code)",
       ]),
     );
@@ -124,7 +124,7 @@ describe("Settings → AI → Background models on a phone", () => {
   it("says so plainly when no model can run background work", async () => {
     await open({ backgroundModels: "none" });
     expect(roles()).toEqual([
-      "Task names and quick memory, Automatic. No model can run this right now.",
+      "Task names (for Chat’s provider), Automatic. No model can run this right now.",
       "Nightly memory, Automatic. No model can run this right now.",
     ]);
     expect(document.body.textContent).not.toContain("Providers for background work");

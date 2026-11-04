@@ -1732,6 +1732,7 @@ export type RunnerVoiceResult = z.infer<typeof RunnerVoiceResultSchema>;
 export const BackgroundTextAttemptIdSchema = z.string().min(1).max(200);
 export const BackgroundTextFailureSchema = z.enum([
   "refused",
+  "capacity",
   "signed-out",
   "usage-limit",
   "timeout",

@@ -2128,7 +2128,7 @@ describe("pi Thread naming", () => {
       expect(
         await fixture.adapter.generateText!({
           context: { ...namingContext, scratchDirectory: namingContext.threadStateDirectory },
-          modelSelection: namingContext.modelSelection,
+          modelSelection: { ...namingContext.modelSelection, options: { thinking: "high" } },
           prompt,
           signal: AbortSignal.timeout(2_000),
         }),
@@ -2136,6 +2136,7 @@ describe("pi Thread naming", () => {
       expect(launches).toBe(1);
       const launch = namingLaunch!;
       expect(launch.cwd).toContain("text-");
+      expect(launch.args[launch.args.indexOf("--thinking") + 1]).toBe("high");
 
       expect(launch.args).toEqual(
         expect.arrayContaining([

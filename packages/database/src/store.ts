@@ -1578,8 +1578,8 @@ export class OpensteerStore {
     return executionStore.getThreadNamingInput(this.#database, threadId);
   }
 
-  listThreadNamingCandidates(limit = 100) {
-    return executionStore.listThreadNamingCandidates(this.#database, limit);
+  listThreadNamingCandidates(limit = 100, after?: ThreadId) {
+    return executionStore.listThreadNamingCandidates(this.#database, limit, after);
   }
 
   applyGeneratedThreadName(

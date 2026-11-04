@@ -895,6 +895,7 @@ export class RunnerRuntime {
   async generateBackgroundText(
     request: Extract<HostToRunnerMessage, { type: "host.background-text" }>,
   ): Promise<HarnessGenerateTextResult> {
+    if (this.#backgroundText.size >= 2) return { ok: false, failure: "capacity" };
     const definition = this.#harnesses.state(request.harnessInstanceId)?.definition;
     if (
       this.#draining ||
@@ -903,7 +904,6 @@ export class RunnerRuntime {
       definition.runtimeRevision !== request.harnessRevision ||
       this.#harnessMaintenance.has(definition.id) ||
       this.#driverMaintenance.has(definition.driverKind) ||
-      this.#backgroundText.size >= 2 ||
       this.#backgroundText.has(request.attemptId)
     )
       return { ok: false, failure: "unavailable" };

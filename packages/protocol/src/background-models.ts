@@ -29,6 +29,7 @@ const roleView = z.object({
   candidates: z.array(BackgroundCandidateViewSchema),
 });
 export const BackgroundModelsViewSchema = z.object({
+  pinnableModels: z.array(BackgroundCandidateViewSchema),
   backgroundProviderConsent: BackgroundProviderConsentSchema,
   light: roleView,
   deep: roleView,

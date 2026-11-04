@@ -1152,7 +1152,11 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
   };
 }
 
-export async function listThreadNamingCandidates(database: Kysely<DatabaseSchema>, limit = 100) {
+export async function listThreadNamingCandidates(
+  database: Kysely<DatabaseSchema>,
+  limit = 100,
+  after?: ThreadId,
+) {
   return database
     .selectFrom("threads")
     .select("id")
@@ -1161,7 +1165,8 @@ export async function listThreadNamingCandidates(database: Kysely<DatabaseSchema
     )
     .where("status", "!=", "archived")
     .where("id", "in", database.selectFrom("runs").select("threadId"))
-    .orderBy("createdAt", "desc")
+    .$if(after !== undefined, (query) => query.where("id", ">", after!))
+    .orderBy("id", "asc")
     .limit(Math.min(100, Math.max(1, limit)))
     .execute();
 }

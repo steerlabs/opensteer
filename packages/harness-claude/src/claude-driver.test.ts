@@ -3673,18 +3673,19 @@ async function waitForSdkCall(sdk: FakeSdk): Promise<void> {
 }
 
 describe("Claude Thread naming", () => {
-  it("uses the Run model when the live catalog has no light model", async () => {
+  it("uses the explicit model and effort without catalog discovery", async () => {
     const sdk = new FakeSdk(() => scriptedQuery([successMessage("naming", "Title")]));
     const fixture = await openSession(sdk);
     try {
       expect(
         await fixture.adapter.generateText!({
           context: { ...fixture.context, scratchDirectory: fixture.context.threadStateDirectory },
-          modelSelection: fixture.context.modelSelection,
+          modelSelection: { ...fixture.context.modelSelection, options: { effort: "high" } },
           prompt: "Name it",
           signal: AbortSignal.timeout(2_000),
         }),
       ).toEqual({ ok: true, text: "Title" });
+      expect(sdk.calls[0]?.options.effort).toBe("high");
       expect(sdk.calls[0]?.options.model).toBe(
         fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId,
       );

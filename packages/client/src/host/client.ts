@@ -879,7 +879,7 @@ export interface HostSnapshot {
   threadLookups: Record<string, ThreadLookupState>;
   /**
    * The Host serves `thread-titles-v1`: a person can rename a Thread, and a new
-   * Thread started from a message is named from it by its engine.
+   * Thread started from a message is named by background work.
    */
   threadRenameAvailable: boolean;
   /** The Host serves `task-marks-v1`: task icons and project colours can be chosen. */
@@ -930,7 +930,7 @@ export interface CreateThreadInput {
   title?: string;
   /**
    * `title` is the first line of the message that will start the Thread, for
-   * its engine to replace. Dropped for a Host without `thread-titles-v1`.
+   * background naming to replace. Dropped for a Host without `thread-titles-v1`.
    */
   generateTitle?: true;
   workspaceId: string;

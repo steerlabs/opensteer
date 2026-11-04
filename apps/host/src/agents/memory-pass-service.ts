@@ -2,10 +2,8 @@ import {
   OpensteerError,
   TimeZoneSchema,
   type AgentEvent,
-  type BackgroundModelRole,
   type Thread,
   type TriggerOccurrenceId,
-  type UserId,
   type WorkspaceId,
 } from "@opensteer/core";
 import {
@@ -19,7 +17,7 @@ import {
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import { MANAGED_MEMORY_WAKE_SKIPPED, type TriggerSystemRole } from "@opensteer/triggers";
 import type { WorkspaceFilesService } from "../workspace/files/workspace-files-service.js";
-import { backgroundAccounts } from "./background-model-settings.js";
+import { readMemoryBackgroundResolutionInput } from "./background-model-settings.js";
 import { resolveBackgroundCandidates } from "./background-models.js";
 import { memoryPassProgram } from "./memory-pass-program.js";
 import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
@@ -150,11 +148,20 @@ export class MemoryPassService {
       .where("triggerOccurrences.id", "=", occurrenceId)
       .executeTakeFirst();
     if (!trigger?.systemRole || trigger.anchorThreadId !== worker.id) return undefined;
-    const [chosen] = await this.#candidates(
-      trigger.systemRole === "memory-light" ? "light" : "deep",
-      worker,
+    const main = await store.getWorkspace(worker.workspaceId);
+    const resolution = await readMemoryBackgroundResolutionInput(
+      this.#options,
       trigger.createdBy,
+      main,
+      worker,
+      trigger.systemRole === "memory-light" ? "light" : "deep",
     );
+    const [chosen] = resolution
+      ? resolveBackgroundCandidates(
+          trigger.systemRole === "memory-light" ? "light" : "deep",
+          resolution,
+        )
+      : [];
     if (
       await setMemoryPassWaiting(
         store.database,
@@ -166,56 +173,6 @@ export class MemoryPassService {
     if (!chosen)
       throw new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED });
     return { harnessInstanceId: chosen.harnessInstanceId, modelSelection: chosen.modelSelection };
-  }
-
-  async #candidates(role: BackgroundModelRole, worker: Thread, ownerId: UserId) {
-    const { store, runners } = this.#options;
-    const main = await store.getWorkspace(worker.workspaceId);
-    // Main's files are reachable only on the computer that holds them, which
-    // is also where the worker anchors its Trigger.
-    if (
-      main?.backing.kind !== "local-directory" ||
-      main.backing.ownerEnvironmentId !== worker.environmentId ||
-      !main.homeThreadId
-    )
-      return [];
-    const [preferences, chat, { harnesses, accounts }] = await Promise.all([
-      store.getBackgroundModelPreferences(ownerId),
-      store.getThreadForOwner(main.homeThreadId, ownerId),
-      backgroundAccounts(
-        store,
-        [worker.environmentId],
-        (environmentId) => runners.isAvailable(environmentId),
-        (harness) =>
-          runners.canRunHarness(harness.environmentId, harness.driverKind) &&
-          runners
-            .harnessAccessModes(harness.environmentId, harness.driverKind)
-            ?.includes(worker.accessMode) === true,
-      ),
-    ]);
-    const chatHarness =
-      role === "deep" && chat
-        ? harnesses.find((harness) => harness.id === chat.harnessInstanceId)
-        : undefined;
-    // Main's memory already reaches Chat's provider, so like a task's own
-    // provider it needs no consent; every other provider does.
-    return resolveBackgroundCandidates(role, {
-      accounts,
-      preferences,
-      now: Date.now(),
-      ...(chat ? { ownProviderId: chat.modelSelection.providerId } : {}),
-      ...(chat && chatHarness
-        ? {
-            taskModelFallback: {
-              environmentId: chat.environmentId,
-              harnessInstanceId: chat.harnessInstanceId,
-              harnessRevision: chatHarness.runtimeRevision,
-              modelSelection: chat.modelSelection,
-              reason: "task-model" as const,
-            },
-          }
-        : {}),
-    });
   }
 }
 

@@ -46,6 +46,7 @@ export type BackgroundCandidateSkipReason =
 export interface BackgroundCandidateDecision {
   readonly candidate: ResolvedBackgroundCandidate;
   readonly skipReason: BackgroundCandidateSkipReason | null;
+  taskModelFallback?: boolean;
 }
 function usageLimited(account: BackgroundAccountSnapshot, model: ModelSelection, now: number) {
   return (account.usageByProvider[model.providerId] ?? []).some((usage) => {
@@ -78,7 +79,7 @@ export function inspectBackgroundCandidates(
   );
   const mode: BackgroundModelMode = input.preferences.backgroundModels[role];
   const decisions: BackgroundCandidateDecision[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, BackgroundCandidateDecision>();
   const add = (
     account: BackgroundAccountSnapshot,
     selection: ModelSelection,
@@ -98,8 +99,11 @@ export function inspectBackgroundCandidates(
       modelSelection.modelId,
       Object.entries(modelSelection.options).sort(),
     ]);
-    if (seen.has(key)) return;
-    seen.add(key);
+    const previous = seen.get(key);
+    if (previous) {
+      if (reason === "task-model") previous.taskModelFallback = true;
+      return;
+    }
     const skipReason: BackgroundCandidateSkipReason | null = !account.enabled
       ? "disabled"
       : !account.available
@@ -116,7 +120,7 @@ export function inspectBackgroundCandidates(
                 : usageLimited(account, selection, input.now)
                   ? "usage-limit"
                   : null;
-    decisions.push({
+    const decision: BackgroundCandidateDecision = {
       candidate: {
         environmentId: account.environmentId,
         harnessInstanceId: account.harnessInstanceId,
@@ -125,7 +129,10 @@ export function inspectBackgroundCandidates(
         reason,
       },
       skipReason,
-    });
+      ...(reason === "task-model" ? { taskModelFallback: true } : {}),
+    };
+    decisions.push(decision);
+    seen.set(key, decision);
   };
   if (mode.kind === "pinned") {
     const account = accounts.find(
@@ -169,4 +176,17 @@ export function resolveBackgroundCandidates(
   return inspectBackgroundCandidates(role, input)
     .filter((decision) => decision.skipReason === null)
     .map((decision) => decision.candidate);
+}
+
+export function resolveBackgroundSelection(
+  role: BackgroundModelRole,
+  input: BackgroundResolutionInput,
+) {
+  const usable = inspectBackgroundCandidates(role, input).filter(
+    (decision) => decision.skipReason === null,
+  );
+  return {
+    candidates: usable.map((decision) => decision.candidate),
+    taskModelFallback: usable.find((decision) => decision.taskModelFallback)?.candidate,
+  };
 }

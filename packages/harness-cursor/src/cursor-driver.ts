@@ -728,10 +728,8 @@ class CursorHarnessSession implements HarnessSession {
   }
 
   /**
-   * One `agent models` per session, whoever asks first, under the session's
-   * lifetime rather than the asker's: naming asks before the Run's turn does,
-   * and a name given up must not end the Run's listing. It runs inside the
-   * Run's launch wrapper, and stopping the session ends it and waits for it.
+   * One `agent models` per session, under its lifetime and launch wrapper.
+   * Stopping the session ends the listing and waits for it.
    */
   #modelListing(signal: AbortSignal): Promise<CursorModelListing> {
     if (!this.#listing) {

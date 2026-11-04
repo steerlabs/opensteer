@@ -223,3 +223,21 @@ it("drops expired usage limits and rejects invalid pinned options", () => {
   expect(inspectBackgroundCandidates("light", value)[0]?.skipReason).toBe("option-unavailable");
   expect(resolveBackgroundCandidates("light", value)).toHaveLength(2);
 });
+
+it("retains the normalized task fallback when stored options omit a default", async () => {
+  const { resolveBackgroundSelection } = await import("./background-models.js");
+  const { namingCandidates } = await import("./thread-naming.js");
+  const current = account();
+  if (current.catalog?.status !== "ready") throw new Error("ready fixture");
+  current.catalog.models[0]!.options[0]!.defaultValue = "low";
+  const result = resolveBackgroundSelection("light", {
+    ...input([current]),
+    taskModelFallback: {
+      ...current,
+      modelSelection: { ...selection, options: {} },
+      reason: "task-model",
+    },
+  });
+  expect(result.taskModelFallback?.modelSelection.options).toEqual({ effort: "low" });
+  expect(namingCandidates(result.candidates, result.taskModelFallback)).toHaveLength(2);
+});

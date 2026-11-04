@@ -4,7 +4,7 @@ import type { OpensteerStore } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import { BackgroundTextAttemptIdSchema } from "@opensteer/protocol";
 import { parseGeneratedThreadName, threadTitlePrompt } from "@opensteer/harness";
-import { resolveBackgroundCandidates } from "./background-models.js";
+import { resolveBackgroundSelection } from "./background-models.js";
 import { readBackgroundResolutionInput } from "./background-model-settings.js";
 import {
   harnessInspectionDefinition,
@@ -40,6 +40,7 @@ interface ThreadNamingDependencies {
 /** Ephemeral jobs: no result survives its authenticated connection or Host boot. */
 export class ThreadNaming {
   readonly #pending = new Map<ThreadId, Promise<void>>();
+  readonly #active = new Map<string, Set<Promise<unknown>>>();
   readonly #shutdown = new AbortController();
   readonly dependencies: ThreadNamingDependencies;
   constructor(dependencies: ThreadNamingDependencies) {
@@ -50,7 +51,7 @@ export class ThreadNaming {
     const existing = this.#pending.get(threadId);
     if (existing) return existing;
     if (this.#shutdown.signal.aborted) return Promise.resolve();
-    const job = this.#name(threadId)
+    const job = this.#withCapacity("naming", 4, () => this.#name(threadId))
       .catch(this.dependencies.onError)
       .finally(() => this.#pending.delete(threadId));
     this.#pending.set(threadId, job);
@@ -58,10 +59,31 @@ export class ThreadNaming {
   }
 
   async reconcile(): Promise<void> {
-    const rows = await this.dependencies.store.listThreadNamingCandidates(100);
-    // Bound both the scan and active provider work, including reconnect bursts.
-    for (let index = 0; index < rows.length && !this.#shutdown.signal.aborted; index += 4) {
-      await Promise.all(rows.slice(index, index + 4).map((row) => this.request(row.id)));
+    let after: ThreadId | undefined;
+    while (!this.#shutdown.signal.aborted) {
+      const rows = await this.dependencies.store.listThreadNamingCandidates(100, after);
+      for (let index = 0; index < rows.length && !this.#shutdown.signal.aborted; index += 4)
+        await Promise.all(rows.slice(index, index + 4).map((row) => this.request(row.id)));
+      if (rows.length < 100) return;
+      after = rows.at(-1)!.id;
+    }
+  }
+
+  async #withCapacity<T>(
+    key: string,
+    limit: number,
+    operation: () => Promise<T>,
+  ): Promise<T | undefined> {
+    const active = this.#active.get(key) ?? new Set<Promise<unknown>>();
+    this.#active.set(key, active);
+    while (active.size >= limit) await Promise.race(active).catch(() => undefined);
+    if (this.#shutdown.signal.aborted) return undefined;
+    const job = operation();
+    active.add(job);
+    try {
+      return await job;
+    } finally {
+      active.delete(job);
     }
   }
 
@@ -89,90 +111,89 @@ export class ThreadNaming {
           reason: "task-model",
         }
       : undefined;
-    const resolved = resolveBackgroundCandidates("light", {
-      ...snapshot,
-      ownProviderId: input.modelSelection.providerId,
-      originatingEnvironmentId: input.environmentId,
-      ...(taskModelFallback ? { taskModelFallback } : {}),
-    });
-    // Resolve the fallback alone too: if ranking already deduplicated it, retain its native selection.
-    const fallback =
-      taskModelFallback &&
-      resolved.find(
-        (candidate) =>
-          candidate.environmentId === taskModelFallback.environmentId &&
-          candidate.harnessInstanceId === taskModelFallback.harnessInstanceId &&
-          candidate.modelSelection.providerId === taskModelFallback.modelSelection.providerId &&
-          candidate.modelSelection.modelId === taskModelFallback.modelSelection.modelId &&
-          JSON.stringify(Object.entries(candidate.modelSelection.options).sort()) ===
-            JSON.stringify(Object.entries(taskModelFallback.modelSelection.options).sort()),
-      );
-    const deadline = Date.now() + 120_000;
-    for (const candidate of namingCandidates(resolved, fallback || undefined)) {
-      if (Date.now() >= deadline || this.#shutdown.signal.aborted) return;
-      const identity = runners.identityForEnvironment(candidate.environmentId);
-      if (!identity) continue;
-      const current = await store.getThreadNamingInput(threadId);
-      if (
-        !current ||
-        current.sourceMessageId !== input.sourceMessageId ||
-        current.principalId !== input.principalId
-      )
+    const { candidates: resolved, taskModelFallback: fallback } = resolveBackgroundSelection(
+      "light",
+      {
+        ...snapshot,
+        ownProviderId: input.modelSelection.providerId,
+        originatingEnvironmentId: input.environmentId,
+        ...(taskModelFallback ? { taskModelFallback } : {}),
+      },
+    );
+    let deadline: number | undefined;
+    for (const candidate of namingCandidates(resolved, fallback)) {
+      if ((deadline !== undefined && Date.now() >= deadline) || this.#shutdown.signal.aborted)
         return;
-      const harness = await store.getHarnessInstance(candidate.harnessInstanceId);
-      if (
-        !harness?.enabled ||
-        harness.removedAt ||
-        harness.runtimeRevision !== candidate.harnessRevision ||
-        !(await store.environmentIsAvailableToUser(candidate.environmentId, input.requestedBy))
-      )
-        continue;
-      const attemptExpiresAt = Math.min(deadline, Date.now() + 60_000);
-      let result;
-      try {
-        result = await runners.backgroundText(
-          {
-            type: "host.background-text",
-            attemptId: BackgroundTextAttemptIdSchema.parse(randomUUID()),
-            environmentId: candidate.environmentId,
-            harnessInstanceId: candidate.harnessInstanceId,
-            harnessRevision: candidate.harnessRevision,
-            modelSelection: candidate.modelSelection,
-            prompt: threadTitlePrompt(input.request, { icon: input.icon }),
-            deadline: new Date(attemptExpiresAt).toISOString(),
-          },
-          this.#shutdown.signal,
-        );
-      } catch (error) {
-        if (this.#shutdown.signal.aborted) return;
-        this.dependencies.onError(error);
-        continue;
-      }
-      if (!result.ok) {
-        // Catalog ownership remains here; generation never performs discovery.
-        await inspectAndRecordInvalidatedHarnessCatalog({
-          catalogs: store,
-          environmentId: candidate.environmentId,
-          harnesses: [harnessInspectionDefinition(harness)],
-          runners,
-          signal: AbortSignal.any([this.#shutdown.signal, AbortSignal.timeout(30_000)]),
-        }).catch(this.dependencies.onError);
-        continue;
-      }
-      if (
-        Date.now() >= deadline ||
-        runners.identityForEnvironment(candidate.environmentId) !== identity
-      )
-        return;
-      const name = parseGeneratedThreadName(result.text, { icon: input.icon });
-      const applied = await store.applyGeneratedThreadName({
-        threadId,
-        ...(name.title ? { title: name.title } : {}),
-        ...(name.icon ? { icon: name.icon } : {}),
-        namingAuthority: { ...input, ...candidate, expiresAt: attemptExpiresAt },
+      const completed = await this.#withCapacity(candidate.environmentId, 2, async () => {
+        deadline ??= Date.now() + 120_000;
+        if (Date.now() >= deadline) return;
+        const identity = runners.identityForEnvironment(candidate.environmentId);
+        if (!identity) return false;
+        const current = await store.getThreadNamingInput(threadId);
+        if (
+          !current ||
+          current.sourceMessageId !== input.sourceMessageId ||
+          current.principalId !== input.principalId
+        )
+          return;
+        const harness = await store.getHarnessInstance(candidate.harnessInstanceId);
+        if (
+          !harness?.enabled ||
+          harness.removedAt ||
+          harness.runtimeRevision !== candidate.harnessRevision ||
+          !(await store.environmentIsAvailableToUser(candidate.environmentId, input.requestedBy))
+        )
+          return false;
+        const attemptExpiresAt = Math.min(deadline, Date.now() + 60_000);
+        let result;
+        try {
+          result = await runners.backgroundText(
+            {
+              type: "host.background-text",
+              attemptId: BackgroundTextAttemptIdSchema.parse(randomUUID()),
+              environmentId: candidate.environmentId,
+              harnessInstanceId: candidate.harnessInstanceId,
+              harnessRevision: candidate.harnessRevision,
+              modelSelection: candidate.modelSelection,
+              prompt: threadTitlePrompt(input.request, { icon: input.icon }),
+              deadline: new Date(attemptExpiresAt).toISOString(),
+            },
+            this.#shutdown.signal,
+          );
+        } catch (error) {
+          if (this.#shutdown.signal.aborted) return;
+          this.dependencies.onError(error);
+          return false;
+        }
+        if (!result.ok) {
+          if (result.failure === "capacity") return true;
+          if (["signed-out", "unavailable", "refused", "usage-limit"].includes(result.failure)) {
+            await inspectAndRecordInvalidatedHarnessCatalog({
+              catalogs: store,
+              environmentId: candidate.environmentId,
+              harnesses: [harnessInspectionDefinition(harness)],
+              runners,
+              signal: AbortSignal.any([this.#shutdown.signal, AbortSignal.timeout(30_000)]),
+            }).catch(this.dependencies.onError);
+          }
+          return false;
+        }
+        if (
+          Date.now() >= deadline ||
+          runners.identityForEnvironment(candidate.environmentId) !== identity
+        )
+          return;
+        const name = parseGeneratedThreadName(result.text, { icon: input.icon });
+        const applied = await store.applyGeneratedThreadName({
+          threadId,
+          ...(name.title ? { title: name.title } : {}),
+          ...(name.icon ? { icon: name.icon } : {}),
+          namingAuthority: { ...input, ...candidate, expiresAt: attemptExpiresAt },
+        });
+        for (const event of applied?.events ?? []) publish(event);
+        return true;
       });
-      for (const event of applied?.events ?? []) publish(event);
-      return;
+      if (completed !== false) return;
     }
   }
 }

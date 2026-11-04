@@ -7,6 +7,7 @@ import {
 import { BackgroundModelModeSchema } from "@opensteer/core";
 it("bounds background output and has closed typed failures", () => {
   for (const failure of [
+    "capacity",
     "refused",
     "signed-out",
     "usage-limit",

@@ -2452,11 +2452,6 @@ const codexSpeedOptionId = "speed";
 const codexStandardServiceTier = "default";
 const codexModelListPageSize = 256;
 
-/**
- * Fast models that name a Thread in a few seconds, newest first: the one
- * Codex 0.162.0's own thread titles use and its successor. The first the
- * account lists wins; an account listing none names with the Run's model.
- */
 const codexLightModels = backgroundLightModels("codex");
 
 /**

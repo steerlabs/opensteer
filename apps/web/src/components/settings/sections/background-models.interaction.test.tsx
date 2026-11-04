@@ -60,7 +60,17 @@ describe("Settings → AI → Background models", () => {
   it("pins a model and returns to automatic", async () => {
     const { page, dispatch } = await mount();
     await click(button(page, "Allow Anthropic"));
-    await vi.waitFor(() => expect(select(page, "Nightly memory").options).toHaveLength(2));
+    await vi.waitFor(() =>
+      expect(
+        Array.from(select(page, "Nightly memory").options, (option) => option.textContent),
+      ).toEqual([
+        "Automatic",
+        "Claude Haiku 5.5 · Claude Code",
+        "GPT-6 Luna · Codex · needs your OK",
+        "Claude Opus 5.5 · Claude Code",
+        "GPT-6.1 Sol · Codex · needs your OK",
+      ]),
+    );
     await choose(select(page, "Nightly memory"), "Claude Opus 5.5 · Claude Code");
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -74,7 +74,7 @@ export const backgroundModelsLead =
 export const backgroundProvidersNote =
   "Providers you allow may run background work. Revoking stops their next job.";
 const roleTitles: Readonly<Record<BackgroundModelRole, string>> = {
-  light: "Task names and quick memory",
+  light: "Task names (for Chat’s provider)",
   deep: "Nightly memory",
 };
 const skipLabels: Readonly<Record<NonNullable<Candidate["skipReason"]>, string>> = {
@@ -134,7 +134,7 @@ export function backgroundModelsSettings(
   view: BackgroundModelsView,
   dismissed: ReadonlySet<string> | null,
 ): BackgroundModelsSettings {
-  const all = [...view.light.candidates, ...view.deep.candidates];
+  const all = [...view.light.candidates, ...view.deep.candidates, ...view.pinnableModels];
   const computers = new Set(all.map((candidate) => candidate.environmentId));
   const where = (candidate: Candidate) =>
     computers.size > 1
@@ -147,11 +147,21 @@ export function backgroundModelsSettings(
       mode.kind === "pinned" ? (candidates.find((c) => c.reason === "pinned") ?? null) : null;
     const choices = [
       automatic,
-      ...candidates
-        .filter((candidate) => candidate.skipReason === null || candidate === pin)
+      ...[
+        ...view.pinnableModels.filter(
+          (candidate) => !pin || selectionKey(candidate) !== selectionKey(pin),
+        ),
+        ...(pin ? [pin] : []),
+      ]
+        .filter(
+          (candidate) =>
+            candidate.skipReason === null ||
+            candidate.skipReason === "consent-required" ||
+            candidate === pin,
+        )
         .map((candidate) => ({
           value: selectionKey(candidate),
-          label: `${candidate.modelDisplayName} · ${where(candidate)}`,
+          label: `${candidate.modelDisplayName} · ${where(candidate)}${candidate.skipReason === "consent-required" ? " · needs your OK" : ""}`,
           mode: pinned(candidate),
         })),
     ];

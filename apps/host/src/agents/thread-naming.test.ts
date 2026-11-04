@@ -5,7 +5,17 @@ import { describe, expect, it, vi } from "vitest";
 import { ThreadNaming, namingCandidates } from "./thread-naming.js";
 
 const mocks = vi.hoisted(() => ({ resolve: vi.fn(), snapshot: vi.fn(), refresh: vi.fn() }));
-vi.mock("./background-models.js", () => ({ resolveBackgroundCandidates: mocks.resolve }));
+vi.mock("./background-models.js", () => ({
+  resolveBackgroundSelection: (...args: unknown[]) => {
+    const candidates = mocks.resolve(...args);
+    return {
+      candidates,
+      taskModelFallback: candidates.find(
+        (c: ResolvedBackgroundCandidate) => c.reason === "task-model",
+      ),
+    };
+  },
+}));
 vi.mock("./background-model-settings.js", () => ({
   readBackgroundResolutionInput: mocks.snapshot,
 }));
@@ -127,8 +137,68 @@ describe("Host naming jobs", () => {
   it("reconciles provisional work after a fresh Host instance and bounds the query", async () => {
     const f = fixture();
     await f.naming.reconcile();
-    expect(f.store.listThreadNamingCandidates).toHaveBeenCalledWith(100);
+    expect(f.store.listThreadNamingCandidates).toHaveBeenCalledWith(100, undefined);
     expect(f.runners.backgroundText).toHaveBeenCalledOnce();
     await f.naming.stop();
   });
 });
+
+it.each(["timeout", "cancelled", "capacity", "failed"])(
+  "does not refresh catalogs on %s",
+  async (failure) => {
+    const f = fixture();
+    f.runners.backgroundText.mockResolvedValueOnce({ ok: false, failure } as never);
+    await f.naming.request(f.threadId);
+    expect(mocks.refresh).not.toHaveBeenCalled();
+    if (failure === "capacity") expect(f.runners.backgroundText).toHaveBeenCalledOnce();
+    await f.naming.stop();
+  },
+);
+it("bounds four simultaneous admissions on one Runner to two attempts", async () => {
+  const f = fixture();
+  let active = 0;
+  let peak = 0;
+  const releases: (() => void)[] = [];
+  f.runners.backgroundText.mockImplementation(async () => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise<void>((resolve) => releases.push(resolve));
+    active--;
+    return { ok: true, text: "Named" };
+  });
+  const jobs = Array.from({ length: 4 }, () => f.naming.request(createId("thread")));
+  await vi.waitFor(() => expect(releases).toHaveLength(2));
+  releases.splice(0).forEach((release) => release());
+  await vi.waitFor(() => expect(releases).toHaveLength(2));
+  releases.splice(0).forEach((release) => release());
+  await Promise.all(jobs);
+  expect(peak).toBe(2);
+  expect(mocks.refresh).not.toHaveBeenCalled();
+  expect(f.runners.backgroundText).toHaveBeenCalledTimes(4);
+  await f.naming.stop();
+});
+it("advances recovery past 100 rows including unnameable tasks", async () => {
+  const f = fixture();
+  const rows = Array.from({ length: 103 }, () => ({ id: createId("thread") })).sort((a, b) =>
+    a.id.localeCompare(b.id),
+  );
+  f.store.listThreadNamingCandidates
+    .mockResolvedValueOnce(rows.slice(0, 100))
+    .mockResolvedValueOnce(rows.slice(100));
+  f.store.getThreadNamingInput.mockResolvedValue(null as never);
+  await f.naming.reconcile();
+  expect(f.store.getThreadNamingInput).toHaveBeenCalledTimes(103);
+  expect(f.store.listThreadNamingCandidates).toHaveBeenLastCalledWith(100, rows[99]!.id);
+  await f.naming.stop();
+});
+
+it.each(["refused", "unavailable"])(
+  "refreshes potentially stale catalogs after %s",
+  async (failure) => {
+    const f = fixture();
+    f.runners.backgroundText.mockResolvedValueOnce({ ok: false, failure } as never);
+    await f.naming.request(f.threadId);
+    expect(mocks.refresh).toHaveBeenCalledOnce();
+    await f.naming.stop();
+  },
+);

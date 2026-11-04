@@ -4963,6 +4963,7 @@ function mockBackgroundModelsView(state: MockHostState): BackgroundModelsView {
     };
   };
   return {
+    pinnableModels: [...role("light").candidates, ...role("deep").candidates],
     backgroundProviderConsent: preferences.backgroundProviderConsent,
     light: role("light"),
     deep: role("deep"),

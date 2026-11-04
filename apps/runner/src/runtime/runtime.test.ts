@@ -175,7 +175,7 @@ describe("RunnerRuntime", () => {
         const second = runtime.generateBackgroundText({ ...request, attemptId: randomUUID() });
         await expect(
           runtime.generateBackgroundText({ ...request, attemptId: randomUUID() }),
-        ).resolves.toEqual({ ok: false, failure: "unavailable" });
+        ).resolves.toEqual({ ok: false, failure: "capacity" });
         await runtime.close();
         await expect(second).resolves.toEqual({ ok: false, failure: "timeout" });
       }

@@ -462,7 +462,13 @@ export type HarnessGenerateTextResult =
   | {
       readonly ok: false;
       readonly failure:
-        "refused" | "signed-out" | "usage-limit" | "timeout" | "unavailable" | "failed";
+        | "capacity"
+        | "refused"
+        | "signed-out"
+        | "usage-limit"
+        | "timeout"
+        | "unavailable"
+        | "failed";
     };
 
 export interface HarnessAdapter {
