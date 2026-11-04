@@ -17,7 +17,6 @@ import {
   type VoiceLevels,
   type VoicePhase,
   type VoiceSnapshot,
-  type VoiceTarget,
 } from "@opensteer/client/voice";
 import { createBrowserVoiceMediaPort } from "../voice/media-port.js";
 import { Icon } from "./icon.js";
@@ -27,6 +26,8 @@ export interface VoiceControls {
   subscribe(listener: () => void): () => void;
   getSnapshot(): VoiceSnapshot;
   subscribeLevel(listener: (levels: VoiceLevels) => void): () => void;
+  /** Fires when the call's agent changed the screen. */
+  subscribeShown?(listener: () => void): () => void;
   start(): Promise<void>;
   stop(): unknown;
   setMuted(muted: boolean): void;
@@ -37,28 +38,24 @@ export interface VoiceControls {
 export const VoiceContext = createContext<VoiceControls | null>(null);
 
 /**
- * The runtime's one voice controller for this Host. Navigation goes through a
- * ref so the controller outlives re-renders; starting voice ends dictation,
- * keeping its words, so only one thing holds the microphone.
+ * The runtime's one voice controller for this Host. What is on screen is read
+ * through a ref so the controller outlives re-renders; starting voice ends
+ * dictation, keeping its words, so only one thing holds the microphone.
  */
 export function useVoiceRuntime(
   hostClient: HostClient,
-  navigate: (target: VoiceTarget) => boolean | Promise<boolean>,
   dictation: DictationController | null,
-  places?: VoiceControllerInput["places"],
-  currentView?: VoiceControllerInput["currentView"],
+  currentView: NonNullable<VoiceControllerInput["currentView"]>,
 ): VoiceController | null {
-  const latest = useRef({ navigate, dictation, places, currentView });
-  latest.current = { navigate, dictation, places, currentView };
+  const latest = useRef({ dictation, currentView });
+  latest.current = { dictation, currentView };
   const [controller, setController] = useState<VoiceController | null>(null);
   useEffect(() => {
     const created = new VoiceController({
       hostClient,
       media: createBrowserVoiceMediaPort(),
-      navigate: (target) => latest.current.navigate(target),
       createId: () => crypto.randomUUID(),
-      currentView: () => latest.current.currentView?.() ?? {},
-      places: () => latest.current.places?.() ?? Promise.resolve([]),
+      currentView: () => latest.current.currentView(),
       onStart: async () => {
         const dictating = latest.current.dictation;
         const owner = dictating?.getSnapshot().owner;
@@ -81,6 +78,7 @@ const idle: VoiceSnapshot = {
   heard: null,
   spoken: null,
   since: null,
+  activity: null,
   notice: null,
 };
 const noSubscribe = () => () => {};
@@ -95,12 +93,13 @@ export function useVoice() {
   return { controller, snapshot };
 }
 
-const labels: Record<VoicePhase, string> = {
+/** What a screen reader hears; the orb says the same thing to the eye. */
+const status: Record<VoicePhase, string> = {
   idle: "",
-  connecting: "Connecting…",
+  connecting: "Connecting",
   listening: "Listening",
   hearing: "Listening",
-  thinking: "Working on it",
+  thinking: "Working",
   speaking: "Speaking",
 };
 
@@ -176,7 +175,7 @@ function Island({
   snapshot: VoiceSnapshot;
   docked: boolean;
 }) {
-  const { phase, notice, muted } = snapshot;
+  const { phase, notice, muted, activity } = snapshot;
   const className = `voice-island${docked ? " voice-island--docked" : ""}`;
   if (phase === "idle" && notice)
     return (
@@ -202,25 +201,25 @@ function Island({
         </button>
       </section>
     );
+  // Live words only; with none, the one word a first-time caller needs to start talking.
   const caption =
-    phase === "hearing"
+    phase === "hearing" || phase === "thinking"
       ? snapshot.heard
       : phase === "speaking"
         ? snapshot.spoken
-        : phase === "thinking"
-          ? snapshot.heard
-          : null;
+        : null;
+  const quiet =
+    caption ??
+    (muted ? "Muted" : phase === "listening" || phase === "connecting" ? status[phase] : null);
   return (
     <section aria-label="Voice" className={className} data-phase={phase} data-muted={muted}>
+      <Glow controller={controller} />
       <span className="visually-hidden" role="status" aria-live="polite">
-        {muted ? "Microphone muted" : labels[phase]}
+        {muted ? "Microphone muted" : status[phase]}
       </span>
-      <Orb controller={controller} phase={phase} muted={muted} />
+      <Orb controller={controller} phase={phase} muted={muted} activity={activity} />
       <div className="voice-island__text" aria-hidden="true">
-        <span className="voice-island__label">
-          {muted && phase !== "connecting" ? "Muted" : labels[phase]}
-        </span>
-        <Caption text={caption} />
+        <Caption text={quiet} live={caption !== null} />
       </div>
       <button
         aria-label={muted ? "Unmute microphone" : "Mute microphone"}
@@ -245,18 +244,60 @@ function Island({
   );
 }
 
+const reducedMotion = () => globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
 /**
- * Loudness moves the orb without re-rendering: each level writes one CSS
- * variable, and the stylesheet turns it into scale and glow.
+ * When the agent opens something, the screen changing is the answer; the
+ * island only glints once to say it was the call. Web Animations run on the
+ * compositor and never re-render React.
+ */
+function Glow({ controller }: { controller: VoiceControls }) {
+  const glow = useRef<HTMLSpanElement | null>(null);
+  useEffect(
+    () =>
+      controller.subscribeShown?.(() => {
+        const element = glow.current;
+        if (typeof element?.animate !== "function") return;
+        const still = reducedMotion();
+        element.animate(
+          still
+            ? [{ opacity: 0 }, { opacity: 0.8, offset: 0.3 }, { opacity: 0 }]
+            : [
+                { opacity: 0, transform: "scale(0.985)" },
+                { opacity: 1, transform: "scale(1)", offset: 0.25 },
+                { opacity: 0, transform: "scale(1.035)" },
+              ],
+          { duration: still ? 500 : 900, easing: "cubic-bezier(0.2, 0.7, 0.2, 1)" },
+        );
+        if (still) return;
+        element.parentElement
+          ?.querySelector(".voice-orb__body")
+          ?.animate(
+            [{ transform: "scale(1)" }, { transform: "scale(1.16)" }, { transform: "scale(1)" }],
+            { duration: 520, easing: "cubic-bezier(0.34, 1.3, 0.5, 1)" },
+          );
+      }),
+    [controller],
+  );
+  return <span className="voice-island__glow" ref={glow} aria-hidden="true" />;
+}
+
+/**
+ * The orb is the call's face. Loudness moves it without re-rendering: each
+ * level writes one CSS variable, and the stylesheet turns it into scale and
+ * glow. A ring circles it while the agent works, holding the glyph of the
+ * step it is taking.
  */
 function Orb({
   controller,
   phase,
   muted,
+  activity,
 }: {
   controller: VoiceControls;
   phase: VoicePhase;
   muted: boolean;
+  activity: VoiceSnapshot["activity"];
 }) {
   const orb = useRef<HTMLSpanElement | null>(null);
   const listening = useRef({ phase, muted });
@@ -265,16 +306,29 @@ function Orb({
     () =>
       controller.subscribeLevel(({ input, output }) => {
         const { phase: now, muted: silent } = listening.current;
-        const level = now === "speaking" ? output : silent ? 0 : input;
+        const level = now === "speaking" ? output : silent || now === "thinking" ? 0 : input;
         orb.current?.style.setProperty("--level", Math.min(1, Math.max(0, level)).toFixed(3));
       }),
     [controller],
   );
-  return <span className="voice-orb" ref={orb} aria-hidden="true" />;
+  return (
+    <span className="voice-orb" ref={orb} aria-hidden="true">
+      <span className="voice-orb__halo" />
+      <span className="voice-orb__ring" />
+      <span className="voice-orb__body">
+        <span className="voice-orb__core" />
+        {activity ? (
+          <span className="voice-orb__glyph" key={activity}>
+            <Icon name={activity} />
+          </span>
+        ) : null}
+      </span>
+    </span>
+  );
 }
 
 /** One line of live words, showing the newest when they overflow. */
-function Caption({ text }: { text: string | null }) {
+function Caption({ text, live }: { text: string | null; live: boolean }) {
   const line = useRef<HTMLSpanElement | null>(null);
   useLayoutEffect(() => {
     const element = line.current;
@@ -284,7 +338,7 @@ function Caption({ text }: { text: string | null }) {
   }, [text]);
   if (!text) return null;
   return (
-    <span className="voice-island__caption" ref={line}>
+    <span className="voice-island__caption" data-live={live} ref={line}>
       {text}
     </span>
   );

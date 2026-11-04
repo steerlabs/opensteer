@@ -1,7 +1,6 @@
 import { BrowserSurfaceIdSchema, ThreadIdSchema, createId } from "@opensteer/core";
 import { EnvironmentIdSchema, HarnessInstanceIdSchema } from "@opensteer/core";
 import { PersonShowMessageSchema } from "@opensteer/protocol";
-import type { VoiceView } from "@opensteer/protocol/voice";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolEntry } from "../host/client.js";
 import { threadPlacementOptions } from "../host/thread-placement.js";
@@ -350,7 +349,7 @@ describe("what the person sees", () => {
   const tab = BrowserSurfaceIdSchema.parse("tab_reading");
 
   it("sends each changed view once, coalescing changes and retrying an unknown outcome", async () => {
-    let view: VoiceView = { threadId: chat, tabId: null };
+    let view: { threadId: string | null; tabId: string | null } = { threadId: chat, tabId: null };
     const f = setup({ input: { currentView: () => view } });
     await f.controller.start();
     expect(f.call.view).toHaveBeenCalledExactlyOnceWith({ threadId: chat, tabId: null });
@@ -390,6 +389,12 @@ describe("what the person sees", () => {
     f.call.view.mockRejectedValueOnce(new VoiceStartError("connection-failed"));
     f.controller.refreshContext(true);
     await vi.advanceTimersByTimeAsync(5_000);
+    expect(f.call.view).toHaveBeenCalledTimes(6);
+
+    // A route parameter that is not an id names nothing, the view last accepted.
+    view = { threadId: "settings", tabId: "" };
+    f.controller.refreshContext(true);
+    await settle();
     expect(f.call.view).toHaveBeenCalledTimes(6);
     f.dispose();
   });

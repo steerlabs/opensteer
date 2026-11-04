@@ -1,4 +1,5 @@
 import type { PersonShowMessage } from "@opensteer/protocol";
+import { BrowserSurfaceIdSchema, ThreadIdSchema } from "@opensteer/core";
 import { VoiceSessionIdSchema, type VoiceView } from "@opensteer/protocol/voice";
 import { classifyClientFailure } from "../connections/operation-error.js";
 import { toolPresentation, type ActivityIcon } from "../host/agent-activity-model.js";
@@ -103,8 +104,11 @@ export interface VoiceControllerInput extends VoiceTimers {
   readonly hostClient: HostClient;
   readonly media: VoiceMediaPort | null;
   readonly createId: () => string;
-  /** The conversation and tab on screen now, in ids; read when `refreshContext` is called. */
-  readonly currentView?: () => VoiceView;
+  /** The conversation and tab on screen now, from the route; read when `refreshContext` is called. */
+  readonly currentView?: () => {
+    readonly threadId: string | null;
+    readonly tabId: string | null;
+  };
   readonly onStart?: () => void | Promise<void>;
   /** Semantic provider seam, also usable by offline implementations and tests. */
   readonly createProvider?: (input: CodexVoiceProviderInput) => VoiceProvider;
@@ -325,7 +329,12 @@ export class VoiceController {
     }
     this.#timers.clear(session.viewTimer);
     session.viewTimer = null;
-    const view = this.#input.currentView?.() ?? { threadId: null, tabId: null };
+    const shown = this.#input.currentView?.();
+    // Route parameters are untrusted text; one that is not an id names nothing.
+    const view: VoiceView = {
+      threadId: ThreadIdSchema.safeParse(shown?.threadId).data ?? null,
+      tabId: BrowserSurfaceIdSchema.safeParse(shown?.tabId).data ?? null,
+    };
     session.view = { key: `${view.threadId ?? ""}\n${view.tabId ?? ""}`, view };
     this.#sendView(session);
   }

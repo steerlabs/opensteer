@@ -1,10 +1,8 @@
 import type { PersonShowMessage } from "@opensteer/protocol";
-import { autoPlacePart } from "./workspace/composer-context.js";
-import { destinationPlaceKey } from "./workspace/navigation.js";
-import { useBrowserTabStrip } from "@opensteer/client/react";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext, VoiceIsland, useVoiceRuntime } from "./voice.js";
 import { handlePersonShow } from "@opensteer/client/host";
+import type { VoiceController } from "@opensteer/client/voice";
 import { useDictation } from "./dictation.js";
 import {
   desktopWebLinksReady,
@@ -315,49 +313,21 @@ export function AppShell({
     (address: string) => openWorkspaceWebLink(hostClient, nav, address, location.state),
     [hostClient, nav, location.state],
   );
-  const routerNavigate = useNavigate();
   const { controller: dictation } = useDictation();
-  const voicePlaces = useBrowserTabStrip(hostClient).ordered;
-  const voice = useVoiceRuntime(
-    hostClient,
-    async (target) => {
-      if (target.kind === "back") {
-        if (!(window.history.state?.idx > 0)) return false;
-        await routerNavigate(-1);
-        return true;
-      }
-      const before = nav.address();
-      // Settings covers places, so a shown place opens over Chat instead.
-      if (target.kind === "place")
-        if (settingsMode) nav.showPlaceWithConversation(target.destination, "/");
-        else nav.showPlace(target.destination);
-      else nav.openConversation(target.kind === "chat" ? "/" : nav.threadPath(target.threadId));
-      const after = nav.address();
-      return before.pathname !== after.pathname || before.search !== after.search;
-    },
-    dictation,
-    async () => {
-      const selection = placeSelection(new URLSearchParams(location.search));
-      const key = selection.kind === "place" ? destinationPlaceKey(selection.destination) : null;
-      const part = await autoPlacePart(
-        hostClient,
-        voicePlaces.find((place) => place.key === key) ?? null,
-      );
-      return part ? [part] : [];
-    },
-    () => {
-      // Pages such as Settings cover the conversation and any place behind them.
-      if (settingsMode) return { title: "Settings" };
-      const match = /^\/threads\/([^/]+)/.exec(location.pathname);
-      if (!match && location.pathname !== "/")
-        return { title: location.pathname.split("/")[1]?.replace(/-/g, " ") ?? "Opensteer" };
-      const selection = placeSelection(new URLSearchParams(location.search));
-      return {
-        threadId: match ? decodeURIComponent(match[1]!) : (snapshot.homeThreadId ?? undefined),
-        ...(selection.kind === "place" ? { destination: selection.destination } : {}),
-      };
-    },
-  );
+  const voice = useVoiceRuntime(hostClient, dictation, () => {
+    // Settings and other full pages cover the conversation and any place beside it.
+    const match = /^\/threads\/([^/]+)/.exec(location.pathname);
+    if (settingsMode || (!match && location.pathname !== "/"))
+      return { threadId: null, tabId: null };
+    const selection = placeSelection(new URLSearchParams(location.search));
+    return {
+      threadId: match ? decodeURIComponent(match[1]!) : snapshot.homeThreadId,
+      tabId:
+        selection.kind === "place" && selection.destination.kind === "browser"
+          ? selection.destination.tabId
+          : null,
+    };
+  });
   useEffect(() => {
     voice?.refreshContext();
   }, [voice, location.key]);
@@ -1043,7 +1013,7 @@ export function AppShell({
         openDrawer={openMobileNavigation}
         openWebLink={openWebLink}
       >
-        <PersonShowNavigation hostClient={hostClient} />
+        <PersonShowNavigation hostClient={hostClient} voice={voice} settingsMode={settingsMode} />
         {webLinkFailure ? (
           <DesktopWebLinkFailureNotice
             {...webLinkFailure}
@@ -1416,7 +1386,15 @@ export function DesktopWebLinkFailureNotice({
   );
 }
 
-function PersonShowNavigation({ hostClient }: { readonly hostClient: HostClient }): null {
+function PersonShowNavigation({
+  hostClient,
+  voice,
+  settingsMode,
+}: {
+  readonly hostClient: HostClient;
+  readonly voice: VoiceController | null;
+  readonly settingsMode: boolean;
+}): null {
   const location = useLocation();
   const { nav, work, phone, dock } = useWorkspace();
   const personShowPort = useRef<(message: PersonShowMessage) => void>(() => undefined);
@@ -1427,24 +1405,35 @@ function PersonShowNavigation({ hostClient }: { readonly hostClient: HostClient 
       'input, textarea, [contenteditable]:not([contenteditable="false"]), iframe',
     );
     const editing = field && !field.hasAttribute("data-composer-input");
-    handlePersonShow(
+    // A Run's own conversation shows only to a focused window; a voice call's
+    // agent shows to the person talking to it, even while a page holds focus.
+    const focused = document.hasFocus();
+    const shown = handlePersonShow(
       hostClient.getSnapshot(),
       message,
       {
-        foreground: document.visibilityState === "visible" && document.hasFocus(),
+        foreground: document.visibilityState === "visible",
+        call: voice?.call() ?? null,
         threadId:
-          !editing && (!work || (!phone && dock.open)) && (match || location.pathname === "/")
+          focused &&
+          !editing &&
+          (!work || (!phone && dock.open)) &&
+          (match || location.pathname === "/")
             ? match
               ? decodeURIComponent(match[1]!)
               : hostClient.getSnapshot().homeThreadId
             : null,
       },
       (target) => {
-        if (target.kind === "place") nav.showPlace(target.destination);
+        // Settings covers places, so a shown place opens over Chat instead.
+        if (target.kind === "place")
+          if (settingsMode) nav.showPlaceWithConversation(target.destination, "/");
+          else nav.showPlace(target.destination);
         else if (target.kind === "thread") nav.openConversation(nav.threadPath(target.threadId));
-        else if (target.kind === "chat") nav.openConversation("/");
+        else nav.openConversation("/");
       },
     );
+    if (shown) voice?.showed(message);
   };
   useEffect(
     () => hostClient.subscribePersonShow((message) => personShowPort.current(message)),
