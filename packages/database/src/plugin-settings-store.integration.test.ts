@@ -15,6 +15,25 @@ import { integrationDefinitionDigest } from "@opensteer/integration-core/digest"
 import { describeStore } from "./store.integration.test-support.js";
 
 describeStore("plugin Settings authority", (test) => {
+  test("deployment packages show Main only after explicit activation", async ({ storeFixture: f }) => {
+    const run = await f.startRunFixture("settings-main-activation");
+    const platform = new IntegrationPlatformStore(f.database);
+    const pluginId = randomUUID();
+    await platform.plugins.install({
+      id: pluginId, name: "unplaced", actorUserId: run.userId,
+      source: {}, digest: "unplaced", manifest: { name: "unplaced", skills: [] },
+    });
+    const target = { kind: "plugin", pluginId } as const;
+    const detail = await platform.settings.detail(run.userId, target);
+    expect(detail.row.placement.mainIncluded).toBe(false);
+    await platform.settings.setPlacement(run.userId, {
+      type: "settings.plugin.placement.set", target, expectedRevision: detail.row.placement.revision,
+      mainIncluded: true, projects: [], personalEverywhere: null, idempotencyKey: "activate-main",
+    }, {});
+    expect((await platform.settings.detail(run.userId, target)).row.placement.mainIncluded).toBe(true);
+    expect(await f.database.selectFrom("pluginActivations").selectAll()
+      .where("pluginId", "=", pluginId).execute()).toHaveLength(1);
+  });
   test("server roles cannot discover another person's private accounts, policy or source files", async ({
     storeFixture: f,
   }) => {

@@ -264,7 +264,8 @@ export class PluginSettingsStore {
       const setting = settings.find((s) => s.targetKey === pluginTargetKey(target));
       return {
         enabled: setting?.enabled ?? true,
-        mainIncluded: setting?.mainIncluded ?? true,
+        mainIncluded: (setting?.mainIncluded ?? true) &&
+          (target.kind !== "plugin" || places.some((p) => p.kind === "main" && selected.includes(p.id))),
         projectCount: places.filter((p) => p.kind === "project" && selected.includes(p.id)).length,
         personalEverywhere:
           setting?.personalEverywhereAccounts !== null &&
