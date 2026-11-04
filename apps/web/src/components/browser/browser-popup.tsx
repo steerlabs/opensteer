@@ -101,8 +101,9 @@ function PopupForm({ target, state }: { target: BrowserPopupTarget; state: Brows
       return;
     }
     const invalid = browserPopupValueError(state, value);
-    if (invalid || (state.kind === "color" && !CSS.supports("color", value))) {
-      setError(invalid ?? "Enter a valid CSS color.");
+    // The native parser accepts CSS colors this viewer may not yet understand.
+    if (invalid) {
+      setError(invalid);
       return;
     }
     target.answer(popup.ref, { value });

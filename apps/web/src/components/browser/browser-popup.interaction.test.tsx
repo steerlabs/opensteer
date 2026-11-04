@@ -127,6 +127,34 @@ it("preserves alpha/P3 exact value until explicit Done and discards the draft on
   expect(f.div.textContent).toContain("Choices changed");
   act(() => f.root.unmount());
 });
+it("submits exact CSS to the native validator when the viewer cannot represent that color", () => {
+  vi.stubGlobal("CSS", { ...CSS, supports: () => false });
+  const value = "color(display-p3 0.2 0.4 0.6 / 0.5)";
+  const f = fixture({
+    kind: "color",
+    rtl: false,
+    items: [],
+    alpha: true,
+    colorSpace: "display-p3",
+    value,
+  });
+  try {
+    expect(CSS.supports("color", value)).toBe(false);
+    expect(f.div.textContent).toContain("Use the exact CSS value");
+    act(() => {
+      f.div
+        .querySelector("form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(f.send.mock.calls.at(-1)?.[2]).toMatchObject({
+      type: "popup.answer",
+      answer: { value },
+    });
+  } finally {
+    act(() => f.root.unmount());
+    vi.unstubAllGlobals();
+  }
+});
 it("suggestion activation prevents proxy blur and submits its opaque ID once", () => {
   const f = fixture({
     kind: "datalist",
