@@ -72,6 +72,7 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         doneShelfFilePath: "/private/done.json",
         draftsFilePath: "/private/drafts.json",
         usageNoticesFilePath: "/private/usage-notices.json",
+        backgroundNoticesFilePath: "/private/background-notices.json",
         selectionFilePath: "/private/selection.json",
         signedOutFilePath: "/private/signout.json",
         fetch: globalThis.fetch,

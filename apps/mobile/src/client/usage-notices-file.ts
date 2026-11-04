@@ -10,9 +10,9 @@ const UsageNoticesFileSchema = z.strictObject({
 });
 
 /**
- * The usage-limit notices dismissed on this phone, remembered across launches.
- * Each key already names its Deployment, person, account and limit, so one
- * file serves them all; one that cannot be read dismisses nothing.
+ * Notices dismissed on this phone, remembered across launches. Each key
+ * already names its Deployment, person and subject, so one file serves a kind
+ * of notice; one that cannot be read dismisses nothing.
  */
 export function createUsageNoticesFile(options: {
   readonly filePath: string;
