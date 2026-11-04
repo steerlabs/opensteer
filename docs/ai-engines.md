@@ -2,110 +2,138 @@
 
 ## Account ownership and selection
 
-The Runner owns credentials; the Host owns account metadata and defaults. Temporary authentication or catalog failures must not transfer an account's default or silently select another account. Delegation inherits the parent's engine, source and exact model unless explicitly overridden; ambiguous account selection is a refusal. See `apps/host/src/agents/delegation-placement.ts`.
-
-Canonical model identity groups labels; the matched live catalog supplies the native model ID sent to the endpoint, never client input. Routing suffixes remain distinct. Creation, delegation and dispatch must validate against the account that will execute, without substituting a model or a listed option value. Retired option IDs still reach the driver for interpretation of saved selections. See `apps/host/src/agents/model-selection.ts` and `packages/client/src/host/model-catalog.ts`.
-
-A remembered selection is a decision: keep an unavailable choice visible with its reason. Later preferences never rewrite an existing Thread. Engine defaults apply when the person leaves an option at default; accounts do not invent their own model defaults.
+The Runner owns credentials; the Host owns account metadata and defaults. A temporary sign-in or
+catalog failure never moves an account's default or silently picks another account. Delegation
+inherits the parent's engine, source and exact model unless overridden; an ambiguous account is a
+refusal ([delegation placement](../apps/host/src/agents/delegation-placement.ts)). The matched live
+catalog supplies the native model ID, never client input, and creation, delegation and dispatch
+validate against the executing account without substituting a model or option
+([model selection](../apps/host/src/agents/model-selection.ts)). Retired option IDs still reach the
+driver. An unavailable remembered selection stays visible with its reason, later preferences never
+rewrite an existing Thread, and accounts never invent model defaults.
 
 ## Automatic model selection
 
-Automatic selection preserves declared preferences, considers authorized configured accounts,
-and treats relevant usage exhaustion as advisory ordering. An eligible original remains once,
-at the final position. Eligibility and endpoint checks always prevail. Selection never replays
-accepted or uncertain work.
-
-This differs from T3 on purpose. Within each declared want the engine's default account comes
-first, then the person's other configured accounts, and declared want order holds; T3 instead
-reaches its other defaults only after a known exhaustion. Usage comes from the catalog owner's
-normalized facts with no engine exceptions: a known-exhausted window moves a candidate after
-every other one and never removes it, because cached readings can be wrong. Naming may move on
-after a contained generation failure; memory and specialists choose before admission, freeze
-that choice, and never run another candidate after a Run failure.
-
-A person's role list replaces the maintained ranking for that role; an absent role follows the
-release's maintained defaults. Exclusions only subtract from the accounts the principal may
-already use, and the original never overrides them. Unbound wants never select an
-OpenAI-compatible endpoint; only the person's explicit account binding can. Specialist
-manifests may expand roles but never bind accounts or confer authority. Ordinary work keeps its
-exact chosen model. See `packages/core/src/model-candidates.ts` and
-`apps/host/src/agents/automatic-models.ts`.
+Work a person didn't place by hand (naming, memory passes, specialists, empty-choice defaults) goes
+through one [resolver](../packages/core/src/model-candidates.ts). It preserves declared preferences,
+considers authorized configured accounts, and treats usage exhaustion as advisory ordering, because
+cached readings can be wrong. An eligible original stays once, last. Eligibility and endpoint checks
+always prevail, so a switched-off account stays off even for a task's own model. Selection never
+replays accepted or uncertain work: naming may advance after a contained generation failure, while
+memory and specialists choose before admission and freeze that choice. The person's list and
+excluded accounts are the only consent; an unbound entry never reaches an `openai-compatible`
+account, and a manifest can't bind one. This differs from T3, which reaches other accounts only
+after a known exhaustion: here declared order holds, default account first within each entry.
 
 ## What a driver declares
 
-Use `packages/core/src/harness-catalog.ts` for declarations and `packages/harness/src/types.ts` for contracts. Keep driver imports out of client-bundled core. Launch Node through `HarnessDriverRuntime.nodeExecutable`, since Desktop's `process.execPath` is Electron.
+Declarations live in [harness-catalog.ts](../packages/core/src/harness-catalog.ts), contracts in
+[types.ts](../packages/harness/src/types.ts). Keep driver imports out of client-bundled core. Launch
+Node through `HarnessDriverRuntime.nodeExecutable`, because Desktop's `process.execPath` is
+Electron. Thread access modes and SSH machine-access modes are separate contracts, and a mode falls
+back only to a stricter one. OpenCode, Pi and Cursor cannot implement the routine-action approval
+mode. OpenCode's child-session permissions must stay routable to a person before child execution is
+on.
 
-Thread access modes and SSH machine-access modes are different contracts. A mode may fall back only to a stricter one; Antigravity's Auto mode uses its approval-prompting default mode. OpenCode, Pi and Cursor cannot implement Opensteer's routine-action approval mode. OpenCode's native child-session permissions must remain routable to a person; do not enable child execution without that path.
-
-Source fields are nonsecret metadata. Reject URL credentials and fragments: credentials there would be stored or logged in clear and do not survive base-URL joining. Managed secrets enter through `secret-input`, travel once from Host to Runner, and are stored by the driver.
+Source fields are nonsecret metadata: reject URL credentials and fragments, which would be stored or
+logged in clear. Managed secrets enter through `secret-input`, travel once from Host to Runner and
+are stored by the driver.
 
 ### Models served by a model server
 
-Discovery contacts only loopback on native-user Runners; a port alone cannot identify a server. Discovery must never send a stored key automatically. The person's explicit local-import action may read oMLX's API key, validate it and store an account-owned copy, without returning it to Host or client. Prefer its sub key; never read `secret_key`, since the main API key also grants admin login. A fake listener can imitate health responses, which is why importing requires the person's action. Management authority includes the computer owner and Deployment administrators.
-
-An endpoint without a stored key is tried without one; a rejected stored key must not fall back to anonymous access. Pi requires an `apiKey` entry in `models.json` to load custom models: use an inert placeholder there and keep real keys in `auth.json`. Avoid Pi's command/environment expansion prefixes in the placeholder.
-
-Unknown effective context limits make a model unavailable, never guessed. Generic endpoint theoretical context fields are not served limits. Ollama's loaded context wins; otherwise its Modelfile `num_ctx` is usable, not theoretical `model_info`. Manual limits assert server configuration; they do not change it, and output headroom is not a complete prompt-size guarantee. Preserve native IDs and saved compatible-account model identities. See `packages/harness/src/compatible-endpoint.ts`, `packages/harness/src/model-servers.ts` and migration `0059_compatible_endpoint_model_identity` in `packages/database/src/migrations.ts`.
-
-Discovery and local-import require Host API epoch 23; older Runners keep existing accounts working but cannot offer these capabilities. Host-first upgrades matter.
+Discovery contacts only loopback, on native-user Runners, and never sends a stored key. A fake
+listener can imitate a server, so importing oMLX's key needs the person's explicit action, and the
+key never returns to Host or client; prefer its sub key and never read `secret_key`, which grants
+admin login. A rejected stored key never falls back to anonymous access. Pi loads custom models only
+with an `apiKey` in `models.json`: use an inert placeholder there and keep real keys in `auth.json`.
+An unknown context limit makes a model unavailable, never guessed; theoretical context fields are
+not served limits ([model-servers.ts](../packages/harness/src/model-servers.ts)).
 
 ## What a driver reports
 
-A settled authentication-required catalog is a normal result, not a background retry loop. External CLI sign-in changes require explicit refresh; drivers must not hide refresh behind timed caches. Catalogs and options come from the executing engine or endpoint; an unlistable or oversized catalog fails rather than publishing a different source or partial inventory.
+A settled sign-in-required catalog is a normal result, not a retry loop, and CLI sign-in changes
+need explicit refresh, never a timed cache. An unlistable or oversized catalog fails rather than
+publishing another source or a partial list. Transient provider retries stay working, not waiting
+for a person. Capacity exhaustion uses the shared `harness_usage_limit` classification. Antigravity
+reports a failed model call as reply text with a normal `end_turn`; only its stderr markers show the
+failure, so its driver classifies from them and drops the echoed reply.
 
-Transient provider retries remain working, not waiting for a person. Only failures another send can overcome are retryable. Capacity exhaustion uses the shared `harness_usage_limit` classification; OpenCode's HTTP 429 and Cursor's text classification remain imperfect provider signals. Antigravity reports a failed model call inside a turn as reply text with a normal `end_turn`; only its stderr markers say the turn failed, so its driver classifies from those and drops the echoed reply. See the driver implementations in `packages/harness-*`.
+Report usage before terminal events, even on interruption. Costs are list-price arithmetic, not
+subscription charges; never invent prices or show an unknown zero price as free. Root usage includes
+native subagents. Codex reports cumulative thread totals across warm Runs and resume, so count only
+growth for this Run's turns, without recharging history after compaction resets.
 
 ## Engine releases and new models
 
-Use [upgrade-engines](../.agents/skills/upgrade-engines/SKILL.md) to bump pins, qualify real accounts or add a model. Engine catalogs are authoritative: forcing an unlisted Claude model can run it with incorrect default context/output limits. Codex's server filters models by client version, Claude compiles its list, and Pi bundles a snapshot; OpenCode and user-installed Cursor can discover new models independently.
+Use [upgrade-engines](../.agents/skills/upgrade-engines/SKILL.md) to bump pins, qualify real
+accounts or add a model. Engine catalogs are authoritative: forcing an unlisted Claude model can run
+it with wrong context and output limits. Codex's server filters models by client version, Claude
+compiles its list and Pi bundles a snapshot; OpenCode and installed Cursor discover models alone.
 
-Own-sign-in Codex, Claude and Cursor accounts run the person's installed CLI, so credentials and executable come from the same installation. Never substitute shipped bytes if that CLI is absent. Shared Runners use shipped engines only. Exact shipped pins and installed minimum versions have different meanings; minimums move only when driver compatibility requires it. See `packages/harness/src/registry.ts` and `packages/harness/src/runtime-artifact.ts`.
+Own-sign-in Codex, Claude and Cursor accounts run the person's installed CLI, so credentials and
+executable come from one installation; never substitute shipped bytes when it is missing. Shared
+Runners use shipped engines only. Installed minimums move only when driver compatibility requires it
+([registry](../packages/harness/src/registry.ts)). Installed-engine updates resolve ownership from
+the real executable (a Homebrew Node formula does not own an npm global) and give guidance rather
+than guess; they fence affected Runs and sign-ins first, and their output is never published, since
+an updater may echo its environment
+([engine-installation.ts](../packages/harness/src/engine-installation.ts)).
 
-Installed-engine updates are native-user maintenance. Resolve ownership from the real executable before choosing a package-manager or native updater; a containing Homebrew Node formula does not own an npm global, and an unproved owner gets guidance rather than a guessed command. Fence affected Runs and sign-ins, retire warm sessions, supervise the updater, then invalidate every driver and catalog object that could retain the replaced executable. Update output is bounded and never published because an upstream updater may echo its environment. See `packages/harness/src/engine-installation.ts` and `apps/runner/src/runtime/runtime.ts`.
-
-Antigravity is neither shipped in a distribution nor resolved from the person's `PATH`. Its driver downloads Google's pinned archive into the Runner-owned runtime cache, verifies the complete archive and member manifest, then atomically publishes an immutable SHA-256-addressed release shared by that Runner's accounts. Version 1.4.1 remains pinned because 1.4.2–1.4.4 write a system skill into every Workspace.
-
-Codex enables only approved features from `packages/harness-codex/src/features.ts`. New defaults must stay off until reviewed; effective configuration that forces an unapproved feature on refuses the Run.
+Antigravity is neither shipped nor taken from `PATH`: its driver downloads Google's pinned archive,
+verifies it and publishes an immutable SHA-256-addressed release
+([pin and reason](../packages/harness-antigravity/src/release.ts)). Codex enables only approved
+[features](../packages/harness-codex/src/features.ts), and a configuration forcing an unapproved one
+refuses the Run. Cursor's CLI MCP configuration has no per-server tool timeout, so the harness
+writes only the server URL and authorization header and cannot pin a Cursor tool-call timeout.
 
 ## Shared Runner sandbox
 
-OpenCode and Pi have no per-command sandbox and must refuse shared (`isolated-service`) Runners during both inspection and session creation. Cursor, Grok, Antigravity and Muse Code also refuse, as do their sign-ins and updates: their sign-ins live in files or keychains of the account the service runs as, so a shared Runner would spend whichever person's plan it happens to hold. Cursor API keys cannot safely replace this because model shell commands can read the harness environment. Several upstream OAuth methods also require callback ports unreachable from a Runner; do not advertise a half-working sign-in.
+OpenCode and Pi have no per-command sandbox and refuse shared (`isolated-service`) Runners. Cursor,
+Grok, Antigravity and Muse Code refuse too, with their sign-ins and updates: their sign-ins live in
+the service account's files or keychain, so a shared Runner would spend whichever person's plan it
+holds, and Cursor API keys are no substitute because model commands can read the harness
+environment. Never advertise a sign-in whose OAuth callback port a Runner cannot reach.
 
-On shared Runners, per-command isolation denies model commands access to private credential state. Linux additionally hides shared roots and binds only this Run's profile, Thread state, Workspace roots and machine-access launch directory. The outer sandbox does not replace protection from the model's commands. macOS Seatbelt cannot nest; native-user Runners omit both isolation layers because their owner owns the machine and credentials. See `apps/runner/src/sandbox/harness-sandbox.ts`.
-
-Boot probes must prove isolation and required writes. Launches must match planned HOME/TMPDIR, use the launch wrapper even for machine-access probes, and keep Thread files in supplied state directories. Desktop's process supervisor must own inspection subprocesses too, even though no Run execution scope owns them; Runner death must end their process groups. See `packages/harness/src/process-supervisor.ts`.
+On shared Runners, per-command isolation keeps model commands from private credential state, and
+Linux binds only this Run's profile, Thread state, Workspace roots and launch directory. Native-user
+Runners omit both layers, because their owner owns the machine and credentials
+([harness-sandbox.ts](../apps/runner/src/sandbox/harness-sandbox.ts)). Boot probes must prove
+isolation, and Runner death must end inspection subprocesses too.
 
 ## Opensteer tools through the Runner
 
-The Host builds each Run's tool plan from the registry, including instructions
-and bundled skills. All eight engines configure one MCP server, `opensteer`,
-from that plan. Runners and drivers must not reconstruct a tool list from their
-own release. `toolsRevision` participates in warm-engine identity, so a changed
-plan cannot reuse an engine with stale discovery. The Host visibly refuses
-execution on a Runner without `agent-tools-plan-v1` before dispatch; there is no
-mixed-version tool inventory. See
-[plan construction](../apps/host/src/agents/agent-tools-plan.ts).
+The Host builds each Run's tool plan, instructions and skills
+([plan construction](../apps/host/src/agents/agent-tools-plan.ts)), and every engine configures one
+`opensteer` MCP server from it; Runners never rebuild a tool list from their own release, and
+`toolsRevision` is part of warm-engine identity. Engines never receive a Host token: the loopback
+[credential proxy](../apps/runner/src/credentials/credential-proxy.ts) gives each Run a secret
+usable only for its tool endpoints, never put on a command line and revoked on interrupt. Loopback
+alone is no tenant isolation. Token refresh belongs to the Runner boot holding the Run; refusal ends
+access, temporary unavailability does not
+([Run tool authority](agent-orchestration.md#run-tool-authority)).
 
-Engines never receive a Host token. The loopback proxy gives each Run a secret usable only for its tool endpoints, forwards the current Host token, rejects arbitrary forwarding and redirects, and bounds requests. Never put its secret on a command line. Interrupt revokes it and closes streams immediately; Host grant revocation remains authoritative. Loopback alone provides no tenant isolation. See `apps/runner/src/credentials/credential-proxy.ts`.
-
-Token refresh belongs only to the Runner boot holding the Run. Refusal ends access; temporary unavailability does not revoke it. Existing MCP sessions authorize each request with its current token; open shell/browser connections remain bound to the grant, not the original token's lifetime. Warm-engine relays serve one Run at a time and suspend between Runs. See [Run tool authority](agent-orchestration.md#run-tool-authority) and [Warm engines](agent-orchestration.md#warm-engines).
-
-Claude defers Opensteer tool schemas through ToolSearch, which must remain available in every mode; disable ambient settings. Its private synthetic project root supplies loose skills without loading the real project settings. CLAUDE.md and .claude/rules from cwd can still load when the project source is enabled. An organization-managed Claude policy is read independently of settingSources and takes precedence over Opensteer’s per-Run settings; it can enable plugins/hooks or loosen permissions, and Opensteer’s guarantees assume no such policy. CLI-bundled plugins remain enabled; plugin permission callbacks that reach Opensteer become Requests in every access mode, while terminal-pane focus requests fail because Opensteer cannot display them. Pi receives the Host's JSON Schema unchanged, including constraints and coercion semantics; Host validation remains authoritative.
+Claude defers Opensteer tool schemas through ToolSearch, which must stay available in every mode.
+Its synthetic project root supplies loose skills without the real project settings, though CLAUDE.md
+and `.claude/rules` can still load. An organization-managed Claude policy overrides Opensteer's
+per-Run settings, so Opensteer's guarantees assume none. Plugin permission callbacks become Requests
+in every access mode.
 
 ## Instructions and skills
 
-Skills have unique full names: `plugin:skill` for plugin skills (including the built-in `opensteer` plugin), bare names for loose Workspace skills. Duplicate full names fail the Run; no layer shadows another. Platform and role instructions supplement the engine's system prompt and never confer Host authority. Keep cross-tool routing in the Run guide so Claude can choose tools before discovering their deferred schemas. MCP initialization must not repeat that guide.
-
-Deliver skill discovery metadata rather than every body. Pi disables ambient discovery in favor of the resolved plan. On Codex resume, send current Workspace and Opensteer instructions through keyed turn context: changed startup instructions do not refresh an existing conversation. An absent Workspace file must clear prior instructions. See `apps/runner/agent-skills/skills`, `packages/harness/src/skill-catalog.ts` and each driver's protocol tests. Transport success alone does not prove model behavior.
-
-ACP engines do not share one resume or cancellation contract. Each driver declares whether the native protocol loads or resumes, whether replayed updates are suppressed, and whether cancellation kills the process or waits for the prompt RPC; those choices are not inferred from an ACP protocol version.
+Skills have unique full names (`plugin:skill`, or bare for loose Workspace skills); duplicates fail
+the Run, and no layer shadows another. Instructions supplement the engine's system prompt and never
+confer Host authority. Cross-tool routing stays in the Run guide so Claude can choose tools before
+loading deferred schemas. On Codex resume, send current instructions through keyed turn context,
+since startup instructions do not refresh an existing conversation
+([skill-catalog.ts](../packages/harness/src/skill-catalog.ts)). ACP engines differ in resume and
+cancellation, so each driver declares its own rather than inferring it from the ACP version.
 
 ## Thread names and symbols
 
-Naming is Host-owned background work, not part of a Run, so a Run's teardown and engine reuse never wait on it. The Host tries up to three candidates from the requester's `light` role and then the task's own model, asking the Runner that holds each account to run `generateText` with that exact model; exclusion and account authority are checked again once a Runner slot is free, just before sending. A typed failure moves on; only failures that may mean stale account or model information refresh the catalog. The Host sends a Runner no more than `backgroundTextAttemptsPerRunner` attempts at once and starts each deadline when it sends, so waiting behind other tasks never spends a candidate; drivers never list models or retry inside generation. Generation runs contained, with no tools, ambient instructions, hooks, plugins or persistent history, and denies interaction requests. Its process is reaped by the attempt deadline. A result is accepted only for its live attempt (Runner connection and boot, account revision, principal, source message and expiry); the Host finds the Thread itself. The person's title and symbol stay independent: only provisional fields change. See `apps/host/src/agents/thread-naming.ts` and `packages/harness/src/thread-title.ts`.
-
-OpenCode can retry refused naming calls indefinitely while reporting errors only in logs; stop at the first logged stream error. Claude's explicit session title prevents recursive automatic naming. Pi prompt overrides must suppress ambient SYSTEM/APPEND_SYSTEM files, and Cursor needs empty working/configuration homes plus tool-denying hooks.
-
-## Usage
-
-Report usage before terminal events, even on interruption. Engine costs are list-price arithmetic, not subscription charges; do not invent prices or present unknown zero prices as free. Root usage already includes native subagents. Codex reports cumulative thread totals across warm Runs and on resume: count only growth for turns this Run owns, handling compaction resets without charging the resumed history again. See the driver usage tests and `RunUsageSchema` in `packages/core/src/models.ts`.
+Names and symbols have independent provenance: a late generated candidate never replaces a person's
+choice, even an identical one. Chat is identified by `homeThreadId` and cannot be renamed through
+ordinary Thread commands. Naming is Host-owned background work, so a Run's teardown and engine reuse
+never wait on it ([thread-naming.ts](../apps/host/src/agents/thread-naming.ts)). Generation runs
+contained with no tools, ambient instructions, hooks, plugins or history, using the exact model it's
+given with no discovery. A result counts only for its live attempt on that Runner connection, and
+the Host finds the Thread itself.

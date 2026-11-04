@@ -36,7 +36,7 @@ enum Wire {
     let protocolVersion: Int
     /// Which delivery routes this build actually has. `windowLocation` is
     /// false when `CGEventSetWindowLocation` could not be resolved, and then
-    /// `click` and `scroll` answer `unsupported` (§2 "Actions"). Optional in
+    /// `click` and `scroll` answer `unsupported`. Optional in
     /// the schema, always sent by this helper.
     let routes: Routes
 

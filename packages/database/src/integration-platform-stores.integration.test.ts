@@ -4648,6 +4648,79 @@ integration.sequential("PostgreSQL computer app connections", () => {
     );
   });
 
+  it("asks again about a declined server installed again as a launch it once approved", async ({
+    storeFixture,
+  }) => {
+    const { guiFixture, platform } = storeFixture;
+    const setup = await guiFixture("server-declined-revert");
+    const installationId = createIntegrationId("installation");
+    const serverId = createIntegrationId("server");
+    const installAs = (edition: string) =>
+      platform.install({
+        actorUserId: setup.ownerUserId,
+        adapterSnapshot: null,
+        installation: {
+          description: "",
+          id: installationId,
+          manifest: {},
+          name: "plugin-camera",
+          provenance: {},
+          sourceKind: "plugin",
+          status: "active",
+          title: "camera",
+          trust: "administrator-approved",
+          version: null,
+        },
+        requestId: `server-declined-revert-${edition}`,
+        servers: [
+          {
+            catalog: { definitions: {}, tools: [] },
+            connectionRequirement: { kind: "none" },
+            id: serverId,
+            name: "camera",
+            status: "needs-attention",
+            statusDetail: null,
+            transport: {
+              launch: {
+                args: [],
+                command: "node",
+                cwd: "/tmp",
+                env: { EDITION: edition },
+                type: "stdio" as const,
+              },
+              runnerId: setup.runnerId,
+              type: "runner",
+            },
+          },
+        ],
+      });
+    const ask = async () => {
+      await platform.localMcp.requestApprovals();
+      const asked = (await platform.listComputerAppSetupRequests(setup.ownerUserId)).find(
+        ({ kind }) => kind === "server",
+      );
+      if (!asked) throw new Error("Its computer was not asked");
+      return asked;
+    };
+    await installAs("approved");
+    await platform.localMcp.approve({
+      actorUserId: setup.ownerUserId,
+      runnerId: setup.runnerId,
+      secrets: async () => null,
+      setupRequestId: (await ask()).id,
+    });
+    await installAs("declined");
+    await platform.localMcp.decline({
+      actorUserId: setup.ownerUserId,
+      runnerId: setup.runnerId,
+      setupRequestId: (await ask()).id,
+    });
+
+    await installAs("approved");
+    expect(await platform.localMcp.get(serverId)).toMatchObject({ approvedLaunchDigest: null });
+    await ask();
+  });
+
   it("asks the computer a server moves to, and keeps none of what was entered for the last", async ({
     storeFixture,
   }) => {

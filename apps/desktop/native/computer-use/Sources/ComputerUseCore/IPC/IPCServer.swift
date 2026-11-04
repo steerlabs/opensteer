@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-/// The helper's canonical on-disk locations (§2 "Install", "IPC").
+/// The helper's canonical on-disk locations.
 public enum HelperPaths {
   public static var supportDirectory: URL {
     URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)

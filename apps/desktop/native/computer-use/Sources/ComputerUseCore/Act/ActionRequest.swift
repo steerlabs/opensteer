@@ -41,7 +41,7 @@ public enum ActionTarget: Decodable, Sendable {
   }
 }
 
-/// One action of a `session.act` batch (§2 "Actions").
+/// One action of a `session.act` batch.
 public enum ActionRequest: Decodable, Sendable {
   case click(target: ActionTarget, button: MouseButton, count: Int)
   /// Without a target, text goes to whatever the app has focused after the

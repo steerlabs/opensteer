@@ -55,7 +55,7 @@ const RUNTIME_VERSION = "0.0.0";
  * What a started Runner brings to its Host connection, and how to stop it.
  *
  * There are exactly two shapes behind this: a computer that runs agents, and a
- * reach-only computer that offers shell, apps, or both (`docs/computers.md` §2). Which
+ * reach-only computer that offers shell, apps, or both (`docs/computers.md#runner-and-desktop`). Which
  * one starts is decided once, here, from the configured module list — nothing
  * downstream asks again.
  */

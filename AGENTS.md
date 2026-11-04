@@ -98,9 +98,10 @@ which entries applied:
   through the [tool catalog](packages/agent-tools/src/tools/index.ts).
   Model-facing text has behavioral evals in `evals/agent-tools`.
 - **Deployments and channels.** Personal and server Deployments; the Stable and
-  Beta update channels.
+  Beta update channels ([Releases](docs/releases.md)).
 - **Connections.** Same computer, private network, Connect, and a weak cellular
-  link. Several devices on one Deployment at once.
+  link. Several devices on one Deployment at once
+  ([Connections](docs/connections.md)).
 - **Reverse states.** If you added a way in, add the way out and a way to see
   it. A one-way door is a bug.
 - **Guidance.** Does the change make a doc, skill or this file wrong? Apply
@@ -135,10 +136,18 @@ as `.claude/skills/`.
   test or journey that proves the behavior. **Do not run repo-wide checks:** no
   `pnpm check`, `pnpm test` or full `pnpm test:integration` unless Tim asks.
   CI owns the full suite.
-- Test what a person would notice breaking, at the cheapest layer that catches
-  it, with real collaborators where they're cheap. Add an end-to-end journey
-  only when the bug only shows end to end: one per user-facing flow, not per
-  edge case.
+- Test what a person would notice breaking: access and authority rules, wire
+  contracts, persistence and migrations, engine protocol translation, races,
+  and the logic a fix changed. Leave out tests for what types already
+  guarantee, trivial logic, copy text, smoke runs, tests that only mirror a
+  mock's calls, callback wiring, and markup rendered from props. Purely visual
+  bugs (spacing, color, alignment, a layout shift) get before/after captures as
+  their proof, not a UI test.
+- Test at one layer: the cheapest one that fails without the fix, with real
+  collaborators where they're cheap. Don't repeat the case in a wrapper, at
+  each call site, or in web and mobile copies of the same logic. Add an
+  end-to-end journey only when the bug only shows end to end: one per
+  user-facing flow, not per edge case.
 - Every test guards something specific, runs quickly and isn't a duplicate.
   Extend an existing case before adding one. Deleting duplicate or useless tests
   is maintenance, but never drop the only coverage of a past real bug or a
@@ -195,19 +204,29 @@ Most code changes need no documentation change: agents can read the code.
   span components, processes or releases, security and privacy properties,
   traps, and facts that live outside the repo. Before adding a paragraph, ask
   what someone would get wrong without it. If the code answers it, leave it out.
+- Each area's notes are one file in `docs/`, named for the area. Open the one
+  your change crosses when you reach it; there is no reading list to finish
+  before you start.
 - Don't narrate control flow, list fields, methods, flags or constants, keep
   file catalogs, or append history (PR summaries, evidence logs, dates, commit
   hashes). Link to the source instead of describing or copying it.
-- A reason that only matters to one spot is a short comment there. Comments
-  explain what the code can't show; never restate it, narrate steps or record
-  history. Finish changes without TODOs.
+- Default to no comment. Write one only for a constraint, an external quirk or
+  an invariant the code can't show: one line where you can, four at most.
+  Don't restate names or signatures, narrate steps, record history or explain
+  the fix you just made; the PR carries that. Finish changes without TODOs.
 - When a documented decision changes, rewrite or delete the old text. Don't
   append a second account.
 - Procedures for running, testing, debugging or releasing are skills in
   `.agents/skills/<name>/SKILL.md`, not docs.
 - Guidance that disagrees with the code is a bug: fix it or remove it in the
   same change.
-- Keep plans, research, reports and scratch output outside the checkout.
+
+## Plans and work artifacts
+
+- Don't commit implementation plans, research notes, reports or agent scratch
+  files. Keep working material outside the checkout.
+- A merged PR is the implementation record. Don't keep a second plan,
+  checklist or status file in the repository.
 
 ## How it works
 
@@ -237,34 +256,12 @@ for macOS app control and Passwords.
 | Agent tool-use behavioral evals                | `evals/agent-tools`                                             |
 | Repository tooling and cross-package guards    | `scripts`, `tests`                                              |
 
-Read the matching doc before changing one of these areas. Each holds only the
-decisions and constraints the code can't show.
-
-| Changing                                                               | Read                                                                                                          |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Deployment config, Host authentication, RPC or compatibility           | [Host boundaries](docs/host-boundaries.md)                                                                    |
-| Client routing, discovery, credentials or attachment lifecycle         | [Connections](docs/connections.md)                                                                            |
-| Agent input delivery, steering, delegation or continuation             | [Agent orchestration](docs/agent-orchestration.md)                                                            |
-| Engines, accounts, model selection, sandboxing or instruction delivery | [AI engines](docs/ai-engines.md)                                                                              |
-| Computer enrollment, SSH access or computer apps                       | [Computers](docs/computers.md)                                                                                |
-| macOS GUI control and helper permissions                               | [Computer use](docs/computer-use.md); [renderer contract](apps/desktop/src/computer-use/RENDERER-CONTRACT.md) |
-| Agent phones: USB setup, the Android app, phone sessions and approvals | [Agent Phone](docs/agent-phone.md)                                                                            |
-| This iPhone's Calendar, Contacts and Reminders for agents              | [iPhone apps](docs/iphone-apps.md); [mobile lifecycle](docs/mobile.md#this-iphones-apps)                      |
-| Workspace storage authority or mount recovery                          | [Workspace lifecycle](docs/workspace-mount-lifecycle.md)                                                      |
-| Integration OAuth and access requests                                  | [Integration OAuth](docs/integration-oauth.md)                                                                |
-| Messaging providers and channel authority                              | [Messaging](docs/messaging.md)                                                                                |
-| Mobile lifecycle, UI or push notifications                             | [Mobile](docs/mobile.md)                                                                                      |
-| Published Opensteer Apps and their viewing frames                      | [Apps](docs/apps.md)                                                                                          |
-| Browser sessions, page uploads or profile storage                      | [Browser sessions](docs/browser-sessions.md)                                                                  |
-| Native browser profile identity and deletion                           | [Storage contract](packages/protocol/src/browser-profile-storage.ts)                                          |
-| Chrome sign-ins and the Chrome extension                               | [Chrome sign-ins](docs/browser-sources.md)                                                                    |
-| Voice dictation into the composer                                      | [Dictation](docs/dictation.md)                                                                                |
-| Saved-password sign-ins and Opensteer Passwords                        | [Opensteer Passwords](docs/passwords.md)                                                                      |
-| Desktop builds, signing and releases; Account service deploys          | [Releases](docs/releases.md)                                                                                  |
-| Tests, CI selection, integration databases and the VM                  | [Testing](docs/testing.md)                                                                                    |
-
 ## Taste
 
+- The Host is authoritative. It decides access, ownership and grants when it
+  acts. Clients derive what to show from what the Host returns and never add
+  an access rule of their own; a client check that can disagree with the Host
+  is a bug.
 - TypeScript and Zod. Parse untrusted data at boundaries, and avoid framework
   abstractions over them. Named exports, except where a framework requires a
   default. No `any`. Production `as unknown as` casts belong only at

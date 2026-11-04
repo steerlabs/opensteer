@@ -1,26 +1,25 @@
 ---
 name: run-agent-evals
-description: Run agent tool-use behavioral evaluations or compare a treatment with a compatible baseline.
+description: Use when running agent tool-use behavioral evaluations (`pnpm eval:agent-tools`), checking a model-facing tool, guide or skill change, repeating the personal memory cases, or comparing a treatment with a compatible baseline.
 ---
 
-Read `docs/testing.md#agent-tool-use-evaluations` for native-tool boundaries.
-Use an existing local subscription login; do not add API keys or host-file targets.
-Start with credential-free harness coverage:
+# Run agent evals
 
-```sh
-pnpm exec vitest run evals/agent-tools
-```
+Real-engine evals spend local subscription capacity and run by hand. Read
+[the safety boundaries](../../../docs/testing.md#agent-tool-use-evaluations) first.
 
-Run the requested engine and select a case for a focused check:
+## Safety rules
 
-```sh
-pnpm eval:agent-tools --engine codex --case workspace-model-discovery-gap --samples 1
-pnpm eval:agent-tools --engine claude
-pnpm eval:agent-tools --engine codex --baseline /absolute/baseline/results.jsonl
-```
+- Devices have one owner: never take another task's simulator, emulator, USB phone or VM slot.
+- Stop everything you start by captured PID or serial, even after a failure; never kill by name.
+- Never drive the host screen: GUI and Electron checks run only in the VM (`pnpm test:vm`).
+- Never read or operate signing keys, Apple accounts or release credentials.
+- Never use a person's real profile, credentials, saved passwords, Messages or personal stores.
+- Never touch the live install: `~/Library/Application Support/Opensteer`, `~/Opensteer`,
+  `Opensteer Beta`.
+- Skipped, blocked or unrun checks are unverified, never passed.
+- Use an existing subscription login, add no API keys, and never target host files in a case.
 
-Use `--out /absolute/directory` outside the checkout when choosing an output.
-Existing results are never overwritten. Inspect `run.json`, `results.jsonl` and
-`summary.md`; distinguish incomplete execution, baseline regressions and ordinary
-behavioral failure data. Use only model/effort values the live engine catalog
-supports. Read `evals/agent-tools/run.ts` for selection and scoring details.
+## Procedures
+
+- [Run and compare](references/running.md): harness tests, focused runs, baselines.

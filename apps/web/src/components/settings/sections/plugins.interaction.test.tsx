@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MockHostClient } from "@opensteer/client/mock";
+import { MockHostClient, type MockHostClientOptions } from "@opensteer/client/mock";
 import { HostClientRequestError, unwrapRpcResult } from "@opensteer/client/host";
 import { pluginCatalogProducts, pluginPath } from "@opensteer/client/settings";
 import {
@@ -60,9 +60,10 @@ async function mount(
     sheet?: boolean;
     empty?: boolean;
     configure?: (client: MockHostClient) => Promise<void>;
+    client?: MockHostClientOptions;
   } = {},
 ) {
-  client = new MockHostClient({ latencyMs: 0 });
+  client = new MockHostClient({ latencyMs: 0, ...options.client });
   await options.configure?.(client);
   if (options.empty) {
     const rpc = client.rpc;
@@ -447,6 +448,21 @@ it("changes only entered server secrets from unified plugin detail", async () =>
   );
   expect(document.querySelector('[role="dialog"]')).toBeNull();
   expect(document.body.textContent).not.toContain("new-secret");
+});
+
+it("leaves updating an agent-made plugin to its agent", async () => {
+  const node = await mount(pluginPath({ kind: "plugin", pluginId: "tapo-camera" }), {
+    client: { agentPlugins: [{ id: "tapo-camera", name: "tapo-camera" }] },
+  });
+  await act(async () => {
+    await vi.waitFor(() => expect(node.textContent).toContain("Installation"));
+  });
+  const buttons = [...node.querySelectorAll("button")].map((button) => button.textContent);
+  expect(buttons).not.toContain("Update");
+  expect(buttons).toContain("Remove");
+  expect(node.querySelector('[aria-label="Enable tapo-camera"]')).not.toBeNull();
+  expect(node.textContent).toContain("updates it by installing its folder again");
+  expect(node.textContent).not.toContain("Source folder unknown");
 });
 
 it("offers only what isn't yours yet, finds it by search and opens its add sheet", async () => {

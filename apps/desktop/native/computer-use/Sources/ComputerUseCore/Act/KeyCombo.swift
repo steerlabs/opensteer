@@ -13,7 +13,7 @@ public enum KeyModifier: String, Sendable, CaseIterable, Comparable {
   }
 }
 
-/// `cmd+s`, `ctrl+shift+tab`, `f5` — what the `key` action accepts (§2).
+/// `cmd+s`, `ctrl+shift+tab`, `f5` — what the `key` action accepts.
 public struct KeyCombo: Sendable, Equatable {
   public let modifiers: Set<KeyModifier>
   /// The normalised key name: a single lowercase letter or digit, or one of

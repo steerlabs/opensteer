@@ -4,7 +4,7 @@ import CoreGraphics
 import Foundation
 import OpensteerAppleData
 
-/// One `session.observe` (§2 "Observation").
+/// One `session.observe`.
 @WorkActor
 public enum AppObserver {
 
@@ -145,7 +145,7 @@ public enum AppObserver {
   }
 
   /// Chromium and Electron apps expose nothing to Accessibility until they are
-  /// asked to, and the ask is per process (§2 "Observation").
+  /// asked to, and the ask is per process.
   static func applyManualAccessibilityIfNeeded(
     app: AppSessionState,
     applicationElement: AXUIElement

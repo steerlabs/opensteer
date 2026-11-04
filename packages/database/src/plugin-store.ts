@@ -2,6 +2,7 @@ import {
   administrationCommand,
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { randomUUID } from "node:crypto";
 import { type Kysely, type Transaction } from "kysely";
 import {
@@ -210,6 +211,8 @@ export class PluginStore {
   async update(
     input: {
       pluginId: string;
+      workspaceId?: WorkspaceId;
+      source?: Readonly<Record<string, unknown>>;
       specialistManifest?: SpecialistManifest | null;
       digest: string;
       manifest: Readonly<Record<string, unknown>>;
@@ -223,6 +226,14 @@ export class PluginStore {
         .where("id", "=", input.pluginId)
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
+      if (
+        (plugin.scope === "workspace" && plugin.workspaceId !== input.workspaceId) ||
+        (input.workspaceId && plugin.scope !== "workspace")
+      )
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Only this Workspace's agent-made plugins can be replaced here",
+        });
       if (input.manifest.name !== plugin.name)
         throw new OpensteerError({
           code: "bad_request",
@@ -244,11 +255,59 @@ export class PluginStore {
         .execute();
       await tx
         .updateTable("plugins")
-        .set({ currentVersionId: id, updatedAt: new Date() })
+        .set({
+          currentVersionId: id,
+          updatedAt: new Date(),
+          ...(input.source ? { source: jsonValue(input.source) } : {}),
+        })
         .where("id", "=", plugin.id)
         .execute();
     };
     return transaction ? persist(transaction) : this.database.transaction().execute(persist);
+  }
+
+  /** Moves the plugin's specialist registrations to its current version; installs call it. */
+  async repinSpecialists(tx: Transaction<DatabaseSchema>, pluginId: string): Promise<void> {
+    const current = await tx
+      .selectFrom("plugins")
+      .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
+      .select(["pluginVersions.id", "pluginVersions.specialistManifest"])
+      .where("plugins.id", "=", pluginId)
+      .executeTakeFirstOrThrow();
+    // Registrations being removed keep the version they were removed from.
+    const registrations = await tx
+      .selectFrom("specialists")
+      .innerJoin("pluginVersions", "pluginVersions.id", "specialists.pluginVersionId")
+      .select(["specialists.id", "pluginVersions.specialistManifest"])
+      .where("specialists.pluginId", "=", pluginId)
+      .where("specialists.removedAt", "is", null)
+      .orderBy("specialists.id")
+      .forNoKeyUpdate("specialists")
+      .execute();
+    if (registrations.length === 0) return;
+    const next = current.specialistManifest;
+    if (!next)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Remove this plugin's specialist registrations before installing it without one",
+      });
+    for (const row of registrations) {
+      // Changed access waits for its owner's choices again, with no automatic
+      // binding, since the owner consented only to the access they saw.
+      const changed =
+        canonicalJson(row.specialistManifest?.access ?? []) !== canonicalJson(next.access ?? []);
+      await tx
+        .updateTable("specialists")
+        .set({
+          pluginVersionId: current.id,
+          updatedAt: new Date(),
+          ...(changed
+            ? { autoBind: false, bindings: jsonValue([]), status: "pending" as const }
+            : {}),
+        })
+        .where("id", "=", row.id)
+        .execute();
+    }
   }
 
   async activateIn(

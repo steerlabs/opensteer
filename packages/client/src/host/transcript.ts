@@ -1154,6 +1154,7 @@ export function browserSignInReceipt(request: Request): string {
     request.response?.kind === "external" ? request.response.value : null,
   );
   if (!response.success || response.data.outcome === "session-closed") return "Allowed";
+  if (response.data.outcome === "not-signed-in") return "Chrome not signed in";
   const site = request.payload.kind === "browser.sign-in" ? request.payload.site : null;
   return site ? `Signed in to ${browserSiteLabel(site)}` : "Signed in";
 }

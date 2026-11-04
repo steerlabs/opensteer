@@ -74,7 +74,7 @@ describe("ComputerUseBlock", () => {
     });
     await click(button(container, "Set up on this Mac"));
     expect(container.querySelector("[role=alert]")?.textContent).toBe(
-      "This build isn’t signed with a Developer ID, so it can’t set up computer use. See SIGNING.md.",
+      "This build isn’t signed with a Developer ID, so it can’t set up computer use. See apps/desktop/README.md.",
     );
   });
 

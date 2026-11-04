@@ -4,7 +4,7 @@ import Foundation
 
 /// Every Accessibility call runs under a two-second messaging timeout, and on
 /// the work executor rather than the main thread, so an unresponsive app can
-/// never hold `Stop` (§2 "Observation").
+/// never hold `Stop`.
 public let axMessagingTimeout: Float = 2.0
 
 /// An `AXUIElement` behind the walker's `ElementNode`.

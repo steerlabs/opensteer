@@ -9,7 +9,7 @@ your phone.
 - **Bring your own agents.** Claude Code, Codex, Cursor, OpenCode and Pi, signed
   in with the subscriptions you already have, or models running on your own
   machine. No API bills required.
-- **Skip the setup.** Connect [Chrome](docs/browser-sources.md) once and agents
+- **Skip the setup.** Connect [Chrome](docs/browser-sessions.md#chrome-sign-ins) once and agents
   use the sites you're already signed into, plus your
   [saved logins](docs/passwords.md), so you don't spend your time signing in and
   connecting things by hand.

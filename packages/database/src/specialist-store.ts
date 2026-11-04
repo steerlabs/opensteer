@@ -49,17 +49,30 @@ export class SpecialistStore {
     pluginId: string;
     actorUserId: UserId;
     autoBind?: boolean;
+    activate?: boolean;
   }) {
     return this.database.transaction().execute((tx) => this.addIn(tx, input));
   }
 
   async addIn(
     tx: Kysely<DatabaseSchema>,
-    input: { workspaceId: WorkspaceId; pluginId: string; actorUserId: UserId; autoBind?: boolean },
+    input: {
+      workspaceId: WorkspaceId;
+      pluginId: string;
+      actorUserId: UserId;
+      autoBind?: boolean;
+      activate?: boolean;
+    },
   ) {
     const autoBind = input.autoBind ?? true;
     await new SpecialistStore(tx).authorize(input.workspaceId, input.actorUserId);
-    await new PluginStore(tx).activateIn(tx, input.pluginId, input.workspaceId, input.actorUserId);
+    if (input.activate !== false)
+      await new PluginStore(tx).activateIn(
+        tx,
+        input.pluginId,
+        input.workspaceId,
+        input.actorUserId,
+      );
     const plugin = await tx
       .selectFrom("plugins")
       .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")

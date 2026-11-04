@@ -1325,6 +1325,7 @@ export async function createHostRuntime(
     await browser.initialize();
     await passwordSignIns.sweepAfterRestart();
     const integrationPlatform = new IntegrationPlatformService({
+      personal: config.workspace.shape.kind === "personal",
       adapters: integrationAdapters,
       secretVault: integrationVault,
       listConnections: (ownerUserId) => integrationStore.listConnections(ownerUserId),
@@ -2279,9 +2280,10 @@ export async function createHostRuntime(
             directory,
             admission,
             files,
-            install: async (directory) => {
+            install: async (stagedDirectory) => {
               const result = await integrationPlatform.installAgentPlugin({
-                directory,
+                directory: stagedDirectory,
+                workspaceDirectory: directory,
                 actorUserId: scope.requestedBy,
                 workspaceId: scope.workspaceId,
                 runnerId: scope.runnerId,
@@ -2291,6 +2293,7 @@ export async function createHostRuntime(
               const registration =
                 result.specialist && pluginId
                   ? await integrationPlatform.store.specialists.add({
+                      activate: false,
                       workspaceId: scope.workspaceId,
                       pluginId,
                       actorUserId: scope.requestedBy,

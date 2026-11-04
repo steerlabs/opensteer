@@ -557,7 +557,7 @@ async function lockedApproved(
 }
 
 /** What was entered for another computer is not kept for this one. */
-async function replaceSecrets(
+export async function replaceSecrets(
   transaction: Transaction<DatabaseSchema>,
   serverId: IntegrationServerId,
   runnerId: RunnerId,
