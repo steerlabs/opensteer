@@ -8,6 +8,7 @@ import {
 import { z } from "zod";
 import type { BrowserFrameView, BrowserCommand, BrowserRasterDemand } from "./client.js";
 import type { WebSocketClient } from "./host-session-client.js";
+import { healthySocketMs } from "./realtime-frames.js";
 export interface BrowserWatchState {
   /** The current socket has received its first authorized snapshot. */
   readonly admitted?: boolean;
@@ -35,7 +36,7 @@ interface Watch {
   readonly awaiting: Map<string, { readonly receivedAt: number; claimed: boolean }>;
   timer: ReturnType<typeof setTimeout> | null;
   attempt: number;
-  /** Frames this target could not read since one was read past a snapshot. */
+  /** Frames this target could not read since a socket last stayed up. */
   unreadableFrames: number;
   /** While frames are unreadable, when the next attempt may start. */
   unreadableRetryAt: number;
@@ -472,6 +473,10 @@ export class BrowserWatchStore {
     socket.binaryType = "arraybuffer";
     this.#set(target, { ...this.#kept(target), status: "connecting" });
     let synchronized = false;
+    const openedAt = Date.now();
+    const forgetFailures = () => {
+      if (Date.now() - openedAt >= healthySocketMs) target.unreadableFrames = 0;
+    };
     // Until the Host answers the subscription for this surface, it treats the
     // socket as a viewer of the active surface; such events are not ours.
     let subscribed = false;
@@ -508,7 +513,7 @@ export class BrowserWatchStore {
           if (data.length > 1024 * 1024)
             return fail(new Error("Browser message exceeds its byte limit."), true);
           const message = BrowserServerMessageSchema.parse(JSON.parse(data));
-          if (synchronized) target.unreadableFrames = 0;
+          forgetFailures();
           if (message.type === "browser.snapshot") {
             if (
               synchronized ||
@@ -598,7 +603,7 @@ export class BrowserWatchStore {
           fail(error, true);
           return;
         }
-        target.unreadableFrames = 0;
+        forgetFailures();
         if (
           frame.header.surfaceId !== target.surfaceId ||
           frame.header.geometryRevision === undefined ||

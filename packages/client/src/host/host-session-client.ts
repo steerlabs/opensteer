@@ -157,6 +157,7 @@ import {
 } from "./transcript.js";
 import {
   describeRealtimeFrameFailure,
+  healthySocketMs,
   maxInboundFrameCharacters,
   realtimeEnvelopeType,
   realtimeFrameLoss,
@@ -401,7 +402,7 @@ interface BrowserChannelState {
   sessionId: string;
   socket: WebSocketClient | null;
   synchronized: boolean;
-  /** Frames this socket's stream could not read since one was read past a snapshot. */
+  /** Frames this viewer could not read since a socket last stayed up. */
   unreadableFrames: number;
 }
 
@@ -1035,6 +1036,7 @@ export class HttpHostClient {
   readonly #reconnectMaxDelayMs: number;
   readonly #reportRealtimeFrame: ((record: RealtimeFrameDiagnostic) => void) | undefined;
   #lostFrameRereadAt = Number.NEGATIVE_INFINITY;
+  #lostFrameRereadTimer: Timer | null = null;
   readonly #refreshIntervalMs: number;
   readonly #prefetchHome: boolean;
   readonly #webSocketFactory: (url: string) => WebSocketClient;
@@ -3472,6 +3474,7 @@ export class HttpHostClient {
     this.#pendingBrowserTabs.dispose();
     if (this.#disposed) return;
     this.#clearAttachmentReads();
+    this.#cancelLostFrameReread();
     this.browserHistory.dispose();
     this.#workspaceTabActivations.dispose();
     this.#snapshot = { ...this.#snapshot, activatingWorkspaceTabs: [] };
@@ -4791,11 +4794,27 @@ export class HttpHostClient {
       case "bootstrap":
         break;
     }
-    // Tab frames arrive with every navigation, and the poll repairs what this skips.
-    const now = Date.now();
-    if (now - this.#lostFrameRereadAt < defaultRefreshIntervalMs) return;
-    this.#lostFrameRereadAt = now;
+    this.#rereadLostFrame();
+  }
+
+  /** Tab frames arrive with every navigation, so reads are spaced and the last is owed, not lost. */
+  #rereadLostFrame(): void {
+    if (this.#lostFrameRereadTimer) return;
+    const wait = this.#lostFrameRereadAt + defaultRefreshIntervalMs - Date.now();
+    if (wait > 0) {
+      this.#lostFrameRereadTimer = globalThis.setTimeout(() => {
+        this.#lostFrameRereadTimer = null;
+        this.#rereadLostFrame();
+      }, wait);
+      return;
+    }
+    this.#lostFrameRereadAt = Date.now();
     this.#reread("host.frame-lost");
+  }
+
+  #cancelLostFrameReread(): void {
+    if (this.#lostFrameRereadTimer) globalThis.clearTimeout(this.#lostFrameRereadTimer);
+    this.#lostFrameRereadTimer = null;
   }
 
   #applyRealtimeMessage(
@@ -5487,14 +5506,12 @@ export class HttpHostClient {
       viewerState: "connecting",
     });
     let gaveUp = false;
+    const openedAt = Date.now();
     socket.addEventListener("message", (event) => {
       if (channel.socket !== socket || socket.readyState >= 2) return;
-      const synchronized = channel.synchronized;
       try {
         this.#handleBrowserFrame(channel, event.data);
-        // A snapshot alone proves nothing: a frame failing right after one on
-        // every connect would otherwise never back off.
-        if (synchronized) channel.unreadableFrames = 0;
+        if (Date.now() - openedAt >= healthySocketMs) channel.unreadableFrames = 0;
       } catch {
         gaveUp = true;
         channel.unreadableFrames += 1;
@@ -5873,6 +5890,7 @@ export class HttpHostClient {
 
   #expireSession(): void {
     this.#clearAttachmentReads();
+    this.#cancelLostFrameReread();
     this.#savedViewReadiness = emptySavedViewReadiness();
     this.#viewerGeneration += 1;
     this.#retainedWorkspaceTabLineages.clear();

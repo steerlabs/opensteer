@@ -11,6 +11,13 @@ import { z } from "zod";
 export const maxInboundFrameCharacters = browserTabCatalogMaxBytes + 4 * 1024;
 
 /**
+ * How long a viewer socket must stay up before its failures are forgotten.
+ * Every connect brings a snapshot, a dialog reply and often a picture, so a
+ * frame read fine proves nothing until the socket has outlasted them.
+ */
+export const healthySocketMs = 30_000;
+
+/**
  * What losing a frame costs, which is what repairs it. `replay`: subscribing
  * from the same cursor sends it again, so it is never skipped. `snapshot`: no
  * subscribe from that cursor would, so only a fresh snapshot answers for it.

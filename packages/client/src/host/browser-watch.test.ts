@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserWatchStore } from "./browser-watch.js";
 import type { WebSocketClient } from "./host-session-client.js";
+import { healthySocketMs } from "./realtime-frames.js";
 
 const sessionId = "bsn_00000000-0000-4000-8000-000000000001";
 const surfaceId = "srf_00000000-0000-4000-8000-000000000001";
@@ -53,6 +54,10 @@ class TargetSocket implements WebSocketClient {
   }
   garbled() {
     this.#emit("message", { data: "{ not a frame" });
+  }
+  /** What the Host answers every targeted subscription with. */
+  subscribed() {
+    this.receive({ type: "browser.dialog.changed", surfaceId, dialog: null });
   }
   /** A binary frame carrying exactly this header, whatever it says. */
   pictureWithHeader(text: string) {
@@ -481,7 +486,7 @@ describe("frames a target cannot read", () => {
   });
 
   it.each([
-    ["a picture", (socket: TargetSocket) => socket.picture(1)],
+    ["a picture", (socket: TargetSocket, sequence: number) => socket.picture(sequence)],
     [
       "a message",
       (socket: TargetSocket) =>
@@ -490,7 +495,7 @@ describe("frames a target cannot read", () => {
           surfaces: [{ id: surfaceId, active: true, title: "Page", url: "about:blank" }],
         }),
     ],
-  ])("keeps counting failures across snapshots until %s is read past one", (_name, read) => {
+  ])("keeps counting failures until %s is read on a socket that has stayed up", (_name, read) => {
     const f = target();
     failThrice(f);
     expect(f.delays.at(-1)).toEqual([0, 3]);
@@ -498,9 +503,44 @@ describe("frames a target cannot read", () => {
     const socket = f.sockets.at(-1)!;
     socket.open();
     socket.admit();
-    read(socket);
+    read(socket, 1);
+    vi.advanceTimersByTime(healthySocketMs);
+    read(socket, 2);
     socket.garbled();
     expect(f.delays.at(-1)).toEqual([0, 1]);
+    f.release();
+  });
+
+  it.each([
+    ["the Host's dialog reply", (socket: TargetSocket) => socket.subscribed()],
+    [
+      "a good picture",
+      (socket: TargetSocket) => {
+        socket.subscribed();
+        socket.picture(1);
+      },
+    ],
+    [
+      "the stream's state",
+      (socket: TargetSocket) =>
+        socket.receive({ type: "browser.stream.state", state: "admitted", surfaceId }),
+    ],
+  ])("grows the delay when %s precedes the same bad picture on every connect", (_name, reply) => {
+    const f = target();
+    for (const [failures, delay] of [
+      [1, 10],
+      [2, 20],
+      [3, 40],
+      [4, 80],
+    ] as const) {
+      const socket = f.sockets.at(-1)!;
+      socket.open();
+      socket.admit();
+      reply(socket);
+      socket.pictureWithHeader("{ not json");
+      expect(f.delays.at(-1)).toEqual([0, failures]);
+      vi.advanceTimersByTime(delay);
+    }
     f.release();
   });
 

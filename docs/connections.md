@@ -87,7 +87,8 @@ refusal stops a channel until Retry.
 
 A browser viewer's snapshot and subscription are the whole of its state, so a viewer that cannot read
 a frame reconnects on the same backoff, keeping its last picture and taking no input. Failures are
-forgotten only after a frame is read past a snapshot, since one can fail right after every snapshot.
+forgotten only once a socket has stayed up a while: every connect brings a snapshot, a dialog reply
+and often a picture, so a frame read fine proves nothing about the next one.
 Everything else stays final: a Host refusal, a Host's 4002 for what the client sent, ended access and
 a frame for the wrong target.
 

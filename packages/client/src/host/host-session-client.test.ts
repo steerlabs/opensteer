@@ -50,6 +50,7 @@ import {
   type WebSocketClient,
 } from "./host-session-client.js";
 import { describeHostConnection } from "./host-connection.js";
+import { healthySocketMs } from "./realtime-frames.js";
 import type { ClientLifecycle, ClientLifecycleSnapshot, ClientNetworkState } from "./lifecycle.js";
 import { placeList } from "./places.js";
 import { visibleTranscript } from "./transcript.js";
@@ -7554,6 +7555,11 @@ describe("HttpHostClient hosted browser", () => {
       socket.receiveRaw(f.snapshot);
       socket.receiveBinary(browserFrame(1));
       socket.receiveRaw(unreadable);
+      socket = await f.viewerAfter(320);
+      socket.receiveRaw(f.snapshot);
+      await vi.advanceTimersByTimeAsync(healthySocketMs);
+      socket.receiveBinary(browserFrame(2));
+      socket.receiveRaw(unreadable);
       await f.viewerAfter(10);
     } finally {
       f.release();
@@ -7567,6 +7573,7 @@ describe("HttpHostClient hosted browser", () => {
       const socket = f.viewers()[0]!;
       socket.open();
       socket.receiveRaw(f.snapshot);
+      await vi.advanceTimersByTimeAsync(healthySocketMs);
       vi.spyOn(socket, "close").mockImplementation(() => {
         socket.readyState = 2;
       });
@@ -13723,10 +13730,9 @@ describe("realtime protocol recovery journey", () => {
         const url = new URL(input instanceof Request ? input.url : input.toString());
         const name = url.pathname.split("/").at(-1)!;
         if (name === "bootstrap.get") bootstrapReads += 1;
-        const read = reads[name];
-        return json(
-          read ? read(rpcPayload(url, init)) : bootstrap([workspace], hostBrowser?.(workspace)),
-        );
+        const answer = reads[name]?.(rpcPayload(url, init));
+        if (answer instanceof Response) return answer;
+        return json(answer ?? bootstrap([workspace], hostBrowser?.(workspace)));
       },
       random: () => 1,
       reconnectBaseDelayMs: 10,
@@ -14300,6 +14306,126 @@ describe("realtime protocol recovery journey", () => {
       } finally {
         f.client.dispose();
       }
+    });
+
+    describe("notices lost faster than a bootstrap may run", () => {
+      const tabCatalog = (revision: number) => ({
+        generation: 1,
+        revision,
+        tabs: [
+          {
+            availability: "ready",
+            documentId: null,
+            iconRef: null,
+            id: "page-1",
+            occupants: [],
+            openerId: null,
+            order: 0,
+            site: "https://example.com",
+            title: "Example",
+          },
+        ],
+      });
+      const lost = {
+        type: "host.browser-tabs-changed",
+        catalog: { generation: -1, revision: 1, tabs: [] },
+        sessionId,
+      };
+      const catalogRevision = (f: Synchronized) =>
+        f.client.getSnapshot().browserSessions[0]?.tabCatalog?.revision;
+
+      async function losing(reads: Parameters<typeof synchronizedClient>[0] = {}) {
+        let revision = 1;
+        const f = await synchronizedClient({
+          ...reads,
+          hostBrowser: (workspace) =>
+            browserWith([session(workspace, { tabCatalog: tabCatalog(revision) })]),
+        });
+        f.sockets[0]!.receiveRaw(lost);
+        await vi.advanceTimersByTimeAsync(0);
+        revision = 2;
+        f.sockets[0]!.receiveRaw(lost);
+        f.sockets[0]!.receiveRaw(lost);
+        await vi.advanceTimersByTimeAsync(0);
+        return f;
+      }
+
+      it("owes one read at the end of the window for all of them, with no poll to fall back on", async () => {
+        const f = await losing();
+        try {
+          expect(catalogRevision(f)).toBe(1);
+          const reads = f.bootstrapReads();
+          await vi.advanceTimersByTimeAsync(14_999);
+          expect(f.bootstrapReads()).toBe(reads);
+          await vi.advanceTimersByTimeAsync(1);
+          expect(f.bootstrapReads()).toBe(reads + 1);
+          expect(catalogRevision(f)).toBe(2);
+          await vi.advanceTimersByTimeAsync(60_000);
+          expect(f.bootstrapReads()).toBe(reads + 1);
+        } finally {
+          f.client.dispose();
+        }
+      });
+
+      it("reads for nobody once the client is disposed", async () => {
+        const f = await losing();
+        f.client.dispose();
+        expect(vi.getTimerCount()).toBe(0);
+      });
+
+      it("still repairs the next viewer's lost notices after a Deployment change", async () => {
+        let moved: unknown;
+        const f = await losing({ reads: { "bootstrap.get": () => moved } });
+        try {
+          moved = {
+            ...bootstrap([f.workspace]),
+            deploymentId: "dep_00000000-0000-4000-8000-000000000002",
+          };
+          await f.client.refresh();
+          await vi.advanceTimersByTimeAsync(60_000);
+          const socket = f.sockets.at(-1)!;
+          socket.open();
+          const reads = f.bootstrapReads();
+          socket.receiveRaw(lost);
+          await vi.advanceTimersByTimeAsync(0);
+          expect(f.bootstrapReads()).toBe(reads + 1);
+        } finally {
+          f.client.dispose();
+        }
+      });
+
+      it.each([
+        [
+          "the viewer is signed out",
+          () => json({ error: { code: "unauthorized", message: "Signed out" } }, 401),
+        ],
+        [
+          "the Deployment changes",
+          (workspace: WorkspaceView) => ({
+            ...bootstrap([workspace]),
+            deploymentId: "dep_00000000-0000-4000-8000-000000000002",
+          }),
+        ],
+      ])("reads for nobody once %s", async (_name, answer) => {
+        let moved: unknown;
+        const f = await losing({
+          reads: {
+            "auth.config": () => ({ methods: [] }),
+            "bootstrap.get": () => moved,
+          },
+        });
+        try {
+          moved = answer(f.workspace);
+          await f.client.refresh().catch(() => undefined);
+          await vi.advanceTimersByTimeAsync(0);
+          moved = undefined;
+          const reads = f.bootstrapReads();
+          await vi.advanceTimersByTimeAsync(60_000);
+          expect(f.bootstrapReads()).toBe(reads);
+        } finally {
+          f.client.dispose();
+        }
+      });
     });
 
     it("rereads a shown conversation's browser usage whole, since the notice cannot name it", async () => {
