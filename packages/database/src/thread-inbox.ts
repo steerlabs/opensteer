@@ -1,4 +1,5 @@
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
+import { startMemoryPassInTransaction } from "./memory-pass-store.js";
 import { assertLineageCompatibleReuse } from "./resource-access.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { z } from "zod";
@@ -1993,6 +1994,8 @@ interface ResolvedThreadInputFacts {
   readonly causalChainId: CausalChainId | null;
   readonly kind: MessageKind;
   readonly replyTarget: ReplyTarget | null;
+  /** A managed memory pass's own wake, admitted onto its idle worker. */
+  readonly memoryPass?: true;
 }
 
 /** Caller holds the prefix in ./lock-order.ts, serializing admission and membership changes. */
@@ -2155,8 +2158,9 @@ export async function enqueueThreadInputInTransaction(
     return replayThreadInput(transaction, existing);
   }
 
-  const { executionValid, membershipGeneration, prelockedActiveRunId, thread } =
-    await lockThreadInputPreconditions(transaction, request);
+  const preconditions = await lockThreadInputPreconditions(transaction, request);
+  const { executionValid, membershipGeneration, prelockedActiveRunId } = preconditions;
+  let thread = preconditions.thread;
   if (request.source.kind === "connection" && policy !== "report" && thread.inheritsMain) {
     const connection = await transaction
       .selectFrom("agentConnections")
@@ -2180,6 +2184,14 @@ export async function enqueueThreadInputInTransaction(
   });
   if (thread.doneAt && request.policy !== "report") {
     throw new OpensteerError({ code: "conflict", message: "This task is Done. Reopen it first." });
+  }
+  const passEvents: AgentEvent[] = [];
+  if (facts.memoryPass) {
+    if (policy !== "queue" || !request.memoryPass)
+      throw new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED });
+    const started = await startMemoryPassInTransaction(transaction, thread, request.memoryPass);
+    thread = started.worker;
+    passEvents.push(started.event);
   }
   await lockThreadProjectionParents(transaction, {
     threadIds: [thread.id],
@@ -2476,7 +2488,7 @@ export async function enqueueThreadInputInTransaction(
     return credited({
       command: steerCommand,
       disposition: "steering",
-      events: [...retiredReportEvents, messageEvent],
+      events: [...retiredReportEvents, ...passEvents, messageEvent],
       input: durableInput,
       message,
       revokedGrants,
@@ -2508,7 +2520,7 @@ export async function enqueueThreadInputInTransaction(
           .where("id", "=", joined.steerCommandId)
           .executeTakeFirstOrThrow(),
         disposition: "steering",
-        events: [...retiredReportEvents, messageEvent, ...handed.events],
+        events: [...retiredReportEvents, ...passEvents, messageEvent, ...handed.events],
         input: threadInputFromRow(joined),
         message: messageFromRow(
           await transaction
@@ -2542,7 +2554,13 @@ export async function enqueueThreadInputInTransaction(
         : finalInput.state === "cancelled"
           ? "cancelled"
           : "pending",
-    events: [...retiredReportEvents, messageEvent, ...handed.events, ...(queued?.events ?? [])],
+    events: [
+      ...retiredReportEvents,
+      ...passEvents,
+      messageEvent,
+      ...handed.events,
+      ...(queued?.events ?? []),
+    ],
     input: finalInput,
     message,
     revokedGrants: handed.revokedGrants,
@@ -2888,6 +2906,9 @@ async function resolveThreadInputFacts(
       causalChainId,
       kind: "input",
       replyTarget: null,
+      ...(origin.systemRole && origin.anchorThreadId === input.targetThread.id
+        ? { memoryPass: true as const }
+        : {}),
     };
   }
 

@@ -1,11 +1,12 @@
 import { sql } from "kysely";
 import { createId, TimeZoneSchema, ThreadAccessModeSchema, type Thread } from "@opensteer/core";
-import { createMemoryPass } from "@opensteer/database";
+import { createMemoryPass, type MemoryPassExecution } from "@opensteer/database";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { HarnessIdSchema, ModelSelectionSchema } from "@opensteer/core";
 import {
   describeStore,
   enrollTestRunner,
+  testContinuationIdentity,
   testReadyHarnessCatalog,
   type StoreFixture,
 } from "@opensteer/database/test-support/store";
@@ -17,7 +18,7 @@ import {
   type TriggerSystemRole,
 } from "@opensteer/triggers";
 import { expect, vi } from "vitest";
-import { MemoryPassService, memoryLightModelPauseReason } from "./memory-pass-service.js";
+import { MemoryPassService, memoryPassWaitingReason } from "./memory-pass-service.js";
 import { memoryPassProgram } from "./memory-pass-program.js";
 
 async function fixture(
@@ -196,12 +197,19 @@ async function tick(f: StoreFixture, base: Awaited<ReturnType<typeof fixture>>, 
   });
   return { occurrence, runnerBootId, ...started };
 }
-function wake(
+/** The Host resolves each pass's model; by default this one keeps the worker's. */
+async function wake(
   f: StoreFixture,
   trigger: Trigger,
   occurrenceId: ReturnType<typeof createId<"triggerOccurrence">>,
   key: string,
+  memoryPass?: MemoryPassExecution | null,
 ) {
+  const worker = await f.database
+    .selectFrom("threads")
+    .select(["harnessInstanceId", "modelSelection"])
+    .where("id", "=", trigger.anchorThreadId)
+    .executeTakeFirstOrThrow();
   return f.store.enqueueThreadInput({
     content: [{ type: "text", text: "Memory pass due" }],
     idempotencyKey: key,
@@ -209,11 +217,12 @@ function wake(
     requestedBy: trigger.createdBy,
     source: { kind: "trigger", occurrenceId },
     threadId: trigger.anchorThreadId,
+    ...(memoryPass === null ? {} : { memoryPass: memoryPass ?? worker }),
   });
 }
 
 describeStore("managed memory passes", (it) => {
-  it("creates exactly one atomic pair under concurrent provisioning, snapshots placement, and never recreates paused/Done identities", async ({
+  it("creates exactly one atomic pair under concurrent provisioning on Chat's placement, and never recreates paused/Done identities", async ({
     storeFixture: f,
   }) => {
     const base = await fixture(f, "concurrent", { accessMode: "approval-required" });
@@ -236,7 +245,7 @@ describeStore("managed memory passes", (it) => {
       lineageRootThreadId: base.chat!.lineageRootThreadId,
       role: "work",
       listed: false,
-      modelSelection: { modelId: "light", nativeModelId: "native-light" },
+      modelSelection: base.chat!.modelSelection,
     });
     expect(nightly.anchorThread?.modelSelection).toEqual(base.chat?.modelSelection);
     expect(light.revision.source).toEqual({
@@ -289,10 +298,7 @@ describeStore("managed memory passes", (it) => {
       workspaceId: base.workspace.id,
       ownerId: base.userId,
       chat: base.chat!,
-      catalog: base.catalog,
-      runtimeRevision: base.harnessInstance.runtimeRevision,
       systemRole: "memory-light" as const,
-      modelSelection: base.chat!.modelSelection,
       program: memoryPassProgram("memory-light"),
       source: {
         kind: "schedule",
@@ -326,10 +332,10 @@ describeStore("managed memory passes", (it) => {
     expect((await role(f, base.userId, "memory-nightly")).trigger.status).toBe("active");
   });
 
-  it("defers no Chat, no zone, preparing catalogs, unreadable files and unsupported inherited modes", async ({
+  it("defers no Chat, no zone and unreadable files, but never waits on a model", async ({
     storeFixture: f,
   }) => {
-    const base = await fixture(f, "prerequisites", { home: false, zone: false });
+    const base = await fixture(f, "prerequisites", { home: false, zone: false, light: false });
     const s = service(f);
     await s.instance.ensureForMain(base.workspace.id);
     const created = await f.store.createThread({
@@ -348,107 +354,36 @@ describeStore("managed memory passes", (it) => {
       userId: base.userId,
       timeZone: TimeZoneSchema.parse("UTC"),
     });
-    await f.store.recordHarnessCatalogs({
-      environmentId: base.environmentId,
-      expectedRevisions: new Map([[base.harnessInstance.id, base.harnessInstance.runtimeRevision]]),
-      catalogs: [
-        HarnessInstanceCatalogSchema.parse({
-          driverKind: "native",
-          harnessInstanceId: base.harnessInstance.id,
-          status: "preparing",
-          detail: "Preparing the account",
-          models: [],
-        }),
-      ],
-    });
-    await s.instance.ensureForMain(base.workspace.id);
-    expect(s.preview).not.toHaveBeenCalled();
-    await f.store.recordHarnessCatalogs({
-      environmentId: base.environmentId,
-      expectedRevisions: new Map([[base.harnessInstance.id, base.harnessInstance.runtimeRevision]]),
-      catalogs: [base.catalog],
-    });
-    s.runners.harnessAccessModes.mockReturnValue([]);
-    await s.instance.ensureForMain(base.workspace.id);
-    expect(s.preview).not.toHaveBeenCalled();
-    s.runners.harnessAccessModes.mockReturnValue(ThreadAccessModeSchema.options);
     s.preview.mockRejectedValueOnce(new Error("Storage unreadable"));
     await s.instance.ensureForMain(base.workspace.id);
     expect(
       await f.triggers.listForOwner({ ownerId: base.userId, scope: { kind: "user" } }),
     ).toEqual([]);
     expect(created.thread.role).toBe("conversation");
-    await s.instance.ensureForMain(base.workspace.id);
-    expect((await role(f, base.userId)).trigger.status).toBe("active");
-  });
-
-  it("creates off identities paused after deferred offline provisioning", async ({
-    storeFixture: f,
-  }) => {
-    const base = await fixture(f, "off");
-    const s = service(f, { off: true });
+    // An offline computer or an account without a light model does not
+    // defer creation: each pass chooses its model when it is admitted.
     s.runners.isAvailable.mockReturnValue(false);
     await s.instance.ensureForMain(base.workspace.id);
-    expect(s.preview).not.toHaveBeenCalled();
-    s.runners.isAvailable.mockReturnValue(true);
-    await s.instance.ensureForMain(base.workspace.id);
+    expect((await role(f, base.userId)).trigger).toMatchObject({
+      status: "active",
+      pauseReason: null,
+    });
+    expect((await role(f, base.userId, "memory-nightly")).trigger.status).toBe("active");
+  });
+
+  it("creates both identities paused, with one reason, when memory is off", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "off", { light: false });
+    await service(f, { off: true }).instance.ensureForMain(base.workspace.id);
     const rows = await f.triggers.listForOwner({ ownerId: base.userId, scope: { kind: "user" } });
     expect(rows).toHaveLength(2);
-    expect(rows.every(({ status, nextFireAt }) => status === "paused" && nextFireAt === null)).toBe(
-      true,
-    );
-  });
-
-  it("retains no-light guidance when provisioned off and nightly is re-enabled", async ({
-    storeFixture: f,
-  }) => {
-    const base = await fixture(f, "off-no-light", { light: false });
-    const s = service(f, { off: true });
-    await s.instance.ensureForMain(base.workspace.id);
-    const light = await role(f, base.userId);
-    const nightly = await role(f, base.userId, "memory-nightly");
-    expect(light.trigger.pauseReason).toBe(
-      `Memory is off at your request. ${memoryLightModelPauseReason}`,
-    );
-    await f.triggers.setStatus({
-      actorThreadId: null,
-      ownerId: base.userId,
-      triggerId: nightly.trigger.id,
-      status: "active",
-    });
-    await s.instance.ensureForMain(base.workspace.id);
-    expect((await role(f, base.userId)).trigger).toMatchObject({
-      id: light.trigger.id,
-      status: "paused",
-      nextFireAt: null,
-      pauseReason: light.trigger.pauseReason,
-    });
-    expect((await role(f, base.userId, "memory-nightly")).trigger.status).toBe("active");
-  });
-
-  it("creates a no-light role paused with a visible reason in detail and list, leaving nightly active", async ({
-    storeFixture: f,
-  }) => {
-    const base = await fixture(f, "no-light", { light: false });
-    await service(f).instance.ensureForMain(base.workspace.id);
-    expect((await role(f, base.userId)).trigger).toMatchObject({
-      status: "paused",
-      nextFireAt: null,
-      pauseReason: memoryLightModelPauseReason,
-    });
-    expect((await role(f, base.userId)).anchorThread?.modelSelection).toEqual(
-      base.chat?.modelSelection,
-    );
-    expect(
-      (
-        await f.triggers.listForOwner({
-          ownerId: base.userId,
-          systemRole: "memory-light",
-          scope: { kind: "user" },
-        })
-      )[0]?.pauseReason,
-    ).toBe(memoryLightModelPauseReason);
-    expect((await role(f, base.userId, "memory-nightly")).trigger.status).toBe("active");
+    for (const row of rows)
+      expect(row).toMatchObject({
+        status: "paused",
+        nextFireAt: null,
+        pauseReason: "Memory is off at your request.",
+      });
   });
 
   it("makes fair keyset progress past ineligible people and isolates a failed person's provisioning", async ({
@@ -461,19 +396,11 @@ describeStore("managed memory passes", (it) => {
     ];
     people.sort((a, b) => a.workspace.id.localeCompare(b.workspace.id));
     const s = service(f, { batchSize: 1 });
-    const original = f.store.getHarnessCatalog.bind(f.store);
-    vi.spyOn(f.store, "getHarnessCatalog").mockImplementation(async (environmentId, harnessId) => {
-      if (environmentId === people[0]!.environmentId)
-        throw new Error("One person's broken catalog");
-      if (environmentId === people[1]!.environmentId)
-        return HarnessInstanceCatalogSchema.parse({
-          driverKind: "native",
-          harnessInstanceId: harnessId,
-          status: "preparing",
-          detail: "Preparing the account",
-          models: [],
-        });
-      return original(environmentId, harnessId);
+    const original = f.store.admitWorkspaceFiles.bind(f.store);
+    vi.spyOn(f.store, "admitWorkspaceFiles").mockImplementation(async (workspaceId, userId) => {
+      if (workspaceId === people[0]!.workspace.id) throw new Error("One person's broken storage");
+      if (workspaceId === people[1]!.workspace.id) return null;
+      return original(workspaceId, userId);
     });
     await s.instance.reconcileMissing();
     await s.instance.reconcileMissing();
@@ -879,4 +806,256 @@ describeStore("managed memory passes", (it) => {
       ).toEqual([]);
       expect(binding.requestedBy).toBe(base.userId);
     });
+
+  it("starts each admitted pass in a fresh native session on its own model, and never reroutes an active pass", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "fresh-pass");
+    await service(f).instance.ensureForMain(base.workspace.id);
+    const light = (await role(f, base.userId)).trigger;
+    const sessions = () =>
+      f.database
+        .selectFrom("providerSessions")
+        .selectAll()
+        .where("threadId", "=", light.anchorThreadId)
+        .execute();
+    const runs = () =>
+      f.database
+        .selectFrom("runs")
+        .selectAll()
+        .where("threadId", "=", light.anchorThreadId)
+        .orderBy("runOrdinal")
+        .execute();
+    const first = await tick(f, base, light);
+    await expect(wake(f, light, first.occurrence.id, "unresolved", null)).rejects.toThrow(
+      MANAGED_MEMORY_WAKE_SKIPPED,
+    );
+    const lightModel = ModelSelectionSchema.parse({
+      providerId: "openai",
+      modelId: "light",
+      nativeModelId: "native-light",
+      options: {},
+    });
+    const admitted = await wake(f, light, first.occurrence.id, "first-pass", {
+      harnessInstanceId: base.harnessInstance.id,
+      modelSelection: lightModel,
+    });
+    expect(admitted.events.map(({ type }) => type)).toContain("thread.execution-updated");
+    const [firstRun] = await runs();
+    const firstSession = (await sessions()).find(({ active }) => active);
+    expect(firstRun).toMatchObject({
+      modelSelection: lightModel,
+      providerSessionId: firstSession?.id,
+    });
+    expect(firstSession?.providerSessionReference).toBeNull();
+    await f.database
+      .updateTable("providerSessions")
+      .set({
+        continuationIdentity: sql`${JSON.stringify(testContinuationIdentity)}::jsonb`,
+        providerSessionReference: "native-first-pass",
+      })
+      .where("id", "=", firstSession!.id)
+      .execute();
+
+    // A later wake while the pass is active neither runs nor reroutes it.
+    const second = await tick(f, base, light);
+    await expect(wake(f, light, second.occurrence.id, "while-active")).rejects.toThrow(
+      MANAGED_MEMORY_WAKE_SKIPPED,
+    );
+    await expect(
+      wake(f, light, second.occurrence.id, "while-active-other-model", {
+        harnessInstanceId: base.harnessInstance.id,
+        modelSelection: base.chat!.modelSelection,
+      }),
+    ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
+    expect((await role(f, base.userId)).anchorThread?.modelSelection).toEqual(lightModel);
+    expect((await sessions()).find(({ active }) => active)?.id).toBe(firstSession!.id);
+
+    await f.database
+      .updateTable("runs")
+      .set({ status: "completed", completedAt: new Date() })
+      .where("id", "=", firstRun!.id)
+      .execute();
+    await f.database
+      .updateTable("threadInputs")
+      .set({ state: "delivered", deliveredAt: new Date(), runId: firstRun!.id })
+      .where("messageId", "=", firstRun!.seedInputId)
+      .execute();
+    const third = await tick(f, base, light);
+    await wake(f, light, third.occurrence.id, "next-pass", {
+      harnessInstanceId: base.harnessInstance.id,
+      modelSelection: base.chat!.modelSelection,
+    });
+    const [frozen, next] = await runs();
+    const nextSession = (await sessions()).find(({ active }) => active);
+    expect(frozen).toMatchObject({
+      modelSelection: lightModel,
+      providerSessionId: firstSession!.id,
+    });
+    expect(next).toMatchObject({
+      modelSelection: base.chat!.modelSelection,
+      providerSessionId: nextSession?.id,
+    });
+    expect(nextSession).toMatchObject({ providerSessionReference: null, status: "starting" });
+    expect(nextSession!.id).not.toBe(firstSession!.id);
+  });
+
+  it("resolves each pass's role when admitted, waits without pausing, and never resumes a pause", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "resolution", { light: false });
+    const claude = await f.store.createHarnessInstance({
+      config: {},
+      driverKind: HarnessIdSchema.parse("claude"),
+      environmentId: base.environmentId,
+      name: "Claude",
+      stateKind: "isolated",
+    });
+    await f.store.recordHarnessCatalogs({
+      environmentId: base.environmentId,
+      expectedRevisions: new Map([[claude.id, claude.runtimeRevision]]),
+      catalogs: [
+        HarnessInstanceCatalogSchema.parse({
+          driverKind: "claude",
+          harnessInstanceId: claude.id,
+          status: "ready",
+          continuationIdentity: {
+            driverKind: "claude",
+            continuationKey: "runner:v1:" + "a".repeat(43),
+          },
+          models: [
+            {
+              displayName: "Claude Haiku 5.5",
+              isDefault: true,
+              providerId: "anthropic",
+              modelId: "claude-haiku-5-5",
+              nativeModelId: "claude-haiku-5-5",
+              options: [
+                {
+                  id: "effort",
+                  label: "Effort",
+                  type: "select",
+                  values: [{ value: "low", label: "Low" }],
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+    // Chat's model as its account's catalog lists it, options included.
+    const chatModel = ModelSelectionSchema.parse({
+      providerId: "openai",
+      modelId: "gpt-5.6-sol",
+      options: {},
+    });
+    await f.database
+      .updateTable("threads")
+      .set({ modelSelection: sql`${JSON.stringify(chatModel)}::jsonb` })
+      .where("id", "=", base.chat!.id)
+      .execute();
+    const s = service(f);
+    const onChanged = vi.fn();
+    const instance = new MemoryPassService({
+      store: f.store,
+      runners: s.runners,
+      files: { preview: s.preview },
+      onEvent: vi.fn(),
+      onChanged,
+      onError: vi.fn(),
+    });
+    await instance.ensureForMain(base.workspace.id);
+    const light = await role(f, base.userId);
+    const nightly = await role(f, base.userId, "memory-nightly");
+    const consent = (providerId: string, acknowledged = true) =>
+      f.store.updateBackgroundModelPreferences(base.userId, {
+        providerId: ModelSelectionSchema.shape.providerId.parse(providerId),
+        acknowledged,
+      });
+
+    // Light has no Chat fallback, and Haiku's provider is not Chat's and is
+    // not yet allowed: it waits.
+    const lightTick = await tick(f, base, light.trigger);
+    await expect(
+      instance.admissionSelection(lightTick.occurrence.id, light.anchorThread!),
+    ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
+    expect(onChanged).toHaveBeenCalledWith(base.workspace.id);
+    expect((await role(f, base.userId)).trigger).toMatchObject({
+      status: "active",
+      pauseReason: null,
+      waitingReason: memoryPassWaitingReason,
+    });
+    expect(
+      (
+        await f.triggers.listForOwner({
+          ownerId: base.userId,
+          systemRole: "memory-light",
+          scope: { kind: "user" },
+        })
+      )[0]?.waitingReason,
+    ).toBe(memoryPassWaitingReason);
+
+    // The person pauses it; a model becoming usable never resumes it.
+    await f.triggers.setStatus({
+      actorThreadId: null,
+      ownerId: base.userId,
+      triggerId: light.trigger.id,
+      status: "paused",
+    });
+    await consent("anthropic");
+    expect(await instance.admissionSelection(lightTick.occurrence.id, light.anchorThread!)).toEqual(
+      {
+        harnessInstanceId: claude.id,
+        modelSelection: expect.objectContaining({
+          providerId: "anthropic",
+          modelId: "claude-haiku-5-5",
+          options: { effort: "low" },
+        }),
+      },
+    );
+    expect((await role(f, base.userId)).trigger).toMatchObject({
+      status: "paused",
+      pauseReason: null,
+      waitingReason: null,
+    });
+    await expect(
+      wake(f, light.trigger, lightTick.occurrence.id, "paused-wake", {
+        harnessInstanceId: claude.id,
+        modelSelection: light.anchorThread!.modelSelection,
+      }),
+    ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
+
+    // Nightly ranks no usable deep model here, so it falls back to Chat's
+    // model; Chat's own provider needs no consent.
+    const nightlyTick = await tick(f, base, nightly.trigger);
+    expect(
+      await instance.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!),
+    ).toEqual({ harnessInstanceId: base.chat!.harnessInstanceId, modelSelection: chatModel });
+    expect((await role(f, base.userId, "memory-nightly")).trigger.waitingReason).toBeNull();
+
+    // Memory turned off stays off while models come and go.
+    await f.database
+      .updateTable("triggers")
+      .set({ pauseReason: "Memory is off at your request.", status: "paused", nextFireAt: null })
+      .where("id", "=", nightly.trigger.id)
+      .execute();
+    await f.store.recordHarnessCatalogs({
+      environmentId: base.environmentId,
+      expectedRevisions: new Map([[base.harnessInstance.id, base.harnessInstance.runtimeRevision]]),
+      catalogs: [{ ...base.catalog, models: [] }],
+    });
+    await expect(
+      instance.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!),
+    ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
+    await f.store.recordHarnessCatalogs({
+      environmentId: base.environmentId,
+      expectedRevisions: new Map([[base.harnessInstance.id, base.harnessInstance.runtimeRevision]]),
+      catalogs: [base.catalog],
+    });
+    await instance.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!);
+    expect((await role(f, base.userId, "memory-nightly")).trigger).toMatchObject({
+      status: "paused",
+      pauseReason: "Memory is off at your request.",
+    });
+  });
 });

@@ -182,7 +182,7 @@ afterEach(() => {
 });
 
 /** The real mock Host's triggers and commands behind a client whose connection the test holds. */
-function host(memoryPasses?: "active" | "off" | "no-light-model") {
+function host(memoryPasses?: "active" | "off" | "waiting-for-model") {
   const mock = new MockHostClient({ latencyMs: 0, ...(memoryPasses ? { memoryPasses } : {}) });
   mocks.push(mock);
   let snapshot: HostSnapshot = { ...mock.getSnapshot(), connection: "connected" };
@@ -711,23 +711,24 @@ describe("One schedule", () => {
 });
 
 describe("Managed memory passes", () => {
-  it("shows the no-light reason, navigates the unlisted worker and pauses/resumes", async () => {
-    const f = host("no-light-model");
+  it("shows the waiting reason, navigates the unlisted worker and pauses/resumes", async () => {
+    const f = host("waiting-for-model");
     const light = (await f.summaries()).find((t) => t.systemRole === "memory-light")!;
     const screen = detailScreen(light.id);
-    await shown(screen, "This engine has no light model", "pause reason missing");
+    await shown(screen, "Waiting for a model it can use", "waiting reason missing");
     expect(screen.textContent).not.toContain("Run now");
     expect(screen.textContent).toContain("Findings reach you through Chat");
     press(button(screen, /^Runs in /));
     expect(pushed().at(-1)).toMatchObject({
       payload: { params: { threadId: light.anchorThreadId } },
     });
-    press(button(screen, "Resume"));
-    await vi.waitFor(() => expect(button(screen, "Pause").disabled).toBe(false), { timeout: 2000 });
     press(button(screen, "Pause"));
     await vi.waitFor(() => expect(button(screen, "Resume").disabled).toBe(false), {
       timeout: 2000,
     });
+    expect(screen.textContent).not.toContain("Waiting for a model it can use");
+    press(button(screen, "Resume"));
+    await vi.waitFor(() => expect(button(screen, "Pause").disabled).toBe(false), { timeout: 2000 });
   });
 
   it("refreshes Done/Reopen/stopped recovery from another device without streaming reads", async () => {

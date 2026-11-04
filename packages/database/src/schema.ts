@@ -1143,6 +1143,7 @@ interface TriggerTable {
   nextFireAt: NullableTimestamp;
   consecutiveFailures: number;
   pauseReason: string | null;
+  waitingReason: Generated<string | null>;
   webhookRouteKey: string | null;
   webhookSecretHash: string | null;
   createdAt: Timestamp;

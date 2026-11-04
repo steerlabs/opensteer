@@ -31,7 +31,7 @@ function account(index = 1): BackgroundAccountSnapshot {
     driverKind: HarnessIdSchema.parse("claude"),
     enabled: true,
     available: true,
-    supportsBackgroundText: true,
+    canRun: true,
     isDefault: true,
     usageByProvider: {},
     catalog: HarnessInstanceCatalogSchema.parse({
@@ -133,7 +133,7 @@ it("limits only the relevant provider and model windows until reset", () => {
 it("skips offline, unsupported, disabled and unavailable models", () => {
   for (const change of [
     { available: false },
-    { supportsBackgroundText: false },
+    { canRun: false },
     { enabled: false },
     { catalog: null },
   ])

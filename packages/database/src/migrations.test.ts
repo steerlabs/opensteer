@@ -165,6 +165,7 @@ const releasedMigrationNames = [
   "0155_connection_message_authors",
   "0156_specialist_auto_bind",
   "0157_background_model_preferences",
+  "0158_memory_pass_waiting",
 ];
 
 describe("migration names", () => {

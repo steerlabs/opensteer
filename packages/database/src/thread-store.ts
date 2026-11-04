@@ -223,6 +223,11 @@ export interface EnqueueThreadInputRequest {
   readonly source: ThreadInputSource;
   readonly threadId: ThreadId;
   readonly forwardedPlaces?: true;
+  /** Host-resolved model for a managed memory pass's own wake; without it the wake is skipped. */
+  readonly memoryPass?: {
+    readonly harnessInstanceId: HarnessInstanceId;
+    readonly modelSelection: ModelSelection;
+  };
   /** Host-only live route check, called after durable replay and before a new claim. */
   readonly validateNewAttachmentInput?: (selection: {
     readonly driverKind: HarnessId;

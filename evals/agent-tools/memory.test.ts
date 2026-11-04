@@ -352,14 +352,3 @@ it("rejects erasure that drops standing instructions outside the Memory section"
     await rm(root, { recursive: true, force: true });
   }
 });
-
-it("requires a model decision but accepts an explicit which-model question", async () => {
-  const c = (await memoryCases()).find((c) => c.id === "memory-reenable-after-erasure")!;
-  const e = CaseSchema.shape.expect.parse({ textMust: c.expect.textMust });
-  for (const text of [
-    "Choose a model for the light pass.",
-    "Which model should the light pass use?",
-  ])
-    expect(grade(e, [], text).every((check) => check.pass)).toBe(true);
-  expect(grade(e, [], "The light model is configured.").every((check) => check.pass)).toBe(false);
-});

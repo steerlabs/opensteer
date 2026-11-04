@@ -19,7 +19,7 @@ export interface BackgroundAccountSnapshot {
   readonly harnessRevision: number;
   readonly driverKind: HarnessId;
   readonly available: boolean;
-  readonly supportsBackgroundText: boolean;
+  readonly canRun: boolean;
   readonly enabled: boolean;
   readonly isDefault: boolean;
   readonly catalog: HarnessInstanceCatalog | null;
@@ -104,7 +104,7 @@ export function inspectBackgroundCandidates(
       ? "disabled"
       : !account.available
         ? "offline"
-        : !account.supportsBackgroundText
+        : !account.canRun
           ? "unsupported"
           : account.catalog?.status !== "ready"
             ? "catalog-not-ready"

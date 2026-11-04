@@ -34,7 +34,7 @@ afterEach(() => {
   client?.dispose();
   document.body.replaceChildren();
 });
-async function mount(memoryPasses?: "active" | "no-light-model", edit = false) {
+async function mount(memoryPasses?: "active" | "waiting-for-model", edit = false) {
   client = new MockHostClient({ latencyMs: 0, ...(memoryPasses ? { memoryPasses } : {}) });
   await client.load();
   harness.client = client;
@@ -68,16 +68,18 @@ function button(node: HTMLElement, name: string) {
   return [...node.querySelectorAll("button")].find((b) => b.textContent?.trim() === name)!;
 }
 it("inspects managed passes, links the worker, and retains Pause/Resume without destructive controls", async () => {
-  const { node, trigger } = await mount("no-light-model");
-  expect(node.textContent).toContain("This engine has no light model");
+  const { node, trigger } = await mount("waiting-for-model");
+  expect(node.textContent).toContain("Waiting for a model it can use");
   expect(node.textContent).toContain("findings reach you through Chat");
   expect(node.querySelector(`a[href="/threads/${trigger.anchorThreadId}"]`)).not.toBeNull();
   for (const label of ["Delete", "Run now", "Edit code"])
     expect(node.textContent).not.toContain(label);
-  await act(async () => button(node, "Resume").click());
-  await vi.waitFor(() => expect(button(node, "Pause")).toBeDefined(), { timeout: 2000 });
   await act(async () => button(node, "Pause").click());
   await vi.waitFor(() => expect(button(node, "Resume")).toBeDefined(), { timeout: 2000 });
+  // Paused by the person, it no longer says it is waiting.
+  expect(node.textContent).not.toContain("Waiting for a model it can use");
+  await act(async () => button(node, "Resume").click());
+  await vi.waitFor(() => expect(button(node, "Pause")).toBeDefined(), { timeout: 2000 });
 });
 it("refuses the direct managed editor route", async () => {
   const { node } = await mount("active", true);

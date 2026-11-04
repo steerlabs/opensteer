@@ -1,11 +1,27 @@
-import { isDeepStrictEqual } from "node:util";
-import { OpensteerError, type Thread, type WorkspaceId, type UserId } from "@opensteer/core";
-import type { HarnessInstanceCatalog } from "@opensteer/protocol";
-import type { TriggerProgram, TriggerSource, TriggerSystemRole } from "@opensteer/triggers";
-import { sql, type Kysely } from "kysely";
+import {
+  createId,
+  ModelSelectionSchema,
+  OpensteerError,
+  type AgentEvent,
+  type HarnessInstanceId,
+  type ModelSelection,
+  type Thread,
+  type TriggerId,
+  type WorkspaceId,
+  type UserId,
+} from "@opensteer/core";
+import {
+  MANAGED_MEMORY_WAKE_SKIPPED,
+  type TriggerProgram,
+  type TriggerSource,
+  type TriggerSystemRole,
+} from "@opensteer/triggers";
+import { sql, type Kysely, type Transaction } from "kysely";
 import { withDatabaseTransaction } from "./connection.js";
-import type { DatabaseSchema } from "./schema.js";
-import { lockCommandIdempotency } from "./store-primitives.js";
+import type { DatabaseSchema, ThreadRow } from "./schema.js";
+import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
+import { threadFromRow } from "./thread-row-mappers.js";
+import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import { prepareThreadInsertion } from "./thread-insertion.js";
 import { createThreadInTransaction } from "./thread-store.js";
 import { createTriggerInTransaction } from "./trigger-store.js";
@@ -56,10 +72,7 @@ export async function createMemoryPass(
     readonly workspaceId: WorkspaceId;
     readonly ownerId: UserId;
     readonly chat: Thread;
-    readonly catalog: HarnessInstanceCatalog;
-    readonly runtimeRevision: number;
     readonly systemRole: TriggerSystemRole;
-    readonly modelSelection: Thread["modelSelection"];
     readonly program: TriggerProgram;
     readonly source: TriggerSource;
     readonly pauseReason: string | null;
@@ -113,36 +126,23 @@ export async function createMemoryPass(
       environmentId: input.chat.environmentId,
       harnessInstanceId: input.chat.harnessInstanceId,
     });
-    const harness = await transaction
-      .selectFrom("harnessInstances")
-      .select("runtimeRevision")
-      .where("id", "=", input.chat.harnessInstanceId)
-      .executeTakeFirstOrThrow();
     const chat = await transaction
       .selectFrom("threads")
       .selectAll()
       .where("id", "=", input.chat.id)
       .forShare()
       .executeTakeFirstOrThrow();
-    const catalog = await transaction
-      .selectFrom("harnessCatalogs")
-      .select("catalog")
-      .where("environmentId", "=", chat.environmentId)
-      .where("harnessInstanceId", "=", chat.harnessInstanceId)
-      .executeTakeFirst();
     if (
-      harness.runtimeRevision !== input.runtimeRevision ||
-      !isDeepStrictEqual(catalog?.catalog, input.catalog) ||
       chat.workspaceId !== workspace.id ||
       chat.role !== "conversation" ||
       !chat.inheritsMain ||
       chat.lineageRootThreadId !== input.chat.lineageRootThreadId ||
       chat.environmentId !== input.chat.environmentId ||
-      chat.harnessInstanceId !== input.chat.harnessInstanceId ||
-      chat.accessMode !== input.chat.accessMode ||
-      !isDeepStrictEqual(chat.modelSelection, input.chat.modelSelection)
+      chat.harnessInstanceId !== input.chat.harnessInstanceId
     )
       throw snapshotChanged();
+    // Chat's engine is only where the worker starts: every pass picks its own
+    // model when admitted (startMemoryPassInTransaction).
     const created = await createThreadInTransaction(
       transaction,
       {
@@ -151,7 +151,7 @@ export async function createMemoryPass(
         harnessInstanceId: chat.harnessInstanceId,
         accessMode: chat.accessMode,
         idempotencyKey: key,
-        modelSelection: input.modelSelection,
+        modelSelection: chat.modelSelection,
         parentThreadId: chat.id,
         role: "work",
         title: input.systemRole === "memory-light" ? "Memory light pass" : "Memory nightly pass",
@@ -178,6 +178,99 @@ export async function createMemoryPass(
     );
     return { ...trigger, event: created.event };
   });
+}
+
+export interface MemoryPassExecution {
+  readonly harnessInstanceId: HarnessInstanceId;
+  readonly modelSelection: ModelSelection;
+}
+
+/**
+ * Puts an admitted pass on the model the Host resolved for it, in a fresh
+ * native session. Passes are stateless over Main's memory files, so nothing
+ * carries from one pass to the next; the Run then freezes this choice for the
+ * pass and its recovery. The caller holds the worker's Thread lock.
+ */
+export async function startMemoryPassInTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  worker: ThreadRow,
+  execution: MemoryPassExecution,
+): Promise<{ readonly worker: ThreadRow; readonly event: AgentEvent }> {
+  // Read without a lock: harness_instances precede threads in lock-order.ts.
+  const harness = await transaction
+    .selectFrom("harnessInstances")
+    .select(["enabled", "environmentId", "removedAt"])
+    .where("id", "=", execution.harnessInstanceId)
+    .executeTakeFirst();
+  if (!harness?.enabled || harness.removedAt || harness.environmentId !== worker.environmentId)
+    throw new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED });
+  await transaction
+    .updateTable("providerSessions")
+    .set({ active: false, updatedAt: new Date() })
+    .where("threadId", "=", worker.id)
+    .where("active", "=", true)
+    .execute();
+  const providerSessionId = createId("providerSession");
+  await transaction
+    .insertInto("providerSessions")
+    .values({
+      active: true,
+      bindingGeneration: 0,
+      continuationIdentity: null,
+      harnessInstanceId: execution.harnessInstanceId,
+      id: providerSessionId,
+      leaseExpiresAt: null,
+      leaseTokenHash: null,
+      providerSessionReference: null,
+      runnerBootId: null,
+      runnerId: null,
+      status: "starting",
+      stateLayout: "session",
+      threadId: worker.id,
+    })
+    .executeTakeFirstOrThrow();
+  const updated = await transaction
+    .updateTable("threads")
+    .set({
+      harnessInstanceId: execution.harnessInstanceId,
+      modelSelection: jsonValue(ModelSelectionSchema.parse(execution.modelSelection)),
+      updatedAt: new Date(),
+    })
+    .where("id", "=", worker.id)
+    .returningAll()
+    .executeTakeFirstOrThrow();
+  const event = await appendHostWorkspaceEvent(transaction, {
+    data: {
+      thread: threadFromRow({
+        ...updated,
+        continuationIdentity: null,
+        pendingRequests: updated.pendingRequestCount,
+        providerSessionId,
+      }),
+    },
+    environmentId: updated.environmentId,
+    runId: null,
+    threadId: updated.id,
+    type: "thread.execution-updated",
+    workspaceId: updated.workspaceId,
+  });
+  return { worker: updated, event };
+}
+
+/** Waiting is not a pause: the schedule keeps waking and each wake resolves again. */
+export async function setMemoryPassWaiting(
+  database: Kysely<DatabaseSchema>,
+  triggerId: TriggerId,
+  waitingReason: string | null,
+): Promise<boolean> {
+  const result = await database
+    .updateTable("triggers")
+    .set({ waitingReason, updatedAt: new Date() })
+    .where("id", "=", triggerId)
+    .where("systemRole", "is not", null)
+    .where(sql<boolean>`waiting_reason is distinct from ${waitingReason}`)
+    .executeTakeFirst();
+  return result.numUpdatedRows > 0n;
 }
 
 function snapshotChanged() {

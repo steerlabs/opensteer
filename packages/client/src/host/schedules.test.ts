@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
-import { createId, type AgentEventView } from "@opensteer/core";
+import { createId, defaultTaskSymbol, type AgentEventView } from "@opensteer/core";
 import type { TriggerSummary } from "@opensteer/triggers";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { HostClientRequestError, type HostClient, type HostSnapshot } from "./client.js";
@@ -74,7 +74,7 @@ describe("schedules", () => {
     expect(scheduleList([hidden], f.snapshot())[0]?.anchor).toMatchObject({
       title: "Unavailable thread",
       visible: false,
-      mark: { icon: null, color: null },
+      mark: { icon: defaultTaskSymbol, color: null },
     });
   });
   it("does no eager reads, bounds many rows to the Host's 100 cap, and stops when hidden", async () => {
