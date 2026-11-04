@@ -54,6 +54,14 @@ class TargetSocket implements WebSocketClient {
   garbled() {
     this.#emit("message", { data: "{ not a frame" });
   }
+  /** A binary frame carrying exactly this header, whatever it says. */
+  pictureWithHeader(text: string) {
+    const header = new TextEncoder().encode(text);
+    const bytes = new Uint8Array(4 + header.length + 4);
+    new DataView(bytes.buffer).setUint32(0, header.length);
+    bytes.set(header, 4);
+    this.receive(bytes.buffer);
+  }
   picture(sequence = 1, target = surfaceId) {
     const header = new TextEncoder().encode(
       JSON.stringify({
@@ -439,6 +447,36 @@ describe("frames a target cannot read", () => {
   });
 
   it.each([
+    ["a header that is not JSON", (socket: TargetSocket) => socket.pictureWithHeader("{ not json")],
+    ["a header its schema refuses", (socket: TargetSocket) => socket.pictureWithHeader("{}")],
+    ["a frame too short to hold one", (socket: TargetSocket) => socket.receive(new ArrayBuffer(2))],
+    [
+      "a header length past its end",
+      (socket: TargetSocket) => {
+        const bytes = new Uint8Array(16);
+        new DataView(bytes.buffer).setUint32(0, 1_000);
+        socket.receive(bytes.buffer);
+      },
+    ],
+  ])("reconnects after a picture with %s, however the decoder reports it", (_name, lose) => {
+    const f = target();
+    const socket = f.sockets[0]!;
+    socket.open();
+    socket.admit();
+    socket.picture(1);
+    const { frame } = state(f);
+    lose(socket);
+    expect(socket.closes).toMatchObject([{ code: 4002 }]);
+    expect(state(f)).toMatchObject({ error: null, status: "unavailable" });
+    expect(state(f).frame).toBe(frame);
+    vi.advanceTimersByTime(10);
+    expect(f.sockets).toHaveLength(2);
+    f.store.reconnect();
+    expect(state(f).error).toBeNull();
+    f.release();
+  });
+
+  it.each([
     ["a picture", (socket: TargetSocket) => socket.picture(1)],
     [
       "a message",
@@ -459,6 +497,23 @@ describe("frames a target cannot read", () => {
     read(socket);
     socket.garbled();
     expect(f.delays.at(-1)).toEqual([0, 1]);
+    f.release();
+  });
+
+  it("keeps counting when the frame that fails after each snapshot is a picture", () => {
+    const f = target();
+    for (const [failures, delay] of [
+      [1, 10],
+      [2, 20],
+      [3, 40],
+    ] as const) {
+      const socket = f.sockets.at(-1)!;
+      socket.open();
+      socket.admit();
+      socket.pictureWithHeader("{ not json");
+      expect(f.delays.at(-1)).toEqual([0, failures]);
+      vi.advanceTimersByTime(delay);
+    }
     f.release();
   });
 

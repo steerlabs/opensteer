@@ -475,7 +475,10 @@ export class BrowserWatchStore {
     // Until the Host answers the subscription for this surface, it treats the
     // socket as a viewer of the active surface; such events are not ours.
     let subscribed = false;
-    const fail = (error: unknown) => {
+    const fail = (
+      error: unknown,
+      unreadable = error instanceof z.ZodError || error instanceof SyntaxError,
+    ) => {
       if (target.socket !== socket) return;
       this.onDisconnect?.(target.sessionId, target.surfaceId);
       target.socket = null;
@@ -483,7 +486,7 @@ export class BrowserWatchStore {
       target.awaiting.clear();
       // A new socket's snapshot and subscription replace everything a frame
       // could have carried. Any other failure is a refusal or a wrong target.
-      if (error instanceof z.ZodError || error instanceof SyntaxError) {
+      if (unreadable) {
         target.unreadableFrames += 1;
         this.#diagnose({ stage: "unreadable-frame" });
         socket.close(4002, "Invalid browser protocol frame");
@@ -586,7 +589,14 @@ export class BrowserWatchStore {
         }
         if (!synchronized || !(data instanceof ArrayBuffer))
           throw new Error("Unexpected browser frame.");
-        const frame = decodeBrowserFrameEnvelope(new Uint8Array(data), 8 * 1024 * 1024);
+        let frame: ReturnType<typeof decodeBrowserFrameEnvelope>;
+        try {
+          frame = decodeBrowserFrameEnvelope(new Uint8Array(data), 8 * 1024 * 1024);
+        } catch (error) {
+          // The decoder reports bad bytes as plain errors, and bad bytes refuse nothing.
+          fail(error, true);
+          return;
+        }
         target.unreadableFrames = 0;
         if (
           frame.header.surfaceId !== target.surfaceId ||

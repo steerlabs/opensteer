@@ -14380,18 +14380,55 @@ describe("realtime protocol recovery journey", () => {
       }
     });
 
-    it("replays an unreadable read state, which only subscribing sends again", async () => {
+    it("starts over from a snapshot when a read state is lost, which no replay would resend", async () => {
       const f = await synchronizedClient();
       try {
-        f.sockets[0]!.receiveRaw({
+        const socket = f.sockets[0]!;
+        socket.receiveRaw({ type: "host.events", events: [stateEvent(f, "11", "running")] });
+        socket.receiveRaw({
           type: "host.read-states",
           workspaceId: f.workspace.id,
           states: [{ threadId: "unreadable" }],
         });
+        expect(socket.closeEvents).toEqual([{ code: 4002, reason: "Invalid Host protocol frame" }]);
+        expect(f.records()).toMatchObject([{ event: "host.realtime.frame-rejected" }]);
+        const next = await reconnectAfter(f, 10);
+        expect(next.afterSequence).toBe("0");
+        next.socket.receiveRaw({
+          type: "host.snapshot",
+          snapshot: {
+            ...workspaceSnapshot(f.workspace, "11"),
+            readStates: [
+              {
+                asOfSequence: "11",
+                readSequence: "2",
+                threadId: f.thread.id,
+                unreadSequence: "11",
+              },
+            ],
+            threads: [f.thread],
+          },
+        });
+        next.socket.receiveRaw({
+          type: "host.synchronized",
+          sequence: "11",
+          workspaceId: f.workspace.id,
+        });
+        expect(f.client.getSnapshot().threadReadStates[f.thread.id]?.unreadSequence).toBe("11");
+        expect(f.client.getSnapshot().connection).toBe("connected");
+      } finally {
+        f.client.dispose();
+      }
+    });
+
+    it("still honours a resync it could not read, which the Host will not ask for twice", async () => {
+      const f = await synchronizedClient();
+      try {
+        f.sockets[0]!.receiveRaw({ type: "host.resync-required", reason: "slow-consumer" });
         expect(f.sockets[0]!.closeEvents).toEqual([
           { code: 4002, reason: "Invalid Host protocol frame" },
         ]);
-        expect((await reconnectAfter(f, 10)).afterSequence).toBe("10");
+        expect((await reconnectAfter(f, 10)).afterSequence).toBe("0");
       } finally {
         f.client.dispose();
       }

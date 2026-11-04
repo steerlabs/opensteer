@@ -68,14 +68,28 @@ publication holes from the store. Readers skip unknown kinds and Thread statuses
 event's Workspace before changing batch state, and advance cursors in order.
 
 A frame a client cannot read costs what [losing it costs](../packages/client/src/host/realtime-frames.ts),
-and never strands the channel. Nothing replays a notice, so it is dropped with the socket up and
-what it spoke of is reread. A replay or sync frame is never applied or acknowledged: the channel
-reconnects from the same cursor, and only `host.synchronized` forgets the failures, so a frame that
-fails on every connect keeps backing off. Replay cannot get past an event this build will never
-read, so a position that keeps failing starts over from a snapshot. If the snapshot is unreadable
-too, the connection reads Unavailable with Retry while it keeps trying on a long cap: each try can
-cost a whole snapshot over cellular, and a later Host or app update must recover it unattended. A Thread this build cannot read is skipped on its own, in a snapshot or in an event that
-carries it. Only a Host's `host.error` refusal stops a channel until Retry.
+and never strands the channel. A notice is dropped with the socket up and repaired by the read that
+answers for it, which is not always a bootstrap: a cache the bootstrap does not touch is invalidated
+directly. A replay or sync frame is never applied or acknowledged: the channel reconnects from the
+same cursor, and only `host.synchronized` forgets the failures, so a frame that fails on every
+connect keeps backing off. Not everything a subscribe sends follows the cursor, though: read states
+come only with replayed events and a resync only with a live condition, so losing one starts over
+from a snapshot at once. Replay also cannot get past an event this build will never read, so a
+position that keeps failing starts over from a snapshot too. If the snapshot is unreadable too, the
+connection reads Unavailable with Retry while it keeps trying on a long cap: each try can cost a
+whole snapshot over cellular, and a later Host or app update must recover it unattended. Network and
+foreground signals wait for that retry's time as well; only Retry skips it.
+
+A snapshot may skip a Thread this build cannot read, because a snapshot is state at a position. An
+event may not: acknowledging past a malformed Thread event would leave what the client holds stale
+with nothing to repair it, so only an unknown status is skipped there. Only a Host's `host.error`
+refusal stops a channel until Retry.
+
+A browser viewer's snapshot and subscription are the whole of its state, so a viewer that cannot read
+a frame reconnects on the same backoff, keeping its last picture and taking no input. Failures are
+forgotten only after a frame is read past a snapshot, since one can fail right after every snapshot.
+Everything else stays final: a Host refusal, a Host's 4002 for what the client sent, ended access and
+a frame for the wrong target.
 
 Wire schemas must answer the same in Node, Chromium and Hermes, and `URL` does not: Chromium treats
 `chrome-error:`, `chrome:` and `devtools:` as standard schemes and refuses them bare, which Node and

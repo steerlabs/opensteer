@@ -4753,19 +4753,22 @@ export class HttpHostClient {
   /**
    * What losing an unreadable frame costs decides what happens. A notice is
    * dropped and its data reread. A replay or sync frame is never applied or
-   * acknowledged: the channel reconnects from the same cursor, then from a
-   * snapshot, because replay cannot get past an event this client cannot read.
+   * acknowledged: the channel reconnects from the same cursor, or from a
+   * snapshot when replay cannot resend it or get past what it cannot read.
    */
   #loseRealtimeFrame(channel: WorkspaceChannel, frame: unknown, error: unknown): void {
     const loss = realtimeFrameLoss(realtimeEnvelopeType(frame));
-    this.#recordRealtimeFrame(frame, error, loss === "replay" ? "rejected" : "ignored");
+    const reconnects = loss === "replay" || loss === "snapshot";
+    this.#recordRealtimeFrame(frame, error, reconnects ? "rejected" : "ignored");
+    if (reconnects) {
+      channel.unreadableFrames += 1;
+      if (loss === "snapshot" || channel.unreadableFrames >= realtimeReplayAttempts)
+        channel.cursor = zeroSequence;
+      this.#closeChannel(channel, true, 4002, "Invalid Host protocol frame");
+      this.#recomputeConnection();
+      return;
+    }
     switch (loss) {
-      case "replay":
-        channel.unreadableFrames += 1;
-        if (channel.unreadableFrames >= realtimeReplayAttempts) channel.cursor = zeroSequence;
-        this.#closeChannel(channel, true, 4002, "Invalid Host protocol frame");
-        this.#recomputeConnection();
-        return;
       case "none":
         return;
       case "place-activity":

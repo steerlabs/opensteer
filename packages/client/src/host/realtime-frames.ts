@@ -11,9 +11,11 @@ import { z } from "zod";
 export const maxInboundFrameCharacters = browserTabCatalogMaxBytes + 4 * 1024;
 
 /**
- * What losing a frame costs, which is what repairs it. `replay`: only
- * subscribing again brings it back, so it is never skipped. `none`: nothing is
- * owed. Every other value names the read that answers for what it carried.
+ * What losing a frame costs, which is what repairs it. `replay`: subscribing
+ * from the same cursor sends it again, so it is never skipped. `snapshot`: no
+ * subscribe from that cursor would, so only a fresh snapshot answers for it.
+ * `none`: nothing is owed. Every other value names the read that answers for
+ * what it carried.
  */
 export type RealtimeFrameLoss =
   | "bootstrap"
@@ -23,21 +25,26 @@ export type RealtimeFrameLoss =
   | "none"
   | "place-activity"
   | "replay"
+  | "snapshot"
   | "triggers";
 
 const realtimeFrameLosses = {
   "host.error": "replay",
   "host.events": "replay",
-  "host.resync-required": "replay",
   "host.snapshot": "replay",
   "host.synchronized": "replay",
-  // Sent while synchronizing, and no read replaces them.
+  // Every subscribe streams all of these.
   "host.read-markers": "replay",
-  "host.read-states": "replay",
-  // No read answers these for a list already on screen.
-  "host.connections-changed": "replay",
+  // Synchronizing reissues this invalidation whatever frame carried it.
   "host.personal-remote-access-changed": "replay",
-  "host.plugins-changed": "replay",
+
+  // Resent only for Threads with events in the replay, which may be none.
+  "host.read-states": "snapshot",
+  // Asked for by a live condition that is gone by the next subscribe.
+  "host.resync-required": "snapshot",
+  // Nothing resends these. They carry only `type`, so they cannot be unreadable.
+  "host.connections-changed": "snapshot",
+  "host.plugins-changed": "snapshot",
 
   "host.browser-presence": "bootstrap",
   "host.browser-sessions-changed": "bootstrap",
