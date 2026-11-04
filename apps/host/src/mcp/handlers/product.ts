@@ -1278,9 +1278,9 @@ export class ProductToolHandlers {
         const anchorId = caller.kind === "connection" ? undefined : callerThread(caller).id;
         const detach = this.#realtime.observe((change) => {
           if (
+            // Revocation ends a connection's whole session, so the service owns that wake.
             ("threadId" in change &&
               (change.threadId === input.threadId || change.threadId === anchorId)) ||
-            (caller.kind === "connection" && change.type.startsWith("host.")) ||
             change.type === "host.machines.changed" ||
             (caller.kind === "program" && change.type === "host.triggers-changed")
           )
