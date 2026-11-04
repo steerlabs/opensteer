@@ -30,7 +30,6 @@ import {
   type AgentEvent,
   type EnvironmentId,
   type HarnessId,
-  type HarnessInstanceId,
   type RunnerId,
   type UserId,
 } from "@opensteer/core";

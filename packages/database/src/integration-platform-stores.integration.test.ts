@@ -3730,7 +3730,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
             noRoute: "No route",
             notAMember: "Not a member",
           },
-          availableEngines: [{ environmentId: run.environmentId, driverKinds: [HarnessIdSchema.parse("native")] }],
+          availableEngines: [
+            { environmentId: run.environmentId, driverKinds: [HarnessIdSchema.parse("native")] },
+          ],
         });
       // Exercise the production revocation transaction without its outer retry:
       // either deadlock victim must be visible to this regression.
