@@ -9,6 +9,97 @@ import { assertLineageCompatibleReuse, resolveResourceAccess } from "./resource-
 import { describeStore } from "./store.integration.test-support.js";
 
 describeStore("specialist registration", (test) => {
+  test("repins every owner's bindings and refuses a version that drops the specialist", async ({
+    storeFixture: fixture,
+  }) => {
+    const owner = await fixture.createRunFixture("repin-owners");
+    const other = await fixture.store.createUser("Other specialist owner");
+    const workspace = await fixture.createProjectWorkspace(owner.userId, "repin");
+    await fixture.database
+      .insertInto("workspaceMemberships")
+      .values({
+        workspaceId: workspace.id,
+        userId: other,
+        id: createId("workspaceMembership"),
+        role: "collaborator",
+        generation: 1,
+        invitedBy: owner.userId,
+        revokedAt: null,
+        revokedBy: null,
+        state: "active",
+        joinedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .execute();
+    const platform = new IntegrationPlatformStore(fixture.database),
+      pluginId = randomUUID();
+    const manifest = SpecialistManifestSchema.parse({
+      version: 1,
+      models: [{ engine: "codex", model: "fast" }],
+      access: [],
+    });
+    await platform.plugins.install({
+      id: pluginId,
+      name: "repin",
+      actorUserId: owner.userId,
+      source: {},
+      digest: "old",
+      manifest: { name: "repin" },
+      specialistManifest: manifest,
+    });
+    for (const actorUserId of [owner.userId, other])
+      await platform.specialists.add({ workspaceId: workspace.id, pluginId, actorUserId });
+    await platform.plugins.setActivation({
+      pluginId,
+      workspaceId: workspace.id,
+      actorUserId: owner.userId,
+      active: false,
+    });
+    await platform.specialists.add({
+      pluginId,
+      workspaceId: workspace.id,
+      actorUserId: owner.userId,
+      activate: false,
+    });
+    expect((await platform.plugins.list()).find((p) => p.id === pluginId)?.activations).toEqual([]);
+    const bindings = [{ requirement: 0, resourceId: "chosen", level: "read" as const }];
+    await fixture.database
+      .updateTable("specialists")
+      .set({ bindings: sql`${JSON.stringify(bindings)}::jsonb` })
+      .where("pluginId", "=", pluginId)
+      .execute();
+    // As an install does: the new version, then its registrations moved to it.
+    const update = (digest: string, specialistManifest: typeof manifest | null) =>
+      fixture.database.transaction().execute(async (tx) => {
+        await platform.plugins.update(
+          { pluginId, digest, manifest: { name: "repin" }, specialistManifest },
+          tx,
+        );
+        await platform.plugins.repinSpecialists(tx, pluginId);
+      });
+    await update("same-access", { ...manifest, models: [{ engine: "claude", model: "haiku" }] });
+    const rows = () =>
+      fixture.database
+        .selectFrom("specialists")
+        .selectAll()
+        .where("pluginId", "=", pluginId)
+        .execute();
+    for (const row of await rows()) expect(row.bindings).toEqual(bindings);
+    expect(new Set((await rows()).map((r) => r.pluginVersionId)).size).toBe(1);
+    await update("changed-access", {
+      ...manifest,
+      access: [{ type: "browser-profile", level: "read", reason: "Research" }],
+    });
+    expect(
+      (await rows()).every((r) => r.status === "pending" && r.bindings.length === 0 && !r.autoBind),
+    ).toBe(true);
+    const pinned = (await rows()).map((r) => r.pluginVersionId);
+    await expect(update("not-specialist", null)).rejects.toThrow(
+      "Remove this plugin's specialist registrations before installing it without one",
+    );
+    expect((await rows()).map((r) => r.pluginVersionId)).toEqual(pinned);
+  });
+
   test("pins versions, binds consent, narrows access and removes registration", async ({
     storeFixture: fixture,
   }) => {

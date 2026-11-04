@@ -81,14 +81,23 @@ loopback is refused. A Host-local program path never implies the files exist on 
 
 The owner reviews the program, arguments, working directory and environment, or URL and headers,
 verbatim from any signed-in device. Those details are fetched only for that review and never ride in
-Request events, agent projections or client snapshots. Consent binds the exact launch digest, server
-and target Runner and is rechecked in admission; the Runner trusts that Host decision, with no local
-approval file. A changed launch needs review again, and an offline computer starts nothing.
+Request events, agent projections or client snapshots. Consent binds the launch digest, server and
+target Runner and is rechecked in admission; the Runner trusts that Host decision, with no local
+approval file. An offline computer starts nothing. A changed launch needs review again, except on a
+Personal Deployment: there an approved server's new launch on the same computer keeps consent unless
+it declares a new secret name, because a Personal Runner runs agent commands as its owner with no
+isolation ([Shared Runner sandbox](ai-engines.md#shared-runner-sandbox)) and review would cover code
+any agent there could already run. Shared Runners isolate agent commands but not plugin servers, so
+server Deployments keep review. A new, moved or declined server always asks.
+
+An agent-made plugin records its Workspace folder, not a Host path, so only an agent updates it, by
+installing that folder again; Settings' Update and `plugin_manage` update person-installed plugins.
 
 A program server declares the secrets its owner must supply under
 `extensions["com.opensteer"].secrets` in `plugin.json`, because Agent Plugins forbids credentials in
 `env`. Only names and labels enter the launch and its digest. The owner enters values when allowing
-it and can change them without new consent; consent and values belong to one computer. Values are
+it and can change them without new consent; a new launch keeps values for names it still declares
+and deletes the rest. Consent and values belong to one computer. Values are
 sealed per server in their own table, never in a listing, Request event or snapshot, and the Host
 adds them only to the launch it sends. Session-end output quotes the server and becomes its status,
 so [the transport](../apps/host/src/integrations/computer-mcp-transport.ts) redacts the values. This

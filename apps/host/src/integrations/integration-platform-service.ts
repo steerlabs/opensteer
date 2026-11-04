@@ -13,7 +13,12 @@ import type {
 } from "@opensteer/integration-core";
 import { computerAppIdentityKey } from "@opensteer/integration-core";
 import { safeMessage } from "@opensteer/shared/safeMessage";
-import { loadAgentPlugin, type LoadedAgentPluginServer } from "@opensteer/agent-plugins";
+import { localMcpLaunchSecrets } from "@opensteer/integration-core";
+import {
+  readAgentPluginName,
+  loadAgentPlugin,
+  type LoadedAgentPluginServer,
+} from "@opensteer/agent-plugins";
 
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
@@ -318,6 +323,7 @@ export class IntegrationPlatformService {
   readonly #publicFetch: typeof fetch;
   readonly #store: IntegrationPlatformStore;
   readonly #localSecrets: LocalMcpSecrets;
+  readonly #personal: boolean;
   readonly #mcpOauth: Pick<McpOAuthService, "providerFor">;
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
   readonly #onConnectionsChanged: () => void;
@@ -339,6 +345,7 @@ export class IntegrationPlatformService {
   readonly computerAppApprovals: ComputerAppApprovalService;
 
   constructor(options: {
+    readonly personal?: boolean;
     readonly listConnections: (
       ownerUserId: UserId,
     ) => Promise<readonly IntegrationConnectionSummary[]>;
@@ -400,6 +407,7 @@ export class IntegrationPlatformService {
   }) {
     this.#publicFetch = options.publicFetch ?? createPublicHttpsFetch();
     this.#localSecrets = new LocalMcpSecrets(options.secretVault);
+    this.#personal = options.personal ?? false;
     this.#authorizationSource = options.authorizationSource;
     this.#listConnections = options.listConnections;
     this.#computerApps = options.computerApps;
@@ -996,22 +1004,57 @@ export class IntegrationPlatformService {
     readonly administration?: AdministrationCommandIdentity | undefined;
     readonly actorUserId: UserId;
     readonly directory: string;
+    readonly workspaceDirectory?: string;
     readonly workspaceId?: import("@opensteer/core").WorkspaceId;
     readonly pluginId?: string;
     readonly requestId: string;
     /**
      * The computer that runs the plugin's servers that start a program or
-     * listen on loopback, which never run inside the Host. The Deployment's
-     * Main computer when omitted.
+     * listen on loopback, which never run inside the Host. The existing computer on update, otherwise the Deployment's Main computer.
      */
-    readonly runnerId?: RunnerId;
+    readonly runnerId?: RunnerId | undefined;
   }): Promise<{
     readonly installation: IntegrationInstallation;
     readonly issues: readonly unknown[];
     readonly specialist: boolean;
   }> {
-    const pluginId = input.pluginId ?? createIntegrationId("installation");
-    const previous = input.pluginId
+    let pluginId = input.pluginId;
+    let currentPlugin:
+      Awaited<ReturnType<IntegrationPlatformStore["plugins"]["list"]>>[number] | undefined;
+    if (input.workspaceId && !pluginId) {
+      // A plugin.json the loader can't read reports why below, in its own words.
+      const name = await readAgentPluginName(input.directory);
+      const plugins = name === null ? [] : await this.#store.plugins.list(input.workspaceId);
+      const here = (plugin: (typeof plugins)[number]) =>
+        plugin.activations.some((a) => a.workspaceId === input.workspaceId);
+      if (plugins.some((p) => p.name === name && p.scope === "deployment" && here(p)))
+        throw new OpensteerError({
+          code: "conflict",
+          message:
+            "A person-installed plugin already uses that name here. Choose a more specific name.",
+        });
+      // Copies installed before updates existed: the one turned on here, else the newest.
+      currentPlugin = plugins
+        .filter(
+          (p) => p.name === name && p.scope === "workspace" && p.workspaceId === input.workspaceId,
+        )
+        .sort(
+          (a, b) =>
+            Number(here(b)) - Number(here(a)) || b.updatedAt.getTime() - a.updatedAt.getTime(),
+        )[0];
+      pluginId = currentPlugin?.id;
+    } else if (pluginId) {
+      currentPlugin = (await this.#store.plugins.list()).find((p) => p.id === pluginId);
+      // Before the folder is read: an agent-made plugin's source is a Workspace folder, not a Host path.
+      if (currentPlugin?.scope === "workspace")
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Agent-made plugins update when an agent installs their folder again.",
+        });
+    }
+    const updating = pluginId !== undefined;
+    pluginId ??= createIntegrationId("installation");
+    const previous = updating
       ? (await this.#store.listInstallations()).find((i) => i.pluginId === pluginId)
       : undefined;
     const plugin = await loadAgentPlugin({
@@ -1020,14 +1063,32 @@ export class IntegrationPlatformService {
       dataDirectory: `${this.#dataDirectory}/plugins/data`,
       directory: input.directory,
     });
+    const previousServers = previous
+      ? (await this.#store.localMcp.list()).filter((s) => s.installationId === previous.id)
+      : [];
     const runnerId = plugin.servers.some(runsOnComputer)
-      ? await this.#pluginComputer(input.runnerId)
+      ? await this.#pluginComputer(await this.#updateComputer(input, previousServers))
       : null;
     if (plugin.manifest.name === "opensteer")
       throw new OpensteerError({
         code: "bad_request",
         message: "The plugin name opensteer is reserved",
       });
+    // Not for administration commands, whose result their ledger records in the install.
+    if (
+      !input.administration &&
+      previous &&
+      currentPlugin?.versions.find((v) => v.id === currentPlugin.currentVersionId)?.digest ===
+        basename(plugin.root) &&
+      previousServers
+        .filter((s) => plugin.servers.some((next) => next.name === s.name))
+        .every((s) => s.runnerId === runnerId && s.status !== "disabled")
+    )
+      return {
+        installation: previous,
+        issues: plugin.issues,
+        specialist: plugin.specialistManifest !== null,
+      };
     const installationId = createIntegrationId("installation");
     const servers = await Promise.all(
       plugin.servers.map((server) =>
@@ -1051,20 +1112,44 @@ export class IntegrationPlatformService {
     const mutation = await this.#store.install({
       administration: input.administration,
       beforeInstall: async (transaction) => {
-        if (input.pluginId) await this.#store.plugins.update({ pluginId, ...version }, transaction);
+        if (updating)
+          await this.#store.plugins.update(
+            {
+              pluginId,
+              ...(input.workspaceId
+                ? {
+                    workspaceId: input.workspaceId,
+                    source: { workspaceDirectory: input.workspaceDirectory },
+                  }
+                : {}),
+              ...version,
+            },
+            transaction,
+          );
         else
           await this.#store.plugins.install(
             {
               id: pluginId,
               name: plugin.manifest.name,
               actorUserId: input.actorUserId,
-              source: { directory: input.directory },
+              source: input.workspaceId
+                ? { workspaceDirectory: input.workspaceDirectory }
+                : { directory: input.directory },
               ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
               ...version,
             },
             transaction,
           );
       },
+      retainedServer: (existing, discovered) =>
+        existing.transport.type === "runner" && discovered.transport.type === "runner"
+          ? {
+              carryApproval:
+                this.#personal &&
+                carriesApproval(existing, existing.transport, discovered.transport),
+              secrets: this.#localSecrets.prune(existing.id, discovered.transport.launch),
+            }
+          : null,
       actorUserId: input.actorUserId,
       adapterSnapshot: null,
       installation: {
@@ -1103,6 +1188,28 @@ export class IntegrationPlatformService {
       this.#startApprovedServers((server) => server.installationId === installation.id);
     }
     return { installation, issues: plugin.issues, specialist: plugin.specialistManifest !== null };
+  }
+
+  /**
+   * The computer an install asks for. An agent's update stays on the plugin's
+   * computer while it is enrolled, not the computer of the Run that updated it;
+   * a person's names one or keeps it.
+   */
+  async #updateComputer(
+    input: { readonly runnerId?: RunnerId | undefined; readonly workspaceId?: unknown },
+    previousServers: readonly { readonly runnerId: RunnerId | null; readonly status: string }[],
+  ): Promise<RunnerId | undefined> {
+    // A removed server keeps the computer it last ran on; a current one says where the plugin is.
+    const previous =
+      (
+        previousServers.find((s) => s.runnerId && s.status !== "disabled") ??
+        previousServers.find((s) => s.runnerId)
+      )?.runnerId ?? null;
+    const kept =
+      previous !== null && (await this.#store.localMcp.computerName(previous)) !== null
+        ? previous
+        : undefined;
+    return input.workspaceId ? (kept ?? input.runnerId) : (input.runnerId ?? kept);
   }
 
   /** The computer a plugin's own servers run on: the one named, or the Main one. */
@@ -3517,6 +3624,25 @@ function portableComputerLaunch(server: LoadedAgentPluginServer): LocalMcpLaunch
 }
 
 /** A plugin server pinned to its computer, waiting for that computer's approval. */
+/**
+ * Whether a Personal Deployment's update keeps a server's approval: on the same
+ * computer, approved as it launched, not declined, and asking for no secret it
+ * didn't, whose value its owner would have to enter.
+ */
+export function carriesApproval(
+  existing: { readonly approvedLaunchDigest: string | null; readonly status: string },
+  previous: { readonly launch: LocalMcpLaunch; readonly runnerId: RunnerId | null },
+  next: { readonly launch: LocalMcpLaunch; readonly runnerId: RunnerId | null },
+): boolean {
+  const declared = new Set(localMcpLaunchSecrets(previous.launch).map(({ name }) => name));
+  return (
+    previous.runnerId === next.runnerId &&
+    existing.status !== "disabled" &&
+    existing.approvedLaunchDigest === localMcpLaunchDigest(previous.launch) &&
+    localMcpLaunchSecrets(next.launch).every(({ name }) => declared.has(name))
+  );
+}
+
 function computerServer(
   server: LoadedAgentPluginServer,
   runnerId: RunnerId,

@@ -626,7 +626,9 @@ function PluginDetail({
           ) : null}
           <PluginServers detail={data} />
           <PackageActions detail={data} reload={detail.reload} />
-          {data.sourceFolder === null && data.row.target.kind === "plugin" ? (
+          {data.sourceFolder === null &&
+          data.row.target.kind === "plugin" &&
+          data.row.source.kind !== "workspace" ? (
             <p>Source folder unknown</p>
           ) : null}
         </>
@@ -1191,14 +1193,18 @@ function PackageActions({ detail, reload }: { detail: PluginDetailView; reload: 
   return (
     <section>
       <h2>Installation</h2>
-      <button
-        className="btn"
-        disabled={pending || !detail.row.permissions.canUpdate || detail.sourceFolder === null}
-        onClick={() => run(false)}
-        type="button"
-      >
-        Update
-      </button>
+      {detail.row.source.kind === "workspace" ? (
+        <p>An agent made this plugin and updates it by installing its folder again.</p>
+      ) : (
+        <button
+          className="btn"
+          disabled={pending || !detail.row.permissions.canUpdate || detail.sourceFolder === null}
+          onClick={() => run(false)}
+          type="button"
+        >
+          Update
+        </button>
+      )}
       <button
         className="btn btn--danger"
         disabled={pending || !detail.row.permissions.canRemove}

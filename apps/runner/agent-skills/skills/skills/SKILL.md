@@ -57,6 +57,9 @@ When repeated work needs skills, scripts or MCP servers together, package it as 
 turn on here; connections still need grants, and local MCP servers need the computer owner's launch
 approval.
 
+Name plugins specifically (`tapo-camera`, not `camera`). To change one, edit its folder and call
+`plugin_install` on it again, never on a renamed copy.
+
 A program server that needs a password, key or token declares it in `plugin.json`, never in
 `mcp.json`, files or chat: `"extensions": {"com.opensteer": {"secrets": {"<server>": [{"name":
 "CAMERA_PASSWORD", "title": "Camera password", "description": "Where to find it"}]}}}`. The computer's
@@ -73,8 +76,8 @@ Ask the person to resolve missing resource grants or specialist bindings; never 
 `specialist` set to its registration id or plugin name. Continue it with `threadId` to retain
 context. Instructions should name per-task outputs in `PLUGIN_DATA`, shared by this registration.
 
-`plugin_manage` lists, updates, activates/deactivates or removes plugins and removes specialist
-registrations within full-access and reach. Activation grants no resource access.
+`plugin_manage` lists, activates/deactivates or removes plugins, updates person-installed ones and
+removes specialist registrations within full-access and reach. Activation grants no resource access.
 
 - Read [durable context](references/durable-context.md) when choosing where a correction, fact or task state belongs.
 - Read [skills](references/skills.md) when authoring procedures.

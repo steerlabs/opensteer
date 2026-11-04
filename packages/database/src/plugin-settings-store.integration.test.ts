@@ -109,11 +109,11 @@ describeStore("plugin Settings authority", (test) => {
       id: pluginId,
       name: "shared-visible",
       actorUserId: run.userId,
-      workspaceId: run.workspace.id,
       source: { directory: "/private/owner-skill-files" },
       digest: "shared",
       manifest: { name: "shared-visible", skills: [{ name: "shared-skill" }] },
     });
+    await platform.plugins.activateIn(f.database, pluginId, run.workspace.id, run.userId);
     const contract = testOpenApiAdapterContract({
       definitionId: "private-records",
       provider: "records",
@@ -134,6 +134,7 @@ describeStore("plugin Settings authority", (test) => {
     });
     const ownerDetail = await platform.settings.detail(run.userId, { kind: "plugin", pluginId });
     expect(ownerDetail.sourceFolder).toBe("/private/owner-skill-files");
+    expect(ownerDetail.row.permissions.canUpdate).toBe(true);
     for (const role of ["owner", "admin", "member", "non-member"] as const) {
       const viewer = role === "owner" ? run.userId : await f.store.createUser(role);
       if (role === "admin")
@@ -618,10 +619,15 @@ describeStore("plugin Settings authority", (test) => {
     });
     expect(await platform.plugins.current(run.workspace.id, run.userId)).toEqual([]);
     expect(await platform.plugins.current(run.workspace.id)).toHaveLength(1);
+    // An agent-made plugin, even one whose row still names a source folder, updates only
+    // through plugin_install.
     expect(await platform.settings.detail(run.userId, target)).toMatchObject({
-      sourceFolder: "/private/source",
+      sourceFolder: null,
       contents: [{ name: "summarize", kind: "skill" }],
-      row: { permissions: { canUpdate: true }, placement: { enabled: false } },
+      row: {
+        permissions: { canEnable: true, canRemove: true, canUpdate: false },
+        placement: { enabled: false },
+      },
     });
     expect(await platform.settings.setEnabled(run.userId, command)).toMatchObject({
       placement: { revision: initialRevision + 1 },

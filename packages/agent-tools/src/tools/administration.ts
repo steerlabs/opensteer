@@ -291,7 +291,7 @@ export const plugin_manage = defineAgentTool({
   minimumReach: "workspace",
   title: "Manage plugins",
   description:
-    "List plugins/specialists; update, activate/deactivate, remove or remove_specialist. Full-access within reach. Returns ok/inventory. Activation grants no resource access; bindings and local MCP launch approval need the person.",
+    "List plugins/specialists; update (person-installed only), activate/deactivate, remove or remove_specialist. Full-access within reach. Returns ok/inventory. Activation grants no resource access; bindings and local MCP launch approval need the person.",
   input: z.strictObject({
     action: z.enum(["list", "update", "activate", "deactivate", "remove", "remove_specialist"]),
     workspaceId: WorkspaceIdSchema.optional().describe(

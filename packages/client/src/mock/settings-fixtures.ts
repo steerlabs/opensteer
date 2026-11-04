@@ -244,6 +244,8 @@ export class MockSettingsFixtures {
         ),
     );
     for (const plugin of packages) {
+      // Agent-made plugins update when an agent installs their folder again.
+      const sourceFolder = plugin.scope === "deployment" ? plugin.directory : null;
       if (
         current.some(
           (detail) =>
@@ -270,7 +272,7 @@ export class MockSettingsFixtures {
               revision: 0,
             },
             accountCount: 0,
-            issues: plugin.directory ? [] : ["unknown-source-folder"],
+            issues: sourceFolder || plugin.scope === "workspace" ? [] : ["unknown-source-folder"],
             contents: {
               skills: plugin.skills,
               tools: plugin.servers,
@@ -280,7 +282,7 @@ export class MockSettingsFixtures {
               canEnable: true,
               canPlace: true,
               canRemove: true,
-              canUpdate: plugin.directory !== null,
+              canUpdate: sourceFolder !== null,
             },
           },
           accounts: [],
@@ -297,7 +299,7 @@ export class MockSettingsFixtures {
           devices: [],
           permissions: [],
           contents: [],
-          sourceFolder: plugin.directory,
+          sourceFolder,
         }),
       );
     }
