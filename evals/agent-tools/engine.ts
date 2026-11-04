@@ -7,7 +7,7 @@ import {
   ModelSelectionSchema,
   type ModelSelection,
 } from "@opensteer/core";
-import { agentTools, opensteerAgentSkillNames, platformGuideForRun } from "@opensteer/agent-tools";
+import { agentTools, opensteerAgentSkillsFor, platformGuideForRun } from "@opensteer/agent-tools";
 import {
   ClaudeHarnessDriver,
   claudeAgentSdk,
@@ -98,7 +98,7 @@ export async function runEngine(input: {
   await cp(join(input.checkout, "apps/runner/agent-skills"), bundlePath, { recursive: true });
   const bundle = await loadAgentSkillBundle(bundlePath);
   const selected = await Promise.all(
-    planAgentSkills(bundle, c.caller === "run" ? opensteerAgentSkillNames : []).map(
+    planAgentSkills(bundle, c.caller === "run" ? opensteerAgentSkillsFor(caseReach(c)) : []).map(
       async (skill) => {
         const { fullName, path } = skill;
         const destination = join(p.workspace, ".eval-skills", fullName);
@@ -227,7 +227,7 @@ export async function runEngine(input: {
                   parentThreadId: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001"),
                 }
               : null,
-          requesterTimeZone: null,
+          requesterTimeZone: c.requesterTimeZone ?? null,
           threadState: { previousAssignment: null, previousRun: null },
         },
         environment: p.environment,

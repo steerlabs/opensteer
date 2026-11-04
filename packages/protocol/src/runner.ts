@@ -1,3 +1,4 @@
+import { DelegationModelChoiceSchema } from "@opensteer/core";
 import { RunnerSkillMetadataReportSchema } from "./runner-skill-metadata.js";
 import { HostAppRequestSchema, RunnerAppResultSchema } from "./apps.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
@@ -957,6 +958,7 @@ export const HarnessInstanceCatalogSchema = z.discriminatedUnion("status", [
     continuationIdentity: ProviderContinuationIdentitySchema,
     driverKind: HarnessIdSchema,
     harnessInstanceId: HarnessInstanceIdSchema,
+    lightModel: DelegationModelChoiceSchema.optional(),
     models: z.array(HarnessModelDescriptorSchema).min(1).max(maxHarnessModelsPerCatalog),
     status: z.literal("ready"),
     steering: z.boolean().default(false),
@@ -1003,6 +1005,7 @@ export const HarnessInstanceCatalogViewSchema = z.discriminatedUnion("status", [
     ...HarnessSetupCatalogViewFields,
     capturedAt: IsoDateTimeSchema.optional(),
     continuationIdentity: ProviderContinuationIdentityViewSchema,
+    lightModel: DelegationModelChoiceSchema.strip().optional(),
     models: z.array(HarnessModelDescriptorViewSchema).min(1).max(maxHarnessModelsPerCatalog),
   }),
   z.object({

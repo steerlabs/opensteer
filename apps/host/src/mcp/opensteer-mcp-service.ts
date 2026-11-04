@@ -444,7 +444,7 @@ export class OpensteerMcpService {
       if (value === "home") {
         const home = await this.options.store.findMainWorkspaceForOwner(caller.userId);
         if (!home?.homeThreadId)
-          throw new OpensteerError({ code: "forbidden", message: "Chat is unavailable" });
+          throw new OpensteerError({ code: "conflict", message: "Chat has not been started yet" });
         ids.push(home.homeThreadId);
       } else {
         const id = ThreadIdSchema.safeParse(value);

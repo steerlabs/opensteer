@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+} from "react";
 import { useLocation, useParams } from "react-router";
 import {
-  HostClientRequestError,
   conversationName,
   mutationIdempotencyKey,
   schedulesClient,
-  unwrapRpcResult,
   type HostClient,
-  type HostSnapshot,
   type TriggerDetail,
 } from "@opensteer/client/host";
 import {
@@ -56,35 +60,14 @@ function AutomationDetail({ triggerId }: { readonly triggerId: string }) {
   const { hostClient, openMobileNavigation, snapshot } = useShell();
   const location = useLocation();
   const now = useMinuteClock();
-  const [detail, setDetail] = useState<TriggerDetail | null>(null);
-  const [missing, setMissing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const runs = useMemo(
-    () => triggerRunLifecycleSignature(snapshot),
-    [snapshot.runQueue, snapshot.threads],
+  const resource = useMemo(
+    () => schedulesClient(hostClient).detail(triggerId),
+    [hostClient, triggerId],
   );
-
-  // Everything below is read again whenever a Trigger changes or one of the
-  // Runs it started moves on, so the page never shows an outcome that is over.
-  useEffect(() => {
-    let current = true;
-    void hostClient.rpc["triggers.get"]({ triggerId })
-      .then((result) => {
-        if (!current) return;
-        setDetail(unwrapRpcResult(result));
-        setError(null);
-      })
-      .catch((reason: unknown) => {
-        if (!current) return;
-        if (reason instanceof HostClientRequestError && reason.code === "not_found") {
-          setMissing(true);
-        } else setError(actionErrorMessage(reason));
-      });
-    return () => {
-      current = false;
-    };
-  }, [attempt, hostClient, runs, snapshot.triggerRevision, triggerId]);
+  const state = useSyncExternalStore(resource.subscribe, resource.getSnapshot);
+  const detail = state.data?.definition ?? null;
+  const error = state.error;
+  const missing = state.status === "error" && state.errorCode === "not_found";
 
   const webhookState = location.state as { readonly webhook?: CreatedWebhook } | null;
   const webhook = webhookState?.webhook?.triggerId === triggerId ? webhookState.webhook : null;
@@ -102,7 +85,7 @@ function AutomationDetail({ triggerId }: { readonly triggerId: string }) {
             </p>
           </>
         ) : null}
-        {error && !detail ? (
+        {error && !detail && !missing ? (
           <>
             <PageHeader back={<BackToAutomations />} title="Automation" />
             <p aria-live="assertive" className="notice notice--error" role="alert">
@@ -110,7 +93,7 @@ function AutomationDetail({ triggerId }: { readonly triggerId: string }) {
               <span>{error}</span>
               <button
                 className="btn btn--small"
-                onClick={() => setAttempt((value) => value + 1)}
+                onClick={() => void resource.refresh().catch(() => undefined)}
                 type="button"
               >
                 Try again
@@ -133,7 +116,6 @@ function AutomationDetail({ triggerId }: { readonly triggerId: string }) {
             homeThreadId={snapshot.homeThreadId}
             machine={machineOf(snapshot, detail.trigger.anchorThreadId)}
             now={now}
-            onChanged={setDetail}
             webhook={webhook}
           />
         ) : null}
@@ -180,7 +162,6 @@ function AutomationView({
   homeThreadId,
   machine,
   now,
-  onChanged,
   webhook,
 }: {
   readonly client: HostClient;
@@ -188,12 +169,13 @@ function AutomationView({
   readonly homeThreadId: string | null;
   readonly machine: string | null;
   readonly now: number;
-  readonly onChanged: (detail: TriggerDetail) => void;
   readonly webhook: CreatedWebhook | null;
 }) {
   const navigate = useAreaNavigate();
   const toast = useToast();
   const { trigger } = detail;
+  const managed = trigger.systemRole != null;
+  const worker = detail.anchorThread;
   const summary = summaryOf(detail);
   const shape = automationShape(detail.revision.source);
   const archived = trigger.status === "archived";
@@ -215,8 +197,8 @@ function AutomationView({
   );
 
   const refresh = useCallback(async () => {
-    onChanged(unwrapRpcResult(await client.rpc["triggers.get"]({ triggerId: trigger.id })));
-  }, [client, onChanged, trigger.id]);
+    await schedulesClient(client).detail(trigger.id).refresh();
+  }, [client, trigger.id]);
 
   const act = async (work: () => Promise<string | null>) => {
     setPending(true);
@@ -245,16 +227,7 @@ function AutomationView({
   const runNow = () =>
     act(async () => {
       const schedules = schedulesClient(client);
-      try {
-        const confirmed = await schedules.act(trigger.id, "run", undefined, {
-          requestedFrom: "web",
-        });
-        onChanged(confirmed.definition);
-      } catch (error) {
-        const state = schedules.detail(trigger.id).getSnapshot();
-        if (state.status === "ready") onChanged(state.data.definition);
-        throw error;
-      }
+      await schedules.act(trigger.id, "run", undefined, { requestedFrom: "web" });
       return "Running now";
     });
 
@@ -312,22 +285,37 @@ function AutomationView({
 
   const canResume = trigger.status === "paused" && !(shape === "once" && elapsed);
   const canPause = trigger.status === "active" && shape !== "once";
-  const canRun = shape !== "watch";
+  const canRun = !managed && shape !== "watch";
 
   return (
     <>
       <PageHeader
         back={<BackToAutomations />}
-        description={statusSentence({ detail, machine, now, problem, shape })}
-        title={trigger.name}
+        description={
+          managed
+            ? trigger.systemRole === "memory-light"
+              ? "Checks what’s new and tells Chat when something matters."
+              : "Tidies memory and prepares tomorrow. Findings reach you through Chat."
+            : statusSentence({ detail, machine, now, problem, shape })
+        }
+        title={
+          managed
+            ? trigger.systemRole === "memory-light"
+              ? "Light memory pass"
+              : "Nightly memory pass"
+            : trigger.name
+        }
       />
 
+      {managed && trigger.pauseReason ? <p className="notice">{trigger.pauseReason}</p> : null}
       {webhook ? <WebhookReady webhook={webhook} /> : null}
 
-      {problem ? (
+      {problem && (!managed || worker || homeThreadId) ? (
         <ProblemNotice
-          conversation={conversation}
-          conversationTitle={conversationTitle}
+          conversation={
+            managed && homeThreadId ? conversationPath(homeThreadId, homeThreadId) : conversation
+          }
+          conversationTitle={managed && homeThreadId ? "Chat" : conversationTitle}
           detail={detail}
           problem={problem}
         />
@@ -344,6 +332,25 @@ function AutomationView({
               type="button"
             >
               <Icon name="clock" /> Change time
+            </button>
+          ) : null}
+          {managed && worker && (worker.doneAt || worker.inputQueuePaused) ? (
+            <button
+              className="btn btn--small"
+              disabled={pending}
+              type="button"
+              onClick={() =>
+                void act(async () => {
+                  if (worker.doneAt) await client.setTaskDone(worker.id, false);
+                  else await client.resumeThreadInputQueue(worker.id);
+                  await refresh();
+                  return worker.doneAt
+                    ? "Worker reopened. Resume the memory pass when ready."
+                    : "Worker resumed";
+                })
+              }
+            >
+              {worker.doneAt ? "Reopen worker" : "Resume worker"}
             </button>
           ) : null}
           {canResume ? (
@@ -376,16 +383,18 @@ function AutomationView({
               Pause
             </button>
           ) : null}
-          <button
-            aria-haspopup="dialog"
-            className="btn btn--small btn--ghost btn--danger"
-            disabled={pending}
-            onClick={() => setConfirmingDelete(true)}
-            ref={deleteRef}
-            type="button"
-          >
-            Delete
-          </button>
+          {managed ? null : (
+            <button
+              aria-haspopup="dialog"
+              className="btn btn--small btn--ghost btn--danger"
+              disabled={pending}
+              onClick={() => setConfirmingDelete(true)}
+              ref={deleteRef}
+              type="button"
+            >
+              Delete
+            </button>
+          )}
           {confirmingDelete && deleteRef.current ? (
             <Popover
               anchor={deleteRef.current}
@@ -441,11 +450,19 @@ function AutomationView({
         <div className="automation-facts__row">
           <dt>Conversation</dt>
           <dd>
-            <AreaLink className="automation-facts__link" to={conversation}>
-              <Icon name="message" />
-              {conversationTitle}
-            </AreaLink>
-            <span className="automation-facts__note">Where it runs and talks to you</span>
+            {!managed || worker ? (
+              <AreaLink className="automation-facts__link" to={conversation}>
+                <Icon name="message" />
+                {worker?.title ?? conversationTitle}
+              </AreaLink>
+            ) : (
+              <span>Worker unavailable</span>
+            )}
+            <span className="automation-facts__note">
+              {managed
+                ? "Runs here; findings reach you through Chat"
+                : "Where it runs and talks to you"}
+            </span>
           </dd>
         </div>
         {machine ? (
@@ -872,7 +889,7 @@ function Advanced({
             {revision.program.language === "typescript" ? "TypeScript" : "JavaScript"} program,
             version {revision.ordinal}
           </span>
-          {archived ? null : (
+          {archived || detail.trigger.systemRole != null ? null : (
             <AreaLink
               className="btn btn--small"
               to={`/automations/${encodeURIComponent(detail.trigger.id)}/edit`}
@@ -951,22 +968,4 @@ function CopyRow({ label, value }: { readonly label: string; readonly value: str
       </div>
     </div>
   );
-}
-
-/**
- * What changes when a Run an automation started moves on: Run and Thread
- * statuses, not streaming metadata, so the detail is read again only when an
- * outcome it shows could have changed.
- */
-export function triggerRunLifecycleSignature(
-  snapshot: Pick<HostSnapshot, "runQueue" | "threads">,
-): string {
-  return JSON.stringify({
-    runs: snapshot.runQueue
-      .map(({ id, status, threadId }) => ({ id, status, threadId }))
-      .sort((left, right) => left.id.localeCompare(right.id)),
-    threads: snapshot.threads
-      .map(({ id, status }) => ({ id, status }))
-      .sort((left, right) => left.id.localeCompare(right.id)),
-  });
 }

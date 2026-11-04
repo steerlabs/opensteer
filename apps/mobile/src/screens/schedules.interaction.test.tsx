@@ -182,8 +182,8 @@ afterEach(() => {
 });
 
 /** The real mock Host's triggers and commands behind a client whose connection the test holds. */
-function host() {
-  const mock = new MockHostClient({ latencyMs: 0 });
+function host(memoryPasses?: "active" | "off" | "no-light-model") {
+  const mock = new MockHostClient({ latencyMs: 0, ...(memoryPasses ? { memoryPasses } : {}) });
   mocks.push(mock);
   let snapshot: HostSnapshot = { ...mock.getSnapshot(), connection: "connected" };
   const listeners = new Set<() => void>();
@@ -192,6 +192,8 @@ function host() {
   const dispatch = vi.fn(mock.dispatch.bind(mock));
   const client = {
     dispatch,
+    setTaskDone: mock.setTaskDone.bind(mock),
+    resumeThreadInputQueue: mock.resumeThreadInputQueue.bind(mock),
     getSnapshot: () => snapshot,
     rpc: { "triggers.get": get, "triggers.list": list },
     subscribe: (listener: () => void) => {
@@ -537,7 +539,11 @@ describe("One schedule", () => {
     f.get.mockImplementation(async (input) => {
       const answer = unwrapRpcResult(await f.mock.rpc["triggers.get"](input));
       return {
-        data: { ...answer, trigger: { ...answer.trigger, anchorThreadId: hidden } },
+        data: {
+          ...answer,
+          anchorThread: null,
+          trigger: { ...answer.trigger, anchorThreadId: hidden },
+        },
         ok: true,
       };
     });
@@ -701,5 +707,66 @@ describe("One schedule", () => {
       () => expect(button(screen, "Pause").disabled, "reconnect never enabled changes").toBe(false),
       { timeout: 2000 },
     );
+  });
+});
+
+describe("Managed memory passes", () => {
+  it("shows the no-light reason, navigates the unlisted worker and pauses/resumes", async () => {
+    const f = host("no-light-model");
+    const light = (await f.summaries()).find((t) => t.systemRole === "memory-light")!;
+    const screen = detailScreen(light.id);
+    await shown(screen, "This engine has no light model", "pause reason missing");
+    expect(screen.textContent).not.toContain("Run now");
+    expect(screen.textContent).toContain("Findings reach you through Chat");
+    press(button(screen, /^Runs in /));
+    expect(pushed().at(-1)).toMatchObject({
+      payload: { params: { threadId: light.anchorThreadId } },
+    });
+    press(button(screen, "Resume"));
+    await vi.waitFor(() => expect(button(screen, "Pause").disabled).toBe(false), { timeout: 2000 });
+    press(button(screen, "Pause"));
+    await vi.waitFor(() => expect(button(screen, "Resume").disabled).toBe(false), {
+      timeout: 2000,
+    });
+  });
+
+  it("refreshes Done/Reopen/stopped recovery from another device without streaming reads", async () => {
+    const f = host("active");
+    const light = (await f.summaries()).find((t) => t.systemRole === "memory-light")!;
+    const screen = detailScreen(light.id);
+    await shown(screen, "Pause", "detail missing");
+    const original = unwrapRpcResult(await f.mock.rpc["triggers.get"]({ triggerId: light.id }));
+    let worker = { ...original.anchorThread!, doneAt: "2026-11-03T10:00:00Z" as string | null };
+    f.get.mockImplementation(async () => ({
+      ok: true,
+      data: { ...original, anchorThread: worker },
+    }));
+    f.emit({ triggerRevision: f.snapshot().triggerRevision + 1 });
+    await shown(screen, "Reopen worker", "Done state did not refresh");
+    const reopen = vi.spyOn(harness.host, "setTaskDone").mockImplementation(async () => {
+      worker = { ...worker, doneAt: null };
+      return f.mock.setTaskDone(light.anchorThreadId, false);
+    });
+    press(button(screen, "Reopen worker"));
+    await vi.waitFor(() => expect(screen.textContent).not.toContain("Reopen worker"), {
+      timeout: 2000,
+    });
+    expect(reopen).toHaveBeenCalledWith(light.anchorThreadId, false);
+    worker = { ...worker, inputQueuePaused: true };
+    f.emit({ triggerRevision: f.snapshot().triggerRevision + 1 });
+    await shown(screen, "Resume worker", "Stop state did not refresh");
+    const resume = vi.spyOn(harness.host, "resumeThreadInputQueue").mockImplementation(async () => {
+      worker = { ...worker, inputQueuePaused: false };
+    });
+    press(button(screen, "Resume worker"));
+    await vi.waitFor(() => expect(screen.textContent).not.toContain("Resume worker"), {
+      timeout: 2000,
+    });
+    expect(resume).toHaveBeenCalledWith(light.anchorThreadId);
+    const reads = f.get.mock.calls.length;
+    f.emit({
+      threads: f.snapshot().threads.map((t) => ({ ...t, updatedAt: "2026-11-03T11:00:00Z" })),
+    });
+    expect(f.get).toHaveBeenCalledTimes(reads);
   });
 });

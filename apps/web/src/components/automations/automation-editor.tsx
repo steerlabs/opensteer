@@ -98,10 +98,17 @@ export function AutomationEditorPage() {
             <LoadingRows label="Loading automation" />
           </div>
         ) : null}
+        {editing?.trigger.systemRole != null ? (
+          <p className="card__empty">
+            Opensteer manages this memory pass. You can inspect it and pause or resume it from its
+            automation page. To stop remembering, ask Chat.
+          </p>
+        ) : null}
         {editing?.trigger.status === "archived" ? (
           <p className="card__empty">This automation was deleted, so it can’t be changed.</p>
         ) : null}
-        {!triggerId || (editing && editing.trigger.status !== "archived") ? (
+        {!triggerId ||
+        (editing && editing.trigger.systemRole == null && editing.trigger.status !== "archived") ? (
           <EditorForm editing={editing} key={editing?.revision.id ?? "new"} />
         ) : null}
       </div>

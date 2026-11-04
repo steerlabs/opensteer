@@ -1028,6 +1028,7 @@ export interface WorkspaceSharingSnapshot {
 export type InitialOwnerClaimInput = PasswordSignInInput;
 
 export interface TriggerDetail {
+  anchorThread?: Thread | null | undefined;
   activation: TriggerWatchActivation | null;
   anchorThreadTitle: string;
   createdByThreadTitle: string | null;

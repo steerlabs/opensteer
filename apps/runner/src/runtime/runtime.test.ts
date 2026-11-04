@@ -78,6 +78,7 @@ import { providerContinuationIdentityProjector } from "@opensteer/runner-client"
 const testAgentSkills = {
   paths: {
     "opensteer:skills": "/runner/agent-skills/skills/skills",
+    "opensteer:memory": "/runner/agent-skills/skills/memory",
     "opensteer:integrations": "/runner/agent-skills/skills/integrations",
     "opensteer:browser": "/runner/agent-skills/skills/browser",
     "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",
@@ -742,6 +743,7 @@ describe("RunnerRuntime", () => {
         throw new Error("Unexpected adapter creation");
       },
       inspect: async () => ({
+        lightModel: selection,
         models: [
           {
             displayName: "Test model",
@@ -802,6 +804,7 @@ describe("RunnerRuntime", () => {
         new AbortController().signal,
       );
       expect(catalogs).toHaveLength(1);
+      expect(catalogs[0]).toMatchObject({ lightModel: selection });
       expect(catalogs[0]).toMatchObject({
         continuationIdentity: {
           continuationKey: expect.stringMatching(/^runner:v1:/),

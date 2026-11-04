@@ -3,7 +3,8 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { createId, type Thread } from "@opensteer/core";
+import { createId, OpensteerError, type Thread } from "@opensteer/core";
+import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentCaller, RunCaller } from "./agent-caller.js";
@@ -390,6 +391,27 @@ describe("Opensteer MCP spine", () => {
         f.service.callTool("program", "person_message", { message: "hi" }, { operationKey: "p" }),
       ).rejects.toThrow("unavailable to this caller");
       expect(f.personMessage).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await f.service.close();
+    }
+  });
+  it("returns a program the exact skipped memory wake text it matches on", async () => {
+    const f = await httpFixture();
+    vi.mocked(f.handlers.thread_message).mockRejectedValueOnce(
+      new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED }),
+    );
+    const client = await connect(f.url, "program");
+    try {
+      await expect(
+        client.callTool({
+          name: "thread_message",
+          arguments: { delivery: "queue", message: "Light pass due", threadId: f.thread.id },
+        }),
+      ).resolves.toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: MANAGED_MEMORY_WAKE_SKIPPED }],
+      });
     } finally {
       await client.close();
       await f.service.close();

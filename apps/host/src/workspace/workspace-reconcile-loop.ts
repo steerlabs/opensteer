@@ -91,3 +91,16 @@ export class WorkspaceReconcileLoop {
     return Math.floor(this.#random() * ceiling);
   }
 }
+
+/** Independent reconcilers settle before dependent work, even when a sibling fails. */
+export async function reconcileWorkspaceServices(
+  work: readonly Promise<unknown>[],
+  afterSettled: () => Promise<void>,
+): Promise<void> {
+  const results = await Promise.allSettled(work);
+  await afterSettled();
+  const failures = results.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : [],
+  );
+  if (failures.length) throw new AggregateError(failures, "Storage reconciliation failed");
+}

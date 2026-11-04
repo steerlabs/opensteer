@@ -1514,6 +1514,40 @@ export class RequestStore {
           requests.map(({ id }) => id),
           input.userId,
         );
+        const managed = requests.length
+          ? await transaction
+              .selectFrom("triggers")
+              .innerJoin("threads as worker", "worker.id", "triggers.anchorThreadId")
+              .innerJoin("workspaces as main", "main.id", "worker.workspaceId")
+              .innerJoin("threads as chat", "chat.id", "main.homeThreadId")
+              .innerJoin("workspaceMemberships as reader", (join) =>
+                join
+                  .onRef("reader.workspaceId", "=", "main.id")
+                  .on("reader.userId", "=", input.userId)
+                  .on("reader.state", "=", "active"),
+              )
+              .select(["worker.id", "worker.title", "chat.id as chatId"])
+              .where("triggers.systemRole", "is not", null)
+              .where("main.kind", "=", "main")
+              .where("main.createdBy", "=", input.userId)
+              .where("triggers.createdBy", "=", input.userId)
+              .whereRef("worker.parentThreadId", "=", "chat.id")
+              .whereRef("worker.lineageRootThreadId", "=", "chat.lineageRootThreadId")
+              .where("worker.listed", "=", false)
+              .where("chat.inheritsMain", "=", true)
+              .where(
+                "worker.id",
+                "in",
+                requests.map(({ originatingThreadId }) => originatingThreadId),
+              )
+              .execute()
+          : [];
+        const presentations = new Map(
+          managed.map(({ id, title, chatId }) => [
+            id,
+            { threadId: chatId, workerThread: { id, title } },
+          ]),
+        );
         const askingNodeIds = requests.flatMap((request) =>
           request.originatingNodeId ? [request.originatingNodeId] : [],
         );
@@ -1530,6 +1564,7 @@ export class RequestStore {
         return {
           requests: requests.map((request) => ({
             assignments: held.get(request.id) ?? [],
+            presentation: presentations.get(request.originatingThreadId) ?? null,
             request: PendingRequestSchema.parse(request),
             subagent: request.originatingNodeId
               ? (askingNodes.get(request.originatingNodeId) ?? null)

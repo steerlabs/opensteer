@@ -20,7 +20,7 @@ import {
   type LocalWorkspaceRegistryOptions,
   type ProvisionFingerprint,
 } from "./registry.js";
-import type { NativeDirectoryIdentity } from "./native-fs-helper.js";
+import { NativeFsHelperError, type NativeDirectoryIdentity } from "./native-fs-helper.js";
 
 export interface LocalWorkspaceAuthorityOptions extends LocalWorkspaceRegistryOptions {}
 
@@ -270,6 +270,10 @@ export class LocalWorkspaceAuthority {
 }
 
 export function failureFromError(error: unknown): WorkspaceLocalFailure {
+  // An absent file does not mean the Workspace itself is inaccessible.
+  if (error instanceof NativeFsHelperError && error.code === "not-found") {
+    return { code: "not-found", message: error.message.slice(0, 500), retryable: false };
+  }
   const localError = asLocalWorkspaceError(error);
   return {
     code: localError.code,

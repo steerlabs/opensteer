@@ -25,7 +25,7 @@ integration("consent scope upgrade", () => {
     await maintenance.query(`create database ${name}`);
     database = createDatabase({ connectionString: urlFor(name), maxConnections: 1 });
     const before = await new Migrator({ db: database, provider: migrationProvider() }).migrateTo(
-      "0151_plugin_settings_revisions",
+      "0152_managed_memory_passes",
     );
     if (before.error) throw before.error;
     // Released rows retain their real shape and constraints, without requiring live engines.
@@ -64,6 +64,7 @@ integration("consent scope upgrade", () => {
           ('discord-shared', 'main', 'discord-shared', null, 'workspace', null),
           ('shared-worker', 'main', 'slack-shared', 'slack-shared', 'delegated', null),
           ('main-trigger-worker', 'main', 'main-root', 'main-root', 'delegated', null),
+          ('memory-worker', 'main', 'main-root', 'main-root', 'delegated', null),
           ('project-trigger-worker', 'project', 'project-root', 'project-root', 'delegated', null),
           ('shared-trigger-worker', 'main', 'discord-shared', 'discord-shared', 'delegated', null)
         ) as rows(id, workspace, root, parent, profile, specialist);
@@ -81,10 +82,11 @@ integration("consent scope upgrade", () => {
         insert into channel_conversation_contexts(conversation_id, authority_user_id, binding_revision, active_thread_id)
           select id, 'owner', 1, id from channel_conversations;
         insert into triggers(id, workspace_id, anchor_thread_id, created_by, idempotency_key,
-          request_fingerprint, name, kind, status, current_revision_id)
-        values ('main-trigger', 'main', 'main-root', 'owner', 'main-trigger', '{}', 'Main', 'schedule', 'active', 'revision'),
-          ('project-trigger', 'project', 'project-root', 'owner', 'project-trigger', '{}', 'Project', 'schedule', 'active', 'revision'),
-          ('shared-trigger', 'main', 'discord-shared', 'owner', 'shared-trigger', '{}', 'Shared', 'schedule', 'active', 'revision');
+          request_fingerprint, name, kind, status, current_revision_id, system_role)
+        values ('main-trigger', 'main', 'main-root', 'owner', 'main-trigger', '{}', 'Main', 'schedule', 'active', 'revision', null),
+          ('project-trigger', 'project', 'project-root', 'owner', 'project-trigger', '{}', 'Project', 'schedule', 'active', 'revision', null),
+          ('shared-trigger', 'main', 'discord-shared', 'owner', 'shared-trigger', '{}', 'Shared', 'schedule', 'active', 'revision', null),
+          ('memory-trigger', 'main', 'memory-worker', 'owner', 'memory-trigger', '{}', 'Memory light pass', 'schedule', 'active', 'revision', 'memory-light');
       `.execute(database);
     } finally {
       await sql`set session_replication_role = origin`.execute(database);
@@ -108,6 +110,7 @@ integration("consent scope upgrade", () => {
         ["main-root", true, null],
         ["main-trigger-worker", true, null],
         ["main-worker", true, null],
+        ["memory-worker", true, null],
         ["owner-dm", true, null],
         ["project-root", false, null],
         ["project-trigger-worker", false, null],

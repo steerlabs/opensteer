@@ -4,6 +4,7 @@ import {
   AssignmentIdSchema,
   AssignmentSummarySchema,
   BrowserProfileIdSchema,
+  DelegationModelChoiceSchema,
   EnvironmentIdSchema,
   ExecutionEnvironmentKindSchema,
   HarnessIdSchema,
@@ -42,6 +43,7 @@ const AgentModelSummarySchema = z.object({
 export type AgentModelSummary = z.infer<typeof AgentModelSummarySchema>;
 
 const HarnessSummarySchema = z.object({
+  lightModel: DelegationModelChoiceSchema.optional(),
   driverKind: HarnessIdSchema,
   enabled: z.boolean(),
   environmentId: EnvironmentIdSchema,

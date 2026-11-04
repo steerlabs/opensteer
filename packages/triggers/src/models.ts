@@ -91,7 +91,15 @@ const TriggerSourceViewSchema = z.discriminatedUnion("kind", [
 ]);
 export type TriggerSource = z.infer<typeof TriggerSourceSchema>;
 
+export const TriggerSystemRoleSchema = z.enum(["memory-light", "memory-nightly"]);
+export type TriggerSystemRole = z.infer<typeof TriggerSystemRoleSchema>;
+
+export const MANAGED_MEMORY_REFUSAL =
+  "Opensteer manages this memory pass. Pause it instead; to stop remembering, ask Chat.";
+export const MANAGED_MEMORY_WAKE_SKIPPED = "Opensteer skipped this memory pass wake.";
+
 export const TriggerSchema = z.strictObject({
+  systemRole: TriggerSystemRoleSchema.nullable().optional(),
   anchorThreadId: ThreadIdSchema,
   consecutiveFailures: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   createdAt: IsoDateTimeSchema,
@@ -291,6 +299,7 @@ export function triggerOccurrenceErrorMessage(error: unknown): string | null {
 }
 
 export const TriggerReadInputSchema = z.strictObject({
+  systemRole: TriggerSystemRoleSchema.optional(),
   action: z.enum(["list", "get"]),
   limit: z.number().int().min(1).max(100).default(50),
   occurrenceLimit: z.number().int().min(1).max(100).default(25),
@@ -352,6 +361,7 @@ export const TriggerControlInputSchema = z.discriminatedUnion("operation", [
   z.strictObject({
     limit: z.number().int().min(1).max(100).default(50),
     operation: z.literal("list"),
+    systemRole: TriggerSystemRoleSchema.optional(),
     workspaceId: WorkspaceIdSchema.optional(),
   }),
   z.strictObject({

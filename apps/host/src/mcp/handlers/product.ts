@@ -423,8 +423,12 @@ export class ProductToolHandlers {
 
   async thread_read({ caller, input }: ToolCall<"thread_read">) {
     const claims = { requestedBy: caller.userId };
-
-    const thread = await this.#store.getThreadForOwner(input.threadId, claims.requestedBy);
+    const threadId =
+      input.threadId === "home"
+        ? (await this.#store.findMainWorkspaceForOwner(caller.userId))?.homeThreadId
+        : input.threadId;
+    if (!threadId) throw conflict("Chat has not been started yet");
+    const thread = await this.#store.getThreadForOwner(threadId, claims.requestedBy);
     if (!thread) throw forbidden("Thread is unavailable to this user");
     assertTarget(caller, thread);
 
@@ -435,7 +439,7 @@ export class ProductToolHandlers {
       maxItems: input.maxMessages,
       maxBytes: 256 * 1_024,
       ownerId: claims.requestedBy,
-      threadId: input.threadId,
+      threadId: thread.id,
     });
     if (!page) throw forbidden("Thread is unavailable to this user");
     const assignments = await this.#store.listThreadAssignmentsForOwner({
@@ -1062,7 +1066,7 @@ export class ProductToolHandlers {
       input.threadId === "home"
         ? (await this.#store.findMainWorkspaceForOwner(caller.userId))?.homeThreadId
         : ThreadIdSchema.parse(input.threadId);
-    if (!destination) throw badRequest("Chat has not been started yet");
+    if (!destination) throw conflict("Chat has not been started yet");
     if (destination === anchor?.id && caller.kind === "run")
       throw badRequest("An agent cannot message its own active Thread");
     const thread = await this.#store.getThreadForOwner(destination, caller.userId);

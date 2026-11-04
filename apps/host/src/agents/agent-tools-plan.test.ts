@@ -26,7 +26,9 @@ describe("Host Run tools plan", () => {
     expect(agentToolsPlanForRun({ ...input, reach: "lineage" }).tools).not.toContain(
       "computer_list",
     );
-    expect(plan.skills).toEqual([...opensteerAgentSkillNames]);
+    expect(plan.skills).toEqual(
+      opensteerAgentSkillNames.filter((name) => name !== "opensteer:memory"),
+    );
     expect(plan.instructions).toContain("Role: work");
     expect(plan.instructions).not.toContain("opensteer:projects");
     expect(agentToolsPlanForRun({ ...input, token: "refreshed" }).toolsRevision).toBe(
@@ -37,6 +39,10 @@ describe("Host Run tools plan", () => {
     expect(chat.toolsRevision).not.toBe(plan.toolsRevision);
     const main = agentToolsPlanForRun({ ...input, reach: "user" });
     expect(main.instructions).toContain("opensteer:projects");
+    expect(main.skills).toEqual([...opensteerAgentSkillNames]);
+    expect(agentToolsPlanForRun({ ...input, reach: "lineage" }).skills).not.toContain(
+      "opensteer:memory",
+    );
     expect(main.toolsRevision).not.toBe(plan.toolsRevision);
     expect(agentToolsPlanForRun({ ...input, reach: "lineage" }).instructions).toContain(
       "PLUGIN_DATA",

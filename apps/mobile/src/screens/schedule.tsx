@@ -121,7 +121,12 @@ function ScheduleView(props: {
   const [failure, setFailure] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  const name = detail?.item.name ?? "";
+  const name =
+    detail?.item.systemRole === "memory-light"
+      ? "Light memory pass"
+      : detail?.item.systemRole === "memory-nightly"
+        ? "Nightly memory pass"
+        : (detail?.item.name ?? "");
   useLayoutEffect(() => {
     navigation.setOptions({ title: name });
   }, [name, navigation]);
@@ -234,6 +239,24 @@ function ScheduleBody(props: {
 }): ReactNode {
   const { detail, pending } = props;
   const { item, definition } = detail;
+  const managed = item.systemRole != null;
+  const worker = definition.anchorThread;
+  const [recovering, setRecovering] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  const recover = async () => {
+    if (!worker) return;
+    setRecovering(true);
+    setRecoveryError(null);
+    try {
+      if (worker.doneAt) await props.hostClient.setTaskDone(worker.id, false);
+      else await props.hostClient.resumeThreadInputQueue(worker.id);
+      await schedulesClient(props.hostClient).detail(item.id).refresh();
+    } catch (error) {
+      setRecoveryError(operationDetail(error, "The worker could not be changed."));
+    } finally {
+      setRecovering(false);
+    }
+  };
   const source = definition.revision.source;
   const now = Date.now();
   const watch =
@@ -261,6 +284,13 @@ function ScheduleBody(props: {
 
   return (
     <View style={styles.body}>
+      {managed ? (
+        <AppText role="secondary" tone="muted">
+          {item.systemRole === "memory-light"
+            ? "Light memory pass — checks what’s new and tells Chat when something matters."
+            : "Nightly memory pass — tidies memory and prepares tomorrow. Findings reach you through Chat."}
+        </AppText>
+      ) : null}
       <View accessible accessibilityLabel={status} style={styles.status}>
         <StatusDot
           live={watch?.text === "Watching"}
@@ -292,7 +322,9 @@ function ScheduleBody(props: {
           </AppText>
           <AppText role="caption" tone="muted">
             {item.anchor.visible
-              ? "Each run posts its result there"
+              ? managed
+                ? "Findings reach you through Chat"
+                : "Each run posts its result there"
               : "That thread isn’t available to you"}
           </AppText>
         </View>
@@ -340,13 +372,15 @@ function ScheduleBody(props: {
                 onPress={() => props.onAct("pause")}
               />
             )}
-            <ActionButton
-              busy={pending === "run"}
-              disabled={props.blocked !== null || (pending !== null && pending !== "run")}
-              icon="play"
-              label="Run now"
-              onPress={() => props.onAct("run")}
-            />
+            {managed ? null : (
+              <ActionButton
+                busy={pending === "run"}
+                disabled={props.blocked !== null || (pending !== null && pending !== "run")}
+                icon="play"
+                label="Run now"
+                onPress={() => props.onAct("run")}
+              />
+            )}
           </View>
           {props.blocked === null ? null : (
             <AppText role="caption" tone="muted">
@@ -365,6 +399,32 @@ function ScheduleBody(props: {
         </View>
       ) : null}
 
+      {managed && worker && (worker.doneAt || worker.inputQueuePaused) ? (
+        <View style={styles.actionsBlock}>
+          <ActionButton
+            busy={recovering}
+            disabled={props.blocked !== null || pending !== null}
+            icon="play"
+            label={worker.doneAt ? "Reopen worker" : "Resume worker"}
+            onPress={() => void recover()}
+          />
+          <AppText role="caption" tone="muted">
+            {worker.doneAt
+              ? "Reopening the worker leaves the memory pass paused until you resume it."
+              : "Resuming the worker leaves the memory pass’s schedule unchanged."}
+          </AppText>
+        </View>
+      ) : null}
+      {recoveryError ? (
+        <AppText role="caption" tone="danger">
+          {recoveryError}
+        </AppText>
+      ) : null}
+      {managed ? (
+        <View style={styles.plate}>
+          <Fact label="Source" value={definition.revision.program.source} />
+        </View>
+      ) : null}
       <View style={styles.runs}>
         <ScheduleGroupHead title="Recent runs" />
         {detail.occurrences.length === 0 ? (

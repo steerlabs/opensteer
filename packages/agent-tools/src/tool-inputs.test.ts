@@ -20,6 +20,11 @@ describe("Opensteer tool inputs", () => {
       }).success,
     ).toBe(false);
   });
+  it("reads Chat by its home alias", () => {
+    expect(tool("thread_read").input.safeParse({ threadId: "home", maxMessages: 1 }).success).toBe(
+      true,
+    );
+  });
   it("keeps browser session identity explicit", () => {
     const schema = tool("browser_session_open").input;
     expect(schema.safeParse({ fresh: true }).success).toBe(true);

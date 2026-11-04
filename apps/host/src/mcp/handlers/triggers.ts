@@ -33,6 +33,7 @@ export class TriggerToolHandlers {
         ? {
             operation: "list",
             limit: input.limit,
+            ...(input.systemRole ? { systemRole: input.systemRole } : {}),
             ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
           }
         : {

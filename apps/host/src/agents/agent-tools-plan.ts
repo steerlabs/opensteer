@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import {
   agentToolAnnotations,
   toolsFor,
-  opensteerAgentSkillNames,
+  opensteerAgentSkillsFor,
   platformGuideForRun,
 } from "@opensteer/agent-tools";
 import type { ThreadAccessMode, ThreadReachScope, ThreadRole } from "@opensteer/core";
@@ -30,7 +30,7 @@ export function agentToolsPlanForRun(input: {
   }));
   const tools = runTools.map(({ name }) => name);
   const instructions = platformGuideForRun({ role: input.role, reach: input.reach });
-  const skills = [...opensteerAgentSkillNames];
+  const skills = [...opensteerAgentSkillsFor(input.reach)];
   const toolsRevision = createHash("sha256")
     .update(JSON.stringify({ catalog: runToolsCatalog, instructions, skills }))
     .digest("hex");

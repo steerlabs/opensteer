@@ -34,7 +34,7 @@ export const thread_read = defineAgentTool({
   targetFields: ["threadId"],
   title: "Read a Thread",
   description:
-    "Read reachable history/assigned tasks before answering about earlier work. Returns thread/messages/assignments, execution selectors, bounded queue and paging windows. query searches; aroundMessageId excludes search/paging. Page messages with window.nextBefore as before, keeping query; tasks with assignmentWindow.nextBefore as assignmentBefore.",
+    "Read reachable history/assigned tasks before answering about earlier work; home means Chat. Returns thread/messages/assignments, execution selectors, bounded queue and paging windows. query searches; aroundMessageId excludes search/paging. Page messages with window.nextBefore as before, keeping query; tasks with assignmentWindow.nextBefore as assignmentBefore.",
   input: z.strictObject({
     before: CursorSchema.optional().describe("Message cursor from window.nextBefore; keep query."),
     maxMessages: z.number().int().min(1).max(100).default(100),
@@ -45,7 +45,7 @@ export const thread_read = defineAgentTool({
     assignmentBefore: CursorSchema.optional().describe(
       "Assignment cursor from assignmentWindow.nextBefore.",
     ),
-    threadId: ThreadIdSchema,
+    threadId: z.union([ThreadIdSchema, z.literal("home")]),
   }),
   output: ThreadReadOutputSchema,
   access: "read",

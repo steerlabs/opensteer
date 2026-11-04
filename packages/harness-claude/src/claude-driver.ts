@@ -1,3 +1,4 @@
+import { type HarnessModelDescriptor, resolveLightModel } from "@opensteer/harness";
 import { type ClaudeExecutableInspection } from "./executable.js";
 import { delay } from "@opensteer/shared/delay";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -5,7 +6,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
 import { mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import {
   query as anthropicQuery,
   startup as anthropicStartup,
@@ -121,19 +122,6 @@ const claudeBuiltinTools = [
   "ToolSearch",
   "Write",
 ] as const;
-/**
- * The plugins Claude Code builds in and loads in every session; no setting
- * turns them off. Each is inert in a Run: `cc-plugin-agents-md` loads AGENTS.md
- * only where CLAUDE.md would load, and a Run loads neither;
- * `cc-plugin-plugin-authoring` contributes a skill the Run's skill list leaves
- * out; `cc-plugin-sec-default` adds no policy of its own. A built-in plugin a
- * later release adds is refused until it is reviewed here.
- */
-const claudeBuiltinPlugins: ReadonlySet<string> = new Set([
-  "cc-plugin-agents-md",
-  "cc-plugin-plugin-authoring",
-  "cc-plugin-sec-default",
-]);
 const claudeDelegationTools = ["Agent", "Task"] as const;
 /** The subagent tool Claude Code runs in the foreground; `Task` is its older name. */
 const claudeSubagentTool = "Agent";
@@ -1145,76 +1133,7 @@ export class ClaudeHarnessDriver implements HarnessDriver {
       if (config.provider !== "anthropic" && models.length === 0) {
         return claudeCloudIdentityRequired(config.provider);
       }
-      const providerId = ModelProviderIdSchema.parse("anthropic");
-      const groups = new Map<string, ModelInfo[]>();
-      for (const model of models) {
-        const modelId = ModelIdSchema.parse(model.resolvedModel ?? model.value);
-        const group = groups.get(modelId) ?? [];
-        group.push(model);
-        groups.set(modelId, group);
-      }
-      const descriptors = [...groups.entries()].map(([modelId, aliases]) => {
-        const representative =
-          aliases.find((model) => model.value === modelId) ??
-          aliases.find((model) => model.value !== claudeRecommendedModelValue) ??
-          aliases[0];
-        if (!representative) throw new Error("Claude returned an empty model alias group");
-        const supportedEfforts = [
-          ...new Set(
-            aliases.flatMap((model) =>
-              model.supportsEffort ? (model.supportedEffortLevels ?? []) : [],
-            ),
-          ),
-        ];
-        if ((supportedEfforts as readonly string[]).includes(claudeEngineDefaultEffort)) {
-          throw new Error(`Claude Code lists a reasoning level named ${claudeEngineDefaultEffort}`);
-        }
-        return {
-          // Every model Claude Code offers reads images; the CLI has never
-          // listed one that does not.
-          acceptsImages: true,
-          ...(representative.description
-            ? { description: representative.description.slice(0, 500) }
-            : {}),
-          displayName: representative.displayName,
-          isDefault: aliases.some((model) => model.value === claudeRecommendedModelValue),
-          modelId: ModelIdSchema.parse(modelId),
-          options: [
-            ...(supportedEfforts.length > 0
-              ? [
-                  {
-                    defaultValue: claudeEngineDefaultEffort,
-                    id: claudeEffortOptionId,
-                    label: "Reasoning",
-                    type: "select" as const,
-                    values: [
-                      {
-                        description: "Claude Code chooses for this model",
-                        label: "Default",
-                        value: claudeEngineDefaultEffort,
-                      },
-                      ...supportedEfforts.map((value) => ({
-                        label: reasoningEffortLabel(value),
-                        value,
-                      })),
-                    ],
-                  },
-                ]
-              : []),
-            ...(aliases.some((model) => model.supportsFastMode === true)
-              ? [
-                  {
-                    defaultValue: false,
-                    id: claudeFastModeOptionId,
-                    label: "Fast mode",
-                    type: "toggle" as const,
-                  },
-                ]
-              : []),
-          ],
-          providerId,
-        };
-      });
+      const descriptors = claudeCatalogModels(models);
       if (descriptors.length === 0) {
         return { detail: "Claude did not report any available models", status: "unavailable" };
       }
@@ -1222,6 +1141,7 @@ export class ClaudeHarnessDriver implements HarnessDriver {
         connections: [claudeConnectionSummary(account, config.provider)],
         detail: "Claude Code is signed in and ready",
         models: descriptors,
+        lightModel: resolveLightModel(descriptors, claudeLightModels),
         setupMethods:
           config.provider === "anthropic" ? claudeSetupMethods(context.providerState) : [],
         status: "ready",
@@ -1524,7 +1444,7 @@ class ClaudeHarnessSession implements HarnessSession {
         /unavailable|not found|not available|not supported|unsupported|access|invalid|permission|denied/iu.test(
           text,
         );
-      const attempt = async (model: string): Promise<{ text: string; refused: boolean }> => {
+      const attempt = async (useRunModel = false): Promise<{ text: string; refused: boolean }> => {
         signal.throwIfAborted();
         const abortController = new AbortController();
         const abort = () => abortController.abort();
@@ -1533,49 +1453,66 @@ class ClaudeHarnessSession implements HarnessSession {
         let stderr: Promise<string> | undefined;
         let query: ClaudeQueryHandle | undefined;
         try {
+          const options: Options = {
+            abortController,
+            cwd: directory,
+            env: environment,
+            pathToClaudeCodeExecutable: this.#dependencies.executable,
+            managedSettings: managedClaudeSettings(this.#context),
+            skills: [],
+            plugins: [],
+            tools: [],
+            mcpServers: {},
+            strictMcpConfig: true,
+            settingSources: [],
+            persistSession: false,
+            maxTurns: 1,
+            permissionMode: "default",
+            title: "Thread title",
+            canUseTool: async () => ({
+              behavior: "deny",
+              message: "Tools are disabled for Thread titles",
+            }),
+            spawnClaudeCodeProcess: ({ args, command, cwd, env }) => {
+              const inherited: Record<string, string> = {};
+              for (const [name, value] of Object.entries(env))
+                if (value !== undefined) inherited[name] = value;
+              child = spawnSupervised({
+                ...this.#context.wrapProcessLaunch({
+                  executable: command,
+                  args,
+                  cwd: cwd ?? directory,
+                  environment: inherited,
+                }),
+                maxOutputBytes: 8192,
+              });
+              stderr = collectStreamText(child.stderr);
+              void stderr.catch(() => undefined);
+              const stop = () => void child?.terminate(0).catch(() => undefined);
+              abortController.signal.addEventListener("abort", stop, { once: true });
+              if (abortController.signal.aborted) stop();
+              return child.child;
+            },
+          };
+          const inspection = await this.#dependencies.sdk.inspectModels?.(
+            options,
+            this.#config.startupTimeoutMs,
+            signal,
+          );
+          const light =
+            !useRunModel && inspection
+              ? resolveLightModel(claudeCatalogModels(inspection.models), claudeLightModels)
+              : undefined;
+          const selection = light ?? this.#context.modelSelection;
           query = this.#dependencies.sdk.query({
             prompt,
             options: {
-              abortController,
-              cwd: directory,
-              env: environment,
-              pathToClaudeCodeExecutable: this.#dependencies.executable,
-              managedSettings: managedClaudeSettings(this.#context),
-              skills: [],
-              plugins: [],
-              tools: [],
-              mcpServers: {},
-              strictMcpConfig: true,
-              settingSources: [],
-              persistSession: false,
-              maxTurns: 1,
-              permissionMode: "default",
-              title: "Thread title",
-              model,
-              canUseTool: async () => ({
-                behavior: "deny",
-                message: "Tools are disabled for Thread titles",
-              }),
-              spawnClaudeCodeProcess: ({ args, command, cwd, env }) => {
-                const inherited: Record<string, string> = {};
-                for (const [name, value] of Object.entries(env))
-                  if (value !== undefined) inherited[name] = value;
-                child = spawnSupervised({
-                  ...this.#context.wrapProcessLaunch({
-                    executable: command,
-                    args,
-                    cwd: cwd ?? directory,
-                    environment: inherited,
-                  }),
-                  maxOutputBytes: 8192,
-                });
-                stderr = collectStreamText(child.stderr);
-                void stderr.catch(() => undefined);
-                const stop = () => void child?.terminate(0).catch(() => undefined);
-                abortController.signal.addEventListener("abort", stop, { once: true });
-                if (abortController.signal.aborted) stop();
-                return child.child;
-              },
+              ...options,
+              model:
+                light?.modelId ??
+                this.#context.modelSelection.nativeModelId ??
+                this.#context.modelSelection.modelId,
+              ...(selection.options.effort === "low" ? { effort: "low" as const } : {}),
             },
           });
           let text = "";
@@ -1608,14 +1545,10 @@ class ClaudeHarnessSession implements HarnessSession {
           }
         }
       };
-      const first = await attempt("haiku");
-      if (!first.refused) return first.text;
-      signal.throwIfAborted();
-      const fallback = await attempt(
-        this.#context.modelSelection.nativeModelId ?? this.#context.modelSelection.modelId,
-      );
-      if (fallback.refused) throw new Error("Claude refused the Thread title model");
-      return fallback.text;
+      let result = await attempt();
+      if (result.refused) result = await attempt(true);
+      if (result.refused) throw new Error("Claude refused the Thread title model");
+      return result.text;
     });
   }
 
@@ -2016,6 +1949,30 @@ class ClaudeHarnessSession implements HarnessSession {
       // actual call against the live Run binding.
       allowedTools: [...new Set(["ToolSearch", ...opensteerTools])],
       canUseTool: this.#canUseTool(active),
+      // Native safe-command rules can allow Bash before canUseTool is consulted.
+      // SDK hooks remain active while our settings suppress ordinary ambient hooks.
+      // Organization-managed policy and hooks can override these settings.
+      ...(this.#context.accessMode === "approval-required" ||
+      this.#context.accessMode === "auto-accept-edits"
+        ? {
+            hooks: {
+              PreToolUse: [
+                {
+                  matcher: "Bash",
+                  hooks: [
+                    async () => ({
+                      hookSpecificOutput: {
+                        hookEventName: "PreToolUse" as const,
+                        permissionDecision: "ask" as const,
+                        permissionDecisionReason: "Opensteer requires approval for shell commands",
+                      },
+                    }),
+                  ],
+                },
+              ],
+            },
+          }
+        : {}),
       cwd: this.#context.workspacePath,
       additionalDirectories: [
         ...this.#context.writableRoots.filter((root) => root !== this.#context.workspacePath),
@@ -2116,7 +2073,11 @@ class ClaudeHarnessSession implements HarnessSession {
       }
       this.#ensureRunStarted(active);
       // Starting a subagent is not itself an action: everything it does asks.
-      if ((claudeDelegationTools as readonly string[]).includes(toolName)) {
+      // A plugin safety check can still require approval of the launch itself.
+      if (
+        (claudeDelegationTools as readonly string[]).includes(toolName) &&
+        !options.decisionReason
+      ) {
         return { behavior: "allow", updatedInput: { ...input } };
       }
       const nodeId = await this.#requestingNode(active, options);
@@ -2163,7 +2124,12 @@ class ClaudeHarnessSession implements HarnessSession {
   ): Promise<PermissionResult> {
     const requestId = createId("request");
     const callId = requireNonEmptyString(options.toolUseID, "Claude tool call id");
-    const detail = options.description ?? options.title ?? describeToolRequest(toolName, input);
+    const detail = [
+      options.description ?? options.title ?? describeToolRequest(toolName, input),
+      options.decisionReason,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join("\n\n");
     const responses = new Map<string, PermissionResult>([
       [
         "allow-once",
@@ -2350,6 +2316,29 @@ class ClaudeHarnessSession implements HarnessSession {
     // the SDK does not type. Results already say which messages a turn consumed.
     const frame: string = message.type;
     if (frame === "command_lifecycle") return;
+
+    // Mods can hold a tool call until someone interacts with a terminal pane.
+    // Close the query via the failure path; interrupt may never be acknowledged.
+    const subtype: unknown = Reflect.get(message, "subtype");
+    // Plugin UI redraw notifications may precede init and need no host action.
+    if (message.type === "system" && subtype === "ui_invalidate") return;
+    if (message.type === "system" && subtype === "ui_panes") {
+      const paneId: unknown = Reflect.get(message, "focus_requested_id");
+      if (typeof paneId === "string" && paneId.trim()) {
+        const panes: unknown = Reflect.get(message, "panes");
+        const pane: unknown = Array.isArray(panes)
+          ? panes.find((entry: unknown) => isRecord(entry) && entry.id === paneId)
+          : undefined;
+        const plugin =
+          isRecord(pane) && typeof pane.plugin === "string" && pane.plugin.trim()
+            ? pane.plugin.trim()
+            : paneId.trim();
+        this.#markUnusable(
+          `The Claude Code plugin "${plugin}" is waiting for input in its terminal pane, which Opensteer cannot show. Disable the plugin for Opensteer sessions, or run the task in the Claude Code terminal.`,
+        );
+      }
+      return;
+    }
 
     if (message.type === "system" && message.subtype === "init") {
       this.#validateInit(message);
@@ -2841,15 +2830,13 @@ class ClaudeHarnessSession implements HarnessSession {
         `Claude exposed tools outside the Opensteer runtime boundary: ${unexpectedTools.join(", ")}`,
       );
     }
-    const unexpectedPlugins = message.plugins.filter(
-      ({ name, path }) =>
-        !this.#skillPlugin?.paths.includes(path) &&
-        !(path === "builtin" && claudeBuiltinPlugins.has(name)),
-    );
-    if (unexpectedPlugins.length > 0) {
-      this.#markUnusable(
-        `Claude exposed plugins outside the Opensteer runtime boundary: ${unexpectedPlugins.map(({ name }) => name).join(", ")}`,
-      );
+    // Other plugins belong to the CLI, but none may impersonate the skills
+    // supplied from this Thread's synthetic plugin directories.
+    for (const path of this.#skillPlugin?.paths ?? []) {
+      const name = basename(path);
+      if (message.plugins.some((plugin) => plugin.name === name && plugin.path !== path)) {
+        this.#markUnusable(`Claude replaced the Opensteer synthetic plugin "${name}"`);
+      }
     }
     const advertised = new Set(message.capabilities ?? []);
     const missing = requiredRuntimeCapabilities.filter((capability) => !advertised.has(capability));
@@ -3548,4 +3535,81 @@ class BoundedTextCollector {
       ? clipUtf8(`${combined}\n[truncated]`, this.#maxBytes)
       : combined;
   }
+}
+
+const claudeLightModels = ["claude-haiku-5-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001"].map(
+  (modelId) => ({ modelId, options: { effort: "low" } }),
+);
+
+function claudeCatalogModels(models: readonly ModelInfo[]): readonly HarnessModelDescriptor[] {
+  const providerId = ModelProviderIdSchema.parse("anthropic");
+  const groups = new Map<string, ModelInfo[]>();
+  for (const model of models) {
+    const modelId = ModelIdSchema.parse(model.resolvedModel ?? model.value);
+    const group = groups.get(modelId) ?? [];
+    group.push(model);
+    groups.set(modelId, group);
+  }
+  return [...groups.entries()].map(([modelId, aliases]) => {
+    const representative =
+      aliases.find((model) => model.value === modelId) ??
+      aliases.find((model) => model.value !== claudeRecommendedModelValue) ??
+      aliases[0];
+    if (!representative) throw new Error("Claude returned an empty model alias group");
+    const supportedEfforts = [
+      ...new Set(
+        aliases.flatMap((model) =>
+          model.supportsEffort ? (model.supportedEffortLevels ?? []) : [],
+        ),
+      ),
+    ];
+    if ((supportedEfforts as readonly string[]).includes(claudeEngineDefaultEffort)) {
+      throw new Error(`Claude Code lists a reasoning level named ${claudeEngineDefaultEffort}`);
+    }
+    return {
+      // Every model Claude Code offers reads images; the CLI has never
+      // listed one that does not.
+      acceptsImages: true,
+      ...(representative.description
+        ? { description: representative.description.slice(0, 500) }
+        : {}),
+      displayName: representative.displayName,
+      isDefault: aliases.some((model) => model.value === claudeRecommendedModelValue),
+      modelId: ModelIdSchema.parse(modelId),
+      options: [
+        ...(supportedEfforts.length > 0
+          ? [
+              {
+                defaultValue: claudeEngineDefaultEffort,
+                id: claudeEffortOptionId,
+                label: "Reasoning",
+                type: "select" as const,
+                values: [
+                  {
+                    description: "Claude Code chooses for this model",
+                    label: "Default",
+                    value: claudeEngineDefaultEffort,
+                  },
+                  ...supportedEfforts.map((value) => ({
+                    label: reasoningEffortLabel(value),
+                    value,
+                  })),
+                ],
+              },
+            ]
+          : []),
+        ...(aliases.some((model) => model.supportsFastMode === true)
+          ? [
+              {
+                defaultValue: false,
+                id: claudeFastModeOptionId,
+                label: "Fast mode",
+                type: "toggle" as const,
+              },
+            ]
+          : []),
+      ],
+      providerId,
+    };
+  });
 }

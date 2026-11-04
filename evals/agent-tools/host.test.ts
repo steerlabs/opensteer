@@ -1,4 +1,4 @@
-import { writeFile, mkdtemp, readFile } from "node:fs/promises";
+import { writeFile, mkdtemp, readFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -47,7 +47,12 @@ it("serves the production inventory and validates mocked calls through real MCP 
       role: "work",
       profile: "main",
       turns: ["hi"],
-      mocks: { integration_search: { $responses: [{ marker: "first" }, { marker: "second" }] } },
+      mocks: {
+        integration_search: { $responses: [{ marker: "first" }, { marker: "second" }] },
+        trigger_read: {
+          $byArgs: [{ args: { systemRole: "memory-light" }, result: { marker: "light" } }],
+        },
+      },
       expect: {},
     }),
   )[0]!;
@@ -85,7 +90,11 @@ it("serves the production inventory and validates mocked calls through real MCP 
       expect(JSON.stringify(second)).toContain("second");
     }
     expect(host.endpoints.size).toBe(1);
-    expect(host.calls.map((call) => call.valid)).toEqual([true, false, true]);
+    const byArgs = async (args: Record<string, unknown>) =>
+      JSON.stringify(await clients[0]!.callTool({ name: "trigger_read", arguments: args }));
+    expect(await byArgs({ action: "list", systemRole: "memory-light" })).toContain("light");
+    expect(await byArgs({ action: "list" })).toContain("No case mock matches these arguments");
+    expect(host.calls.map((call) => call.valid)).toEqual([true, false, true, true, true]);
     const out = await mkdtemp(join(tmpdir(), "opensteer-eval-mcp-evidence-"));
     await writeFile(
       join(out, "journey.json"),
@@ -198,5 +207,195 @@ it("validates the new surface cases with each caller's production inventory", as
       await client.close();
       await host.close();
     }
+  }
+});
+
+it("preserves production action validation before consuming mocks", async () => {
+  const testCase = parseCases(
+    JSON.stringify({
+      id: "semantic-admission",
+      area: "memory",
+      kind: "guard",
+      source: { commit: "a".repeat(40), note: "Flat schemas must retain handler validation" },
+      profile: "main",
+      role: "conversation",
+      turns: ["hi"],
+      expect: {},
+      mocks: { trigger_write: { marker: "admitted" }, trigger_read: { marker: "admitted" } },
+    }),
+  )[0]!;
+  const host = await startFakeHost(testCase);
+  const client = new Client({ name: "semantic-validation", version: "1" });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    for (const [name, args] of [
+      ["trigger_write", { action: "create" }],
+      ["trigger_write", { action: "set_status", status: "paused" }],
+      [
+        "trigger_write",
+        { action: "run", triggerId: "trg_00000000-0000-4000-8000-000000000011", name: "stray" },
+      ],
+      ["trigger_read", { action: "get" }],
+      ["thread_delegate", { task: "Missing destination" }],
+      ["browser_session_open", { fresh: true, sessionId: "existing" }],
+    ] as const) {
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result)).not.toContain("admitted");
+      expect(host.calls.at(-1)?.valid).toBe(false);
+    }
+    const result = await client.callTool({
+      name: "trigger_write",
+      arguments: {
+        action: "create",
+        anchorThreadId: "thr_00000000-0000-4000-8000-000000000011",
+        name: "Light memory pass",
+        source: { kind: "schedule", cron: "*/30 8-22 * * *", timezone: "America/New_York" },
+        program: {
+          language: "javascript",
+          toolContractVersion: 3,
+          source: "export default async function () {}",
+        },
+      },
+    });
+    expect(JSON.stringify(result)).toContain("admitted");
+    expect(host.calls.at(-1)?.valid).toBe(true);
+  } finally {
+    await client.close();
+    await host.close();
+  }
+});
+
+it("closes once when a chained sample's stage and final cleanup both close it", async () => {
+  const c = parseCases(
+    JSON.stringify({
+      id: "close-twice",
+      area: "transport",
+      kind: "guard",
+      source: { commit: "a".repeat(40), note: "chained samples close each stage's Host" },
+      role: "work",
+      profile: "main",
+      turns: ["hi"],
+      expect: {},
+    }),
+  )[0]!;
+  const host = await startFakeHost(c);
+  await host.close();
+  await expect(host.close()).resolves.toBeUndefined();
+});
+
+it("retains ingress file failures even if the agent recreates memory before later calls", async () => {
+  const c = parseCases(
+    await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"),
+  ).find((c) => c.id === "memory-stop-when-idle")!;
+  const workspace = await mkdtemp(join(tmpdir(), "eval-boundary-"));
+  const host = await startFakeHost(c, workspace);
+  const client = new Client({ name: "eval-boundary", version: "1" });
+  try {
+    await mkdir(join(workspace, "skills/light-pass"), { recursive: true });
+    await writeFile(join(workspace, "AGENTS.md"), "Memory: off at the person's request.\n");
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    const pause = c.expect.calls.find((call) => call.tool === "trigger_write")!;
+    await client.callTool({ name: pause.tool, arguments: pause.args });
+    expect(host.boundaryChecks.some((check) => !check.pass)).toBe(true);
+    await mkdir(join(workspace, "memory"));
+    await client.callTool({ name: pause.tool, arguments: pause.args });
+    expect(host.calls.at(-1)?.result).toMatchObject({ status: "paused" });
+    expect(host.boundaryChecks.some((check) => !check.pass)).toBe(true);
+  } finally {
+    await client.close();
+    await host.close();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+it("reads back successful Trigger writes and the requested one-shot time", async () => {
+  const c = parseCases(
+    await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"),
+  ).find((c) => c.id === "memory-stop-while-running")!;
+  const host = await startFakeHost(c);
+  const client = new Client({ name: "eval-trigger-state", version: "1" });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    const pause = c.expect.calls.find(
+      (call) => call.tool === "trigger_write" && call.args.status === "paused",
+    )!;
+    await client.callTool({ name: pause.tool, arguments: pause.args });
+    await client.callTool({
+      name: "trigger_read",
+      arguments: { action: "get", triggerId: pause.args.triggerId },
+    });
+    expect(host.calls.at(-1)?.result).toMatchObject({
+      trigger: { status: "paused", nextFireAt: null },
+    });
+    await client.callTool({
+      name: "trigger_write",
+      arguments: {
+        action: "create",
+        name: "Reminder: finish deleting memory",
+        anchorThreadId: "home",
+        source: { kind: "schedule", at: "2027-01-01T09:05:00-05:00" },
+        program: {
+          language: "typescript",
+          toolContractVersion: 3,
+          source: "export default async function () {}",
+        },
+      },
+    });
+    const created = host.calls.at(-1)?.result;
+    expect(created).toMatchObject({ nextFireAt: "2027-01-01T14:05:00.000Z" });
+    await client.callTool({
+      name: "trigger_read",
+      arguments: { action: "get", triggerId: "trg_00000000-0000-4000-8000-000000000099" },
+    });
+    expect(host.calls.at(-1)?.result).toMatchObject({ trigger: created });
+  } finally {
+    await client.close();
+    await host.close();
+  }
+});
+
+it("reads back a source-only schedule change while retaining the person's pause", async () => {
+  const c = parseCases(
+    await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"),
+  ).find((c) => c.id === "memory-nightly-tunes-paused-light")!;
+  const host = await startFakeHost(c);
+  const client = new Client({ name: "eval-trigger-source", version: "1" });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    const update = c.expect.calls[0]!;
+    await client.callTool({ name: update.tool, arguments: update.args });
+    await client.callTool({
+      name: "trigger_read",
+      arguments: { action: "get", triggerId: update.args.triggerId },
+    });
+    expect(host.calls.at(-1)?.result).toMatchObject({
+      trigger: { status: "paused", nextFireAt: null },
+      revision: {
+        source: {
+          kind: "schedule",
+          schedule: { kind: "cron", expression: "0 9 * * 1-5", timezone: "America/New_York" },
+        },
+      },
+    });
+  } finally {
+    await client.close();
+    await host.close();
   }
 });

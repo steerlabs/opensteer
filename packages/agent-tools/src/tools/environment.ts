@@ -32,7 +32,7 @@ export const environment_list = defineAgentTool({
   name: "environment_list",
   title: "Find engines and models",
   description:
-    "Find computers, engine accounts, models/options before choosing execution settings. Copy selectors; report unavailable catalogs without substitution. query matches all words across IDs/names/engines. Page directories with environmentsNextCursor as environmentCursor and harnessesNextCursor as harnessCursor. For model pages, keep query/harnessInstanceId; pass modelsNextCursor as cursor.",
+    "Find computers, engine accounts, models/options before choosing execution settings. Copy selectors; pass an engine’s lightModel directly as thread_delegate model for cheap work; report unavailable catalogs without substitution. query matches all words across IDs/names/engines. Page directories with environmentsNextCursor as environmentCursor and harnessesNextCursor as harnessCursor. For model pages, keep query/harnessInstanceId; pass modelsNextCursor as cursor.",
   input: EnvironmentListInputSchema,
   output: EnvironmentDiscoverySchema,
   access: "read",

@@ -4703,10 +4703,11 @@ export function migrationProvider() {
         "0149_plugin_owner_settings": pluginOwnerSettingsMigration,
         "0150_workspace_skill_inventory": workspaceSkillInventoryMigration,
         "0151_plugin_settings_revisions": pluginSettingsRevisionsMigration,
-        "0152_consent_scope": consentScopeMigration,
-        "0153_agent_connections": agentConnectionsMigration,
-        "0154_connection_message_authors": connectionMessageAuthorsMigration,
-        "0155_specialist_auto_bind": specialistAutoBindMigration,
+        "0152_managed_memory_passes": managedMemoryPassesMigration,
+        "0153_consent_scope": consentScopeMigration,
+        "0154_agent_connections": agentConnectionsMigration,
+        "0155_connection_message_authors": connectionMessageAuthorsMigration,
+        "0156_specialist_auto_bind": specialistAutoBindMigration,
       };
     },
   };
@@ -7234,6 +7235,17 @@ export const localMcpServerSecretsMigration: Migration = {
         updated_at timestamptz not null default now()
       );
     `.execute(database);
+  },
+};
+
+export const managedMemoryPassesMigration: Migration = {
+  async up(database) {
+    await sql`alter table triggers add column system_role text
+      check (system_role in ('memory-light', 'memory-nightly'));
+      create unique index triggers_system_role_unique on triggers(workspace_id, system_role)
+        where system_role is not null;
+      create unique index triggers_managed_anchor_unique on triggers(anchor_thread_id)
+        where system_role is not null;`.execute(database);
   },
 };
 

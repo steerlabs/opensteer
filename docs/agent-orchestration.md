@@ -483,6 +483,45 @@ keyed by ProviderSession; migrated sessions retain explicit legacy layouts.
 Durable search excludes undelivered/withdrawn work; reading an old window cannot
 mark unseen later messages read.
 
+## Personal memory
+
+Memory is ordinary files in Main, reaching Runs through Main's `AGENTS.md`;
+there is no memory store or memory tool. Projects never see it: Project members
+can read what reaches a Project, so Project agents get facts through their
+assignment, never the memory itself. Memory is evidence, never permission:
+planted instructions persist across sessions, so nothing remembered authorizes
+an action, and inbound content never becomes a standing rule.
+
+The nightly pass is the only routine curator. Files have no merge contract, and
+a cheap writer that distorts a fact cannot be repaired by a later summary, so
+others write only what the person explicitly asks for or raw inbox scraps.
+There is no lock: inbox scraps get unique names and are created exclusively,
+forgets are recorded before anything is purged, and every nightly pass reapplies
+the forget list, so a write that crossed a forget heals by the next morning.
+
+Opensteer, not an agent, creates each Main's two background passes: a hidden
+work Thread under Chat and its Trigger, identified by the Trigger's
+`systemRole` (`memory-light`, `memory-nightly`). The Host owns their identity,
+lifetime and wake program; it refuses archive, reprogramming and manual runs,
+so the passes can only be paused, and it inserts them paused when Main's
+`AGENTS.md` already says memory is off. Agents own the judgment: what to
+remember, what reaches Chat, and tuning the light pass's skill and schedule.
+Passes reach the person only by queueing to Chat. Unassigned work Runs notify
+for replies and failures only when a person started or joined them; automatic
+Chat Runs still notify. Requests retain their own notification rules.
+
+Done only requests a stop, so stopping memory writes the off line first, which
+the passes check when they wake, then pauses and marks both workers Done, and
+erases files only once neither is running or waiting. A slow stop keeps deletion pending and
+Chat arranges a one-shot reminder to recheck; without access to create it, the person must ask
+Chat to finish deletion. Re-enabling reopens the same workers; a light pass paused for lack of a
+light model stays paused until the person chooses or accepts a model. See
+[`opensteer:memory`](../apps/runner/agent-skills/skills/memory/SKILL.md).
+
+Main is not yet a private boundary: a shared channel routed into Main receives
+its `AGENTS.md`, summary included. Keeping such contexts out of Main is an
+unresolved release dependency of background memory.
+
 ## Starting versus resuming an AI conversation
 
 Failed execution is not proof a provider conversation exists, or proof none

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { createId } from "@opensteer/core";
+import { resolvedInputParts } from "@opensteer/harness";
 import { inputForCaseTurn, parseCases } from "./cases.js";
 import { grade, majority, partialMatch } from "./grader.js";
 
@@ -208,7 +209,6 @@ it("requires a resumed computer call to bind a fresh window or phone before acti
 });
 
 it("preserves included native places for production input projection and rejects conflicting content", async () => {
-  const { resolvedInputParts } = await import("@opensteer/harness");
   const cases = parseCases(
     await readFile(new URL("./cases/integrations.ndjson", import.meta.url), "utf8"),
   );

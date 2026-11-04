@@ -1,3 +1,4 @@
+import { resolveLightModel } from "@opensteer/harness";
 import { rm, stat, mkdir, copyFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
@@ -300,6 +301,7 @@ export class CursorHarnessDriver implements HarnessDriver {
       ],
       detail: `Cursor ${version} is signed in and ready`,
       models,
+      lightModel: resolveLightModel(models, cursorLightModels),
       status: "ready",
     };
     return result;
@@ -547,6 +549,10 @@ class CursorHarnessSession implements HarnessSession {
         threadStateDirectory: directory,
       });
       const listing = await this.#modelListing(signal);
+      const light = resolveLightModel(
+        cursorModelDescriptors(listing, cursorSourceId),
+        cursorLightModels,
+      );
       return runTitleProcess(
         this.#context,
         {
@@ -562,7 +568,7 @@ class CursorHarnessSession implements HarnessSession {
             "--plugin-dir",
             plugin.path,
             "--model",
-            cursorModelArgument(listing, this.#context.modelSelection),
+            cursorModelArgument(listing, light ?? this.#context.modelSelection),
             prompt,
           ],
           cwd: workspace,
@@ -1622,3 +1628,8 @@ function truncateCursorReasoning(text: string): string {
     ? `${text.slice(0, cursorReasoningMaxLength)}…`
     : text;
 }
+
+const cursorLightModels = ["composer-2.5", "composer-2"].map((modelId) => ({
+  modelId,
+  options: { effort: "low" },
+}));

@@ -24,6 +24,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocalWorkspaceErrorCode } from "./errors.js";
 import {
+  failureFromError,
+  NativeFsHelperError,
   LocalWorkspaceAuthority,
   type LocalWorkspaceAuthorityOptions,
   type LocalWorkspaceBindingRequest,
@@ -758,4 +760,23 @@ it("retries a released specialized binding after the Project migration", async (
   expect(await readFile(fixture.registryFilePath, "utf8")).toContain('"kind":"specialized"');
   const upgraded = new LocalWorkspaceAuthority(fixture.options);
   await expect(upgraded.provision(legacy)).resolves.toBe(originalPath);
+});
+
+describe("failureFromError", () => {
+  it("preserves a native missing-file failure without declaring the Workspace inaccessible", () => {
+    expect(failureFromError(new NativeFsHelperError("not-found", "File not found"))).toEqual({
+      code: "not-found",
+      message: "File not found",
+      retryable: false,
+    });
+  });
+
+  it("does not expose an unrecognized native error code on the wire", () => {
+    expect(
+      failureFromError(new NativeFsHelperError("unknown-helper-code", "Unknown")),
+    ).toMatchObject({
+      code: "directory-inaccessible",
+      retryable: true,
+    });
+  });
 });
