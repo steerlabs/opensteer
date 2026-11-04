@@ -126,6 +126,7 @@ type SignInRequests = Pick<
   | "fulfilBrowserSignInRequest"
   | "get"
   | "listDeliverableBrowserSignIns"
+  | "listUngrantedBrowserSignIns"
 >;
 
 /**
@@ -696,7 +697,21 @@ export class BrowserSourceService {
     if (candidates.length > 0 && candidates.every((candidate) => candidate.status === "no-state")) {
       return { site, status: "not-signed-in" };
     }
-    return ask();
+    const asked = await ask();
+    // A Chrome that connected after `candidates` may have run its check before
+    // this Request was stored; check again for it.
+    const connectedSince = (await this.#store.list(input.ownerId)).some(
+      (source) =>
+        this.#isConnected(source.id) &&
+        !candidates.some(
+          (candidate) => candidate.source.id === source.id && candidate.status !== "offline",
+        ),
+    );
+    if (asked.status === "pending" && !asked.replayed && connectedSince) {
+      const request = await this.#requests.get(asked.requestId);
+      if (request) await this.#endIfUnservable(input.ownerId, request, new Map());
+    }
+    return asked;
   }
 
   passwordSignInGet(input: Parameters<PasswordSignInService["get"]>[0]) {
@@ -747,14 +762,19 @@ export class BrowserSourceService {
           : undefined,
       );
       if (settled.success) {
-        return settled.data.outcome === "applied"
-          ? {
+        switch (settled.data.outcome) {
+          case "applied":
+            return {
               profileName: settled.data.profileName,
               site,
               sourceName: settled.data.sourceName,
               status: "applied",
-            }
-          : problem("session-closed", site, null);
+            };
+          case "not-signed-in":
+            return problem("no-state", site, null);
+          case "session-closed":
+            return problem("session-closed", site, null);
+        }
       }
       throw new OpensteerError({ code: "conflict", message: "The sign-in Request is closed." });
     }
@@ -798,6 +818,7 @@ export class BrowserSourceService {
     const previous = this.#drains.get(peer.ownerId) ?? Promise.resolve();
     const drain = previous
       .then(() => this.#drain(peer.ownerId, peer.sourceId))
+      .then(() => this.#endUnservable(peer.ownerId, peer.sourceId))
       .catch(this.#onError)
       .finally(() => {
         if (this.#drains.get(peer.ownerId) === drain) this.#drains.delete(peer.ownerId);
@@ -843,6 +864,76 @@ export class BrowserSourceService {
       if (page.length < drainPageSize) return;
       after = page.at(-1)!.id;
     }
+  }
+
+  /**
+   * Ends pending Requests nobody has allowed once every Chrome is connected
+   * and none has a sign-in to the site, so the agent can offer signing in by
+   * hand or Opensteer Passwords instead of waiting on a card with no Allow.
+   * The same rule `agentSignIn` applies before it opens one.
+   */
+  async #endUnservable(ownerId: UserId, sourceId: BrowserSourceId): Promise<void> {
+    const unservable = new Map<string, Promise<boolean>>();
+    let after: RequestId | null = null;
+    for (;;) {
+      if (this.#closed || !this.#isConnected(sourceId)) return;
+      const page: readonly Request[] = await this.#requests.listUngrantedBrowserSignIns({
+        after,
+        limit: drainPageSize,
+        ownerId,
+      });
+      if (page.length === 0) return;
+      for (const request of page) {
+        if (this.#closed || !this.#isConnected(sourceId)) return;
+        try {
+          await this.#endIfUnservable(ownerId, request, unservable);
+        } catch (error) {
+          this.#onError(error);
+        }
+      }
+      if (page.length < drainPageSize) return;
+      after = page.at(-1)!.id;
+    }
+  }
+
+  /** `unservable` memoizes each site's check across one pass. */
+  async #endIfUnservable(
+    ownerId: UserId,
+    request: Request,
+    unservable: Map<string, Promise<boolean>>,
+  ): Promise<void> {
+    if (request.payload.kind !== "browser.sign-in") return;
+    const { site } = request.payload;
+    let check = unservable.get(site);
+    if (!check) {
+      check = this.#store
+        .list(ownerId)
+        .then((sources) => this.#candidates(sources, site))
+        .then(
+          (candidates) =>
+            candidates.length > 0 &&
+            candidates.every((candidate) => candidate.status === "no-state"),
+        );
+      unservable.set(site, check);
+    }
+    if (!(await check)) return;
+    // In the Request's turn, after an Allow already delivering.
+    await this.#inTurn(`request\0${request.id}`, async () => {
+      const grant = await this.#store.getGrant({
+        ownerId,
+        site,
+        workspaceId: request.targetWorkspaceId,
+      });
+      if (grant) return;
+      const settled = await this.#requests.fulfilBrowserSignInRequest({
+        ownerId,
+        requestId: request.id,
+        response: { outcome: "not-signed-in" },
+      });
+      if (!settled) return;
+      for (const event of settled.events) this.#onWorkspaceEvent(event);
+      this.#onRequestResolved();
+    });
   }
 
   /**
@@ -965,7 +1056,7 @@ export class BrowserSourceService {
           detail: input.reason,
           kind: "external",
           subject: { id: input.site, kind: "browser-site" },
-          title: `Sign in to ${browserSiteDomain(input.site)}`,
+          title: `Use your Chrome sign-in for ${browserSiteDomain(input.site)}`,
         },
         requestedBy: input.ownerId,
         requiredActor: "requester",
@@ -1014,14 +1105,19 @@ export class BrowserSourceService {
         const response = BrowserSignInRequestResponseSchema.parse(
           request.response.kind === "external" ? request.response.value : undefined,
         );
-        return response.outcome === "applied"
-          ? {
+        switch (response.outcome) {
+          case "applied":
+            return {
               profileName: response.profileName,
               site,
               sourceName: response.sourceName,
               status: "applied",
-            }
-          : { reason: "session-closed", site, status: "unavailable" };
+            };
+          case "not-signed-in":
+            return { site, status: "not-signed-in" };
+          case "session-closed":
+            return { reason: "session-closed", site, status: "unavailable" };
+        }
       }
       case "cancelled":
       case "withdrawn":

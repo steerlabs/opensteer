@@ -13,7 +13,10 @@ import {
   type ChromeSignInChoice,
   type HostClient,
 } from "@opensteer/client/host";
-import type { BrowserSignInOutcome } from "@opensteer/protocol/browser-sources";
+import {
+  BrowserSignInRequestResponseSchema,
+  type BrowserSignInOutcome,
+} from "@opensteer/protocol/browser-sources";
 import { actionErrorMessage } from "../ui-utils.js";
 import { ActionNote } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
@@ -181,7 +184,19 @@ export function BrowserSignInRequestBody({
 
   if (!payload || !site) return <ActionNote alert>This sign-in request is invalid.</ActionNote>;
   if (!pending) {
-    return <ActionNote>{request.status === "declined" ? "Not allowed." : "Answered."}</ActionNote>;
+    const response = BrowserSignInRequestResponseSchema.safeParse(
+      request.response?.kind === "external" ? request.response.value : null,
+    );
+    const notSignedIn = response.success && response.data.outcome === "not-signed-in";
+    return (
+      <ActionNote>
+        {request.status === "declined"
+          ? "Not allowed."
+          : notSignedIn
+            ? `Chrome isn’t signed in to ${browserSiteLabel(site)}. Your agent will help you sign in another way.`
+            : "Answered."}
+      </ActionNote>
+    );
   }
 
   const domain = browserSiteLabel(site);

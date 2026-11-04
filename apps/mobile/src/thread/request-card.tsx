@@ -1334,6 +1334,15 @@ function BrowserSignInResolved(props: {
       />
     );
   }
+  if (value?.["outcome"] === "not-signed-in") {
+    return (
+      <Notice
+        detail="Your agent will help you sign in another way."
+        title={`Chrome isn’t signed in to ${domain}`}
+        tone="neutral"
+      />
+    );
+  }
   if (value?.["outcome"] === "session-closed") {
     return (
       <Notice

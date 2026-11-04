@@ -2449,6 +2449,42 @@ export class RequestStore {
     return rows.map(requestFromRow);
   }
 
+  /**
+   * Pending sign-in Requests whose (Workspace, site) nobody has allowed yet,
+   * oldest first and paged like `listDeliverableBrowserSignIns`.
+   */
+  async listUngrantedBrowserSignIns(input: {
+    readonly ownerId: UserId;
+    readonly after: RequestId | null;
+    readonly limit: number;
+  }): Promise<readonly Request[]> {
+    let query = this.#database
+      .selectFrom("requests")
+      .leftJoin("browserSiteGrants", (join) =>
+        join
+          .onRef("browserSiteGrants.ownerId", "=", "requests.requestedBy")
+          .onRef("browserSiteGrants.workspaceId", "=", "requests.targetWorkspaceId")
+          .on(sql<boolean>`browser_site_grants.site = requests.payload->>'site'`)
+          .on("browserSiteGrants.revokedAt", "is", null),
+      )
+      .selectAll("requests")
+      .where("requests.kind", "=", "browser.sign-in")
+      .where("requests.status", "=", "pending")
+      .where("requests.requestedBy", "=", input.ownerId)
+      .where("browserSiteGrants.ownerId", "is", null);
+    if (input.after) {
+      query = query.where(
+        sql<boolean>`(requests.created_at, requests.id) > (select created_at, id from public.requests where id = ${input.after})`,
+      );
+    }
+    const rows = await query
+      .orderBy("requests.createdAt", "asc")
+      .orderBy("requests.id", "asc")
+      .limit(input.limit)
+      .execute();
+    return rows.map(requestFromRow);
+  }
+
   async findPendingBrowserSignIn(input: {
     readonly ownerId: UserId;
     readonly originatingRunId: RunId;
