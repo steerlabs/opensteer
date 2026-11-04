@@ -49,6 +49,13 @@ export function RemoteDesktopUpdateSection({ view }: { readonly view: SettingsVi
     updates,
     home.name ?? view.name,
     visible && updates !== null,
+    async () => {
+      const bridge = desktopBridge();
+      if (bridge) {
+        if ((await bridge.getDeploymentAccessSnapshot()).account.status !== "signed-in")
+          await bridge.signIn();
+      } else window.location.reload();
+    },
   );
   const [confirming, setConfirming] = useState<RequestAction | null>(null);
   if (updates === null || model.hidden) return null;

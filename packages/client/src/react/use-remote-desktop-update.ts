@@ -14,6 +14,7 @@ export function useRemoteDesktopUpdate(
   updates: DesktopUpdates | null,
   computerName: string,
   visible: boolean,
+  signIn?: () => Promise<unknown>,
 ) {
   const controller = useMemo(
     () => (updates === null ? null : new DesktopUpdateController(updates)),
@@ -25,6 +26,12 @@ export function useRemoteDesktopUpdate(
   return {
     view: desktopUpdateView({ ...snapshot, computerName, now: Date.now() }),
     run: (action: DesktopUpdateAction) => {
+      if (action.kind === "retry" && snapshot.failure === "unauthorized" && signIn) {
+        void signIn()
+          .then(() => controller?.retry())
+          .catch(() => undefined);
+        return;
+      }
       if (action.kind === "retry") controller?.retry();
       else controller?.request(action.intent);
     },

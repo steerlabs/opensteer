@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { HostAttachment, HostSessionRecovery } from "../auth/host-session.js";
 import {
   hostKeyFingerprint,
   personalHostAccessRouteEnvelopeSha256,
@@ -29,9 +30,40 @@ export * from "./desktop-updates-contract.js";
 /** Own transport lifetime: usable before attachment and after an epoch refusal. */
 export class DesktopUpdatesService implements DesktopUpdates {
   readonly #transport: HostTransport;
+  readonly #verificationTransport: HostTransport;
   #verifiedKey: string | null = null;
-  constructor(options: HostTransportOptions) {
-    this.#transport = new HostTransport(options);
+  constructor(
+    options: Omit<HostTransportOptions, "sessions"> & {
+      readonly sessions?: (attachment: HostAttachment) => HostSessionRecovery;
+    },
+  ) {
+    const { credentials, sessions, ...routing } = options;
+    // Credential lookup can refresh OAuth against the Host; verify before even looking it up.
+    this.#verificationTransport = new HostTransport(routing);
+    this.#transport = new HostTransport({
+      ...routing,
+      ...(credentials
+        ? {
+            credentials: {
+              authorizationHeader: async (connection) => {
+                await this.#verify();
+                return credentials.authorizationHeader(connection);
+              },
+            },
+          }
+        : {}),
+      ...(sessions
+        ? {
+            sessions: sessions({
+              current: async () => {
+                await this.#verify();
+                return this.#verificationTransport.current();
+              },
+              currentKey: () => this.#verificationTransport.currentKey(),
+            }),
+          }
+        : {}),
+    });
   }
   async status(
     options: { after?: string; signal?: AbortSignal } = {},
@@ -59,14 +91,14 @@ export class DesktopUpdatesService implements DesktopUpdates {
   }
   async #verify(signal?: AbortSignal) {
     signal?.throwIfAborted();
-    const selected = await this.#transport.current();
+    const selected = await this.#verificationTransport.current();
     if (selected.resolved.key === this.#verifiedKey) return selected.resolved;
     const { connection, resolved } = selected;
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const requestSignal = init?.signal ?? signal;
       const url = new URL(input instanceof Request ? input.url : String(input));
       if (url.origin !== resolved.origin) throw new DesktopUpdatesError("invalid-response");
-      return this.#transport.exchange(
+      return this.#verificationTransport.exchange(
         {
           method: "GET",
           path: url.pathname,
@@ -112,7 +144,7 @@ export class DesktopUpdatesService implements DesktopUpdates {
             : (connection.endpoints.find((endpoint) => endpoint.origin === resolved.origin)?.kind ??
               "canonical"),
       });
-    if ((await this.#transport.current()).resolved.key !== resolved.key)
+    if ((await this.#verificationTransport.current()).resolved.key !== resolved.key)
       throw new DesktopUpdatesError("invalid-response");
     this.#verifiedKey = resolved.key;
     return resolved;

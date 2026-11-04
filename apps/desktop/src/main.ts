@@ -582,7 +582,23 @@ async function runDesktop(
       deploymentId,
       localRuntime: { current: async () => desktopLocalHostRuntime(await personal.current()) },
       network: hostNetwork,
-      sessions: hostSessions,
+      sessions: (attachment) => {
+        const sessions = new HostSession({
+          recoveryCooldownMs: 0,
+          attachment,
+          clearDeploymentSession: (id) => hostNetwork.clearDeploymentSession(id),
+          exchange: hostSessionExchange,
+          localOwner: personal,
+          oauth: nativeAuth,
+        });
+        return {
+          recoverUnauthorized: async (selected) => {
+            const outcome = await sessions.recoverUnauthorized(selected);
+            if (outcome === "account-required") await nativeAuth.notifyAccountCredentialRejected();
+            return outcome;
+          },
+        };
+      },
     });
     deploymentUpdates.set(deploymentId, created);
     return created;

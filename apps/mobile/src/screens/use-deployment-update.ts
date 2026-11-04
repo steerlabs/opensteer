@@ -1,7 +1,7 @@
 import { useRemoteDesktopUpdate } from "@opensteer/client/react";
 import type { DesktopUpdateAction, DesktopUpdateView } from "@opensteer/client/settings";
 import type { DeploymentId } from "@opensteer/core";
-import { useIsFocused } from "@react-navigation/native";
+import { useIsFocused, useNavigation } from "@react-navigation/native";
 import { useMemo } from "react";
 import { Alert } from "react-native";
 import { useAppForeground } from "../ui/foreground.js";
@@ -18,6 +18,7 @@ export function useDeploymentUpdate(
   computerName: string,
 ): DeploymentUpdateModel | null {
   const client = useMobileClient();
+  const navigation = useNavigation();
   const updates = useMemo(
     () => (deploymentId === null ? null : client.desktopUpdates(deploymentId)),
     [client, deploymentId],
@@ -28,6 +29,21 @@ export function useDeploymentUpdate(
     updates,
     computerName,
     foreground && focused && updates !== null,
+    async () => {
+      if (deploymentId === null) return;
+      const connection = (await client.catalog.load()).deployments.find(
+        (entry) => entry.authority.document.deploymentId === deploymentId,
+      );
+      if (
+        (connection?.reachability === "routed"
+          ? connection.personalAccessRoute?.document.route.kind
+          : null) === "private"
+      ) {
+        navigation.navigate("AddPersonal");
+        return;
+      }
+      await client.signInAccount();
+    },
   );
   if (updates === null || view.hidden) return null;
   return {

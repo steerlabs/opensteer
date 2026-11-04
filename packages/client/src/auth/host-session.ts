@@ -566,7 +566,7 @@ function recoveryFailure(error: unknown): HostSessionRecoveryOutcome {
 }
 
 function boundedRecoveryCooldown(value: number): number {
-  if (!Number.isSafeInteger(value) || value < 1 || value > 300_000) {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 300_000) {
     throw new TypeError("Host session recovery cooldown is invalid.");
   }
   return value;

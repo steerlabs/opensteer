@@ -17,7 +17,20 @@ export function PlaceUpdate({ row }: { readonly row: PlaceRow }) {
     [bridge, row.id],
   );
   const visible = usePageVisible();
-  const { run, view } = useRemoteDesktopUpdate(updates, row.name, updates !== null && visible);
+  const { run, view } = useRemoteDesktopUpdate(
+    updates,
+    row.name,
+    updates !== null && visible,
+    async () => {
+      if (!places) return;
+      const deployment = places.snapshot.deployments.find((entry) => entry.id === row.id);
+      if (deployment?.source === "manual") {
+        places.onAddPlace();
+        return;
+      }
+      if (places.snapshot.account.status !== "signed-in") await places.bridge.signIn();
+    },
+  );
   const [confirming, setConfirming] = useState<Extract<
     DesktopUpdateAction,
     { readonly kind: "request" }

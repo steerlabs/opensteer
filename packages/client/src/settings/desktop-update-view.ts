@@ -310,7 +310,7 @@ function settledOrActiveView(input: DesktopUpdateViewInput): DesktopUpdateView {
         ...base,
         headline: "Sign in again",
         detail: `Sign in to ${name} again to update it.`,
-        action: retry,
+        action: { kind: "retry", label: "Sign in again" },
       };
     case "offline":
       return {

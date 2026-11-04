@@ -1,4 +1,8 @@
-import type { NativeOAuthManager } from "@opensteer/client/auth";
+import {
+  HostSession,
+  type HostSessionExchange,
+  type NativeOAuthManager,
+} from "@opensteer/client/auth";
 import {
   DesktopUpdatesService,
   HostVersionMismatchError,
@@ -15,7 +19,7 @@ import {
   type HostCapabilityReader,
   type BrowserPreferencesStorage,
 } from "@opensteer/client/host";
-import type { DeploymentId } from "@opensteer/core";
+import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import { isSameHost } from "@opensteer/deployment-authority";
 import {
@@ -30,7 +34,7 @@ import {
   type DeploymentCredentials,
 } from "./deployment-credentials.js";
 import type { HostVerification } from "./deployment-rows.js";
-import type { PersonalSessionStore } from "./personal-session-store.js";
+import { personalSessionFrom, type PersonalSessionStore } from "./personal-session-store.js";
 
 /**
  * What this app and one Host agree about, as a live probe of the route this
@@ -76,6 +80,7 @@ export interface MobileHostPort {
 export type MobileHostPortFactory = (input: {
   readonly oauth: NativeOAuthManager;
   readonly sessions: PersonalSessionStore;
+  readonly sessionExchange: HostSessionExchange;
 }) => MobileHostPort;
 
 export function createNetworkHostPort(options: {
@@ -89,7 +94,7 @@ export function createNetworkHostPort(options: {
   ) => WebSocketClient;
 }): MobileHostPortFactory {
   const maintenanceNetwork = createMaintenanceNetwork(options);
-  return ({ oauth, sessions }) => ({
+  return ({ oauth, sessions, sessionExchange }) => ({
     credentials: createDeploymentCredentials({ now: options.now, oauth, sessions }),
 
     desktopUpdates: ({ catalog, deploymentId }) => {
@@ -100,6 +105,25 @@ export function createNetworkHostPort(options: {
         deploymentId,
         localRuntime: { current: async () => null },
         network: maintenanceNetwork,
+        sessions: (attachment) =>
+          new HostSession({
+            recoveryCooldownMs: 0,
+            attachment,
+            clearDeploymentSession: (id) => sessions.clear(DeploymentIdSchema.parse(id)),
+            exchange: {
+              supports: (resolved) => sessionExchange.supports(resolved),
+              probe: (resolved) => sessionExchange.probe(resolved),
+              establish: async (resolved) => {
+                const established = await sessionExchange.establish(resolved);
+                if ((await attachment.current()).resolved.key !== resolved.key)
+                  throw new Error("This computer's route changed during sign-in.");
+                await sessions.save(personalSessionFrom(resolved.deploymentId, established));
+                return established;
+              },
+            },
+            localOwner: { ownsHostSession: () => false, recoverOwnerSession: async () => false },
+            oauth,
+          }),
       });
     },
 
