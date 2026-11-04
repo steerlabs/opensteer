@@ -510,7 +510,10 @@ function refineIntegrationAuthorizationFinish(
       path: ["finish"],
     });
   }
-  if (value.appReturnPort !== undefined && (value.finish !== "app" || value.surface !== "desktop")) {
+  if (
+    value.appReturnPort !== undefined &&
+    (value.finish !== "app" || value.surface !== "desktop")
+  ) {
     context.addIssue({
       code: "custom",
       message: "Only a desktop app finish can return to a port",

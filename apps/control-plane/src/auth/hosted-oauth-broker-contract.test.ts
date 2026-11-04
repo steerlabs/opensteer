@@ -252,7 +252,9 @@ describe("managed provider authorization contract", () => {
 
   it("hands off nothing when consent fails", async () => {
     const s = await scenario(validResponse, "desktop", "app", 48_203);
-    const result = await s.complete(new URLSearchParams({ state: s.state, error: "access_denied" }));
+    const result = await s.complete(
+      new URLSearchParams({ state: s.state, error: "access_denied" }),
+    );
     expect(result.status).toBe("denied");
     expect(result).not.toHaveProperty("returnHandoff");
   });

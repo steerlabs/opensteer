@@ -1083,7 +1083,8 @@ describe("MobileClient cancelling an integration sign-in", () => {
   ) {
     const cancels = vi.fn(async (command: { attemptId: unknown }) => ({
       attemptId: command.attemptId,
-      connectionId: input.answer === "completed" ? "con_00000000-0000-4000-8000-0000000000aa" : null,
+      connectionId:
+        input.answer === "completed" ? "con_00000000-0000-4000-8000-0000000000aa" : null,
       expiresAt,
       failureCode: null,
       status: input.answer ?? ("cancelled" as const),
@@ -1105,8 +1106,7 @@ describe("MobileClient cancelling an integration sign-in", () => {
       configureClient: (host) => {
         const dispatch = host.dispatch.bind(host);
         host.dispatch = async (command) => {
-          if (command.type === "integration.authorization.cancel")
-            return cancels(command) as never;
+          if (command.type === "integration.authorization.cancel") return cancels(command) as never;
           if (command.type === "integration.authorization.return") return returns() as never;
           return dispatch(command);
         };

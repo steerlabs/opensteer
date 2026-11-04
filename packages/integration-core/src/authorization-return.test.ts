@@ -140,7 +140,9 @@ describe("desktop loopback handoff", () => {
   });
 
   it("refuses to address a port outside the reserved block", () => {
-    expect(() => integrationAuthorizationBrowserReturn({ ...held, appReturnPort: 3_000 })).toThrow();
+    expect(() =>
+      integrationAuthorizationBrowserReturn({ ...held, appReturnPort: 3_000 }),
+    ).toThrow();
   });
 
   it.each([

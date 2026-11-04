@@ -257,7 +257,10 @@ describe("IntegrationAuthorizationLoopback requests", () => {
   it("sends no reflected input and a closed-down response on both outcomes", async () => {
     const { instance } = loopback({ accept: (url) => url.length < 0 });
     const port = (await instance.prepare())!;
-    for (const reply of [await post(port), await post(port, { path: "/<script>alert(1)</script>" })]) {
+    for (const reply of [
+      await post(port),
+      await post(port, { path: "/<script>alert(1)</script>" }),
+    ]) {
       expect(reply.headers).toContain("referrer-policy: no-referrer");
       expect(reply.headers).toContain("cache-control: no-store");
       expect(reply.headers).toContain("connection: close");
@@ -339,7 +342,10 @@ describe("IntegrationAuthorizationLoopback login session", () => {
   });
 
   it("gives up a port it finished binding after the session resigned", async () => {
-    const active = vi.fn(() => true).mockReturnValueOnce(true).mockReturnValue(false);
+    const active = vi
+      .fn(() => true)
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false);
     const { instance } = loopback({ active });
     expect(await instance.prepare()).toBeNull();
     expect(await refused(free[0])).toBe(true);

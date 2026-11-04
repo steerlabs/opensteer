@@ -38,7 +38,11 @@ function page(input: Parameters<typeof statusPageBody>[0]): string {
  */
 export class IntegrationAuthorizationLoopback {
   readonly #accept: (appReturn: string) => boolean;
-  readonly #deadlines: { readonly headers: number; readonly request: number; readonly socket: number };
+  readonly #deadlines: {
+    readonly headers: number;
+    readonly request: number;
+    readonly socket: number;
+  };
   readonly #now: () => number;
   readonly #pendingUntil: () => number | null;
   readonly #ports: readonly number[];

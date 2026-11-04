@@ -210,9 +210,7 @@ export class HostedOAuthBrokerService {
             .map((definition) => definition.provider),
         ),
       ],
-      ...(includeInstallationUrls
-        ? { mcpCallbackRelay: 1, appFinish: 1, appReturnPort: 1 }
-        : {}),
+      ...(includeInstallationUrls ? { mcpCallbackRelay: 1, appFinish: 1, appReturnPort: 1 } : {}),
       providerRevisions: Object.fromEntries(
         [...this.#applications.values()].map(({ provider, revision }) => [provider, revision]),
       ),
