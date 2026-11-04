@@ -487,7 +487,9 @@ describeStore("plugin Settings authority", (test) => {
       expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     });
     await connections.activate(connection.id, "c".repeat(64));
-    const access = async (requester: { threadId: typeof run.thread.id } | { connectionId: string }) =>
+    const access = async (
+      requester: { threadId: typeof run.thread.id } | { connectionId: string },
+    ) =>
       (
         await resolveResourceAccess(f.database, {
           ownerUserId: run.userId,

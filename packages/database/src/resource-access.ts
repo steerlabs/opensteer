@@ -247,11 +247,7 @@ export async function resolveResourceAccess(
     );
   }
   let policyAllowed = true;
-  if (
-    agentRequester &&
-    input.resource &&
-    input.resource.type !== "browser-profile"
-  ) {
+  if (agentRequester && input.resource && input.resource.type !== "browser-profile") {
     const connection = await database
       .selectFrom("integrationConnections")
       .select(["integrationDefinitionId", "connectionKind"])
