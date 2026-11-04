@@ -171,6 +171,18 @@
   object-fit: cover;
 }
 
+/* A brand or device mark sits on a light tile, as app icons do, in both themes. */
+.intg-icon--mark {
+  border-color: rgb(0 0 0 / 8%);
+  background: #fff;
+  box-shadow: none;
+}
+
+.intg-icon--mark svg {
+  width: 58%;
+  height: 58%;
+}
+
 .intg-icon--monogram {
   font-size: var(--text-xs);
   font-weight: 650;

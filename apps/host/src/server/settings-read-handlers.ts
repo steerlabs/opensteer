@@ -1,11 +1,15 @@
 import { requestTitleText, type UserId, type WaitingRequest } from "@opensteer/core";
-import { hostApi, rpcSuccess, type DurableWindow, type HostApiHandlers } from "@opensteer/protocol";
+import {
+  hostApi,
+  rpcSuccess,
+  type DurableWindow,
+  type HostApiHandlers,
+  type PluginsDirectoryView,
+} from "@opensteer/protocol";
 import { requireSession } from "../integrations/integration-rpc-context.js";
 
 export function createSettingsReadHandlers(options: {
-  readonly catalog: () => Promise<
-    readonly { definitionId: string; title: string; description: string; added: boolean }[]
-  >;
+  readonly catalog: () => Promise<PluginsDirectoryView["catalog"]>;
   readonly requests: (
     owner: UserId,
   ) => Promise<{ readonly requests: readonly WaitingRequest[]; readonly window: DurableWindow }>;

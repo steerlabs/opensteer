@@ -12,7 +12,7 @@ function fixture() {
       title: "Gmail",
       description: "Mail",
       added: true,
-      contents: [{ name: "Search mail", kind: "tool" }],
+      contents: [{ name: "Search mail", kind: "tool" as const }],
       access: ["Read mail"],
     },
   ]);

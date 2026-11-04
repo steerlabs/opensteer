@@ -1,5 +1,6 @@
 import { HostClientRequestError } from "../host/client.js";
 export * from "./plugin-add-consent.js";
+export * from "./catalog.js";
 import {
   PluginTargetSchema,
   type PluginTarget,
@@ -113,11 +114,7 @@ export function pluginPlacementLabel(row: PluginRow, personal: boolean): string 
       .join(" and ") || "No places selected"
   );
 }
-export function pluginGroups(
-  rows: readonly PluginRow[],
-  query = "",
-  filter: PluginRow["tags"][number] | "all" = "all",
-) {
+export function pluginGroups(rows: readonly PluginRow[], query = "") {
   const result: Record<"Needs you" | "On" | "Turned off", PluginRow[]> = {
     "Needs you": [],
     On: [],
@@ -125,7 +122,6 @@ export function pluginGroups(
   };
   const term = query.trim().toLocaleLowerCase();
   for (const row of rows) {
-    if (filter !== "all" && !row.tags.includes(filter)) continue;
     if (term && !`${row.title} ${row.description ?? ""}`.toLocaleLowerCase().includes(term))
       continue;
     result[pluginState(row).group].push(row);

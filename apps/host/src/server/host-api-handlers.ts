@@ -10,6 +10,7 @@ import {
   type HostApiHandlers,
   type HostApiServerContext,
 } from "@opensteer/protocol";
+import { listedPluginRow } from "../integrations/catalog-presentation.js";
 import type { IdentityRpcHandlers } from "../identity/identity-routes.js";
 import { handleTriggerCommand } from "../triggers/trigger-routes.js";
 import type { TriggerService } from "../triggers/trigger-service.js";
@@ -130,16 +131,15 @@ export function createHostApiHandlers(
     "plugins.overview.get": async (_input, context) => {
       const machines = await coreHandlers["machines.list"]({}, context);
       if (!machines.ok) return machines;
-      return rpcSuccess(
-        await integrationPlatform.platform.store.settings.overview(
-          requireSession(context).user.id,
-          new Set(
-            machines.data.machines
-              .filter((machine) => machine.status === "online")
-              .map((machine) => machine.id),
-          ),
+      const overview = await integrationPlatform.platform.store.settings.overview(
+        requireSession(context).user.id,
+        new Set(
+          machines.data.machines
+            .filter((machine) => machine.status === "online")
+            .map((machine) => machine.id),
         ),
       );
+      return rpcSuccess({ ...overview, rows: overview.rows.map(listedPluginRow) });
     },
     "plugins.detail.get": async (input, context) => {
       const machines = await coreHandlers["machines.list"]({}, context);
@@ -149,6 +149,7 @@ export function createHostApiHandlers(
         input.target,
         new Set(machines.data.machines.filter((m) => m.status === "online").map((m) => m.id)),
       );
+      detail.row = listedPluginRow(detail.row);
       const runnerIds = new Set<string>([
         ...detail.devices.map((d) => d.runnerId),
         ...detail.accounts.flatMap((account) => (account.runnerId ? [account.runnerId] : [])),
