@@ -24,7 +24,7 @@ files must be readable by container uid 10001, inside an operator-only directory
   set -eu
   initializer=$(docker create -w /source \
     -e OPENSTEER_SOURCE_REVISION="$(git rev-parse HEAD)" \
-    node:24.13.0-bookworm-slim node deploy/self-host/initialize.mjs)
+    node:24.22.2-bookworm-slim node deploy/self-host/initialize.mjs)
   trap 'docker rm -f "$initializer" >/dev/null' EXIT
   docker cp package.json "$initializer:/source/package.json"
   docker cp deploy "$initializer:/source/deploy"
