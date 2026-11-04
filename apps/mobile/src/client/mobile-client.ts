@@ -1,3 +1,4 @@
+import type { HostApiCommandInput, HostApiCommandOutput } from "@opensteer/protocol";
 import { delay } from "@opensteer/shared/delay";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { NotificationPreviews } from "../notifications/notification-preview.js";
@@ -42,6 +43,7 @@ import {
   createUsageNoticeDismissals,
   mutationIdempotencyKey,
   isHostRefusal,
+  unwrapRpcResult,
   type HostClient,
   type SavedViewStore,
   type UsageNoticeDismissals,
@@ -133,6 +135,32 @@ const integrationCancelReconcileGraceMilliseconds = 5 * 60_000;
 
 /** A person's own Cancel, which an app-link delivery ends on without reporting a failure. */
 class IntegrationAuthorizationCancelledByPerson extends IntegrationAuthorizationCancelledError {}
+
+/**
+ * Sends a command that must not outlive its deadline or its caller. Racing
+ * `dispatch` would stop only the waiter: a request still loading credentials goes
+ * out once they arrive, so ending the wait has to end the request too.
+ */
+async function dispatchWithin(
+  client: HostClient,
+  command: HostApiCommandInput,
+  milliseconds: number,
+  signal?: AbortSignal,
+): Promise<HostApiCommandOutput> {
+  const request = new AbortController();
+  const stop = () => request.abort(signal?.reason);
+  signal?.addEventListener("abort", stop, { once: true });
+  try {
+    return await withTimeout(
+      client.rpc["commands.dispatch"](command, { signal: request.signal }).then(unwrapRpcResult),
+      milliseconds,
+      { ...(signal ? { signal } : {}), timeoutError: () => new HostTransportError("timed-out") },
+    );
+  } finally {
+    signal?.removeEventListener("abort", stop);
+    request.abort();
+  }
+}
 
 export interface MobileClientOptions {
   readonly notificationPreviews?: NotificationPreviews | null;
@@ -998,14 +1026,14 @@ export class MobileClient {
     client: HostClient,
     attemptId: IntegrationAuthorizationStart["attemptId"],
   ): Promise<IntegrationAuthorizationStatus> {
-    const answer = await withTimeout(
-      client.dispatch({
+    const answer = await dispatchWithin(
+      client,
+      {
         attemptId,
         idempotencyKey: mutationIdempotencyKey(`integration-auth:${attemptId}`),
         type: "integration.authorization.cancel",
-      }),
+      },
       integrationCancelTimeoutMilliseconds,
-      { timeoutError: () => new HostTransportError("timed-out") },
     );
     if (answer.type !== "integration.authorization.cancel")
       throw new Error("Integration authorization command mismatch.");
@@ -1155,10 +1183,12 @@ export class MobileClient {
             assertOwner();
             if (client.getSnapshot().user === null) throw new HostTransportError("timed-out");
             if (command === null) break;
-            status = await withTimeout(client.dispatch(command), Math.min(20_000, remaining()), {
-              signal: controller.signal,
-              timeoutError: () => new HostTransportError("timed-out"),
-            });
+            status = await dispatchWithin(
+              client,
+              command,
+              Math.min(20_000, remaining()),
+              controller.signal,
+            );
           } catch (error) {
             assertOwner();
             if (
