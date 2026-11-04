@@ -4709,6 +4709,7 @@ export function migrationProvider() {
         "0155_connection_message_authors": connectionMessageAuthorsMigration,
         "0156_specialist_auto_bind": specialistAutoBindMigration,
         "0157_background_model_preferences": backgroundModelPreferencesMigration,
+        "0158_memory_pass_waiting": memoryPassWaitingMigration,
       };
     },
   };
@@ -7387,5 +7388,33 @@ export const backgroundModelPreferencesMigration: Migration = {
       preferences jsonb not null,
       updated_at timestamptz not null default now()
     )`.execute(database);
+  },
+};
+
+/**
+ * A memory pass without a usable model now waits while active instead of
+ * pausing. Light passes paused only for want of a light model were never
+ * paused by the person, so they resume; one whose worker is Done keeps its
+ * pause (the person stopped memory) without the obsolete reason.
+ */
+export const memoryPassWaitingMigration: Migration = {
+  async up(database) {
+    const noLightModel =
+      "This engine has no light model. Choose a model for the light pass, then resume.";
+    await sql`alter table triggers add column waiting_reason text`.execute(database);
+    await sql`update triggers set pause_reason = 'Memory is off at your request.', updated_at = now()
+      where system_role = 'memory-light'
+        and pause_reason = ${`Memory is off at your request. ${noLightModel}`}`.execute(database);
+    await sql`update triggers as trigger set
+        status = case when worker.done_at is null then 'active' else 'paused' end,
+        next_fire_at = case when worker.done_at is null then now() end,
+        consecutive_failures = 0,
+        pause_reason = null,
+        updated_at = now()
+      from threads as worker
+      where worker.id = trigger.anchor_thread_id
+        and trigger.system_role = 'memory-light'
+        and trigger.status = 'paused'
+        and trigger.pause_reason = ${noLightModel}`.execute(database);
   },
 };

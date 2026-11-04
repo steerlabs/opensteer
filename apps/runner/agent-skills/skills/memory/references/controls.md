@@ -8,11 +8,10 @@ reprogram them; Opensteer refuses.
 ## Pause and resume
 
 Use `trigger_write` action `set_status` with each `triggerId` and status `paused`, or `active` to
-resume. Before resuming light, read its Trigger: if its pause reason says the engine has no light
-model, leave it paused and ask: "Which model should the light pass use? Choose a model, or
-explicitly accept the current model." To keep memory but turn the passes off, pause both; they
-stay paused until the person asks.
-A pass already running finishes its turn.
+resume. To keep memory but turn the passes off, pause both; they stay paused until the person asks.
+A pass already running finishes its turn. Opensteer picks each pass's model; an active pass with a
+`waitingReason` has no model it can use yet and resumes by itself, so tell the person the reason
+rather than pausing or resuming it.
 
 ## Stop remembering
 
@@ -56,7 +55,5 @@ follow-up until creation succeeds.
 ## Turn back on
 
 Finish any pending deletion first. Clear only the contents under `## Memory`, preserving
-everything outside it byte-for-byte; reopen each worker marked Done with `thread_write` action `reopen`, then resume nightly. Read the light Trigger's pause reason:
-if it says the engine has no light model, leave light paused and ask: "Which model should the light
-pass use? Choose a model, or explicitly accept the current model." Resume only after their answer.
-Otherwise resume light too. Preserve both worker and Trigger identities.
+everything outside it byte-for-byte; reopen each worker marked Done with `thread_write` action `reopen`, then resume both
+Triggers. Preserve both worker and Trigger identities.

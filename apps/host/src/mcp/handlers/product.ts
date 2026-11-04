@@ -44,6 +44,7 @@ import { environmentDiscovery } from "../../agents/environment-discovery.js";
 
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import type { AgentWorkspaceMountService } from "../../agents/agent-workspace-mount-service.js";
+import type { MemoryPassService } from "../../agents/memory-pass-service.js";
 import { callerThread, type AgentCaller } from "../agent-caller.js";
 import type { ToolCall } from "./index.js";
 import {
@@ -105,7 +106,7 @@ export class ProductToolHandlers {
   readonly #onBrowserUsage: ((credits: readonly BrowserUsageCredit[]) => void) | undefined;
   readonly #placeContext: Pick<PlaceContextService, "assertDelegated"> | undefined;
   readonly #workspaceMounts: AgentWorkspaceMountService;
-
+  readonly #memoryPasses: Pick<MemoryPassService, "admissionSelection"> | undefined;
   readonly #workspaces: AgentWorkspaceCreator;
 
   constructor(options: {
@@ -137,6 +138,7 @@ export class ProductToolHandlers {
       environmentId: EnvironmentId,
     ) => readonly WorkspaceBackingKind[];
     readonly isEnvironmentConnected: (environmentId: EnvironmentId) => boolean;
+    readonly memoryPasses?: Pick<MemoryPassService, "admissionSelection">;
     readonly onWorkspaceEvent: (event: AgentEvent) => void;
     readonly store: OpensteerStore;
     readonly onBrowserUsage?: (credits: readonly BrowserUsageCredit[]) => void;
@@ -145,6 +147,7 @@ export class ProductToolHandlers {
     readonly workspaces: AgentWorkspaceCreator;
   }) {
     this.#threads = options.threads;
+    this.#memoryPasses = options.memoryPasses;
     this.#realtime = options.realtime;
     this.#computerUse = options.computerUse;
     this.#personShow = options.personShow;
@@ -1124,6 +1127,10 @@ export class ProductToolHandlers {
         thread.workspaceId,
         caller.userId,
       );
+    const memoryPass =
+      caller.kind === "program" && caller.program.kind === "trigger"
+        ? await this.#memoryPasses?.admissionSelection(caller.program.occurrenceId, thread)
+        : undefined;
     const delivered = await this.#threads.sendInput(
       caller,
       {
@@ -1133,6 +1140,7 @@ export class ProductToolHandlers {
         requestedBy: caller.userId,
         source: messageSource(caller, observationId),
         threadId: thread.id,
+        ...(memoryPass ? { memoryPass } : {}),
       },
       caller.kind === "connection"
         ? undefined

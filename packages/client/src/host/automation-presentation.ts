@@ -51,6 +51,8 @@ export function placeAutomation(summary: TriggerSummary, now: number): Automatio
     }
     return { group: "paused", problem: null };
   }
+  // A memory pass waiting for a usable model is active, not paused.
+  if (summary.waitingReason) return attention(summary.waitingReason);
   if (shape === "repeating") return { group: "repeating", problem: null };
   if (shape === "webhook" || shape === "watch") return { group: "events", problem: null };
   if (summary.nextFireAt) return { group: "upcoming", problem: null };

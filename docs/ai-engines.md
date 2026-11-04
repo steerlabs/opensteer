@@ -13,8 +13,9 @@ live in `packages/core/src/background-models.ts`; catalogs remain authoritative
 for availability and native IDs. Automatic choices are recomputed from the
 current authorized accounts, never frozen as a preference. A pin goes first,
 then the automatic ranking continues. Cross-provider work requires the person's
-durable, revocable consent; memory requires consent for every provider because
-it has no originating task provider. Ordinary work keeps its exact chosen model.
+durable, revocable consent. A memory pass's own provider is Chat's: Main's
+memory already reaches it, so only other providers need consent. Ordinary work
+keeps its exact chosen model.
 
 ## What a driver declares
 

@@ -275,6 +275,7 @@ export function AnchorMark(props: {
 /** When it next does something, or why it will not. */
 function scheduleWhen(item: ScheduleItem, now: number): string | null {
   if (item.status === "paused") return item.pauseReason ?? item.statusWord;
+  if (item.waitingReason) return item.waitingReason;
   return item.nextFireAt === null ? null : `Next ${formatMoment(item.nextFireAt, now, true)}`;
 }
 
@@ -289,7 +290,8 @@ interface ScheduleRowProps {
 const ScheduleRow = memo(function ScheduleRow(props: ScheduleRowProps): ReactNode {
   const { item } = props;
   const when = scheduleWhen(item, props.now);
-  const attention = item.status === "paused" && item.pauseReason !== null;
+  const attention =
+    (item.status === "paused" && item.pauseReason !== null) || item.waitingReason !== null;
   return (
     <Pressable
       accessibilityHint="Opens this schedule"
@@ -362,6 +364,7 @@ function sameRowProps(left: ScheduleRowProps, right: ScheduleRowProps): boolean 
     a.status === b.status &&
     a.statusWord === b.statusWord &&
     a.pauseReason === b.pauseReason &&
+    a.waitingReason === b.waitingReason &&
     a.timing === b.timing &&
     a.nextFireAt === b.nextFireAt &&
     a.anchor.title === b.anchor.title &&

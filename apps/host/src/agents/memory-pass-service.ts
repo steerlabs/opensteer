@@ -1,19 +1,31 @@
-import { OpensteerError, type AgentEvent, type WorkspaceId, TimeZoneSchema } from "@opensteer/core";
+import {
+  OpensteerError,
+  TimeZoneSchema,
+  type AgentEvent,
+  type BackgroundModelRole,
+  type Thread,
+  type TriggerOccurrenceId,
+  type UserId,
+  type WorkspaceId,
+} from "@opensteer/core";
 import {
   createMemoryPass,
   missingMemoryPassMains,
+  setMemoryPassWaiting,
   withDatabaseOperationSignal,
+  type MemoryPassExecution,
   type OpensteerStore,
 } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
-import type { TriggerSystemRole } from "@opensteer/triggers";
+import { MANAGED_MEMORY_WAKE_SKIPPED, type TriggerSystemRole } from "@opensteer/triggers";
 import type { WorkspaceFilesService } from "../workspace/files/workspace-files-service.js";
-import { matchModelSelection, storedModelSelection } from "./model-selection.js";
+import { backgroundAccounts } from "./background-model-settings.js";
+import { resolveBackgroundCandidates } from "./background-models.js";
 import { memoryPassProgram } from "./memory-pass-program.js";
 import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
 
-export const memoryLightModelPauseReason =
-  "This engine has no light model. Choose a model for the light pass, then resume.";
+export const memoryPassWaitingReason =
+  "Waiting for a model it can use. Allow a provider for background work, or choose a model, in AI settings; it resumes by itself.";
 
 interface MemoryPassServiceOptions {
   readonly store: OpensteerStore;
@@ -56,7 +68,7 @@ export class MemoryPassService {
   }
 
   async ensureForMain(workspaceId: WorkspaceId): Promise<void> {
-    const { store, runners, files } = this.#options;
+    const { store, files } = this.#options;
     const present = await store.database
       .selectFrom("triggers")
       .select("systemRole")
@@ -81,23 +93,8 @@ export class MemoryPassService {
     if (!zone.success) return;
     const chat = await store.getThreadForOwner(workspace.homeThreadId, workspace.createdBy);
     if (!chat?.inheritsMain) return;
-    const harness = await store.getHarnessInstance(chat.harnessInstanceId);
-    if (
-      !harness?.enabled ||
-      harness.environmentId !== chat.environmentId ||
-      !runners.isAvailable(chat.environmentId) ||
-      !runners.canRunHarness(chat.environmentId, harness.driverKind)
-    )
-      return;
-    const modes = runners.harnessAccessModes(chat.environmentId, harness.driverKind);
-    if (!modes?.includes(chat.accessMode)) return;
+    // The worker is each pass's Trigger anchor, on Chat's computer.
     if (await triggerProgramCompatibilityReason(store, chat.environmentId, 3)) return;
-    const catalog = await store.getHarnessCatalog(chat.environmentId, harness.id);
-    if (
-      catalog?.status !== "ready" ||
-      matchModelSelection(catalog.models, chat.modelSelection, "carry").kind !== "offered"
-    )
-      return;
     const admission = await store.admitWorkspaceFiles(workspace.id, workspace.createdBy);
     if (!admission) return;
     let off = false;
@@ -113,36 +110,112 @@ export class MemoryPassService {
       if (!(error instanceof OpensteerError) || error.code !== "not_found") return;
     }
     for (const systemRole of missing) {
-      const light = systemRole === "memory-light";
-      const selection = light ? catalog.lightModel : undefined;
-      const match = selection ? matchModelSelection(catalog.models, selection, "refuse") : null;
-      if (selection && match?.kind !== "offered") continue;
       const created = await createMemoryPass(store.database, {
         workspaceId,
         ownerId: workspace.createdBy,
         chat,
-        catalog,
-        runtimeRevision: harness.runtimeRevision,
         systemRole,
-        modelSelection:
-          selection && match?.kind === "offered"
-            ? storedModelSelection(selection, match.model)
-            : chat.modelSelection,
         program: memoryPassProgram(systemRole),
         source: memoryPassSource(systemRole, zone.data),
-        pauseReason: off
-          ? light && !selection
-            ? `Memory is off at your request. ${memoryLightModelPauseReason}`
-            : "Memory is off at your request."
-          : light && !selection
-            ? memoryLightModelPauseReason
-            : null,
+        pauseReason: off ? "Memory is off at your request." : null,
       });
       if (created) {
         if (created.event) this.#options.onEvent(created.event);
         this.#options.onChanged(workspaceId);
       }
     }
+  }
+
+  /**
+   * The model a managed pass's own wake runs on, resolved afresh for each
+   * pass; undefined for every other Trigger. Without a usable model the pass
+   * waits: the wake is skipped and the next one resolves again, so the
+   * schedule recovers by itself and a pause stays the person's.
+   */
+  async admissionSelection(
+    occurrenceId: TriggerOccurrenceId,
+    worker: Thread,
+  ): Promise<MemoryPassExecution | undefined> {
+    const { store } = this.#options;
+    const trigger = await store.database
+      .selectFrom("triggerOccurrences")
+      .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+      .select([
+        "triggers.id",
+        "triggers.anchorThreadId",
+        "triggers.createdBy",
+        "triggers.systemRole",
+        "triggers.workspaceId",
+      ])
+      .where("triggerOccurrences.id", "=", occurrenceId)
+      .executeTakeFirst();
+    if (!trigger?.systemRole || trigger.anchorThreadId !== worker.id) return undefined;
+    const [chosen] = await this.#candidates(
+      trigger.systemRole === "memory-light" ? "light" : "deep",
+      worker,
+      trigger.createdBy,
+    );
+    if (
+      await setMemoryPassWaiting(
+        store.database,
+        trigger.id,
+        chosen ? null : memoryPassWaitingReason,
+      )
+    )
+      this.#options.onChanged(trigger.workspaceId);
+    if (!chosen)
+      throw new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED });
+    return { harnessInstanceId: chosen.harnessInstanceId, modelSelection: chosen.modelSelection };
+  }
+
+  async #candidates(role: BackgroundModelRole, worker: Thread, ownerId: UserId) {
+    const { store, runners } = this.#options;
+    const main = await store.getWorkspace(worker.workspaceId);
+    // Main's files are reachable only on the computer that holds them, which
+    // is also where the worker anchors its Trigger.
+    if (
+      main?.backing.kind !== "local-directory" ||
+      main.backing.ownerEnvironmentId !== worker.environmentId ||
+      !main.homeThreadId
+    )
+      return [];
+    const [preferences, chat, { harnesses, accounts }] = await Promise.all([
+      store.getBackgroundModelPreferences(ownerId),
+      store.getThreadForOwner(main.homeThreadId, ownerId),
+      backgroundAccounts(
+        store,
+        [worker.environmentId],
+        (environmentId) => runners.isAvailable(environmentId),
+        (harness) =>
+          runners.canRunHarness(harness.environmentId, harness.driverKind) &&
+          runners
+            .harnessAccessModes(harness.environmentId, harness.driverKind)
+            ?.includes(worker.accessMode) === true,
+      ),
+    ]);
+    const chatHarness =
+      role === "deep" && chat
+        ? harnesses.find((harness) => harness.id === chat.harnessInstanceId)
+        : undefined;
+    // Main's memory already reaches Chat's provider, so like a task's own
+    // provider it needs no consent; every other provider does.
+    return resolveBackgroundCandidates(role, {
+      accounts,
+      preferences,
+      now: Date.now(),
+      ...(chat ? { ownProviderId: chat.modelSelection.providerId } : {}),
+      ...(chat && chatHarness
+        ? {
+            taskModelFallback: {
+              environmentId: chat.environmentId,
+              harnessInstanceId: chat.harnessInstanceId,
+              harnessRevision: chatHarness.runtimeRevision,
+              modelSelection: chat.modelSelection,
+              reason: "task-model" as const,
+            },
+          }
+        : {}),
+    });
   }
 }
 

@@ -2073,8 +2073,21 @@ export async function createHostRuntime(
         realtime.publishBrowserSessionsChanged(workspaceId, ownerIds, "browser.groups"),
     });
     const threadService = new ThreadService({ store, commands, runners, placeContext, browser });
+    const memoryPasses = new MemoryPassService({
+      store,
+      runners,
+      files,
+      onEvent: publishWorkspaceEvent,
+      onChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
+      onError: (workspaceId, error) =>
+        app.log.warn(
+          { workspaceId, code: error instanceof OpensteerError ? error.code : "internal" },
+          "Memory pass provisioning failed",
+        ),
+    });
     const productHandlers = new ProductToolHandlers({
       threads: threadService,
+      memoryPasses,
       realtime,
       computerUse,
       personShow: (userId, message) => realtime.showToPerson(userId, message),
@@ -2505,18 +2518,6 @@ export async function createHostRuntime(
       }
     };
     reportWorkspaceStorageHealth(await workspaces.reconcile());
-    const memoryPasses = new MemoryPassService({
-      store,
-      runners,
-      files,
-      onEvent: publishWorkspaceEvent,
-      onChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
-      onError: (workspaceId, error) =>
-        app.log.warn(
-          { workspaceId, code: error instanceof OpensteerError ? error.code : "internal" },
-          "Memory pass provisioning failed",
-        ),
-    });
     await memoryPasses.reconcileMissing();
     coordinator.start();
     continuations.start();

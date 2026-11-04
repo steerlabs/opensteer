@@ -514,9 +514,19 @@ Done only requests a stop, so stopping memory writes the off line first, which
 the passes check when they wake, then pauses and marks both workers Done, and
 erases files only once neither is running or waiting. A slow stop keeps deletion pending and
 Chat arranges a one-shot reminder to recheck; without access to create it, the person must ask
-Chat to finish deletion. Re-enabling reopens the same workers; a light pass paused for lack of a
-light model stays paused until the person chooses or accepts a model. See
+Chat to finish deletion. Re-enabling reopens the same workers. See
 [`opensteer:memory`](../apps/runner/agent-skills/skills/memory/SKILL.md).
+
+Each pass resolves its model when its wake is admitted (light uses the `light`
+role, nightly `deep`, falling back to Chat's model), then runs in a fresh native
+session: passes carry state only in Main's files, so engine and account may
+change between passes, while the Run freezes the choice for that pass and its
+recovery. Main's files are reachable only on the computer that holds them, so
+every candidate is an account there. Without a usable model the pass waits: it
+stays active, records why, skips the wake and resolves again on the next one.
+Waiting is never a pause, so recovery cannot resume a pass the person paused or
+memory they turned off. See
+[memory-pass-service.ts](../apps/host/src/agents/memory-pass-service.ts).
 
 Main is not yet a private boundary: a shared channel routed into Main receives
 its `AGENTS.md`, summary included. Keeping such contexts out of Main is an

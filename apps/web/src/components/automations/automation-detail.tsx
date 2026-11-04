@@ -307,7 +307,11 @@ function AutomationView({
         }
       />
 
-      {managed && trigger.pauseReason ? <p className="notice">{trigger.pauseReason}</p> : null}
+      {managed && (trigger.status === "paused" ? trigger.pauseReason : trigger.waitingReason) ? (
+        <p className="notice">
+          {trigger.status === "paused" ? trigger.pauseReason : trigger.waitingReason}
+        </p>
+      ) : null}
       {webhook ? <WebhookReady webhook={webhook} /> : null}
 
       {problem && (!managed || worker || homeThreadId) ? (

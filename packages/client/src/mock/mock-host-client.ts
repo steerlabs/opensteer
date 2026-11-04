@@ -1783,7 +1783,7 @@ export interface MockHostClientOptions {
   readonly lifecycle?: ClientLifecycle;
   /** Automations covering every state the Automations page shows; seeded by default. */
   automations?: "seeded" | "absent";
-  memoryPasses?: "active" | "off" | "no-light-model";
+  memoryPasses?: "active" | "off" | "waiting-for-model";
   places?: "seeded" | "absent";
   /** Development fixture for the first message before a Chat exists. */
   initialHome?: "seeded" | "absent";
@@ -6031,18 +6031,24 @@ class MockHostState {
           },
         });
         const record = this.getTrigger(created.trigger.id);
-        const pauseReason =
-          options.memoryPasses === "off"
-            ? "Memory is off at your request."
-            : options.memoryPasses === "no-light-model" && systemRole === "memory-light"
-              ? "This engine has no light model. Choose a model for the light pass, then resume."
-              : null;
         this.triggers.set(created.trigger.id, {
           ...record,
           trigger: {
             ...record.trigger,
             systemRole,
-            ...(pauseReason ? { status: "paused", pauseReason, nextFireAt: null } : {}),
+            ...(options.memoryPasses === "off"
+              ? {
+                  status: "paused",
+                  pauseReason: "Memory is off at your request.",
+                  nextFireAt: null,
+                }
+              : {}),
+            ...(options.memoryPasses === "waiting-for-model" && systemRole === "memory-light"
+              ? {
+                  waitingReason:
+                    "Waiting for a model it can use. Allow a provider for background work, or choose a model, in AI settings; it resumes by itself.",
+                }
+              : {}),
           },
         });
       }
