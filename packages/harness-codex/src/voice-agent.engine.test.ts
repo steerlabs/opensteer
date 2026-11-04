@@ -153,11 +153,14 @@ describe.skipIf(!qualify).each([
       // The voice acknowledges first ("On it…"); only speech carrying the tool's fact is the answer.
       const spoken = new Deferred<void>();
       const answerPattern = /4:30|four[- ]thirty/iu;
+      const eventTypes: string[] = [];
       await page.exposeFunction("voiceEvent", (raw: string) => {
         const event = JSON.parse(raw) as {
           type?: string;
           turn?: { id?: string; role?: string; transcript?: string };
         };
+        if (event.type && !event.type.includes("delta") && eventTypes.at(-1) !== event.type)
+          eventTypes.push(event.type);
         if (event.type === "turn.done" && event.turn?.role === "user")
           userTurns.push({ at: Date.now(), text: event.turn.transcript ?? "" });
         if (event.type === "turn.done" && event.turn?.role === "assistant") {
@@ -255,10 +258,17 @@ describe.skipIf(!qualify).each([
           voice: events.map((event) => event.text),
           toolCalls: tools.calls,
           runEvents,
+          eventTypes,
         });
       const consume = (async () => {
         for await (const event of session!.events) {
           runEvents.push(event.type);
+          // Nobody taps in qualification: decline as a person would, so the
+          // agent answers with its Opensteer tool rather than waiting on a shell.
+          if (event.type === "request.opened")
+            void session!
+              .resolveRequest(event.data.request.id, { kind: "choice", optionId: "reject" })
+              .catch(() => undefined);
           if (event.type === "assistant.message") final.resolve();
           if (event.type === "run.interrupted" || event.type === "run.failed") terminal++;
         }
