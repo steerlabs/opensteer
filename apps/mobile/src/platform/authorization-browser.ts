@@ -69,8 +69,13 @@ export function createIntegrationAuthorizationBrowser(options: {
     let abort = () => {};
     const aborted = new Promise<never>((_, reject) => {
       abort = () => {
-        options.browser.dismissAuthSession();
         reject(new IntegrationAuthorizationCancelledError());
+        try {
+          options.browser.dismissAuthSession();
+        } catch {
+          // Android's module has no dismissal, so its tab stays open for the person to
+          // close. Nothing is lost: a return from it finds no attempt to finish.
+        }
       };
     });
     signal?.addEventListener("abort", abort, { once: true });

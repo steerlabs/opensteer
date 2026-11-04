@@ -5,7 +5,8 @@ import {
   opensteerMobileHostOAuthCallback,
   opensteerMobileOAuthClientId,
 } from "@opensteer/core";
-import { describe, expect, it } from "vitest";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { describe, expect, it, vi } from "vitest";
 import {
   authorizationRedirectOf,
   createAuthorizationBrowser,
@@ -68,6 +69,32 @@ describe("authorizationRedirectOf", () => {
 });
 
 describe("createIntegrationAuthorizationBrowser", () => {
+  // Android's module exposes neither dismissal, so Expo's call throws there.
+  it("ends the wait even where the platform cannot dismiss the session", async () => {
+    const browser = new FakeBrowser();
+    browser.openAuthSessionAsync = () => new Promise(() => {});
+    browser.dismissAuthSession = () => {
+      throw new Error("The method or property WebBrowser.dismissBrowser is not available.");
+    };
+    const controller = new AbortController();
+    const waiting = createIntegrationAuthorizationBrowser({ browser })(
+      "https://host.example/v1/integration-authorizations/launch",
+      controller.signal,
+    );
+    const uncaught = vi.fn();
+    process.on("uncaughtException", uncaught);
+    try {
+      controller.abort();
+      await expect(
+        withTimeout(waiting, 1_000, { timeoutError: () => new Error("The wait never ended.") }),
+      ).rejects.toBeInstanceOf(IntegrationAuthorizationCancelledError);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(uncaught).not.toHaveBeenCalled();
+    } finally {
+      process.off("uncaughtException", uncaught);
+    }
+  });
+
   it("ends the session and the wait when its signal aborts", async () => {
     const browser = new FakeBrowser();
     browser.openAuthSessionAsync = () => new Promise(() => {});
