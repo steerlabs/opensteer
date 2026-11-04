@@ -385,7 +385,9 @@ export class PluginSettingsStore {
           canEnable: true,
           canPlace: manage,
           canRemove: manage,
-          canUpdate: manage && typeof plugin.source.directory === "string",
+          // Agent-made plugins update when an agent installs their folder again.
+          canUpdate:
+            manage && plugin.scope === "deployment" && typeof plugin.source.directory === "string",
         },
       });
       const packageRow = rows[rows.length - 1]!;
@@ -993,7 +995,9 @@ export class PluginSettingsStore {
       ],
       contents: target.kind === "skill" ? [{ name: target.fullName, kind: "skill" }] : contents,
       sourceFolder:
-        plugin?.installedBy === owner && typeof plugin.source.directory === "string"
+        plugin?.installedBy === owner &&
+        plugin.scope === "deployment" &&
+        typeof plugin.source.directory === "string"
           ? plugin.source.directory
           : null,
     });

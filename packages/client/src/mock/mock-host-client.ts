@@ -1776,6 +1776,8 @@ const mockMachines: readonly MachineSummary[] = [
 
 export interface MockHostClientOptions {
   specialistPlugins?: { id: string; name: string; manifest: SpecialistManifest }[];
+  /** Plugins an agent made in Main, from a folder in that Workspace. */
+  agentPlugins?: { id: string; name: string }[];
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
   readonly sharedTaskDoneAvailable?: boolean;
   /** The platform's lifecycle, reported to display sockets as the real client reports it. */
@@ -4865,7 +4867,7 @@ interface MockPlugin {
   name: string;
   scope: "deployment" | "workspace";
   workspaceId: string | null;
-  source: { directory?: string };
+  source: { directory?: string; workspaceDirectory?: string };
   currentVersionId: string;
   versions: {
     id: string;
@@ -5199,6 +5201,12 @@ class MockHostState {
       for (let i = this.specialists.length - 1; i >= 0; i--)
         if (this.specialists[i]?.pluginId === command.pluginId) this.specialists.splice(i, 1);
     } else if (command.type === "plugin.update") {
+      if (plugin.scope === "workspace")
+        throw new HostClientRequestError({
+          code: "bad_request",
+          message: "Agent-made plugins update when an agent installs their folder again.",
+          status: 400,
+        });
       const id = crypto.randomUUID();
       const current = plugin.versions.find((v) => v.id === plugin.currentVersionId);
       plugin.versions.push({
@@ -5914,6 +5922,22 @@ class MockHostState {
           },
         ],
         activations: [],
+        createdAt: at,
+        updatedAt: at,
+      });
+    }
+    for (const p of options.agentPlugins ?? []) {
+      const id = crypto.randomUUID();
+      const at = new Date(0).toISOString();
+      this.plugins.push({
+        id: p.id,
+        name: p.name,
+        scope: "workspace",
+        workspaceId: mockMainWorkspaceId,
+        source: { workspaceDirectory: `plugins/${p.name}` },
+        currentVersionId: id,
+        versions: [{ id, digest: id, manifest: { name: p.name, skills: [{}] } }],
+        activations: [{ workspaceId: mockMainWorkspaceId }],
         createdAt: at,
         updatedAt: at,
       });
