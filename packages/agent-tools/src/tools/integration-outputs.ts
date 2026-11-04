@@ -96,7 +96,8 @@ export const IntegrationSearchOutputSchema = z.object({
             alias: z.string().optional(),
             isDefault: z.boolean().optional(),
             status: z.string().optional(),
-            access: z.string().optional(),
+            // null: this Workspace holds no grant to the account.
+            access: z.string().nullable().optional(),
             readiness: ReadinessSchema.optional(),
           }),
         ),

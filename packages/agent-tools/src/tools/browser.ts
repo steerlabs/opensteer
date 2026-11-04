@@ -145,6 +145,7 @@ export const browser_session_open = defineAgentTool({
 
 export const browser_profile_create = defineAgentTool({
   name: "browser_profile_create",
+  minimumReach: "user",
   title: "Create a browser profile",
   description:
     "Create an empty named identity where Main inheritance permits. List first to avoid duplicates. Returns profile.id; opens nothing and grants no Project access. Open with browser_session_open, then request sign-in. Names prove no login. Never create replacements to bypass update refusals.",
