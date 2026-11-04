@@ -8,6 +8,7 @@ import { delay } from "@opensteer/shared/delay";
 import {
   RunnerChallengeSchema,
   agentPhoneOutdatedReason,
+  agentPhoneReleaseSignerSha256,
   RunnerDescriptorSchema,
   RunnerEnrollmentCredentialSchema,
   type RunnerDescriptor,
@@ -18,6 +19,7 @@ import {
 } from "@opensteer/runner-auth";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
+import { phoneUpdateRelease } from "../agent-phone/update-release.js";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 import { createHostRuntime } from "./runtime.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
@@ -184,7 +186,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
     console.info(`Runner proof v2 evidence: ${directory}/proof-contract.json`);
   });
 
-  it("remembers only a proven old phone, survives restart, and clears the refusal after an update and rename", async () => {
+  it("admits an older compatible release and clears only proven incompatibility across restart", async () => {
     const lines: string[] = [];
     const logger = {
       level: "info",
@@ -196,12 +198,61 @@ integration.sequential("An Android phone joining a Deployment", () => {
         },
       }),
     };
-    host = await startMachineAccessHost(isolated!.url, { logger });
+    const apk = Buffer.from("newer bundled phone release");
+    const manifest = {
+      apkSha256: createHash("sha256").update(apk).digest("hex"),
+      apkSize: apk.length,
+      buildType: "release",
+      minSdk: 30,
+      packageName: "com.opensteer.agentphone",
+      signingCertSha256: agentPhoneReleaseSignerSha256,
+      versionCode: 1_999,
+      versionName: "0.1.999",
+    };
+    const manifestBytes = Buffer.from(JSON.stringify(manifest));
+    const release = phoneUpdateRelease(
+      new Map([
+        ["agent-phone/opensteer-agent-phone.apk", apk],
+        ["agent-phone/agent-phone.json", manifestBytes],
+        [
+          "agent-phone/agent-phone-release.json",
+          Buffer.from(
+            JSON.stringify({
+              schemaVersion: 1,
+              sourceRevision: "a".repeat(40),
+              version: manifest.versionName,
+              apkSha256: manifest.apkSha256,
+              apkSize: apk.length,
+              signingCertSha256: manifest.signingCertSha256,
+              manifestSha256: createHash("sha256").update(manifestBytes).digest("hex"),
+            }),
+          ),
+        ],
+      ]),
+      manifest.versionName,
+    );
+    expect(release).not.toBeNull();
+    const newerRelease = () => release;
+    host = await startMachineAccessHost(isolated!.url, {
+      logger,
+      phoneUpdateRelease: newerRelease,
+    });
     const minted = await mintPhone(host, "honest-old-phone");
     const runnerId = createId("runner");
     const current = { ...phoneDescriptor(runnerId), name: "Kitchen phone" };
     const arrived = await presentPhone(host, current, { token: minted.token });
     expect(arrived.welcome).not.toBeNull();
+    expect(
+      (
+        await host.store.database
+          .selectFrom("runnerEnrollments")
+          .select("consumedAt")
+          .where("id", "=", minted.enrollmentId)
+          .executeTakeFirstOrThrow()
+      ).consumedAt,
+    ).not.toBeNull();
+    const reconnected = await presentPhone(host, current, { privateKey: arrived.privateKey });
+    expect(reconnected.welcome).not.toBeNull();
     const machine = async () =>
       (
         await testRpcData(host!.origin, "machines.list", {}, { headers: host!.ownerHeaders })
@@ -266,7 +317,10 @@ integration.sequential("An Android phone joining a Deployment", () => {
     ).toBe(true);
     const before = host;
     await before.runtime.close();
-    const restarted = await createHostRuntime(before.config, { logger });
+    const restarted = await createHostRuntime(before.config, {
+      logger,
+      phoneUpdateRelease: newerRelease,
+    });
     await restarted.listen();
     host = {
       ...before,

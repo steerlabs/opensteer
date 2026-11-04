@@ -23,10 +23,7 @@ import type { AppService } from "./apps/app-service.js";
 import { createAppHandlers, registerAppRoutes } from "./apps/app-routes.js";
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { AgentPhoneUpdateHub } from "./agent-phone/update-hub.js";
-import {
-  agentPhoneVersionCode,
-  type AgentPhoneUpdateRelease,
-} from "./agent-phone/update-release.js";
+import type { AgentPhoneUpdateRelease } from "./agent-phone/update-release.js";
 import type { BrowserTabGroupService } from "./browser/browser-tab-group-service.js";
 import { searchSuggestions } from "./browser/search-suggestions.js";
 import { runnerAuxiliaryWelcome } from "./server/runner-auxiliary-welcome.js";
@@ -2658,8 +2655,6 @@ export async function createHostServer(
           notifyMachinesChanged(dependencies.realtime, "machine.command");
         }
       },
-      dependencies.phoneUpdateRelease ??
-        (() => dependencies.staticDistribution?.service.agentPhoneRelease ?? null),
     );
   });
 
@@ -2973,7 +2968,6 @@ function attachRunnerSocket(
     readonly connectionGeneration: number;
     readonly reason: "agent-phone-outdated" | "runner-outdated";
   }) => Promise<void>,
-  phoneRelease: () => AgentPhoneUpdateRelease | null,
 ): void {
   const peer = jsonPeer<HostToRunnerMessage>(socket, `runner-peer:${randomUUID()}`);
   // A Run can stream many small events at once, for example a command's output
@@ -3093,21 +3087,7 @@ function attachRunnerSocket(
           return refuseRunnerAdmission(socket, peer, error);
         };
         const identity = await authenticator
-          .authenticate(challenge, message, (verified) => {
-            const release = phoneRelease();
-            const version = agentPhoneVersionCode(verified.descriptor.runtimeVersion);
-            if (
-              verified.descriptor.device?.form === "phone" &&
-              release &&
-              version !== null &&
-              version < release.manifest.versionCode
-            )
-              throw new OpensteerError({
-                code: "forbidden",
-                reason: "agent-phone-outdated",
-                message: agentPhoneOutdatedReason,
-              });
-          })
+          .authenticate(challenge, message)
           .catch(async (error: unknown) => {
             if (error instanceof z.ZodError && androidPhoneProofSchema.safeParse(frame).success)
               return refuse(
