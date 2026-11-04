@@ -208,7 +208,7 @@ describe("continuationMessage", () => {
       expect(await continuationMessage(request, inventory())).toBe(
         kind === "browser.access"
           ? String.raw`Request ${request.id} was fulfilled. The person chose browser profile "Owner \"renamed\" work" (${profile.id}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${profile.id}, then continue the task.`
-          : `Request ${request.id} is historical. Create a browser profile before signing in; Guest sign-ins cannot be saved.`,
+          : `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`,
       );
     },
   );
@@ -220,7 +220,7 @@ describe("continuationMessage", () => {
       expect(await continuationMessage(request, inventory())).toBe(
         kind === "browser.access"
           ? `Request ${request.id} was fulfilled. Browser profile access is now available; browser_profile_list shows the profiles this Workspace can use. Continue the task.`
-          : `Request ${request.id} is historical. Create a browser profile before signing in; Guest sign-ins cannot be saved.`,
+          : `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`,
       );
     },
   );
@@ -236,7 +236,7 @@ describe("continuationMessage", () => {
       expect(await continuationMessage(request, inventory())).toBe(
         kind === "browser.access"
           ? `Request ${request.id} was declined by the user. Browser profiles this Workspace could already use are unchanged: browser_profile_list shows them. Do not request this access again unless the user asks.`
-          : `Request ${request.id} is historical. Create a browser profile before signing in; Guest sign-ins cannot be saved.`,
+          : `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`,
       );
     },
   );

@@ -258,7 +258,7 @@ export async function continuationMessage(
       return `Request ${request.id} was fulfilled. The person chose browser profile ${JSON.stringify(name)} (${profileId}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${profileId}, then continue the task.`;
     }
     case "browser.profile.save":
-      return `Request ${request.id} is historical. Create a browser profile before signing in; Guest sign-ins cannot be saved.`;
+      return `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`;
     case "browser.profile.import":
       return request.status === "declined" &&
         request.response.kind === "external" &&
