@@ -70,24 +70,15 @@ function Plugins({
   const [serverEntries, setServerEntries] = useState<
     SettingsRpcData<"integration.platform.get">["installations"]
   >([]);
-  const [detail, setDetail] = useState<PluginDetailView | null>(null);
-  useEffect(() => {
-    if (!target) return;
-    const parsed = PluginTargetSchema.safeParse(target);
-    if (!parsed.success) return;
-    let active = true;
-    void host.rpc["plugins.detail.get"]({ target: parsed.data })
-      .then(unwrapRpcResult)
-      .then((value) => {
-        if (active && isCurrent()) setDetail(value);
-      })
-      .catch(() => {
-        if (active && isCurrent()) setError("Couldn’t load plugin.");
-      });
-    return () => {
-      active = false;
-    };
-  }, [host, target, isCurrent]);
+  const [detailTarget, setDetailTarget] = useState(target);
+  useEffect(() => setDetailTarget(target), [target]);
+  const detailRead = useSettingsRead(host, async () => {
+    if (!detailTarget) return null;
+    return unwrapRpcResult(await host.rpc["plugins.detail.get"]({
+      target: PluginTargetSchema.parse(detailTarget),
+    }));
+  }, JSON.stringify(detailTarget));
+  const detail = detailRead.data;
   useEffect(() => {
     if (!detail) {
       setServerEntries([]);
@@ -153,7 +144,7 @@ function Plugins({
         if (isCurrent()) setError("The change could not be confirmed. Refresh before retrying.");
       })
       .then(async () => {
-        await overview.reload();
+        await Promise.all([overview.reload(), detailRead.reload()]);
         busy.current = false;
         setPending(null);
       });
@@ -175,12 +166,7 @@ function Plugins({
         throw reason;
       }
       attempts.current.delete(intent);
-      if (detail) {
-        const result = unwrapRpcResult(
-          await host.rpc["plugins.detail.get"]({ target: detail.row.target }),
-        );
-        if (isCurrent()) setDetail(result);
-      }
+      await detailRead.reload();
     });
   useEffect(() => {
     if (overview.data?.rows.length !== 0) return;
@@ -249,7 +235,7 @@ function Plugins({
                     idempotencyKey: mutationIdempotencyKey("plugin-remove"),
                   });
                 }
-              if (isCurrent()) setDetail(null);
+              if (isCurrent()) setDetailTarget(undefined);
             }),
         },
       ],
@@ -749,7 +735,7 @@ function Plugins({
               setAdd(null);
               setAddEntry(null);
               setDirectory(null);
-              setDetail(null);
+              setDetailTarget(undefined);
               void overview.reload();
             };
             const review: NativeSettingsSection[] = [

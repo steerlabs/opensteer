@@ -637,3 +637,17 @@ it.each(["ios", "android"])(
     expect(rows().some((row) => row.kind === "input" && row.secure)).toBe(false);
   },
 );
+
+it("refreshes an open plugin detail after a plugin invalidation", async () => {
+  await open("plugins");
+  const target = { kind: "service", definitionId: "google-gmail" } as const;
+  await act(async () => root!.render(
+    <SettingsPluginsScreen route={{ params: { deploymentId: "deployment", target } }} />,
+  ));
+  const original = host.dispatch.bind(host);
+  await act(async () => {
+    await original({ type: "settings.plugin.enabled.set", target,
+      enabled: false, expectedRevision: 0, idempotencyKey: "other-session" });
+  });
+  expect(rows().find((row) => row.kind === "toggle" && row.label === "Gmail")).toMatchObject({ value: false });
+});
