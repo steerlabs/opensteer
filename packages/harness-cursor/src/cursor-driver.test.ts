@@ -1535,6 +1535,33 @@ describe("cursor Thread naming", () => {
   );
 });
 
+it("runs the chosen Cursor variant for background text", async () => {
+  const fixture = await setup({ scenario: "happy" });
+  let namingLaunch: import("@opensteer/harness").HarnessProcessLaunch | undefined;
+  const context = {
+    ...fixture.context,
+    wrapProcessLaunch: (launch: import("@opensteer/harness").HarnessProcessLaunch) => {
+      if (launch.cwd.includes("text-")) namingLaunch = launch;
+      return launch;
+    },
+  };
+  try {
+    await fixture.adapter.generateText!({
+      context: { ...context, scratchDirectory: context.threadStateDirectory },
+      modelSelection: {
+        ...context.modelSelection,
+        options: { variant: "composer-2.5-fast" },
+      },
+      prompt: threadTitlePrompt("Migrate support", { icon: true }),
+      signal: AbortSignal.timeout(2_000),
+    });
+    const args = namingLaunch!.args;
+    expect(args[args.indexOf("--model") + 1]).toBe("composer-2.5-fast");
+  } finally {
+    await fixture.adapter.close();
+  }
+});
+
 it("delivers distinct full names for two plugins and a loose review skill", async () => {
   const fixture = await setup({});
   const skills = await collisionSkills(fixture.context.workspacePath);

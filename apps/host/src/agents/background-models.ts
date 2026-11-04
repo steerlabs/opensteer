@@ -41,11 +41,12 @@ export type BackgroundCandidateSkipReason =
   | "disabled"
   | "catalog-not-ready"
   | "model-unavailable"
-  | "option-unavailable"
-  | "usage-limit";
+  | "option-unavailable";
 export interface BackgroundCandidateDecision {
   readonly candidate: ResolvedBackgroundCandidate;
   readonly skipReason: BackgroundCandidateSkipReason | null;
+  /** A usage reading at its limit: the candidate still runs, after the others. */
+  readonly usageLimited: boolean;
 }
 /** One account's one model with its options: what a repeated attempt would run again. */
 export function backgroundCandidateKey(
@@ -123,11 +124,7 @@ export function inspectBackgroundCandidates(
               : selection.providerId !== input.ownProviderId &&
                   !input.preferences.backgroundProviderConsent.includes(selection.providerId)
                 ? "consent-required"
-                : // Observed usage never gates the task's own model, as it never
-                  // gates the task's work on it: a plan's credits can outlast its windows.
-                  reason !== "task-model" && usageLimited(account, selection, input.now)
-                  ? "usage-limit"
-                  : null;
+                : null;
     decisions.push({
       candidate: {
         environmentId: account.environmentId,
@@ -137,6 +134,7 @@ export function inspectBackgroundCandidates(
         reason,
       },
       skipReason,
+      usageLimited: skipReason === null && usageLimited(account, selection, input.now),
     });
   };
   if (mode.kind === "pinned") {
@@ -172,7 +170,12 @@ export function inspectBackgroundCandidates(
     );
     if (account) add(account, fallback.modelSelection, "task-model");
   }
-  return decisions;
+  // Usage is an observation, never a precondition: a window can read 100% while
+  // work still succeeds. A limited ranked model runs after the unlimited ones; a
+  // pin keeps its place, and the task's own model still closes the list.
+  const place = ({ candidate, usageLimited }: BackgroundCandidateDecision) =>
+    candidate.reason === "task-model" ? 2 : usageLimited && candidate.reason === "ranked" ? 1 : 0;
+  return decisions.sort((a, b) => place(a) - place(b));
 }
 export function resolveBackgroundCandidates(
   role: BackgroundModelRole,

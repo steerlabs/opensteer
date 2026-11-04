@@ -471,7 +471,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     home: z.literal(true).optional(),
     /**
      * `title` is the first line of the message that will start the Thread, for
-     * its engine to replace with a name of its own. Absent, `title` is a name
+     * background naming to replace with a generated name. Absent, `title` is a name
      * someone chose and nothing replaces it. Sent only to a Host that
      * advertises `thread-titles-v1`.
      */

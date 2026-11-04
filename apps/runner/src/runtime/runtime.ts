@@ -61,6 +61,7 @@ import {
   type ResolvedAttachment,
 } from "@opensteer/harness";
 import {
+  backgroundTextAttemptsPerRunner,
   HarnessInstanceCatalogSchema,
   PendingAgentEventSchema,
   pendingAgentEventMaxSerializedBytes,
@@ -897,9 +898,9 @@ export class RunnerRuntime {
     request: Extract<HostToRunnerMessage, { type: "host.background-text" }>,
   ): Promise<HarnessGenerateTextResult> {
     if (this.#backgroundText.has(request.attemptId)) return { ok: false, failure: "unavailable" };
-    // Two at a time. A busy Runner is not a failed model, so a third attempt
-    // waits for a slot within its own deadline.
-    while (this.#backgroundText.size >= 2 && !this.#draining) {
+    // The Host keeps within this bound; an excess (a Host deadline passing while
+    // this Runner still reaps) waits for a slot within its own deadline.
+    while (this.#backgroundText.size >= backgroundTextAttemptsPerRunner && !this.#draining) {
       const waited = Date.parse(request.deadline) - Date.now();
       if (waited <= 0) return { ok: false, failure: "timeout" };
       const slot = new AbortController();

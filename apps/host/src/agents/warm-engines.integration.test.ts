@@ -12,7 +12,7 @@ import {
 } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { OpencodeHarnessDriver } from "@opensteer/harness-opencode";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { PluginSettingsStore } from "@opensteer/database";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
@@ -350,16 +350,21 @@ integration("Warm engines", () => {
           .where("id", "=", threadId)
           .executeTakeFirstOrThrow();
       // Naming runs beside each Run, not in it: it settles when its symbol is
-      // stored or, failing, once its account's catalog has been asked afresh.
+      // stored or, failing, when the Host reports the job found no name.
+      const warn = vi.spyOn(console, "warn");
+      onTestFinished(() => warn.mockRestore());
+      const unnamed = () =>
+        warn.mock.calls.filter(
+          ([message, details]) =>
+            message === "Thread naming found no name" &&
+            (details as { threadId?: string } | undefined)?.threadId === threadId,
+        ).length;
       const namingSettled = (turns: number) =>
         waitFor(async () => {
-          const lines = await captured(captureFile);
-          const named = lines.filter((line) => line.fakeTitleTurn);
-          const last = lines.findLastIndex((line) => line.fakeTitleTurn);
+          const named = (await captured(captureFile)).filter((line) => line.fakeTitleTurn);
           return (
             named.length >= turns &&
-            ((await stored()).iconSource === "generated" ||
-              lines.slice(last).some((line) => line.method === "model/list"))
+            ((await stored()).iconSource === "generated" || unnamed() >= turns)
           );
         }, `naming turn ${turns} to settle`);
       const first = await run(active, threadId, "First question");

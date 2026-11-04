@@ -1,4 +1,4 @@
-import { backgroundLightModels } from "@opensteer/core";
+import { type ModelSelection, backgroundLightModels } from "@opensteer/core";
 import { type HarnessModelDescriptor, resolveLightModel } from "@opensteer/harness";
 import { type ClaudeExecutableInspection } from "./executable.js";
 import { delay } from "@opensteer/shared/delay";
@@ -1305,92 +1305,89 @@ class ClaudeHarnessAdapter implements HarnessAdapter {
         context.providerState,
       );
       return withBackgroundTextDirectory(context, signal, async (directory) => {
-        const attempt = async (): Promise<string> => {
-          signal.throwIfAborted();
-          const abortController = new AbortController();
-          const abort = () => abortController.abort();
-          signal.addEventListener("abort", abort, { once: true });
-          let child: SupervisedProcess | undefined;
-          let stderr: Promise<string> | undefined;
-          let query: ClaudeQueryHandle | undefined;
-          try {
-            const options: Options = {
-              abortController,
-              cwd: directory,
-              env: environment,
-              pathToClaudeCodeExecutable: this.#dependencies.executable,
-              managedSettings: managedClaudeSettings({
-                ...context,
-                machineAccessPlatform: undefined,
-                machineAccessRelaySocket: undefined,
-              }),
-              skills: [],
-              plugins: [],
-              tools: [],
-              mcpServers: {},
-              strictMcpConfig: true,
-              settingSources: [],
-              persistSession: false,
-              maxTurns: 1,
-              permissionMode: "default",
-              title: "Thread title",
-              canUseTool: async () => ({
-                behavior: "deny",
-                message: "Tools are disabled for Thread titles",
-              }),
-              spawnClaudeCodeProcess: ({ args, command, cwd, env }) => {
-                const inherited: Record<string, string> = {};
-                for (const [name, value] of Object.entries(env))
-                  if (value !== undefined) inherited[name] = value;
-                child = spawnSupervised({
-                  ...context.wrapProcessLaunch({
-                    executable: command,
-                    args,
-                    cwd: cwd ?? directory,
-                    environment: inherited,
-                  }),
-                  maxOutputBytes: 8192,
-                });
-                stderr = collectStreamText(child.stderr);
-                void stderr.catch(() => undefined);
-                const stop = () => void child?.terminate(0).catch(() => undefined);
-                abortController.signal.addEventListener("abort", stop, { once: true });
-                if (abortController.signal.aborted) stop();
-                return child.child;
-              },
-            };
-            query = this.#dependencies.sdk.query({
-              prompt,
-              options: {
-                ...options,
-                model: modelSelection.nativeModelId ?? modelSelection.modelId,
-                ...(modelSelection.options.effort === "low" ? { effort: "low" as const } : {}),
-              },
-            });
-            let text = "";
-            for await (const message of query) {
-              signal.throwIfAborted();
-              if (message.type === "result") {
-                if (message.subtype === "success") text = message.result;
-                else {
-                  throw new Error(message.errors.join(" "));
-                }
+        signal.throwIfAborted();
+        const abortController = new AbortController();
+        const abort = () => abortController.abort();
+        signal.addEventListener("abort", abort, { once: true });
+        let child: SupervisedProcess | undefined;
+        let stderr: Promise<string> | undefined;
+        let query: ClaudeQueryHandle | undefined;
+        try {
+          const options: Options = {
+            abortController,
+            cwd: directory,
+            env: environment,
+            pathToClaudeCodeExecutable: this.#dependencies.executable,
+            managedSettings: managedClaudeSettings({
+              ...context,
+              machineAccessPlatform: undefined,
+              machineAccessRelaySocket: undefined,
+            }),
+            skills: [],
+            plugins: [],
+            tools: [],
+            mcpServers: {},
+            strictMcpConfig: true,
+            settingSources: [],
+            persistSession: false,
+            maxTurns: 1,
+            permissionMode: "default",
+            title: "Thread title",
+            canUseTool: async () => ({
+              behavior: "deny",
+              message: "Tools are disabled for Thread titles",
+            }),
+            spawnClaudeCodeProcess: ({ args, command, cwd, env }) => {
+              const inherited: Record<string, string> = {};
+              for (const [name, value] of Object.entries(env))
+                if (value !== undefined) inherited[name] = value;
+              child = spawnSupervised({
+                ...context.wrapProcessLaunch({
+                  executable: command,
+                  args,
+                  cwd: cwd ?? directory,
+                  environment: inherited,
+                }),
+                maxOutputBytes: 8192,
+              });
+              stderr = collectStreamText(child.stderr);
+              void stderr.catch(() => undefined);
+              const stop = () => void child?.terminate(0).catch(() => undefined);
+              abortController.signal.addEventListener("abort", stop, { once: true });
+              if (abortController.signal.aborted) stop();
+              return child.child;
+            },
+          };
+          query = this.#dependencies.sdk.query({
+            prompt,
+            options: {
+              ...options,
+              model: modelSelection.nativeModelId ?? modelSelection.modelId,
+              ...claudeEffortOptions(modelSelection.options),
+            },
+          });
+          let text = "";
+          for await (const message of query) {
+            signal.throwIfAborted();
+            if (message.type === "result") {
+              if (message.subtype === "success") text = message.result;
+              else {
+                throw new Error(message.errors.join(" "));
               }
             }
-            return text;
-          } finally {
-            signal.removeEventListener("abort", abort);
-            abortController.abort();
-            try {
-              query?.close();
-            } finally {
-              await child?.terminate(0);
-              await child?.exited;
-              await stderr;
-            }
           }
-        };
-        return attempt();
+          return text;
+        } finally {
+          signal.removeEventListener("abort", abort);
+          abortController.abort();
+          try {
+            query?.close();
+          } finally {
+            await child?.terminate(0);
+            await child?.exited;
+            await stderr;
+          }
+        }
       });
     });
   }
@@ -1926,7 +1923,6 @@ class ClaudeHarnessSession implements HarnessSession {
     const systemAppend = this.#systemPromptAppend();
     const opensteerTools = this.#context.agentTools.tools.map((name) => `mcp__opensteer__${name}`);
     const { options: selectedOptions } = this.#context.modelSelection;
-    const effort = selectedOptions[claudeEffortOptionId];
     const options: Options = {
       abortController: active.abortController,
       // The Host plan is the authority for product tools. Letting
@@ -2041,9 +2037,7 @@ class ClaudeHarnessSession implements HarnessSession {
         ? { resume: this.providerSessionReference }
         : { sessionId: this.providerSessionReference }),
       // The Host admits only a level Claude Code listed for this model.
-      ...(typeof effort === "string" && effort !== claudeEngineDefaultEffort
-        ? { effort: effort as NonNullable<Options["effort"]> }
-        : {}),
+      ...claudeEffortOptions(selectedOptions),
       // Flag settings are the Agent SDK's opt-in to fast mode; without one
       // Claude Code refuses it as `sdk_opt_in_required`.
       ...(selectedOptions[claudeFastModeOptionId] === true ? { settings: { fastMode: true } } : {}),
@@ -3596,4 +3590,11 @@ function claudeCatalogModels(models: readonly ModelInfo[]): readonly HarnessMode
       providerId,
     };
   });
+}
+
+function claudeEffortOptions(options: ModelSelection["options"]): Pick<Options, "effort"> {
+  const effort = options[claudeEffortOptionId];
+  return typeof effort === "string" && effort !== claudeEngineDefaultEffort
+    ? { effort: effort as NonNullable<Options["effort"]> }
+    : {};
 }

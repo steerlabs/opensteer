@@ -2701,6 +2701,7 @@ function modelListResponse(ids: readonly string[]): () => Promise<Response> {
 
 interface SetupOptions {
   readonly sourceId?: "openai" | "openai-compatible";
+  readonly serverArguments?: readonly string[];
   readonly accessMode?: HarnessSessionContext["accessMode"];
   readonly additionalWritableRoot?: string;
   readonly environmentOverrides?: Readonly<Record<string, string>>;
@@ -2744,7 +2745,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
   });
   const driver = new CodexHarnessDriver({
     launch: {
-      arguments: options.executable ? [] : [fakeServer],
+      arguments: options.executable ? [] : [fakeServer, ...(options.serverArguments ?? [])],
       executable: options.executable ?? process.execPath,
     },
   });
@@ -3109,6 +3110,33 @@ describe("Codex Thread naming", () => {
       expect(
         (await fixture.capture()).findLast((entry) => entry.method === "thread/start")?.params,
       ).toMatchObject({ model: "compatible-run-model" });
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("reports a failed turn's usage limit as a typed failure", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-title-script-"));
+    temporaryDirectories.push(directory);
+    const script = join(directory, "script.json");
+    const fixture = await setup("thread-name", { serverArguments: [`--title-script=${script}`] });
+    const modelId =
+      fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId;
+    const generate = () =>
+      fixture.adapter.generateText!({
+        context: { ...fixture.context, scratchDirectory: fixture.context.threadStateDirectory },
+        modelSelection: fixture.context.modelSelection,
+        prompt: "Name it",
+        signal: AbortSignal.timeout(2_000),
+      });
+    try {
+      await writeFile(
+        script,
+        JSON.stringify({ [modelId]: { error: "You've hit your usage limit. Try again later." } }),
+      );
+      expect(await generate()).toEqual({ ok: false, failure: "usage-limit" });
+      await writeFile(script, JSON.stringify({ [modelId]: { error: "Model unavailable." } }));
+      expect(await generate()).toEqual({ ok: false, failure: "unavailable" });
     } finally {
       await fixture.adapter.close();
     }

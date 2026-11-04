@@ -1,9 +1,17 @@
-import { modelLabLabels, type EnvironmentId, type UserId } from "@opensteer/core";
+import {
+  modelLabLabels,
+  type EnvironmentId,
+  type Thread,
+  type Workspace,
+  type UserId,
+} from "@opensteer/core";
 import type { HarnessInstanceRecord, OpensteerStore } from "@opensteer/database";
 import type { BackgroundModelsView } from "@opensteer/protocol";
+import type { RunnerRegistry } from "@opensteer/orchestration";
 import type { HostServerDependencies } from "../server.js";
 import {
   inspectBackgroundCandidates,
+  type BackgroundResolutionInput,
   type BackgroundAccountSnapshot,
 } from "./background-models.js";
 
@@ -41,35 +49,47 @@ export async function readBackgroundModels(
   const chat = main?.homeThreadId
     ? await dependencies.store.getThreadForOwner(main.homeThreadId, userId)
     : undefined;
+  const memory = chat
+    ? await readMemoryBackgroundResolutionInput(dependencies, userId, main, chat, "deep")
+    : undefined;
+  const display = ({
+    candidate,
+    skipReason,
+    usageLimited,
+  }: ReturnType<typeof inspectBackgroundCandidates>[number]) => {
+    const harness = harnesses.find((harness) => harness.id === candidate.harnessInstanceId);
+    const catalog = accounts.find(
+      (account) => account.harnessInstanceId === candidate.harnessInstanceId,
+    )?.catalog;
+    const model = catalog?.models.find(
+      (model) =>
+        model.providerId === candidate.modelSelection.providerId &&
+        model.modelId === candidate.modelSelection.modelId,
+    );
+    return {
+      ...candidate,
+      skipReason,
+      usageLimited,
+      providerDisplayName:
+        modelLabLabels[candidate.modelSelection.providerId] ?? candidate.modelSelection.providerId,
+      modelDisplayName: model?.displayName ?? candidate.modelSelection.modelId,
+      accountDisplayName: harness?.name ?? candidate.harnessInstanceId,
+      computerDisplayName:
+        environments.find((environment) => environment.id === candidate.environmentId)?.name ??
+        candidate.environmentId,
+    };
+  };
   const roleView = (role: "light" | "deep") => {
-    const candidates = inspectBackgroundCandidates(role, {
-      accounts,
-      preferences,
-      now: Date.now(),
-      ...(chat ? { ownProviderId: chat.modelSelection.providerId } : {}),
-    }).map(({ candidate, skipReason }) => {
-      const harness = harnesses.find((harness) => harness.id === candidate.harnessInstanceId);
-      const catalog = accounts.find(
-        (account) => account.harnessInstanceId === candidate.harnessInstanceId,
-      )?.catalog;
-      const model = catalog?.models.find(
-        (model) =>
-          model.providerId === candidate.modelSelection.providerId &&
-          model.modelId === candidate.modelSelection.modelId,
-      );
-      return {
-        ...candidate,
-        skipReason,
-        providerDisplayName:
-          modelLabLabels[candidate.modelSelection.providerId] ??
-          candidate.modelSelection.providerId,
-        modelDisplayName: model?.displayName ?? candidate.modelSelection.modelId,
-        accountDisplayName: harness?.name ?? candidate.harnessInstanceId,
-        computerDisplayName:
-          environments.find((environment) => environment.id === candidate.environmentId)?.name ??
-          candidate.environmentId,
-      };
-    });
+    const resolution =
+      role === "deep"
+        ? memory
+        : {
+            accounts,
+            preferences,
+            now: Date.now(),
+            ...(chat ? { ownProviderId: chat.modelSelection.providerId } : {}),
+          };
+    const candidates = resolution ? inspectBackgroundCandidates(role, resolution).map(display) : [];
     return {
       mode: preferences.backgroundModels[role],
       effectivePick: candidates.find((candidate) => candidate.skipReason === null) ?? null,
@@ -77,6 +97,37 @@ export async function readBackgroundModels(
     };
   };
   return {
+    pinnableModels: accounts.flatMap((account) => {
+      if (
+        !account.enabled ||
+        !account.available ||
+        !account.canRun ||
+        account.catalog?.status !== "ready"
+      )
+        return [];
+      return account.catalog.models
+        .filter((model) => !model.unavailableReason)
+        .map((model) => {
+          const pin = {
+            environmentId: account.environmentId,
+            harnessInstanceId: account.harnessInstanceId,
+            modelSelection: { providerId: model.providerId, modelId: model.modelId, options: {} },
+          };
+          const decision = inspectBackgroundCandidates("light", {
+            accounts: [account],
+            preferences: {
+              ...preferences,
+              backgroundModels: {
+                ...preferences.backgroundModels,
+                light: { kind: "pinned", selection: pin },
+              },
+            },
+            now: Date.now(),
+            ...(chat ? { ownProviderId: chat.modelSelection.providerId } : {}),
+          })[0]!;
+          return display(decision);
+        });
+    }),
     backgroundProviderConsent: preferences.backgroundProviderConsent,
     light: roleView("light"),
     deep: roleView("deep"),
@@ -133,4 +184,60 @@ export async function backgroundAccounts(
     };
   });
   return { harnesses, accounts };
+}
+
+/** Shared by Settings and managed memory admission: Main's files and access mode define the boundary. */
+export async function readMemoryBackgroundResolutionInput(
+  {
+    store,
+    runners,
+  }: {
+    store: OpensteerStore;
+    runners: Pick<RunnerRegistry, "isAvailable" | "canRunHarness" | "harnessAccessModes">;
+  },
+  ownerId: UserId,
+  main: Workspace | null | undefined,
+  worker: Thread,
+  role: "light" | "deep",
+): Promise<BackgroundResolutionInput | undefined> {
+  if (
+    main?.backing.kind !== "local-directory" ||
+    main.backing.ownerEnvironmentId !== worker.environmentId ||
+    !main.homeThreadId
+  )
+    return undefined;
+  const [preferences, chat, { harnesses, accounts }] = await Promise.all([
+    store.getBackgroundModelPreferences(ownerId),
+    store.getThreadForOwner(main.homeThreadId, ownerId),
+    backgroundAccounts(
+      store,
+      [worker.environmentId],
+      (environmentId) => runners.isAvailable(environmentId),
+      (harness) =>
+        runners.canRunHarness(harness.environmentId, harness.driverKind) &&
+        runners
+          .harnessAccessModes(harness.environmentId, harness.driverKind)
+          ?.includes(worker.accessMode) === true,
+    ),
+  ]);
+  const chatHarness = chat
+    ? harnesses.find((harness) => harness.id === chat.harnessInstanceId)
+    : undefined;
+  return {
+    accounts,
+    preferences,
+    now: Date.now(),
+    ...(chat ? { ownProviderId: chat.modelSelection.providerId } : {}),
+    ...(role === "deep" && chat && chatHarness
+      ? {
+          taskModelFallback: {
+            environmentId: chat.environmentId,
+            harnessInstanceId: chat.harnessInstanceId,
+            harnessRevision: chatHarness.runtimeRevision,
+            modelSelection: chat.modelSelection,
+            reason: "task-model",
+          },
+        }
+      : {}),
+  };
 }

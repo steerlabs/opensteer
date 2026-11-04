@@ -1,8 +1,17 @@
 import { randomUUID } from "node:crypto";
-import type { AgentEvent, ResolvedBackgroundCandidate, ThreadId } from "@opensteer/core";
+import type {
+  AgentEvent,
+  EnvironmentId,
+  ResolvedBackgroundCandidate,
+  ThreadId,
+} from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
-import { BackgroundTextAttemptIdSchema } from "@opensteer/protocol";
+import {
+  BackgroundTextAttemptIdSchema,
+  backgroundTextAttemptsPerRunner,
+  type BackgroundTextFailure,
+} from "@opensteer/protocol";
 import { parseGeneratedThreadName, threadTitlePrompt } from "@opensteer/harness";
 import { backgroundCandidateKey, resolveBackgroundCandidates } from "./background-models.js";
 import { readBackgroundResolutionInput } from "./background-model-settings.js";
@@ -12,16 +21,25 @@ import {
 } from "./harness-catalogs.js";
 
 /** Three ranked attempts, followed by the task model if it was not already tried. */
-export function namingCandidates(
-  candidates: readonly ResolvedBackgroundCandidate[],
-  fallback: ResolvedBackgroundCandidate | undefined,
-) {
-  const ranked = candidates.filter((candidate) => candidate.reason !== "task-model").slice(0, 3);
+export function namingCandidates(resolved: readonly ResolvedBackgroundCandidate[]) {
+  const ranked = resolved.filter((candidate) => candidate.reason !== "task-model").slice(0, 3);
+  const fallback = resolved.find((candidate) => candidate.reason === "task-model");
   const key = fallback && backgroundCandidateKey(fallback);
   if (fallback && !ranked.some((candidate) => backgroundCandidateKey(candidate) === key))
     ranked.push(fallback);
   return ranked;
 }
+
+/** Failures that suggest the stored catalog is stale, so it is refreshed before the next job. */
+const staleCatalogFailures: ReadonlySet<BackgroundTextFailure> = new Set([
+  "signed-out",
+  "unavailable",
+  "refused",
+  "usage-limit",
+]);
+
+/** Why one candidate gave no name: the Runner's typed failure, or why none was sent or came back. */
+type AttemptFailure = BackgroundTextFailure | "offline" | "account-changed" | "no-result";
 
 interface ThreadNamingDependencies {
   store: OpensteerStore;
@@ -33,6 +51,7 @@ interface ThreadNamingDependencies {
 /** Ephemeral jobs: no result survives its authenticated connection or Host boot. */
 export class ThreadNaming {
   readonly #pending = new Map<ThreadId, Promise<void>>();
+  readonly #inFlight = new Map<EnvironmentId, Set<Promise<unknown>>>();
   readonly #shutdown = new AbortController();
   readonly dependencies: ThreadNamingDependencies;
   constructor(dependencies: ThreadNamingDependencies) {
@@ -51,16 +70,38 @@ export class ThreadNaming {
   }
 
   async reconcile(): Promise<void> {
-    const rows = await this.dependencies.store.listThreadNamingCandidates(100);
-    // Bound both the scan and active provider work, including reconnect bursts.
-    for (let index = 0; index < rows.length && !this.#shutdown.signal.aborted; index += 4) {
-      await Promise.all(rows.slice(index, index + 4).map((row) => this.request(row.id)));
+    let after: ThreadId | undefined;
+    while (!this.#shutdown.signal.aborted) {
+      const rows = await this.dependencies.store.listThreadNamingCandidates(100, after);
+      // Bound the Host's own reads; each Runner's slots bound provider work.
+      for (let index = 0; index < rows.length && !this.#shutdown.signal.aborted; index += 4)
+        await Promise.all(rows.slice(index, index + 4).map((row) => this.request(row.id)));
+      if (rows.length < 100) return;
+      after = rows.at(-1)!.id;
     }
   }
 
   async stop(): Promise<void> {
     this.#shutdown.abort();
     await Promise.all(this.#pending.values());
+  }
+
+  /**
+   * Sends no more attempts to one Runner than it runs at once, so an attempt's
+   * deadline starts when it is sent, never while it queues behind others.
+   */
+  async #whenRunnerFree<T>(environmentId: EnvironmentId, attempt: () => Promise<T>): Promise<T> {
+    let active = this.#inFlight.get(environmentId);
+    if (!active) this.#inFlight.set(environmentId, (active = new Set()));
+    while (active.size >= backgroundTextAttemptsPerRunner)
+      await Promise.race(active).catch(() => undefined);
+    const running = attempt();
+    active.add(running);
+    try {
+      return await running;
+    } finally {
+      active.delete(running);
+    }
   }
 
   async #name(threadId: ThreadId) {
@@ -73,27 +114,43 @@ export class ThreadNaming {
         account.environmentId === input.environmentId &&
         account.harnessInstanceId === input.harnessInstanceId,
     );
-    const taskModelFallback: ResolvedBackgroundCandidate | undefined = account
-      ? {
-          environmentId: input.environmentId,
-          harnessInstanceId: input.harnessInstanceId,
-          harnessRevision: account.harnessRevision,
-          modelSelection: input.modelSelection,
-          reason: "task-model",
-        }
-      : undefined;
-    const resolved = resolveBackgroundCandidates("light", {
-      ...snapshot,
-      ownProviderId: input.modelSelection.providerId,
-      originatingEnvironmentId: input.environmentId,
-      ...(taskModelFallback ? { taskModelFallback } : {}),
-    });
-    const fallback = resolved.find((candidate) => candidate.reason === "task-model");
-    const deadline = Date.now() + 120_000;
-    for (const candidate of namingCandidates(resolved, fallback)) {
-      if (Date.now() >= deadline || this.#shutdown.signal.aborted) return;
+    const candidates = namingCandidates(
+      resolveBackgroundCandidates("light", {
+        ...snapshot,
+        ownProviderId: input.modelSelection.providerId,
+        originatingEnvironmentId: input.environmentId,
+        ...(account
+          ? {
+              taskModelFallback: {
+                environmentId: input.environmentId,
+                harnessInstanceId: input.harnessInstanceId,
+                harnessRevision: account.harnessRevision,
+                modelSelection: input.modelSelection,
+                reason: "task-model",
+              },
+            }
+          : {}),
+      }),
+    );
+    const failures: AttemptFailure[] = [];
+    // Content-free: the prompt, a title and credentials never reach this line.
+    const unnamed = () =>
+      console.warn("Thread naming found no name", {
+        threadId,
+        candidates: candidates.length,
+        failures,
+      });
+    if (candidates.length === 0) return unnamed();
+    // The job's deadline starts with its first attempt, not while it waits for a Runner.
+    let deadline: number | undefined;
+    for (const candidate of candidates) {
+      if (this.#shutdown.signal.aborted) return;
+      if (deadline !== undefined && Date.now() >= deadline) break;
       const identity = runners.identityForEnvironment(candidate.environmentId);
-      if (!identity) continue;
+      if (!identity) {
+        failures.push("offline");
+        continue;
+      }
       const current = await store.getThreadNamingInput(threadId);
       if (
         !current ||
@@ -107,42 +164,48 @@ export class ThreadNaming {
         harness.removedAt ||
         harness.runtimeRevision !== candidate.harnessRevision ||
         !(await store.environmentIsAvailableToUser(candidate.environmentId, input.requestedBy))
-      )
-        continue;
-      const attemptExpiresAt = Math.min(deadline, Date.now() + 60_000);
-      let result;
-      try {
-        result = await runners.backgroundText(
-          {
-            type: "host.background-text",
-            attemptId: BackgroundTextAttemptIdSchema.parse(randomUUID()),
-            environmentId: candidate.environmentId,
-            harnessInstanceId: candidate.harnessInstanceId,
-            harnessRevision: candidate.harnessRevision,
-            modelSelection: candidate.modelSelection,
-            prompt: threadTitlePrompt(input.request, { icon: input.icon }),
-            deadline: new Date(attemptExpiresAt).toISOString(),
-          },
-          this.#shutdown.signal,
-        );
-      } catch (error) {
-        if (this.#shutdown.signal.aborted) return;
-        this.dependencies.onError(error);
+      ) {
+        failures.push("account-changed");
         continue;
       }
-      if (!result.ok) {
+      const attempt = await this.#whenRunnerFree(candidate.environmentId, async () => {
+        deadline ??= Date.now() + 120_000;
+        const expiresAt = Math.min(deadline, Date.now() + 60_000);
+        const result = await runners
+          .backgroundText(
+            {
+              type: "host.background-text",
+              attemptId: BackgroundTextAttemptIdSchema.parse(randomUUID()),
+              environmentId: candidate.environmentId,
+              harnessInstanceId: candidate.harnessInstanceId,
+              harnessRevision: candidate.harnessRevision,
+              modelSelection: candidate.modelSelection,
+              prompt: threadTitlePrompt(input.request, { icon: input.icon }),
+              deadline: new Date(expiresAt).toISOString(),
+            },
+            this.#shutdown.signal,
+          )
+          // A dropped connection or a Host-side deadline: the next candidate goes on.
+          .catch(() => undefined);
+        return { result, expiresAt };
+      });
+      if (this.#shutdown.signal.aborted) return;
+      const { result, expiresAt } = attempt;
+      if (!result?.ok) {
+        failures.push(result?.failure ?? "no-result");
         // Catalog ownership remains here; generation never performs discovery.
-        await inspectAndRecordInvalidatedHarnessCatalog({
-          catalogs: store,
-          environmentId: candidate.environmentId,
-          harnesses: [harnessInspectionDefinition(harness)],
-          runners,
-          signal: AbortSignal.any([this.#shutdown.signal, AbortSignal.timeout(30_000)]),
-        }).catch(this.dependencies.onError);
+        if (result && staleCatalogFailures.has(result.failure))
+          await inspectAndRecordInvalidatedHarnessCatalog({
+            catalogs: store,
+            environmentId: candidate.environmentId,
+            harnesses: [harnessInspectionDefinition(harness)],
+            runners,
+            signal: AbortSignal.any([this.#shutdown.signal, AbortSignal.timeout(30_000)]),
+          }).catch(this.dependencies.onError);
         continue;
       }
       if (
-        Date.now() >= deadline ||
+        Date.now() >= expiresAt ||
         runners.identityForEnvironment(candidate.environmentId) !== identity
       )
         return;
@@ -151,10 +214,11 @@ export class ThreadNaming {
         threadId,
         ...(name.title ? { title: name.title } : {}),
         ...(name.icon ? { icon: name.icon } : {}),
-        namingAuthority: { ...input, ...candidate, expiresAt: attemptExpiresAt },
+        namingAuthority: { ...input, ...candidate, expiresAt },
       });
       for (const event of applied?.events ?? []) publish(event);
       return;
     }
+    unnamed();
   }
 }

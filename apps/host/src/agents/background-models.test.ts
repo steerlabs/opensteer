@@ -13,6 +13,7 @@ import {
   type BackgroundAccountSnapshot,
   type BackgroundResolutionInput,
 } from "./background-models.js";
+import { namingCandidates } from "./thread-naming.js";
 const selection = ModelSelectionSchema.parse({
   providerId: "anthropic",
   modelId: "claude-haiku-5-5",
@@ -99,7 +100,7 @@ it("requires consent across providers, including memory without an own provider"
   value.preferences.backgroundProviderConsent.push(selection.providerId);
   expect(resolveBackgroundCandidates("light", value)).toHaveLength(2);
 });
-it("limits only the relevant provider and model windows until reset", () => {
+it("runs a usage-limited model after unlimited ones, never skipping it", () => {
   const current = account();
   const usage = {
     limitReached: true,
@@ -120,26 +121,45 @@ it("limits only the relevant provider and model windows until reset", () => {
   const value = input([
     { ...current, usageByProvider: { anthropic: [usage], openai: [{ ...usage, windows: [] }] } },
   ]);
-  expect(resolveBackgroundCandidates("light", value).map((c) => c.modelSelection.modelId)).toEqual([
-    "claude-haiku-4-5",
-  ]);
-  // Usage is an observation: the task's own model runs its work regardless,
-  // so it still closes the list.
-  expect(
-    resolveBackgroundCandidates("light", {
-      ...value,
-      taskModelFallback: { ...current, modelSelection: selection, reason: "task-model" },
-    }).map((c) => [c.modelSelection.modelId, c.reason]),
-  ).toEqual([
+  const ids = (candidates: ReturnType<typeof resolveBackgroundCandidates>) =>
+    candidates.map((c) => [c.modelSelection.modelId, c.reason]);
+  // Naming tries the limited model last; a memory pass takes the first, unlimited one.
+  expect(ids(resolveBackgroundCandidates("light", value))).toEqual([
     ["claude-haiku-4-5", "ranked"],
+    ["claude-haiku-5-5", "ranked"],
+  ]);
+  expect(
+    inspectBackgroundCandidates("light", value)
+      .filter((decision) => decision.skipReason === null)
+      .map((decision) => decision.usageLimited),
+  ).toEqual([false, true]);
+  // The task's own model still closes the list, after the demoted one.
+  const withTask = resolveBackgroundCandidates("light", {
+    ...value,
+    taskModelFallback: { ...current, modelSelection: selection, reason: "task-model" },
+  });
+  expect(ids(withTask)).toEqual([
+    ["claude-haiku-4-5", "ranked"],
+    ["claude-haiku-5-5", "ranked"],
     ["claude-haiku-5-5", "task-model"],
   ]);
+  expect(namingCandidates(withTask)).toHaveLength(2);
+  // A pin keeps its place: the person chose it, and a reading is only an observation.
+  value.preferences.backgroundModels.light = {
+    kind: "pinned",
+    selection: { ...current, modelSelection: selection },
+  };
+  expect(ids(resolveBackgroundCandidates("light", value))[0]).toEqual([
+    "claude-haiku-5-5",
+    "pinned",
+  ]);
+  // Another provider's reading limits nothing here.
   expect(
-    resolveBackgroundCandidates(
+    inspectBackgroundCandidates(
       "light",
       input([{ ...current, usageByProvider: { openai: [usage] } }]),
-    ),
-  ).toHaveLength(2);
+    ).some((decision) => decision.usageLimited),
+  ).toBe(false);
 });
 it("skips offline, unsupported, disabled and unavailable models", () => {
   for (const change of [
@@ -239,4 +259,24 @@ it("drops expired usage limits and rejects invalid pinned options", () => {
   };
   expect(inspectBackgroundCandidates("light", value)[0]?.skipReason).toBe("option-unavailable");
   expect(resolveBackgroundCandidates("light", value)).toHaveLength(2);
+  expect(inspectBackgroundCandidates("light", value).some((d) => d.usageLimited)).toBe(false);
+});
+
+it("closes with the task model as its catalog runs it, deduplicated by one key", () => {
+  const current = account();
+  if (current.catalog?.status !== "ready") throw new Error("ready fixture");
+  current.catalog.models[0]!.options[0]!.defaultValue = "low";
+  const candidates = resolveBackgroundCandidates("light", {
+    ...input([current]),
+    taskModelFallback: {
+      ...current,
+      modelSelection: { ...selection, options: {} },
+      reason: "task-model",
+    },
+  });
+  expect(candidates.at(-1)).toMatchObject({
+    reason: "task-model",
+    modelSelection: { options: { effort: "low" } },
+  });
+  expect(namingCandidates(candidates)).toHaveLength(2);
 });

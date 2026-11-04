@@ -441,11 +441,15 @@ describe("Muse Code sessions", () => {
     expect(
       await adapter.generateText!({
         context: { ...fixture.context, scratchDirectory: fixture.context.threadStateDirectory },
-        modelSelection: fixture.context.modelSelection,
+        modelSelection: { ...fixture.context.modelSelection, options: { effort: "high" } },
         prompt: "Name this thread",
         signal: AbortSignal.timeout(5_000),
       }),
     ).toEqual({ ok: true, text: "Hello from Muse" });
+    expect(
+      (await fixture.messages()).find((entry) => entry.message?.method === "turn/start")?.message
+        ?.params,
+    ).toMatchObject({ reasoningEffort: "high" });
     const launches = (await fixture.messages()).filter((entry) => entry.argv?.includes("serve"));
     expect(launches).toHaveLength(1);
     const title = launches.find((entry) => entry.argv?.includes("--no-session-log"));

@@ -91,3 +91,49 @@ it("keeps a device's Not now per Deployment, person and provider", () => {
   expect(dismissedBackgroundProviders(keys, scope)).toEqual(new Set(["openai"]));
   expect(dismissedBackgroundProviders(null, scope)).toBeNull();
 });
+
+it("offers catalog-only Sonnet pins for deep even before provider consent", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const result = await getBackgroundModels(client);
+    if (!result.ok) throw new Error(result.error.message);
+    const base = result.data.light.candidates[0]!;
+    const sonnet = {
+      ...base,
+      modelDisplayName: "Sonnet",
+      modelSelection: {
+        ...base.modelSelection,
+        modelId: ModelSelectionSchema.shape.modelId.parse("claude-sonnet-4-6"),
+        options: {},
+      },
+    };
+    result.data.pinnableModels = [sonnet];
+    const settings = backgroundModelsSettings(result.data, new Set());
+    const pin = settings.roles[1]!.choices.find((choice) => choice.label.startsWith("Sonnet"));
+    expect(pin?.label).toContain("needs your OK");
+    expect(pin?.mode.kind === "pinned" && pin.mode.selection.modelSelection.modelId).toBe(
+      "claude-sonnet-4-6",
+    );
+  } finally {
+    client.dispose();
+  }
+});
+
+it("shows a usage-limited pick as running, near its limit", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    await setBackgroundProviderConsent(
+      client,
+      ModelSelectionSchema.shape.providerId.parse("anthropic"),
+      true,
+    );
+    const result = await getBackgroundModels(client);
+    if (!result.ok) throw new Error(result.error.message);
+    result.data.light.effectivePick = { ...result.data.light.effectivePick!, usageLimited: true };
+    expect(backgroundModelsSettings(result.data, new Set()).roles[0]?.detail).toBe(
+      "Automatic (currently Claude Haiku 5.5 via Claude Code, near its usage limit)",
+    );
+  } finally {
+    client.dispose();
+  }
+});

@@ -1730,6 +1730,12 @@ export const RunnerVoiceResultSchema = z.discriminatedUnion("ok", [
 export type RunnerVoiceResult = z.infer<typeof RunnerVoiceResultSchema>;
 
 export const BackgroundTextAttemptIdSchema = z.string().min(1).max(200);
+/**
+ * Background text attempts one Runner runs at once. The Host sends no more than
+ * this, starting each attempt's deadline when it sends; the Runner holds any
+ * excess until a slot frees, so a busy Runner never fails a candidate.
+ */
+export const backgroundTextAttemptsPerRunner = 2;
 export const BackgroundTextFailureSchema = z.enum([
   "refused",
   "signed-out",
@@ -1738,6 +1744,7 @@ export const BackgroundTextFailureSchema = z.enum([
   "unavailable",
   "failed",
 ]);
+export type BackgroundTextFailure = z.infer<typeof BackgroundTextFailureSchema>;
 export const BackgroundTextResultSchema = z.discriminatedUnion("ok", [
   z.strictObject({ ok: z.literal(true), text: z.string().max(20_000) }),
   z.strictObject({ ok: z.literal(false), failure: BackgroundTextFailureSchema }),

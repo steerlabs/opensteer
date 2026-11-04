@@ -19,9 +19,10 @@ export const BackgroundCandidateViewSchema = z.object({
       "catalog-not-ready",
       "model-unavailable",
       "option-unavailable",
-      "usage-limit",
     ])
     .nullable(),
+  /** Observed usage reads at a limit. It still runs, after unlimited candidates. */
+  usageLimited: z.boolean(),
 });
 const roleView = z.object({
   mode: BackgroundModelModeSchema,
@@ -29,6 +30,7 @@ const roleView = z.object({
   candidates: z.array(BackgroundCandidateViewSchema),
 });
 export const BackgroundModelsViewSchema = z.object({
+  pinnableModels: z.array(BackgroundCandidateViewSchema),
   backgroundProviderConsent: BackgroundProviderConsentSchema,
   light: roleView,
   deep: roleView,

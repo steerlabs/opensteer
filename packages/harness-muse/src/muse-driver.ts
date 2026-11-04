@@ -536,6 +536,9 @@ class MuseHarnessAdapter implements HarnessAdapter {
               displayText: prompt,
               ifBusy: "reject",
               input: [{ text: prompt, type: "text" }],
+              ...(museSelectedEffort(modelSelection.options)
+                ? { reasoningEffort: museSelectedEffort(modelSelection.options) }
+                : {}),
               sessionId,
               workspaceRoots: [workspace],
             }),

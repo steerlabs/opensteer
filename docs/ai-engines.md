@@ -14,7 +14,9 @@ for availability and native IDs. Automatic choices are recomputed from the
 current authorized accounts, never frozen as a preference. A pin goes first,
 then the automatic ranking continues. Cross-provider work requires the person's
 durable, revocable consent. A memory pass's own provider is Chat's: Main's
-memory already reaches it, so only other providers need consent. Ordinary work
+memory already reaches it, so only other providers need consent. Observed usage
+only demotes: a window can read 100% while work still succeeds, so a limited
+ranked model runs after the unlimited ones and is never skipped. Ordinary work
 keeps its exact chosen model.
 
 ## What a driver declares
@@ -88,7 +90,7 @@ ACP engines do not share one resume or cancellation contract. Each driver declar
 
 ## Thread names and symbols
 
-Naming is Host-owned background work, not part of a Run, so a Run's teardown and engine reuse never wait on it. The Host tries `light` candidates and then the task's own model, asking the Runner that holds each account to run `generateText` with that exact model. A typed failure moves on and refreshes that catalog; drivers never list models or retry inside generation. Generation runs contained, with no tools, ambient instructions, hooks, plugins or persistent history, and denies interaction requests. Its process is reaped by the attempt deadline. A result is accepted only for its live attempt (Runner connection and boot, account revision, principal, source message and expiry); the Host finds the Thread itself. The person's title and symbol stay independent: only provisional fields change. See `apps/host/src/agents/thread-naming.ts` and `packages/harness/src/thread-title.ts`.
+Naming is Host-owned background work, not part of a Run, so a Run's teardown and engine reuse never wait on it. The Host tries `light` candidates and then the task's own model, asking the Runner that holds each account to run `generateText` with that exact model. A typed failure moves on; only failures that may mean stale account or model information refresh the catalog. The Host sends a Runner no more than `backgroundTextAttemptsPerRunner` attempts at once and starts each deadline when it sends, so waiting behind other tasks never spends a candidate; drivers never list models or retry inside generation. Generation runs contained, with no tools, ambient instructions, hooks, plugins or persistent history, and denies interaction requests. Its process is reaped by the attempt deadline. A result is accepted only for its live attempt (Runner connection and boot, account revision, principal, source message and expiry); the Host finds the Thread itself. The person's title and symbol stay independent: only provisional fields change. See `apps/host/src/agents/thread-naming.ts` and `packages/harness/src/thread-title.ts`.
 
 OpenCode can retry refused naming calls indefinitely while reporting errors only in logs; stop at the first logged stream error. Claude's explicit session title prevents recursive automatic naming. Pi prompt overrides must suppress ambient SYSTEM/APPEND_SYSTEM files, and Cursor needs empty working/configuration homes plus tool-denying hooks.
 

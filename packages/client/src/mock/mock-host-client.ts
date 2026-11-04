@@ -4924,6 +4924,7 @@ const mockBackgroundCandidates = (
     accountDisplayName: account,
     computerDisplayName: "Main runner",
     skipReason: null,
+    usageLimited: false,
   }),
 }));
 /** The Host's ranking in miniature: a pin first, then providers the person allowed. */
@@ -4963,6 +4964,7 @@ function mockBackgroundModelsView(state: MockHostState): BackgroundModelsView {
     };
   };
   return {
+    pinnableModels: [...role("light").candidates, ...role("deep").candidates],
     backgroundProviderConsent: preferences.backgroundProviderConsent,
     light: role("light"),
     deep: role("deep"),

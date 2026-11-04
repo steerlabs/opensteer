@@ -977,12 +977,18 @@ class CodexHarnessAdapter implements HarnessAdapter {
                 typeof message.params.item.text === "string"
               )
                 text = message.params.item.text;
-              if (message.method === "turn/completed")
-                completed.resolve(
-                  isRecord(message.params.turn) && message.params.turn.status === "completed"
-                    ? { text }
-                    : { failed: true },
-                );
+              if (message.method !== "turn/completed") return;
+              const turn = isRecord(message.params.turn) ? message.params.turn : {};
+              if (turn.status === "completed") return completed.resolve({ text });
+              // The turn's own error says why, such as an exhausted plan.
+              const error = isRecord(turn.error) ? turn.error : {};
+              failure =
+                codexErrorVariant(error.codexErrorInfo) === codexUsageLimitError
+                  ? "usage-limit"
+                  : typeof error.message === "string"
+                    ? error.message
+                    : "";
+              completed.resolve({ failed: true });
             },
           });
           if (signal.aborted) {
@@ -1039,7 +1045,8 @@ class CodexHarnessAdapter implements HarnessAdapter {
           return result.text ?? "";
         } catch (error) {
           throw new Error(
-            client?.stderrText() ||
+            failure ||
+              client?.stderrText() ||
               (error instanceof Error ? error.message : "Codex background text failed"),
           );
         } finally {
@@ -2452,11 +2459,6 @@ const codexSpeedOptionId = "speed";
 const codexStandardServiceTier = "default";
 const codexModelListPageSize = 256;
 
-/**
- * Fast models that name a Thread in a few seconds, newest first: the one
- * Codex 0.162.0's own thread titles use and its successor. The first the
- * account lists wins; an account listing none names with the Run's model.
- */
 const codexLightModels = backgroundLightModels("codex");
 
 /**

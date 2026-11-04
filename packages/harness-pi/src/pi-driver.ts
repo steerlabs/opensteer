@@ -535,7 +535,7 @@ class PiHarnessAdapter implements HarnessAdapter {
               "--model",
               piModelSelectionId(modelSelection),
               "--thinking",
-              "off",
+              piThinkingOption(modelSelection) ?? "off",
               "--no-approve",
             ],
             cwd: directory,
