@@ -517,8 +517,9 @@ Chat arranges a one-shot reminder to recheck; without access to create it, the p
 Chat to finish deletion. Re-enabling reopens the same workers. See
 [`opensteer:memory`](../apps/runner/agent-skills/skills/memory/SKILL.md).
 
-Each pass resolves its model when its wake is admitted (light uses the `light`
-role, nightly `deep`, falling back to Chat's model), then runs in a fresh native
+Each pass resolves its model from Main's owner's automatic models when its wake
+is admitted (light uses the `light` role and waits rather than borrow Chat's
+model; nightly uses `deep` and ends with Chat's), then runs in a fresh native
 session: passes carry state only in Main's files, so engine and account may
 change between passes, while the Run freezes the choice for that pass and its
 recovery. Main's files are reachable only on the computer that holds them, so

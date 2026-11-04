@@ -8,19 +8,28 @@ Canonical model identity groups labels; the matched live catalog supplies the na
 
 A remembered selection is a decision: keep an unavailable choice visible with its reason. Later preferences never rewrite an existing Thread. Engine defaults apply when the person leaves an option at default; accounts do not invent their own model defaults.
 
-Automatic selection preserves declared preferences, considers authorized configured accounts,
-and treats relevant usage exhaustion as advisory ordering. An eligible original remains once
-at the final position. Eligibility and endpoint checks always prevail. Selection never replays
-accepted or uncertain work. Within each want, the default account precedes other configured
-accounts; unlike T3's defaults-after-exhaustion policy, declared want order is preserved before
-advisory usage demotion. Naming may advance after a contained generation failure; memory and
-specialists freeze their selection before admission and do not reselect after a Run failure.
+## Automatic model selection
 
-The person's automatic config replaces either role's maintained ranking when present; an
-absent role follows future maintained defaults. Exclusions only subtract from current account
-authority. Unbound wants never select arbitrary OpenAI-compatible endpoints; only the person's
-explicit account binding can select those destinations. Portable specialists may expand roles
-but cannot bind accounts or confer authority. Ordinary work keeps its exact chosen model.
+Automatic selection preserves declared preferences, considers authorized configured accounts,
+and treats relevant usage exhaustion as advisory ordering. An eligible original remains once,
+at the final position. Eligibility and endpoint checks always prevail. Selection never replays
+accepted or uncertain work.
+
+This differs from T3 on purpose. Within each declared want the engine's default account comes
+first, then the person's other configured accounts, and declared want order holds; T3 instead
+reaches its other defaults only after a known exhaustion. Usage comes from the catalog owner's
+normalized facts with no engine exceptions: a known-exhausted window moves a candidate after
+every other one and never removes it, because cached readings can be wrong. Naming may move on
+after a contained generation failure; memory and specialists choose before admission, freeze
+that choice, and never run another candidate after a Run failure.
+
+A person's role list replaces the maintained ranking for that role; an absent role follows the
+release's maintained defaults. Exclusions only subtract from the accounts the principal may
+already use, and the original never overrides them. Unbound wants never select an
+OpenAI-compatible endpoint; only the person's explicit account binding can. Specialist
+manifests may expand roles but never bind accounts or confer authority. Ordinary work keeps its
+exact chosen model. See `packages/core/src/model-candidates.ts` and
+`apps/host/src/agents/automatic-models.ts`.
 
 ## What a driver declares
 
@@ -93,7 +102,7 @@ ACP engines do not share one resume or cancellation contract. Each driver declar
 
 ## Thread names and symbols
 
-Naming is Host-owned background work, not part of a Run, so a Run's teardown and engine reuse never wait on it. The Host tries `light` candidates and then the task's own model, asking the Runner that holds each account to run `generateText` with that exact model. A typed failure moves on; only failures that may mean stale account or model information refresh the catalog. The Host sends a Runner no more than `backgroundTextAttemptsPerRunner` attempts at once and starts each deadline when it sends, so waiting behind other tasks never spends a candidate; drivers never list models or retry inside generation. Generation runs contained, with no tools, ambient instructions, hooks, plugins or persistent history, and denies interaction requests. Its process is reaped by the attempt deadline. A result is accepted only for its live attempt (Runner connection and boot, account revision, principal, source message and expiry); the Host finds the Thread itself. The person's title and symbol stay independent: only provisional fields change. See `apps/host/src/agents/thread-naming.ts` and `packages/harness/src/thread-title.ts`.
+Naming is Host-owned background work, not part of a Run, so a Run's teardown and engine reuse never wait on it. The Host tries up to three candidates from the requester's `light` role and then the task's own model, asking the Runner that holds each account to run `generateText` with that exact model; exclusion and account authority are checked again once a Runner slot is free, just before sending. A typed failure moves on; only failures that may mean stale account or model information refresh the catalog. The Host sends a Runner no more than `backgroundTextAttemptsPerRunner` attempts at once and starts each deadline when it sends, so waiting behind other tasks never spends a candidate; drivers never list models or retry inside generation. Generation runs contained, with no tools, ambient instructions, hooks, plugins or persistent history, and denies interaction requests. Its process is reaped by the attempt deadline. A result is accepted only for its live attempt (Runner connection and boot, account revision, principal, source message and expiry); the Host finds the Thread itself. The person's title and symbol stay independent: only provisional fields change. See `apps/host/src/agents/thread-naming.ts` and `packages/harness/src/thread-title.ts`.
 
 OpenCode can retry refused naming calls indefinitely while reporting errors only in logs; stop at the first logged stream error. Claude's explicit session title prevents recursive automatic naming. Pi prompt overrides must suppress ambient SYSTEM/APPEND_SYSTEM files, and Cursor needs empty working/configuration homes plus tool-denying hooks.
 
