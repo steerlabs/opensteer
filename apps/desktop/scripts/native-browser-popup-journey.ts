@@ -43,9 +43,11 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   await kit.selectNativePage(context.sessionId, surfaceId);
   const producer = [...kit.pages.values()].find((p) => p.surfaceId === surfaceId);
   assert(producer, "Popup fixture has a production runtime page");
-  const contents = (
+  const native = (
     await import("../src/browser/electron-browser-launcher.js")
-  ).electronPagePresentation(producer.page)!.view.webContents;
+  ).electronPagePresentation(producer.page)!.view;
+  const contents = native.webContents;
+  const viewerViewport = { width: 1200, height: Math.min(700, native.getBounds().height) };
   assert("_createOpensteerInputOwner" in contents, "Private popup/input owner is missing");
   // Observe the production owner, without creating a second owner or retaining payloads.
   const patched = contents as typeof contents & {
@@ -143,7 +145,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       .cookies.get({ url: context.hostOrigin });
     const viewers = await Promise.all(
       [0, 1].map(async (index) => {
-        const viewer = await browser.newContext({ viewport: { width: 1200, height: 700 } });
+        const viewer = await browser.newContext({ viewport: viewerViewport });
         await viewer.addCookies(
           cookies.map((c) => ({
             name: c.name,
@@ -348,9 +350,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       "({width:innerWidth,height:innerHeight})",
       false,
     )) as { width: number; height: number };
-    const native = (
-      await import("../src/browser/electron-browser-launcher.js")
-    ).electronPagePresentation(producer.page)!.view;
     const stage = await a.locator(".browser-stage").boundingBox();
     assert(stage);
     const expected = { width: Math.round(stage.width), height: Math.round(stage.height) };
@@ -395,7 +394,11 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       )) as { width: number; height: number };
     }
     const bounds = native.getBounds();
-    kit.artifacts.json("cases/popups/producer-geometry.json", { dimensions, bounds });
+    kit.artifacts.json("cases/popups/producer-geometry.json", {
+      dimensions,
+      bounds,
+      viewerViewport,
+    });
     assert(
       dimensions.width <= bounds.width && dimensions.height <= bounds.height,
       "Positive popup qualification requires an uncropped, unemulated producer",
