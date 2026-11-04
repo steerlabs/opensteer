@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { NotificationPreviews } from "../notifications/notification-preview.js";
 import { addPersonalDeployment } from "./add-deployment.js";
 import { savedViewFixture } from "../../test-support/saved-views.js";
@@ -1197,7 +1198,9 @@ describe("MobileClient cancelling an integration sign-in", () => {
       },
     });
     const delivery = client.handleIntegrationAuthorizationCallback(callback);
-    await reached;
+    await withTimeout(reached, 5_000, {
+      timeoutError: () => new Error("The proof never reached the Host."),
+    });
     controller.abort();
     await expect(started).resolves.toMatchObject({ status: "completed" });
     await expect(delivery).resolves.toBeNull();

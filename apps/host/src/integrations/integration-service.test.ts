@@ -1519,7 +1519,7 @@ describe("IntegrationService hosted OAuth failures", () => {
       expect(createCallbackRelay.mock.calls[0]?.[0]).toMatchObject(finish ? { finish: "app" } : {});
       // An older Account's strict schema would refuse the port, so Connect goes on without it.
       expect(
-        (createCallbackRelay.mock.calls[0]?.[0] as { appReturnPort?: number }).appReturnPort,
+        (createCallbackRelay.mock.calls[0]![0] as { appReturnPort?: number }).appReturnPort,
       ).toBe("appReturnPort" in scenario && !("portlessAccount" in scenario) ? 48_203 : undefined);
       expect(attemptPayload.payload).not.toContain("appReturnPort");
       expect(Object.hasOwn(createCallbackRelay.mock.calls[0]![0], "finish")).toBe(!!finish);
