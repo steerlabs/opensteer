@@ -18,7 +18,7 @@ export function AgentDevicesSection() {
   const [adding, setAdding] = useState<"choose" | "computer" | "phone" | null>(null);
   const devices = useSettingsRead(
     () => hostClient.rpc["devices.overview.get"]({}).then(unwrapRpcResult),
-    "settings-devices",
+    `settings-devices:${snapshot.machineRevision}`,
   );
   const localId = desktopBridge
     ? currentDeviceMachineId({
