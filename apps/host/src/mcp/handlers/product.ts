@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { ThreadService } from "../../threads/thread-service.js";
 import { ThreadWaitService } from "../../threads/thread-wait.js";
 import { readThreadWaitSnapshot } from "@opensteer/database";
@@ -14,6 +15,7 @@ import {
   placeContentLabel,
   provisionalThreadTitle,
   ThreadIdSchema,
+  WorkspaceIdSchema,
   type AgentEvent,
   type EnvironmentId,
   type HarnessId,
@@ -715,37 +717,98 @@ export class ProductToolHandlers {
     return { existingThread, workspace, specialist, environment, placement, chosenEnvironmentId };
   }
   async authorizeDelegation(call: ToolCall<"thread_delegate">) {
-    if (call.caller.kind === "connection")
-      await this.#prepareConnectionDelegation(call.caller, call.input);
-    else await this.prepareDelegation(call);
+    if (call.caller.kind === "connection") {
+      if (!(await this.#priorConnectionTask(call.caller, call.input, call.operationKey)))
+        await this.#prepareConnectionDelegation(call.caller, call.input);
+    } else await this.prepareDelegation(call);
+  }
+  /**
+   * The task an earlier call under this operationKey already created. Its
+   * placement came from the person's defaults at that time, so a retry returns
+   * it rather than resolving today's defaults; only what the caller itself
+   * specified must still match.
+   */
+  async #priorConnectionTask(
+    caller: Extract<AgentCaller, { kind: "connection" }>,
+    input: ToolCall<"thread_delegate">["input"],
+    operationKey: string,
+  ): Promise<Thread | null> {
+    if (input.threadId) return null;
+    const requestId = operationId(caller, operationKey, "thread_delegate");
+    const key = idempotencyKey(caller, requestId, "create");
+    const prior = await this.#store.database
+      .selectFrom("commands")
+      .select(["type", "threadId", "payload"])
+      .where("requestedBy", "=", caller.userId)
+      .where("idempotencyKey", "=", key)
+      .executeTakeFirst();
+    if (!prior) return null;
+    const requested = prior.payload as Readonly<Record<string, unknown>>;
+    const asked = {
+      ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
+      ...(input.environmentId === undefined ? {} : { environmentId: input.environmentId }),
+      ...(input.harnessInstanceId === undefined
+        ? {}
+        : { harnessInstanceId: input.harnessInstanceId }),
+      ...(input.model === undefined ? {} : { modelSelection: input.model }),
+      ...(input.title === undefined ? {} : { title: input.title }),
+      ...(input.icon === undefined ? {} : { icon: input.icon }),
+    };
+    const specialist = input.specialist
+      ? await resolveDelegationSpecialist(
+          this.#store,
+          caller.userId,
+          WorkspaceIdSchema.parse(requested.workspaceId),
+          input.specialist,
+          null,
+        )
+      : null;
+    if (
+      prior.type !== "thread.create" ||
+      !prior.threadId ||
+      Object.entries(asked).some(([field, value]) => !isDeepStrictEqual(requested[field], value)) ||
+      (specialist !== null && requested.specialistId !== specialist?.id)
+    )
+      throw new OpensteerError({
+        code: "conflict",
+        message: "The idempotency key was already used for a different command",
+      });
+    return this.#threads.assertTarget(caller, prior.threadId);
+  }
+  async #createConnectionTask(
+    caller: Extract<AgentCaller, { kind: "connection" }>,
+    input: ToolCall<"thread_delegate">["input"],
+    requestId: string,
+  ): Promise<Thread> {
+    const { existing, workspace, environmentId, harnessInstanceId, modelSelection, specialist } =
+      await this.#prepareConnectionDelegation(caller, input);
+    if (existing) return existing;
+    const { thread } = await this.#threads.create(
+      caller,
+      {
+        type: "thread.create",
+        workspaceId: workspace.id,
+        environmentId,
+        harnessInstanceId,
+        modelSelection,
+        accessMode: caller.accessMode,
+        title: input.title ?? provisionalThreadTitle(input.task),
+        ...(!input.title ? { generateTitle: true } : {}),
+        idempotencyKey: idempotencyKey(caller, requestId, "create"),
+      },
+      {
+        ...(specialist ? { specialistId: specialist.id } : {}),
+        ...(input.icon ? { icon: input.icon } : {}),
+      },
+    );
+    return thread;
   }
   async thread_delegate({ caller, input, operationKey }: ToolCall<"thread_delegate">) {
     if (caller.kind === "connection") {
-      const { existing, workspace, environmentId, harnessInstanceId, modelSelection, specialist } =
-        await this.#prepareConnectionDelegation(caller, input);
       const requestId = operationId(caller, operationKey, "thread_delegate");
       const created =
-        existing ??
-        (
-          await this.#threads.create(
-            caller,
-            {
-              type: "thread.create",
-              workspaceId: workspace.id,
-              environmentId,
-              harnessInstanceId,
-              modelSelection,
-              accessMode: caller.accessMode,
-              title: input.title ?? provisionalThreadTitle(input.task),
-              ...(!input.title ? { generateTitle: true } : {}),
-              idempotencyKey: idempotencyKey(caller, requestId, "create"),
-            },
-            {
-              ...(specialist ? { specialistId: specialist.id } : {}),
-              ...(input.icon ? { icon: input.icon } : {}),
-            },
-          )
-        ).thread;
+        (await this.#priorConnectionTask(caller, input, operationKey)) ??
+        (await this.#createConnectionTask(caller, input, requestId));
       const delivered = await this.#threads.sendInput(caller, {
         threadId: created.id,
         requestedBy: caller.userId,

@@ -68,42 +68,46 @@ export function registerConnectionRoutes(
   const getOrigin = (request: FastifyRequest) => connectionRequestOrigin(request, options);
   app.addHook("onRequest", async (request, reply) => {
     if (request.url.split("?", 1)[0] !== mcpResourcePath) return;
-    const origin = await getOrigin(request);
     const header = request.headers.authorization;
+    // Runs and programs reach this path on the runtime origin, which a
+    // self-hosted gateway may keep private; the MCP service checks them there.
+    // Only connected agents, and requests that must learn how to become one,
+    // are bound to an approved connection route.
+    const connecting =
+      !header ||
+      (typeof header === "string" &&
+        /^Bearer /i.test(header) &&
+        header.slice(7).startsWith(connectionCredentialPrefix));
+    if (!connecting) return;
+    const origin = await getOrigin(request);
     if (!header)
       return reply
         .code(401)
         .header("www-authenticate", challenge(origin))
         .send({ error: "unauthorized" });
-    if (
-      typeof header === "string" &&
-      /^Bearer /i.test(header) &&
-      header.slice(7).startsWith(connectionCredentialPrefix)
-    ) {
-      // Resource binding is checked once for this request; the MCP handler
-      // forwards this caller through authInfo, never through a transport session.
-      try {
-        const connection = await oauth.authenticator.authenticate(
-          header.slice(7),
-          origin + mcpResourcePath,
-        );
-        const caller: ConnectionCaller = {
-          ...connection,
-          kind: "connection",
-          key: `connection:${connection.connectionId}`,
-        };
-        (request.raw as typeof request.raw & { auth?: AuthInfo }).auth = {
-          token: header.slice(7),
-          clientId: caller.key,
-          scopes: [],
-          extra: { caller },
-        };
-      } catch {
-        return reply
-          .code(401)
-          .header("www-authenticate", challenge(origin))
-          .send({ error: "unauthorized" });
-      }
+    // Resource binding is checked once for this request; the MCP handler
+    // forwards this caller through authInfo, never through a transport session.
+    try {
+      const connection = await oauth.authenticator.authenticate(
+        header.slice(7),
+        origin + mcpResourcePath,
+      );
+      const caller: ConnectionCaller = {
+        ...connection,
+        kind: "connection",
+        key: `connection:${connection.connectionId}`,
+      };
+      (request.raw as typeof request.raw & { auth?: AuthInfo }).auth = {
+        token: header.slice(7),
+        clientId: caller.key,
+        scopes: [],
+        extra: { caller },
+      };
+    } catch {
+      return reply
+        .code(401)
+        .header("www-authenticate", challenge(origin))
+        .send({ error: "unauthorized" });
     }
   });
   app.addHook("onSend", async (request, reply, payload) => {

@@ -13,11 +13,18 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { agentTools } from "@opensteer/agent-tools";
-import { createId, ThreadIdSchema, type ThreadAccessMode } from "@opensteer/core";
+import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
+import {
+  createId,
+  ModelSelectionSchema,
+  ThreadIdSchema,
+  type ThreadAccessMode,
+} from "@opensteer/core";
 import { AgentConnectionStore, type OpensteerStore } from "@opensteer/database";
 import {
   describeStore,
   testModelSelection,
+  testReadyHarnessCatalog,
   pendingEvent,
 } from "@opensteer/database/test-support/store";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
@@ -519,6 +526,71 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         }),
       ),
     ).toContain("outside the caller's reach");
+  });
+
+  it("returns a connection's original task on retry after the person's defaults change", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("connection-delegate-defaults");
+    const url = await serveMcp(storeFixture.store);
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "approval-required",
+      reach: { kind: "workspace", workspaceId: f.workspace.id },
+    });
+    const catalog = testReadyHarnessCatalog(f.harnessInstance.id);
+    await storeFixture.store.recordHarnessCatalogs({
+      catalogs: [
+        HarnessInstanceCatalogSchema.parse({
+          ...catalog,
+          models: [
+            ...(catalog.status === "ready" ? catalog.models : []),
+            {
+              displayName: "GPT-6 Sol",
+              isDefault: false,
+              modelId: "gpt-6-sol",
+              options: [],
+              providerId: testModelSelection.providerId,
+            },
+          ],
+        }),
+      ],
+      environmentId: f.environmentId,
+      expectedRevisions: new Map([[f.harnessInstance.id, f.harnessInstance.runtimeRevision]]),
+    });
+    const remember = (modelId: string) =>
+      storeFixture.store.rememberExecutionChoice(f.userId, {
+        selection: {
+          environmentId: f.environmentId,
+          harnessInstanceId: f.harnessInstance.id,
+          modelSelection: ModelSelectionSchema.parse({
+            ...testModelSelection,
+            modelId,
+            options: {},
+          }),
+        },
+      });
+    await remember("gpt-5.6-sol");
+    // The model is left to the person's remembered choice.
+    const call = (title: string) =>
+      agent.client.callTool({
+        name: "thread_delegate",
+        arguments: {
+          workspaceId: f.workspace.id,
+          environmentId: f.environmentId,
+          harnessInstanceId: f.harnessInstance.id,
+          title,
+          task: "Inspect the project",
+          operationKey: "defaults-retry",
+        },
+      });
+    const first = await call("External work");
+    expect(first.isError, JSON.stringify(first.content)).not.toBe(true);
+    await remember("gpt-6-sol");
+    const retry = await call("External work");
+    expect(retry.isError, JSON.stringify(retry.content)).not.toBe(true);
+    expect(retry.structuredContent).toEqual(first.structuredContent);
+    expect(errorText(await call("Renamed work"))).toMatch(/idempotency|different input/i);
   });
 
   it("refuses Workspace connection activation of Main queues inside the transaction", async ({

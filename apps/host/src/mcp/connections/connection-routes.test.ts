@@ -66,6 +66,41 @@ describe("public MCP discovery boundaries", () => {
       await app.close();
     }
   });
+  it("leaves Run and program credentials on a private runtime origin to the MCP service", async () => {
+    const app = Fastify();
+    const keys = generateKeyPairSync("ed25519");
+    const oauth = new ConnectionOAuth({
+      deploymentId: createId("deployment"),
+      store: {} as AgentConnectionStore,
+      signingKey: keys.privateKey,
+      verificationKey: keys.publicKey,
+    });
+    const authenticate = vi.spyOn(oauth.authenticator, "authenticate");
+    registerConnectionRoutes(app, {
+      oauth,
+      canonicalOrigin: "https://server.example",
+      personal: false,
+    });
+    app.post("/internal/v1/mcp", async () => ({ reached: true }));
+    try {
+      // A self-hosted gateway gives Runners a runtime origin unlike the public one.
+      const response = await app.inject({
+        method: "POST",
+        url: "/internal/v1/mcp",
+        headers: {
+          host: "gateway:8443",
+          "x-forwarded-proto": "https",
+          authorization: "Bearer run-capability-token",
+        },
+        payload: {},
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ reached: true });
+      expect(authenticate).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
   it("uses the server public origin without replacing native OAuth metadata", async () => {
     const app = Fastify();
     const keys = generateKeyPairSync("ed25519");
