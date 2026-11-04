@@ -39,7 +39,7 @@ describe("Settings models", () => {
         group: "On",
         label: "Waiting",
       });
-      expect(pluginGroups(rows, "GMAIL", "accounts").On).toContainEqual(gmail);
+      expect(pluginGroups(rows, "GMAIL").On).toContainEqual(gmail);
       const detail = unwrapRpcResult(
         await client.rpc["plugins.detail.get"]({ target: gmail.target }),
       );

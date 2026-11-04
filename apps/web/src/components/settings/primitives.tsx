@@ -182,6 +182,37 @@ export function SettingsError({ message }: { readonly message: string | null }) 
   );
 }
 
+/** A small set of mutually exclusive choices, side by side. */
+export function SettingsSegmented<T extends string>({
+  disabled = false,
+  label,
+  onChange,
+  options,
+  value,
+}: {
+  readonly disabled?: boolean;
+  readonly label: string;
+  readonly onChange: (value: T) => void;
+  readonly options: readonly { readonly value: T; readonly label: string }[];
+  readonly value: T;
+}) {
+  return (
+    <div aria-label={label} className="settings-segmented" role="group">
+      {options.map((option) => (
+        <button
+          aria-pressed={option.value === value}
+          disabled={disabled}
+          key={option.value}
+          onClick={() => onChange(option.value)}
+          type="button"
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function formatWhen(value: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
     new Date(value),

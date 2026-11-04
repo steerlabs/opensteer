@@ -1,7 +1,7 @@
 import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
-import type { PersonShowMessage } from "@opensteer/protocol";
+import type { PersonShowMessage, PluginRow } from "@opensteer/protocol";
 import { RunPlaceStore } from "../host/run-place.js";
 import { compareTaskOrder } from "../host/task-entries.js";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
@@ -2043,7 +2043,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       const workspaceId = WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id);
       client.settings.syncServices(workspaceId, await client.loadIntegrationPlatform());
       client.settings.syncPackages(workspaceId, await client.listPlugins(workspaceId));
-      return rpcSuccess(client.settings.overview(workspaceId));
+      const overview = client.settings.overview(workspaceId);
+      return rpcSuccess({ ...overview, rows: overview.rows.map(listedMockRow) });
     },
     "plugins.detail.get": async ({ target }) => {
       try {
@@ -2055,12 +2056,11 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
           await client.listPlugins(),
         );
-        return rpcSuccess(
-          client.settings.detail(
-            WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
-            target,
-          ),
+        const detail = client.settings.detail(
+          WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
+          target,
         );
+        return rpcSuccess({ ...detail, row: listedMockRow(detail.row) });
       } catch (error) {
         return mockRefusal(error);
       }
@@ -2075,16 +2075,24 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
             .length > 100,
         catalog: platform.catalog.map((item) => ({
           definitionId: item.definition.id,
-          title: item.definition.name,
+          title: mockCatalogProducts[item.definition.id]?.title ?? item.definition.name,
           description: item.definition.description,
           added: item.installationId !== null,
+          ...(mockCatalogProducts[item.definition.id]
+            ? { product: { id: item.definition.id, ...mockCatalogProducts[item.definition.id]! } }
+            : {}),
           contents: (item.definition.computerApp?.operations ?? []).map(({ name }) => ({
             name,
             kind: "tool" as const,
           })),
-          access: item.definition.authMethods.flatMap((method) =>
-            method.kind === "oauth" ? method.oauth.scopes : [method.label],
-          ),
+          access: item.definition.computerApp
+            ? [
+                item.definition.computerApp.accessSummaries.read,
+                item.definition.computerApp.accessSummaries.readWrite,
+              ]
+            : item.definition.authMethods.flatMap((method) =>
+                method.kind === "oauth" ? method.oauth.scopes : [method.label],
+              ),
         })),
         requests: client
           .getSnapshot()
@@ -13195,3 +13203,34 @@ export function mockPasswordSignInRequest(
 
 const mockPasswordSignInThreadId = "thr_00000000-0000-4000-8000-000000000004";
 const mockPasswordSignInWorkspaceId = "wsp_00000000-0000-4000-8000-000000000003";
+
+/** A built-in service wears its listing's name, as the Host's own rows do. */
+function listedMockRow(row: PluginRow): PluginRow {
+  const listed =
+    row.source.kind === "built-in" &&
+    (row.target.kind === "service" || row.target.kind === "device-app")
+      ? mockCatalogProducts[row.target.definitionId]
+      : undefined;
+  return listed ? { ...row, title: listed.title } : row;
+}
+
+/** The Host's catalog listing, for the definitions these fixtures carry. */
+const mockCatalogProducts: Readonly<
+  Record<string, { title: string; category: string; popular: boolean }>
+> = {
+  slack: { title: "Slack", category: "communication", popular: true },
+  "google-gmail": { title: "Gmail", category: "communication", popular: true },
+  resend: { title: "Resend", category: "communication", popular: false },
+  notion: { title: "Notion", category: "work", popular: true },
+  "google-calendar": { title: "Google Calendar", category: "work", popular: true },
+  linear: { title: "Linear", category: "developer", popular: true },
+  github: { title: "GitHub", category: "developer", popular: true },
+  "apple-messages": { title: "iMessage", category: "devices", popular: false },
+  "apple-contacts": { title: "Contacts", category: "devices", popular: false },
+  "apple-calendar": { title: "Calendar", category: "devices", popular: false },
+  "apple-reminders": { title: "Reminders", category: "devices", popular: false },
+  "iphone-photos": { title: "Photos", category: "devices", popular: false },
+  "iphone-location": { title: "Location", category: "devices", popular: false },
+  "macos-app": { title: "Computer use", category: "devices", popular: false },
+  "android-phone": { title: "Android phone", category: "devices", popular: false },
+};

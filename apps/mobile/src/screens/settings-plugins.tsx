@@ -8,7 +8,13 @@ import { PluginAccounts } from "./settings-plugin-accounts.js";
 import {
   completePluginConsent,
   addPluginService,
+  pluginCatalogCategories,
+  pluginCatalogMatches,
+  pluginCatalogProducts,
+  pluginCatalogToAdd,
+  remoteMcpSlug,
   type PluginAddConsent,
+  type PluginCatalogProduct,
   settingsMutationRejected,
   pluginPlacementAccounts,
   pluginGroups,
@@ -17,7 +23,7 @@ import {
   pluginPlacementLabel,
   pluginAccountRows,
 } from "@opensteer/client/settings";
-import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { PluginTargetSchema } from "@opensteer/protocol";
@@ -68,7 +74,6 @@ function Plugins({
   const [secretsSaved, setSecretsSaved] = useState(false);
   const [query, setQuery] = useState("");
   const search = useDeferredValue(query);
-  const [tag, setTag] = useState<PluginRow["tags"][number] | "all">("all");
   const [serverEntries, setServerEntries] = useState<
     SettingsRpcData<"integration.platform.get">["installations"]
   >([]);
@@ -116,29 +121,41 @@ function Plugins({
       active = false;
     };
   }, [host, detail, isCurrent]);
-  const [directory, setDirectory] = useState<SettingsRpcData<"plugins.directory.get"> | null>(null);
-  const [add, setAdd] = useState<
-    SettingsRpcData<"plugins.directory.get">["catalog"][number] | null
-  >(null);
+  const directory = useSettingsRead(
+    host,
+    async () => (target ? null : unwrapRpcResult(await host.rpc["plugins.directory.get"]({}))),
+    target ? "detail" : "overview",
+  );
+  const [shelf, setShelf] = useState("popular");
+  const [add, setAdd] = useState<{
+    readonly product: PluginCatalogProduct;
+    readonly definitionId: string;
+  } | null>(null);
   const [addEntry, setAddEntry] = useState<
     SettingsRpcData<"integration.platform.get">["catalog"][number] | null
   >(null);
-  const [suggestions, setSuggestions] = useState<NonNullable<typeof directory>["catalog"]>([]);
   const [addInstalled, setAddInstalled] = useState(false);
   const addConsent = useRef<PluginAddConsent | null>(null);
   const [addPlaces, setAddPlaces] = useState<string[]>([]);
   const [addEverywhere, setAddEverywhere] = useState(false);
-  const openAdd = (item: NonNullable<typeof add>) =>
+  const [addingOwn, setAddingOwn] = useState(false);
+  const [ownKind, setOwnKind] = useState<"folder" | "mcp">("folder");
+  const openAdd = (
+    product: PluginCatalogProduct,
+    definitionId = product.variants[0].definitionId,
+  ) =>
     run("review", async () => {
       const platform = unwrapRpcResult(await host.rpc["integration.platform.get"]({}));
-      const entry = platform.catalog.find((entry) => entry.definition.id === item.definitionId);
+      const entry = platform.catalog.find((entry) => entry.definition.id === definitionId);
       if (!entry || !isCurrent()) throw new Error("Catalog changed");
       setAddEntry(entry);
-      setAddPlaces([]);
-      setAddEverywhere(host.getSnapshot().deploymentShape?.kind === "personal");
+      if (add?.product.id !== product.id) {
+        setAddPlaces([]);
+        setAddEverywhere(host.getSnapshot().deploymentShape?.kind === "personal");
+      }
       addConsent.current = null;
       setAddInstalled(false);
-      setAdd(item);
+      setAdd({ product, definitionId });
     });
   const [accountDefinition, setAccountDefinition] = useState<string | null>(null);
   const [mcpTitle, setMcpTitle] = useState("");
@@ -187,20 +204,13 @@ function Plugins({
       attempts.current.delete(intent);
       await detailRead.reload();
     });
-  useEffect(() => {
-    if (overview.data?.rows.length !== 0) return;
-    let active = true;
-    void host.rpc["plugins.directory.get"]({})
-      .then(unwrapRpcResult)
-      .then((result) => {
-        if (active && isCurrent())
-          setSuggestions(result.catalog.filter((item) => !item.added).slice(0, 3));
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, [host, overview.data?.rows.length, isCurrent]);
+  const toAdd = useMemo(
+    () =>
+      directory.data && overview.data
+        ? pluginCatalogToAdd(pluginCatalogProducts(directory.data.catalog), overview.data.rows)
+        : null,
+    [directory.data, overview.data],
+  );
   const button = (
     key: string,
     label: string,
@@ -259,6 +269,63 @@ function Plugins({
         },
       ],
     );
+  const productRow = (product: PluginCatalogProduct): NativeSettingsRow => ({
+    ...button(`product:${product.id}`, product.title, () => openAdd(product)),
+    mark: { definitionId: product.id, name: product.title },
+  });
+  const catalogRows = (): NativeSettingsRow[] => {
+    if (directory.error) return [text("catalog-error", directory.error)];
+    if (!toAdd) return [text("catalog-loading", "Loading…")];
+    const own =
+      host.getSnapshot().user?.instanceRole === "administrator"
+        ? [
+            button("add-your-own", "Add your own…", () => {
+              setFolder("");
+              setMcpTitle("");
+              setMcpUrl("");
+              setOwnKind("folder");
+              setAddingOwn(true);
+            }),
+          ]
+        : [];
+    if (search.trim()) {
+      const matching = toAdd.filter((product) => pluginCatalogMatches(product, search));
+      return [
+        ...(matching.length
+          ? matching.map(productRow)
+          : [text("catalog-none", `Nothing to add matches “${search.trim()}”.`)]),
+        ...own,
+      ];
+    }
+    const categories = pluginCatalogCategories(toAdd);
+    const popular = toAdd.filter((product) => product.popular).slice(0, 6);
+    const shelves = [
+      ...(popular.length ? [{ id: "popular", label: "Popular" }] : []),
+      ...categories,
+      { id: "all", label: "All" },
+    ];
+    const active = shelves.some(({ id }) => id === shelf) ? shelf : shelves[0]!.id;
+    const shown =
+      active === "popular"
+        ? popular
+        : active === "all"
+          ? toAdd
+          : toAdd.filter((product) => product.category === active);
+    return [
+      {
+        key: "shelf",
+        kind: "chips",
+        label: "Browse",
+        value: active,
+        choices: shelves.map(({ id, label }) => ({ value: id, label })),
+        onChange: setShelf,
+      },
+      ...(shown.length
+        ? shown.map(productRow)
+        : [text("catalog-done", "You’ve added everything in the catalog.")]),
+      ...own,
+    ];
+  };
   const sections: NativeSettingsSection[] = [];
   if (error || overview.error || detailRead.error)
     sections.push({
@@ -270,7 +337,7 @@ function Plugins({
     const row = detail.row;
     sections.push({
       key: "hero",
-      title: row.title === "Apple Messages" ? "iMessage" : row.title,
+      title: row.title,
       rows: [
         text("source", `${row.source.kind}${row.source.version ? ` · ${row.source.version}` : ""}`),
         toggle(row),
@@ -480,151 +547,19 @@ function Plugins({
           : []),
       ],
     });
-  } else if (directory) {
-    sections.push({
-      key: "directory",
-      title: "Add plugins",
-      rows: [
-        button("back", "Back to plugins", () => setDirectory(null)),
-        ...directory.catalog
-          .filter((item) =>
-            `${item.title} ${item.description}`.toLowerCase().includes(search.toLowerCase()),
-          )
-          .map((item) =>
-            button(item.definitionId, `${item.title}${item.added ? " · Added" : " · Add"}`, () => {
-              openAdd(item);
-            }),
-          ),
-      ],
-    });
-    sections.push({
-      key: "requests",
-      title: "Suggested by your agents",
-      rows: directory.requests.flatMap((request) => [
-        text(`${request.requestId}:title`, request.title),
-        ...(["installed", "declined"] as const).map((optionId) =>
-          button(
-            `${request.requestId}:${optionId}`,
-            optionId === "installed" ? "Add" : "Dismiss",
-            () =>
-              run(request.requestId, async () => {
-                const pending = unwrapRpcResult(await host.rpc["requests.list"]({})).requests.find(
-                  (item) => item.request.id === request.requestId,
-                )?.request;
-                if (
-                  !isCurrent() ||
-                  !pending ||
-                  pending.presentation.kind !== "choice" ||
-                  !pending.presentation.options.some((option) => option.id === optionId)
-                )
-                  throw new Error("Request changed");
-                await host.dispatch({
-                  type: "request.respond",
-                  requestId: request.requestId,
-                  response: { kind: "choice", optionId },
-                  idempotencyKey: mutationIdempotencyKey("plugin-request"),
-                });
-                const result = unwrapRpcResult(await host.rpc["plugins.directory.get"]({}));
-                if (isCurrent()) setDirectory(result);
-              }),
-          ),
-        ),
-      ]),
-    });
-    if (host.getSnapshot().user?.instanceRole === "administrator")
-      sections.push({
-        key: "install",
-        title: "Install from a folder or link",
-        rows: [
-          {
-            key: "folder",
-            kind: "input",
-            label: "Folder on your computer",
-            value: folder,
-            onChange: setFolder,
-          },
-          button("install", "Install plugin", () =>
-            command("install", {
-              type: "plugin.install",
-              input: { directory: folder.trim() },
-              idempotencyKey: mutationIdempotencyKey("plugin-install"),
-            }),
-          ),
-          {
-            key: "url",
-            kind: "input",
-            label: "Remote MCP URL",
-            value: mcpUrl,
-            onChange: setMcpUrl,
-          },
-          {
-            key: "mcp-title",
-            kind: "input",
-            label: "MCP name",
-            value: mcpTitle,
-            onChange: setMcpTitle,
-          },
-          button("mcp", "Add remote MCP", () =>
-            command("mcp", {
-              type: "integration.remoteMcp.install",
-              input: {
-                name: mcpTitle.toLowerCase().replace(/[^a-z0-9-]/g, "-"),
-                title: mcpTitle,
-                url: mcpUrl,
-              },
-              idempotencyKey: mutationIdempotencyKey("remote-mcp-install"),
-            }),
-          ),
-        ],
-      });
   } else {
-    sections.push({
-      key: "actions",
-      title: "Plugins",
-      rows: [
-        button("add", "Add plugins", () =>
-          run("directory", async () => {
-            const result = unwrapRpcResult(await host.rpc["plugins.directory.get"]({}));
-            if (isCurrent()) setDirectory(result);
-          }),
-        ),
-        button("refresh", "Refresh", () => {
-          void overview.reload();
-        }),
-      ],
-    });
-    sections.push({
-      key: "filters",
-      title: "Show",
-      rows: [
-        {
-          key: "filters",
-          kind: "chips",
-          label: "Filter plugins",
-          value: tag,
-          onChange: (value) => {
-            if (["all", "accounts", "devices", "skills", "specialists"].includes(value))
-              setTag(value as typeof tag);
-          },
-          choices: [
-            { value: "all", label: "All" },
-            { value: "accounts", label: "Accounts" },
-            { value: "devices", label: "On your devices" },
-            { value: "skills", label: "Skills" },
-            { value: "specialists", label: "Specialists" },
-          ],
-        },
-      ],
-    });
-    const groups = pluginGroups(overview.data?.rows ?? [], search, tag);
+    const groups = pluginGroups(overview.data?.rows ?? [], search);
     for (const group of ["Needs you", "On", "Turned off"] as const) {
       const items: NativeSettingsRow[] = [];
       for (const row of groups[group]) {
         const key = `${row.target.kind}:${pluginTargetKey(row.target)}`;
         items.push({
-          ...button(key, row.title === "Apple Messages" ? "iMessage" : row.title, () =>
+          ...button(key, row.title, () =>
             navigation.navigate("SettingsPluginDetail", { deploymentId, target: row.target }),
           ),
+          ...(row.target.kind === "service" || row.target.kind === "device-app"
+            ? { mark: { definitionId: row.target.definitionId, name: row.title } }
+            : {}),
           actions: [
             ...(row.placement.enabled && row.permissions.canEnable
               ? [
@@ -677,20 +612,45 @@ function Plugins({
       if (items.length)
         sections.push({ key: group, title: group, collapsed: group === "Turned off", rows: items });
     }
-    if (overview.data?.rows.length === 0)
+    if (directory.data?.requests.length)
       sections.push({
-        key: "empty",
-        title: "No plugins yet",
-        rows: [
-          ...suggestions.map((item) => button(item.definitionId, item.title, () => openAdd(item))),
-          button("browse", "Browse all plugins", () =>
-            run("directory", async () => {
-              const result = unwrapRpcResult(await host.rpc["plugins.directory.get"]({}));
-              if (isCurrent()) setDirectory(result);
-            }),
+        key: "requests",
+        title: "Asked for by your agents",
+        rows: directory.data.requests.flatMap((request) => [
+          text(`${request.requestId}:title`, request.title),
+          ...(["installed", "declined"] as const).map((optionId) =>
+            button(
+              `${request.requestId}:${optionId}`,
+              optionId === "installed" ? "Add" : "Dismiss",
+              () =>
+                run(request.requestId, async () => {
+                  const pending = unwrapRpcResult(
+                    await host.rpc["requests.list"]({}),
+                  ).requests.find((item) => item.request.id === request.requestId)?.request;
+                  if (
+                    !isCurrent() ||
+                    !pending ||
+                    pending.presentation.kind !== "choice" ||
+                    !pending.presentation.options.some((option) => option.id === optionId)
+                  )
+                    throw new Error("Request changed");
+                  await host.dispatch({
+                    type: "request.respond",
+                    requestId: request.requestId,
+                    response: { kind: "choice", optionId },
+                    idempotencyKey: mutationIdempotencyKey("plugin-request"),
+                  });
+                  await directory.reload();
+                }),
+            ),
           ),
-        ],
+        ]),
       });
+    sections.push({
+      key: "add-more",
+      title: "Add more",
+      rows: catalogRows(),
+    });
   }
   if (!detail && secrets.data?.length)
     sections.push({
@@ -796,29 +756,57 @@ function Plugins({
       </Sheet>
       {add && addEntry
         ? (() => {
+            const entry =
+              add.product.variants.find((variant) => variant.definitionId === add.definitionId) ??
+              add.product.variants[0];
             const close = () => {
               setAdd(null);
               setAddEntry(null);
-              setDirectory(null);
               setDetailTarget(undefined);
               void overview.reload();
+              void directory.reload();
             };
             const review: NativeSettingsSection[] = [
               {
                 key: "description",
                 title: "What it does",
-                rows: [text("description", add.description)],
+                rows: [text("description", entry.description)],
               },
               {
                 key: "contents",
                 title: "Comes with",
-                rows: (add.contents ?? []).map((item) =>
+                rows: (entry.contents ?? []).map((item) =>
                   text(`${item.kind}:${item.name}`, `${item.name} · ${item.kind}`),
                 ),
               },
+              ...(add.product.variants.length > 1
+                ? [
+                    {
+                      key: "variant",
+                      title: "How it connects",
+                      rows: [
+                        {
+                          key: "variant",
+                          kind: "chips" as const,
+                          label: "How it connects",
+                          value: add.definitionId,
+                          choices: add.product.variants.map((variant) => ({
+                            value: variant.definitionId,
+                            label: variant.variant ?? variant.title,
+                          })),
+                          onChange: (definitionId: string) => {
+                            // Adding is for the way chosen when it began.
+                            if (!addInstalled && pending === null)
+                              openAdd(add.product, definitionId);
+                          },
+                        },
+                      ],
+                    },
+                  ]
+                : []),
               {
                 key: "access",
-                title: "What it will access",
+                title: "What it can reach",
                 rows: addEntry.definition.authMethods.flatMap((method) =>
                   method.kind === "oauth"
                     ? method.oauth.scopes.map((scope) => text(`${method.id}:${scope}`, scope))
@@ -864,47 +852,53 @@ function Plugins({
             ];
             const render = (accounts: NativeSettingsSection[]) => (
               <NativeSettingsPage
-                sheet={{ title: add.title, onClose: close }}
+                sheet={{ title: add.product.title, onClose: close }}
                 sections={[
                   ...review,
                   ...accounts,
                   {
                     key: "install",
-                    title: addInstalled ? "Finish" : "Add plugin",
+                    title: addInstalled ? "Finish" : add.product.title,
                     rows: addInstalled
                       ? [button("done", "Done", close)]
                       : [
-                          button("add", "Add and continue to sign-in", () =>
-                            run("catalog", async () => {
-                              if (!add.added)
-                                await host.dispatch({
-                                  type: "integration.catalog.install",
-                                  input: {
-                                    definitionId: add.definitionId,
-                                    digest: addEntry.digest,
-                                  },
-                                  idempotencyKey: mutationIdempotencyKey("plugin-catalog-install"),
-                                });
-                              if (!isCurrent()) return;
-                              const target: PluginTarget = {
-                                kind: addEntry.definition.computerApp ? "device-app" : "service",
-                                definitionId: add.definitionId,
-                              };
-                              await addPluginService(host, target);
-                              if (isCurrent()) {
-                                addConsent.current = {
-                                  target,
-                                  everywhere: addEverywhere,
-                                  places: addPlaces,
-                                  access: "read",
-                                  idempotencyKey: mutationIdempotencyKey(
-                                    "plugin-add-account-placement",
-                                  ),
-                                  command: null,
+                          button(
+                            "add",
+                            addEntry.definition.computerApp
+                              ? `Add ${add.product.title}`
+                              : `Connect ${add.product.title}`,
+                            () =>
+                              run("catalog", async () => {
+                                if (!entry.added)
+                                  await host.dispatch({
+                                    type: "integration.catalog.install",
+                                    input: {
+                                      definitionId: entry.definitionId,
+                                      digest: addEntry.digest,
+                                    },
+                                    idempotencyKey:
+                                      mutationIdempotencyKey("plugin-catalog-install"),
+                                  });
+                                if (!isCurrent()) return;
+                                const target: PluginTarget = {
+                                  kind: addEntry.definition.computerApp ? "device-app" : "service",
+                                  definitionId: entry.definitionId,
                                 };
-                                setAddInstalled(true);
-                              }
-                            }),
+                                await addPluginService(host, target);
+                                if (isCurrent()) {
+                                  addConsent.current = {
+                                    target,
+                                    everywhere: addEverywhere,
+                                    places: addPlaces,
+                                    access: "read",
+                                    idempotencyKey: mutationIdempotencyKey(
+                                      "plugin-add-account-placement",
+                                    ),
+                                    command: null,
+                                  };
+                                  setAddInstalled(true);
+                                }
+                              }),
                           ),
                         ],
                   },
@@ -915,7 +909,7 @@ function Plugins({
               <PluginAccounts
                 hostClient={host}
                 hostName={host.getSnapshot().identityConfig?.deployment.name ?? "Opensteer"}
-                definitionId={add.definitionId}
+                definitionId={entry.definitionId}
                 render={render}
                 onConnected={async (connectionId) => {
                   const consent = addConsent.current;
@@ -930,6 +924,123 @@ function Plugins({
             );
           })()
         : null}
+      {addingOwn ? (
+        <NativeSettingsPage
+          sheet={{
+            title: "Add your own",
+            onClose: () => {
+              if (!pending) setAddingOwn(false);
+            },
+          }}
+          sections={[
+            {
+              key: "kind",
+              title: "What to add",
+              rows: [
+                {
+                  key: "kind",
+                  kind: "chips",
+                  label: "What to add",
+                  value: ownKind,
+                  choices: [
+                    { value: "folder", label: "Plugin folder" },
+                    { value: "mcp", label: "MCP server" },
+                  ],
+                  onChange: (value) => setOwnKind(value === "mcp" ? "mcp" : "folder"),
+                },
+              ],
+            },
+            ownKind === "folder"
+              ? {
+                  key: "folder",
+                  title: `Folder on ${host.getSnapshot().identityConfig?.deployment.name ?? "the computer Opensteer runs on"}`,
+                  rows: [
+                    {
+                      key: "folder",
+                      kind: "input",
+                      label: "Folder path",
+                      value: folder,
+                      onChange: setFolder,
+                    },
+                    text(
+                      "folder-hint",
+                      "A folder with a plugin.json (Agent Plugins 1.0). Programs it starts run only after that computer’s owner approves them.",
+                    ),
+                    {
+                      ...button("install", pending === "install" ? "Adding…" : "Add plugin", () =>
+                        run("install", async () => {
+                          const result = await host.dispatch({
+                            type: "plugin.install",
+                            input: { directory: folder.trim() },
+                            idempotencyKey: mutationIdempotencyKey("plugin-install"),
+                          });
+                          if (!isCurrent()) return;
+                          setAddingOwn(false);
+                          if (result.type === "plugin.install" && result.issues.length)
+                            Alert.alert(
+                              `Added without ${result.issues.length === 1 ? "one part" : `${result.issues.length} parts`}`,
+                              result.issues
+                                .slice(0, 5)
+                                .map(
+                                  ({ component, entry, message }) =>
+                                    `${entry ?? component}: ${message}`,
+                                )
+                                .join("\n"),
+                            );
+                        }),
+                      ),
+                      disabled: pending !== null || folder.trim() === "",
+                    },
+                  ],
+                }
+              : {
+                  key: "mcp",
+                  title: "MCP server",
+                  rows: [
+                    {
+                      key: "mcp-title",
+                      kind: "input",
+                      label: "Name",
+                      value: mcpTitle,
+                      onChange: setMcpTitle,
+                    },
+                    {
+                      key: "url",
+                      kind: "input",
+                      label: "Address (https://…)",
+                      value: mcpUrl,
+                      onChange: setMcpUrl,
+                    },
+                    text(
+                      "mcp-hint",
+                      "A remote MCP server over HTTPS. You sign in to it after adding it; keys never go in its address.",
+                    ),
+                    {
+                      ...button("mcp", pending === "mcp" ? "Adding…" : "Add MCP server", () =>
+                        run("mcp", async () => {
+                          await host.dispatch({
+                            type: "integration.remoteMcp.install",
+                            input: {
+                              description: "",
+                              name: remoteMcpSlug(mcpTitle),
+                              title: mcpTitle.trim(),
+                              url: mcpUrl.trim(),
+                            },
+                            idempotencyKey: mutationIdempotencyKey("remote-mcp-install"),
+                          });
+                          if (isCurrent()) setAddingOwn(false);
+                        }),
+                      ),
+                      disabled: pending !== null || !mcpTitle.trim() || !mcpUrl.trim(),
+                    },
+                  ],
+                },
+            ...(error
+              ? [{ key: "own-error", title: "Needs you", rows: [text("own-error", error)] }]
+              : []),
+          ]}
+        />
+      ) : null}
     </>
   );
 }
