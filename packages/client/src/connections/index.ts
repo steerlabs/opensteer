@@ -12,3 +12,4 @@ export * from "./host-transport-error.js";
 export * from "./operation-error.js";
 export * from "./private-deployment-connection.js";
 export * from "./private-filesystem.js";
+export * from "./desktop-updates.js";

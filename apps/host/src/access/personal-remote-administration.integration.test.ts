@@ -886,7 +886,7 @@ describe("Personal remote administration intents", () => {
       try {
         const address = await app.listen({ host: "127.0.0.1", port: 0 });
         socket = new WebSocket(
-          `${address.replace("http:", "ws:")}/v1/personal-remote-access/executor?apiVersion=${hostApiVersion}`,
+          `${address.replace("http:", "ws:")}/v1/desktop-supervisor?apiVersion=${hostApiVersion}`,
           {
             headers: { authorization: `Bearer ${capability}` },
           },
@@ -896,6 +896,26 @@ describe("Personal remote administration intents", () => {
         await withTimeout(once(socket, "open"), 1000, {
           timeoutError: () => new Error("Executor never opened"),
         });
+        const helloAck = withTimeout(once(socket, "message"), 1000, {
+          timeoutError: () => new Error("Recovery supervisor hello was not acknowledged"),
+        });
+        socket.send(
+          JSON.stringify({
+            type: "hello",
+            messageId: crypto.randomUUID(),
+            incarnationId: crypto.randomUUID(),
+            state: {
+              status: "idle",
+              currentVersion: "1.0.0",
+              channel: "stable",
+              availableVersion: null,
+              latestVersion: null,
+              failed: null,
+              downloadPercent: null,
+            },
+          }),
+        );
+        await helloAck;
         await vi.waitFor(
           async () =>
             expect((await administration.status(session)).operation).toMatchObject({
@@ -940,8 +960,8 @@ describe("Personal remote administration intents", () => {
         );
         administration.release(unlink.id);
         expect(JSON.parse(String((await delivered)[0]))).toMatchObject({
-          id: unlink.id,
-          intent: { action: "unlink" },
+          type: "remote-access.operation",
+          operation: { id: unlink.id, intent: { action: "unlink" } },
         });
         expect(socket.readyState).toBe(WebSocket.OPEN);
         expect(closed).not.toHaveBeenCalled();
@@ -1265,7 +1285,7 @@ describe("Personal remote administration intents", () => {
     try {
       const address = await app.listen({ host: "127.0.0.1", port: 0 });
       socket = new WebSocket(
-        `${address.replace("http:", "ws:")}/v1/personal-remote-access/executor?apiVersion=${hostApiVersion}`,
+        `${address.replace("http:", "ws:")}/v1/desktop-supervisor?apiVersion=${hostApiVersion}`,
         { headers: { authorization: `Bearer ${capability}` } },
       );
       await withTimeout(once(socket, "open"), 1000, {
@@ -1276,6 +1296,26 @@ describe("Personal remote administration intents", () => {
           expect((await access.administration.status(session)).executorConnected).toBe(true),
         { timeout: 1000 },
       );
+      const helloAck = withTimeout(once(socket, "message"), 1000, {
+        timeoutError: () => new Error("Supervisor hello was not acknowledged"),
+      });
+      socket.send(
+        JSON.stringify({
+          type: "hello",
+          messageId: crypto.randomUUID(),
+          incarnationId: crypto.randomUUID(),
+          state: {
+            status: "idle",
+            currentVersion: "1.0.0",
+            channel: "stable",
+            availableVersion: null,
+            latestVersion: null,
+            failed: null,
+            downloadPercent: null,
+          },
+        }),
+      );
+      await helloAck;
       changed.mockClear();
       const delivered = withTimeout(once(socket, "message"), 2000, {
         timeoutError: () => new Error("Accepted intent never reached the desktop executor"),
@@ -1302,8 +1342,14 @@ describe("Personal remote administration intents", () => {
       expect(response.status).toBe(200);
       await response.json();
       const [frame] = await delivered;
-      const operation = JSON.parse(String(frame)) as { id: string };
-      socket.send(JSON.stringify({ operationId: operation.id, state: "succeeded", detail: null }));
+      const { operation } = JSON.parse(String(frame)) as { operation: { id: string } };
+      socket.send(
+        JSON.stringify({
+          type: "remote-access.progress",
+          messageId: crypto.randomUUID(),
+          progress: { operationId: operation.id, state: "succeeded", detail: null },
+        }),
+      );
       await vi.waitFor(
         async () =>
           expect((await access.administration.status(session)).operation?.state).toBe("succeeded"),

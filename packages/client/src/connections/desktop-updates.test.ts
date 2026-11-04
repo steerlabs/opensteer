@@ -1,0 +1,202 @@
+import { expect, it, vi } from "vitest";
+import { createId } from "@opensteer/core";
+import { hostApiVersion } from "@opensteer/deployment-authority";
+import { DesktopUpdatesService } from "./desktop-updates.js";
+import {
+  DeploymentCatalogSchema,
+  DeploymentConnectionSchema,
+  verifyAccessEndpoint,
+} from "./deployment-catalog.js";
+import {
+  signTestDiscoveryEnvelope,
+  signTestPersonalAccessRoute,
+  testHostAuthorityKeys,
+} from "../test-support/host-authority.js";
+import type { HostNetworkRequest } from "./host-transport.js";
+
+function fixture(epoch = hostApiVersion - 1) {
+  const keys = testHostAuthorityKeys();
+  const authority = signTestDiscoveryEnvelope(
+    {
+      deploymentId: createId("deployment"),
+      hostInstanceId: createId("hostInstance"),
+      canonicalOrigin: "http://127.0.0.1:4310",
+      deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+      hostKey: { algorithm: "Ed25519" },
+    },
+    keys,
+  );
+  const origin = "https://home.connect.opensteer.test";
+  const route = signTestPersonalAccessRoute(
+    {
+      authority: authority.document,
+      documentVersion: 2,
+      purpose: "opensteer-personal-access-route",
+      route: { generation: 1, kind: "connect", origin },
+    },
+    keys,
+  );
+  const now = new Date().toISOString();
+  const connection = DeploymentConnectionSchema.parse({
+    authority,
+    bootstrapMethods: ["connect-grant"],
+    endpoints: [{ kind: "direct", origin, verifiedAt: now }],
+    kind: "personal",
+    reachability: "routed",
+    personalAccessRoute: route,
+    preferredEndpointOrigin: origin,
+    source: { kind: "manual" },
+    name: "Mac",
+    createdAt: now,
+    updatedAt: now,
+    lastUsedAt: null,
+  });
+  const catalog = DeploymentCatalogSchema.parse({
+    deployments: [connection],
+    selectedDeploymentId: authority.document.deploymentId,
+    revision: 1,
+    schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
+    updatedAt: now,
+  });
+  const descriptor = {
+    apiVersion: epoch,
+    authority,
+    bootstrapMethods: ["connect-grant"],
+    capabilities: [],
+  };
+  const status = { supported: true, state: null, operation: null, revision: "host:0" };
+  const maintenance = vi.fn(async (_input: HostNetworkRequest) => Response.json(status));
+  const request = vi.fn(async (input: HostNetworkRequest) => {
+    if (input.url.endsWith("/personal-access-route")) {
+      expect(input.authorization).toBeNull();
+      return Response.json(route);
+    }
+    if (input.url.endsWith("/.well-known/opensteer")) {
+      expect(input.authorization).toBeNull();
+      return Response.json(descriptor);
+    }
+    expect(input.authorization).toBe("PersonalRemote owner-session");
+    expect(input.request.headers.apiVersion).toBeUndefined();
+    return maintenance(input);
+  });
+  const recoverUnauthorized = vi.fn(async () => "recovered" as const);
+  const service = new DesktopUpdatesService({
+    catalog: { load: async () => catalog, subscribe: () => () => {} },
+    credentials: { authorizationHeader: async () => "PersonalRemote owner-session" },
+    localRuntime: { current: async () => null },
+    network: {
+      request,
+      openWebSocket: () => {
+        throw new Error("Maintenance must not attach a socket");
+      },
+    },
+    sessions: { recoverUnauthorized },
+  });
+  return {
+    service,
+    request,
+    maintenance,
+    status,
+    descriptor,
+    connection,
+    recoverUnauthorized,
+    catalog,
+  };
+}
+
+it.each([hostApiVersion - 1, hostApiVersion + 1])(
+  "verifies the signed route below attachment and reaches maintenance across epoch %s",
+  async (epoch) => {
+    const { service, request, descriptor, connection, maintenance, status } = fixture(epoch);
+    await expect(
+      verifyAccessEndpoint({
+        origin: connection.preferredEndpointOrigin!,
+        kind: "direct",
+        fetch: async () => Response.json(descriptor),
+      }),
+    ).rejects.toMatchObject({ name: "HostVersionMismatchError" });
+    expect(await service.status()).toEqual(status);
+    expect(request).toHaveBeenCalledTimes(3);
+    maintenance.mockImplementationOnce(async () =>
+      Response.json({
+        id: crypto.randomUUID(),
+        intent: { action: "channel", channel: "beta" },
+        state: "pending",
+        fromVersion: null,
+        targetVersion: null,
+        incarnationId: null,
+        detail: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+    );
+    const intent = { action: "channel" as const, channel: "beta" as const };
+    expect(await service.request({ intent, idempotencyKey: "switch-once" })).toMatchObject({
+      state: "pending",
+      intent,
+    });
+    expect(maintenance.mock.calls.at(-1)?.[0].request.body).toBe(
+      JSON.stringify({ idempotencyKey: "switch-once", intent }),
+    );
+  },
+);
+
+it("never sends a session after signature verification fails", async () => {
+  const { descriptor, service, request } = fixture();
+  descriptor.authority.signature = "A".repeat(86);
+  await expect(service.status()).rejects.toMatchObject({ reason: "invalid-response" });
+  expect(request.mock.calls.every(([input]) => input.authorization === null)).toBe(true);
+});
+
+it("reuses session recovery below attachment and identifies desktops needing their first local update", async () => {
+  const { service, maintenance, status, recoverUnauthorized } = fixture();
+  maintenance.mockResolvedValueOnce(Response.json({ error: "expired" }, { status: 401 }));
+  maintenance.mockResolvedValueOnce(Response.json(status));
+  expect(await service.status()).toEqual(status);
+  expect(recoverUnauthorized).toHaveBeenCalledOnce();
+  maintenance.mockResolvedValueOnce(new Response("missing", { status: 404 }));
+  await expect(service.status()).rejects.toMatchObject({ reason: "unsupported" });
+});
+
+it("cancels a visible subscription and its outstanding long-poll without reporting offline", async () => {
+  const { service, maintenance } = fixture();
+  let abandoned: AbortSignal | undefined;
+  maintenance.mockImplementationOnce(async () =>
+    Response.json({ supported: true, state: null, operation: null, revision: "host:1" }),
+  );
+  maintenance.mockImplementation(async (input) => {
+    abandoned = input.signal;
+    return new Promise<Response>((_resolve, reject) =>
+      input.signal.addEventListener("abort", () => reject(input.signal.reason), { once: true }),
+    );
+  });
+  const controller = new AbortController();
+  const received = vi.fn();
+  const error = vi.fn();
+  const stop = service.subscribeWhileVisible(received, {
+    signal: controller.signal,
+    onError: error,
+  });
+  try {
+    await vi.waitFor(() => expect(maintenance).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    expect(maintenance.mock.calls[1]?.[0].url).toContain("?after=host%3A1");
+    controller.abort();
+    expect(abandoned?.aborted).toBe(true);
+    expect(received).toHaveBeenCalledOnce();
+    expect(error).not.toHaveBeenCalled();
+  } finally {
+    stop();
+  }
+});
+
+it("does not send a credential when selection moves during identity verification", async () => {
+  const { service, request, catalog } = fixture();
+  const original = request.getMockImplementation()!;
+  request.mockImplementation(async (input) => {
+    const response = await original(input);
+    if (input.url.endsWith("/.well-known/opensteer")) catalog.selectedDeploymentId = null;
+    return response;
+  });
+  await expect(service.status()).rejects.toMatchObject({ reason: "invalid-response" });
+  expect(request.mock.calls.every(([input]) => input.authorization === null)).toBe(true);
+});

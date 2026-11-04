@@ -1,3 +1,4 @@
+import { registerDesktopUpdateMaintenance } from "./access/personal-desktop-update-routes.js";
 import { ThreadService, assertAccessModeEnforceable } from "./threads/thread-service.js";
 import {
   AdministrationService,
@@ -582,6 +583,11 @@ export async function createHostServer(
       capabilities: advertisedCapabilities(dependencies),
     });
   });
+  registerDesktopUpdateMaintenance(
+    app,
+    dependencies.authenticator,
+    dependencies.personalRemoteAccess?.service.desktopUpdates ?? null,
+  );
   // One optional subsystem, one registration decision. A Deployment without
   // Personal reachability does not answer on these paths at all, so no handler
   // repeats an availability check the router already made.
@@ -589,7 +595,12 @@ export async function createHostServer(
     const personalRemoteAccess = dependencies.personalRemoteAccess.service;
     const supervisor = dependencies.localBootstrap?.service;
     if (supervisor)
-      registerPersonalRemoteExecutor(app, supervisor, personalRemoteAccess.administration);
+      registerPersonalRemoteExecutor(
+        app,
+        supervisor,
+        personalRemoteAccess.administration,
+        personalRemoteAccess.desktopUpdates,
+      );
     const detachAdministration = personalRemoteAccess.administration.subscribe(() =>
       dependencies.realtime.broadcast({ type: "host.personal-remote-access-changed" }),
     );
