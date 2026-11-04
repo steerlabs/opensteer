@@ -18,6 +18,7 @@ import {
   computerAccessUpgrade,
   computerAppPermissionNotice,
   computerAppSetupElsewhere,
+  collapsedAccountRows,
   computerConnectionState,
   connectCard,
   integrationAccountDetail,
@@ -28,6 +29,7 @@ import {
   resolveIntegrationAccess,
   type AccessPlan,
   type AccessRequestAccount,
+  type ConnectCard,
   type IntegrationAccess,
   type IntegrationConnectionSummary,
   type IntegrationRepositoryAccess,
@@ -35,9 +37,10 @@ import {
 } from "@opensteer/client/integrations";
 import { useNavigation } from "@react-navigation/native";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Linking, Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Linking, Pressable, StyleSheet, View } from "react-native";
 import * as Haptics from "expo-haptics";
-import { color, controlFontScaleLimit, space, touchTarget } from "../theme.js";
+import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
+import { Symbol } from "../ui/symbol.js";
 import {
   AppText,
   ChoiceRow,
@@ -55,7 +58,7 @@ import { InstallReview } from "./integration-install-review.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 
-type Step = "review" | "api-key" | "computer" | "repository-access" | "server";
+type Step = "review" | "accounts" | "api-key" | "computer" | "repository-access" | "server";
 type CardHostState = Pick<HostSnapshot, "deploymentId" | "machines" | "workspaceWindow"> & {
   readonly workspace: HostSnapshot["workspaces"][number] | null;
 };
@@ -664,66 +667,49 @@ export function IntegrationConnectCard(props: {
     );
   if (card.phase === "connected")
     return (
-      <View style={styles.result}>
-        <AppText role="body">{card.success}</AppText>
+      <View accessibilityRole="summary" style={styles.result}>
+        <View style={styles.resultMark}>
+          <Symbol name="checkmark" size={11} tint={color.green} weight="bold" />
+        </View>
+        <AppText role="body" style={styles.resultText}>
+          {card.success}
+        </AppText>
       </View>
     );
   if (card.phase === "answered") return <AppText role="secondary">Request answered</AppText>;
   const title =
-    step === "computer"
-      ? "Choose a computer"
-      : step === "repository-access"
-        ? "Choose GitHub repositories"
-        : step === "server"
-          ? "Choose server"
-          : (card.primary?.label ?? `Connect ${card.name}`);
+    step === "accounts"
+      ? `${card.name} accounts`
+      : step === "computer"
+        ? "Choose a computer"
+        : step === "repository-access"
+          ? "Choose GitHub repositories"
+          : step === "server"
+            ? "Choose server"
+            : (card.primary?.label ?? `Connect ${card.name}`);
+  const controlsDisabled = busy || (props.disabled ?? false);
+  const collapsed = collapsedAccountRows(card.accounts, collapsedAccountLimit);
+  const addLabel =
+    plan?.requirement.kind === "computer" ? "Use another computer" : "Add another account";
+  const canAdd = card.canConnectAnother && card.accounts.length > 0;
+  const chooseAccount = (id: string) => {
+    setAccountId(id);
+    void Haptics.selectionAsync();
+  };
   return (
     <View style={styles.body}>
       <View style={styles.integrationHeading}>
         <IntegrationIcon definitionId={card.iconId} name={card.name} />
         <View style={styles.integrationHeadingText}>
-          <AppText role="title">{card.name}</AppText>
-          <AppText role="secondary" tone="soft">
-            {card.purpose}
-          </AppText>
+          <AppText role="title">{card.title}</AppText>
+          {card.proposed ? <AgentProposedCaption proposed /> : null}
+          {card.reason ? (
+            <AppText role="secondary" tone="soft">
+              {card.reason}
+            </AppText>
+          ) : null}
         </View>
       </View>
-      {card.capabilities
-        .filter(
-          (line) => line.includes("connecting also allows") || line.includes("requires read-write"),
-        )
-        .map((line) => (
-          <AppText key={line} role="secondary" tone="muted">
-            {line}
-          </AppText>
-        ))}
-      {plan?.proposed || props.request.presentation.agentProposed ? (
-        <AgentProposedCaption proposed />
-      ) : null}
-      {card.projectNote ? (
-        <AppText role="secondary" tone="muted">
-          {card.projectNote}
-        </AppText>
-      ) : null}
-      {/* Primary action precedes account rows in accessibility focus order. */}
-      {card.primary ? (
-        <PrimaryButton
-          busy={busy}
-          disabled={props.disabled ?? false}
-          label={card.primary.label}
-          onPress={primary}
-        />
-      ) : null}
-      {connecting ? (
-        <AppText role="secondary">Connecting…</AppText>
-      ) : (
-        <SecondaryButton
-          busy={busy}
-          disabled={props.disabled ?? false}
-          label={card.secondary}
-          onPress={() => void decline()}
-        />
-      )}
       {card.error ? (
         <Notice detail={card.error} title="This connection did not finish" tone="danger" />
       ) : null}
@@ -752,33 +738,53 @@ export function IntegrationConnectCard(props: {
           manifest={loaded?.request.manifest}
         />
       ) : null}
-      {card.accounts.length ? (
-        <RowGroup>
-          {card.accounts.map((account) => (
-            <ChoiceRow
-              disabled={busy || (props.disabled ?? false)}
-              description={`${account.displayName} · ${account.detail}${account.selected ? " · chosen" : ""}`}
+      {collapsed.rows.length > 0 || connecting ? (
+        <View style={styles.list}>
+          {collapsed.rows.map((account, index) => (
+            <AccountRow
+              account={account}
+              disabled={controlsDisabled || connecting}
+              first={index === 0}
               key={account.id}
-              onPress={() => setAccountId(account.id)}
-              title={account.label}
+              onPress={() => chooseAccount(account.id)}
             />
           ))}
-        </RowGroup>
-      ) : null}
-      {card.canConnectAnother && card.accounts.length ? (
-        <SecondaryButton
-          disabled={busy || (props.disabled ?? false)}
-          label={
-            plan?.requirement.kind === "computer"
-              ? "Use another computer"
-              : "Connect another account"
-          }
-          onPress={openConnect}
-        />
+          {collapsed.hidden > 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => showForm("accounts")}
+              style={({ pressed }) => [
+                styles.row,
+                styles.rowSeparated,
+                pressed && styles.rowPressed,
+              ]}
+            >
+              <AppText role="secondaryMedium" style={styles.rowText} tone="soft">
+                {`See all ${card.accounts.length} accounts`}
+              </AppText>
+              <Symbol name="chevron.right" size={13} tint={color.muted} />
+            </Pressable>
+          ) : null}
+          {connecting ? (
+            <View
+              accessibilityLiveRegion="polite"
+              style={[styles.row, collapsed.rows.length > 0 && styles.rowSeparated]}
+            >
+              <View style={styles.avatar}>
+                <ActivityIndicator color={color.ember} size="small" />
+              </View>
+              <AppText role="secondary" style={styles.rowText} tone="soft">
+                Finish signing in
+              </AppText>
+            </View>
+          ) : canAdd ? (
+            <AddAccountRow disabled={controlsDisabled} label={addLabel} onPress={openConnect} />
+          ) : null}
+        </View>
       ) : null}
       {card.canAllowChanges ? (
         <SwitchRow
-          disabled={busy || (props.disabled ?? false)}
+          disabled={controlsDisabled}
           label={
             plan?.definition?.computerApp
               ? `Allow changes (${plan.definition.computerApp.accessLabels.readWrite})`
@@ -825,74 +831,105 @@ export function IntegrationConnectCard(props: {
           machines={snapshot.machines}
         />
       ) : null}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: disclosed }}
-        onPress={() => setDisclosed((value) => !value)}
-        style={styles.disclosure}
-      >
-        <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="action">
-          What Opensteer can do
+      {connecting ? null : (
+        <View style={styles.actions}>
+          <View style={styles.actionSecondary}>
+            <SecondaryButton
+              busy={busy && !card.primary}
+              disabled={props.disabled ?? false}
+              label={card.secondary}
+              onPress={() => void decline()}
+            />
+          </View>
+          {card.primary ? (
+            <View style={styles.actionPrimary}>
+              <PrimaryButton
+                busy={busy}
+                disabled={props.disabled ?? false}
+                label={card.primary.label}
+                onPress={primary}
+              />
+            </View>
+          ) : null}
+        </View>
+      )}
+      {card.details.length > 0 ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: disclosed }}
+          hitSlop={space[8]}
+          onPress={() => setDisclosed((value) => !value)}
+          style={styles.scope}
+        >
+          <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="muted">
+            {card.scope ?? "Details"}
+          </AppText>
+          <Symbol name={disclosed ? "chevron.up" : "chevron.down"} size={11} tint={color.muted} />
+        </Pressable>
+      ) : card.scope ? (
+        <AppText role="caption" style={styles.scopeText} tone="muted">
+          {card.scope}
         </AppText>
-      </Pressable>
-      {disclosed
-        ? card.capabilities
-            .filter(
-              (line) =>
-                !line.includes("connecting also allows") && !line.includes("requires read-write"),
-            )
-            .map((line) => (
-              <AppText key={line} role="secondary" tone="muted">
-                {line}
-              </AppText>
-            ))
-        : null}
+      ) : null}
+      {disclosed && card.details.length > 0 ? (
+        <View style={styles.details}>
+          {card.details.map((line) => (
+            <AppText key={line} role="secondary" tone="soft">
+              {line}
+            </AppText>
+          ))}
+        </View>
+      ) : null}
       <Sheet
         open={step !== "review"}
         onClose={close}
         title={title}
+        // The account list is a light page sheet a person swipes away; the
+        // forms keep their pinned footer above the keyboard.
         footer={
-          <View style={styles.footer}>
-            {step === "api-key" && plan?.apiKeyMethod ? (
-              <PrimaryButton
-                busy={busy}
-                disabled={
-                  props.disabled ||
-                  plan.apiKeyMethod.inputs.some(
-                    ({ variable }) => !(apiKeyValues[variable] ?? "").trim(),
-                  )
-                }
-                label={
-                  reconnect
-                    ? `Reconnect ${reconnect.account.accountIdentifier ?? reconnect.account.displayName}`
-                    : `Connect ${card.name}`
-                }
-                onPress={() => void connectApiKey()}
-              />
-            ) : null}
-            {step === "computer" && computerChosen ? (
-              <PrimaryButton
-                busy={busy}
-                disabled={props.disabled ?? false}
-                label={`Request setup on ${computerChosen.machine.name}`}
-                onPress={() =>
-                  void setComputerApp({
-                    access: computerAccess,
-                    runnerId: computerChosen.machine.id,
-                  })
-                }
-              />
-            ) : null}
-            {step === "repository-access" ? (
-              <PrimaryButton
-                busy={busy}
-                disabled={props.disabled ?? false}
-                label="Recheck repository access"
-                onPress={() => void recheckRepositories()}
-              />
-            ) : null}
-            <SecondaryButton label="Finish later" onPress={close} />
-          </View>
+          step === "accounts" ? undefined : (
+            <View style={styles.footer}>
+              {step === "api-key" && plan?.apiKeyMethod ? (
+                <PrimaryButton
+                  busy={busy}
+                  disabled={
+                    props.disabled ||
+                    plan.apiKeyMethod.inputs.some(
+                      ({ variable }) => !(apiKeyValues[variable] ?? "").trim(),
+                    )
+                  }
+                  label={
+                    reconnect
+                      ? `Reconnect ${reconnect.account.accountIdentifier ?? reconnect.account.displayName}`
+                      : `Connect ${card.name}`
+                  }
+                  onPress={() => void connectApiKey()}
+                />
+              ) : null}
+              {step === "computer" && computerChosen ? (
+                <PrimaryButton
+                  busy={busy}
+                  disabled={props.disabled ?? false}
+                  label={`Request setup on ${computerChosen.machine.name}`}
+                  onPress={() =>
+                    void setComputerApp({
+                      access: computerAccess,
+                      runnerId: computerChosen.machine.id,
+                    })
+                  }
+                />
+              ) : null}
+              {step === "repository-access" ? (
+                <PrimaryButton
+                  busy={busy}
+                  disabled={props.disabled ?? false}
+                  label="Recheck repository access"
+                  onPress={() => void recheckRepositories()}
+                />
+              ) : null}
+              <SecondaryButton label="Finish later" onPress={close} />
+            </View>
+          )
         }
       >
         <View style={styles.body}>
@@ -910,6 +947,32 @@ export function IntegrationConnectCard(props: {
                 />
               ) : null}
             </>
+          ) : null}
+          {step === "accounts" ? (
+            <View style={styles.list}>
+              {card.accounts.map((account, index) => (
+                <AccountRow
+                  account={account}
+                  disabled={controlsDisabled}
+                  first={index === 0}
+                  key={account.id}
+                  onPress={() => {
+                    chooseAccount(account.id);
+                    close();
+                  }}
+                />
+              ))}
+              {card.canConnectAnother ? (
+                <AddAccountRow
+                  disabled={controlsDisabled}
+                  label={addLabel}
+                  onPress={() => {
+                    close();
+                    openConnect();
+                  }}
+                />
+              ) : null}
+            </View>
           ) : null}
           {step === "api-key" && plan?.apiKeyMethod && plan.definition ? (
             <>
@@ -954,6 +1017,83 @@ export function IntegrationConnectCard(props: {
     </View>
   );
 }
+
+/** Rows shown before "See all": two, so the card never covers the whole thread on a phone. */
+const collapsedAccountLimit = 2;
+
+type AccountRowModel = ConnectCard["accounts"][number];
+
+function AccountRow(props: {
+  readonly account: AccountRowModel;
+  readonly disabled: boolean;
+  readonly first: boolean;
+  readonly onPress: () => void;
+}): ReactNode {
+  const { account } = props;
+  return (
+    <Pressable
+      accessibilityLabel={account.detail ? `${account.label}, ${account.detail}` : account.label}
+      accessibilityRole="radio"
+      accessibilityState={{ checked: account.selected, disabled: props.disabled }}
+      disabled={props.disabled}
+      onPress={props.onPress}
+      style={({ pressed }) => [
+        styles.row,
+        !props.first && styles.rowSeparated,
+        account.selected && styles.rowSelected,
+        pressed && !account.selected && styles.rowPressed,
+        props.disabled && !account.selected && styles.rowDisabled,
+      ]}
+    >
+      <View style={styles.avatar}>
+        <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="soft">
+          {(account.label.trim()[0] ?? "?").toLocaleUpperCase()}
+        </AppText>
+      </View>
+      <View style={styles.rowText}>
+        <AppText numberOfLines={1} role="bodyMedium">
+          {account.label}
+        </AppText>
+        {account.detail ? (
+          <AppText numberOfLines={1} role="caption" tone="muted">
+            {account.detail}
+          </AppText>
+        ) : null}
+      </View>
+      <View style={[styles.radio, account.selected && styles.radioChecked]}>
+        {account.selected ? <View style={styles.radioDot} /> : null}
+      </View>
+    </Pressable>
+  );
+}
+
+function AddAccountRow(props: {
+  readonly disabled: boolean;
+  readonly label: string;
+  readonly onPress: () => void;
+}): ReactNode {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      disabled={props.disabled}
+      onPress={props.onPress}
+      style={({ pressed }) => [
+        styles.row,
+        styles.rowSeparated,
+        pressed && styles.rowPressed,
+        props.disabled && styles.rowDisabled,
+      ]}
+    >
+      <View style={[styles.avatar, styles.avatarAdd]}>
+        <Symbol name="plus" size={13} tint={color.ember} weight="semibold" />
+      </View>
+      <AppText role="bodyMedium" style={styles.rowText} tone="ember">
+        {props.label}
+      </AppText>
+    </Pressable>
+  );
+}
+
 function ApiKeyStep(props: {
   readonly definition: NonNullable<AccessPlan["definition"]>;
   readonly proposed: boolean;
@@ -1129,11 +1269,78 @@ function describe(reason: unknown): string {
   return reason instanceof Error ? reason.message : "This deployment could not be reached.";
 }
 const styles = StyleSheet.create({
+  actionPrimary: { flex: 1.4 },
+  actionSecondary: { flex: 1 },
+  actions: { flexDirection: "row", gap: space[8] },
+  avatar: {
+    alignItems: "center",
+    backgroundColor: color.surfaceRaised,
+    borderColor: color.lineStrong,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    height: 28,
+    justifyContent: "center",
+    width: 28,
+  },
+  avatarAdd: {
+    backgroundColor: "transparent",
+    borderColor: color.emberLine,
+    borderStyle: "dashed",
+    borderWidth: 1,
+  },
   body: { gap: space[12], padding: space[16] },
+  details: {
+    ...material.quiet,
+    borderRadius: radius.sm,
+    gap: space[6],
+    paddingHorizontal: space[12],
+    paddingVertical: space[10],
+  },
   fact: { gap: space[2], paddingHorizontal: space[14], paddingVertical: space[12] },
   footer: { backgroundColor: color.surface, gap: space[8] },
-  integrationHeading: { alignItems: "center", flexDirection: "row", gap: space[10] },
-  integrationHeadingText: { flex: 1 },
-  disclosure: { minHeight: touchTarget, justifyContent: "center" },
-  result: { padding: space[16] },
+  integrationHeading: { alignItems: "flex-start", flexDirection: "row", gap: space[12] },
+  integrationHeadingText: { flex: 1, gap: space[2] },
+  list: { ...material.plate, borderRadius: radius.md, overflow: "hidden" },
+  radio: {
+    alignItems: "center",
+    borderColor: color.lineControl,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    height: 20,
+    justifyContent: "center",
+    width: 20,
+  },
+  radioChecked: { borderColor: color.ember },
+  radioDot: { backgroundColor: color.ember, borderRadius: 5, height: 10, width: 10 },
+  result: { alignItems: "center", flexDirection: "row", gap: space[10], padding: space[16] },
+  resultMark: {
+    alignItems: "center",
+    backgroundColor: color.greenWash,
+    borderRadius: 10,
+    height: 20,
+    justifyContent: "center",
+    width: 20,
+  },
+  resultText: { flex: 1 },
+  row: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: space[12],
+    minHeight: touchTarget + space[6],
+    paddingHorizontal: space[12],
+    paddingVertical: space[8],
+  },
+  rowDisabled: { opacity: 0.5 },
+  rowPressed: { ...material.quiet },
+  rowSelected: { backgroundColor: color.emberWash },
+  rowSeparated: { borderColor: color.line, borderTopWidth: StyleSheet.hairlineWidth },
+  rowText: { flex: 1, minWidth: 0 },
+  scope: {
+    alignItems: "center",
+    alignSelf: "center",
+    flexDirection: "row",
+    gap: space[4],
+    minHeight: space[24],
+  },
+  scopeText: { textAlign: "center" },
 });

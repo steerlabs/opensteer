@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { LoadedAccessRequest } from "./access-request.js";
+import { mainAccessDetail, type LoadedAccessRequest } from "./access-request.js";
 import { mockMessagesDefinition, mockTmdbProposal } from "../mock/mock-integration-fixtures.js";
-import { connectCard } from "./connect-card.js";
+import { collapsedAccountRows, connectCard } from "./connect-card.js";
 
 const workspace = { kind: "main", name: "Main" } as const;
 const project = { kind: "project", name: "Launch" } as const;
@@ -148,27 +148,33 @@ function preinstall(administrator: boolean, proposal = false) {
 describe("connectCard", () => {
   it("discloses Main inherited changes before catalog installation", () => {
     const card = connectCard({ loaded: preinstall(true), workspace });
-    expect(card.capabilities.join(" ")).toContain("connecting also allows this request");
+    expect(card.scope).toBe("All tasks in Main");
+    expect(card.details).toContain(mainAccessDetail("Main", "Gmail"));
   });
   it("connects Main in one action and discloses inherited changes", () => {
     const card = connectCard({ loaded: loaded(), workspace });
     expect(card).toMatchObject({
       phase: "ask",
-      primary: { kind: "connect", label: "Connect Gmail" },
+      title: "Connect Gmail",
+      primary: { kind: "connect", label: "Connect" },
       secondary: "Not now",
-      purpose: "Read the latest message",
-      projectNote: null,
+      reason: "Read the latest message",
+      scope: "All tasks in Main",
       source,
     });
-    expect(card.capabilities.join(" ")).toContain("connecting also allows this request");
+    expect(card.details).toContain(mainAccessDetail("Main", "Gmail"));
   });
   it("connects and grants only the named project, with optional changes", () => {
     expect(connectCard({ loaded: loaded(), workspace: project })).toMatchObject({
-      primary: { label: "Connect Gmail" },
-      projectNote: "Only Launch gets access",
+      title: "Connect Gmail in Launch",
+      primary: { label: "Connect" },
+      scope: null,
       canAllowChanges: true,
       effectiveAccess: "read",
     });
+    expect(connectCard({ loaded: loaded(), workspace: project }).details).toContain(
+      "Only Launch gets access.",
+    );
     expect(
       connectCard({ loaded: loaded(), workspace: project, allowChanges: true }).effectiveAccess,
     ).toBe("read-write");
@@ -177,25 +183,48 @@ describe("connectCard", () => {
     const card = connectCard({ loaded: value, workspace: project });
     expect(card.effectiveAccess).toBe("read-write");
     expect(card.canAllowChanges).toBe(false);
-    expect(card.capabilities.join(" ")).toContain("requires read-write access");
+    expect(card.scope).toBe("Read and write");
   });
-  it.each([1, 3])("offers account rows and explicit use labels with %i accounts", (count) => {
+  it.each([1, 3])("offers account rows and one Allow with %i accounts", (count) => {
     const card = connectCard({
       loaded: loaded("provider", count),
       workspace,
       selectedAccountId: "account-0",
     });
     expect(card.phase).toBe("choose-account");
-    expect(card.primary?.label).toBe("Use you0@gmail.com");
+    expect(card.title).toBe("Use Gmail");
+    expect(card.primary).toEqual({ kind: "use", label: "Allow" });
     expect(card.accounts).toHaveLength(count);
-    expect(card.accounts[0]?.selected).toBe(true);
+    expect(card.accounts[0]).toMatchObject({ label: "you0@gmail.com", selected: true });
     expect(card.canConnectAnother).toBe(true);
   });
   it("preserves the selected account across model reads", () => {
     expect(
       connectCard({ loaded: loaded("provider", 3), workspace, selectedAccountId: "account-2" })
-        .primary?.label,
-    ).toBe("Use you2@gmail.com");
+        .selectedAccount?.id,
+    ).toBe("account-2");
+  });
+  it("says an account's identity once, and a second line only between look-alikes", () => {
+    const value = loaded("provider", 3);
+    value.dashboard.connections[2] = {
+      ...value.dashboard.connections[2]!,
+      accountIdentifier: "you0@gmail.com",
+      displayName: "Work inbox",
+    };
+    const card = connectCard({ loaded: value, workspace });
+    expect(card.accounts.map(({ label, detail }) => [label, detail])).toEqual([
+      ["you0@gmail.com", "Personal"],
+      ["you1@gmail.com", null],
+      ["you0@gmail.com", "Work inbox"],
+    ]);
+    // A Request pinned to one look-alike still says which one it is.
+    const pinned = { ...value, request: { ...value.request, requestedConnectionId: "account-2" } };
+    expect(
+      connectCard({ loaded: pinned, workspace }).accounts.map(({ label, detail }) => [
+        label,
+        detail,
+      ]),
+    ).toEqual([["you0@gmail.com", "Work inbox"]]);
   });
   it("repairs a pinned account and never offers another", () => {
     const original = loaded("provider", 2);
@@ -230,7 +259,7 @@ describe("connectCard", () => {
       const card = connectCard({ loaded: preinstall(administrator), workspace });
       expect(card.phase).toBe(phase);
       expect(card.autoInstall).toBe(true);
-      expect(card.primary?.label).toBe(administrator ? "Connect Gmail" : undefined);
+      expect(card.primary?.label).toBe(administrator ? "Connect" : undefined);
       if (!administrator) expect(card.error).toBe("Ask an admin to add Gmail");
     },
   );
@@ -252,11 +281,12 @@ describe("connectCard", () => {
   it("connects MCP directly and uses existing MCP account rows", () => {
     expect(connectCard({ loaded: loaded("mcp-oauth"), workspace })).toMatchObject({
       phase: "ask",
-      primary: { label: "Connect Gmail" },
+      primary: { label: "Connect" },
     });
-    expect(connectCard({ loaded: loaded("mcp-oauth", 1), workspace }).primary?.label).toBe(
-      "Use you0@gmail.com",
-    );
+    expect(connectCard({ loaded: loaded("mcp-oauth", 1), workspace }).primary).toEqual({
+      kind: "use",
+      label: "Allow",
+    });
   });
   it("requires explicit server choice, including a singleton", () => {
     const original = loaded();
@@ -293,7 +323,7 @@ describe("connectCard", () => {
     ).toMatchObject({
       phase: "connected",
       primary: null,
-      success: "✓ Gmail connected · you@gmail.com",
+      success: "Gmail connected · you@gmail.com",
     });
     expect(connectCard({ ...input, answered: true }).phase).toBe("answered");
   });
@@ -330,7 +360,6 @@ describe("connectCard", () => {
   it("keeps the Request's proposal attribution on account and grant surfaces", () => {
     const card = connectCard({ loaded: loaded(), workspace, agentProposed: true });
     expect(card.proposed).toBe(true);
-    expect(card.capabilities[0]).toContain("isn’t part of Opensteer’s reviewed catalog");
   });
   it("keeps an active browser attempt ahead of a local failure", () => {
     expect(
@@ -345,8 +374,22 @@ describe("connectCard", () => {
   it("allows a credential-free integration without inventing an account", () => {
     expect(connectCard({ loaded: loaded("none"), workspace: project })).toMatchObject({
       phase: "ask",
-      primary: { kind: "use", label: "Allow in Launch" },
+      title: "Use Gmail in Launch",
+      primary: { kind: "use", label: "Allow" },
       accounts: [],
     });
+  });
+});
+
+describe("collapsedAccountRows", () => {
+  const rows = (count: number, selected = 0) =>
+    Array.from({ length: count }, (_, id) => ({ id, selected: id === selected }));
+  it("shows a list at most one past the limit whole", () => {
+    expect(collapsedAccountRows(rows(4), 3)).toEqual({ rows: rows(4), hidden: 0 });
+  });
+  it("keeps the selected account on screen when the list collapses", () => {
+    const collapsed = collapsedAccountRows(rows(8, 6), 3);
+    expect(collapsed.hidden).toBe(5);
+    expect(collapsed.rows.map(({ id }) => id)).toEqual([0, 1, 6]);
   });
 });

@@ -422,6 +422,9 @@ function RequestPanel({
         ? request.payload.reason
         : request.presentation.detail;
   const title = requestTitle(request);
+  // An integration card names the integration, the reason and the proposal
+  // itself, so the panel's own head would only say them twice.
+  const ownHead = request.kind === "integration.access" && !surface.denied;
   return (
     <fieldset
       aria-label="Opensteer needs your input"
@@ -430,16 +433,18 @@ function RequestPanel({
       disabled={disabled}
       tabIndex={-1}
     >
-      <div className="action-panel__head">
-        <span aria-hidden className="action-panel__icon">
-          <Icon name={requestIcon(request)} />
-        </span>
-        <span className="action-panel__title">{title}</span>
-        {request.presentation.agentProposed ? <AgentProposedChip /> : null}
-      </div>
+      {ownHead ? null : (
+        <div className="action-panel__head">
+          <span aria-hidden className="action-panel__icon">
+            <Icon name={requestIcon(request)} />
+          </span>
+          <span className="action-panel__title">{title}</span>
+          {request.presentation.agentProposed ? <AgentProposedChip /> : null}
+        </div>
+      )}
       {subagent ? <p className="action-panel__asker">Asked by subagent {subagent}</p> : null}
       <div className="action-panel__content">
-        {detail ? (
+        {detail && !ownHead ? (
           <ActionDetail mono={request.kind === "harness.approval"}>{detail}</ActionDetail>
         ) : null}
         <ActionBody disabled={disabled} surface={surface} threadId={threadId} />

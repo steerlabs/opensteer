@@ -4,13 +4,16 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { requestAgentProposedDetail } from "@opensteer/core";
+import { mainAccessDetail } from "@opensteer/client/integrations";
 import { mockTmdbProposal } from "@opensteer/client/mock";
 
 vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate }) }));
 vi.mock("expo-haptics", () => ({
   impactAsync: vi.fn(async () => {}),
   ImpactFeedbackStyle: { Light: "light" },
+  selectionAsync: vi.fn(async () => {}),
 }));
+vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 const navigate = vi.hoisted(() => vi.fn());
 const cardRenders = vi.hoisted(() => vi.fn());
 const openURL = vi.hoisted(() => vi.fn(async () => undefined));
@@ -19,25 +22,38 @@ const openURL = vi.hoisted(() => vi.fn(async () => undefined));
 // are outside this regression; what it pins is the flow: which app is sent to
 // the Host, and what the sheet is willing to call a connection.
 vi.mock("react-native", () => ({
+  ActivityIndicator: () => <span aria-hidden />,
   StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Linking: { openURL },
   Pressable: ({
     accessibilityRole,
+    accessibilityState,
     children,
+    disabled,
     onPress,
   }: {
-    accessibilityRole: "link";
+    accessibilityRole: "link" | "button" | "radio";
+    accessibilityState?: { checked?: boolean; expanded?: boolean };
     children?: ReactNode;
+    disabled?: boolean;
     onPress: () => void;
   }) => (
-    <button role={accessibilityRole} onClick={onPress}>
+    <button
+      aria-checked={accessibilityState?.checked}
+      aria-expanded={accessibilityState?.expanded}
+      disabled={disabled}
+      role={accessibilityRole}
+      onClick={onPress}
+    >
       {children}
     </button>
   ),
 }));
 vi.mock("../theme.js", () => ({
   color: {},
+  material: { plate: {}, quiet: {} },
+  radius: {},
   space: {},
   touchTarget: 44,
   controlFontScaleLimit: 1.5,
@@ -185,8 +201,7 @@ const personalSource = {
   providerApplicationRevision: 3,
 };
 
-const mainConnectAllows =
-  "Your tasks in Main can read and make changes with every account you connect, so connecting also allows this request.";
+const mainConnectAllows = mainAccessDetail("Main", "Slack");
 
 describe("IntegrationConnectCard", () => {
   it("does not render for streaming updates in an unrelated thread", async () => {
@@ -205,7 +220,7 @@ describe("IntegrationConnectCard", () => {
     });
     await render(client);
     expect(load).toHaveBeenCalledOnce();
-    expect(buttons()).toContain("Connect Slack");
+    expect(buttons()).toContain("Connect");
   });
   it("offers Decline when the target Workspace is unavailable", async () => {
     const client = fakeClient({ sources: [hosted] });
@@ -232,13 +247,12 @@ describe("IntegrationConnectCard", () => {
       });
       await render(client);
       expect(document.querySelector("h1")).toBeNull();
-      expect(buttons()[0]).toBe("Connect Slack");
-      await click("Connect Slack");
+      await press("Connect");
       expect(beginIntegrationAuthorization).toHaveBeenCalledExactlyOnceWith({
         applicationSource: hosted,
         definitionId: "slack",
       });
-      expect(text()).toContain("✓ Slack connected · oversteer.slack.com");
+      expect(text()).toContain("Slack connected · oversteer.slack.com");
       expect(text()).not.toMatch(/Back to the request|Account connected|Review connection/u);
       const grants = client.dispatch.mock.calls.filter(
         ([command]) => command.type === "request.respond",
@@ -266,8 +280,8 @@ describe("IntegrationConnectCard", () => {
       });
       const onResponded = vi.fn();
       await render(client, request(), { onResponded });
-      await click("oversteer.slack.com —");
-      await click("Connect another account");
+      await click("oversteer.slack.com");
+      await click("Add another account");
       expect(text()).toContain(
         status === "denied" ? "Access was not approved." : "Authorization was cancelled.",
       );
@@ -292,7 +306,7 @@ describe("IntegrationConnectCard", () => {
     );
     const onResponded = vi.fn();
     await render(client, request(), { onResponded });
-    await click("Connect Slack");
+    await press("Connect");
     await act(async () =>
       roots.at(-1)!.render(
         <IntegrationConnectCard
@@ -333,10 +347,8 @@ describe("IntegrationConnectCard", () => {
         {},
         false,
       );
-      expect(text()).toContain(
-        workspaceKind === "main" ? mainConnectAllows : "requires read-write access",
-      );
-      expect(buttons()).toContain("Connect Test Calendar");
+      expect(text()).toContain(workspaceKind === "main" ? "All tasks in Main" : "Read and write");
+      expect(buttons()).toContain("Connect");
     },
   );
 
@@ -346,8 +358,8 @@ describe("IntegrationConnectCard", () => {
 
     expect(text()).toContain("Test Calendar");
     expect(text()).toContain("Scheduling for the test suite.");
-    expect(buttons()).toContain("Connect Test Calendar");
-    await click("Connect Test Calendar");
+    expect(buttons()).toContain("Connect");
+    await press("Connect");
 
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -398,7 +410,7 @@ describe("IntegrationConnectCard", () => {
     const client = fakeClient({ requirementKind: "mcp-oauth", sources: [] });
     await render(client);
 
-    await click("Connect Slack");
+    await press("Connect");
 
     expect(beginMcpIntegrationAuthorization).toHaveBeenCalledWith({
       displayName: "Slack account",
@@ -409,7 +421,7 @@ describe("IntegrationConnectCard", () => {
 
   it("starts MCP sign-in from a remote device", async () => {
     await render(fakeClient({ remote: true, requirementKind: "mcp-oauth", sources: [] }));
-    await click("Connect Slack");
+    await press("Connect");
     expect(beginMcpIntegrationAuthorization).toHaveBeenCalledWith(
       expect.objectContaining({
         requestId: "req_00000000-0000-4000-8000-000000000001",
@@ -430,7 +442,7 @@ describe("IntegrationConnectCard", () => {
 
     expect(text()).toContain("Read and write · 2 operations");
     expect(text()).toContain(mainConnectAllows);
-    await click("Connect Slack");
+    await press("Connect");
     expect(text()).toContain(mainConnectAllows);
     expect(text()).toContain("Get your API token in your Slack account, then paste it here.");
     typeInto("API token", "secret-token");
@@ -491,17 +503,17 @@ describe("IntegrationConnectCard", () => {
     });
     const onResponded = vi.fn();
     await render(client, request(), { onResponded });
-    await click("Connect Slack");
+    await press("Connect");
     typeInto("API token", "test-api-key");
     await click("Connect Slack");
     if (!returnsConnectionId) {
       expect(dashboard).toHaveBeenCalledTimes(2);
       expect(client.dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([]);
       expect(onResponded).not.toHaveBeenCalled();
-      expect(text()).not.toContain("✓ Slack connected");
+      expect(text()).not.toContain("Slack connected");
       // The key sheet closes so the saved account's Use is in front.
       expect(text()).not.toContain("API token");
-      await click("Use Account B");
+      await press("Allow");
     }
     expect(client.dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([
       [
@@ -521,7 +533,7 @@ describe("IntegrationConnectCard", () => {
       ],
     ]);
     expect(onResponded).toHaveBeenCalledOnce();
-    expect(text()).toContain(`✓ Slack connected · Account ${returnsConnectionId ? "A" : "B"}`);
+    expect(text()).toContain(`Slack connected · Account ${returnsConnectionId ? "A" : "B"}`);
   });
 
   // Instruction failures: a proposed label loses its case, the method title
@@ -568,7 +580,7 @@ describe("IntegrationConnectCard", () => {
         data: installed,
       });
       await render(client);
-      await click("Connect TMDB");
+      await press("Connect");
 
       const noun = extra ? "key" : label;
       const safe = setupUrl?.startsWith("https://www.") === true;
@@ -602,7 +614,7 @@ describe("IntegrationConnectCard", () => {
     expect(text()).toContain("Connect Slack");
     expect(text()).toContain("Read only · 1 of 2 operations");
     expect(text()).not.toContain("connecting also allows this request");
-    await click("Connect Slack");
+    await press("Connect");
     expect(text()).toContain("API token");
     expect(text()).not.toContain("connecting also allows this request");
   });
@@ -634,7 +646,7 @@ describe("IntegrationConnectCard", () => {
         onClose,
         onResponded,
       });
-      await click(reconnecting ? "Reconnect Slack" : "Connect Slack");
+      await (reconnecting ? click("Reconnect Slack") : press("Connect"));
       typeInto("API token", "discard-this-key");
       await click("Dismiss sheet");
       expect(onClose).toHaveBeenCalledOnce();
@@ -674,7 +686,7 @@ describe("IntegrationConnectCard", () => {
       document.querySelector<HTMLInputElement>('input[aria-label="Account label (optional)"]')
         ?.value,
     ).toBe("Slack");
-    expect(text()).not.toContain("Connect another account");
+    expect(text()).not.toContain("Add another account");
 
     typeInto("API token", "replacement-token");
     await click("Reconnect Slack");
@@ -713,8 +725,8 @@ describe("IntegrationConnectCard", () => {
     );
     expect(text()).not.toContain("Dismiss request");
     expect(text()).not.toContain("Reconnect oversteer.slack.com");
-    expect(text()).not.toContain("Connect another account");
-    expect(text()).not.toContain("Use oversteer.slack.com");
+    expect(text()).not.toContain("Add another account");
+    expect(buttons()).not.toContain("Allow");
 
     await click("Not now");
 
@@ -733,7 +745,7 @@ describe("IntegrationConnectCard", () => {
 
     expect(text()).toContain("Choose server");
     await click("Choose server");
-    expect(text()).not.toContain("Connect Slack");
+    expect(buttons()).not.toContain("Connect");
     await click("Continue with live");
 
     expect(client.dispatch).toHaveBeenCalledWith(
@@ -757,7 +769,7 @@ describe("IntegrationConnectCard", () => {
     const client = fakeClient({ selected: personalSource, sources: [hosted, personalSource] });
     await render(client);
 
-    await click("Connect Slack");
+    await press("Connect");
     expect(text()).toContain(mainConnectAllows);
     expect(text()).not.toContain(personalSource.callbackUrl);
 
@@ -779,7 +791,7 @@ describe("IntegrationConnectCard", () => {
     const client = fakeClient({ selected: hosted, sources: [hosted] });
     await render(client);
 
-    await click("Connect Slack");
+    await press("Connect");
 
     expect(text()).toContain("no connected account is recorded here");
     expect(text()).not.toContain("is connected as");
@@ -800,9 +812,9 @@ describe("IntegrationConnectCard", () => {
     });
     await render(client);
 
-    await click("Connect another account");
+    await click("Add another account");
 
-    expect(text()).toContain("✓ Slack connected · oversteer.slack.com");
+    expect(text()).toContain("Slack connected · oversteer.slack.com");
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: "request.respond" }),
     );
@@ -824,7 +836,7 @@ describe("IntegrationConnectCard", () => {
     beginIntegrationAuthorization.mockResolvedValue(completed(githubConnectionId));
     await render(client);
 
-    await click("Connect GitHub");
+    await press("Connect");
 
     expect(text()).toContain(`This connection did not finish${rejectedSignIn}`);
     expect(buttons()).toContain("Try again");
@@ -844,7 +856,7 @@ describe("IntegrationConnectCard", () => {
     });
     beginIntegrationAuthorization.mockResolvedValue(completed(githubConnectionId));
     await render(client);
-    await click("Connect GitHub");
+    await press("Connect");
     expect(text()).toContain("Repository access is still required");
 
     client.rpc["integration.repositoryAccess.check"].mockImplementationOnce(async () =>
@@ -868,7 +880,7 @@ describe("IntegrationConnectCard", () => {
     const reload = vi.spyOn(client.rpc, "integrations.get");
     beginIntegrationAuthorization.mockResolvedValue(completed(githubConnectionId));
     await render(client);
-    await click("Connect GitHub");
+    await press("Connect");
     const reloads = reload.mock.calls.length;
 
     // A 5xx changes nothing at the Host: the account still waits for repositories.
@@ -904,9 +916,9 @@ describe("IntegrationConnectCard", () => {
     });
     await render(client, request("read-write"));
 
-    expect(text()).toContain("This task requires read-write access");
+    expect(text()).toContain("Read and write");
     expect(text()).not.toContain("Allow changes");
-    await click("Use oversteer.slack.com");
+    await press("Allow");
 
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -933,7 +945,7 @@ describe("IntegrationConnectCard", () => {
     expect(text()).not.toContain("1 operations");
     await click("Allow changes");
     expect(text()).toContain("Read and write · 2 operations");
-    await click("Use oversteer.slack.com");
+    await press("Allow");
 
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1124,7 +1136,7 @@ describe("IntegrationConnectCard", () => {
     await click("Allow changes (Read and send)");
 
     expect(text()).toContain("Request sending access on Mac mini");
-    expect(text()).not.toContain("Use oversteer.slack.com");
+    expect(buttons()).not.toContain("Allow");
     await click("Request sending access on Mac mini");
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1204,7 +1216,6 @@ describe("IntegrationConnectCard", () => {
     await click("Request setup on MacBook");
 
     expect(text()).toContain("Setup requested. On MacBook");
-    expect(text()).not.toContain("Use oversteer.slack.com");
   });
 
   it("requires reselection when the explicitly chosen computer disappears", async () => {
@@ -1267,7 +1278,7 @@ describe("IntegrationConnectCard", () => {
     await render(client, request("read-write"));
 
     expect(text()).toContain("Allow changes on this computer");
-    expect(text()).not.toContain("Use oversteer.slack.com");
+    expect(buttons()).not.toContain("Allow");
     await click("Request sending access on Mac mini");
 
     expect(client.dispatch).toHaveBeenCalledWith(
@@ -1286,7 +1297,7 @@ describe("IntegrationConnectCard", () => {
     await render(client);
 
     expect(text()).not.toContain("No account is connected yet");
-    await click("Allow in Main");
+    await press("Allow");
 
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1311,7 +1322,7 @@ describe("IntegrationConnectCard", () => {
       request: preinstallRequest,
       start: async (client, held) => {
         client.dispatch.mockReturnValueOnce(held);
-        await click("Connect Test Calendar");
+        await press("Connect");
       },
     },
     {
@@ -1329,7 +1340,7 @@ describe("IntegrationConnectCard", () => {
       operation: "a key",
       request,
       start: async (client, held) => {
-        await click("Connect Slack");
+        await press("Connect");
         typeInto("API token", "secret-token");
         client.dispatch.mockReturnValueOnce(held);
         await click("Connect Slack");
@@ -1341,7 +1352,7 @@ describe("IntegrationConnectCard", () => {
       request,
       start: async (_client, held) => {
         beginMcpIntegrationAuthorization.mockReturnValueOnce(held);
-        await click("Connect Slack");
+        await press("Connect");
       },
     },
   ])("leaves a reopened sheet alone when $operation fails late", async (input) => {
@@ -1382,7 +1393,13 @@ async function render(
       />,
     );
   });
-  if (disclose) await click("What Opensteer can do");
+  if (disclose) await openDetails();
+}
+
+/** Opens what the card's foot line stands for, where the card has anything behind it. */
+async function openDetails(): Promise<void> {
+  const toggle = document.querySelector<HTMLButtonElement>('button[aria-expanded="false"]');
+  if (toggle) await act(async () => toggle.click());
 }
 
 /** Closes the sheet and opens it again on the same request, as its card does. */
@@ -1413,6 +1430,17 @@ function text(): string {
 
 function buttons(): readonly string[] {
   return [...document.querySelectorAll("button")].map((button) => button.textContent ?? "");
+}
+
+/** Presses the control whose whole label is this, where a longer one would also match. */
+async function press(label: string): Promise<void> {
+  const target = [...document.querySelectorAll("button")]
+    .reverse()
+    .find((element) => element.textContent === label);
+  if (!target) throw new Error(`No control labelled exactly ${label} in: ${text()}`);
+  await act(async () => {
+    target.click();
+  });
 }
 
 async function click(label: string): Promise<void> {

@@ -1,5 +1,5 @@
 import { useIntegrationAuthorizationTracking } from "../integrations/use-integration-authorization-tracking.js";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   IntegrationAuthorizationAttemptIdSchema,
   type IntegrationAccess,
@@ -10,7 +10,7 @@ import {
 // Deep import: the package index pulls in node:crypto, which cannot load in the browser.
 import { IntegrationServerIdSchema } from "@opensteer/integration-core/ids";
 import { Link, useSearchParams } from "react-router";
-import { requestAgentProposedDetail, type Request } from "@opensteer/core";
+import type { Request } from "@opensteer/core";
 import { desktopBridge } from "../desktop/desktop-bridge.js";
 import {
   integrationAuthorizationError,
@@ -28,6 +28,8 @@ import { useShell } from "./app-shell.js";
 import { ApiKeyForm } from "./integrations/api-key-form.js";
 import { RepositoryAccessSetup } from "./integrations/connect-flow.js";
 import { IntegrationIcon } from "./integrations/integration-icon.js";
+import { AgentProposedChip } from "./integrations/agent-proposed-chip.js";
+import { SegmentedControl } from "./segmented-control.js";
 import {
   connectCard,
   integrationRequestStillPending,
@@ -39,13 +41,14 @@ import {
   authorizationConnection,
   accessServerChoices,
   accountConnectable,
-  changingOperationCount,
+  collapsedAccountRows,
   computerAccessUpgrade,
   connectAvailability,
   effectiveIntegrationAccess,
   repositoryAccountStep,
   resolveIntegrationAccess,
   type AccessPlan,
+  type ConnectCard,
   type LoadedAccessRequest,
 } from "@opensteer/client/integrations";
 import { RunnerIdSchema } from "@opensteer/core";
@@ -69,6 +72,8 @@ export function ThreadIntegrationAction({
   const [accountName, setAccountName] = useState("");
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
+  const [accountsExpanded, setAccountsExpanded] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [computerSetupNotice, setComputerSetupNotice] = useState<string | null>(null);
   const [repositorySetup, setRepositorySetup] = useState<{
     readonly access: IntegrationRepositoryAccess | null;
@@ -291,6 +296,8 @@ export function ThreadIntegrationAction({
     setApiKeyError(null);
     setApiKeyOpen(false);
     setConnectOpen(false);
+    setAccountsExpanded(false);
+    setDetailsOpen(false);
     setComputerSetupNotice(null);
     setRepositorySetup(null);
     setPending(false);
@@ -657,29 +664,45 @@ export function ThreadIntegrationAction({
   if (connected)
     return (
       <div className="connect-card__result" role="status">
+        <span aria-hidden className="connect-card__result-mark">
+          <Icon name="check" />
+        </span>
         {card.success}
       </div>
     );
   if (requestSettled) return <ActionNote>Request answered</ActionNote>;
+  const foot = (actions: ReactNode, access: ReactNode = null) => (
+    <ConnectCardFoot
+      access={access}
+      actions={actions}
+      details={card.details}
+      detailsOpen={detailsOpen}
+      onDetails={() => setDetailsOpen((open) => !open)}
+      scope={card.scope}
+    />
+  );
   if (!plan)
     return (
       <div className="connect-card">
-        <div className="connect-card__heading">
-          <IntegrationIcon id={card.iconId} name={card.name} />
-          <strong>{card.name}</strong>
-        </div>
-        <p>{card.purpose}</p>
-        {card.projectNote ? <p className="field__hint">{card.projectNote}</p> : null}
-        {card.capabilities
-          .filter(
-            (line) =>
-              line.includes("connecting also allows") || line.includes("requires read-write"),
-          )
-          .map((line) => (
-            <p className="field__hint" key={line}>
-              {line}
-            </p>
-          ))}
+        <ConnectCardHead card={card} />
+        {foot(
+          <>
+            {card.primary && card.primary.kind !== "server" ? (
+              <button
+                aria-busy={pending}
+                className="btn btn--primary"
+                disabled={pending || disabled}
+                onClick={install}
+              >
+                {pending ? <span aria-hidden className="spinner spinner--on-accent" /> : null}
+                {card.primary.label}
+              </button>
+            ) : null}
+            <button className="btn btn--ghost" disabled={pending || disabled} onClick={decline}>
+              {card.secondary}
+            </button>
+          </>,
+        )}
         {card.installReview ? (
           <IntegrationInstallReview manifest={requestPayload.manifest} />
         ) : null}
@@ -693,41 +716,22 @@ export function ThreadIntegrationAction({
           </ActionNote>
         ) : null}
         {card.error ? <ActionNote alert>{card.error}</ActionNote> : null}
-        <div className="connect-card__actions action-buttons">
-          {card.primary && card.primary.kind !== "server" ? (
-            <button className="btn btn--primary" disabled={pending || disabled} onClick={install}>
-              {pending ? "Connecting…" : card.primary.label}
-            </button>
-          ) : null}
-          <button className="btn" disabled={pending || disabled} onClick={decline}>
-            Not now
-          </button>
-        </div>
-        <details className="connect-card__disclosure">
-          <summary>What Opensteer can do</summary>
-          {card.capabilities
-            .filter(
-              (line) =>
-                !line.includes("connecting also allows") &&
-                !line.includes("requires read-write") &&
-                line !== requestAgentProposedDetail,
-            )
-            .map((line) => (
-              <p className="field__hint" key={line}>
-                {line}
-              </p>
+        {serverChoices.length > 0 ? (
+          <div className="connect-card__list">
+            {serverChoices.map((server) => (
+              <button
+                className="connect-card__row"
+                key={server.id}
+                disabled={pending || disabled}
+                onClick={() => chooseServer(server.id)}
+                type="button"
+              >
+                <span className="connect-card__row-text">Continue with {server.name}</span>
+                <Icon name="chevron-right" />
+              </button>
             ))}
-        </details>
-        {serverChoices.map((server) => (
-          <button
-            className="btn"
-            key={server.id}
-            disabled={pending || disabled}
-            onClick={() => chooseServer(server.id)}
-          >
-            Continue with {server.name}
-          </button>
-        ))}
+          </div>
+        ) : null}
       </div>
     );
 
@@ -998,6 +1002,34 @@ export function ThreadIntegrationAction({
     else if (apiKeyMethod) setApiKeyOpen(true);
     else connect();
   };
+  const accountRows = accountsExpanded
+    ? { rows: card.accounts, hidden: 0 }
+    : collapsedAccountRows(card.accounts, collapsedAccountLimit);
+  const addAccount = () => {
+    if (computerRequirement) setConnectOpen(true);
+    else if (apiKeyMethod) setApiKeyOpen(true);
+    else connect();
+  };
+  const showAdd = card.canConnectAnother && hasAccount && !showApiKeyForm && !showComputerPicker;
+  const accessChoice = card.canAllowChanges ? (
+    <SegmentedControl
+      ariaLabel="Access"
+      className="connect-card__access"
+      disabled={pending || disabled}
+      onChange={(value: IntegrationAccess) => setSelectedAccess(value)}
+      options={[
+        {
+          label: computerAppPresentation?.accessLabels.read ?? "Read only",
+          value: "read",
+        },
+        {
+          label: computerAppPresentation?.accessLabels.readWrite ?? "Read and write",
+          value: "read-write",
+        },
+      ]}
+      value={effectiveAccess}
+    />
+  ) : null;
   return (
     <div
       className="connect-card"
@@ -1013,64 +1045,51 @@ export function ThreadIntegrationAction({
         }
       }}
     >
-      <div className="connect-card__heading">
-        <IntegrationIcon id={card.iconId} name={card.name} />
-        <div>
-          <strong>{card.name}</strong>
-          <p>{card.purpose}</p>
-        </div>
-      </div>
-      {card.projectNote ? <p className="field__hint">{card.projectNote}</p> : null}
-      {card.capabilities
-        .filter(
-          (line) =>
-            line.includes("connecting also allows") ||
-            line.includes("requires read-write") ||
-            line === requestAgentProposedDetail,
-        )
-        .map((line) => (
-          <p className="field__hint" key={line}>
-            {line}
-          </p>
-        ))}
+      <ConnectCardHead card={card} />
       {/* First in focus order, placed at the foot of the card by CSS. */}
-      {!showApiKeyForm ? (
-        <>
-          <div className="connect-card__actions action-buttons">
-            {!showApiKeyForm && card.primary ? (
-              card.primary.kind === "settings" ? (
-                <Link className="btn btn--primary" to={settingsPath}>
-                  {card.primary.label}
-                </Link>
-              ) : (
+      {!showApiKeyForm
+        ? foot(
+            <>
+              {card.primary ? (
+                card.primary.kind === "settings" ? (
+                  <Link className="btn btn--primary" to={settingsPath}>
+                    {card.primary.label}
+                  </Link>
+                ) : (
+                  <button
+                    aria-busy={pending}
+                    className="btn btn--primary"
+                    disabled={pending || disabled}
+                    onClick={primary}
+                    type="button"
+                  >
+                    {pending ? <span aria-hidden className="spinner spinner--on-accent" /> : null}
+                    {card.primary.label}
+                  </button>
+                )
+              ) : null}
+              {authorization ? (
                 <button
-                  className="btn btn--primary"
-                  disabled={pending || disabled}
-                  onClick={primary}
+                  className="btn btn--ghost"
+                  onClick={() => void cancelAuthorization()}
                   type="button"
                 >
-                  {pending ? "Connecting…" : card.primary.label}
+                  Cancel
                 </button>
-              )
-            ) : null}
-            {authorization ? (
-              <button className="btn" onClick={() => void cancelAuthorization()} type="button">
-                Cancel
-              </button>
-            ) : (
-              <button
-                className="btn"
-                disabled={pending || disabled}
-                onClick={decline}
-                type="button"
-              >
-                {card.secondary}
-              </button>
-            )}
-          </div>
-        </>
-      ) : null}
-      {authorization ? <p role="status">Connecting…</p> : null}
+              ) : (
+                <button
+                  className="btn btn--ghost"
+                  disabled={pending || disabled}
+                  onClick={decline}
+                  type="button"
+                >
+                  {card.secondary}
+                </button>
+              )}
+            </>,
+            accessChoice,
+          )
+        : foot(null)}
       {card.error ? <ActionNote alert>{card.error}</ActionNote> : null}
       {computerSetupNotice ? (
         <>
@@ -1085,56 +1104,84 @@ export function ThreadIntegrationAction({
           </button>
         </>
       ) : null}
-      {card.accounts.length > 0 ? (
-        <div aria-label="Account" className="connect-card__accounts" role="radiogroup">
-          {card.accounts.map((account, index) => (
+      {accountRows.rows.length > 0 || authorization || showAdd ? (
+        <div className="connect-card__list">
+          {accountRows.rows.length > 0 ? (
+            <div
+              aria-label="Account"
+              className={`connect-card__accounts${accountsExpanded ? " connect-card__accounts--expanded" : ""}`}
+              role="radiogroup"
+            >
+              {accountRows.rows.map((account, index) => (
+                <button
+                  aria-checked={account.selected}
+                  className="connect-card__row connect-card__account"
+                  disabled={pending || disabled || authorization !== null}
+                  key={account.id}
+                  onClick={() => setSelectedAccountId(account.id)}
+                  onKeyDown={(event) => {
+                    if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key))
+                      return;
+                    event.preventDefault();
+                    const rows = accountRows.rows;
+                    const offset = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1;
+                    const next = (index + offset + rows.length) % rows.length;
+                    setSelectedAccountId(rows[next]!.id);
+                    (
+                      event.currentTarget.parentElement?.children[next] as HTMLElement | undefined
+                    )?.focus();
+                  }}
+                  role="radio"
+                  tabIndex={account.selected ? 0 : -1}
+                  type="button"
+                >
+                  <span aria-hidden className="connect-card__avatar">
+                    {accountInitial(account.label)}
+                  </span>
+                  <span className="connect-card__row-text">
+                    <span className="connect-card__row-label">{account.label}</span>
+                    {account.detail ? <small>{account.detail}</small> : null}
+                  </span>
+                  <span aria-hidden className="connect-card__radio" />
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {accountRows.hidden > 0 ? (
             <button
-              aria-checked={account.selected}
-              className={`connect-card__account${account.selected ? " connect-card__account--selected" : ""}`}
-              disabled={pending || disabled}
-              key={account.id}
-              onClick={() => setSelectedAccountId(account.id)}
-              onKeyDown={(event) => {
-                if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key))
-                  return;
-                event.preventDefault();
-                const offset = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1;
-                const next = (index + offset + card.accounts.length) % card.accounts.length;
-                setSelectedAccountId(card.accounts[next]!.id);
-                (
-                  event.currentTarget.parentElement?.children[next] as HTMLElement | undefined
-                )?.focus();
-              }}
-              role="radio"
-              tabIndex={account.selected ? 0 : -1}
+              aria-expanded={false}
+              className="connect-card__row connect-card__more"
+              onClick={() => setAccountsExpanded(true)}
               type="button"
             >
-              <Icon name="user" />
-              <span>
-                <strong>{account.label}</strong>
-                <small>{account.detail}</small>
-              </span>
-              {account.selected ? <Icon name="check" /> : null}
+              <span className="connect-card__row-text">Show {accountRows.hidden} more</span>
+              <Icon name="chevron-down" />
             </button>
-          ))}
+          ) : null}
+          {authorization ? (
+            <div className="connect-card__row connect-card__pending" role="status">
+              <span aria-hidden className="spinner" />
+              <span className="connect-card__row-text">Finish signing in in your browser</span>
+            </div>
+          ) : showAdd ? (
+            <button
+              className="connect-card__row connect-card__add"
+              disabled={pending || disabled}
+              onClick={addAccount}
+              type="button"
+            >
+              <span aria-hidden className="connect-card__avatar connect-card__avatar--add">
+                <Icon name="plus" />
+              </span>
+              <span className="connect-card__row-text">
+                {computerRequirement ? "Use another computer" : "Add another account"}
+              </span>
+            </button>
+          ) : null}
         </div>
       ) : null}
-      {card.canConnectAnother && hasAccount && !showApiKeyForm ? (
-        <button
-          className="connect-card__account btn"
-          disabled={pending || disabled}
-          onClick={() => {
-            if (computerRequirement) setConnectOpen(true);
-            else if (apiKeyMethod) setApiKeyOpen(true);
-            else connect();
-          }}
-          type="button"
-        >
-          {computerRequirement ? "Use another computer" : "Connect another account"}
-        </button>
-      ) : null}
       {reconnect ? (
-        <div>
+        <div className="connect-card__reconnect">
           <strong>{reconnect.account.displayName}</strong>
           <p>
             {integrationAccountDetail(reconnect.account, [reconnect.account, ...plan.accounts])} ·
@@ -1143,25 +1190,6 @@ export function ThreadIntegrationAction({
         </div>
       ) : null}
       {reconnect?.statusDetail ? <ActionNote>{reconnect.statusDetail}</ActionNote> : null}
-      {card.canAllowChanges ? (
-        <label className="check-item">
-          <input
-            checked={effectiveAccess === "read-write"}
-            disabled={pending || disabled}
-            onChange={(event) => setSelectedAccess(event.target.checked ? "read-write" : "read")}
-            type="checkbox"
-          />
-          <span className="check-item__meta">
-            <span className="check-item__label">
-              {computerAppPresentation?.accessLabels.readWrite ?? "Allow changes"}
-            </span>
-            <span className="check-item__detail">
-              {computerAppPresentation?.accessSummaries.readWrite ??
-                `Read-write access, ${changingOperationCount(plan.writeCount)}`}
-            </span>
-          </span>
-        </label>
-      ) : null}
       {plan.requirement.kind === "mcp-oauth" && !hasAccount ? (
         <label className="action-field">
           <span>Account name</span>
@@ -1242,21 +1270,81 @@ export function ThreadIntegrationAction({
           </button>
         </div>
       ) : null}
-      <details className="connect-card__disclosure">
-        <summary>What Opensteer can do</summary>
-        {card.capabilities
-          .filter(
-            (line) =>
-              !line.includes("connecting also allows") &&
-              !line.includes("requires read-write") &&
-              line !== requestAgentProposedDetail,
-          )
-          .map((line) => (
-            <p className="field__hint" key={line}>
-              {line}
-            </p>
+    </div>
+  );
+}
+
+/** Rows shown before "Show more"; a phone shows fewer, where the card covers more. */
+const collapsedAccountLimit = 3;
+
+function accountInitial(label: string): string {
+  return (label.trim()[0] ?? "?").toLocaleUpperCase();
+}
+
+function ConnectCardHead({ card }: { readonly card: ConnectCard }) {
+  return (
+    <div className="connect-card__heading">
+      <IntegrationIcon id={card.iconId} name={card.name} />
+      <div className="connect-card__titles">
+        <span className="connect-card__title">
+          <strong>{card.title}</strong>
+          {card.proposed ? <AgentProposedChip /> : null}
+        </span>
+        {card.reason ? <p className="connect-card__reason">{card.reason}</p> : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The card's last line: where the access lands, which opens what it means, and
+ * the answer. It comes first in the markup so the primary action is the first
+ * focus stop, and CSS places it at the foot.
+ */
+function ConnectCardFoot({
+  access,
+  actions,
+  details,
+  detailsOpen,
+  onDetails,
+  scope,
+}: {
+  readonly access: ReactNode;
+  readonly actions: ReactNode;
+  readonly details: readonly string[];
+  readonly detailsOpen: boolean;
+  readonly onDetails: () => void;
+  readonly scope: string | null;
+}) {
+  const canOpen = details.length > 0;
+  return (
+    <div className="connect-card__foot">
+      <div className="connect-card__foot-row">
+        {actions === null ? null : <div className="connect-card__actions">{actions}</div>}
+        {access}
+        {canOpen ? (
+          <button
+            aria-expanded={detailsOpen}
+            className="connect-card__scope"
+            onClick={onDetails}
+            type="button"
+          >
+            <span>{scope ?? "Details"}</span>
+            <Icon name="chevron-down" />
+          </button>
+        ) : scope === null ? (
+          <span className="connect-card__scope-gap" />
+        ) : (
+          <span className="connect-card__scope">{scope}</span>
+        )}
+      </div>
+      {canOpen && detailsOpen ? (
+        <div className="connect-card__details">
+          {details.map((line) => (
+            <p key={line}>{line}</p>
           ))}
-      </details>
+        </div>
+      ) : null}
     </div>
   );
 }
