@@ -292,7 +292,8 @@ export class PluginStore {
         message: "Remove this plugin's specialist registrations before installing it without one",
       });
     for (const row of registrations) {
-      // Changed access needs its owner's choices again; unchanged keeps them.
+      // Changed access waits for its owner's choices again, with no automatic
+      // binding, since the owner consented only to the access they saw.
       const changed =
         canonicalJson(row.specialistManifest?.access ?? []) !== canonicalJson(next.access ?? []);
       await tx
@@ -300,7 +301,9 @@ export class PluginStore {
         .set({
           pluginVersionId: current.id,
           updatedAt: new Date(),
-          ...(changed ? { bindings: jsonValue([]), status: "pending" as const } : {}),
+          ...(changed
+            ? { autoBind: false, bindings: jsonValue([]), status: "pending" as const }
+            : {}),
         })
         .where("id", "=", row.id)
         .execute();

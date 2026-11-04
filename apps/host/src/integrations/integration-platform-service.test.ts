@@ -317,7 +317,10 @@ describe("agent plugin replacement", () => {
     }
   });
 
-  it("moves an agent's update off a computer that left the Deployment", async () => {
+  it.each([
+    ["moves an agent's update off a computer that left the Deployment", false],
+    ["keeps an agent's update on its current computer past a removed server's", true],
+  ])("%s", async (_, current) => {
     const directory = await mkdtemp(join(tmpdir(), "plugin-computer-"));
     try {
       await writeFile(
@@ -336,7 +339,8 @@ describe("agent plugin replacement", () => {
       );
       const workspaceId = createId("workspace");
       const gone = createId("runner"),
-        agents = createId("runner");
+        agents = createId("runner"),
+        kept = createId("runner");
       const previous = {
         id: createIntegrationId("installation"),
         pluginId: "owned",
@@ -362,7 +366,22 @@ describe("agent plugin replacement", () => {
           } as never,
           localMcp: {
             list: async () => [
-              { installationId: previous.id, name: "camera", runnerId: gone, status: "active" },
+              {
+                installationId: previous.id,
+                name: "retired",
+                runnerId: gone,
+                status: current ? "disabled" : "active",
+              },
+              ...(current
+                ? [
+                    {
+                      installationId: previous.id,
+                      name: "camera",
+                      runnerId: kept,
+                      status: "active",
+                    },
+                  ]
+                : []),
             ],
             computerName: async (runnerId: unknown) => (runnerId === gone ? null : "Mac"),
             requestApprovals: async () => [],
@@ -385,7 +404,7 @@ describe("agent plugin replacement", () => {
         actorUserId: createId("user"),
         requestId: "computer",
       });
-      expect(ranOn).toMatchObject({ runnerId: agents, type: "runner" });
+      expect(ranOn).toMatchObject({ runnerId: current ? kept : agents, type: "runner" });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

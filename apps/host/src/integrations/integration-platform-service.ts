@@ -1197,9 +1197,14 @@ export class IntegrationPlatformService {
    */
   async #updateComputer(
     input: { readonly runnerId?: RunnerId | undefined; readonly workspaceId?: unknown },
-    previousServers: readonly { readonly runnerId: RunnerId | null }[],
+    previousServers: readonly { readonly runnerId: RunnerId | null; readonly status: string }[],
   ): Promise<RunnerId | undefined> {
-    const previous = previousServers.find((s) => s.runnerId)?.runnerId ?? null;
+    // A removed server keeps the computer it last ran on; a current one says where the plugin is.
+    const previous =
+      (
+        previousServers.find((s) => s.runnerId && s.status !== "disabled") ??
+        previousServers.find((s) => s.runnerId)
+      )?.runnerId ?? null;
     const kept =
       previous !== null && (await this.#store.localMcp.computerName(previous)) !== null
         ? previous

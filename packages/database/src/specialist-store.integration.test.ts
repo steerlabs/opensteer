@@ -90,9 +90,9 @@ describeStore("specialist registration", (test) => {
       ...manifest,
       access: [{ type: "browser-profile", level: "read", reason: "Research" }],
     });
-    expect((await rows()).every((r) => r.status === "pending" && r.bindings.length === 0)).toBe(
-      true,
-    );
+    expect(
+      (await rows()).every((r) => r.status === "pending" && r.bindings.length === 0 && !r.autoBind),
+    ).toBe(true);
     const pinned = (await rows()).map((r) => r.pluginVersionId);
     await expect(update("not-specialist", null)).rejects.toThrow(
       "Remove this plugin's specialist registrations before installing it without one",
