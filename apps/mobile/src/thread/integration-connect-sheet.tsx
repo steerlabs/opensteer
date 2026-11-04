@@ -472,7 +472,7 @@ export function IntegrationConnectCard(props: {
   const connectApiKey = () =>
     run(async (generation) => {
       if (!plan?.apiKeyMethod || !plan.definition || !loaded) return;
-      await props.hostClient.dispatch({
+      const result = await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`integration-key:${plan.definition.id}`),
         input: {
           authMethodId: plan.apiKeyMethod.id,
@@ -483,19 +483,15 @@ export function IntegrationConnectCard(props: {
         },
         type: "integration.apiKey.connect",
       });
-      const dashboard = unwrapRpcResult(await props.hostClient.rpc["integrations.get"]({}));
       if (generation !== operationGeneration.current) return;
-      const connection = dashboard.connections.find(
-        (account) =>
-          account.definitionId === plan.definition!.id &&
-          account.status === "connected" &&
-          (reconnect
-            ? account.id === reconnect.account.id
-            : !loaded.dashboard.connections.some((previous) => previous.id === account.id)),
-      );
-      if (!connection) throw new Error("No connected account is recorded here. Try again.");
       setApiKeyValues({});
-      await finish(connection.id, generation);
+      // An older Host does not say which account the key made; the person
+      // then chooses it with Use rather than the card guessing.
+      if (result.type === "integration.apiKey.connect" && result.connectionId) {
+        await finish(result.connectionId, generation);
+      } else {
+        setReload((value) => value + 1);
+      }
     });
   const recheckRepositories = () =>
     run(async (generation) => {

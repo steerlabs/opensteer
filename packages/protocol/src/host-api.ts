@@ -1415,7 +1415,14 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   IntegrationAuthorizationStartViewSchema.extend({
     type: z.literal("integration.authorization.begin"),
   }),
-  z.object({ type: z.literal("integration.apiKey.connect") }),
+  /**
+   * The exact account the key connected or reconnected, so a card answers its
+   * request with that account and never a look-alike. Older Hosts omit it.
+   */
+  z.object({
+    connectionId: IntegrationConnectionIdSchema.optional(),
+    type: z.literal("integration.apiKey.connect"),
+  }),
   z.object({ grant: IntegrationGrantViewSchema, type: z.literal("integration.grant.create") }),
   /**
    * Revocation is best effort: the credential is always destroyed locally, and

@@ -119,11 +119,11 @@ async function executeIntegrationCommand(
       };
     }
     case "integration.apiKey.connect": {
-      await options.integrations.connectApiKey(command.input, {
+      const connection = await options.integrations.connectApiKey(command.input, {
         ownerUserId: session.user.id,
         requestId: context.requestId,
       });
-      return { type: command.type };
+      return { connectionId: connection.id, type: command.type };
     }
     case "integration.providerApplication.status.set": {
       const application = await options.integrations.setProviderApplicationStatus(

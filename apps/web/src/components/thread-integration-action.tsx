@@ -828,23 +828,20 @@ export function ThreadIntegrationAction({
         },
         type: "integration.apiKey.connect",
       })
-      .then(async () => {
-        const dashboard = unwrapRpcResult(await hostClient.rpc["integrations.get"]({}));
-        const connection = dashboard.connections.find(
-          (account) =>
-            account.definitionId === plan.definition!.id &&
-            account.status === "connected" &&
-            (reconnectedConnectionId
-              ? account.id === reconnectedConnectionId
-              : !loaded.dashboard.connections.some((previous) => previous.id === account.id)),
-        );
-        if (!connection) throw new Error("No connected account is recorded here. Try again.");
-        answerAfterConnect.current = {
-          requestId: request.id,
-          connectionId: connection.id,
-          access: effectiveAccess,
-        };
-        setSelectedAccountId(connection.id);
+      .then((result) => {
+        if (result.type !== "integration.apiKey.connect") {
+          throw new Error("No connected account is recorded here. Try again.");
+        }
+        // An older Host does not say which account the key made; the person
+        // then chooses it with Use rather than the card guessing.
+        if (result.connectionId) {
+          answerAfterConnect.current = {
+            requestId: request.id,
+            connectionId: result.connectionId,
+            access: effectiveAccess,
+          };
+          setSelectedAccountId(result.connectionId);
+        }
         setApiKeyOpen(false);
         setReload((value) => value + 1);
       })

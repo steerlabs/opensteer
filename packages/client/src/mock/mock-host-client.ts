@@ -2916,8 +2916,10 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         type: command.type,
       });
     case "integration.apiKey.connect":
-      await client.connectIntegrationApiKey(command.input);
-      return rpcSuccess({ type: command.type });
+      return rpcSuccess({
+        connectionId: await client.connectIntegrationApiKey(command.input),
+        type: command.type,
+      });
     case "integration.grant.create":
       return rpcSuccess({
         grant: await client.createIntegrationGrant(command.input),
@@ -8244,7 +8246,7 @@ class MockHostState {
 
   async connectIntegrationApiKey(
     input: CommandInputOf<"integration.apiKey.connect">["input"],
-  ): Promise<void> {
+  ): Promise<IntegrationConnectionId> {
     const definition = this.integrationDefinition(input.definitionId);
     if (!definition) throw new Error("Integration not found.");
     // The Host's own words when a checked key is turned away; nothing is saved.
@@ -8274,7 +8276,7 @@ class MockHostState {
           : connection,
       );
       await this.#settleMainAccessRequests(reconnected.id);
-      return;
+      return reconnected.id;
     }
     const connectionId = createIntegrationId("connection");
     this.integrations.connections.push({
@@ -8299,6 +8301,7 @@ class MockHostState {
       updatedAt: timestamp,
     });
     await this.#settleMainAccessRequests(connectionId);
+    return connectionId;
   }
 
   /**
