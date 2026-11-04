@@ -3,6 +3,7 @@ import { withDatabaseTransaction } from "./connection.js";
 import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
 import {
   IntegrationServerTransportSchema,
+  localMcpLaunchSecrets,
   type IntegrationInstallationId,
   type IntegrationServerId,
   type IntegrationToolMaterial,
@@ -33,6 +34,13 @@ export interface LocalMcpServerRecord {
   readonly runnerName: string | null;
   readonly status: "active" | "disabled" | "needs-attention";
 }
+
+/**
+ * Replaces one server's sealed secrets given what is stored, or null when
+ * nothing is: the caller opens, merges and seals while the server stays
+ * locked. Null removes them.
+ */
+export type LocalMcpSecretsUpdate = (current: Buffer | null) => Promise<Buffer | null>;
 
 const waitingSentence = "Waiting for approval on the computer that runs it.";
 const startingSentence = "Starting on the computer that runs it.";
@@ -186,6 +194,8 @@ export class LocalMcpServerStore {
     readonly settlementSessionId?: string | undefined;
     readonly now?: Date;
     readonly runnerId: RunnerId;
+    /** The secrets its launch declares, as the owner answered them. */
+    readonly secrets: LocalMcpSecretsUpdate;
     readonly setupRequestId: string;
   }): Promise<{ readonly launchDigest: string; readonly serverId: IntegrationServerId }> {
     const now = input.now ?? new Date();
@@ -205,9 +215,88 @@ export class LocalMcpServerStore {
         })
         .where("id", "=", server.id)
         .execute();
+      await replaceSecrets(transaction, server.id, input.runnerId, input.secrets, now);
       await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
       return { launchDigest: server.launchDigest, serverId: server.id };
     });
+  }
+
+  /**
+   * The owner of the computer that runs an approved server changed what it
+   * was given for its secrets. Only while it still launches as approved: a
+   * new launch takes its secrets with its approval.
+   */
+  async setSecrets(input: {
+    readonly actorUserId: UserId;
+    /** The launch `secrets` was checked against. */
+    readonly launchDigest: string;
+    readonly now?: Date;
+    readonly secrets: LocalMcpSecretsUpdate;
+    readonly serverId: IntegrationServerId;
+  }): Promise<{ readonly runnerId: RunnerId }> {
+    const now = input.now ?? new Date();
+    const named = await this.get(input.serverId);
+    if (!named?.runnerId) {
+      throw new OpensteerError({ code: "not_found", message: "That server isn't installed." });
+    }
+    const runnerId = named.runnerId;
+    return withDatabaseTransaction(this.#database, async (transaction) => {
+      await lockComputer(transaction, runnerId);
+      await lockServer(transaction, input.serverId);
+      const server = (await records(transaction, await serverRows(transaction, input.serverId)))[0];
+      if (!server || server.runnerId !== runnerId || server.status === "disabled") {
+        throw new OpensteerError({ code: "not_found", message: "That server isn't installed." });
+      }
+      const ownership = await machineOwnershipIn(transaction, runnerId);
+      if (ownership?.effectiveOwner !== input.actorUserId) {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Only the owner of the computer that runs it can change its secrets.",
+        });
+      }
+      if (server.approvedLaunchDigest !== server.launchDigest) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "It's waiting for approval. Enter its secrets when you approve it.",
+        });
+      }
+      if (server.launchDigest !== input.launchDigest) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Its plugin changed just now. Try again.",
+        });
+      }
+      await replaceSecrets(transaction, server.id, runnerId, input.secrets, now);
+      return { runnerId };
+    });
+  }
+
+  /** The approved servers that take secrets on computers this person owns, whose secrets they set. */
+  async withSecretsOwnedBy(ownerUserId: UserId): Promise<readonly LocalMcpServerRecord[]> {
+    const owned: LocalMcpServerRecord[] = [];
+    for (const server of await this.list()) {
+      if (
+        server.runnerId === null ||
+        server.status === "disabled" ||
+        server.approvedLaunchDigest !== server.launchDigest ||
+        localMcpLaunchSecrets(server.launch).length === 0
+      )
+        continue;
+      const ownership = await machineOwnershipIn(this.#database, server.runnerId);
+      if (ownership?.effectiveOwner === ownerUserId) owned.push(server);
+    }
+    return owned;
+  }
+
+  /** One server's sealed secrets for the computer that runs it, or null when it has none there. */
+  async secrets(serverId: IntegrationServerId, runnerId: RunnerId): Promise<Buffer | null> {
+    const row = await this.#database
+      .selectFrom("integrationServerSecrets")
+      .select("encryptedPayload")
+      .where("serverId", "=", serverId)
+      .where("runnerId", "=", runnerId)
+      .executeTakeFirst();
+    return row?.encryptedPayload ?? null;
   }
 
   /** The computer's owner declined one server there; it is not asked about again. */
@@ -465,6 +554,38 @@ async function lockedApproved(
   return transport.type === "runner" && localMcpLaunchDigest(transport.launch) === launchDigest
     ? server
     : null;
+}
+
+/** What was entered for another computer is not kept for this one. */
+async function replaceSecrets(
+  transaction: Transaction<DatabaseSchema>,
+  serverId: IntegrationServerId,
+  runnerId: RunnerId,
+  update: LocalMcpSecretsUpdate,
+  now: Date,
+): Promise<void> {
+  const current = await transaction
+    .selectFrom("integrationServerSecrets")
+    .select(["encryptedPayload", "runnerId"])
+    .where("serverId", "=", serverId)
+    .executeTakeFirst();
+  const next = await update(current?.runnerId === runnerId ? current.encryptedPayload : null);
+  if (next === null) {
+    if (current) {
+      await transaction
+        .deleteFrom("integrationServerSecrets")
+        .where("serverId", "=", serverId)
+        .execute();
+    }
+    return;
+  }
+  await transaction
+    .insertInto("integrationServerSecrets")
+    .values({ encryptedPayload: next, runnerId, serverId, updatedAt: now })
+    .onConflict((conflict) =>
+      conflict.column("serverId").doUpdateSet({ encryptedPayload: next, runnerId, updatedAt: now }),
+    )
+    .execute();
 }
 
 async function setStatus(

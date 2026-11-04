@@ -282,6 +282,27 @@ describe("a Project's settings on the phone", () => {
     expect(container.textContent).not.toContain("Needs setup");
   });
 
+  it("refreshes a visible specialist after its browser access is revoked elsewhere", async () => {
+    const { container, host, project } = await open({ rebind: true });
+    const choice = container.querySelector('[aria-label="Which to use for A browser profile"]')!;
+    await press(button(choice, "Work"));
+    await shows(() => expect(container.textContent).toContain("Uses Work"));
+    await act(async () => {
+      for (const grant of host
+        .getSnapshot()
+        .browserProfileGrants.filter((g) => g.workspaceId === project.id)) {
+        await host.dispatch({
+          type: "browser.profileGrant.revoke",
+          grantId: grant.id,
+          idempotencyKey: mutationIdempotencyKey("revoke-visible"),
+        });
+      }
+    });
+    await shows(() =>
+      expect(button(container, "Allow a profile"), "the revoked binding still showed").toBeTruthy(),
+    );
+  });
+
   it("binds a specialist's choice, allows its missing account, and removes it after confirming", async () => {
     const { container, host, project } = await open();
     expect(container.textContent).toContain("Needs setup");

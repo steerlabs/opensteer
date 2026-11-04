@@ -3,10 +3,14 @@ import type {
   DesktopPersonalDeploymentStatus,
   DesktopPersonalDeploymentStep,
 } from "@opensteer/protocol/desktop";
+import { thisComputerLabel } from "../desktop/places.js";
 import { Icon } from "./icon.js";
+import { SetupAiPlaceholder, SetupPhonePlaceholder } from "./first-run/setup-placeholders.js";
+import { SetupList, SetupRow, SetupStatus } from "./first-run/setup-list.js";
 import { ErrorNotice, OnboardingCard } from "./onboarding-card.js";
 import { OptionRow } from "./option-row.js";
 
+/** The words for each step, in the order the supervisor runs them. */
 const personalSteps: ReadonlyArray<{
   readonly label: string;
   readonly step: DesktopPersonalDeploymentStep;
@@ -14,10 +18,10 @@ const personalSteps: ReadonlyArray<{
   { label: "Checking this computer", step: "checking-computer" },
   { label: "Preparing your private database", step: "preparing-database" },
   { label: "Starting Opensteer", step: "starting-host" },
-  { label: "Creating your workspace", step: "creating-main" },
-  { label: "Starting local agents", step: "starting-local-agents" },
   { label: "Connecting this computer", step: "connecting-computer" },
-  { label: "Ready", step: "ready" },
+  { label: "Starting local agents", step: "starting-local-agents" },
+  { label: "Creating your workspace", step: "creating-main" },
+  { label: "Opening Opensteer", step: "ready" },
 ];
 
 export function DesktopPersonalLoadFailure({
@@ -140,12 +144,15 @@ export function DesktopVerifiedDeployment({
 
 export function DesktopPersonalSetup({
   actionError,
+  computerName,
   onBack,
   onRetry,
   requestPending = false,
   status,
 }: {
   readonly actionError: string | null;
+  /** What this computer is called, so the row keeps its name once the app opens. */
+  readonly computerName: string;
   readonly onBack: () => void;
   readonly onRetry: () => void;
   readonly requestPending?: boolean;
@@ -156,77 +163,70 @@ export function DesktopPersonalSetup({
     status.state === "degraded" ||
     status.state === "repair-required" ||
     status.state === "update-required" ||
-    error;
-
-  if (failed) {
-    const canRetry = status.canStart;
-    return (
-      <OnboardingCard
-        bare
-        eyebrow="This computer"
-        live
-        title={
-          status.state === "update-required"
-            ? "Opensteer needs an update"
-            : status.state === "degraded"
-              ? "Opensteer needs attention"
-              : "This computer needs attention"
-        }
-      >
-        <ErrorNotice message={error ?? "Local setup could not be completed."} />
-        {!canRetry ? (
-          <p className="onboarding__note">
-            Update or repair Opensteer, then reopen the app to continue this setup safely.
-          </p>
-        ) : null}
-        <div className="onboarding__actions">
-          {canRetry ? (
-            <button className="btn btn--primary" onClick={onRetry} type="button">
-              Try again
-              <Icon name="reload" />
-            </button>
-          ) : null}
-          <button className="btn btn--ghost" onClick={onBack} type="button">
-            Back
-          </button>
-        </div>
-      </OnboardingCard>
-    );
-  }
-
-  const activeIndex = personalStepIndex(status.step);
+    error !== null;
+  const stepIndex = personalStepIndex(status.step);
+  const stopped = status.state === "stopped" && !requestPending;
+  const canRetry = status.canStart;
+  const title =
+    status.state === "update-required"
+      ? "Opensteer needs an update"
+      : status.state === "stopping"
+        ? "Stopping this computer"
+        : "Set up Opensteer";
   return (
-    <OnboardingCard
-      bare
-      description="Opensteer is getting this computer ready. You can safely reopen the app if setup is interrupted."
-      eyebrow="This computer"
-      live
-      title={personalProgressTitle(status)}
-    >
-      <ol aria-label="This computer setup progress" className="desktop-personal-progress">
-        {personalSteps.map((item, index) => {
-          const state =
-            index < activeIndex ? "complete" : index === activeIndex ? "current" : "pending";
-          return (
-            <li
-              aria-current={state === "current" ? "step" : undefined}
-              className={`desktop-personal-progress__step is-${state}`}
-              key={item.step}
-            >
-              <span className="desktop-personal-progress__marker" aria-hidden>
-                {state === "complete" ? <Icon name="check" /> : null}
-              </span>
-              <span>{item.label}</span>
-            </li>
-          );
-        })}
-      </ol>
-      {status.state === "stopped" && !requestPending ? (
-        <button className="btn btn--primary onboarding__primary" onClick={onRetry} type="button">
-          Set up this computer
-          <Icon name="arrow-right" />
-        </button>
-      ) : null}
+    <OnboardingCard bare live title={title}>
+      <div className="setup">
+        <SetupList label="Setup">
+          <SetupRow
+            detail={
+              failed ? (
+                <span role="alert">{error ?? "Local setup could not be completed."}</span>
+              ) : stopped ? null : (
+                (personalSteps[stepIndex]?.label ?? null)
+              )
+            }
+            icon={<Icon name="laptop" />}
+            title={computerName}
+            tone={failed ? "attention" : "idle"}
+            trailing={
+              failed ? (
+                canRetry ? (
+                  <button className="btn btn--small" onClick={onRetry} type="button">
+                    Try again
+                  </button>
+                ) : null
+              ) : stopped ? null : (
+                <SetupStatus label="Setting up" state="working" />
+              )
+            }
+          />
+          <SetupAiPlaceholder />
+          <SetupPhonePlaceholder />
+        </SetupList>
+        <div className="setup__actions">
+          {failed ? (
+            <>
+              {!canRetry ? (
+                <p className="onboarding__note">
+                  Update or repair Opensteer, then reopen the app to continue this setup safely.
+                </p>
+              ) : null}
+              <button className="btn btn--ghost" onClick={onBack} type="button">
+                Back
+              </button>
+            </>
+          ) : stopped ? (
+            <button className="btn btn--primary" onClick={onRetry} type="button">
+              Set up {thisComputerLabel().replace(/^This /u, "this ")}
+              <Icon name="arrow-right" />
+            </button>
+          ) : (
+            <button className="btn btn--primary" disabled type="button">
+              Start
+            </button>
+          )}
+        </div>
+      </div>
     </OnboardingCard>
   );
 }
@@ -266,10 +266,4 @@ export function personalStepIndex(step: DesktopPersonalDeploymentStep | null): n
   if (step === null) return 0;
   const index = personalSteps.findIndex((candidate) => candidate.step === step);
   return index < 0 ? 0 : index;
-}
-
-function personalProgressTitle(status: DesktopPersonalDeploymentStatus): string {
-  if (status.state === "stopping") return "Stopping this computer";
-  if (status.state === "ready") return "Opening Opensteer";
-  return personalSteps[personalStepIndex(status.step)]?.label ?? "Checking this computer";
 }

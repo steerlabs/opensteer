@@ -12,6 +12,7 @@ import { HostToClientMessageSchema } from "@opensteer/protocol";
 import {
   HostTransport,
   HostTransportError,
+  HostRouteUnavailableError,
   type DeploymentCatalogStore,
   type HostCredentialProvider,
   type HostNetwork,
@@ -165,7 +166,13 @@ export class DesktopHostTransport extends HostTransport {
 
   /** Refreshes the attachment fence and republishes the catalog projection. */
   async selection(): Promise<DesktopDeploymentSelection> {
-    await this.refreshSelection();
+    try {
+      await this.refreshSelection();
+    } catch (error) {
+      if (!(error instanceof HostRouteUnavailableError)) throw error;
+      // The fence has released the old route; its absence is a place status,
+      // not a failure to read the Account directory or publish other places.
+    }
     const projection = await this.#projection.read();
     return DesktopDeploymentSelectionSchema.parse({
       deployments: projection.deployments.map(

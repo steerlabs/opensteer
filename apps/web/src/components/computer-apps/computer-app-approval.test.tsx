@@ -68,3 +68,84 @@ it("loads owner details only on review and clears them when the signed-in sessio
     container.remove();
   }
 });
+
+it("asks for a server's secrets, keeps saved ones blank, and sends only what was entered", async () => {
+  const rpc = vi.fn(async () => ({
+    ok: true,
+    data: {
+      request: {
+        id: "request",
+        kind: "server",
+        server: {
+          name: "camera",
+          installationTitle: "Tapo",
+          launch: {
+            type: "stdio",
+            command: "node",
+            args: [],
+            cwd: "/plugin",
+            env: {},
+            secrets: [
+              { name: "CAMERA_PASSWORD", title: "Camera password" },
+              { name: "CAMERA_USER", title: "Camera user" },
+            ],
+          },
+        },
+      },
+      app: null,
+      savedSecrets: ["CAMERA_USER"],
+    },
+  }));
+  const dispatch = vi.fn(async () => ({ type: "integration.computer.setup.respond" }));
+  const host = {
+    getSnapshot: () => ({ user: { id: "owner" } }),
+    subscribe: () => () => {},
+    rpc: { "integration.computer.setup.review": rpc },
+    dispatch,
+    refresh: vi.fn(async () => undefined),
+  } as unknown as HostClient;
+  function Review() {
+    const approval = useComputerAppApproval(host);
+    return (
+      <>
+        {approval.dialog}
+        <button onClick={() => void approval.ask("request")}>Review</button>
+      </>
+    );
+  }
+  const button = (label: string) =>
+    [...document.querySelectorAll("button")].find((each) => each.textContent === label)!;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<Review />));
+    await act(async () => button("Review").click());
+    const fields = [...document.querySelectorAll<HTMLInputElement>("input")];
+    expect(fields.map(({ type }) => type)).toEqual(["password", "password"]);
+    expect(fields[1]?.placeholder).toBe("Saved. Leave blank to keep it.");
+    expect(document.body.textContent).toContain("Its program receives this as CAMERA_PASSWORD.");
+
+    await act(async () => button("Allow").click());
+    expect(document.body.textContent).toContain("Enter Camera password.");
+    expect(dispatch).not.toHaveBeenCalled();
+
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setValue.call(fields[0], "hunter2");
+      fields[0]!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => button("Allow").click());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: "allow",
+        secrets: { CAMERA_PASSWORD: "hunter2" },
+        setupRequestId: "request",
+        type: "integration.computer.setup.respond",
+      }),
+    );
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});

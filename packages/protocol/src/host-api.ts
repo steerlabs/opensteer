@@ -130,6 +130,11 @@ import {
   IntegrationPlatformDashboardViewSchema,
   IntegrationProviderApplicationViewSchema,
   IntegrationRepositoryAccessViewSchema,
+  IntegrationServerIdSchema,
+  LocalMcpSecretNameSchema,
+  LocalMcpSecretViewSchema,
+  LocalMcpSecretValuesSchema,
+  localMcpMaxSecrets,
   RequestComputerAppSetupSchema,
   SaveIntegrationProviderApplicationSchema,
   SetComputerAppConnectionSchema,
@@ -805,7 +810,16 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     setupRequestId: z.uuid(),
     decision: z.enum(["allow", "deny"]),
+    /** Allowing a server: what its owner entered for the secrets its launch declares. */
+    secrets: LocalMcpSecretValuesSchema.optional(),
     type: z.literal("integration.computer.setup.respond"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    /** New values for some of an approved server's secrets; the rest keep theirs. */
+    secrets: LocalMcpSecretValuesSchema,
+    serverId: IntegrationServerIdSchema,
+    type: z.literal("integration.server.secrets.set"),
   }),
   z.strictObject({
     attemptId: IntegrationAuthorizationAttemptIdSchema,
@@ -1332,6 +1346,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("integration.computer.setup.respond"),
   }),
+  z.object({ type: z.literal("integration.server.secrets.set") }),
   z.object({ type: z.literal("integration.computer.policy.set"), appApproval: z.literal("ask") }),
   z.object({ type: z.literal("integration.computer.app.block") }),
   IntegrationAuthorizationStatusViewSchema.extend({
@@ -1518,11 +1533,7 @@ export const hostApi = defineRpc({
     z.strictObject({ appId: AppIdSchema, theme: z.enum(["light", "dark"]) }),
     z.object({
       app: AppSchema,
-      path: z
-        .string()
-        .regex(
-          /^\/v1\/apps\/app_[0-9a-f-]{36}\/content\?token=[A-Za-z0-9_-]{43}&theme=(light|dark)$/u,
-        ),
+      path: z.string().regex(/^\/v1\/apps\/app_[0-9a-f-]{36}\/(light|dark)\/[A-Za-z0-9_-]{43}\/$/u),
     }),
   ),
   "attachment.get": declaration("GET", AttachmentReferenceInputSchema, AttachmentSchema),
@@ -1715,12 +1726,33 @@ export const hostApi = defineRpc({
       app: z
         .object({ ...ComputerUseResolvedAppSchema.shape, identity: ComputerAppIdentityViewSchema })
         .nullable(),
+      /** Which of a server's secrets already have a value, which allowing can keep. */
+      savedSecrets: z.array(LocalMcpSecretNameSchema).max(localMcpMaxSecrets).optional(),
     }),
   ),
   "integration.computer.setup.list": declaration(
     "GET",
     emptyInputSchema,
     z.object({ requests: z.array(ComputerAppSetupRequestViewSchema).max(1_000) }),
+  ),
+  /** Plugin servers on the caller's computers whose secrets the caller may change; never values. */
+  "integration.server.secrets.list": declaration(
+    "GET",
+    emptyInputSchema,
+    z.object({
+      servers: z
+        .array(
+          z.object({
+            computer: z.string().nullable(),
+            installationId: IntegrationInstallationIdSchema,
+            id: IntegrationServerIdSchema,
+            name: z.string(),
+            plugin: z.string(),
+            secrets: z.array(LocalMcpSecretViewSchema).max(localMcpMaxSecrets),
+          }),
+        )
+        .max(1_000),
+    }),
   ),
   /**
    * The picker's list, asked of the Mac itself.

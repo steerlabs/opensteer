@@ -1,4 +1,11 @@
 import {
+  localMcpSecretServers,
+  localMcpSecretsToSend,
+  setLocalMcpServerSecrets,
+  type LocalMcpSecretServer,
+} from "@opensteer/client/integrations";
+import { LocalMcpSecretFields } from "../../computer-apps/local-mcp-secret-fields.js";
+import {
   completePluginConsent,
   pluginConsentKey,
   readPluginConsent,
@@ -198,6 +205,7 @@ function PluginOverview({ view }: { readonly view: SettingsView }) {
           )
         )}
       </div>
+      <PluginSecrets />
     </>
   );
 }
@@ -414,6 +422,7 @@ function PluginDetail({
               </div>
             </section>
           ) : null}
+          <PluginServers detail={data} />
           <PackageActions detail={data} reload={detail.reload} />
           {data.sourceFolder === null && data.row.target.kind === "plugin" ? (
             <p>Source folder unknown</p>
@@ -422,6 +431,7 @@ function PluginDetail({
       ) : (
         <p role="status">Loading plugin…</p>
       )}
+      {data ? <PluginSecrets detail={data} /> : null}
     </>
   );
 }
@@ -1063,5 +1073,149 @@ function PluginIcon({ row }: { row: PluginRow }) {
         }
       />
     </span>
+  );
+}
+
+/** New values for the secrets a server's computer's owner entered when approving it. */
+function ChangeSecrets(props: {
+  readonly onClose: () => void;
+  readonly onSaved: () => void;
+  readonly server: LocalMcpSecretServer;
+}) {
+  const { hostClient } = useShell();
+  const fields = props.server.secrets.map((secret) => ({ ...secret, saved: true }));
+  const [values, setValues] = useState<Readonly<Record<string, string>>>({});
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = () => {
+    const entered = localMcpSecretsToSend(fields, values);
+    if (!entered.ok || Object.keys(entered.secrets).length === 0) {
+      setError(entered.ok ? "Enter a new value to change." : entered.message);
+      return;
+    }
+    setPending(true);
+    setError(null);
+    void setLocalMcpServerSecrets(hostClient, props.server.id, entered.secrets)
+      .then(props.onSaved)
+      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+      .finally(() => setPending(false));
+  };
+  return (
+    <Dialog
+      labelledBy="plugin-secrets-title"
+      onClose={() => {
+        if (!pending) props.onClose();
+      }}
+      title={`${props.server.plugin}’s secrets`}
+    >
+      <p className="section__hint">
+        Enter only what changed. {props.server.name} restarts with the new values.
+      </p>
+      <LocalMcpSecretFields
+        disabled={pending}
+        fields={fields}
+        onChange={(name, value) => setValues((current) => ({ ...current, [name]: value }))}
+        values={values}
+      />
+      <div className="form-actions">
+        <button className="btn" disabled={pending} onClick={props.onClose} type="button">
+          Cancel
+        </button>
+        <button className="btn btn--primary" disabled={pending} onClick={save} type="button">
+          {pending ? "Saving…" : "Save"}
+        </button>
+      </div>
+      {error ? <SettingsError message={error} /> : null}
+    </Dialog>
+  );
+}
+
+function PluginSecrets({ detail }: { readonly detail?: PluginDetailView }) {
+  const { hostClient, snapshot } = useShell();
+  const servers = useSettingsRead(() => localMcpSecretServers(hostClient), "plugin-secrets");
+  const [changing, setChanging] = useState<LocalMcpSecretServer | null>(null);
+  const [done, setDone] = useState(false);
+  const matching = servers.data?.filter(
+    (server) => !detail || detail.installationIds.includes(server.installationId),
+  );
+  return (
+    <section className="settings-group">
+      <SettingsError message={servers.error ? actionErrorMessage(servers.error) : null} />
+      {matching?.length ? (
+        <>
+          <h2 className="settings-group__title">Secrets on your computers</h2>
+          <div className="card">
+            {matching.map((server) => (
+              <SettingsRow
+                key={server.id}
+                icon="shield"
+                title={server.name}
+                detail={[server.computer, ...server.secrets.map((secret) => secret.title)]
+                  .filter(Boolean)
+                  .join(" · ")}
+                action={
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={snapshot.connection !== "connected"}
+                    onClick={() => {
+                      setDone(false);
+                      setChanging(server);
+                    }}
+                  >
+                    Change
+                  </button>
+                }
+              />
+            ))}
+          </div>
+        </>
+      ) : null}
+      {done ? <p role="status">Secrets changed</p> : null}
+      {changing ? (
+        <ChangeSecrets
+          server={changing}
+          onClose={() => setChanging(null)}
+          onSaved={() => {
+            setChanging(null);
+            setDone(true);
+          }}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function PluginServers({ detail }: { readonly detail: PluginDetailView }) {
+  const { hostClient } = useShell();
+  const platform = useSettingsRead(
+    () => hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
+    `plugin-servers:${pluginPath(detail.row.target)}`,
+  );
+  const entries =
+    platform.data?.installations.filter(
+      (entry) => detail.installationIds.includes(entry.installation.id) && entry.servers.length > 0,
+    ) ?? [];
+  return (
+    <>
+      <SettingsError message={platform.error ? actionErrorMessage(platform.error) : null} />
+      {entries.length ? (
+        <section className="settings-group">
+          <h2 className="settings-group__title">MCP servers</h2>
+          <div className="card">
+            {entries.flatMap((entry) =>
+              entry.servers.map((server) => (
+                <SettingsRow
+                  key={server.id}
+                  title={server.name}
+                  icon="puzzle"
+                  detail={server.status}
+                />
+              )),
+            )}
+          </div>
+        </section>
+      ) : null}
+    </>
   );
 }

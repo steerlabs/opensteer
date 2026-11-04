@@ -492,12 +492,17 @@ function SpecialistsSection({
   readonly hostClient: HostClient;
   readonly workspace: WorkspaceSummary;
 }) {
+  const { snapshot } = useShell();
+  const browserAccess = JSON.stringify([
+    snapshot.browserProfileGrants.filter((grant) => grant.workspaceId === workspace.id),
+    snapshot.browserProfiles,
+  ]);
   const specialists = useHostRead(
     () =>
       hostClient.rpc["specialist.list"]({ workspaceId: WorkspaceIdSchema.parse(workspace.id) })
         .then(unwrapRpcResult)
         .then(({ specialists }) => specialists),
-    `specialists:${workspace.id}`,
+    `specialists:${workspace.id}:${browserAccess}`,
   );
   const [updated, setUpdated] = useState<ReadonlyMap<string, SpecialistRegistration>>(new Map());
   useEffect(() => setUpdated(new Map()), [specialists.data]);

@@ -4520,7 +4520,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       };
       const decide = () =>
         decision === "mcp-allow"
-          ? held.localMcp.approve(input)
+          ? held.localMcp.approve({ ...input, secrets: async () => null })
           : decision === "mcp-deny"
             ? held.localMcp.decline(input)
             : held.setComputerUsePolicy({
@@ -4577,6 +4577,161 @@ integration.sequential("PostgreSQL computer app connections", () => {
       }
     });
   }
+
+  it("changes a server's secrets only for its computer's owner, while it runs as approved", async ({
+    storeFixture,
+  }) => {
+    const { database, guiFixture, platform } = storeFixture;
+    const setup = await guiFixture("server-secrets");
+    const stranger = await guiFixture("server-secrets-stranger");
+    const setLaunch = (env: Record<string, string>) =>
+      database
+        .updateTable("integrationServers")
+        .set({
+          transport: jsonValue({
+            launch: {
+              args: [],
+              command: "node",
+              cwd: "/tmp",
+              env,
+              secrets: [{ name: "CAMERA_PASSWORD", title: "Camera password" }],
+              type: "stdio",
+            },
+            runnerId: setup.runnerId,
+            type: "runner",
+          }),
+        })
+        .where("id", "=", setup.gui.serverId)
+        .execute();
+    await setLaunch({});
+    await platform.localMcp.requestApprovals();
+    const asked = (await platform.listComputerAppSetupRequests(setup.ownerUserId)).find(
+      ({ kind }) => kind === "server",
+    );
+    if (!asked) throw new Error("The server's computer was not asked");
+    await platform.localMcp.approve({
+      actorUserId: setup.ownerUserId,
+      runnerId: setup.runnerId,
+      secrets: async (current) => {
+        expect(current).toBeNull();
+        return Buffer.from("sealed");
+      },
+      setupRequestId: asked.id,
+    });
+    const server = await platform.localMcp.get(setup.gui.serverId);
+    if (!server) throw new Error("The server is installed");
+    const change = (
+      actorUserId: typeof setup.ownerUserId,
+      launchDigest: string = server.launchDigest,
+    ) =>
+      platform.localMcp.setSecrets({
+        actorUserId,
+        launchDigest,
+        secrets: async (current) => Buffer.concat([current ?? Buffer.alloc(0), Buffer.from("+")]),
+        serverId: server.id,
+      });
+    await expect(change(stranger.ownerUserId)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(change(setup.ownerUserId, "another-launch")).rejects.toMatchObject({
+      code: "conflict",
+    });
+    await change(setup.ownerUserId);
+    expect(await platform.localMcp.secrets(server.id, setup.runnerId)).toEqual(
+      Buffer.from("sealed+"),
+    );
+
+    // Launched differently, it waits for approval, which takes its secrets.
+    await setLaunch({ EDITION: "2" });
+    const relaunched = await platform.localMcp.get(server.id);
+    await expect(change(setup.ownerUserId, relaunched?.launchDigest)).rejects.toMatchObject({
+      code: "conflict",
+      message: "It's waiting for approval. Enter its secrets when you approve it.",
+    });
+    expect(await platform.localMcp.secrets(server.id, setup.runnerId)).toEqual(
+      Buffer.from("sealed+"),
+    );
+  });
+
+  it("asks the computer a server moves to, and keeps none of what was entered for the last", async ({
+    storeFixture,
+  }) => {
+    const { guiFixture, platform } = storeFixture;
+    const setup = await guiFixture("server-moves");
+    const other = await guiFixture("server-moves-other");
+    const launch = {
+      args: [],
+      command: "node",
+      cwd: "/tmp",
+      env: {},
+      secrets: [{ name: "CAMERA_PASSWORD", title: "Camera password" }],
+      type: "stdio" as const,
+    };
+    const installationId = createIntegrationId("installation");
+    const serverId = createIntegrationId("server");
+    // A plugin installed again, its programs run on another computer this time.
+    const installOn = (runnerId: typeof setup.runnerId, key: string) =>
+      platform.install({
+        actorUserId: setup.ownerUserId,
+        adapterSnapshot: null,
+        installation: {
+          description: "",
+          id: installationId,
+          manifest: {},
+          name: "plugin-camera",
+          provenance: {},
+          sourceKind: "plugin",
+          status: "active",
+          title: "camera",
+          trust: "administrator-approved",
+          version: null,
+        },
+        requestId: key,
+        servers: [
+          {
+            catalog: { definitions: {}, tools: [] },
+            connectionRequirement: { kind: "none" },
+            id: serverId,
+            name: "camera",
+            status: "needs-attention",
+            statusDetail: null,
+            transport: { launch, runnerId, type: "runner" },
+          },
+        ],
+      });
+    await installOn(setup.runnerId, "server-moves-first");
+    await platform.localMcp.requestApprovals();
+    const asked = (await platform.listComputerAppSetupRequests(setup.ownerUserId)).find(
+      ({ kind }) => kind === "server",
+    );
+    if (!asked) throw new Error("The first computer was not asked");
+    await platform.localMcp.approve({
+      actorUserId: setup.ownerUserId,
+      runnerId: setup.runnerId,
+      secrets: async () => Buffer.from("entered-on-the-first"),
+      setupRequestId: asked.id,
+    });
+
+    await installOn(other.runnerId, "server-moves-second");
+    const moved = await platform.localMcp.get(serverId);
+    expect(moved).toMatchObject({ approvedLaunchDigest: null, runnerId: other.runnerId });
+    expect(await platform.localMcp.secrets(serverId, other.runnerId)).toBeNull();
+    await platform.localMcp.requestApprovals();
+    const askedOther = (await platform.listComputerAppSetupRequests(other.ownerUserId)).find(
+      ({ kind }) => kind === "server",
+    );
+    if (!askedOther) throw new Error("The computer it moved to was not asked");
+    await platform.localMcp.approve({
+      actorUserId: other.ownerUserId,
+      runnerId: other.runnerId,
+      secrets: async (current) => {
+        expect(current).toBeNull();
+        return Buffer.from("entered-on-the-second");
+      },
+      setupRequestId: askedOther.id,
+    });
+    expect(await platform.localMcp.secrets(serverId, other.runnerId)).toEqual(
+      Buffer.from("entered-on-the-second"),
+    );
+  });
 
   it("requires the pending policy request, consumes it once, and keeps connections when switched off", async ({
     storeFixture,

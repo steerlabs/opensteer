@@ -311,6 +311,7 @@ export function DeploymentsScreen(): ReactNode {
     const generation = accountFlowGeneration.current + 1;
     accountFlowGeneration.current = generation;
     const expectedSelection = client.getSnapshot().selection.deploymentId;
+    const openingComputer = client.getSnapshot().pendingComputer !== null;
     setFailure(null);
     setStartingAccountSignIn(true);
     void (async () => {
@@ -318,6 +319,7 @@ export function DeploymentsScreen(): ReactNode {
       if (!accountFlowIsCurrent(generation, expectedSelection)) return;
       await client.refreshDirectory();
       if (!accountFlowIsCurrent(generation, expectedSelection)) return;
+      if (openingComputer || client.getSnapshot().pendingComputer !== null) return;
       const singleton = eligibleSingletonDeployment(client.getSnapshot().rows);
       if (singleton !== null) open(singleton);
     })()
@@ -416,6 +418,7 @@ export function DeploymentsScreen(): ReactNode {
         >
           {presentation === "welcome" ? (
             <Welcome
+              portalOrigin={client.portalOrigin}
               account={account.account}
               failure={failure}
               onAccount={signInAccount}

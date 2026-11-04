@@ -224,7 +224,9 @@ export function IntegrationControllerFixture(props: Parameters<typeof useIntegra
                   workspaces={snapshot.workspaces}
                 />
                 <PluginsAndMcpSection
-                  entries={otherInstallations.filter((e) => e.installation.sourceKind !== "plugin")}
+                  entries={otherInstallations.filter(
+                    (e) => e.installation.sourceKind !== "plugin" || e.servers.length > 0,
+                  )}
                   isAdministrator={dashboard?.isAdministrator ?? false}
                   onInstall={() => {
                     setError(null);

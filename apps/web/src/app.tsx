@@ -43,6 +43,9 @@ import { useHostSnapshot } from "@opensteer/client/react";
 import { consumeOAuthErrorQuery } from "./account/auth-error-query.js";
 import { consumeNativeOAuthQuery } from "./account/native-oauth-query.js";
 import { Icon } from "./components/icon.js";
+import { SetupOpening } from "./components/first-run/setup-opening.js";
+import { setupPath } from "./components/workspace/navigation.js";
+import { SetupPage } from "./components/first-run/setup-page.js";
 import { ToastProvider } from "./components/toast.js";
 import { DesktopUpdateFeedback } from "./components/desktop-update-button.js";
 import { actionErrorMessage } from "./ui-utils.js";
@@ -59,6 +62,8 @@ export function App({
   hostClient,
   onNotificationTargetOpened,
   notificationTarget = null,
+  onSetupOpened,
+  openSetup = false,
 }: {
   /** The Desktop's single guarded access snapshot, or null in a browser. */
   readonly deploymentAccess?: DeploymentAccessSnapshot | null;
@@ -72,6 +77,10 @@ export function App({
    * the app until this person is authenticated.
    */
   readonly notificationTarget?: DesktopNotificationTarget | null;
+  /** Told once setup has taken over the window, so it is not opened again. */
+  readonly onSetupOpened?: (() => void) | undefined;
+  /** This computer was set up in this window, so setup continues as the app opens. */
+  readonly openSetup?: boolean;
 }) {
   const { loadError, reload, snapshot } = useHostSnapshot(hostClient, sameAppGateSnapshot);
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
@@ -83,6 +92,23 @@ export function App({
   // Captured once, during the first render, so the code leaves the URL before
   // anything can paint it or persist it in history.
   const [setupToken] = useState(takeSetupToken);
+  // Setup carries on into the app it just set up. The address is chosen before
+  // the router first reads it, so Chat never mounts underneath setup and a
+  // notification the window was opened for still wins.
+  useState(() => {
+    if (openSetup && window.location.pathname === "/" && notificationTarget === null) {
+      window.history.replaceState(window.history.state, "", setupPath + window.location.search);
+    }
+  });
+  // Setup stays on screen through the session and workspace waits below, and
+  // hands back only once the app it continues into can draw.
+  const [continuingSetup, setContinuingSetup] = useState(openSetup);
+  const shellReady = snapshot.session === "authenticated" && snapshot.workspaces.length > 0;
+  useEffect(() => {
+    if (!continuingSetup || !shellReady) return;
+    setContinuingSetup(false);
+    onSetupOpened?.();
+  }, [continuingSetup, onSetupOpened, shellReady]);
   const [recoveryToken] = useState(takeRecoveryToken);
   const [nativeOAuthQuery] = useState(() =>
     consumeNativeOAuthQuery(window.location, (url) => window.history.replaceState(null, "", url)),
@@ -340,6 +366,9 @@ export function App({
   }
 
   if (snapshot.session === "checking") {
+    if (continuingSetup && !loadError) {
+      return <SetupOpening computerName={desktopDeployment?.name ?? "This computer"} />;
+    }
     return (
       <Splash detail={loadError ?? "Connecting to your deployment…"}>
         {loadError ? (
@@ -410,6 +439,9 @@ export function App({
   // empty list means it is still being written, not that there is nothing to
   // show. This is a brief moment on a first run and none at all afterwards.
   if (snapshot.workspaces.length === 0) {
+    if (continuingSetup && !loadError) {
+      return <SetupOpening computerName={desktopDeployment?.name ?? "This computer"} />;
+    }
     return (
       <Splash detail={loadError ?? "Preparing your Workspace…"}>
         {loadError ? (
@@ -444,6 +476,7 @@ export function App({
             <Route path="threads/:threadId" element={<ThreadRoute />} />
             <Route path="live" element={<LiveRedirect />} />
             <Route path="projects" element={<ProjectsPage />} />
+            <Route path="get-started" element={<SetupPage />} />
             <Route path="workspaces/:workspaceId" element={<WorkspaceHomeRoute />} />
             <Route path="workspaces/:workspaceId/settings" element={<ProjectSettingsRoute />} />
             <Route

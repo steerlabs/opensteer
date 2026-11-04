@@ -324,3 +324,87 @@ describe("Plugins settings", () => {
     expect(node.querySelector('[aria-label="Enable Gmail"]')).not.toBeNull();
   });
 });
+
+it("changes only entered server secrets from unified plugin detail", async () => {
+  let serverId = "";
+  const node = await mount(pluginPath({ kind: "service", definitionId: "google-gmail" }), {
+    configure: async (client) => {
+      await client.load();
+      const detail = unwrapRpcResult(
+        await client.rpc["plugins.detail.get"]({
+          target: { kind: "service", definitionId: "google-gmail" },
+        }),
+      );
+      const rpc = client.rpc;
+      serverId = "isv_00000000-0000-4000-8000-000000000009";
+      Object.defineProperty(client, "rpc", {
+        value: new Proxy(rpc, {
+          get: (target, key) =>
+            key === "plugins.detail.get"
+              ? async () => ({
+                  ok: true,
+                  data: { ...detail, installationIds: ["iin_secret_fixture"] },
+                })
+              : key === "integration.server.secrets.list"
+                ? async () => ({
+                    ok: true,
+                    data: {
+                      servers: [
+                        {
+                          id: serverId,
+                          installationId: "iin_secret_fixture",
+                          plugin: "Gmail",
+                          computer: "Studio Mac",
+                          name: "mail",
+                          secrets: [
+                            { name: "PASSWORD", title: "Mail password" },
+                            { name: "TOKEN", title: "Token" },
+                          ],
+                        },
+                      ],
+                    },
+                  })
+                : Reflect.get(target, key),
+        }),
+      });
+    },
+  });
+  const dispatch = vi
+    .spyOn(client, "dispatch")
+    .mockResolvedValue({ type: "integration.server.secrets.set" } as never);
+  await act(async () => {
+    await vi.waitFor(() => expect(node.textContent).toContain("Secrets on your computers"));
+  });
+  await act(async () =>
+    [...node.querySelectorAll("button")].find((button) => button.textContent === "Change")!.click(),
+  );
+  await act(async () =>
+    [...document.querySelectorAll("button")]
+      .find((button) => button.textContent === "Save")!
+      .click(),
+  );
+  expect(document.body.textContent).toContain("Enter a new value to change.");
+  const field = document.querySelector<HTMLInputElement>('input[type="password"]')!;
+  expect(field.type).toBe("password");
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+      field,
+      "new-secret",
+    );
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () =>
+    [...document.querySelectorAll("button")]
+      .find((button) => button.textContent === "Save")!
+      .click(),
+  );
+  expect(dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: "integration.server.secrets.set",
+      serverId,
+      secrets: { PASSWORD: "new-secret" },
+    }),
+  );
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.body.textContent).not.toContain("new-secret");
+});

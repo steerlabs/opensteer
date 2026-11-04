@@ -15,6 +15,8 @@ import {
 } from "../components/desktop-onboarding.js";
 import { DesktopPlaceChooser, DesktopWelcome } from "../components/places/place-chooser.js";
 import { DesktopPlacesProvider, type DesktopPlaces } from "./places-context.js";
+import { thisComputerLabel } from "./places.js";
+import { SetupOpening } from "../components/first-run/setup-opening.js";
 import { StartupFailure } from "../components/onboarding-card.js";
 import {
   createDesktopHostFetch,
@@ -109,6 +111,9 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   const [screen, setScreen] = useState<BrowsingScreen>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [connectingPrivate, setConnectingPrivate] = useState(false);
+  // This window set this computer up, so setup carries on into the app it
+  // opens. A later launch opens the app as it is; setup stays one menu away.
+  const [settingUpHere, setSettingUpHere] = useState(false);
   // The notification that was clicked. It names one Deployment, which this
   // window may not be showing, so it waits here — through the selection and any
   // sign-in that follows — until the app for that Deployment can open it.
@@ -273,6 +278,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       return (
         <DesktopPersonalSetup
           actionError={snapshot.personalSetup?.issue?.detail ?? operationError}
+          computerName={selected?.name ?? thisComputerLabel()}
           onBack={() => runBridgeOperation(bridge.cancel())}
           onRetry={() => runBridgeOperation(bridge.retry())}
           requestPending={busy}
@@ -358,6 +364,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
             snapshot.personalSetup.canStart
               ? () => {
                   setScreen(null);
+                  setSettingUpHere(true);
                   runBridgeOperation(bridge.createPersonalDeployment());
                 }
               : null
@@ -378,6 +385,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       const setUpHere = canSetUpHere
         ? () => {
             setScreen(null);
+            setSettingUpHere(true);
             runBridgeOperation(bridge.createPersonalDeployment());
           }
         : null;
@@ -404,7 +412,11 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       );
     }
 
+    const opening = settingUpHere ? (
+      <SetupOpening computerName={selected?.name ?? thisComputerLabel()} />
+    ) : null;
     if (selectedConnection?.status !== "connected" || !hostClient) {
+      if (opening && !operationError) return opening;
       return (
         <DesktopLoadingScreen
           error={operationError}
@@ -418,7 +430,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     }
 
     return (
-      <Suspense fallback={<DesktopLoadingScreen />}>
+      <Suspense fallback={opening ?? <DesktopLoadingScreen />}>
         <SignedInApp
           deploymentAccess={snapshot}
           desktopBridge={bridge}
@@ -431,6 +443,8 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
           notificationTarget={
             notificationTarget?.deploymentId === selected.id ? notificationTarget : null
           }
+          onSetupOpened={() => setSettingUpHere(false)}
+          openSetup={settingUpHere && selected.kind === "personal" && selected.onThisComputer}
         />
       </Suspense>
     );

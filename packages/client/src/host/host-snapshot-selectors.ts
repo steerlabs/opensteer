@@ -36,6 +36,8 @@ export function sameStableHostSnapshot(previous: HostSnapshot, next: HostSnapsho
   return (
     previous === next ||
     (previous.browserProfileDeletions === next.browserProfileDeletions &&
+      previous.browserProfileGrants === next.browserProfileGrants &&
+      previous.browserProfiles === next.browserProfiles &&
       previous.connection === next.connection &&
       previous.network === next.network &&
       previous.deploymentShape === next.deploymentShape &&

@@ -223,6 +223,7 @@ export class WorkspaceService {
       throw new OpensteerError({
         code: "workspace_unavailable",
         message: "Workspace is awaiting deletion",
+        reason: "workspace-deleting",
       });
     }
     if (workspace.storageIssue?.code === "relocation-required")

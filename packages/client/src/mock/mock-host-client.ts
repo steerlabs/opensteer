@@ -2150,6 +2150,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess({ appApproval: client.computerUseAppApproval(input.runnerId) }),
     "integration.computer.setup.review": async ({ setupRequestId }) =>
       rpcSuccess(client.reviewComputerAppSetup(setupRequestId)),
+    // This mock runs no MCP server on a computer, so none takes secrets.
+    "integration.server.secrets.list": async () => rpcSuccess({ servers: [] }),
     "integration.computer.setup.list": async () =>
       rpcSuccess(
         hostApi["integration.computer.setup.list"].success.parse({
@@ -2926,6 +2928,8 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "integration.computer.setup.respond":
       await client.respondComputerAppSetup(command.setupRequestId, command.decision);
       return rpcSuccess({ type: command.type });
+    case "integration.server.secrets.set":
+      throw new Error("This mock has no local MCP executor.");
     case "integration.computer.policy.set":
       await client.setComputerUsePolicy(command.input.runnerId);
       return rpcSuccess({ appApproval: "ask", type: command.type });

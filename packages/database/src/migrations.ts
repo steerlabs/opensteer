@@ -4699,9 +4699,10 @@ export function migrationProvider() {
         "0145_specialist_lifecycle": specialistLifecycleMigration,
         "0146_every_turn_shows": everyTurnShowsMigration,
         "0147_quiet_assignment_results": quietAssignmentResultsMigration,
-        "0148_plugin_owner_settings": pluginOwnerSettingsMigration,
-        "0149_workspace_skill_inventory": workspaceSkillInventoryMigration,
-        "0150_plugin_settings_revisions": pluginSettingsRevisionsMigration,
+        "0148_local_mcp_server_secrets": localMcpServerSecretsMigration,
+        "0149_plugin_owner_settings": pluginOwnerSettingsMigration,
+        "0150_workspace_skill_inventory": workspaceSkillInventoryMigration,
+        "0151_plugin_settings_revisions": pluginSettingsRevisionsMigration,
       };
     },
   };
@@ -7164,6 +7165,28 @@ export const pluginSettingsRevisionsMigration: Migration = {
       create trigger plugin_activation_settings_revision after insert or update or delete on plugin_activations for each row execute function opensteer_legacy_plugin_revision();
       create trigger specialist_settings_revision after insert or update or delete on specialists for each row execute function opensteer_legacy_plugin_revision();
       create trigger integration_grant_settings_revision after insert or update or delete on integration_grants for each row execute function opensteer_legacy_plugin_revision();
+    `.execute(database);
+  },
+};
+
+/**
+ * What the owner of the computer that runs an MCP server entered for the
+ * secrets its launch declares, sealed as one envelope. A table of its own, so
+ * no listing of servers carries it, and it goes with its server. It is for
+ * the computer it was entered for: one the server moves to is asked again.
+ */
+export const localMcpServerSecretsMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table public.integration_server_secrets (
+        server_id text primary key
+          references public.integration_servers(id) on delete cascade,
+        runner_id text not null references public.runners(id) on delete cascade,
+        encrypted_payload bytea not null check (
+          octet_length(encrypted_payload) between 1 and 1048576
+        ),
+        updated_at timestamptz not null default now()
+      );
     `.execute(database);
   },
 };

@@ -1477,7 +1477,7 @@ export class RunnerRegistry {
       if (canceled) return;
       canceled = true;
       void connection.peer
-        .send({ ...request, type: "host.app.cancel", fence })
+        .send({ type: "host.app.cancel", requestId: request.requestId, spec: request.spec, fence })
         .catch(() => undefined);
     };
     signal.addEventListener("abort", cancel, { once: true });
@@ -2170,6 +2170,7 @@ export class RunnerRegistry {
       case "runner.workspace.local.provisioned":
       case "runner.workspace.local.relocated":
       case "runner.workspace.local.inspected":
+      case "runner.workspace.local.specialist.removed":
       case "runner.workspace.local.destroyed":
       case "runner.workspace.local.files.listed":
       case "runner.workspace.local.files.read":

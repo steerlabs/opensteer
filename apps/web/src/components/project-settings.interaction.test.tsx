@@ -136,6 +136,32 @@ async function openProjectSettings({ offline = false, rebind = false, restoreAcc
 }
 
 describe("a Project's settings", () => {
+  it("refreshes a visible specialist after its browser access is revoked", async () => {
+    const project = await openProjectSettings({ rebind: true });
+    await click(button("Use", section("Specialists")));
+    await settle();
+    expect(section("Specialists").textContent).toContain("Uses Work");
+    await act(async () => {
+      for (const grant of client
+        .getSnapshot()
+        .browserProfileGrants.filter((g) => g.workspaceId === project.id)) {
+        await client.dispatch({
+          type: "browser.profileGrant.revoke",
+          grantId: grant.id,
+          idempotencyKey: mutationIdempotencyKey("revoke-visible"),
+        });
+      }
+    });
+    await settle();
+    await vi.waitFor(
+      () => {
+        expect(section("Specialists").textContent).toContain("Needs setup");
+        expect(button("Allow access", section("Specialists"))).toBeTruthy();
+      },
+      { timeout: 3000 },
+    );
+  });
+
   it("offers access setup for revoked access with no remaining candidates", async () => {
     await openProjectSettings({ rebind: true, restoreAccess: false });
     expect(button("Allow access", section("Specialists"))).toBeTruthy();

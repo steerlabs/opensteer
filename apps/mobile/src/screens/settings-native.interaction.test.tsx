@@ -537,3 +537,72 @@ it.each(["ios", "android"])(
     expect(JSON.stringify(uncertain)).toContain(account.connectionId);
   },
 );
+
+it.each(["ios", "android"])(
+  "lets a computer owner edit secrets in unified Plugins on %s",
+  async (os) => {
+    state.os = os;
+    await open("plugins");
+    const rpc = host.rpc;
+    const originalSnapshot = host.getSnapshot.bind(host);
+    vi.spyOn(host, "getSnapshot").mockImplementation(() => ({
+      ...originalSnapshot(),
+      user: { ...originalSnapshot().user!, instanceRole: "user" },
+    }));
+    const serverId = "isv_00000000-0000-4000-8000-000000000009";
+    Object.defineProperty(host, "rpc", {
+      value: new Proxy(rpc, {
+        get: (target, key) =>
+          key === "integration.server.secrets.list"
+            ? async () => ({
+                ok: true,
+                data: {
+                  servers: [
+                    {
+                      id: serverId,
+                      installationId: "iin_00000000-0000-4000-8000-000000000009",
+                      plugin: "Camera",
+                      computer: "Studio Mac",
+                      name: "camera",
+                      secrets: [
+                        { name: "PASSWORD", title: "Camera password" },
+                        { name: "TOKEN", title: "Token" },
+                      ],
+                    },
+                  ],
+                },
+              })
+            : Reflect.get(target, key),
+      }),
+    });
+    await act(async () =>
+      root!.render(
+        <SettingsPluginsScreen key="secrets" route={{ params: { deploymentId: "deployment" } }} />,
+      ),
+    );
+    await act(async () => {
+      await vi.waitFor(() =>
+        expect(rows().some((row) => row.label === "Change secrets")).toBe(true),
+      );
+    });
+    const dispatch = vi
+      .spyOn(host, "dispatch")
+      .mockResolvedValue({ type: "integration.server.secrets.set" } as never);
+    await press("Change secrets");
+    await press("Save");
+    expect(rows().some((row) => row.label === "Enter a new value to change.")).toBe(true);
+    const field = row("Camera password");
+    expect(field.kind === "input" && field.secure).toBe(true);
+    await input("Camera password", "new-secret");
+    await press("Save");
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "integration.server.secrets.set",
+        serverId,
+        secrets: { PASSWORD: "new-secret" },
+      }),
+    );
+    expect(rows().some((row) => row.label === "Secrets changed")).toBe(true);
+    expect(rows().some((row) => row.kind === "input" && row.secure)).toBe(false);
+  },
+);

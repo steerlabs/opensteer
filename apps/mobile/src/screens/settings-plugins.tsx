@@ -1,3 +1,9 @@
+import {
+  localMcpSecretServers,
+  localMcpSecretsToSend,
+  setLocalMcpServerSecrets,
+  type LocalMcpSecretServer,
+} from "@opensteer/client/integrations";
 import { PluginAccounts } from "./settings-plugin-accounts.js";
 import {
   completePluginConsent,
@@ -53,9 +59,16 @@ function Plugins({
   const overview = useSettingsRead(host, async () =>
     unwrapRpcResult(await host.rpc["plugins.overview.get"]({})),
   );
+  const secrets = useSettingsRead(host, () => localMcpSecretServers(host));
+  const [changingSecrets, setChangingSecrets] = useState<LocalMcpSecretServer | null>(null);
+  const [secretValues, setSecretValues] = useState<Readonly<Record<string, string>>>({});
+  const [secretsSaved, setSecretsSaved] = useState(false);
   const [query, setQuery] = useState("");
   const search = useDeferredValue(query);
   const [tag, setTag] = useState<PluginRow["tags"][number] | "all">("all");
+  const [serverEntries, setServerEntries] = useState<
+    SettingsRpcData<"integration.platform.get">["installations"]
+  >([]);
   const [detail, setDetail] = useState<PluginDetailView | null>(null);
   useEffect(() => {
     if (!target) return;
@@ -74,6 +87,29 @@ function Plugins({
       active = false;
     };
   }, [host, target, isCurrent]);
+  useEffect(() => {
+    if (!detail) {
+      setServerEntries([]);
+      return;
+    }
+    let active = true;
+    void host.rpc["integration.platform.get"]({})
+      .then(unwrapRpcResult)
+      .then((platform) => {
+        if (active && isCurrent())
+          setServerEntries(
+            platform.installations.filter((entry) =>
+              detail.installationIds.includes(entry.installation.id),
+            ),
+          );
+      })
+      .catch(() => {
+        if (active && isCurrent()) setError("Couldn’t load MCP servers.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [host, detail, isCurrent]);
   const [directory, setDirectory] = useState<SettingsRpcData<"plugins.directory.get"> | null>(null);
   const [add, setAdd] = useState<
     SettingsRpcData<"plugins.directory.get">["catalog"][number] | null
@@ -229,6 +265,39 @@ function Plugins({
         toggle(row),
       ],
     });
+    const servers =
+      secrets.data?.filter((server) => detail.installationIds.includes(server.installationId)) ??
+      [];
+    if (servers.length)
+      sections.push({
+        key: "secrets",
+        title: "Secrets on your computers",
+        rows: servers.flatMap((server) => [
+          text(
+            `${server.id}:computer`,
+            [server.name, server.computer, ...server.secrets.map((secret) => secret.title)]
+              .filter(Boolean)
+              .join(" · "),
+          ),
+          button(server.id, "Change secrets", () => {
+            setSecretValues({});
+            setSecretsSaved(false);
+            setChangingSecrets(server);
+          }),
+        ]),
+      });
+    if (secrets.error)
+      sections.push({
+        key: "secrets-error",
+        title: "Secrets",
+        rows: [text("secrets-error", secrets.error)],
+      });
+    if (secretsSaved)
+      sections.push({
+        key: "secrets-saved",
+        title: "Secrets",
+        rows: [text("secrets-saved", "Secrets changed")],
+      });
     sections.push({
       key: "accounts",
       title: "Accounts",
@@ -255,6 +324,14 @@ function Plugins({
         ),
       ),
     });
+    if (serverEntries.some((entry) => entry.servers.length))
+      sections.push({
+        key: "servers",
+        title: "MCP servers",
+        rows: serverEntries.flatMap((entry) =>
+          entry.servers.map((server) => text(server.id, `${server.name} · ${server.status}`)),
+        ),
+      });
     sections.push({
       key: "contents",
       title: "Comes with",
@@ -342,9 +419,6 @@ function Plugins({
         ...(row.permissions.canRemove
           ? [{ ...button("remove", "Remove plugin", () => remove(detail)), destructive: true }]
           : []),
-        button("installed", "Manage installed plugin", () =>
-          navigation.navigate("Plugins", { deploymentId }),
-        ),
       ],
     });
   } else if (directory) {
@@ -561,12 +635,92 @@ function Plugins({
         ],
       });
   }
+  if (!detail && secrets.data?.length)
+    sections.push({
+      key: "secrets",
+      title: "Secrets on your computers",
+      rows: secrets.data.flatMap((server) => [
+        text(
+          `${server.id}:computer`,
+          [
+            server.plugin,
+            server.name,
+            server.computer,
+            ...server.secrets.map((secret) => secret.title),
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        ),
+        button(server.id, "Change secrets", () => {
+          setSecretValues({});
+          setSecretsSaved(false);
+          setChangingSecrets(server);
+        }),
+      ]),
+    });
+  if (!detail && secretsSaved)
+    sections.push({
+      key: "secrets-saved",
+      title: "Secrets",
+      rows: [text("secrets-saved", "Secrets changed")],
+    });
   return (
     <>
       <NativeSettingsPage
         sections={sections}
         {...(target ? {} : { search: { value: query, onChange: setQuery } })}
       />
+      {changingSecrets ? (
+        <NativeSettingsPage
+          sheet={{
+            title: `${changingSecrets.plugin}’s secrets`,
+            onClose: () => {
+              if (!pending) {
+                setChangingSecrets(null);
+                setSecretValues({});
+              }
+            },
+          }}
+          sections={[
+            {
+              key: "secret-fields",
+              title: "Enter only what changed",
+              rows: [
+                ...changingSecrets.secrets.map((secret) => ({
+                  key: secret.name,
+                  kind: "input" as const,
+                  label: secret.title,
+                  secure: true,
+                  value: secretValues[secret.name] ?? "",
+                  onChange: (value: string) => {
+                    if (!pending)
+                      setSecretValues((current) => ({ ...current, [secret.name]: value }));
+                  },
+                })),
+                button("save-secrets", pending ? "Saving…" : "Save", () => {
+                  const entered = localMcpSecretsToSend(
+                    changingSecrets.secrets.map((secret) => ({ ...secret, saved: true })),
+                    secretValues,
+                  );
+                  if (!entered.ok || !Object.keys(entered.secrets).length) {
+                    setError(entered.ok ? "Enter a new value to change." : entered.message);
+                    return;
+                  }
+                  run("secrets", async () => {
+                    await setLocalMcpServerSecrets(host, changingSecrets.id, entered.secrets);
+                    if (isCurrent()) {
+                      setChangingSecrets(null);
+                      setSecretValues({});
+                      setSecretsSaved(true);
+                    }
+                  });
+                }),
+                ...(error ? [text("secret-error", error)] : []),
+              ],
+            },
+          ]}
+        />
+      ) : null}
       <Sheet
         open={accountDefinition !== null}
         title="Accounts and permissions"

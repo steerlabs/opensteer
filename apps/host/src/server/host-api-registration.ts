@@ -75,6 +75,7 @@ const hostApiScopes = {
   "specialist.list": "session",
   "integration.platform.get": "session",
   "integration.computer.setup.list": "session",
+  "integration.server.secrets.list": "session",
   "integration.computer.setup.review": "mutation",
   "integration.computer.policy.get": "session",
   // It reaches out to a live computer, so it is a mutation's scope rather than

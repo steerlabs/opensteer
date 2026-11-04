@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildMobileThreadDeepLink, parseMobileThreadDeepLink } from "./deep-links.js";
+import {
+  buildMobileThreadDeepLink,
+  parseMobileThreadDeepLink,
+  parseMobileOpenDeepLink,
+} from "./deep-links.js";
 import { createId } from "./ids.js";
 
 const deploymentId = createId("deployment");
@@ -58,4 +62,23 @@ describe("mobile thread deep links", () => {
   ])("refuses %s", (_label, value) => {
     expect(parseMobileThreadDeepLink(value)).toBeNull();
   });
+});
+
+describe("mobile computer links", () => {
+  it("accepts only a Deployment destination", () => {
+    expect(parseMobileOpenDeepLink(`com.opensteer.mobile:/open?d=${deploymentId}`)).toEqual({
+      deploymentId,
+    });
+  });
+  it.each([
+    `com.opensteer.mobile://host/open?d=${deploymentId}`,
+    `com.opensteer.mobile://user@host/open?d=${deploymentId}`,
+    `com.opensteer.mobile:/open?d=${deploymentId}#x`,
+    `com.opensteer.mobile:/open?d=${deploymentId}#`,
+    `com.opensteer.mobile:/open?d=${deploymentId}&d=${deploymentId}`,
+    `com.opensteer.mobile:/open?d=${deploymentId}&host=https://evil.example`,
+    "com.opensteer.mobile:/open?d=invalid",
+    "com.opensteer.mobile:/open",
+    `https://example.com/open?d=${deploymentId}`,
+  ])("rejects %s", (url) => expect(parseMobileOpenDeepLink(url)).toBeNull());
 });
