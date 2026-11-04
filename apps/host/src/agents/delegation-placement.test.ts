@@ -293,7 +293,7 @@ function thread(): Thread {
   const threadId = createId("thread");
   return {
     accessMode: "full-access",
-    capabilityProfileId: "main",
+    inheritsMain: true,
     continuationIdentity: null,
     doneAt: null,
     icon: null,

@@ -184,7 +184,6 @@ class AcpHarnessSession implements HarnessSession {
     });
     this.#stderrSecrets = [
       context.agentTools.token,
-      context.integrationTools.token,
       ...Object.entries(context.environment)
         .filter(([name]) => credentialNamePattern.test(name))
         .map(([, value]) => value),
@@ -1059,12 +1058,6 @@ function mcpServers(context: HarnessSessionContext): readonly AcpMcpServer[] {
       name: "opensteer",
       type: "http",
       url: context.agentTools.url,
-    },
-    {
-      headers: [{ name: "Authorization", value: `Bearer ${context.integrationTools.token}` }],
-      name: "opensteer_integrations",
-      type: "http",
-      url: context.integrationTools.url,
     },
   ];
 }

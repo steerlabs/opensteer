@@ -1,3 +1,4 @@
+import type { AdministrationCommandIdentity } from "@opensteer/database";
 import type { AgentEvent, UserId, Workspace, WorkspaceId } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import { type WorkspaceBackingLifecycleDriver, workspaceUsesBacking } from "@opensteer/workspace";
@@ -50,9 +51,14 @@ export class WorkspaceDeletionService {
     this.#terminateRuns = options.terminateRuns;
   }
 
-  async requestDeletion(workspaceId: WorkspaceId, requestedBy: UserId): Promise<Workspace> {
+  async requestDeletion(
+    workspaceId: WorkspaceId,
+    requestedBy: UserId,
+    administration?: AdministrationCommandIdentity | undefined,
+  ): Promise<Workspace> {
     const now = this.#now();
     const mutation = await this.#store.requestWorkspaceDeletion({
+      administration,
       purgeAfter: new Date(now.getTime() + this.#retentionMilliseconds),
       requestedBy,
       workspaceId,
@@ -66,8 +72,12 @@ export class WorkspaceDeletionService {
     return workspace;
   }
 
-  recover(workspaceId: WorkspaceId, requestedBy: UserId): Promise<Workspace> {
-    return this.#store.recoverWorkspaceDeletion({ requestedBy, workspaceId });
+  recover(
+    workspaceId: WorkspaceId,
+    requestedBy: UserId,
+    administration?: AdministrationCommandIdentity | undefined,
+  ): Promise<Workspace> {
+    return this.#store.recoverWorkspaceDeletion({ requestedBy, workspaceId, administration });
   }
 
   async purgeDue(now: Date): Promise<void> {

@@ -82,6 +82,34 @@ First-party native client identities come from
 registrations converge on that registry. Add a signed build there and match its
 release identity; do not create per-Deployment client allowlists.
 
+External agents use the MCP OAuth issuer under `/oauth/mcp`. The single MCP
+resource is `/internal/v1/mcp`; protected-resource and authorization-server
+metadata bind discovery to that exact resource and issuer. Authorization uses
+code exchange with PKCE S256, stateless client registration and explicit resource
+binding. MCP OAuth works on Personal loopback without an Account; Host-native
+OAuth remains a separate, server-only audience. Discovery is pinned to the configured
+Host origin or its current signed Personal access route, preserving the route's
+exact issuer and MCP resource through registration, consent and code exchange.
+Route headers select that origin and never prove who is approving.
+
+Only a signed-in owner can approve a connection in the web client. A Personal
+browser without a session hands a request ID and Deployment ID to the signed-in
+desktop client; the link grants no authority. Completion returns through the
+original route to the registered callback after approval, without copying a Host
+session into the browser. PKCE binds the code to the requesting agent. Consent selects
+an access ceiling and either everything the person can access or one Workspace
+they own. MCP credentials are opaque, hashed in a separate durable record, and
+cannot become Host sessions or authenticate Runners, Runs or programs. The one MCP
+route serves a connection only on the route origin it was approved for, and Runs and
+programs only on the runtime origin, so neither credential works on the other's route. The live
+connection authenticator rechecks expiry and revocation on every call; transport
+sessions do not retain connection authority. Workspace consent loses authority when ownership ends.
+Revocation ends future calls, including calls in an already open MCP session and
+waits that wake after revocation. It does not cancel tasks already admitted or
+undo their effects. Revoking a login does not revoke independently approved
+connections: remove those in Settings → Account → Connected agents on every client. Connections
+expire after 30 days and require new consent; no refresh grant can extend them.
+
 ## API boundaries
 
 Use [hostApi](../packages/protocol/src/host-api.ts) and
@@ -210,7 +238,7 @@ integrations versions are separate from the Runner proof format.
 
 Upgrade Hosts before Runners needing new execution/storage semantics; Personal
 ships both together. Enrollment is not execution admission. Native continuation,
-execution leases and requester-time-zone support are mandatory execution gates;
+execution leases, requester-time-zone support and Host-authored MCP plans are mandatory execution gates;
 unsupported Runners stay visible but cannot execute. Refused durable events end
 only their still-bound Run, not unrelated Runs or the connection.
 
@@ -251,8 +279,9 @@ update/use-v2 error; never relabel source.
 `thread.done.set` before mutation **or idempotency lookup** with the update reason:
 Done stops the task for everyone. Preserve read-state placement projections for
 older readers; actual read positions never change because a task became Done.
-Use the existing `thread-archived` cancellation reason. `thread_write` requires
-Runner `task-done-v1`; older strict summaries omit `doneAt`, even after parsing.
+Use the existing `thread-archived` cancellation reason. Current MCP tools follow
+the Host-built plan, without per-tool Runner gates; older client summaries omit
+`doneAt`, even after parsing.
 
 Passwords consent includes websites and apps and the risk that a tricked agent
 reveals saved fields. Request lists/snapshots skip unreadable kinds.

@@ -23,21 +23,14 @@ import type {
   WorkspaceId,
 } from "@opensteer/core";
 import type {
-  AgentControlRequest,
-  AgentControlResponse,
   HarnessInput,
   HarnessRunReports,
   RunAgentToolsPlan,
-  RunIntegrationToolsPlan,
   RunHistoryWindow,
   RunInitialContext,
 } from "@opensteer/protocol";
 import type { z } from "zod";
 import type { InstalledEngineUpdateFacts } from "./engine-installation.js";
-
-interface AgentControlClient {
-  request(input: AgentControlRequest, signal: AbortSignal): Promise<AgentControlResponse>;
-}
 
 export interface HarnessCapabilities {
   readonly approvals: boolean;
@@ -283,9 +276,7 @@ export interface HarnessSessionContext {
   readonly attachmentRoot?: string;
   /** Durable per-Thread access policy snapshotted onto this Run. */
   readonly accessMode: ThreadAccessMode;
-  readonly agentControl?: AgentControlClient;
   readonly agentTools: RunAgentToolsPlan;
-  readonly integrationTools: RunIntegrationToolsPlan;
   readonly environmentId: EnvironmentId;
   readonly history: readonly Message[];
   readonly historyWindow: RunHistoryWindow;
@@ -307,7 +298,7 @@ export interface HarnessSessionContext {
   readonly machineAccessRelaySocket: string | undefined;
   /** Host-independent Opensteer product facts and capability scope. */
   readonly platformGuide: string;
-  /** Runner-owned Agent Skills selected by the signed capability profile. */
+  /** Runner-owned Agent Skills the Host's Run plan selected. */
   readonly skills: HarnessSkillPlan | undefined;
   /** Exact provider/model/options snapshot chosen for this Run. */
   readonly modelSelection: ModelSelection;

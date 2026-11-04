@@ -2,9 +2,9 @@ import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { AgentThreadSummarySchema } from "@opensteer/protocol";
 import { ThreadSchema } from "@opensteer/core";
 import { TriggerSchema, TriggerRevisionSchema } from "../../packages/triggers/src/models.js";
+import { ThreadWriteOutputSchema } from "../../packages/agent-tools/src/tools/outputs.js";
 import { CaseSchema, inputForCaseTurn, parseCases } from "./cases.js";
 import { grade, gradeWorkspaceFiles, gradeToolBoundary } from "./grader.js";
 import { startFakeHost } from "./host.js";
@@ -161,7 +161,7 @@ it("offers every expected call and uses production-shaped control fixtures", asy
       for (const result of results(c.mocks.thread_read))
         expect(() => ThreadSchema.parse(result.thread)).not.toThrow();
       for (const result of results(c.mocks.thread_write))
-        expect(() => AgentThreadSummarySchema.parse(result.thread)).not.toThrow();
+        expect(() => ThreadWriteOutputSchema.shape.thread.parse(result.thread)).not.toThrow();
     }
   }
 });

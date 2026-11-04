@@ -66,7 +66,10 @@ export const CaseSchema = z.strictObject({
   area: z.string().min(1),
   kind: z.enum(["bad", "guard", "control"]),
   source: z.strictObject({ commit: z.string().regex(/^[a-f0-9]{40}$/u), note: z.string().min(1) }),
+  // Historical fixture labels, not tool or authority profiles.
   profile: z.enum(["main", "workspace", "delegated"]),
+  caller: z.enum(["run", "connection"]).default("run"),
+  reach: z.enum(["user", "workspace", "lineage"]).optional(),
   role: z.enum(["conversation", "work"]),
   /** Overrides the profile default for workers without an Assignment. */
   assigned: z.boolean().optional(),
@@ -153,4 +156,8 @@ export function inputForCaseTurn(turn: EvalCase["turns"][number]) {
     createdAt: new Date().toISOString(),
     messageId: createId("message"),
   });
+}
+
+export function caseReach(testCase: EvalCase) {
+  return testCase.reach ?? (testCase.profile === "main" ? "user" : "workspace");
 }

@@ -1955,23 +1955,16 @@ function executeCommand(
     context: {
       accessMode: "full-access",
       assignment: null,
-      agentControl: {
-        token: "agent-token",
-        url: "https://host.example.test/internal/v1/agent-control",
-      },
       agentTools: {
-        capabilityProfileId: "workspace",
+        tools: ["thread_read", "integration_call", "computer"],
+        toolsRevision: "test-tools-v1",
+        instructions: "Host Opensteer instructions",
+        skills: ["opensteer:threads"],
         token: "agent-tools-token",
         url: "https://host.example.test/internal/v1/mcp",
       },
-      browserCdp: {
-        token: "browser-cdp-token",
-        url: "https://host.example.test/internal/v1/browser-cdp",
-      },
-      integrationTools: {
-        token: "agent-tools-token",
-        url: "https://host.example.test/internal/v1/integration-mcp",
-      },
+      browserCdp: { url: "https://host.example.test/internal/v1/browser-cdp" },
+
       plugins: {
         versions: [],
         token: "plugin-cache-token",
@@ -2092,10 +2085,7 @@ function triggerCommand(
         trigger: { anchorThreadId, id: triggerId, revisionId, workspaceId },
       },
       executionGeneration: 1,
-      integrationMcp: {
-        token: "integration-mcp-token",
-        url: "https://host.example.test/internal/v1/integration-mcp",
-      },
+
       mcp: { token: "mcp-token", url: "https://host.example.test/internal/v1/mcp" },
       occurrenceId,
       program: {

@@ -1828,7 +1828,7 @@ export async function startPhoneAgent(
     title: input.title,
     workspaceId: input.workspaceId,
   });
-  input.redaction.add(run.integrationTools.token, run.agentControlToken);
+  input.redaction.add(run.integrationTools.token, run.toolsToken);
   try {
     return { gateway: await connectAgentGateway(host, run.integrationTools), run };
   } catch (error) {

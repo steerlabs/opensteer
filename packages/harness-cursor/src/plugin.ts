@@ -15,16 +15,16 @@ import { cursorHookProgramFileName, cursorHookProgramSource } from "./hook-progr
 export const cursorPluginDirectoryName = "opensteer";
 
 export const cursorAgentToolsServerName = "opensteer";
+/** The retired integrations server, kept so historical tool calls keep their identity. */
 export const cursorIntegrationToolsServerName = "opensteer_integrations";
 
-/** What `beforeMCPExecution` calls our two servers. */
+/** What `beforeMCPExecution` calls our server. */
 export function cursorMcpServerIdentifier(serverName: string): string {
   return `plugin-${cursorPluginDirectoryName}-${serverName}`;
 }
 
 export const cursorOpensteerMcpServerIdentifiers: readonly string[] = [
   cursorMcpServerIdentifier(cursorAgentToolsServerName),
-  cursorMcpServerIdentifier(cursorIntegrationToolsServerName),
 ];
 
 /**
@@ -97,7 +97,6 @@ export interface CursorPluginPlan {
   readonly agentTools: { readonly token: string; readonly url: string };
   readonly hookSocketPath: string;
   readonly hookTimeoutSeconds: number;
-  readonly integrationTools: { readonly token: string; readonly url: string };
   /** The Runner's own Node, never `process.execPath`: that is Electron in the desktop app. */
   readonly nodeExecutable: string;
   readonly threadStateDirectory: string;
@@ -109,8 +108,8 @@ export interface CursorPlugin {
 }
 
 /**
- * Writes the Run's plugin directory. The MCP file carries the two bearer
- * tokens, so it is the one file written at mode 0600: Cursor hands the harness
+ * Writes the Run's plugin directory. The MCP file carries the bearer
+ * token, so it is the one file written at mode 0600: Cursor hands the harness
  * process environment to the commands the model runs, which is why the tokens
  * travel in a file it reads rather than in a variable (cursor-facts §A.7).
  */
@@ -135,10 +134,6 @@ export async function materializeCursorPlugin(plan: CursorPluginPlan): Promise<C
               [cursorAgentToolsServerName]: {
                 headers: { Authorization: `Bearer ${plan.agentTools.token}` },
                 url: plan.agentTools.url,
-              },
-              [cursorIntegrationToolsServerName]: {
-                headers: { Authorization: `Bearer ${plan.integrationTools.token}` },
-                url: plan.integrationTools.url,
               },
             },
       },

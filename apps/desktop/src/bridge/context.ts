@@ -30,6 +30,10 @@ export interface BridgeEnvelope {
 }
 
 export interface DesktopBridgeOptions {
+  readonly mcpAuthorizationLinks?: Pick<
+    import("../app/mcp-authorization-links.js").McpAuthorizationLinks,
+    "clear"
+  >;
   readonly accountLinkCourier?: Pick<
     import("@opensteer/client/connections").AccountDeploymentDirectoryService,
     "issuePersonalHostAccountLinkChallenge" | "completePersonalHostAccountLink"

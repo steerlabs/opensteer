@@ -1,0 +1,520 @@
+import { machineIsManagedBy } from "@opensteer/database";
+import { harnessView } from "../../administration/authority.js";
+import { OpensteerError, type UserId, type WorkspaceId } from "@opensteer/core";
+import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
+import { hostApi } from "@opensteer/protocol";
+import * as specs from "@opensteer/agent-tools/tools";
+import {
+  AdministrationService,
+  assertUserReach,
+  assertWorkspaceReach,
+  isAdministrationCommand,
+  type AdministrationCommand,
+} from "../../administration/administration-service.js";
+import { isIntegrationAdministrationCommand } from "../../integrations/integration-administration.js";
+import type { AgentCaller } from "../agent-caller.js";
+import { operationId } from "../operations.js";
+import { settings } from "../tool-access.js";
+import type { ToolCall, AgentToolHandlers } from "./index.js";
+
+type AdministrationToolName = (typeof specs.administrationTools)[number]["name"];
+export type AdministrationHandlers = Pick<AgentToolHandlers, AdministrationToolName>;
+function command(value: Record<string, unknown>): AdministrationCommand {
+  const parsed = hostApi["commands.dispatch"].payload.parse(value);
+  if (
+    isAdministrationCommand(parsed) ||
+    isIntegrationAdministrationCommand(parsed) ||
+    parsed.type === "browser.site.remove" ||
+    parsed.type === "channel.binding.revoke" ||
+    parsed.type === "channel.connection.status.set"
+  )
+    return parsed;
+  throw new OpensteerError({ code: "forbidden", message: "This command is unavailable to agents" });
+}
+export class AdministrationToolHandlers {
+  readonly service: AdministrationService;
+  readonly listConnections: (userId: UserId) => Promise<readonly IntegrationConnectionSummary[]>;
+  constructor(
+    service: AdministrationService,
+    listConnections: (userId: UserId) => Promise<readonly IntegrationConnectionSummary[]>,
+  ) {
+    this.service = service;
+    this.listConnections = listConnections;
+  }
+  async #workspace(caller: AgentCaller, workspaceId: WorkspaceId) {
+    assertWorkspaceReach(caller, workspaceId);
+    const membership = await this.service.dependencies.store.workspaceMembershipForUser(
+      workspaceId,
+      caller.userId,
+    );
+    if (membership?.state !== "active")
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Active Workspace membership is required",
+      });
+  }
+  #write(
+    call: { caller: AgentCaller; operationKey: string },
+    tool: AdministrationToolName,
+    value: Record<string, unknown>,
+  ) {
+    return command({
+      ...value,
+      idempotencyKey: operationId(call.caller, call.operationKey, tool),
+    });
+  }
+  projectCommand(c: ToolCall<"project_write">) {
+    const i = c.input;
+    const common = { workspaceId: i.workspaceId };
+    switch (i.action) {
+      case "set_icon":
+        return this.#write(c, "project_write", {
+          ...common,
+          type: "workspace.icon.set",
+          icon: i.icon,
+        });
+      case "set_color":
+        return this.#write(c, "project_write", {
+          ...common,
+          type: "workspace.color.set",
+          color: i.color,
+        });
+      case "set_notifications":
+        return this.#write(c, "project_write", {
+          ...common,
+          type: "workspace.notifications.update",
+          muted: i.muted,
+        });
+      case "delete":
+        return this.#write(c, "project_write", { ...common, type: "workspace.delete" });
+      case "recover":
+        return this.#write(c, "project_write", { ...common, type: "workspace.deletion.recover" });
+      case "retry_storage":
+        return this.#write(c, "project_write", { ...common, type: "workspace.storage.retry" });
+    }
+  }
+  settingsCommand(c: ToolCall<"settings_write">) {
+    const i = c.input;
+    const common = { environmentId: i.environmentId, harnessInstanceId: i.harnessInstanceId };
+    switch (i.action) {
+      case "set_default":
+        return this.#write(c, "settings_write", { ...common, type: "harness.default.set" });
+      case "configure_model":
+        return this.#write(c, "settings_write", {
+          ...common,
+          type: "harness.model.configure",
+          nativeModelId: i.nativeModelId,
+          settings: i.settings,
+        });
+      case "set_enabled":
+        return this.#write(c, "settings_write", {
+          ...common,
+          type: "harness.enabled.set",
+          enabled: i.enabled,
+        });
+      case "rename":
+        return this.#write(c, "settings_write", {
+          ...common,
+          type: "harness.rename",
+          name: i.name,
+        });
+      case "remember_execution":
+        return this.#write(c, "settings_write", {
+          type: "execution.preferences.remember",
+          selection: i.selection,
+          accessMode: i.accessMode,
+        });
+      case "set_time_zone":
+        return this.#write(c, "settings_write", {
+          type: "viewer.timeZone.update",
+          timeZone: i.timeZone,
+        });
+    }
+  }
+  computerCommand(c: ToolCall<"computer_write">) {
+    const i = c.input;
+    switch (i.action) {
+      case "rename":
+        return this.#write(c, "computer_write", {
+          type: "machine.rename",
+          machineId: i.machineId,
+          name: i.name,
+        });
+      case "revoke":
+        return this.#write(c, "computer_write", { type: "machine.revoke", machineId: i.machineId });
+      case "stop_session":
+        return this.#write(c, "computer_write", {
+          type: "machine.access.session.stop",
+          sessionId: i.sessionId,
+        });
+    }
+  }
+  async integrationCommand(c: ToolCall<"integration_manage">) {
+    const i = c.input;
+    switch (i.action) {
+      case "list":
+        return null;
+      case "disconnect": {
+        const kind = i.connectionId
+          ? await this.service.dependencies.integrations.platform.store.getConnectionKind({
+              connectionId: i.connectionId,
+              ownerUserId: c.caller.userId,
+            })
+          : null;
+        return this.#write(c, "integration_manage", {
+          type: kind === "mcp-oauth" ? "integration.mcp.disconnect" : "integration.disconnect",
+          connectionId: i.connectionId,
+        });
+      }
+      case "uninstall":
+        return this.#write(c, "integration_manage", {
+          type: "integration.uninstall",
+          installationId: i.installationId,
+        });
+      case "revoke_grant":
+        return this.#write(c, "integration_manage", {
+          type: "integration.grant.revoke",
+          workspaceId: i.workspaceId,
+          grantId: i.grantId,
+        });
+    }
+  }
+  channelCommand(c: ToolCall<"channel_manage">) {
+    const i = c.input;
+    switch (i.action) {
+      case "list":
+        return null;
+      case "revoke_binding":
+        return this.#write(c, "channel_manage", {
+          type: "channel.binding.revoke",
+          bindingId: i.bindingId,
+        });
+      case "pause":
+      case "resume":
+        return this.#write(c, "channel_manage", {
+          type: "channel.connection.status.set",
+          connectionId: i.connectionId,
+          status: i.action === "pause" ? "paused" : "connected",
+        });
+    }
+  }
+  pluginCommand(c: ToolCall<"plugin_manage">) {
+    const i = c.input;
+    switch (i.action) {
+      case "list":
+        return null;
+      case "update":
+        return this.#write(c, "plugin_manage", {
+          type: "plugin.update",
+          pluginId: i.pluginId,
+          input: { directory: i.directory, ...(i.runnerId ? { runnerId: i.runnerId } : {}) },
+        });
+      case "activate":
+      case "deactivate":
+        return this.#write(c, "plugin_manage", {
+          type: "plugin.activation.set",
+          workspaceId: i.workspaceId,
+          pluginId: i.pluginId,
+          active: i.action === "activate",
+        });
+      case "remove":
+        return this.#write(c, "plugin_manage", { type: "plugin.remove", pluginId: i.pluginId });
+      case "remove_specialist":
+        return this.#write(c, "plugin_manage", {
+          type: "specialist.remove",
+          workspaceId: i.workspaceId,
+          specialistId: i.specialistId,
+        });
+    }
+  }
+  browserCommand(c: ToolCall<"browser_profile_write">) {
+    const i = c.input;
+    switch (i.action) {
+      case "list":
+        return null;
+      case "rename":
+        return this.#write(c, "browser_profile_write", {
+          type: "browser.profile.rename",
+          profileId: i.profileId,
+          name: i.name,
+        });
+      case "delete":
+        return this.#write(c, "browser_profile_write", {
+          type: "browser.profile.delete",
+          profileId: i.profileId,
+        });
+      case "clear_history":
+        return this.#write(c, "browser_profile_write", {
+          type: "browser.history.clear",
+          profileId: i.profileId,
+        });
+      case "remove_history":
+        return this.#write(c, "browser_profile_write", {
+          type: "browser.history.remove",
+          profileId: i.profileId,
+          url: i.url,
+        });
+      case "remove_site":
+        return this.#write(c, "browser_profile_write", {
+          type: "browser.site.remove",
+          workspaceId: i.workspaceId,
+          site: i.site,
+        });
+      case "revoke_grant":
+        return this.#write(c, "browser_profile_write", {
+          type: "browser.profileGrant.revoke",
+          grantId: i.grantId,
+        });
+    }
+  }
+  async execute(caller: AgentCaller, command: AdministrationCommand) {
+    return { ...(await this.service.execute(caller, command)), ok: true as const };
+  }
+  async settings_read({ caller }: ToolCall<"settings_read">) {
+    assertUserReach(caller);
+    const store = this.service.dependencies.store;
+    const environments = await store.listEnvironmentsForUser(caller.userId);
+    const [instances, preferences, timeZone] = await Promise.all([
+      store.listHarnessInstances({ environmentIds: environments.map(({ id }) => id) }),
+      store.getExecutionPreferences(caller.userId),
+      store.notificationState.timeZoneFor(caller.userId),
+    ]);
+    return {
+      harnesses: instances.map(harnessView),
+      preferences,
+      timeZone,
+    };
+  }
+  async computer_list({ caller, input }: ToolCall<"computer_list">) {
+    assertUserReach(caller);
+    const { store, runners } = this.service.dependencies;
+    const actor = await this.service.actor(caller);
+    const page = await store.listRunners({
+      ...(input.after ? { after: input.after } : {}),
+      ownerId: caller.userId,
+      includeDeployment: actor.isAdministrator,
+      includeOtherOwners: actor.isAdministrator,
+      limit: 100,
+    });
+    return {
+      nextCursor: page.nextCursor,
+      machines: await Promise.all(
+        page.runners.map(async (runner) => {
+          const ownership = await store.effectiveMachineOwner(runner.id);
+          return {
+            id: runner.id,
+            name: runner.name,
+            connected: runners.isRunnerConnected(runner.id),
+            revoked: runner.revokedAt !== null,
+            sessions:
+              ownership &&
+              machineIsManagedBy(ownership, caller.userId, {
+                allowDeployment: actor.isAdministrator,
+              })
+                ? await store.listActiveShellSessions(runner.id)
+                : [],
+          };
+        }),
+      ),
+    };
+  }
+  async authorizeList(caller: AgentCaller, workspaceId?: WorkspaceId) {
+    settings(caller, []);
+    const target =
+      workspaceId ?? (caller.reach.kind === "workspace" ? caller.reach.workspaceId : undefined);
+    if (target) await this.#workspace(caller, target);
+    else assertUserReach(caller);
+  }
+  async integration_list(c: ToolCall<"integration_manage">) {
+    settings(c.caller, []);
+    const workspaceId =
+      c.input.workspaceId ??
+      (c.caller.reach.kind === "workspace" ? c.caller.reach.workspaceId : undefined);
+    if (workspaceId) await this.#workspace(c.caller, workspaceId);
+    else assertUserReach(c.caller);
+    const platform = this.service.dependencies.integrations.platform;
+    const workspaceIds = workspaceId
+      ? [workspaceId]
+      : (await this.service.dependencies.store.listWorkspacesForOwner(c.caller.userId)).map(
+          ({ id }) => id,
+        );
+    const grants = (
+      await Promise.all(
+        workspaceIds.map((workspaceId) =>
+          platform.store.listGrants({ ownerUserId: c.caller.userId, workspaceId }),
+        ),
+      )
+    ).flat();
+    const connections = [
+      ...(await this.listConnections(c.caller.userId)),
+      ...(await platform.store.listMcpOAuthConnections(c.caller.userId)).map((connection) => ({
+        ...connection,
+        id: connection.connectionId,
+      })),
+    ];
+    const installations = await platform.store.listInstallations();
+    return {
+      ok: true as const,
+      grants,
+      connections: workspaceId
+        ? connections.filter((connection) =>
+            grants.some((grant) => grant.connectionId === connection.id),
+          )
+        : connections,
+      installations: workspaceId
+        ? installations.filter((installation) =>
+            grants.some((grant) => grant.installationId === installation.id),
+          )
+        : installations,
+    };
+  }
+  async channel_list(c: ToolCall<"channel_manage">) {
+    settings(c.caller, []);
+    if (c.caller.reach.kind === "lineage") assertUserReach(c.caller);
+    const workspaceId =
+      c.caller.reach.kind === "workspace" ? c.caller.reach.workspaceId : undefined;
+    if (workspaceId) await this.#workspace(c.caller, workspaceId);
+    const dashboard = await this.service.dependencies.channels.service.dashboard(c.caller.userId);
+    const bindings = workspaceId
+      ? dashboard.bindings.filter((binding) => binding.workspaceId === workspaceId)
+      : dashboard.bindings;
+    const accounts = dashboard.accounts.filter((account) =>
+      bindings.some((binding) => binding.accountId === account.id),
+    );
+    return {
+      ok: true as const,
+      connections: workspaceId
+        ? dashboard.connections.filter((connection) =>
+            accounts.some((account) => account.connectionId === connection.id),
+          )
+        : dashboard.connections,
+      bindings,
+    };
+  }
+  async browser_list(c: ToolCall<"browser_profile_write">) {
+    await this.authorizeList(c.caller);
+    const { store, browserSources } = this.service.dependencies;
+    const [profiles, grants, sources] = await Promise.all([
+      store.listBrowserProfiles(c.caller.userId),
+      store.listActiveBrowserProfileGrants(c.caller.userId),
+      browserSources.listState({ ownerId: c.caller.userId }),
+    ]);
+    const workspaceId =
+      c.caller.reach.kind === "workspace" ? c.caller.reach.workspaceId : undefined;
+    const visibleGrants = workspaceId
+      ? grants.filter((grant) => grant.workspaceId === workspaceId)
+      : grants;
+    return {
+      ok: true as const,
+      profiles: workspaceId
+        ? profiles.filter((profile) =>
+            visibleGrants.some((grant) => grant.profileId === profile.id),
+          )
+        : profiles,
+      grants: visibleGrants,
+      sites: workspaceId
+        ? sources.sites.filter((site) => site.workspaceId === workspaceId)
+        : sources.sites,
+    };
+  }
+  async plugin_list(c: ToolCall<"plugin_manage">) {
+    settings(c.caller, []);
+    const workspaceId =
+      c.input.workspaceId ??
+      (c.caller.reach.kind === "workspace" ? c.caller.reach.workspaceId : undefined);
+    if (workspaceId) await this.#workspace(c.caller, workspaceId);
+    else assertUserReach(c.caller);
+    const { store, integrations } = this.service.dependencies;
+    const workspaces = workspaceId
+      ? [workspaceId]
+      : (await store.listWorkspacesForOwner(c.caller.userId)).map(({ id }) => id);
+    return {
+      ok: true as const,
+      plugins: (
+        await integrations.platform.store.plugins.listForUser(c.caller.userId, workspaceId)
+      ).map((plugin) => ({
+        ...plugin,
+        activations: workspaceId
+          ? plugin.activations.filter((activation) => activation.workspaceId === workspaceId)
+          : plugin.activations,
+      })),
+      specialists: (
+        await Promise.all(
+          workspaces.map((workspaceId) =>
+            integrations.platform.store.specialists.summaries(workspaceId, c.caller.userId),
+          ),
+        )
+      ).flat(),
+    };
+  }
+}
+export function administrationToolHandlers(
+  admin: AdministrationToolHandlers,
+): AdministrationHandlers {
+  const mutation = <Name extends AdministrationToolName>(
+    parse: (call: ToolCall<Name>) => AdministrationCommand | Promise<AdministrationCommand>,
+  ) =>
+    Object.assign(async (call: ToolCall<Name>) => admin.execute(call.caller, await parse(call)), {
+      authorize: async (call: ToolCall<Name>) =>
+        admin.service.authorize(call.caller, await parse(call)),
+    });
+  return {
+    project_write: mutation((c) => admin.projectCommand(c)),
+    settings_write: mutation((c) => admin.settingsCommand(c)),
+    computer_write: mutation((c) => admin.computerCommand(c)),
+    browser_profile_write: Object.assign(
+      async (c: ToolCall<"browser_profile_write">) =>
+        c.input.action === "list"
+          ? await admin.browser_list(c)
+          : await admin.execute(c.caller, admin.browserCommand(c)!),
+      {
+        authorize: async (c: ToolCall<"browser_profile_write">) => {
+          const command = admin.browserCommand(c);
+          if (command) await admin.service.authorize(c.caller, command);
+          else await admin.authorizeList(c.caller);
+        },
+      },
+    ),
+    settings_read: (c) => admin.settings_read(c),
+    computer_list: async (c) => await admin.computer_list(c),
+    integration_manage: Object.assign(
+      async (c: ToolCall<"integration_manage">) =>
+        c.input.action === "list"
+          ? await admin.integration_list(c)
+          : await admin.execute(c.caller, (await admin.integrationCommand(c))!),
+      {
+        authorize: async (c: ToolCall<"integration_manage">) => {
+          const command = await admin.integrationCommand(c);
+          if (command) await admin.service.authorize(c.caller, command);
+          else await admin.authorizeList(c.caller, c.input.workspaceId);
+        },
+      },
+    ),
+    channel_manage: Object.assign(
+      async (c: ToolCall<"channel_manage">) =>
+        c.input.action === "list"
+          ? await admin.channel_list(c)
+          : await admin.execute(c.caller, admin.channelCommand(c)!),
+      {
+        authorize: async (c: ToolCall<"channel_manage">) => {
+          const command = admin.channelCommand(c);
+          if (command) await admin.service.authorize(c.caller, command);
+          else await admin.authorizeList(c.caller);
+        },
+      },
+    ),
+    plugin_manage: Object.assign(
+      async (c: ToolCall<"plugin_manage">) =>
+        c.input.action === "list"
+          ? await admin.plugin_list(c)
+          : await admin.execute(c.caller, admin.pluginCommand(c)!),
+      {
+        authorize: async (c: ToolCall<"plugin_manage">) => {
+          const command = admin.pluginCommand(c);
+          if (command) await admin.service.authorize(c.caller, command);
+          else await admin.authorizeList(c.caller, c.input.workspaceId);
+        },
+      },
+    ),
+  };
+}

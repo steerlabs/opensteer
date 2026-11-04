@@ -17,7 +17,7 @@ import {
   type ShellSessionSummary,
 } from "@opensteer/protocol";
 import { vi } from "vitest";
-import type { AgentControlRunScope } from "../agents/agent-control-service.js";
+import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type { ShellByteSocket } from "./shell-byte-pump.js";
 import type { ShellControlPeer } from "./shell-control-stream.js";
 import type { ShellHubOptions } from "./shell-hub.js";
@@ -295,10 +295,9 @@ export function runScope(input: {
   readonly requestedBy: UserId;
   readonly runId?: RunId;
   readonly runnerId: RunnerId;
-}): AgentControlRunScope {
+}): RunToolScope {
   return {
     bindingGeneration: 1,
-    capabilityProfileId: "workspace",
     environmentId: createId("environment"),
     membershipGeneration: 1,
     requestedBy: input.requestedBy,
@@ -307,7 +306,7 @@ export function runScope(input: {
     runnerId: input.runnerId,
     threadId: createId("thread"),
     workspaceId: createId("workspace"),
-  } as AgentControlRunScope;
+  } as RunToolScope;
 }
 
 export function recordingNotifier() {

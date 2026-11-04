@@ -1,3 +1,4 @@
+import { agentTools } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -725,7 +726,7 @@ describe("Claude Agent SDK harness", () => {
     expect(sdk.calls[1]?.options.sessionId).toBeUndefined();
     expect(sdk.calls[0]?.options.env?.ENABLE_TOOL_SEARCH).toBe("true");
     expect(sdk.calls[1]?.options.env?.ENABLE_TOOL_SEARCH).toBe("true");
-    expect(sdk.calls[0]?.options.mcpServers?.opensteer_integrations).toMatchObject({
+    expect(sdk.calls[0]?.options.mcpServers?.opensteer).toMatchObject({
       alwaysLoad: false,
     });
     expect(sdk.calls[0]?.options.settingSources).toEqual(["project"]);
@@ -770,42 +771,12 @@ describe("Claude Agent SDK harness", () => {
     });
     expect(sdk.calls[0]?.options.allowedTools).toEqual([
       "ToolSearch",
-      "mcp__opensteer__app_publish",
-      "mcp__opensteer__app_list",
-      "mcp__opensteer__app_fetch",
-      "mcp__opensteer__request_list",
-      "mcp__opensteer__request_withdraw",
-      "mcp__opensteer__environment_list",
-      "mcp__opensteer__project_list",
-      "mcp__opensteer__project_create",
-      "mcp__opensteer__plugin_install",
-      "mcp__opensteer__thread_read",
-      "mcp__opensteer__thread_list",
-      "mcp__opensteer__thread_delegate",
-      "mcp__opensteer__assignment_cancel",
-      "mcp__opensteer__person_message",
-      "mcp__opensteer__person_show",
-      "mcp__opensteer__thread_message",
-      "mcp__opensteer__thread_write",
-      "mcp__opensteer__browser_profile_list",
-      "mcp__opensteer__sign_in",
-      "mcp__opensteer__browser_access_request",
-      "mcp__opensteer__machine_full_disk_access_request",
-      "mcp__opensteer__browser_tab_read",
-      "mcp__opensteer__browser_tab_write",
-      "mcp__opensteer__browser_session_list",
-      "mcp__opensteer__browser_session_open",
-      "mcp__opensteer__browser_profile_create",
-      "mcp__opensteer__browser_session_close",
-      "mcp__opensteer__trigger_read",
-      "mcp__opensteer__trigger_write",
-      "mcp__opensteer_integrations__integration_search",
-      "mcp__opensteer_integrations__integration_describe",
-      "mcp__opensteer_integrations__integration_call",
-      "mcp__opensteer_integrations__computer",
-      "mcp__opensteer_integrations__integration_request",
-      "mcp__opensteer_integrations__integration_propose",
+      ...sessionContext.agentTools.tools.map((name) => `mcp__opensteer__${name}`),
     ]);
+    for (const call of sdk.calls) {
+      expect(Object.keys(call.options.mcpServers ?? {})).toEqual(["opensteer"]);
+      expect(call.options.allowedTools).toEqual(sdk.calls[0]?.options.allowedTools);
+    }
     const pluginPath = await realpath(
       join(sessionContext.threadStateDirectory, "claude-plugin", "opensteer"),
     );
@@ -2437,6 +2408,10 @@ describe("Claude Agent SDK harness", () => {
       overrides: { tools: ["Read", "WebSearch"] },
     },
     {
+      expected: "tools outside",
+      overrides: { tools: ["Read", "mcp__opensteer_integrations__integration_call"] },
+    },
+    {
       // Addressing an agent resumes it in the background, which no turn owns.
       expected: "tools outside",
       overrides: { tools: ["Read", "SendMessage"] },
@@ -3205,14 +3180,17 @@ async function context(
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
     agentTools: {
-      capabilityProfileId: "main",
+      tools: [
+        "host_only_tool",
+        ...agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
+      ],
+      toolsRevision: "test-tools-v1",
+      instructions: "Host Opensteer instructions",
+      skills: ["opensteer:threads"],
       token: "test-agent-tools-token",
       url: "https://host.example/internal/v1/mcp",
     },
-    integrationTools: {
-      token: "test-agent-tools-token",
-      url: "https://host.example/internal/v1/integration-mcp",
-    },
+
     environment: {
       ANTHROPIC_API_KEY: "os_secret_api",
       CLAUDE_CONFIG_DIR: join(workspacePath, ".claude-user"),

@@ -97,6 +97,19 @@ describe("AgentTranscript", () => {
         messageKind: "assistant",
         runId,
       },
+      {
+        author: {
+          kind: "connection",
+          connectionId: "mcn_external",
+          displayName: "Connected research agent",
+        },
+        body: "External agent input",
+        createdAt: "2026-08-16T10:00:03.000Z",
+        id: "message-connection",
+        kind: "message",
+        messageKind: "input",
+        runId: null,
+      },
     ];
 
     const markup = renderToStaticMarkup(
@@ -109,6 +122,28 @@ describe("AgentTranscript", () => {
     expect(markup).toContain("msg--assistant");
     expect(markup).toContain("Alex");
     expect(markup).toContain("Flight research");
+    expect(markup).toContain("Connected research agent");
+  });
+
+  it("gives connection-authored input no row in a conversation, like other agent input", () => {
+    const entry: MessageEntry = {
+      author: { kind: "connection", connectionId: "mcn_external", displayName: "Research agent" },
+      body: "External agent input",
+      createdAt: "2026-11-03T10:00:00.000Z",
+      id: "message-connection",
+      kind: "message",
+      messageKind: "input",
+      runId: null,
+    };
+    const markup = renderToStaticMarkup(
+      <MemoryRouter>
+        <AgentTranscript conversation entries={[entry]} viewerUserId="owner" />
+      </MemoryRouter>,
+    );
+    // A conversation draws what its agent says and what needs the reader; an
+    // external agent's input is for that agent, and is never drawn as the person.
+    expect(markup).not.toContain("External agent input");
+    expect(markup).not.toContain('class="msg--user"');
   });
 
   it("renders a collaborator's message as plain labeled input, not agent output", () => {

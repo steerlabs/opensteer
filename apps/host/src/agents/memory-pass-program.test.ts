@@ -84,7 +84,6 @@ it.each(["memory-light", "memory-nightly"] as const)(
             trigger: { anchorThreadId: threadId, id: triggerId, revisionId, workspaceId },
           },
           executionGeneration: 1,
-          integrationMcp: endpoint,
           mcp: endpoint,
           occurrenceId,
           program: memoryPassProgram(role),
@@ -105,7 +104,7 @@ it.each(["memory-light", "memory-nightly"] as const)(
           privateDirectory: join(directory, "private"),
         }).execute({
           context,
-          endpoints: { integrationMcp: endpoint, mcp: endpoint },
+          endpoints: { mcp: endpoint },
           planLaunch: async () => (launch) => launch,
           signal: AbortSignal.timeout(5_000),
           workspace: { instructions: undefined, path: directory },

@@ -84,7 +84,7 @@
     "file": "apps/host/src/triggers/trigger-authority.integration.test.ts",
     "name": [
       "Trigger authority through real Host services and PostgreSQL",
-      "A7/F13b: detail omits downstream Runs on an unrelated reused work Thread"
+      "A7/F13b: detail shows downstream Runs only to readers that reach the anchor"
     ],
     "area": "Triggers",
     "owner": "Triggers maintainers",
@@ -477,7 +477,8 @@
     "deadline": "2026-11-06T05:39:00Z",
     "sha": "7cab25b8ba1f7397e3feb0c66d13cb118a84265a",
     "evidence": [
-      "integration (1) on 7cab25b (PR #243, which changed only how task rows render): the clipboard result arrived late ('Matcher did not succeed in time'; expected [ { type: 'clipboard.result', … } ] to deeply equal [ ObjectContaining{…} ]) after 25.7 s. The same job passed on rerun at the same SHA (run 41009135701, attempt 2) in 17.7 s. Reproduce under the integration shard's load; fix why the native clipboard result can miss the matcher's window, keeping the projection and attribution assertions unchanged."
+      "integration (1) on 7cab25b (PR #243, which changed only how task rows render): the clipboard result arrived late ('Matcher did not succeed in time'; expected [ { type: 'clipboard.result', … } ] to deeply equal [ ObjectContaining{…} ]) after 25.7 s. The same job passed on rerun at the same SHA (run 41009135701, attempt 2) in 17.7 s. Reproduce under the integration shard's load; fix why the native clipboard result can miss the matcher's window, keeping the projection and attribution assertions unchanged.",
+      "integration (1) on 70c2a445c (PR #418, a merge of main with no browser changes): the test body finished, then its afterEach cleanup exceeded the 30 s hook timeout (run 41836895735). The Host also logged an unparsed browser runtime frame (Unrecognized keys: access, dialog, sessionId, state, surfaces), which main's own CI logs for this test too (run 41832359500). Three local runs of the file at the same SHA passed. Acceptance additionally covers bounded cleanup: identify which close in afterEach blocks and make it settle without lengthening the hook timeout."
     ]
   },
   {
@@ -560,6 +561,25 @@
       "The selected integration phase of pnpm check:changed --base origin/main timed out at the unchanged 30000 ms limit (30223 ms) on the named test, on this SHA plus the D2a skill-identity working tree. All preceding tests in the file passed. The broader integration attempt was stopped after this failure; this is not a complete qualification receipt.",
       "Diagnostic reproduction: pnpm test:integration -- apps/host/src/runtime/runtime.integration.test.ts -t 'persists the exact managed owner' passed in 934 ms; the subsequent complete file passed all 22 tests, with the named case taking 747 ms. Temporary phase markers confirmed initial startup, both closes, restart and both expected startup rejections settled; markers were removed. No assertion, timeout or execution exemption changed. Logs: ~/.local/state/opensteer/work/d2a-skill-identity/{check-first,managed-isolated,managed-full}.log.",
       "Reproduce under the normal four-worker selected integration workload and capture bounded startup/shutdown phase diagnostics, including HostRuntime.closingStep(), if it recurs. Acceptance: identify and gate the blocking operation deterministically, preserve managed-owner identity, enrollment replay, Account publication ordering and mismatch refusal assertions, and pass the complete file plus the selected integration workload before removing this record."
+    ]
+  },
+  {
+    "file": "apps/host/src/agents/runner-reattach.integration.test.ts",
+    "name": [
+      "Runs that outlive their connection",
+      "preserves a delegated recovery through Runner preparation and a dispatch disconnect race"
+    ],
+    "area": "Run lifecycle",
+    "owner": "Run lifecycle maintainers",
+    "status": "quarantined",
+    "firstSeen": "2026-11-04T09:00:00Z",
+    "deadline": "2026-11-11T09:00:00Z",
+    "sha": "2ae8c55607cb877bad58cc26e8b3461935f2656e",
+    "evidence": [
+      "Pre-existing race, reproduced on origin/main 2ae8c556 in 5 of 14 local runs (1 of 14 on the MCP overhaul head). Every failure records run.status queued -> starting -> queued; every pass records only queued.",
+      "Cause: runner-registry marks the Runner attached and onAttached wakes dispatch (apps/host/src/runtime/runtime.ts onAttached) before the registration-time account inspection answers, so the dispatcher's preparing guard (apps/host/src/agents/dispatcher.ts, Runner preparation check) has not yet seen 'preparing'. The dispatch claims the Run, its own inspection reports preparing, it throws the retryable 'Preparing <account>…' error and the Run is requeued.",
+      "The assertion at runner-reattach.integration.test.ts:749-750 allows at most 2 run.status events, but the claim-and-requeue its own comment tolerates always yields 3, so the case passes only when the race does not occur.",
+      "Reproduce: pnpm test:integration -- apps/host/src/agents/runner-reattach.integration.test.ts -t \"dispatch disconnect race\" (several runs). Acceptance: do not dispatch new Runs on a freshly attached Runner until its first account inspection answers, so a held recovery records no extra claim/requeue, with the assertion unchanged."
     ]
   }
 ]

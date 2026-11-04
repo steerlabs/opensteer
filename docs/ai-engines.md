@@ -54,6 +54,15 @@ Boot probes must prove isolation and required writes. Launches must match planne
 
 ## Opensteer tools through the Runner
 
+The Host builds each Run's tool plan from the registry, including instructions
+and bundled skills. All eight engines configure one MCP server, `opensteer`,
+from that plan. Runners and drivers must not reconstruct a tool list from their
+own release. `toolsRevision` participates in warm-engine identity, so a changed
+plan cannot reuse an engine with stale discovery. The Host visibly refuses
+execution on a Runner without `agent-tools-plan-v1` before dispatch; there is no
+mixed-version tool inventory. See
+[plan construction](../apps/host/src/agents/agent-tools-plan.ts).
+
 Engines never receive a Host token. The loopback proxy gives each Run a secret usable only for its tool endpoints, forwards the current Host token, rejects arbitrary forwarding and redirects, and bounds requests. Never put its secret on a command line. Interrupt revokes it and closes streams immediately; Host grant revocation remains authoritative. Loopback alone provides no tenant isolation. See `apps/runner/src/credentials/credential-proxy.ts`.
 
 Token refresh belongs only to the Runner boot holding the Run. Refusal ends access; temporary unavailability does not revoke it. Existing MCP sessions authorize each request with its current token; open shell/browser connections remain bound to the grant, not the original token's lifetime. Warm-engine relays serve one Run at a time and suspend between Runs. See [Run tool authority](agent-orchestration.md#run-tool-authority) and [Warm engines](agent-orchestration.md#warm-engines).
@@ -62,7 +71,7 @@ Claude defers Opensteer tool schemas through ToolSearch, which must remain avail
 
 ## Instructions and skills
 
-Skills have unique full names: `plugin:skill` for plugin skills (including the built-in `opensteer` plugin), bare names for loose Workspace skills. Duplicate full names fail the Run; no layer shadows another. Platform, role and capability instructions supplement the engine's system prompt and never confer Host authority. Keep cross-tool routing in the Run guide so Claude can choose tools before discovering their deferred schemas. MCP initialization must not repeat that guide.
+Skills have unique full names: `plugin:skill` for plugin skills (including the built-in `opensteer` plugin), bare names for loose Workspace skills. Duplicate full names fail the Run; no layer shadows another. Platform and role instructions supplement the engine's system prompt and never confer Host authority. Keep cross-tool routing in the Run guide so Claude can choose tools before discovering their deferred schemas. MCP initialization must not repeat that guide.
 
 Deliver skill discovery metadata rather than every body. Pi disables ambient discovery in favor of the resolved plan. On Codex resume, send current Workspace and Opensteer instructions through keyed turn context: changed startup instructions do not refresh an existing conversation. An absent Workspace file must clear prior instructions. See `apps/runner/agent-skills/skills`, `packages/harness/src/skill-catalog.ts` and each driver's protocol tests. Transport success alone does not prove model behavior.
 

@@ -800,6 +800,27 @@ describe("Opensteer's own steps", () => {
   const opensteer = (name: string, args: Record<string, unknown> = {}) =>
     toolPresentation(tool({ arguments: args, tool: { name, namespace: "opensteer" } }));
 
+  it.each(["opensteer", "opensteer.integrations", "mcp:opensteer_integrations"])(
+    "keeps integration summaries and model-only details consistent in %s",
+    (namespace) => {
+      const entry = tool({
+        arguments: { toolRef: "opaque-reference", arguments: { query: "mail" } },
+        tool: { namespace, name: "integration_call" },
+        output: { text: "model-only output" },
+      });
+      expect(toolPresentation(entry)).toMatchObject({
+        label: "Called an integration",
+        activeLabel: "Calling an integration",
+        hint: "",
+      });
+      expect(toolBody(entry)).toMatchObject({
+        collapsed: true,
+        argumentsText: JSON.stringify({ query: "mail" }, null, 2),
+      });
+      expect(activityFeedPresentation(entry).detail).not.toContain("model-only output");
+    },
+  );
+
   it("say what an action did, not which tool did it", () => {
     expect(opensteer("browser_tab_write", { action: "restore", tabIds: ["t1"] })).toMatchObject({
       activeLabel: "Restoring tabs",

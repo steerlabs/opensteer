@@ -151,15 +151,18 @@ integration("Expo external engine sign-in recovery", () => {
         const account = button("Cursor");
         if (account) await act(async () => account.click());
       }
+      // The model appears with the ready catalog; it becomes selectable once the
+      // engine's availability settles, which can take another render.
       await act(async () => {
-        await expect.poll(() => button(model.displayName), { timeout: 10_000 }).toBeDefined();
+        await expect
+          .poll(() => button(model.displayName)?.disabled, { timeout: 10_000 })
+          .toBe(false);
       });
       expect(refresh).toHaveBeenCalledExactlyOnceWith({
         environmentId: active.environmentId,
         harnessInstanceId: active.harnessInstanceId,
       });
       const selectable = button(model.displayName)!;
-      expect(selectable.disabled).toBe(false);
       const after = container.innerHTML;
       await act(async () => selectable.click());
       if (context === "new") {

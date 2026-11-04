@@ -1,3 +1,4 @@
+import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import type {
   ComputerAppApprovalAnswer,
@@ -75,7 +76,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentControlService } from "../agents/agent-control-service.js";
 import {
   continuationMessage,
   type IntegrationInventorySource,
@@ -137,25 +137,52 @@ interface ToolResult {
 
 const mcp = vi.hoisted(() => ({
   callHandler: undefined as CallHandler | undefined,
-  instructions: "",
+  instructions: undefined as string | undefined,
   listHandler: undefined as
     ((request: unknown, extra: McpCallExtra) => Promise<unknown>) | undefined,
   registrations: 0,
 }));
 
-vi.mock("@modelcontextprotocol/sdk/server/index.js", () => ({
-  Server: class {
-    constructor(_identity: unknown, options: { instructions: string }) {
-      mcp.instructions = options.instructions;
+vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => ({
+  McpServer: class {
+    readonly callbacks = new Map<
+      string,
+      (args: unknown, extra: McpCallExtra) => Promise<unknown>
+    >();
+    readonly server = {
+      setRequestHandler: (
+        _schema: unknown,
+        handler: (request: unknown, extra: McpCallExtra) => Promise<unknown>,
+      ) => {
+        mcp.listHandler = handler;
+      },
+    };
+    constructor(_info: unknown, options?: { readonly instructions?: string }) {
+      mcp.instructions = options?.instructions;
+      mcp.callHandler = async (request, extra): Promise<ToolResult> => {
+        const callback = this.callbacks.get(request.params.name);
+        if (!callback)
+          return { isError: true, content: [{ type: "text", text: "Tool is unavailable" }] };
+        const result = await callback(request.params.arguments ?? {}, extra);
+        if (
+          ["computer", "integration_call"].includes(request.params.name) &&
+          result &&
+          typeof result === "object" &&
+          "structuredContent" in result
+        )
+          return result.structuredContent as ToolResult;
+        return result as ToolResult;
+      };
     }
-    async close() {}
+    registerTool(
+      name: string,
+      _registration: unknown,
+      callback: (args: unknown, extra: McpCallExtra) => Promise<unknown>,
+    ) {
+      this.callbacks.set(name, callback);
+    }
     async connect() {}
-    setRequestHandler(_schema: unknown, handler: unknown) {
-      mcp.registrations += 1;
-      if (mcp.registrations % 2 === 1)
-        mcp.listHandler = handler as (request: unknown, extra: McpCallExtra) => Promise<unknown>;
-      else mcp.callHandler = handler as CallHandler;
-    }
+    async close() {}
   },
 }));
 
@@ -173,7 +200,7 @@ vi.mock("@modelcontextprotocol/sdk/server/streamableHttp.js", () => ({
   },
 }));
 
-const { IntegrationToolsMcpService } = await import("./integration-tools-mcp-service.js");
+const { createIntegrationMcpFixture } = await import("../mcp/integration-fixture.test-support.js");
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = baseDatabaseUrl ? describe : describe.skip;
@@ -483,7 +510,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     return world.fakePhone;
   }
 
-  it("computer REPL gates tools/list and tools/call against each request", async () => {
+  it("keeps the Run inventory fixed and checks computer execution availability per call", async () => {
     const world = await createWorld(database);
     try {
       const run = await world.startRun("Capability gating");
@@ -493,7 +520,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       });
       world.executionCapability.on = false;
       const listed = (await gateway.list()) as { tools: { name: string }[] };
-      expect(listed.tools.map((row) => row.name)).not.toContain("computer");
+      expect(listed.tools.map((row) => row.name)).toContain("computer");
       expect((await gateway.call("computer", { code: "return 1" })).isError).toBe(true);
       world.executionCapability.on = true;
       const trigger = await world.gateway(run, true);
@@ -1733,7 +1760,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       );
       expect(wrongDisplay.statusCode, wrongDisplay.body).toBe(400);
       // Forward the included Mac app to a real child; its scope is checked before it exists.
-      const control = new AgentControlService({
+      const control = new ProductToolsTestClient({
         browserSources: {} as never,
         machineFullDiskAccess: {} as never,
         browser: {} as never,
@@ -1746,7 +1773,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         store,
         placeContext: places,
         tokens: {
-          authenticate: async () => ({ ...run.claims, aud: "opensteer-agent-control" }),
+          authenticate: async () => ({ ...run.claims, aud: "opensteer-run-tools" }),
         } as never,
         workspaceMounts: {} as never,
         workspaces: {} as never,
@@ -1907,42 +1934,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       }
     } finally {
       await closeHost?.();
-      await world.close();
-    }
-  });
-
-  it("refuses new access from delegated gateway requests and proposals", async () => {
-    const world = await createWorld(database);
-    const run = await world.startRun("Delegated task");
-    const gateway = await world.gateway({
-      ...run,
-      claims: { ...run.claims, capabilityProfileId: "delegated" },
-    });
-    try {
-      for (const [name, args] of [
-        ["integration_request", { catalog: "macos-app", access: "read", reason: "Use an app" }],
-        [
-          "integration_request",
-          { integration: "cloud-account", access: "read-write", reason: "Send a message" },
-        ],
-        [
-          "integration_propose",
-          {
-            source: "https://example.test/openapi.json",
-            description: "An example API.",
-            access: "read",
-            reason: "Use an API",
-          },
-        ],
-      ] as const) {
-        const response = await gateway.call(name, args);
-        expect(response.isError).toBe(true);
-        expect(JSON.stringify(response.content)).toContain(
-          "This capability profile cannot request integration access.",
-        );
-      }
-      expect(world.fakeMac.waiting()).toEqual([]);
-    } finally {
       await world.close();
     }
   });
@@ -2966,9 +2957,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       refusal("A session on a computer belongs to a running task, so only a task can ask for one."),
     );
     expect(await trigger.call("computer", { code: "return 1" })).toEqual(
-      refusal(
-        "The computer tool is not available to this execution. Update this task's Runner to use it.",
-      ),
+      refusal("Tool is unavailable"),
     );
     await world.close();
   });
@@ -5456,10 +5445,10 @@ async function openGateway(
     runnerBootId: "boot",
     runnerId: run.agentRunnerId,
     threadId: run.threadId,
-    toolContractVersion: 2,
+    toolContractVersion: 2 as const,
     workspaceId: run.workspaceId,
   };
-  const service = new IntegrationToolsMcpService({
+  const service = createIntegrationMcpFixture({
     definitions,
     getWorkspaceForOwner: async (workspaceId) => ({ id: workspaceId }),
     onWorkspaceEvent: () => undefined,
@@ -5470,15 +5459,20 @@ async function openGateway(
         if (trigger) throw new Error("not a Run token");
         return runScope;
       },
-    } as never,
-    triggerTokens: { authenticate: async () => triggerScope } as never,
+    },
+    triggerTokens: { authenticate: async () => triggerScope },
   });
   await service.handle(
     {
       headers: { host: "opensteer.example.test", origin: "https://opensteer.example.test" },
       method: "POST",
     } as never,
-    { end: () => undefined, headersSent: false, setHeader: () => undefined } as never,
+    {
+      end: () => undefined,
+      headersSent: false,
+      once: () => undefined,
+      setHeader: () => undefined,
+    } as never,
     {
       id: 1,
       jsonrpc: "2.0",

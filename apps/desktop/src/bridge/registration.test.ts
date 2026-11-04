@@ -216,6 +216,7 @@ describe("desktop bridge", () => {
     ).toHaveLength(16);
     const notificationChannels = new Set<string>([
       desktopBridgeChannels.integrationAuthorizationReturn,
+      desktopBridgeChannels.mcpAuthorization,
       desktopBridgeChannels.dictationEvent,
       desktopBridgeChannels.downloadsChanged,
       desktopBridgeChannels.updateChanged,

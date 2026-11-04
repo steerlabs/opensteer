@@ -1,9 +1,17 @@
 import { CommandIdSchema, type Workspace } from "@opensteer/core";
 import { CorrelationIdSchema, type RunnerCommand } from "@opensteer/protocol";
 import type { RunnerRegistry } from "@opensteer/orchestration";
-import type { AgentControlRunScope, AgentWorkspaceMountService } from "./agent-control-service.js";
+import type { RunToolScope } from "./run-tool-tokens.js";
 import type { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
 import type { WorkspaceActivityService } from "../workspace/workspace-activity.js";
+
+export interface AgentWorkspaceMountService {
+  mount(input: {
+    readonly requestId: string;
+    readonly scope: RunToolScope;
+    readonly workspace: Workspace;
+  }): Promise<{ readonly path: string }>;
+}
 
 const mountCommandDeadlineMs = 2 * 60 * 1_000;
 
@@ -24,7 +32,7 @@ export class RunnerAgentWorkspaceMountService implements AgentWorkspaceMountServ
 
   async mount(input: {
     readonly requestId: string;
-    readonly scope: AgentControlRunScope;
+    readonly scope: RunToolScope;
     readonly workspace: Workspace;
   }): Promise<{ readonly path: string }> {
     const { scope, workspace } = input;

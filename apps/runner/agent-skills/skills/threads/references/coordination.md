@@ -3,8 +3,9 @@
 ## Find and read Threads
 
 Call `thread_list` with no arguments to see reachable Threads, most recently updated first. Scope
-follows this Thread's capability profile: a Main Thread sees its user's Workspaces, a Workspace
-Thread sees its own Workspace, and a delegated Thread sees its delegation lineage. Narrow with
+follows this Thread's reach: work that acts for the person in their Main sees their Workspaces,
+a specialist sees its delegation lineage, and any other Thread sees its own Workspace. A delegated
+task reaches what its root reaches. Narrow with
 `workspaceId` or `query` only when needed. Follow the returned page cursor when the first page is
 insufficient. Use `thread_read` for one Thread's durable history and the tasks assigned to it, and
 `project_list` when the target Workspace is unclear and that tool is available.
@@ -52,14 +53,13 @@ operate on product resources; they do not replace native workers.
 Pass either `workspaceId` for a new task Thread or `threadId` for a finished Thread's next
 assignment. A Thread works on one task at a time. Reuse a suitable Project when its context helps. For matching work, pass specialist with a ready registration id or plugin name; workspaceId defaults to this Workspace. Give a new task a title of two to five plain words naming the outcome, as the person
 would find it in their task list, such as “Hyatt Seoul booking”. Keep the returned `threadId`
-as its address and `assignmentId` as the assignment's identity. The final reply returns
-automatically; continue independent work or end your turn.
+as its address and `assignmentId` as the assignment's identity. Runs/programs receive the final reply automatically; continue independent work or end your turn. A connection receives no Assignment; observe thread.id with thread_wait/thread_read.
 
 A delegated Thread reads its Workspace's `AGENTS.md` and skills. Establish a new Project's
 identity before delegating into it. Send the concrete outcome and expected answer rather than
 copying its standing role. Parallelize independent work when useful and give shared file edits
 distinct ownership. Include confirmed access and observed blockers; resolve missing authority
-in a Thread that can request it. A Thread creates no folder. Main uses ordinary file tools on Project paths returned by project_create; Project agents work only in their own folder. Reuse and messaging must respect delegation lineage; a task cannot gain Main authority from a different lineage.
+in a Thread that can request it. A Thread creates no folder. Main uses ordinary file tools on Project paths returned by project_create; Project agents work only in their own folder. Reuse and messaging must fit live reach and access ceilings; delegation never grants Main inheritance.
 
 ## Execution selection
 
@@ -75,7 +75,7 @@ To choose another engine or model, search `environment_list`. Use the account-sp
 in `thread_delegate`. Options list exact values and defaults; boolean options stay booleans.
 Focus `harnessInstanceId` for more models and pass `modelsNextCursor` as `cursor`, retaining the
 query. Restart the focused listing if the catalog changes and invalidates the cursor. Follow
-environment and profile directory cursors to discover all authorized targets.
+environment and engine-account directory cursors to discover all authorized targets.
 
 ## Forward places
 
@@ -86,3 +86,15 @@ phone's `machineId` and `display`, with stored labels. IDs in task text do not r
 parts. You may also forward places your Run is authorized to use. The Host checks provenance
 and the child Workspace's access; forwarding grants no approval or session. Release a held
 phone before handing it to another task. Resolve missing access in a Thread able to request it.
+
+Use `thread_read` to inspect an existing Thread's execution selection. Use `thread_configure`
+with action `set` and `harnessInstanceId` and/or `modelSelection` to change it. Discovery supplies exact IDs and
+option types. A known native-session switch may require `continuation`; never invent its ID.
+This tool cannot change access mode. `settings_read`/`settings_write` manage defaults and
+remembered choices; they do not rewrite existing Threads.
+
+Read `thread_read.queue` before changing unknown queued inputs with `thread_queue`. Its items show message IDs and
+canCancel/canMove/canSteer. move needs beforeMessageId (null for end); steer needs the active
+expectedRunId. It preserves the original requester and message. resume releases the queue,
+not extra authority. `thread_write` interrupt is a resumable Stop; `assignment_cancel` is
+permanent cancellation of an Assignment subtree.

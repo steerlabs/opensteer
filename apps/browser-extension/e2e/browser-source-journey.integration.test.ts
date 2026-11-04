@@ -618,26 +618,6 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       expect(signedIn(await visit(viewerTwo, "www.beta.test"), "beta")).toBe(true);
     });
 
-    await step("agent: a delegated Thread cannot ask for a new site", async () => {
-      const childExecution = nextRunExecute(agentComputer);
-      await agent.call("thread_delegate", {
-        task: "Check the gamma account page.",
-        title: "Gamma check",
-        workspaceId,
-      });
-      const childRun = await acceptRun(agentComputer, runtime, await childExecution);
-      expect(childRun.capabilityProfileId).toBe("delegated");
-      const child = await AgentTools.connect(hostOrigin, childRun.token);
-      const before = (await signInRequests()).length;
-      expect(await signIn(child, sessionTwo, "https://gamma.test")).toEqual({
-        reason: "needs-approval",
-        site: "https://gamma.test",
-        status: "unavailable",
-      });
-      expect((await signInRequests()).length).toBe(before);
-      await child.close();
-    });
-
     // ---- 5. Offline Chrome: the Request waits and drains by itself ----
     const drainedRequestId = await step(
       "agent: preferred Chrome offline leaves the Request pending",
@@ -1301,7 +1281,7 @@ async function acceptRun(
   computer: CallerMachine,
   runtime: HostRuntime,
   message: RunExecute,
-): Promise<{ readonly capabilityProfileId: string; readonly token: string }> {
+): Promise<{ readonly token: string }> {
   const context = message.command.context;
   const fence: RunnerConnectionFence = {
     bootId: message.bootId,
@@ -1357,12 +1337,7 @@ async function acceptRun(
       .executeTakeFirst();
     return run?.status === "running";
   });
-  const thread = await runtime.store.database
-    .selectFrom("threads")
-    .select("capabilityProfileId")
-    .where("id", "=", context.threadId)
-    .executeTakeFirstOrThrow();
-  return { capabilityProfileId: thread.capabilityProfileId, token: context.agentControl.token };
+  return { token: context.agentTools.token };
 }
 
 /** A minimal MCP Streamable HTTP client, as an agent's engine speaks to the Host. */

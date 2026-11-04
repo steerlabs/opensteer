@@ -1,3 +1,9 @@
+import {
+  assertThreadCaller,
+  lockThreadCaller,
+  withThreadCallerTransaction,
+  type ThreadCallerAuthority,
+} from "./thread-caller.js";
 import { admitThreadWrite, requireThreadWriteAuthority } from "./task-done.js";
 import {
   retryDatabaseTransaction,
@@ -60,18 +66,18 @@ import { type CommandRow, type ThreadRow, type DatabaseSchema } from "./schema.j
 import { type RevokedRunGrant } from "./run-grants.js";
 import type { BrowserUsageCredit } from "./browser-session-store.js";
 import {
-  type AgentControlAdmissionInput,
+  type RunToolAdmissionInput,
   type TriggerControlAdmissionInput,
   type WatchControlAdmissionInput,
-  type AgentControlAdmissionResult,
-  admitAgentControlRequest as persistAgentControlAdmission,
+  type RunToolAdmissionResult,
+  admitRunToolCall as persistRunToolAdmission,
   type TriggerControlAdmissionResult,
   admitTriggerControlRequest as persistTriggerControlAdmission,
-  admitAgentControlRequestInTransaction,
+  admitRunToolCallInTransaction,
   admitTriggerControlRequestInTransaction,
   admitWatchControlRequestInTransaction,
   type AdmissionMode,
-} from "./agent-control-admission.js";
+} from "./run-tool-admission.js";
 import { type DurableWindow } from "@opensteer/protocol";
 import { type Transaction, type Kysely, sql } from "kysely";
 import {
@@ -132,6 +138,9 @@ import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import { projectThreadState } from "./thread-status.js";
 
 export interface CreateThreadInput {
+  readonly specialistId?: string;
+  readonly icon?: WorkspaceIconName;
+  readonly authority?: ThreadCallerAuthority;
   readonly accessMode?: ThreadAccessMode;
   readonly createdBy: UserId;
   readonly environmentId: EnvironmentId;
@@ -168,6 +177,7 @@ export interface ThreadUpdateResult {
  */
 export type ThreadInputSource =
   | { readonly kind: "human" }
+  | { readonly kind: "connection"; readonly connectionId: string }
   | { readonly kind: "agent"; readonly runId: RunId }
   | { readonly kind: "trigger"; readonly occurrenceId: TriggerOccurrenceId }
   | {
@@ -201,6 +211,8 @@ export type ThreadInputSource =
     };
 
 export interface EnqueueThreadInputRequest {
+  readonly requireUnassigned?: true;
+  readonly authority?: ThreadCallerAuthority;
   readonly quotedMessageId?: MessageId;
   readonly content: readonly ContentPart[];
   readonly idempotencyKey: string;
@@ -234,6 +246,7 @@ export interface EnqueuedThreadInput {
 }
 
 export interface SteerThreadInputRequest {
+  readonly authority?: ThreadCallerAuthority;
   readonly threadId: ThreadId;
   readonly messageId: MessageId;
   readonly expectedRunId: RunId;
@@ -242,6 +255,7 @@ export interface SteerThreadInputRequest {
 }
 
 export interface CancelThreadInputRequest {
+  readonly authority?: ThreadCallerAuthority;
   readonly threadId: ThreadId;
   readonly messageId: MessageId;
   readonly idempotencyKey: string;
@@ -259,6 +273,7 @@ export interface CancelledThreadInput {
 }
 
 export interface MoveThreadInputRequest {
+  readonly authority?: ThreadCallerAuthority;
   /** The waiting message to stand in front of, or null for the back of the queue. */
   readonly beforeMessageId: MessageId | null;
   readonly idempotencyKey: string;
@@ -274,7 +289,7 @@ export interface MovedThreadInput {
 
 export interface DelegateThreadRequest {
   readonly specialistId?: string;
-  readonly callerIntent?: Pick<AgentControlAdmissionInput, "requestId" | "requestFingerprint">;
+  readonly callerIntent?: Pick<RunToolAdmissionInput, "requestId" | "requestFingerprint">;
   readonly accessMode: ThreadAccessMode;
   readonly createdBy: UserId;
   readonly environmentId: EnvironmentId;
@@ -321,7 +336,7 @@ export interface DelegatedThreadResult {
 }
 
 export type ThreadMutationAdmission =
-  | { readonly kind: "agent"; readonly request: AgentControlAdmissionInput }
+  | { readonly kind: "agent"; readonly request: RunToolAdmissionInput }
   | { readonly kind: "trigger"; readonly request: TriggerControlAdmissionInput }
   | { readonly kind: "watch"; readonly request: WatchControlAdmissionInput };
 
@@ -417,6 +432,8 @@ function canonicalCreateThreadInput(input: CreateThreadInput): Readonly<Record<s
   // refused instead of returning the Thread the first call created.
   const { nativeModelId: _nativeModelId, ...modelSelection } = input.modelSelection;
   return {
+    ...(input.specialistId ? { specialistId: input.specialistId } : {}),
+    ...(input.icon ? { icon: input.icon } : {}),
     accessMode: input.accessMode ?? DEFAULT_THREAD_ACCESS_MODE,
     createdBy: input.createdBy,
     environmentId: input.environmentId,
@@ -919,12 +936,12 @@ export async function getThreadForOwner(
   return row ? threadFromRow(row) : null;
 }
 
-export function admitAgentControlRequest(
+export function admitRunToolCall(
   database: Kysely<DatabaseSchema>,
-  input: AgentControlAdmissionInput,
+  input: RunToolAdmissionInput,
   executionNow: () => number = Date.now,
-): Promise<AgentControlAdmissionResult> {
-  return persistAgentControlAdmission(database, input, executionNow);
+): Promise<RunToolAdmissionResult> {
+  return persistRunToolAdmission(database, input, executionNow);
 }
 
 export function admitTriggerControlRequest(
@@ -983,7 +1000,7 @@ export async function createThread(
   database: Kysely<DatabaseSchema>,
   input: CreateThreadInput,
 ): Promise<ThreadCreationResult> {
-  return withDatabaseTransaction(database, (transaction) =>
+  return withThreadCallerTransaction(database, input, (transaction) =>
     createThreadInTransaction(transaction, input),
   );
 }
@@ -1009,7 +1026,7 @@ export async function createThreadInTransaction(
   const commandId = createId("command");
   const workspace = await transaction
     .selectFrom("workspaces")
-    .select(["homeThreadId", "id", "kind", "status"])
+    .select(["homeThreadId", "id", "kind", "status", "createdBy"])
     .where("id", "=", input.workspaceId)
     .forNoKeyUpdate()
     .executeTakeFirst();
@@ -1069,10 +1086,16 @@ export async function createThreadInTransaction(
   }
   let lineageRootThreadId = id;
   let listed = true;
+  let inheritsMain =
+    !(input.authority?.kind === "connection" && input.authority.reach.kind !== "user") &&
+    workspace.kind === "main" &&
+    workspace.createdBy === input.createdBy &&
+    membership.role === "owner";
+  let specialistId: string | null = input.specialistId ?? null;
   if (input.parentThreadId) {
     const parent = await transaction
       .selectFrom("threads")
-      .select(["lineageRootThreadId", "role", "workspaceId"])
+      .select(["lineageRootThreadId", "role", "workspaceId", "inheritsMain", "specialistId"])
       .where("threads.id", "=", input.parentThreadId)
       .executeTakeFirst();
     if (!parent) {
@@ -1091,16 +1114,15 @@ export async function createThreadInTransaction(
       });
     }
     lineageRootThreadId = parent.lineageRootThreadId;
+    inheritsMain = parent.inheritsMain;
+    specialistId = parent.specialistId;
     listed = parent.role === "conversation";
   }
   const actorPrincipalId = await principalIdForUser(transaction, input.createdBy);
   const thread = await insertThread({
     accessMode: resolvedInput.accessMode,
-    capabilityProfileId: input.parentThreadId
-      ? "delegated"
-      : workspace.kind === "main" && membership.role === "owner"
-        ? "main"
-        : "workspace",
+    inheritsMain,
+    specialistId,
     createdByPrincipalId: actorPrincipalId,
     id,
     lineageRootThreadId,
@@ -1115,8 +1137,8 @@ export async function createThreadInTransaction(
     }),
     title: input.home ? CHAT_THREAD_TITLE : input.title,
     titleSource: input.generateTitle && !input.home ? "provisional" : "chosen",
-    icon: null,
-    iconSource: input.home ? "chosen" : "provisional",
+    icon: input.icon ?? null,
+    iconSource: input.home || input.icon ? "chosen" : "provisional",
     workspaceId: input.workspaceId,
   });
   await ensureSelectedProviderSession(transaction, thread);
@@ -1237,7 +1259,7 @@ async function admitThreadMutation(
   executionNow: () => number = Date.now,
 ): Promise<void> {
   if (admission.kind === "agent") {
-    await admitAgentControlRequestInTransaction(transaction, admission.request, mode, executionNow);
+    await admitRunToolCallInTransaction(transaction, admission.request, mode, executionNow);
   } else if (admission.kind === "trigger") {
     await admitTriggerControlRequestInTransaction(transaction, admission.request, mode);
   } else {
@@ -1248,7 +1270,7 @@ async function admitThreadMutation(
 export async function cancelAssignment(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
-  input: CancelAssignmentInput & { readonly admission?: AgentControlAdmissionInput },
+  input: CancelAssignmentInput & { readonly admission?: RunToolAdmissionInput },
   executionNow: () => number = Date.now,
 ): Promise<CancelAssignmentResult> {
   if (
@@ -1268,22 +1290,12 @@ export async function cancelAssignment(
     () =>
       database.transaction().execute(async (transaction) => {
         if (input.admission) {
-          await admitAgentControlRequestInTransaction(
-            transaction,
-            input.admission,
-            "check",
-            executionNow,
-          );
+          await admitRunToolCallInTransaction(transaction, input.admission, "check", executionNow);
         }
         await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
         const result = await cancelAssignmentInTransaction(transaction, input, links);
         if (input.admission) {
-          await admitAgentControlRequestInTransaction(
-            transaction,
-            input.admission,
-            "admit",
-            executionNow,
-          );
+          await admitRunToolCallInTransaction(transaction, input.admission, "admit", executionNow);
         }
         return result;
       }),
@@ -1308,6 +1320,7 @@ export function drainAssignmentReturn(
 export async function updateThreadExecutionSelection(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly authority?: ThreadCallerAuthority;
     readonly continuationIdentity: ProviderContinuationIdentity;
     readonly continuation?: { readonly expectedProviderSessionId: ProviderSessionId | null };
     readonly harnessInstanceId: HarnessInstanceId;
@@ -1331,7 +1344,7 @@ export async function updateThreadExecutionSelection(
     modelSelection,
     threadId: input.threadId,
   };
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withThreadCallerTransaction(database, input, async (transaction) => {
     await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
     const existingCommand = await findCommandByIdempotency(
       transaction,
@@ -1575,6 +1588,7 @@ export async function updateThreadExecutionSelection(
 export async function resumeThreadInputQueue(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly authority?: ThreadCallerAuthority;
     readonly idempotencyKey: string;
     readonly requestedBy: UserId;
     readonly threadId: ThreadId;
@@ -1584,7 +1598,7 @@ export async function resumeThreadInputQueue(
   readonly thread: Thread;
   readonly events: readonly AgentEvent[];
 }> {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withThreadCallerTransaction(database, input, async (transaction) => {
     await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
     const observed = await transaction
       .selectFrom("threads")
@@ -1604,6 +1618,10 @@ export async function resumeThreadInputQueue(
       ])
       .where("id", "=", input.threadId)
       .executeTakeFirstOrThrow();
+    await assertThreadCaller(transaction, input.authority, {
+      threadId: input.threadId,
+      activate: true,
+    });
     const membership = await requireActiveWorkspaceMembership(
       transaction,
       thread.workspaceId,
@@ -1690,10 +1708,11 @@ export async function resumeThreadInputQueue(
 export async function renameThread(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly authority?: ThreadCallerAuthority;
     readonly idempotencyKey: string;
     readonly requestedBy: UserId;
     readonly actorRunId?: RunId;
-    readonly admission?: AgentControlAdmissionInput;
+    readonly admission?: RunToolAdmissionInput;
     readonly threadId: ThreadId;
     readonly title: string;
   },
@@ -1703,6 +1722,7 @@ export async function renameThread(
     database,
     async (transaction) => {
       await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+      await lockThreadCaller(transaction, input.authority);
       const payload = { threadId: input.threadId, title };
       const existing = await findCommandByIdempotency(
         transaction,
@@ -1813,10 +1833,11 @@ export async function renameThread(
 export async function setThreadIcon(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly authority?: ThreadCallerAuthority;
     readonly idempotencyKey: string;
     readonly requestedBy: UserId;
     readonly actorRunId?: RunId;
-    readonly admission?: AgentControlAdmissionInput;
+    readonly admission?: RunToolAdmissionInput;
     readonly threadId: ThreadId;
     readonly icon: WorkspaceIconName | null;
   },
@@ -1826,6 +1847,7 @@ export async function setThreadIcon(
     database,
     async (transaction) => {
       await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+      await lockThreadCaller(transaction, input.authority);
       const payload = { threadId: input.threadId, icon: input.icon };
       const existing = await findCommandByIdempotency(
         transaction,
@@ -2104,48 +2126,72 @@ export async function enqueueThreadInput(
   database: Kysely<DatabaseSchema>,
   input: EnqueueThreadInputRequest,
 ): Promise<EnqueuedThreadInput> {
-  return withDatabaseTransaction(database, (transaction) =>
-    enqueueThreadInputInTransaction(transaction, input),
-  );
+  return withDatabaseTransaction(database, async (transaction) => {
+    await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+    await lockThreadCaller(transaction, input.authority);
+    const result = await enqueueThreadInputInTransaction(transaction, input);
+    await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
+    return result;
+  });
 }
 
 export async function steerThreadInput(
   database: Kysely<DatabaseSchema>,
   input: SteerThreadInputRequest,
 ): Promise<EnqueuedThreadInput> {
-  return withDatabaseTransaction(database, (transaction) =>
-    steerThreadInputInTransaction(transaction, input),
-  );
+  return withDatabaseTransaction(database, async (transaction) => {
+    await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+    await lockThreadCaller(transaction, input.authority, [input.expectedRunId]);
+    const result = await steerThreadInputInTransaction(transaction, input);
+    await assertThreadCaller(transaction, input.authority, {
+      threadId: input.threadId,
+      activate: true,
+    });
+    return result;
+  });
 }
 
 export async function cancelThreadInput(
   database: Kysely<DatabaseSchema>,
   input: CancelThreadInputRequest,
 ): Promise<CancelledThreadInput> {
-  return withDatabaseTransaction(database, (transaction) =>
-    cancelThreadInputInTransaction(transaction, input),
-  );
+  return withDatabaseTransaction(database, async (transaction) => {
+    await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+    await lockThreadCaller(transaction, input.authority);
+    const result = await cancelThreadInputInTransaction(transaction, input);
+    await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
+    return result;
+  });
 }
 
 export async function moveThreadInput(
   database: Kysely<DatabaseSchema>,
   input: MoveThreadInputRequest,
 ): Promise<MovedThreadInput> {
-  return withDatabaseTransaction(database, (transaction) =>
-    moveThreadInputInTransaction(transaction, input),
-  );
+  return withDatabaseTransaction(database, async (transaction) => {
+    await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+    await lockThreadCaller(transaction, input.authority);
+    const result = await moveThreadInputInTransaction(transaction, input);
+    await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
+    return result;
+  });
 }
 
 export async function getThreadInputQueue(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly authority?: ThreadCallerAuthority;
     readonly threadId: ThreadId;
     readonly requestedBy: UserId;
   },
 ): Promise<ThreadInputQueue> {
-  return withDatabaseTransaction(database, (transaction) =>
-    readThreadInputQueue(transaction, input),
-  );
+  return withDatabaseTransaction(database, async (transaction) => {
+    await assertThreadCaller(transaction, input.authority, {
+      threadId: input.threadId,
+      readOnly: true,
+    });
+    return readThreadInputQueue(transaction, input);
+  });
 }
 
 export async function enqueueAdmittedThreadInput(

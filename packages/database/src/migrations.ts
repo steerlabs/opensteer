@@ -4704,6 +4704,10 @@ export function migrationProvider() {
         "0150_workspace_skill_inventory": workspaceSkillInventoryMigration,
         "0151_plugin_settings_revisions": pluginSettingsRevisionsMigration,
         "0152_managed_memory_passes": managedMemoryPassesMigration,
+        "0153_consent_scope": consentScopeMigration,
+        "0154_agent_connections": agentConnectionsMigration,
+        "0155_connection_message_authors": connectionMessageAuthorsMigration,
+        "0156_specialist_auto_bind": specialistAutoBindMigration,
       };
     },
   };
@@ -7242,5 +7246,135 @@ export const managedMemoryPassesMigration: Migration = {
         where system_role is not null;
       create unique index triggers_managed_anchor_unique on triggers(anchor_thread_id)
         where system_role is not null;`.execute(database);
+  },
+};
+
+export const consentScopeMigration: Migration = {
+  async up(database) {
+    await sql`
+      lock table public.threads in access exclusive mode;
+      alter table public.threads add column inherits_main boolean;
+      drop trigger threads_immutable_capability_profile on public.threads;
+      drop function public.opensteer_enforce_thread_capability_profile();
+      drop trigger threads_specialist_binding on public.threads;
+      drop function public.opensteer_enforce_specialist_binding();
+
+      -- Workspace kind cannot recover consent withheld from shared/external
+      -- conversations in Main. The stored lineage root is the consent receipt.
+      update public.threads as child
+        set inherits_main = (root.capability_profile_id = 'main')
+        from public.threads as root where root.id = child.lineage_root_thread_id;
+
+      -- Delegation must not shed the specialist ceiling of an ancestor.
+      with recursive bindings as (
+        select id, specialist_id from public.threads where parent_thread_id is null
+        union all
+        select child.id, coalesce(child.specialist_id, parent.specialist_id)
+          from public.threads child join bindings parent on child.parent_thread_id = parent.id
+      )
+      update public.threads as child set specialist_id = bindings.specialist_id
+        from bindings where bindings.id = child.id;
+
+      alter table public.threads alter column inherits_main set not null;
+      alter table public.threads drop column capability_profile_id;
+
+      update public.workspace_events as event
+        set data = jsonb_set(event.data, '{thread}',
+          ((event.data -> 'thread') - 'capabilityProfileId') || jsonb_build_object(
+            'inheritsMain', thread.inherits_main, 'specialistId', thread.specialist_id))
+        from public.threads as thread
+        where event.thread_id = thread.id and event.data #>> '{thread,id}' = thread.id
+          and jsonb_typeof(event.data -> 'thread') = 'object';
+
+
+      create function public.opensteer_enforce_thread_consent() returns trigger language plpgsql as $$
+      declare parent public.threads;
+      begin
+        if tg_op = 'UPDATE' then
+          if new.inherits_main is distinct from old.inherits_main then
+            raise exception 'thread consent is immutable';
+          end if;
+          if new.specialist_id is distinct from old.specialist_id then
+            raise exception 'specialist binding is immutable';
+          end if;
+          if new.lineage_root_thread_id is distinct from old.lineage_root_thread_id then
+            raise exception 'thread lineage is immutable';
+          end if;
+          return new;
+        end if;
+        if new.parent_thread_id is not null then
+          select * into parent from public.threads where id = new.parent_thread_id;
+          if not found or new.inherits_main is distinct from parent.inherits_main then
+            raise exception 'thread consent does not match its lineage';
+          end if;
+          if parent.specialist_id is not null and new.specialist_id is distinct from parent.specialist_id then
+            raise exception 'thread cannot escape its specialist binding';
+          end if;
+        elsif new.inherits_main and not exists (
+          select 1 from public.workspaces workspace
+            join public.workspace_memberships membership on membership.workspace_id = workspace.id
+          where workspace.id = new.workspace_id and workspace.kind = 'main'
+            and workspace.created_by = new.created_by
+            and membership.user_id = new.created_by
+            and membership.state = 'active' and membership.role = 'owner'
+        ) then
+          raise exception 'thread consent exceeds its durable authority';
+        end if;
+        if new.specialist_id is not null then
+          if not exists (
+            select 1 from public.specialists where id = new.specialist_id
+              and workspace_id = new.workspace_id and owner_user_id = new.created_by
+              and status = 'ready' and removed_at is null for share
+          ) then
+            raise exception 'invalid specialist binding';
+          end if;
+        end if;
+        return new;
+      end $$;
+      create trigger threads_immutable_consent before insert or update on public.threads
+        for each row execute function public.opensteer_enforce_thread_consent();
+    `.execute(database);
+  },
+};
+
+export const agentConnectionsMigration: Migration = {
+  async up(database) {
+    await sql`CREATE TABLE agent_connections (
+      id text PRIMARY KEY CHECK (id ~ '^mcn_[0-9a-f-]{36}$'),
+      user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      label text NOT NULL CHECK (length(label) BETWEEN 1 AND 120),
+      client_name text NOT NULL CHECK (length(client_name) BETWEEN 1 AND 100),
+      access_mode text NOT NULL CHECK (access_mode IN ('approval-required', 'auto-accept-edits', 'auto', 'full-access')),
+      workspace_id text REFERENCES workspaces(id) ON DELETE CASCADE,
+      resource text NOT NULL,
+      token_hash text UNIQUE CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+      created_at timestamptz NOT NULL,
+      last_used_at timestamptz,
+      expires_at timestamptz NOT NULL,
+      revoked_at timestamptz,
+      CHECK (expires_at > created_at)
+    );
+    CREATE INDEX agent_connections_owner ON agent_connections(user_id, created_at) WHERE revoked_at IS NULL`.execute(
+      database,
+    );
+  },
+};
+
+const connectionMessageAuthorsMigration: Migration = {
+  async up(database) {
+    await sql`alter table messages drop constraint messages_kind_author_check,
+      add constraint messages_kind_author_check check (
+        (kind = 'input' and author->>'kind' in ('human', 'agent', 'trigger', 'watch', 'connection')) or
+        (kind in ('assistant', 'run-result') and author->>'kind' = 'agent') or
+        (kind = 'continuation' and author->>'kind' = 'platform')
+      )`.execute(database);
+  },
+};
+
+const specialistAutoBindMigration: Migration = {
+  async up(database) {
+    await sql`ALTER TABLE specialists ADD COLUMN auto_bind boolean NOT NULL DEFAULT true`.execute(
+      database,
+    );
   },
 };

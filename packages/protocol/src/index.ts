@@ -1,6 +1,6 @@
 export * from "./access.js";
 export * from "./attachments.js";
-export * from "./agent-control.js";
+export * from "./run-plans.js";
 export * from "./browser.js";
 export * from "./places.js";
 export * from "./browser-sources.js";
@@ -40,5 +40,6 @@ export * from "./voice.js";
 
 export * from "./apps.js";
 
+export * from "./agent-connections.js";
 export * from "./settings.js";
 export * from "./runner-skill-metadata.js";

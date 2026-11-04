@@ -123,7 +123,10 @@ export function createHostApiHandlers(
     context: HostApiServerContext,
   ) => Promise<HostApiCommandOutput>,
   computerViews?: ComputerViewService,
-): Omit<HostApiHandlers, "personal.remoteAccess.get"> {
+): Omit<
+  HostApiHandlers,
+  "personal.remoteAccess.get" | "connections.list" | "connections.authorization.get"
+> {
   return {
     "plugins.overview.get": async (_input, context) => {
       const machines = await coreHandlers["machines.list"]({}, context);
@@ -276,7 +279,10 @@ export function createHostApiHandlers(
       const output = await handleCoreCommand(command, context);
       return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));
     },
-  } satisfies Omit<HostApiHandlers, "personal.remoteAccess.get">;
+  } satisfies Omit<
+    HostApiHandlers,
+    "personal.remoteAccess.get" | "connections.list" | "connections.authorization.get"
+  >;
 }
 
 type TriggerCommand = Extract<HostApiCommand, { readonly type: `trigger.${string}` }>;

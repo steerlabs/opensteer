@@ -1655,6 +1655,25 @@ export interface ToolPresentation {
   surface?: ActivitySurface;
 }
 
+function isIntegrationGateway(tool: ToolEntry): boolean {
+  const identity = tool.tool;
+  return (
+    identity !== null &&
+    identity !== undefined &&
+    (identity.namespace === "opensteer.integrations" ||
+      identity.namespace === "mcp:opensteer_integrations" ||
+      (identity.namespace === "opensteer" &&
+        (identity.name === "computer" ||
+          [
+            "integration_search",
+            "integration_describe",
+            "integration_call",
+            "integration_request",
+            "integration_propose",
+          ].includes(identity.name))))
+  );
+}
+
 /**
  * Provider-neutral display mapping over the identities each driver reports.
  * Each engine names the same handful of tools its own way; they all read the
@@ -1663,11 +1682,7 @@ export interface ToolPresentation {
 export function toolPresentation(tool: ToolEntry): ToolPresentation {
   const identity = tool.tool;
   const args = effectiveArguments(tool);
-  if (
-    identity?.name === "computer" &&
-    (identity.namespace === "opensteer.integrations" ||
-      identity.namespace === "mcp:opensteer_integrations")
-  )
+  if (identity?.name === "computer" && isIntegrationGateway(tool))
     return step({
       activeLabel: "Running computer code",
       label: "Ran computer code",
@@ -1685,7 +1700,7 @@ export function toolPresentation(tool: ToolEntry): ToolPresentation {
     if (present) return present(tool, args);
   }
 
-  if (identity?.namespace === "opensteer.integrations") {
+  if (identity && isIntegrationGateway(tool)) {
     const presentation = integrationPresentation(tool, identity.name, args);
     if (presentation) return presentation;
   }
@@ -1765,7 +1780,7 @@ export function toolPresentation(tool: ToolEntry): ToolPresentation {
   return step({
     activeLabel: label,
     // A gateway tool's arguments carry opaque references, never words.
-    hint: identity?.namespace === "opensteer.integrations" ? "" : summarizeUnknown(args),
+    hint: isIntegrationGateway(tool) ? "" : summarizeUnknown(args),
     icon:
       identity?.namespace === "opensteer.integrations" ||
       identity?.namespace.startsWith("mcp:") ||
@@ -1794,7 +1809,7 @@ function said([activeLabel, label]: StepWords, icon: ActivityIcon): OpensteerSte
 
 /**
  * A step that says which of its tool's actions it took, and the name it gave
- * when there is one. An action only a newer Runner offers reads as `otherwise`.
+ * when there is one. An action from a newer Host reads as `otherwise`.
  */
 function saidByAction<Action extends string>(
   words: Readonly<Record<Action, StepWords>>,
@@ -1820,6 +1835,7 @@ const tabActions: Record<BrowserTabWriteInput["action"], StepWords> = {
 };
 
 const taskActions: Record<ThreadWriteInput["action"], StepWords> = {
+  interrupt: ["Stopping a task", "Stopped a task"],
   done: ["Marking a task done", "Marked a task done"],
   rename: ["Renaming a task", "Renamed a task"],
   reopen: ["Reopening a task", "Reopened a task"],
@@ -1835,12 +1851,138 @@ const automationActions: Record<TriggerWriteInput["action"], StepWords> = {
   update: ["Changing an automation", "Changed an automation"],
 };
 
-/**
- * Opensteer's own tools, by what each step did and never by the tool's name.
- * It holds every tool the agent catalog offers and the names older Runners
- * still report; `tests/opensteer-tool-steps.test.ts` keeps it that way.
- */
+/** Transcripts outlive their tool inventory, so removed names stay readable. */
 const opensteerSteps = new Map<string, OpensteerStep>([
+  ["thread_wait", said(["Waiting for a task", "Waited for a task"], "list")],
+  [
+    "thread_configure",
+    saidByAction(
+      {
+        read: ["Reading a task’s AI settings", "Read a task’s AI settings"],
+        set: ["Changing a task’s AI", "Changed a task’s AI"],
+      },
+      ["Configuring a task", "Configured a task"],
+      "pencil",
+    ),
+  ],
+  [
+    "thread_queue",
+    saidByAction(
+      {
+        list: ["Looking at queued work", "Looked at queued work"],
+        cancel: ["Cancelling queued work", "Cancelled queued work"],
+        move: ["Reordering queued work", "Reordered queued work"],
+        steer: ["Steering queued work", "Steered queued work"],
+        resume: ["Resuming queued work", "Resumed queued work"],
+      },
+      ["Managing queued work", "Managed queued work"],
+      "list",
+    ),
+  ],
+  [
+    "project_write",
+    saidByAction(
+      {
+        set_icon: ["Changing a project’s icon", "Changed a project’s icon"],
+        set_color: ["Changing a project’s color", "Changed a project’s color"],
+        set_notifications: ["Changing project notifications", "Changed project notifications"],
+        delete: ["Deleting a project", "Deleted a project"],
+        recover: ["Recovering a project", "Recovered a project"],
+        retry_storage: ["Retrying project storage", "Retried project storage"],
+      },
+      ["Changing a project", "Changed a project"],
+      "folder",
+    ),
+  ],
+  ["settings_read", said(["Reading settings", "Read settings"], "list")],
+  [
+    "settings_write",
+    saidByAction(
+      {
+        set_default: ["Changing the default AI", "Changed the default AI"],
+        configure_model: ["Changing model limits", "Changed model limits"],
+        set_enabled: ["Changing AI availability", "Changed AI availability"],
+        rename: ["Renaming an AI", "Renamed an AI"],
+        remember_execution: ["Saving AI preferences", "Saved AI preferences"],
+        set_time_zone: ["Changing the time zone", "Changed the time zone"],
+      },
+      ["Changing settings", "Changed settings"],
+      "pencil",
+      "name",
+    ),
+  ],
+  ["computer_list", said(["Looking up computers", "Looked up computers"], "laptop")],
+  [
+    "computer_write",
+    saidByAction(
+      {
+        rename: ["Renaming a computer", "Renamed a computer"],
+        revoke: ["Revoking a computer", "Revoked a computer"],
+        stop_session: ["Stopping computer access", "Stopped computer access"],
+      },
+      ["Managing a computer", "Managed a computer"],
+      "laptop",
+      "name",
+    ),
+  ],
+  [
+    "integration_manage",
+    saidByAction(
+      {
+        list: ["Looking up integration access", "Looked up integration access"],
+        disconnect: ["Disconnecting an integration", "Disconnected an integration"],
+        uninstall: ["Uninstalling an integration", "Uninstalled an integration"],
+        revoke_grant: ["Revoking integration access", "Revoked integration access"],
+      },
+      ["Managing integrations", "Managed integrations"],
+      "puzzle",
+    ),
+  ],
+  [
+    "channel_manage",
+    saidByAction(
+      {
+        list: ["Looking up messaging channels", "Looked up messaging channels"],
+        revoke_binding: ["Revoking a channel binding", "Revoked a channel binding"],
+        pause: ["Pausing a messaging channel", "Paused a messaging channel"],
+        resume: ["Resuming a messaging channel", "Resumed a messaging channel"],
+      },
+      ["Managing messaging channels", "Managed messaging channels"],
+      "share",
+    ),
+  ],
+  [
+    "plugin_manage",
+    saidByAction(
+      {
+        list: ["Looking up plugins and specialists", "Looked up plugins and specialists"],
+        update: ["Updating a plugin", "Updated a plugin"],
+        activate: ["Activating a plugin", "Activated a plugin"],
+        deactivate: ["Deactivating a plugin", "Deactivated a plugin"],
+        remove: ["Removing a plugin", "Removed a plugin"],
+        remove_specialist: ["Removing a specialist", "Removed a specialist"],
+      },
+      ["Managing plugins", "Managed plugins"],
+      "puzzle",
+    ),
+  ],
+  [
+    "browser_profile_write",
+    saidByAction(
+      {
+        list: ["Looking up browser access", "Looked up browser access"],
+        rename: ["Renaming a browser profile", "Renamed a browser profile"],
+        delete: ["Deleting a browser profile", "Deleted a browser profile"],
+        clear_history: ["Clearing browser history", "Cleared browser history"],
+        remove_history: ["Removing a history entry", "Removed a history entry"],
+        remove_site: ["Forgetting a website", "Forgot a website"],
+        revoke_grant: ["Revoking browser access", "Revoked browser access"],
+      },
+      ["Managing a browser profile", "Managed a browser profile"],
+      "browser",
+      "name",
+    ),
+  ],
   ["assignment_cancel", said(["Stopping a task", "Stopped a task"], "stop")],
   [
     "browser_access_request",
@@ -2552,7 +2694,7 @@ export function toolBody(tool: ToolEntry): ToolBody {
     argumentsText: presentation.command === null ? toolArgumentsText(tool) : "",
     // A gateway result is written for the model: catalogs, schemas and the
     // references it passes back, none of it the step's story.
-    collapsed: tool.tool?.namespace === "opensteer.integrations",
+    collapsed: isIntegrationGateway(tool),
     command: presentation.command,
     output: toolOutputText(tool),
     outputLabel: outputLabel(tool),
@@ -2645,9 +2787,10 @@ function shownArguments(tool: ToolEntry): unknown {
     if (typeof args === "string")
       return args.replace(/("code"\s*:\s*)"(?:[^"\\]|\\.)*("|$)/gu, '$1"[hidden]"');
   }
-  if (tool.tool?.namespace !== "opensteer.integrations" || !isRecord(args)) return args;
+  if (!isIntegrationGateway(tool) || !isRecord(args)) return args;
   const { toolRef: _reference, ...rest } = args;
-  const sent = tool.tool.name === "integration_call" && "arguments" in rest ? rest.arguments : rest;
+  const sent =
+    tool.tool?.name === "integration_call" && "arguments" in rest ? rest.arguments : rest;
   return isRecord(sent) && Object.keys(sent).length === 0 ? undefined : sent;
 }
 
@@ -2690,7 +2833,7 @@ export function activityFeedPresentation(entry: ActivityFeedEntry): ActivityFeed
       ? head.detail
       : computerPlace(entry)
         ? head.detail || computerStepPlace(entry)
-        : entry.tool?.namespace === "opensteer.integrations"
+        : isIntegrationGateway(entry)
           ? head.detail
           : head.detail || toolOutputText(entry) || toolArgumentsText(entry);
   return {

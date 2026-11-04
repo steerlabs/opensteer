@@ -160,6 +160,10 @@ const releasedMigrationNames = [
   "0150_workspace_skill_inventory",
   "0151_plugin_settings_revisions",
   "0152_managed_memory_passes",
+  "0153_consent_scope",
+  "0154_agent_connections",
+  "0155_connection_message_authors",
+  "0156_specialist_auto_bind",
 ];
 
 describe("migration names", () => {

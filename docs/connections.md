@@ -35,6 +35,23 @@ Catalog recovery follows realtime and task/request reads; newer revisions and
 viewer generations fence delayed catalogs. Deadline/size policy lives in the
 transport source, not this document.
 
+## MCP routes
+
+MCP discovery and OAuth must reach the same Host as `/internal/v1/mcp`. Forward
+`/.well-known/oauth-protected-resource` (including its resource-specific suffix),
+`/.well-known/oauth-authorization-server` and `/oauth/mcp/*` through development
+and deployed gateways; an SPA fallback at those paths breaks discovery or code
+exchange. Keep the approved route's exact origin through consent and completion.
+Personal Connect forwards these paths with the whole tunnel hostname; Stable's
+loopback route needs no Account. A route is reachability, never consent or caller
+authority. See [MCP OAuth boundaries](host-boundaries.md#credentials-and-session-authority).
+
+Connected-agent Settings load only when opened, on web, desktop and both mobile
+platforms. Listing or revoking connections must add no attach round trip or
+bootstrap dependency. Opening Settings, reconnecting, explicitly refreshing or
+the person's `host.connections-changed` notice (approval or revocation on any of
+their devices) rereads current Host authority.
+
 ## Remote administration
 
 The Host persists owner intent and progress; the desktop app executes it through
@@ -218,13 +235,12 @@ credentials. See [supervisor sources](../apps/desktop/src/supervisor).
 
 Quit is irreversible: stop new work immediately, continue cleanup after errors,
 and never reopen the app or a modal. Native browsers close without clearing their
-stores; legacy profile saves finish while Runner relay and Host remain alive.
-Runner, Host and database then stop in order. Lost parent
+stores. Runner, Host and database then stop in order. Lost parent
 control pipes must contain process trees, including tunnel and detached engine
 helpers. Connector shutdown preserves enabled intent without requiring live
 Host/Account or configuring routes. Tunnel WebSockets cannot drain while their
-Host quits. A stuck save is a reported failure, never a promise that new browser
-state survived. See
+Host quits. An unconfirmed browser close never proves that new browser state
+survived. See
 [`desktop-shutdown.test.ts`](../apps/desktop/src/app/desktop-shutdown.test.ts).
 
 ## Catalog authority

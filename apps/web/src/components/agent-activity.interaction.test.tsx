@@ -26,6 +26,7 @@ import {
   RunnerIdSchema,
 } from "@opensteer/core";
 import { computerUseStops } from "@opensteer/client/integrations";
+import { mcpPresentationScenarios, mcpPresentationTool } from "@opensteer/client/test-support";
 import { AgentTranscript, ConversationActivity } from "./agent-activity.js";
 import type { WorkspaceNavigation } from "./workspace/navigation.js";
 import { useWorkspaceNavigation } from "./workspace/navigation.js";
@@ -152,6 +153,19 @@ function status(container: HTMLElement): HTMLElement {
 }
 
 describe("AgentTranscript work", () => {
+  it.each(mcpPresentationScenarios)(
+    "presents %s while running and after completion",
+    (name, args, active, done) => {
+      for (const running of [true, false]) {
+        const container = mount([mcpPresentationTool(name, args, running)]);
+        if (!running) click(status(container));
+        expect(container.querySelector(".trace-step__label")?.textContent).toBe(
+          running ? active : done,
+        );
+      }
+    },
+  );
+
   // Failure modes: steps crowd out what the agent wrote; a failed step the
   // agent read and carried on from shows as an alarm on the turn; opening a
   // step's detail opens or closes anything else.

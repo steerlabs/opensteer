@@ -1,7 +1,11 @@
 import { useSettingsLease } from "./use-settings-read.js";
 import { settingsSessionRows } from "@opensteer/client/settings";
-import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
-import { usePersonalRemoteAccess } from "@opensteer/client/react";
+import {
+  connectionAccessLabel,
+  connectionReachLabel,
+  remoteAccessDisconnectWarning,
+} from "@opensteer/client/host";
+import { useConnectedAgents, usePersonalRemoteAccess } from "@opensteer/client/react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Alert, TextInput, View } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
@@ -56,6 +60,8 @@ function AccountSettingsContent({
       ? selection.hostClient
       : null,
   );
+  // Read only while the Account page itself is open, never on attach.
+  const connectedAgents = useConnectedAgents(detail ? null : selection.hostClient);
   const [sessions, setSessions] = useState<readonly import("@opensteer/core").AuthSessionSummary[]>(
     [],
   );
@@ -386,6 +392,47 @@ function AccountSettingsContent({
             },
           ),
         ),
+      });
+    }
+    if (selection.hostClient) {
+      const workspaces = snapshot?.workspaces ?? [];
+      sections.push({
+        key: "connected-agents",
+        title: "Connected agents",
+        rows: [
+          ...(connectedAgents.connections ?? []).flatMap((connection): NativeSettingsRow[] => [
+            text(
+              `${connection.id}:detail`,
+              `${connection.label} · ${connection.clientName} · ${connectionAccessLabel(connection.accessMode)} · ${connectionReachLabel(connection, workspaces)} · ${connection.lastUsedAt ? `Last used ${new Date(connection.lastUsedAt).toLocaleDateString()}` : "Never used"} · Expires ${new Date(connection.expiresAt).toLocaleDateString()}`,
+            ),
+            {
+              key: connection.id,
+              kind: "button",
+              label:
+                connectedAgents.pending === connection.id
+                  ? "Revoking…"
+                  : `Revoke ${connection.label}`,
+              destructive: true,
+              disabled: connectedAgents.pending !== null,
+              onPress: () => void connectedAgents.revoke?.(connection.id),
+            },
+          ]),
+          text(
+            "connected-agents-status",
+            connectedAgents.error ??
+              (connectedAgents.connections === null
+                ? "Loading connected agents…"
+                : connectedAgents.connections.length === 0
+                  ? "No connected agents."
+                  : "Revoking stops the agent’s next request, including in an open session."),
+          ),
+          {
+            key: "connected-agents-refresh",
+            kind: "button",
+            label: "Refresh connected agents",
+            onPress: () => void connectedAgents.refresh?.(),
+          },
+        ],
       });
     }
   }

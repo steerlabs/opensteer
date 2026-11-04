@@ -7,6 +7,7 @@ import {
   appMaxBytes,
   nonTerminalRunStatuses,
   threadInReach,
+  threadReachScope,
   type AppServerSpec,
   type AgentEvent,
   type EnvironmentId,
@@ -14,6 +15,7 @@ import {
   type ThreadId,
   type UserId,
   type WorkspaceId,
+  type ThreadReachScope,
 } from "@opensteer/core";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -94,7 +96,8 @@ export class AppStore {
       .select([
         "threads.id",
         "threads.workspaceId",
-        "threads.capabilityProfileId",
+        "threads.inheritsMain",
+        "threads.specialistId",
         "threads.lineageRootThreadId",
         "threads.accessMode",
         "runs.status",
@@ -135,6 +138,10 @@ export class AppStore {
     readonly userId: UserId;
   }) {
     const { publisher } = await this.authorize({ ...input, fullAccess: true });
+    return this.listReachable({ userId: input.userId, reach: threadReachScope(publisher) });
+  }
+
+  async listReachable(input: { userId: UserId; reach: ThreadReachScope }) {
     const rows = await this.#database
       .selectFrom("apps")
       .innerJoin("threads", "threads.id", "apps.threadId")
@@ -145,12 +152,17 @@ export class AppStore {
       )
       .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "apps.workspaceId")
       .selectAll("apps")
-      .select(["threads.capabilityProfileId", "threads.lineageRootThreadId", "appVersions.server"])
+      .select([
+        "threads.inheritsMain",
+        "threads.specialistId",
+        "threads.lineageRootThreadId",
+        "appVersions.server",
+      ])
       .where("workspaceMemberships.userId", "=", input.userId)
       .where("workspaceMemberships.state", "=", "active")
       .execute();
     return rows
-      .filter((row) => threadInReach(publisher, row))
+      .filter((row) => threadInReach(input.reach, row))
       .map((row) => ({
         id: row.id,
         title: row.title,
@@ -268,7 +280,7 @@ export class AppStore {
           if (!app) throw missing();
           const threads = await transaction
             .selectFrom("threads")
-            .select(["id", "capabilityProfileId", "lineageRootThreadId", "workspaceId"])
+            .select(["id", "inheritsMain", "specialistId", "lineageRootThreadId", "workspaceId"])
             .where("id", "in", [input.threadId, app.threadId])
             .execute();
           const publisher = threads.find((thread) => thread.id === input.threadId);

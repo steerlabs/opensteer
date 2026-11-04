@@ -1,3 +1,6 @@
+import { EnvironmentDiscoverySchema } from "@opensteer/agent-tools/outputs";
+import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
+import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -31,8 +34,6 @@ import {
 import { resolvedInputParts } from "@opensteer/harness";
 import { CommandService, KeyedAdmissionQueue } from "@opensteer/orchestration";
 import {
-  AgentControlResponseSchema,
-  EnvironmentDiscoverySchema,
   HarnessInstanceCatalogSchema,
   type HarnessInstanceCatalog,
   type RunnerCommand,
@@ -43,12 +44,9 @@ import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  AgentControlService,
-  type AgentControlRunScope,
-  type AgentControlTokenService,
-} from "./agent-control-service.js";
-import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
+import { type RunToolScope, type RunToolTokenService } from "./run-tool-tokens.js";
+import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
+import { AgentCallerResolver } from "../mcp/agent-caller.js";
 import { ContinuationService } from "./continuation-service.js";
 import { HostCommandDispatcher } from "./dispatcher.js";
 
@@ -82,7 +80,7 @@ integration("cross-environment delegation reaches the Runner", () => {
   });
   const store = new OpensteerStore(database);
   const acceptanceEvidence: Record<string, unknown>[] = [];
-  const claimsByToken = new Map<string, AgentControlRunScope>();
+  const claimsByToken = new Map<string, RunToolScope>();
   const commands = new CommandService({
     admission: new KeyedAdmissionQueue({
       maxInFlight: 4,
@@ -94,7 +92,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     store,
   });
   const assertDelegatedPlaces = vi.fn(async () => undefined);
-  const service = new AgentControlService({
+  const service = new ProductToolsTestClient({
     placeContext: { assertDelegated: assertDelegatedPlaces },
     browserSources: {
       agentSignIn: async () => {
@@ -126,7 +124,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         if (!claims) throw new Error(`No test claims for ${token}`);
         return claims;
       },
-    } as unknown as AgentControlTokenService,
+    } as unknown as RunToolTokenService,
     defaultWorkspaceBacking: "local-directory",
     environmentWorkspaceBackings: () => ["local-directory"],
     workspaceMounts: { mount: unexpected },
@@ -586,10 +584,10 @@ integration("cross-environment delegation reaches the Runner", () => {
       expectedRevisions: new Map([[fixture.lentHarnessInstanceId, 1]]),
     });
     let caller = fixture.parent;
-    for (const profile of ["workspace", "delegated"] as const) {
+    // The Project root, then the task it delegates.
+    for (const profile of ["root", "delegated"] as const) {
       const mcp = await startDiscoveryMcp(caller.token);
       try {
-        expect(claimsByToken.get(caller.token)?.capabilityProfileId).toBe(profile);
         const listed = await mcp.client.listTools();
         expect(listed.tools.map(({ name }) => name)).toContain("environment_list");
         expect(listed.tools.map(({ name }) => name)).not.toContain("workspace_list");
@@ -648,7 +646,7 @@ integration("cross-environment delegation reaches the Runner", () => {
           },
         });
         expect(delegated.isError, JSON.stringify(delegated.structuredContent)).not.toBe(true);
-        const result = AgentControlResponseSchema.parse({
+        const result = ProductToolResultSchema.parse({
           requestId: randomUUID(),
           type: "thread.delegate.result",
           result: delegated.structuredContent,
@@ -2022,14 +2020,20 @@ integration("cross-environment delegation reaches the Runner", () => {
     });
     const cancel = (token: string, assignmentId: typeof parent.assignmentId) =>
       service.handle(token, { assignmentId, requestId: randomUUID(), type: "assignment.cancel" });
-    // A task's own Run stops only what it started.
+    // A task's own Run cannot stop itself, but stops work within its reach,
+    // including work it did not start.
     await expect(cancel(parentWorker.token, parent.assignmentId)).rejects.toMatchObject({
       code: "forbidden",
     });
-    await expect(cancel(parentWorker.token, sibling.assignmentId)).rejects.toMatchObject({
-      code: "forbidden",
-    });
     await expect(cancel(parentWorker.token, child.assignmentId)).resolves.toMatchObject({
+      assignment: { status: "cancelled" },
+    });
+    const unrelated = await delegate(fixture.token, {
+      environmentId: fixture.lentEnvironmentId,
+      task: "Unrelated follow-up",
+      workspaceId: fixture.workspaceId,
+    });
+    await expect(cancel(parentWorker.token, unrelated.assignmentId)).resolves.toMatchObject({
       assignment: { status: "cancelled" },
     });
     // A member who neither started the work nor owns the Workspace cannot stop it.
@@ -2049,7 +2053,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         requestedBy: fixture.userId,
       }),
     ).resolves.toMatchObject({ assignment: { status: "cancelled" } });
-    // A Main-profile Run stops whatever its person could.
+    // A Run that inherits Main stops whatever its person could.
     await expect(cancel(fixture.token, parent.assignmentId)).resolves.toMatchObject({
       assignment: { status: "cancelled" },
     });
@@ -2717,9 +2721,8 @@ integration("cross-environment delegation reaches the Runner", () => {
     });
     const token = `token-${randomUUID()}`;
     claimsByToken.set(token, {
-      aud: "opensteer-agent-control",
+      aud: "opensteer-run-tools",
       bindingGeneration: binding.bindingGeneration,
-      capabilityProfileId: parent.capabilityProfileId,
       environmentId: mainEnvironmentId,
       exp: Math.floor(Date.now() / 1_000) + 60,
       iat: Math.floor(Date.now() / 1_000),
@@ -2760,7 +2763,7 @@ integration("cross-environment delegation reaches the Runner", () => {
 
   const controlService = service;
   async function startDiscoveryMcp(token: string) {
-    let service: AgentToolsMcpService;
+    let service: OpensteerMcpService;
     const server = createServer((request, response) => {
       void (async () => {
         const chunks: Buffer[] = [];
@@ -2782,31 +2785,21 @@ integration("cross-environment delegation reaches the Runner", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("MCP server did not bind");
     const url = new URL(`http://127.0.0.1:${address.port}/internal/v1/mcp`);
-    service = new AgentToolsMcpService({
-      apps: {
-        list: async () => ({ apps: [] }),
-        fetch: async () => {
-          throw new Error("Unexpected app fetch in fixture");
-        },
-        publish: async () => {
-          throw new Error("Unexpected app publication in fixture");
-        },
-      },
-      agentControl: controlService,
-      runnerCapabilities: async () => [
-        "browser-profile-create-v1",
-        "task-done-v1",
-        "environment-list-v1",
-      ],
-      store,
+    service = new OpensteerMcpService({
       publicUrl: url,
-      tokens: {
-        authenticate: async (presented: string) => {
-          const claims = claimsByToken.get(presented);
-          if (!claims || presented !== token) throw new Error("Invalid MCP token");
-          return claims;
-        },
-      } as AgentControlTokenService,
+      store: store,
+      handlers: controlService.service.options.handlers,
+
+      callers: new AgentCallerResolver({
+        store: store,
+        runs: {
+          authenticate: async (presented: string) => {
+            const claims = claimsByToken.get(presented);
+            if (!claims || presented !== token) throw new Error("Invalid MCP token");
+            return claims;
+          },
+        } as RunToolTokenService,
+      }),
     });
     const client = new Client({ name: "model-discovery-e2e", version: "1.0.0" });
     await client.connect(
@@ -2841,7 +2834,6 @@ integration("cross-environment delegation reaches the Runner", () => {
         "runs.environmentId",
         "runs.nextRunnerOrdinal",
         "runs.providerSessionId",
-        "threads.capabilityProfileId",
         "threads.id as threadId",
         "threads.workspaceId",
       ])
@@ -2887,9 +2879,8 @@ integration("cross-environment delegation reaches the Runner", () => {
     });
     const token = `assignment-run-${randomUUID()}`;
     claimsByToken.set(token, {
-      aud: "opensteer-agent-control",
+      aud: "opensteer-run-tools",
       bindingGeneration: binding.bindingGeneration,
-      capabilityProfileId: target.capabilityProfileId,
       environmentId: target.environmentId,
       exp: Math.floor(Date.now() / 1_000) + 60,
       iat: Math.floor(Date.now() / 1_000),
@@ -3222,12 +3213,12 @@ integration("cross-environment delegation reaches the Runner", () => {
       executionLeaseMs: 90_000,
       attachmentRunTokens: { issue } as never,
       attachments: { listForRun: async () => [] },
-      agentControlTokens: { issue } as never,
+      runToolTokens: { issue } as never,
       browser: {} as never,
       egress: { issue: () => ({ allowedHosts: [], token: "test-egress" }) } as never,
       pluginVersions: async () => [],
       pluginsTokens: { issue } as never,
-      integrationToolsTokens: { issue } as never,
+
       onWorkspaceEvent: vi.fn(),
       publicUrl: new URL("https://delegation.opensteer.test"),
       requestResponseVault: {} as never,
@@ -3248,6 +3239,7 @@ integration("cross-environment delegation reaches the Runner", () => {
             "thread-state-v1",
             "requester-time-zone-v1",
             "execution-plane-v2",
+            "agent-tools-plan-v1",
           ],
           name: "Lent Mac",
           runnerId,
@@ -3265,7 +3257,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       } as never,
       store,
       triggerControlTokens: { issue } as never,
-      triggerIntegrationToolsTokens: { issue } as never,
+
       triggers: {} as never,
       workspaceAccess: { plan: async () => ({ kind: "none" }) } as never,
       workspaces: { ensureExecutionReady: async () => undefined } as never,

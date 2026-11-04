@@ -1,0 +1,50 @@
+import { RequestIdSchema, RequestKindSchema, RequestStatusSchema } from "@opensteer/core";
+
+import { z } from "zod";
+
+export const RequestCreationResultSchema = z.strictObject({
+  kind: RequestKindSchema,
+  replayed: z.boolean(),
+  requestId: RequestIdSchema,
+  status: RequestStatusSchema,
+});
+export type RequestCreationResult = z.infer<typeof RequestCreationResultSchema>;
+
+/** Authenticated with the Run's one tool credential, `agentTools.token`. */
+export const RunBrowserCdpPlanSchema = z.strictObject({
+  url: z.url(),
+});
+export type RunBrowserCdpPlan = z.infer<typeof RunBrowserCdpPlanSchema>;
+
+export const RunAgentToolsPlanSchema = z.strictObject({
+  /** The Run's one Host credential: its MCP tools, browser control and shell relay. */
+  token: z.string().min(1).max(4_096),
+  url: z.url(),
+  tools: z
+    .array(z.string().min(1).max(128))
+    .max(256)
+    .refine((tools) => new Set(tools).size === tools.length, "Tool names must be unique"),
+  toolsRevision: z.string().min(1).max(256),
+  instructions: z.string().max(128 * 1_024),
+  skills: z.array(z.string().min(1).max(256)).max(256),
+});
+export type RunAgentToolsPlan = z.infer<typeof RunAgentToolsPlanSchema>;
+
+export const PinnedPluginSchema = z.strictObject({
+  pluginId: z.string().min(1).max(256),
+  name: z.string().min(1).max(64),
+  digest: z.string().regex(/^[a-f0-9]{64}$/u),
+});
+export const RunPluginsPlanSchema = z.strictObject({
+  // Send only to settings-plugin-policy-v1 Runners; required once overrides exist.
+  workspaceSkillPolicy: z
+    .strictObject({
+      revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      disabledFullNames: z.array(z.string().min(1).max(120)).max(64),
+    })
+    .optional(),
+  token: z.string().min(1).max(16_000),
+  url: z.url(),
+  versions: z.array(PinnedPluginSchema).max(128),
+});
+export type RunPluginsPlan = z.infer<typeof RunPluginsPlanSchema>;

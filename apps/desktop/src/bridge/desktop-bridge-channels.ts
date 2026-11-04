@@ -1,5 +1,7 @@
 /** Dependency-free IPC vocabulary shared by the main process and sandboxed preload. */
 export const desktopBridgeChannels = {
+  dismissMcpAuthorization: "opensteer.desktop.mcp.authorization.dismiss",
+  mcpAuthorization: "opensteer.desktop.mcp.authorization",
   webLinkDelivery: "opensteer.desktop.webLinkDelivery",
   dictationAvailability: "opensteer.desktop.dictation.availability",
   dictationStart: "opensteer.desktop.dictation.start",

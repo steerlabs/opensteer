@@ -3,6 +3,7 @@ import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import { expect, vi } from "vitest";
 import { createId, SpecialistManifestSchema } from "@opensteer/core";
+import { AgentConnectionStore } from "./agent-connection-store.js";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { assertLineageCompatibleReuse, resolveResourceAccess } from "./resource-access.js";
 import { describeStore } from "./store.integration.test-support.js";
@@ -83,6 +84,87 @@ describeStore("specialist registration", (test) => {
     });
     const ready = (await platform.specialists.list(workspace.id, run.userId))[0]!;
     expect(ready.status).toBe("ready");
+    const connections = new AgentConnectionStore(fixture.database);
+    const connection = await connections.create({
+      userId: run.userId,
+      label: "Specialist agent",
+      clientName: "test",
+      accessMode: "full-access",
+      reach: { kind: "workspace", workspaceId: workspace.id },
+      resource: "http://localhost/internal/v1/mcp",
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    await connections.activate(connection.id, "a".repeat(64));
+    const scopedMain = await connections.create({
+      userId: run.userId,
+      label: "Main scoped",
+      clientName: "test",
+      accessMode: "full-access",
+      reach: { kind: "workspace", workspaceId: run.workspace.id },
+      resource: "http://localhost/internal/v1/mcp",
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    await connections.activate(scopedMain.id, "b".repeat(64));
+    expect(
+      await resolveResourceAccess(fixture.database, {
+        ownerUserId: run.userId,
+        workspaceId: run.workspace.id,
+        connectionId: scopedMain.id,
+      }),
+    ).toMatchObject({ inheritsMain: false, mainAccess: "withheld", access: null });
+    await connections.revoke(run.userId, scopedMain.id);
+    await expect(
+      resolveResourceAccess(fixture.database, {
+        ownerUserId: run.userId,
+        workspaceId: run.workspace.id,
+        connectionId: scopedMain.id,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const independent = await fixture.store.createThread({
+      authority: {
+        kind: "connection",
+        connectionId: connection.id,
+        userId: run.userId,
+        accessMode: "full-access",
+        reach: { kind: "workspace", workspaceId: workspace.id },
+      },
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      harnessInstanceId: run.harnessInstance.id,
+      modelSelection: run.thread.modelSelection,
+      workspaceId: workspace.id,
+      idempotencyKey: "independent-specialist",
+      title: "Independent specialist",
+      specialistId: ready.id,
+    });
+    expect(independent.thread).toMatchObject({
+      parentThreadId: null,
+      lineageRootThreadId: independent.thread.id,
+      inheritsMain: false,
+      specialistId: ready.id,
+    });
+    const rootChild = await fixture.store.createThread({
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      harnessInstanceId: run.harnessInstance.id,
+      modelSelection: run.thread.modelSelection,
+      workspaceId: workspace.id,
+      parentThreadId: independent.thread.id,
+      idempotencyKey: "independent-specialist-child",
+      title: "Child",
+    });
+    expect(rootChild.thread).toMatchObject({
+      specialistId: ready.id,
+      inheritsMain: false,
+      lineageRootThreadId: independent.thread.id,
+    });
+    await expect(
+      fixture.database
+        .updateTable("threads")
+        .set({ specialistId: null })
+        .where("id", "=", rootChild.thread.id)
+        .execute(),
+    ).rejects.toThrow(/specialist.*immutable/u);
     const beforeOff = await fixture.database
       .selectFrom("specialists")
       .selectAll()
@@ -138,12 +220,50 @@ describeStore("specialist registration", (test) => {
     const child = await delegate();
     expect(child.thread).toMatchObject({
       specialistId: ready.id,
-      capabilityProfileId: "specialist",
+      inheritsMain: true,
       lineageRootThreadId: run.thread.lineageRootThreadId,
     });
     await expect(
       assertLineageCompatibleReuse(fixture.database, child.thread.id, run.thread.id),
     ).rejects.toMatchObject({ code: "forbidden" });
+    const descendant = await fixture.store.createThread({
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      harnessInstanceId: run.harnessInstance.id,
+      modelSelection: run.thread.modelSelection,
+      workspaceId: workspace.id,
+      parentThreadId: child.thread.id,
+      idempotencyKey: "specialist-descendant",
+      title: "Invoice subtask",
+    });
+    expect(descendant.thread).toMatchObject({ specialistId: ready.id, inheritsMain: true });
+    expect(
+      (
+        await resolveResourceAccess(fixture.database, {
+          workspaceId: workspace.id,
+          ownerUserId: run.userId,
+          threadId: descendant.thread.id,
+          explicitAccess: "read-write",
+          resource,
+        })
+      ).access,
+    ).toBe("read");
+    const boundChild = await fixture.database
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", child.thread.id)
+      .executeTakeFirstOrThrow();
+    await expect(
+      fixture.database
+        .insertInto("threads")
+        .values({
+          ...boundChild,
+          id: createId("thread"),
+          parentThreadId: child.thread.id,
+          specialistId: null,
+        })
+        .execute(),
+    ).rejects.toThrow(/cannot escape its specialist binding/u);
     const sourceRunId = child.run.id;
     await fixture.database
       .updateTable("runs")
@@ -194,7 +314,7 @@ describeStore("specialist registration", (test) => {
         ...root,
         id: channelId,
         lineageRootThreadId: channelId,
-        capabilityProfileId: "workspace",
+        inheritsMain: false,
       })
       .execute();
     const specialistThreadId = createId("thread");
@@ -211,6 +331,7 @@ describeStore("specialist registration", (test) => {
         workspaceId: run.workspace.id,
         lineageRootThreadId: channelId,
         parentThreadId: channelId,
+        inheritsMain: false,
         specialistId: mainRegistration.id,
       })
       .execute();
@@ -419,6 +540,65 @@ describeStore("specialist registration", (test) => {
     expect(cleanup).toHaveBeenCalledTimes(2);
     expect(cleanup).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: b.id }));
     expect(await platform.specialists.list(b.id, owner.userId)).toEqual([]);
+  });
+
+  test("an agent-registered specialist waits for its owner to choose even a sole candidate", async ({
+    storeFixture: fixture,
+  }) => {
+    const owner = await fixture.createRunFixture("specialist-agent-registered");
+    const workspace = await fixture.createProjectWorkspace(owner.userId, "agent-registered");
+    const platform = new IntegrationPlatformStore(fixture.database);
+    const pluginId = randomUUID();
+    await platform.plugins.install({
+      id: pluginId,
+      name: "agent-installed",
+      actorUserId: owner.userId,
+      source: {},
+      digest: "e".repeat(64),
+      manifest: { name: "agent-installed" },
+      specialistManifest: SpecialistManifestSchema.parse({
+        version: 1,
+        models: [{ engine: "claude", model: "haiku" }],
+        access: [{ type: "browser-profile", level: "read", reason: "Browse" }],
+      }),
+    });
+    const profile = await fixture.store.createBrowserProfile({
+      ownerId: owner.userId,
+      name: "Only",
+      idempotencyKey: "only",
+    });
+    await fixture.store.createBrowserProfileGrant({
+      workspaceId: workspace.id,
+      createdBy: owner.userId,
+      profileId: profile.id,
+      access: "read",
+    });
+    const registered = await platform.specialists.add({
+      workspaceId: workspace.id,
+      pluginId,
+      actorUserId: owner.userId,
+      autoBind: false,
+    });
+    expect(registered).toMatchObject({
+      status: "pending",
+      access: [{ state: "choose", binding: null }],
+    });
+    // Later reads, including the check before running it, never bind for the owner.
+    expect((await platform.specialists.list(workspace.id, owner.userId))[0]).toMatchObject({
+      status: "pending",
+      access: [{ state: "choose", binding: null }],
+    });
+    await expect(
+      platform.specialists.assertRunnable(registered.id, workspace.id, owner.userId),
+    ).rejects.toThrow();
+    const ready = await platform.specialists.bind({
+      workspaceId: workspace.id,
+      specialistId: registered.id,
+      actorUserId: owner.userId,
+      requirement: 0,
+      resourceId: profile.id,
+    });
+    expect(ready).toMatchObject({ status: "ready", access: [{ state: "bound" }] });
   });
 
   test("ambiguous consent requires an owner choice and list revalidates revocations", async ({

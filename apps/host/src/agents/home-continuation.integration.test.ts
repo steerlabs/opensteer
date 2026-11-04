@@ -1,3 +1,4 @@
+import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   AgentEventSchema,
@@ -28,11 +29,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { testRpcRequest } from "../server/test-host-api-request.js";
-import {
-  AgentControlService,
-  type AgentControlRunScope,
-  type AgentControlTokenService,
-} from "./agent-control-service.js";
+import { type RunToolScope, type RunToolTokenService } from "./run-tool-tokens.js";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -854,7 +851,7 @@ integration("durable Thread changes native continuation", () => {
     console.info(`Home paused switch evidence: ${evidenceRoot}`);
   }, 90_000);
 
-  it("accepts a specialist's Home report through agent control while Home changes accounts", async () => {
+  it("refuses a specialist's out-of-reach Home report while Home changes accounts", async () => {
     captureRoot = await mkdtemp(join(tmpdir(), "opensteer-home-specialist-"));
     stack = await startVerticalStack({
       additionalHarnessInstances: [
@@ -901,25 +898,25 @@ integration("durable Thread changes native continuation", () => {
     const [home, ordinaryMain, specialistRow] = await Promise.all([
       stack.host.store.database
         .selectFrom("threads")
-        .select(["role", "capabilityProfileId"])
+        .select(["role", "inheritsMain"])
         .where("id", "=", homeId)
         .executeTakeFirstOrThrow(),
       stack.host.store.database
         .selectFrom("threads")
-        .select(["role", "capabilityProfileId"])
+        .select(["role", "inheritsMain"])
         .where("id", "=", ordinaryMainId)
         .executeTakeFirstOrThrow(),
       stack.host.store.database
         .selectFrom("threads")
-        .select(["role", "capabilityProfileId"])
+        .select(["role", "inheritsMain"])
         .where("id", "=", specialistId)
         .executeTakeFirstOrThrow(),
     ]);
     expect(home.role).toBe("conversation");
     expect(ordinaryMain.role).toBe("work");
     expect(specialistRow.role).toBe("work");
-    expect(home.capabilityProfileId).toBe("main");
-    expect(ordinaryMain.capabilityProfileId).toBe("main");
+    expect(home.inheritsMain).toBe(true);
+    expect(ordinaryMain.inheritsMain).toBe(true);
 
     const foreignUserId = await stack.host.store.createUser("Other owner");
     const foreignPlacement = await createForeignPlacement(stack, foreignUserId);
@@ -948,11 +945,11 @@ integration("durable Thread changes native continuation", () => {
       workspaceId: foreignWorkspace.id,
     });
 
-    let claims: AgentControlRunScope | null = null;
+    let claims: RunToolScope | null = null;
     const unexpected = async (): Promise<never> => {
-      throw new Error("Unexpected agent-control dependency");
+      throw new Error("Unexpected Run tool dependency");
     };
-    const service = new AgentControlService({
+    const service = new ProductToolsTestClient({
       browserSources: { agentSignIn: unexpected },
       machineFullDiskAccess: { request: unexpected },
       browser: {
@@ -985,11 +982,11 @@ integration("durable Thread changes native continuation", () => {
           if (!claims) throw new Error("Child Run has no claim");
           return claims;
         },
-      } as unknown as AgentControlTokenService,
+      } as unknown as RunToolTokenService,
       workspaceMounts: { mount: unexpected },
       workspaces: { create: unexpected },
     });
-    let reportMessageId: string | undefined;
+    let reportRefused = false;
     let selectedAfterSwitch: string | undefined;
     const specialist = await stack.sendMessage({
       text: "Research the migration while Home changes accounts.",
@@ -1012,9 +1009,8 @@ integration("durable Thread changes native continuation", () => {
         if (!source || !session.runnerId || !session.runnerBootId)
           throw new Error("Specialist binding is incomplete");
         claims = {
-          aud: "opensteer-agent-control",
+          aud: "opensteer-run-tools",
           bindingGeneration: session.bindingGeneration,
-          capabilityProfileId: source.capabilityProfileId,
           environmentId: stack!.environmentId,
           exp: Math.floor(Date.now() / 1_000) + 60,
           iat: Math.floor(Date.now() / 1_000),
@@ -1049,23 +1045,24 @@ integration("durable Thread changes native continuation", () => {
             type: "thread.message",
           }),
         ).rejects.toMatchObject({ code: "forbidden" });
-        const sent = await service.handle("child-token", {
-          content: [{ text: "Specialist findings for Home", type: "text" }],
-          delivery: "report",
-          requestId: randomUUID(),
-          threadId: "home",
-          type: "thread.message",
+        await expect(
+          service.handle("child-token", {
+            content: [{ text: "Specialist findings for Home", type: "text" }],
+            delivery: "report",
+            requestId: randomUUID(),
+            threadId: "home",
+            type: "thread.message",
+          }),
+        ).rejects.toMatchObject({
+          code: "forbidden",
+          message: "Target Thread is outside the caller's reach",
         });
-        if (sent.type !== "thread.message.result")
-          throw new Error("Agent-control report response mismatch");
-        expect(sent.result.thread.id).toBe(homeId);
-        expect(sent.result.run).toBeNull();
-        reportMessageId = sent.result.message.id;
+        reportRefused = true;
       },
     });
     expect(specialist.assistantText).toBe("Completed by Codex.");
-    if (!reportMessageId || !selectedAfterSwitch)
-      throw new Error("Specialist did not report after switching Home");
+    if (!reportRefused || !selectedAfterSwitch)
+      throw new Error("Specialist report did not respect reach after switching Home");
     expect(selectedAfterSwitch).not.toBe(originalSelection.id);
     const childStatus = await stack.host.store.database
       .selectFrom("runs")
@@ -1085,25 +1082,14 @@ integration("durable Thread changes native continuation", () => {
       query: "Specialist findings for Home",
     });
     if (!report.ok) throw new Error(`Specialist report lookup failed: ${report.error.code}`);
-    expect(report.data.messages).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: reportMessageId,
-          author: expect.objectContaining({
-            kind: "agent",
-            threadId: specialistId,
-            workspaceId: specialistWorkspace.id,
-          }),
-        }),
-      ]),
-    );
+    expect(report.data.messages).toEqual([]);
 
     const evidenceRoot =
       process.env.OPENSTEER_HOME_ACCEPTANCE_OUTPUT ??
       join(tmpdir(), "opensteer-home-acceptance", randomUUID());
     await mkdir(evidenceRoot, { recursive: true });
     await writeFile(
-      join(evidenceRoot, "specialist-report.json"),
+      join(evidenceRoot, "specialist-report-refusal.json"),
       JSON.stringify(
         {
           homeId,
@@ -1112,7 +1098,7 @@ integration("durable Thread changes native continuation", () => {
           specialistRunStatus: childStatus.status,
           originalSelectionId: originalSelection.id,
           selectedAfterSwitch,
-          reportMessageId,
+          reportRefused,
           reportSourceWorkspaceId: specialistWorkspace.id,
           homeRunCount: 0,
           foreignHomeIdRefused: foreignHome.thread.id,
@@ -1145,13 +1131,13 @@ integration("durable Thread changes native continuation", () => {
       title: "Chat",
       workspaceId: stack.mainWorkspaceId,
     });
-    let claims: AgentControlRunScope | null = null;
+    let claims: RunToolScope | null = null;
     const unexpected = async (): Promise<never> => {
-      throw new Error("Unexpected agent-control dependency");
+      throw new Error("Unexpected Run tool dependency");
     };
     // The Host's own dispatcher, Runner and event reactions run the task; this
     // service only stands in for the MCP endpoint Home's engine would call.
-    const service = new AgentControlService({
+    const service = new ProductToolsTestClient({
       browserSources: { agentSignIn: unexpected },
       machineFullDiskAccess: { request: unexpected },
       browser: {
@@ -1184,7 +1170,7 @@ integration("durable Thread changes native continuation", () => {
           if (!claims) throw new Error("Home Run has no claim");
           return claims;
         },
-      } as unknown as AgentControlTokenService,
+      } as unknown as RunToolTokenService,
       workspaceMounts: { mount: unexpected },
       workspaces: { create: unexpected },
     });
@@ -1228,9 +1214,8 @@ integration("durable Thread changes native continuation", () => {
         if (!session.runnerId || !session.runnerBootId)
           throw new Error("Home binding is incomplete");
         claims = {
-          aud: "opensteer-agent-control",
+          aud: "opensteer-run-tools",
           bindingGeneration: session.bindingGeneration,
-          capabilityProfileId: "main",
           environmentId: stack!.environmentId,
           exp: Math.floor(Date.now() / 1_000) + 60,
           iat: Math.floor(Date.now() / 1_000),

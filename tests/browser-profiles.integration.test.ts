@@ -360,11 +360,12 @@ run("Browser profiles through a whole deployment", () => {
         ["workspace", project.report],
         ["delegated", child!],
       ] as const) {
+        // Delegated work keeps its root's Main inheritance; Project work never creates profiles.
         equal(
           evidence,
-          `${kind} has create only when Main`,
+          `${kind} has create only when it inherits Main`,
           report.tools!.includes("browser_profile_create"),
-          kind === "main",
+          kind !== "workspace",
         );
         equal(
           evidence,

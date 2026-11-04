@@ -12,9 +12,10 @@ if (process.env.OPENSTEER_WATCH === "1") {
 const opensteer = Object.freeze({
   callTool: (name, input = {}) => callTool(capabilities().mcp, name, input),
   capabilities,
+  // Not in the program contract, but saved programs call it and capabilities.integrationMcp.
   integrations: Object.freeze({
-    callTool: (name, input = {}) => callTool(capabilities().integrationMcp, name, input),
-    mcp: initialCapabilities.integrationMcp,
+    callTool: (name, input = {}) => callTool(capabilities().mcp, name, input),
+    mcp: initialCapabilities.mcp,
   }),
   mcp: initialCapabilities.mcp,
 });
@@ -136,19 +137,18 @@ function createMcpClient(plan) {
 
 function capabilities() {
   const path = process.env.OPENSTEER_CAPABILITIES_PATH;
-  if (path) return deepFreeze(JSON.parse(readFileSync(path, "utf8")));
+  if (path) {
+    const plans = JSON.parse(readFileSync(path, "utf8"));
+    return deepFreeze({ ...plans, integrationMcp: plans.mcp });
+  }
   const mcp = {
     token: requiredEnv("OPENSTEER_MCP_TOKEN"),
     url: requiredEnv("OPENSTEER_MCP_URL"),
   };
-  const integrationMcp = {
-    token: requiredEnv("OPENSTEER_INTEGRATION_MCP_TOKEN"),
-    url: requiredEnv("OPENSTEER_INTEGRATION_MCP_URL"),
-  };
   const browserCdp = process.env.OPENSTEER_CDP_URL && process.env.OPENSTEER_CDP_TOKEN
     ? { token: process.env.OPENSTEER_CDP_TOKEN, url: process.env.OPENSTEER_CDP_URL }
     : null;
-  return deepFreeze({ browserCdp, integrationMcp, mcp });
+  return deepFreeze({ browserCdp, integrationMcp: mcp, mcp });
 }
 
 function deepFreeze(value) {

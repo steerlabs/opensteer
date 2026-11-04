@@ -7,7 +7,7 @@ import {
   type ShellSessionId,
 } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentControlRunScope } from "../agents/agent-control-service.js";
+import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import { ShellConnectRejection } from "./shell-connect-error.js";
 import { ShellHub } from "./shell-hub.js";
 import {
@@ -62,7 +62,7 @@ function harness(options: { readonly openTimeoutMs?: number; readonly stallSends
     onControlError,
     owner,
     peer,
-    setScope: (next: AgentControlRunScope) => {
+    setScope: (next: RunToolScope) => {
       scope = next;
     },
     get scope() {

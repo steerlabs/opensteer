@@ -124,7 +124,6 @@ export type NullableTimestamp = ColumnType<
 export type JsonColumn<T> = ColumnType<T, T, T>;
 
 /** Threads never hold the Trigger profile, which belongs to Trigger occurrences. */
-export type ThreadCapabilityProfileId = "main" | "workspace" | "delegated" | "specialist";
 
 export interface DeploymentTable {
   id: DeploymentId;
@@ -784,7 +783,7 @@ export interface ThreadTable {
   inputQueuePausedBy: Generated<UserId | null>;
   accessMode: Generated<ThreadAccessMode>;
   specialistId: Generated<string | null>;
-  capabilityProfileId: ThreadCapabilityProfileId;
+  inheritsMain: boolean;
   role: Generated<ThreadRole>;
   id: ThreadId;
   lineageRootThreadId: ThreadId;
@@ -2017,7 +2016,23 @@ export interface AppVersionTable {
   createdAt: Timestamp;
 }
 
+export interface AgentConnectionTable {
+  id: string;
+  userId: UserId;
+  label: string;
+  clientName: string;
+  accessMode: ThreadAccessMode;
+  workspaceId: WorkspaceId | null;
+  resource: string;
+  tokenHash: string | null;
+  createdAt: Timestamp;
+  lastUsedAt: NullableTimestamp;
+  expiresAt: Timestamp;
+  revokedAt: NullableTimestamp;
+}
+
 export interface DatabaseSchema {
+  agentConnections: AgentConnectionTable;
   apps: AppTable;
   appVersions: AppVersionTable;
   attachments: AttachmentTable;
@@ -2196,6 +2211,7 @@ export interface DatabaseSchema {
     createdBy: UserId;
     status: "pending" | "ready" | "removing" | "removal-failed";
     bindings: JsonColumn<readonly import("@opensteer/core").SpecialistBinding[]>;
+    autoBind: Generated<boolean>;
     createdAt: Timestamp;
     updatedAt: Timestamp;
   };

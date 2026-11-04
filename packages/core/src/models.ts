@@ -188,15 +188,6 @@ export type WorkspaceBacking = z.infer<typeof WorkspaceBackingSchema>;
 
 export type LocalWorkspaceBacking = Extract<WorkspaceBacking, { readonly kind: "local-directory" }>;
 
-export const AgentCapabilityProfileIdSchema = z.enum([
-  "main",
-  "workspace",
-  "delegated",
-  "specialist",
-  "trigger",
-]);
-export type AgentCapabilityProfileId = z.infer<typeof AgentCapabilityProfileIdSchema>;
-
 export const WorkspaceSchema = z.object({
   slug: z
     .string()
@@ -283,6 +274,7 @@ export const RunnerCapabilitySchema = z.enum([
   "native-session-continuation-v1",
   // Carries `requesterTimeZone` in every Run's context.
   "requester-time-zone-v1",
+  "agent-tools-plan-v1",
   // A message steered into a Run and accepted by its engine is answered in that
   // Run, as a turn of its own if the engine was already answering.
   "steer-answer-v1",
@@ -297,6 +289,17 @@ export const RunnerCapabilitySchema = z.enum([
   "person-show-v1",
 ]);
 export type RunnerCapability = z.infer<typeof RunnerCapabilitySchema>;
+
+/**
+ * Why this Runner cannot run agents at all, in the words every picker and
+ * refusal shows; null when it can. A Runner without the Host-built tool plan
+ * would run engines with no Opensteer tools.
+ */
+export function runnerAgentToolsFailure(capabilities: readonly string[]): string | null {
+  return capabilities.includes("agent-tools-plan-v1")
+    ? null
+    : "Update this computer to use Opensteer tools.";
+}
 
 export const ExecutionEnvironmentKindSchema = z.enum(["main", "local", "managed"]);
 export type ExecutionEnvironmentKind = z.infer<typeof ExecutionEnvironmentKindSchema>;
@@ -441,7 +444,8 @@ export const ThreadSchema = z.object({
    * and durable Thread events carry no such field.
    */
   askedAt: IsoDateTimeSchema.optional(),
-  capabilityProfileId: AgentCapabilityProfileIdSchema,
+  /** Immutable consent inherited from the lineage root, including withheld Main access. */
+  inheritsMain: z.boolean(),
   continuationIdentity: ProviderContinuationIdentitySchema.nullable(),
   createdAt: IsoDateTimeSchema,
   createdBy: UserIdSchema,
@@ -673,6 +677,11 @@ const messageAuthorVariants = [
     kind: z.literal("platform"),
     referenceId: z.string().trim().min(1).max(255).optional(),
   }),
+  z.strictObject({
+    displayName: z.string().trim().min(1).max(160),
+    kind: z.literal("connection"),
+    connectionId: z.string().min(1).max(255),
+  }),
 ] as const;
 export const MessageAuthorSchema = z.discriminatedUnion("kind", messageAuthorVariants);
 export const MessageAuthorViewSchema = z.discriminatedUnion("kind", [
@@ -681,6 +690,7 @@ export const MessageAuthorViewSchema = z.discriminatedUnion("kind", [
   z.object(messageAuthorVariants[2].shape),
   z.object(messageAuthorVariants[3].shape),
   z.object(messageAuthorVariants[4].shape),
+  z.object(messageAuthorVariants[5].shape),
 ]);
 export type MessageAuthor = z.infer<typeof MessageAuthorSchema>;
 

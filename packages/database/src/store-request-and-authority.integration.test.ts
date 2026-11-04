@@ -2361,11 +2361,11 @@ describeStore("PostgreSQL store", (it) => {
       sql`
         insert into threads (
           id, workspace_id, title, environment_id, harness_instance_id, created_by,
-          created_by_principal_id, model_selection, capability_profile_id
+          created_by_principal_id, model_selection, inherits_main
         ) values (
           ${createId("thread")}, ${fixture.workspace.id}, 'Raw', ${fixture.aliceEnvironmentId},
           ${fixture.harness.id}, ${fixture.bobId}, ${bobPrincipalId},
-          ${JSON.stringify(testModelSelection)}::jsonb, 'workspace'
+          ${JSON.stringify(testModelSelection)}::jsonb, false
         )
       `.execute(database),
     ).rejects.toThrow(/thread creator cannot execute on the selected environment/u);

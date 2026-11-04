@@ -1,3 +1,7 @@
+import {
+  withAdministrationTransaction,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
 import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import { TransactionScopeChanged, withDatabaseTransaction } from "./connection.js";
 import { prepareThreadInsertion } from "./thread-insertion.js";
@@ -700,8 +704,9 @@ export class ChannelStore {
     connectionId: IntegrationConnectionId,
     ownerUserId: UserId,
     status: "connected" | "paused" | "revoked",
+    administration?: AdministrationCommandIdentity | undefined,
   ): Promise<void> {
-    await withDatabaseTransaction(this.#database, async (transaction) => {
+    await withAdministrationTransaction(this.#database, administration, async (transaction) => {
       const connection = await transaction
         .selectFrom("integrationConnections")
         .select("id")
@@ -743,33 +748,39 @@ export class ChannelStore {
    * unrouted conversation is, so nothing has to be torn down here.
    */
   async revokeBinding(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly bindingId: ChannelBindingId;
     readonly ownerUserId: UserId;
-  }): Promise<void> {
-    await withDatabaseTransaction(this.#database, async (transaction) => {
-      const binding = await transaction
-        .selectFrom("channelBindings")
-        .innerJoin("channelAccounts", "channelAccounts.id", "channelBindings.accountId")
-        .innerJoin(
-          "integrationConnections",
-          "integrationConnections.id",
-          "channelAccounts.connectionId",
-        )
-        .select("channelBindings.id")
-        .where("channelBindings.id", "=", input.bindingId)
-        .where("channelBindings.status", "!=", "revoked")
-        .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
-        .forNoKeyUpdate("channelBindings")
-        .executeTakeFirst();
-      if (!binding) {
-        throw new OpensteerError({ code: "not_found", message: "Channel route not found" });
-      }
-      await transaction
-        .updateTable("channelBindings")
-        .set({ status: "revoked", updatedAt: new Date() })
-        .where("id", "=", input.bindingId)
-        .executeTakeFirstOrThrow();
-    });
+  }): Promise<boolean> {
+    return withAdministrationTransaction(
+      this.#database,
+      input.administration,
+      async (transaction) => {
+        const binding = await transaction
+          .selectFrom("channelBindings")
+          .innerJoin("channelAccounts", "channelAccounts.id", "channelBindings.accountId")
+          .innerJoin(
+            "integrationConnections",
+            "integrationConnections.id",
+            "channelAccounts.connectionId",
+          )
+          .select(["channelBindings.id", "channelBindings.status"])
+          .where("channelBindings.id", "=", input.bindingId)
+          .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
+          .forNoKeyUpdate("channelBindings")
+          .executeTakeFirst();
+        if (!binding) {
+          throw new OpensteerError({ code: "not_found", message: "Channel route not found" });
+        }
+        if (binding.status === "revoked") return false;
+        await transaction
+          .updateTable("channelBindings")
+          .set({ status: "revoked", updatedAt: new Date() })
+          .where("id", "=", input.bindingId)
+          .executeTakeFirstOrThrow();
+        return true;
+      },
+    );
   }
 
   /**
@@ -1928,17 +1939,15 @@ export class ChannelStore {
         // in their own Main that is their Home agent. Everyone else — an admitted
         // stranger, a channel, even the owner in a conversation others share —
         // runs as the route's creator without being them, below Main.
-        const capabilityProfileId =
+        const inheritsMain =
           event.conversation.type === "dm" &&
           identity.linkedUserId === authority.userId &&
           lockedWorkspace.kind === "main" &&
-          lockedWorkspace.createdBy === authority.userId
-            ? "main"
-            : "workspace";
+          lockedWorkspace.createdBy === authority.userId;
         const rotate =
           !thread ||
           thread.status === "archived" ||
-          thread.capabilityProfileId !== capabilityProfileId ||
+          thread.inheritsMain !== inheritsMain ||
           thread.environmentId !== placement.environmentId ||
           thread.harnessInstanceId !== selectedHarnessId;
         const events: AgentEvent[] = [];
@@ -1947,9 +1956,9 @@ export class ChannelStore {
           const threadRow = await insertThread({
             accessMode: thread?.accessMode ?? DEFAULT_THREAD_ACCESS_MODE,
             // A messaging context never inherits another Thread's history:
-            // every rotation, including a change of profile, is a fresh root.
-            capabilityProfileId,
-            role: capabilityProfileId === "main" ? "conversation" : "work",
+            // every rotation, including a change of consent, is a fresh root.
+            inheritsMain,
+            role: inheritsMain ? "conversation" : "work",
             createdByPrincipalId: identity.principalId,
             id: threadId,
             lineageRootThreadId: threadId,

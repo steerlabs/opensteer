@@ -1,3 +1,7 @@
+import { TriggerToolHandlers } from "../mcp/handlers/triggers.js";
+import { trigger_write } from "@opensteer/agent-tools/tools";
+import type { RunCaller } from "../mcp/agent-caller.js";
+import { idempotencyKey, operationId } from "../mcp/operations.js";
 import { createHash } from "node:crypto";
 import { createId } from "@opensteer/core";
 import type { TriggerStore } from "@opensteer/database";
@@ -7,6 +11,37 @@ import { TriggerScheduleLoop, TriggerService } from "./trigger-service.js";
 
 describe("TriggerService", () => {
   afterEach(() => vi.useRealTimers());
+
+  it("carries MCP retry identity into manual Trigger admission", async () => {
+    const workspaceId = createId("workspace");
+    const enqueueManual = vi.fn(async () => ({ event: { trigger: { workspaceId } } }));
+    const service = new TriggerService({
+      store: { enqueueManual },
+      onOccurrenceQueued: vi.fn(),
+    } as unknown as ConstructorParameters<typeof TriggerService>[0]);
+    const caller = {
+      kind: "run",
+      key: "run:manual",
+      userId: createId("user"),
+      thread: { id: createId("thread") },
+    } as RunCaller;
+    const handlers = new TriggerToolHandlers(service);
+    const input = trigger_write.input.parse({
+      action: "run",
+      triggerId: createId("trigger"),
+      payload: { task: "once" },
+    });
+    await handlers.trigger_write({ caller, input, operationKey: "manual-once" });
+    expect(enqueueManual).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: idempotencyKey(
+          caller,
+          operationId(caller, "manual-once", "trigger_write"),
+          "trigger.write",
+        ),
+      }),
+    );
+  });
 
   it("refuses v3 before persisting when the anchor computer has no v3 advertisement", async () => {
     const create = vi.fn(async () => ({ trigger: { kind: "watch" } }));

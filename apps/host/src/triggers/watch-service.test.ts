@@ -14,40 +14,53 @@ import { describe, expect, it, vi } from "vitest";
 import { WatchService, type WatchServiceOptions } from "./watch-service.js";
 
 describe("WatchService", () => {
-  it("never activates an unsupported v3 Watch and records the actionable failure", async () => {
-    const fixture = watchFixture();
-    const context = { ...fixture.context, toolContractVersion: 3 as const };
-    const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
-      async () => undefined,
-    );
-    const recordWatchUnavailable = vi.fn<WatchServiceOptions["store"]["recordWatchUnavailable"]>(
-      async () => context.activation,
-    );
-    const service = new WatchService({
-      ...options(fixture, {
-        reconcileWatches,
-        recordWatchUnavailable,
-        reconcileWatchesForRunner: async () => ({ activations: [context], reconcileGeneration: 1 }),
-      }),
-      runnerStore: {
-        getEnvironment: async () => ({ runnerId: fixture.identity.runnerId }),
-        runnerCapabilities: async () => [],
-      } as never,
-    });
-    try {
-      await service.reconcile(context.activation.environmentId);
-      expect(reconcileWatches.mock.calls[0]?.[2]).toEqual([]);
-      expect(recordWatchUnavailable).toHaveBeenCalledWith(
-        expect.objectContaining({
-          activationId: context.activation.id,
-          reason:
-            "This computer's Runner cannot run Trigger program version 3. Use version 2 or update that computer.",
-        }),
+  it.each([
+    {
+      capabilities: ["agent-tools-plan-v1"] as const,
+      reason:
+        "This computer's Runner cannot run Trigger program version 3. Use version 2 or update that computer.",
+    },
+    { capabilities: [] as const, reason: "Update this computer to use Opensteer tools." },
+  ])(
+    "never activates an unsupported Watch and records $reason",
+    async ({ capabilities, reason }) => {
+      const fixture = watchFixture();
+      const context = { ...fixture.context, toolContractVersion: 3 as const };
+      const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
+        async () => undefined,
       );
-    } finally {
-      await service.close();
-    }
-  });
+      const recordWatchUnavailable = vi.fn<WatchServiceOptions["store"]["recordWatchUnavailable"]>(
+        async () => context.activation,
+      );
+      const service = new WatchService({
+        ...options(fixture, {
+          reconcileWatches,
+          recordWatchUnavailable,
+          identityForEnvironment: () => ({ ...fixture.identity, capabilities: [...capabilities] }),
+          reconcileWatchesForRunner: async () => ({
+            activations: [context],
+            reconcileGeneration: 1,
+          }),
+        }),
+        runnerStore: {
+          getEnvironment: async () => ({ runnerId: fixture.identity.runnerId }),
+          runnerCapabilities: async () => [],
+        } as never,
+      });
+      try {
+        await service.reconcile(context.activation.environmentId);
+        expect(reconcileWatches.mock.calls[0]?.[2]).toEqual([]);
+        expect(recordWatchUnavailable).toHaveBeenCalledWith(
+          expect.objectContaining({
+            activationId: context.activation.id,
+            reason,
+          }),
+        );
+      } finally {
+        await service.close();
+      }
+    },
+  );
 
   it("builds the desired set without sending program bodies and applies fenced status", async () => {
     const fixture = watchFixture();
@@ -71,7 +84,6 @@ describe("WatchService", () => {
         activationId: fixture.context.activation.id,
         capabilities: {
           browserCdp: null,
-          integrationMcp: expect.objectContaining({ token: "integration-token" }),
           mcp: expect.objectContaining({ token: "control-token" }),
         },
         executionGeneration: 3,
@@ -283,8 +295,6 @@ function options(
     browser: { hasBrowserProfileAccess: async () => false },
     browserCdpUrl: "wss://host.test/internal/v1/watch-cdp",
     controlTokens: { issue: () => ({ expiresAt, token: "control-token" }) },
-    integrationMcpUrl: "https://host.test/integration-mcp",
-    integrationTokens: { issue: () => ({ expiresAt, token: "integration-token" }) },
     mcpUrl: "https://host.test/mcp",
     onChanged: overrides.onChanged ?? (() => undefined),
     onError: overrides.onError ?? (() => undefined),
@@ -385,7 +395,7 @@ function watchFixture(status: "provisioning" | "ready" = "ready"): {
   };
   const descriptor = RunnerDescriptorSchema.parse({
     bootId: context.activation.runnerBootId,
-    capabilities: ["filesystem"],
+    capabilities: ["filesystem", "agent-tools-plan-v1"],
     modules: {
       agents: {
         environmentIds: [environmentId],

@@ -863,7 +863,7 @@ integration("messaging pipeline", () => {
         .executeTakeFirstOrThrow();
       expect(thread).toMatchObject({
         createdBy: ownerUserId,
-        capabilityProfileId: "workspace",
+        inheritsMain: false,
         parentThreadId: null,
       });
       const direct = {
@@ -1096,7 +1096,7 @@ integration("messaging pipeline", () => {
             "channelConversationContexts.conversationId",
           )
           .innerJoin("threads", "threads.id", "channelConversationContexts.activeThreadId")
-          .select(["threads.id", "threads.capabilityProfileId"])
+          .select(["threads.id", "threads.inheritsMain"])
           .where(
             "channelConversations.externalConversationId",
             "=",
@@ -1110,7 +1110,7 @@ integration("messaging pipeline", () => {
     // 1. Anyone may write under this route, and runs as its creator without
     //    being them: below Main even though it lands in their Main.
     const stranger = await deliver(direct("Ev-HOME-1", "1786320000.000201"));
-    expect(stranger.capabilityProfileId).toBe("workspace");
+    expect(stranger.inheritsMain).toBe(false);
 
     // 2. The same direct message from the owner's own linked identity is the
     //    owner speaking for themself, so it is their Home agent — in a fresh
@@ -1122,7 +1122,7 @@ integration("messaging pipeline", () => {
       .where("externalUserId", "=", "U-EXTERNAL")
       .execute();
     const owner = await deliver(direct("Ev-HOME-2", "1786320000.000202"));
-    expect(owner.capabilityProfileId).toBe("main");
+    expect(owner.inheritsMain).toBe(true);
     expect(owner.id).not.toBe(stranger.id);
 
     // 3. A channel is shared with whoever else is in it, so even the owner's
@@ -1132,7 +1132,7 @@ integration("messaging pipeline", () => {
       eventId: "Ev-HOME-3",
       providerMessageId: "1786320000.000203",
     });
-    expect(shared.capabilityProfileId).toBe("workspace");
+    expect(shared.inheritsMain).toBe(false);
 
     await service.close();
     hub.close();

@@ -135,7 +135,7 @@ export async function createMemoryPass(
       !isDeepStrictEqual(catalog?.catalog, input.catalog) ||
       chat.workspaceId !== workspace.id ||
       chat.role !== "conversation" ||
-      chat.capabilityProfileId !== "main" ||
+      !chat.inheritsMain ||
       chat.lineageRootThreadId !== input.chat.lineageRootThreadId ||
       chat.environmentId !== input.chat.environmentId ||
       chat.harnessInstanceId !== input.chat.harnessInstanceId ||

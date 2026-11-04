@@ -371,8 +371,8 @@ describe("Passwords in settings", () => {
       body: "Passwords are kept in the Opensteer app on Studio Mac. Set them up and manage them there.",
       detail: "Kept on Studio Mac",
       facts: [
-        "You allow an account once per Workspace, on Studio Mac, with Touch ID or your Mac password. After that, agents there sign in with it on their own.",
-        "You can say no to a sign-in from this phone.",
+        "You allow an account once per Workspace from any device signed in to this Opensteer. After that, agents there can use it to sign in on their own.",
+        "You can allow or decline a sign-in from this phone. Allowing first confirms it’s you on this device.",
       ],
       title: "Passwords",
     });

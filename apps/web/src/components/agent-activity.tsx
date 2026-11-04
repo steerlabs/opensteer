@@ -2005,6 +2005,7 @@ function updateSource(
     case "trigger":
     case "watch":
       return { glyph: "bolt", href: automationPath(author.triggerId), name };
+    case "connection":
     case "platform":
       return { glyph: "message", href: null, name };
   }
@@ -2150,6 +2151,8 @@ function inputSource(
         markdown: true,
         name,
       };
+    case "connection":
+      return { glyph: null, href: null, markdown: true, name };
     case "human":
       return {
         glyph: (

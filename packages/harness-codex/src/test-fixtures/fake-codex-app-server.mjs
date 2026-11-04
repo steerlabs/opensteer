@@ -169,7 +169,6 @@ function handleClientMethod(message) {
       capture({
         fakeOpensteerTokenEnvironment: {
           agentTools: Boolean(process.env.OPENSTEER_AGENT_TOOLS_TOKEN),
-          integrationTools: Boolean(process.env.OPENSTEER_INTEGRATION_TOOLS_TOKEN),
         },
       });
       // Opt-in, for journeys that exercise exactly the token an engine holds.
@@ -591,7 +590,7 @@ function handleClientMethod(message) {
     case "mcpServerStatus/list":
       requireInitialized(message);
       const ambientNames = scenario === "ambient-extensions" ? ["company.docs", "github"] : [];
-      const managedNames = ["opensteer", "opensteer_integrations"];
+      const managedNames = ["opensteer"];
       send({
         id: message.id,
         result: {
@@ -605,12 +604,12 @@ function handleClientMethod(message) {
                 [
                   ...(threadConfig[`mcp_servers.${name}.enabled_tools`] ?? []).filter(
                     (tool) =>
-                      name !== "opensteer_integrations" ||
+                      name !== "opensteer" ||
                       ((scenario !== "previous-host" || tool !== "computer") &&
                         (scenario !== "mcp-missing-required-tool" ||
                           tool !== "integration_search")),
                   ),
-                  ...(scenario === "mcp-extra-tool" && name === "opensteer_integrations"
+                  ...(scenario === "mcp-extra-tool" && name === "opensteer"
                     ? ["unexpected_tool"]
                     : []),
                 ].map((tool) => [tool, { inputSchema: { type: "object" }, name: tool }]),

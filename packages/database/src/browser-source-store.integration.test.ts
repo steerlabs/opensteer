@@ -689,12 +689,12 @@ integration.sequential("browser sign-in authority", () => {
     ]);
   });
 
-  it("admits sign_in on the agent-control ledger", async ({ storeFixture }) => {
+  it("admits sign_in on the Run tool ledger", async ({ storeFixture }) => {
     const { fixture, runningRun, store } = storeFixture;
     const scope = await fixture();
     const run = await runningRun(scope.ownerId, scope.workspaceId);
     const admit = (requestId: string) =>
-      store.admitAgentControlRequest({
+      store.admitRunToolCall({
         action: "browser.sign-in",
         bindingGeneration: run.bindingGeneration,
         environmentId: run.environmentId,

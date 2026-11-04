@@ -10,7 +10,7 @@ import { WorkspaceIconNameSchema } from "./workspace-icons.js";
  */
 export const ThreadWriteInputSchema = z
   .strictObject({
-    action: z.enum(["rename", "set_icon", "done", "reopen"]),
+    action: z.enum(["rename", "set_icon", "done", "reopen", "interrupt"]),
     threadId: ThreadIdSchema.optional(),
     title: ThreadTitleSchema.optional(),
     icon: WorkspaceIconNameSchema.nullable().optional(),

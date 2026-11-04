@@ -4,7 +4,7 @@ import { createBrowserSessionId } from "@opensteer/protocol";
 import Fastify from "fastify";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentControlTokenService } from "../agents/agent-control-service.js";
+import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
 import { BrowserCdpConnectionEnded, type BrowserService } from "./browser-service.js";
 import {
   registerAgentCdpBridge,
@@ -79,7 +79,7 @@ async function agentBridge(
         workspaceId: createId("workspace"),
       })),
       reauthorize: vi.fn(async (scope: unknown) => scope),
-    } as unknown as AgentControlTokenService,
+    } as unknown as RunToolTokenService,
   );
   const port = await listen(app);
   return connect(
@@ -272,7 +272,7 @@ describe("Agent CDP bridge", () => {
       {
         authenticate: vi.fn(async () => ({ requestedBy, runId, workspaceId })),
         reauthorize: vi.fn(async (scope: unknown) => scope),
-      } as unknown as AgentControlTokenService,
+      } as unknown as RunToolTokenService,
     );
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address();
