@@ -5,6 +5,7 @@ import { DeploymentIdSchema } from "@opensteer/core";
 import { BridgeDesktopUpdates } from "../../desktop/deployment-updates.js";
 import type { PlaceRow } from "../../desktop/places.js";
 import { useDesktopPlaces } from "../../desktop/places-context.js";
+import { usePageVisible } from "../../ui-utils.js";
 
 /** The way out of "Needs update": this app can't open that computer, but can update it. */
 export function PlaceUpdate({ row }: { readonly row: PlaceRow }) {
@@ -15,7 +16,8 @@ export function PlaceUpdate({ row }: { readonly row: PlaceRow }) {
       bridge === null ? null : new BridgeDesktopUpdates(bridge, DeploymentIdSchema.parse(row.id)),
     [bridge, row.id],
   );
-  const { run, view } = useRemoteDesktopUpdate(updates, row.name, updates !== null);
+  const visible = usePageVisible();
+  const { run, view } = useRemoteDesktopUpdate(updates, row.name, updates !== null && visible);
   const [confirming, setConfirming] = useState<Extract<
     DesktopUpdateAction,
     { readonly kind: "request" }

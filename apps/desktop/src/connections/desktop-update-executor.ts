@@ -3,6 +3,8 @@ import type { DesktopUpdateProgress } from "@opensteer/protocol/desktop-supervis
 import type { DesktopUpdater } from "../app/desktop-updater.js";
 import type { DesktopSupervisor } from "./desktop-supervisor.js";
 
+export const desktopUpdateResultRetryMs = 5_000;
+
 export class DesktopUpdateExecutor {
   readonly #supervisor: DesktopSupervisor;
   readonly #updater: DesktopUpdater;
@@ -12,6 +14,7 @@ export class DesktopUpdateExecutor {
   #running = false;
   #queued: DesktopUpdateOperation | null = null;
   #stopped = false;
+  #retry: ReturnType<typeof setTimeout> | undefined;
   readonly #results = new Map<string, DesktopUpdateProgress>();
   constructor(options: {
     supervisor: DesktopSupervisor;
@@ -30,6 +33,7 @@ export class DesktopUpdateExecutor {
   }
   stop(): void {
     this.#stopped = true;
+    clearTimeout(this.#retry);
     this.#unsubscribe();
     this.#unsubscribeState();
   }
@@ -43,6 +47,7 @@ export class DesktopUpdateExecutor {
     this.#running = true;
     let phase = operation.state;
     let targetVersion = operation.targetVersion;
+    let delivered = false;
     const fromVersion = operation.fromVersion ?? this.#updater.state().currentVersion;
     const progress = async (
       state: DesktopUpdateProgress["state"],
@@ -63,11 +68,13 @@ export class DesktopUpdateExecutor {
       }
       await this.#supervisor.acknowledge(message);
       phase = state;
+      delivered = state === "failed" || state === "succeeded";
     };
     try {
       const result = this.#results.get(operation.id);
       if (result) {
         await this.#supervisor.acknowledge({ ...result, messageId: crypto.randomUUID() });
+        delivered = true;
         return;
       }
       if (targetVersion && operation.incarnationId !== this.#supervisor.incarnationId) {
@@ -100,15 +107,26 @@ export class DesktopUpdateExecutor {
         await action.restart(this.#install);
       });
     } catch {
-      try {
-        await progress("failed", phase === "installing" ? "handoff-failed" : "update-failed");
-      } catch {
-        /* Replayed from the acknowledged journal or cached result on reconnect. */
+      // A settled result stands: the store accepts only it, so a failed delivery must not replace it.
+      if (!this.#results.has(operation.id)) {
+        try {
+          await progress("failed", phase === "installing" ? "handoff-failed" : "update-failed");
+        } catch {
+          /* Retried below from the cached result. */
+        }
       }
     } finally {
       this.#running = false;
       // Intermediate publications for this action are obsolete after its acknowledged completion.
       this.#dropQueued(operation.id);
+      if (!delivered && this.#results.has(operation.id) && !this.#stopped) {
+        clearTimeout(this.#retry);
+        this.#retry = setTimeout(() => {
+          this.#queued ??= operation;
+          void this.#drain();
+        }, desktopUpdateResultRetryMs);
+        this.#retry.unref?.();
+      }
       void this.#drain();
     }
   }

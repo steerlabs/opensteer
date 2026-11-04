@@ -144,7 +144,7 @@ export class DesktopUpdateController {
   #lost(failure: DesktopUpdatesFailure): void {
     const active = desktopUpdateActive(this.#snapshot.status?.operation);
     this.#publish({ failure, stalled: active && this.#silentTooLong() });
-    if (active && failure !== "forbidden")
+    if ((active || this.#unanswered) && failure !== "forbidden")
       this.#reconnect = setTimeout(() => this.#follow(), reconnectDelayMs);
   }
 

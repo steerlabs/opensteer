@@ -124,6 +124,21 @@ describe("DesktopUpdateController", () => {
     expect(controller.getSnapshot()).toMatchObject({ failure: null, stalled: false });
   });
 
+  it("keeps following after a lost request, so an update that landed still shows", async () => {
+    const { controller, follows, request } = shown();
+    request.mockRejectedValueOnce(new DesktopUpdatesError("offline"));
+    controller.request({ action: "update" });
+    await vi.advanceTimersByTimeAsync(0);
+    follows[0]!.onError(new DesktopUpdatesError("offline"));
+    vi.advanceTimersByTime(3_000);
+    expect(follows).toHaveLength(2);
+    follows[1]!.listener(status(operation("a", "installing")));
+    expect(controller.getSnapshot()).toMatchObject({
+      failure: null,
+      status: { operation: { id: "a" } },
+    });
+  });
+
   it("calls a restart stalled only after it has been silent for minutes", () => {
     const { controller, follows } = shown();
     follows[0]!.listener(status(operation("a", "installing")));

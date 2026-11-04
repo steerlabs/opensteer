@@ -67,6 +67,9 @@ export async function readDesktopUpdateResponse<T>(
         } as const
       )[response.status as 401 | 403 | 404 | 409] ?? "unavailable",
     );
+  // A Host older than this contract answers an unknown GET with its web app's index.html.
+  if (/^text\/html\b/iu.test(response.headers.get("content-type") ?? ""))
+    throw new DesktopUpdatesError("unsupported");
   const value = await readBoundedJson(response, {
     maximumBytes: desktopUpdateMaximumBytes,
     ...(progress.signal === undefined ? {} : { signal: progress.signal }),

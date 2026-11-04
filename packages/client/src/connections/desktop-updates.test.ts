@@ -157,6 +157,10 @@ it("reuses session recovery below attachment and identifies desktops needing the
   expect(recoverUnauthorized).toHaveBeenCalledOnce();
   maintenance.mockResolvedValueOnce(new Response("missing", { status: 404 }));
   await expect(service.status()).rejects.toMatchObject({ reason: "unsupported" });
+  maintenance.mockResolvedValueOnce(
+    new Response("<!doctype html>", { headers: { "content-type": "text/html; charset=utf-8" } }),
+  );
+  await expect(service.status()).rejects.toMatchObject({ reason: "unsupported" });
 });
 
 it("cancels a visible subscription and its outstanding long-poll without reporting offline", async () => {

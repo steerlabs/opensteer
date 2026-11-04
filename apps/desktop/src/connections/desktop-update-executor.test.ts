@@ -3,7 +3,7 @@ import type { DesktopSupervisorOutput } from "@opensteer/protocol/desktop-superv
 import type { DesktopUpdateOperation } from "@opensteer/protocol/maintenance";
 import type { DesktopUpdater } from "../app/desktop-updater.js";
 import type { DesktopSupervisor } from "./desktop-supervisor.js";
-import { DesktopUpdateExecutor } from "./desktop-update-executor.js";
+import { DesktopUpdateExecutor, desktopUpdateResultRetryMs } from "./desktop-update-executor.js";
 
 it.each(["staged", "installing"] as const)(
   "reconciles a %s operation only after a new incarnation, without downloading or restarting",
@@ -59,3 +59,52 @@ it.each(["staged", "installing"] as const)(
     }
   },
 );
+
+it("keeps retrying the settled result when its acknowledgement is lost", async () => {
+  vi.useFakeTimers();
+  let receive!: (message: DesktopSupervisorOutput) => void;
+  const states: string[] = [];
+  const acknowledge = vi.fn(async (message: { state: string }) => {
+    states.push(message.state);
+    if (states.length < 3) throw new Error("Lost acknowledgement");
+  });
+  const executor = new DesktopUpdateExecutor({
+    supervisor: {
+      incarnationId: crypto.randomUUID(),
+      subscribe: (listener: typeof receive) => {
+        receive = listener;
+        return () => {};
+      },
+      acknowledge,
+      state: () => {},
+    } as unknown as DesktopSupervisor,
+    updater: {
+      state: () => ({ currentVersion: "1.0.1" }),
+      subscribe: () => () => {},
+      remoteAction: vi.fn(),
+    } as unknown as DesktopUpdater,
+    install: vi.fn(),
+  });
+  try {
+    receive({
+      type: "desktop-update.operation",
+      operation: {
+        id: crypto.randomUUID(),
+        state: "installing",
+        targetVersion: "1.0.1",
+        fromVersion: "1.0.0",
+        incarnationId: crypto.randomUUID(),
+        intent: { action: "update" },
+        detail: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    await vi.advanceTimersByTimeAsync(desktopUpdateResultRetryMs * 3);
+    expect(states).toEqual(["succeeded", "succeeded", "succeeded"]);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    executor.stop();
+    vi.useRealTimers();
+  }
+});
