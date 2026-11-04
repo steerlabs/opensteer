@@ -134,10 +134,6 @@ export interface RunnerDisconnectScope {
   readonly triggerOccurrenceIds: readonly TriggerOccurrenceId[];
 }
 
-export type RunnerThreadTitle = Extract<
-  RunnerOperationalMessage,
-  { readonly type: "runner.thread-title" }
->;
 export type RunnerLive = Extract<RunnerOperationalMessage, { readonly type: "runner.live" }>;
 /** What a refused Runner report is answered for: one Run, under one binding. */
 export type RefusedRunnerReport = Pick<PendingAgentEvent, "bindingGeneration" | "runId">;
@@ -198,7 +194,6 @@ export interface RunnerRegistryHooks {
     identity: RunnerIdentity,
     report: import("@opensteer/protocol").RunnerSkillMetadataReport,
   ): Promise<void>;
-  onThreadTitle?(identity: RunnerIdentity, report: RunnerThreadTitle): Promise<void>;
   /**
    * Fires once the connection is live and reachable, which `authorize` cannot
    * do: authorization runs before the connection is inserted, so nothing it
@@ -484,6 +479,20 @@ export class RunnerRegistry {
   readonly #now: () => number;
   readonly #byRunner = new Map<RunnerId, RunnerConnection>();
   readonly #auxiliaryByPeer = new Map<string, AuxiliaryStream>();
+  readonly #backgroundText = new Map<
+    string,
+    {
+      identity: RunnerIdentity;
+      expiresAt: number;
+      resolve: (
+        result: Extract<
+          RunnerOperationalMessage,
+          { type: "runner.background-text-result" }
+        >["result"],
+      ) => void;
+    }
+  >();
+
   readonly #byEnvironment = new Map<EnvironmentId, RunnerConnection>();
   readonly #byPeer = new Map<string, RunnerConnection>();
   // A cancellation fence exists only while its interrupt dispatch is in flight,
@@ -1583,6 +1592,48 @@ export class RunnerRegistry {
     }
   }
 
+  /** One ephemeral request, bound to this exact authenticated connection until its deadline. */
+  async backgroundText(
+    request: Omit<
+      Extract<HostToRunnerMessage, { type: "host.background-text" }>,
+      keyof RunnerConnectionFence
+    >,
+    signal: AbortSignal,
+  ) {
+    const connection = this.#byEnvironment.get(request.environmentId);
+    if (!connection?.attached || !connection.identity.capabilities.includes("background-text-v1")) {
+      throw new OpensteerError({ code: "runner_offline", message: "Background Runner is offline" });
+    }
+    const expiresAt = Date.parse(request.deadline);
+    const pending =
+      deferred<
+        Extract<RunnerOperationalMessage, { type: "runner.background-text-result" }>["result"]
+      >();
+    this.#backgroundText.set(request.attemptId, {
+      identity: connection.identity,
+      expiresAt,
+      resolve: pending.resolve,
+    });
+    try {
+      await connection.peer.send({ ...request, ...connection.identity.fence });
+      const result = await withDeadline(
+        pending.promise,
+        Math.max(1, expiresAt - Date.now()),
+        signal,
+        "Background text timed out",
+      );
+      if (
+        this.#byEnvironment.get(request.environmentId) !== connection ||
+        Date.now() >= expiresAt
+      ) {
+        throw new OpensteerError({ code: "conflict", message: "Background attempt expired" });
+      }
+      return result;
+    } finally {
+      this.#backgroundText.delete(request.attemptId);
+    }
+  }
+
   /**
    * Sends a durable command and resolves when the Runner accepts it. A caller
    * that prepared the command for one connection names its generation: a
@@ -2042,19 +2093,12 @@ export class RunnerRegistry {
         this.#hooks.onLive?.(connection.identity, message);
         break;
       }
-      case "runner.thread-title": {
-        const owned = connection.ownedRunBindings.get(message.runId);
-        if (
-          !owned ||
-          connection.revokedRunIds.has(message.runId) ||
-          !connection.identity.environmentIds.includes(message.environmentId) ||
-          owned.bindingGeneration !== message.bindingGeneration ||
-          owned.environmentId !== message.environmentId ||
-          owned.threadId !== message.threadId ||
-          owned.workspaceId !== message.workspaceId
-        )
-          break;
-        await this.#runHook(() => this.#hooks.onThreadTitle?.(connection.identity, message));
+      case "runner.background-text-result": {
+        const pending = this.#backgroundText.get(message.attemptId);
+        if (pending?.identity === connection.identity && Date.now() < pending.expiresAt) {
+          this.#backgroundText.delete(message.attemptId);
+          pending.resolve(message.result);
+        }
         break;
       }
       case "runner.trigger-result":

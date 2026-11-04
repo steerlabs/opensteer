@@ -814,7 +814,7 @@ integration("agent-to-agent messaging round trip", () => {
         .where("type", "=", "run.execute")
         .executeTakeFirstOrThrow();
       await store.claimCommand(command.id, "title-dispatcher");
-      expect((await store.loadRunDispatchContext(command.id)).titleRequest).toEqual({
+      expect(await store.getThreadNamingInput(worker.id)).toMatchObject({
         request: task.trim(),
         icon: true,
       });
