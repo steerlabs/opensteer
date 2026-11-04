@@ -330,13 +330,10 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     const native = (
       await import("../src/browser/electron-browser-launcher.js")
     ).electronPagePresentation(producer.page)!.view;
-    if (
-      dimensions.width > native.getBounds().width ||
-      dimensions.height > native.getBounds().height
-    ) {
-      const stage = await a.locator(".browser-stage").boundingBox();
-      assert(stage);
-      const expected = { width: Math.round(stage.width), height: Math.round(stage.height) };
+    const stage = await a.locator(".browser-stage").boundingBox();
+    assert(stage);
+    const expected = { width: Math.round(stage.width), height: Math.round(stage.height) };
+    if (dimensions.width !== expected.width || dimensions.height !== expected.height) {
       const fitted = Promise.withResolvers<void>();
       void fitted.promise.catch(() => undefined);
       const remove = producer.onEvent((event) => {
