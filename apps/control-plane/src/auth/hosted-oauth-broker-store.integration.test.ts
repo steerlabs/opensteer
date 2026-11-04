@@ -115,94 +115,197 @@ integration("hosted OAuth broker durable boundary", () => {
     },
   });
 
-  it("relays MCP consent with issuer, PKCE, Account browser binding and no token exchange", async ({
-    storeFixture,
-  }) => {
-    const { store, accountId, deploymentId, now } = storeFixture;
+  async function proveAppReturn(
+    broker: HostedOAuthBrokerService,
+    fixture: StoreFixture,
+    attemptId: ReturnType<typeof attemptIdAt>,
+    returnUrl: string,
+    acknowledge = false,
+  ) {
+    const { store, database, deploymentId, now } = fixture;
     const binding = (await store.deploymentBinding(deploymentId))!;
-    const broker = new HostedOAuthBrokerService({
-      applications: [],
-      issuer: new URL("https://accounts.example.test"),
-      now: () => now,
-      attemptContextEncryptionKey: Buffer.alloc(32, 4).toString("base64url"),
-      store,
-      fetch: vi.fn(async () => {
-        throw new Error("Account must not exchange MCP tokens");
-      }),
-    });
-    const attemptId = attemptIdAt(90);
-    const recipient = generateOAuthBrokerEphemeralKeyPair();
-    const mcp = {
-      serverId: `isv_${crypto.randomUUID()}`,
-      issuer: "https://mcp-issuer.example.test/",
-      authorizationEndpoint: "https://mcp-issuer.example.test/authorize",
-      authorizationResponseIssuerParameterSupported: true,
+    const authority = {
+      credentialHash: "unused",
+      deploymentId,
+      hostInstanceId: binding.activeHostInstanceId,
     };
-    const context = OAuthBrokerMcpCallbackRelayContextSchema.parse({
-      accountSubject: { issuer: "https://accounts.example.test", subject: accountId },
-      attemptId,
-      authorizationDigest: "d".repeat(43),
-      deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(binding),
-      expiresAt: new Date(now.getTime() + 60_000).toISOString(),
-      clientId: "mcp-client",
-      mcp,
-      redirectUrl: broker.callbackUrl("mcp"),
-      schemaVersion: 1,
+    const proof = new URL(returnUrl).searchParams.get("return")!;
+    expect(proof).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    expect(await broker.pull(authority, attemptId)).toMatchObject({
+      status: "launched",
+      sealedResult: null,
     });
-    const state = "s".repeat(43);
-    const authorizationUrl = new URL(mcp.authorizationEndpoint);
-    authorizationUrl.search = new URLSearchParams({
-      state,
-      client_id: context.clientId,
-      redirect_uri: context.redirectUrl,
-      response_type: "code",
-      code_challenge: "c".repeat(43),
-      code_challenge_method: "S256",
-    }).toString();
-    const { schemaVersion: _version, redirectUrl: _redirect, ...requestContext } = context;
-    const created = await broker.createCallbackRelay(
-      { credentialHash: "unused", deploymentId, hostInstanceId: binding.activeHostInstanceId! },
-      {
-        ...requestContext,
-        authorizationUrl: authorizationUrl.toString(),
-        hostPublicKey: recipient.publicKey,
-        clientSurface: "native",
-        definitionId: mcp.serverId,
-        provider: "mcp",
-        providerApplicationRevision: 1,
-      },
-    );
-    const ticket = new URL(created.launchUrl).searchParams.get("ticket")!;
-    await broker.launchAuthorization(accountId, attemptId, ticket);
-    const parameters = new URLSearchParams({ code: "mcp-code", state, iss: mcp.issuer });
-    await expect(
-      broker.completeAuthorization({ parameters, provider: "mcp" }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      broker.completeAuthorization({
-        parameters,
-        provider: "google",
-        cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${ticket}`,
+    const before = await store.getAttemptForHost(deploymentId, attemptId, now);
+    expect(
+      await store.claimCallback({
+        stateHash: before!.stateHash!,
+        provider: before!.provider,
+        browserBindings: [{ attemptId, hash: before!.browserBindingHash! }],
+        now,
       }),
+    ).toBeNull();
+    expect(before).toMatchObject({
+      status: "held",
+      returnProofHash: createHash("sha256").update(proof).digest("base64url"),
+    });
+    await expect(broker.returnAttempt(authority, attemptId, "X".repeat(43))).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    await expect(
+      broker.returnAttempt(
+        { ...authority, deploymentId: createId("deployment") },
+        attemptId,
+        proof,
+      ),
     ).rejects.toMatchObject({ code: "forbidden" });
-    const outcome = await broker.completeAuthorization({
-      parameters,
-      provider: "mcp",
-      cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${ticket}`,
+    expect(await store.getAttemptForHost(deploymentId, attemptId, now)).toEqual(before);
+    await database
+      .updateTable("deployments")
+      .set({ canonicalOrigin: "https://changed.example.test" })
+      .where("id", "=", deploymentId)
+      .execute();
+    await expect(broker.returnAttempt(authority, attemptId, proof)).rejects.toMatchObject({
+      code: "forbidden",
+      refusalReason: "return-authority-mismatch",
     });
-    expect(outcome).toMatchObject({
-      status: "sealed",
-      returnUrl: expect.stringContaining(`attempt_id=imo_${attemptId.slice(4)}`),
-    });
-    const result = await broker.pull(
-      { credentialHash: "unused", deploymentId, hostInstanceId: binding.activeHostInstanceId! },
-      attemptId,
-    );
-    expect(openOAuthBrokerPayload(result.sealedResult!, recipient.privateKey, context)).toEqual({
-      parameters: [...parameters],
-    });
-    expect(broker.mcpClientMetadata()).toMatchObject({ redirect_uris: [context.redirectUrl] });
-  });
+    expect(await store.getAttemptForHost(deploymentId, attemptId, now)).toEqual(before);
+    await database
+      .updateTable("deployments")
+      .set({ canonicalOrigin: binding.canonicalOrigin })
+      .where("id", "=", deploymentId)
+      .execute();
+    if (before!.accountSubject !== binding.ownerAccountId) {
+      await database
+        .updateTable("deploymentDirectoryEntries")
+        .set({ present: false })
+        .where("deploymentId", "=", deploymentId)
+        .where("accountId", "=", before!.accountSubject)
+        .execute();
+      await expect(broker.returnAttempt(authority, attemptId, proof)).rejects.toMatchObject({
+        code: "forbidden",
+      });
+      expect(await store.getAttemptForHost(deploymentId, attemptId, now)).toEqual(before);
+      await database
+        .updateTable("deploymentDirectoryEntries")
+        .set({ present: true })
+        .where("deploymentId", "=", deploymentId)
+        .where("accountId", "=", before!.accountSubject)
+        .execute();
+    }
+    const results = await Promise.all([
+      broker.returnAttempt(authority, attemptId, proof),
+      broker.returnAttempt(authority, attemptId, proof),
+    ]);
+    expect(results.map((result) => result.status)).toEqual(["sealed", "sealed"]);
+    expect((await broker.pull(authority, attemptId)).sealedResult).not.toBeNull();
+    if (acknowledge) {
+      await broker.acknowledge(authority, attemptId);
+      expect(await broker.returnAttempt(authority, attemptId, proof)).toMatchObject({
+        status: "acknowledged",
+      });
+      expect(await store.getAttemptForHost(deploymentId, attemptId, now)).toMatchObject({
+        returnProofHash: null,
+        sealedCiphertext: null,
+      });
+      await expect(
+        broker.returnAttempt(authority, attemptId, "X".repeat(43)),
+      ).rejects.toMatchObject({
+        code: "forbidden",
+      });
+    }
+  }
+
+  it.for([false, true])(
+    "relays MCP consent with issuer, PKCE, Account browser binding and no token exchange (app finish: %s)",
+    async (appFinish, { storeFixture }) => {
+      const { store, accountId, deploymentId, now } = storeFixture;
+      const binding = (await store.deploymentBinding(deploymentId))!;
+      const broker = new HostedOAuthBrokerService({
+        applications: [],
+        issuer: new URL("https://accounts.example.test"),
+        now: () => now,
+        attemptContextEncryptionKey: Buffer.alloc(32, 4).toString("base64url"),
+        store,
+        fetch: vi.fn(async () => {
+          throw new Error("Account must not exchange MCP tokens");
+        }),
+      });
+      const attemptId = attemptIdAt(90);
+      const recipient = generateOAuthBrokerEphemeralKeyPair();
+      const mcp = {
+        serverId: `isv_${crypto.randomUUID()}`,
+        issuer: "https://mcp-issuer.example.test/",
+        authorizationEndpoint: "https://mcp-issuer.example.test/authorize",
+        authorizationResponseIssuerParameterSupported: true,
+      };
+      const context = OAuthBrokerMcpCallbackRelayContextSchema.parse({
+        accountSubject: { issuer: "https://accounts.example.test", subject: accountId },
+        attemptId,
+        authorizationDigest: "d".repeat(43),
+        deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(binding),
+        expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+        clientId: "mcp-client",
+        mcp,
+        redirectUrl: broker.callbackUrl("mcp"),
+        schemaVersion: 1,
+      });
+      const state = "s".repeat(43);
+      const authorizationUrl = new URL(mcp.authorizationEndpoint);
+      authorizationUrl.search = new URLSearchParams({
+        state,
+        client_id: context.clientId,
+        redirect_uri: context.redirectUrl,
+        response_type: "code",
+        code_challenge: "c".repeat(43),
+        code_challenge_method: "S256",
+      }).toString();
+      const { schemaVersion: _version, redirectUrl: _redirect, ...requestContext } = context;
+      const created = await broker.createCallbackRelay(
+        { credentialHash: "unused", deploymentId, hostInstanceId: binding.activeHostInstanceId! },
+        {
+          ...requestContext,
+          authorizationUrl: authorizationUrl.toString(),
+          hostPublicKey: recipient.publicKey,
+          clientSurface: "native",
+          ...(appFinish ? { finish: "app" as const } : {}),
+          definitionId: mcp.serverId,
+          provider: "mcp",
+          providerApplicationRevision: 1,
+        },
+      );
+      const ticket = new URL(created.launchUrl).searchParams.get("ticket")!;
+      await broker.launchAuthorization(appFinish ? null : accountId, attemptId, ticket);
+      const parameters = new URLSearchParams({ code: "mcp-code", state, iss: mcp.issuer });
+      await expect(
+        broker.completeAuthorization({ parameters, provider: "mcp" }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      await expect(
+        broker.completeAuthorization({
+          parameters,
+          provider: "google",
+          cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${ticket}`,
+        }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      const outcome = await broker.completeAuthorization({
+        parameters,
+        provider: "mcp",
+        cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${ticket}`,
+      });
+      expect(outcome).toMatchObject({
+        status: appFinish ? "held" : "sealed",
+        returnUrl: expect.stringContaining(`attempt_id=imo_${attemptId.slice(4)}`),
+      });
+      if (appFinish) await proveAppReturn(broker, storeFixture, attemptId, outcome.returnUrl!);
+      const result = await broker.pull(
+        { credentialHash: "unused", deploymentId, hostInstanceId: binding.activeHostInstanceId! },
+        attemptId,
+      );
+      expect(openOAuthBrokerPayload(result.sealedResult!, recipient.privateKey, context)).toEqual({
+        parameters: [...parameters],
+      });
+      expect(broker.mcpClientMetadata()).toMatchObject({ redirect_uris: [context.redirectUrl] });
+    },
+  );
 
   it("replays one sealed attempt, rejects state replay, and deletes ciphertext on ACK", async ({
     storeFixture,
@@ -374,206 +477,225 @@ integration("hosted OAuth broker durable boundary", () => {
     ).resolves.toBeNull();
   });
 
-  it("relays one Slack code to the exact member, Host, attempt, and custom app", async ({
-    storeFixture,
-  }) => {
-    const { database, now, deploymentId, store } = storeFixture;
-    const memberId = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
-    await database
-      .insertInto("users")
-      .values({
-        createdAt: now,
-        displayName: "Relay member",
-        email: "relay-member@example.test",
-        emailVerified: true,
-        id: memberId,
-        image: null,
-        updatedAt: now,
-      })
-      .execute();
-    await database
-      .insertInto("deploymentDirectoryEntries")
-      .values({
-        accountId: memberId,
-        deploymentId,
-        generation: "1",
-        observedAt: now,
-        present: true,
-        updatedAt: now,
-      })
-      .execute();
-    const binding = (await store.deploymentBinding(deploymentId))!;
-    const definition = integrationDefinitions.find((candidate) => candidate.id === "slack")!;
-    const method = definition.authMethods.find((candidate) => candidate.kind === "oauth")!;
-    if (method.kind !== "oauth") throw new Error("Slack OAuth definition is unavailable");
-    const broker = new HostedOAuthBrokerService({
-      applications: [],
-      issuer: new URL("https://accounts.opensteer.test"),
-      now: () => now,
-      attemptContextEncryptionKey: Buffer.alloc(32, 7).toString("base64url"),
-      store,
-    });
-    const attemptId = attemptIdAt(30);
-    const recipient = generateOAuthBrokerEphemeralKeyPair();
-    const state = "S".repeat(43);
-    const callbackUrl = broker.callbackUrl("slack");
-    const authorizationUrl = new URL(method.oauth.authorizationUrl);
-    authorizationUrl.searchParams.set("client_id", "custom-slack-client");
-    authorizationUrl.searchParams.set("redirect_uri", callbackUrl);
-    authorizationUrl.searchParams.set("response_type", "code");
-    authorizationUrl.searchParams.set(
-      "scope",
-      method.oauth.scopes.join(method.oauth.scopeSeparator),
-    );
-    authorizationUrl.searchParams.set("state", state);
-    const providerApplicationId = `ipa_${crypto.randomUUID()}`;
-    const expiresAt = new Date(now.getTime() + 60_000).toISOString();
-    const created = await broker.createCallbackRelay(
-      { credentialHash: "unused", deploymentId, hostInstanceId: binding.activeHostInstanceId },
-      {
-        accountSubject: { issuer: "https://accounts.opensteer.test", subject: memberId },
-        attemptId,
-        authorizationDigest: authorizationDigest(definition),
-        authorizationUrl: authorizationUrl.toString(),
-        clientSurface: "native",
-        clientId: "custom-slack-client",
-        definitionId: definition.id,
-        deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(binding),
-        expiresAt,
-        hostPublicKey: recipient.publicKey,
-        provider: "slack",
-        providerApplicationId,
-        providerApplicationRevision: 3,
-      },
-    );
-    const ticket = new URL(created.launchUrl).searchParams.get("ticket")!;
-    await expect(broker.launchAuthorization(memberId, attemptId, ticket)).resolves.toBe(
-      authorizationUrl.toString(),
-    );
-    await expect(
-      broker.completeAuthorization({
+  it.for([false, true])(
+    "relays one Slack code to the exact member, Host, attempt, and custom app (app finish: %s)",
+    async (appFinish, { storeFixture }) => {
+      const { database, now, deploymentId, store } = storeFixture;
+      const memberId = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
+      await database
+        .insertInto("users")
+        .values({
+          createdAt: now,
+          displayName: "Relay member",
+          email: "relay-member@example.test",
+          emailVerified: true,
+          id: memberId,
+          image: null,
+          updatedAt: now,
+        })
+        .execute();
+      await database
+        .insertInto("deploymentDirectoryEntries")
+        .values({
+          accountId: memberId,
+          deploymentId,
+          generation: "1",
+          observedAt: now,
+          present: true,
+          updatedAt: now,
+        })
+        .execute();
+      const binding = (await store.deploymentBinding(deploymentId))!;
+      const definition = integrationDefinitions.find((candidate) => candidate.id === "slack")!;
+      const method = definition.authMethods.find((candidate) => candidate.kind === "oauth")!;
+      if (method.kind !== "oauth") throw new Error("Slack OAuth definition is unavailable");
+      const broker = new HostedOAuthBrokerService({
+        applications: [],
+        issuer: new URL("https://accounts.opensteer.test"),
+        now: () => now,
+        attemptContextEncryptionKey: Buffer.alloc(32, 7).toString("base64url"),
+        store,
+      });
+      const attemptId = attemptIdAt(30);
+      const recipient = generateOAuthBrokerEphemeralKeyPair();
+      const state = "S".repeat(43);
+      const callbackUrl = broker.callbackUrl("slack");
+      const authorizationUrl = new URL(method.oauth.authorizationUrl);
+      authorizationUrl.searchParams.set("client_id", "custom-slack-client");
+      authorizationUrl.searchParams.set("redirect_uri", callbackUrl);
+      authorizationUrl.searchParams.set("response_type", "code");
+      authorizationUrl.searchParams.set(
+        "scope",
+        method.oauth.scopes.join(method.oauth.scopeSeparator),
+      );
+      authorizationUrl.searchParams.set("state", state);
+      const providerApplicationId = `ipa_${crypto.randomUUID()}`;
+      const expiresAt = new Date(now.getTime() + 60_000).toISOString();
+      const created = await broker.createCallbackRelay(
+        { credentialHash: "unused", deploymentId, hostInstanceId: binding.activeHostInstanceId },
+        {
+          accountSubject: { issuer: "https://accounts.opensteer.test", subject: memberId },
+          attemptId,
+          authorizationDigest: authorizationDigest(definition),
+          authorizationUrl: authorizationUrl.toString(),
+          clientSurface: "native",
+          ...(appFinish ? { finish: "app" as const } : {}),
+          clientId: "custom-slack-client",
+          definitionId: definition.id,
+          deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(binding),
+          expiresAt,
+          hostPublicKey: recipient.publicKey,
+          provider: "slack",
+          providerApplicationId,
+          providerApplicationRevision: 3,
+        },
+      );
+      const ticket = new URL(created.launchUrl).searchParams.get("ticket")!;
+      await expect(
+        broker.launchAuthorization(appFinish ? null : memberId, attemptId, ticket),
+      ).resolves.toBe(authorizationUrl.toString());
+      const outcome = await broker.completeAuthorization({
         cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${ticket}`,
         parameters: new URLSearchParams({ code: "one-use-slack-code", state }),
         provider: "slack",
-      }),
-    ).resolves.toEqual({
-      attemptId,
-      returnUrl: `com.opensteer.mobile:/oauth/integration-callback?deployment_id=${deploymentId}&attempt_id=ioa_${attemptId.slice("hoa_".length)}`,
-      status: "sealed",
-    });
-    const pulled = await broker.pull(
-      { credentialHash: "unused", deploymentId, hostInstanceId: binding.activeHostInstanceId },
-      attemptId,
-    );
-    const context = OAuthBrokerCallbackRelayContextSchema.parse({
-      accountSubject: { issuer: "https://accounts.opensteer.test", subject: memberId },
-      attemptId,
-      authorizationDigest: authorizationDigest(definition),
-      definitionId: definition.id,
-      deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(binding),
-      expiresAt,
-      providerApplicationId,
-      providerApplicationRevision: 3,
-      redirectUrl: callbackUrl,
-      schemaVersion: 1,
-    });
-    expect(
-      OAuthBrokerAuthorizationCodeBundleSchema.parse(
-        openOAuthBrokerPayload(pulled.sealedResult!, recipient.privateKey, context),
-      ),
-    ).toEqual({ code: "one-use-slack-code" });
-
-    await database
-      .updateTable("deploymentDirectoryEntries")
-      .set({ present: false, updatedAt: now })
-      .where("deploymentId", "=", deploymentId)
-      .where("accountId", "=", memberId)
-      .execute();
-    await expect(
-      broker.pull(
+      });
+      expect(outcome).toMatchObject({
+        attemptId,
+        returnUrl: expect.stringContaining(`attempt_id=ioa_${attemptId.slice("hoa_".length)}`),
+        status: appFinish ? "held" : "sealed",
+      });
+      if (appFinish) await proveAppReturn(broker, storeFixture, attemptId, outcome.returnUrl!);
+      const pulled = await broker.pull(
         { credentialHash: "unused", deploymentId, hostInstanceId: binding.activeHostInstanceId },
         attemptId,
-      ),
-    ).rejects.toMatchObject({ code: "forbidden" });
-  });
-
-  it("exchanges a managed provider code for the initiating cloud member", async ({
-    storeFixture,
-  }) => {
-    const { database, now, deploymentId, store } = storeFixture;
-    const memberId = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
-    await database
-      .insertInto("users")
-      .values({
-        createdAt: now,
-        displayName: "Managed member",
-        email: "managed-member@example.test",
-        emailVerified: true,
-        id: memberId,
-        image: null,
-        updatedAt: now,
-      })
-      .execute();
-    await database
-      .insertInto("deploymentDirectoryEntries")
-      .values({
-        accountId: memberId,
-        deploymentId,
-        generation: "1",
-        observedAt: now,
-        present: true,
-        updatedAt: now,
-      })
-      .execute();
-    const binding = (await store.deploymentBinding(deploymentId))!;
-    const definition = integrationDefinitions.find((candidate) => candidate.id === "google-gmail")!;
-    const method = definition.authMethods.find((candidate) => candidate.kind === "oauth")!;
-    if (method.kind !== "oauth") throw new Error("Google OAuth definition is unavailable");
-    const providerFetch = vi.fn(async () =>
-      Response.json({
-        access_token: "managed-member-access",
-        refresh_token: "managed-member-refresh",
-        scope: method.oauth.scopes.join(method.oauth.scopeSeparator),
-        token_type: "Bearer",
-      }),
-    );
-    const broker = new HostedOAuthBrokerService({
-      applications: [
-        {
-          clientId: "managed-google-client",
-          clientSecret: "managed-google-secret",
-          provider: "google",
-          revision: 1,
-        },
-      ],
-      fetch: providerFetch,
-      issuer: new URL("https://accounts.opensteer.test"),
-      now: () => now,
-      attemptContextEncryptionKey: Buffer.alloc(32, 7).toString("base64url"),
-      store,
-    });
-    const attemptId = attemptIdAt(40);
-    const recipient = generateOAuthBrokerEphemeralKeyPair();
-    const expiresAt = new Date(now.getTime() + 60_000).toISOString();
-    const created = await broker.createAuthorizationAttempt(
-      { credentialHash: "unused", deploymentId, hostInstanceId: binding.activeHostInstanceId },
-      {
+      );
+      const context = OAuthBrokerCallbackRelayContextSchema.parse({
         accountSubject: { issuer: "https://accounts.opensteer.test", subject: memberId },
         attemptId,
         authorizationDigest: authorizationDigest(definition),
-        clientSurface: "web",
         definitionId: definition.id,
         deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(binding),
         expiresAt,
-        hostPublicKey: recipient.publicKey,
-        provider: "google",
-        providerApplicationRevision: 1,
-      },
-    );
-    const ticket = new URL(created.launchUrl).searchParams.get("ticket")!;
-    const authorizationUrl = new URL(await broker.launchAuthorization(memberId, attemptId, ticket));
-    await expect(
-      broker.completeAuthorization({
+        providerApplicationId,
+        providerApplicationRevision: 3,
+        redirectUrl: callbackUrl,
+        schemaVersion: 1,
+      });
+      expect(
+        OAuthBrokerAuthorizationCodeBundleSchema.parse(
+          openOAuthBrokerPayload(pulled.sealedResult!, recipient.privateKey, context),
+        ),
+      ).toEqual({ code: "one-use-slack-code" });
+
+      await database
+        .updateTable("deploymentDirectoryEntries")
+        .set({ present: false, updatedAt: now })
+        .where("deploymentId", "=", deploymentId)
+        .where("accountId", "=", memberId)
+        .execute();
+      await expect(
+        broker.pull(
+          { credentialHash: "unused", deploymentId, hostInstanceId: binding.activeHostInstanceId },
+          attemptId,
+        ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+    },
+  );
+
+  it.for(["session", "app", "expired-app"] as const)(
+    "exchanges a managed provider code for the initiating cloud member (app finish: %s)",
+    async (mode, { storeFixture }) => {
+      const appFinish = mode !== "session";
+      const { database, now, deploymentId, store } = storeFixture;
+      let brokerNow = now;
+      const memberId = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
+      await database
+        .insertInto("users")
+        .values({
+          createdAt: now,
+          displayName: "Managed member",
+          email: "managed-member@example.test",
+          emailVerified: true,
+          id: memberId,
+          image: null,
+          updatedAt: now,
+        })
+        .execute();
+      await database
+        .insertInto("deploymentDirectoryEntries")
+        .values({
+          accountId: memberId,
+          deploymentId,
+          generation: "1",
+          observedAt: now,
+          present: true,
+          updatedAt: now,
+        })
+        .execute();
+      const binding = (await store.deploymentBinding(deploymentId))!;
+      const definition = integrationDefinitions.find(
+        (candidate) => candidate.id === "google-gmail",
+      )!;
+      const method = definition.authMethods.find((candidate) => candidate.kind === "oauth")!;
+      if (method.kind !== "oauth") throw new Error("Google OAuth definition is unavailable");
+      const providerFetch = vi.fn(async () =>
+        Response.json({
+          access_token: "managed-member-access",
+          refresh_token: "managed-member-refresh",
+          scope: method.oauth.scopes.join(method.oauth.scopeSeparator),
+          token_type: "Bearer",
+        }),
+      );
+      const broker = new HostedOAuthBrokerService({
+        applications: [
+          {
+            clientId: "managed-google-client",
+            clientSecret: "managed-google-secret",
+            provider: "google",
+            revision: 1,
+          },
+        ],
+        fetch: providerFetch,
+        issuer: new URL("https://accounts.opensteer.test"),
+        now: () => brokerNow,
+        attemptContextEncryptionKey: Buffer.alloc(32, 7).toString("base64url"),
+        store,
+      });
+      const attemptId = attemptIdAt(40);
+      const recipient = generateOAuthBrokerEphemeralKeyPair();
+      const expiresAt = new Date(now.getTime() + 60_000).toISOString();
+      const created = await broker.createAuthorizationAttempt(
+        { credentialHash: "unused", deploymentId, hostInstanceId: binding.activeHostInstanceId },
+        {
+          accountSubject: { issuer: "https://accounts.opensteer.test", subject: memberId },
+          attemptId,
+          authorizationDigest: authorizationDigest(definition),
+          clientSurface: appFinish ? "desktop" : "web",
+          ...(appFinish ? { finish: "app" as const } : {}),
+          definitionId: definition.id,
+          deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(binding),
+          expiresAt,
+          hostPublicKey: recipient.publicKey,
+          provider: "google",
+          providerApplicationRevision: 1,
+        },
+      );
+      const ticket = new URL(created.launchUrl).searchParams.get("ticket")!;
+      if (!appFinish) {
+        await expect(
+          broker.launchAuthorization(storeFixture.accountId, attemptId, ticket),
+        ).rejects.toMatchObject({ refusalReason: "account-mismatch" });
+        expect(await broker.inspectLaunch(attemptId, ticket)).toMatchObject({ status: "ready" });
+        expect((await store.getAttemptForHost(deploymentId, attemptId, now))!.status).toBe(
+          "pending",
+        );
+      }
+      const authorizationUrl = new URL(
+        await broker.launchAuthorization(appFinish ? null : memberId, attemptId, ticket),
+      );
+      expect(await broker.inspectLaunch(attemptId, ticket)).toEqual({ status: "used" });
+      expect(await broker.inspectLaunch(attemptId, "X".repeat(43))).toEqual({ status: "invalid" });
+      const outcome = await broker.completeAuthorization({
         cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${ticket}`,
         parameters: new URLSearchParams({
           code: "managed-member-code",
@@ -581,38 +703,58 @@ integration("hosted OAuth broker durable boundary", () => {
           state: authorizationUrl.searchParams.get("state")!,
         }),
         provider: "google",
-      }),
-    ).resolves.toMatchObject({ attemptId, status: "sealed" });
-    expect(providerFetch).toHaveBeenCalledOnce();
-  });
+      });
+      expect(outcome).toMatchObject({ attemptId, status: appFinish ? "held" : "sealed" });
+      if (appFinish)
+        await proveAppReturn(broker, storeFixture, attemptId, outcome.returnUrl!, true);
+      expect(providerFetch).toHaveBeenCalledOnce();
+    },
+  );
 
-  it("deletes expired ciphertext and rate-limits a deployment", async ({ storeFixture }) => {
-    const { store, expiringAttempt, now, database, deploymentId, attempt } = storeFixture;
-    const expiring = attemptIdAt(0);
-    await store.createAttempt(expiringAttempt(expiring), now);
-    await database
-      .updateTable("hostedOAuthBrokerAttempts")
-      .set({
-        contextKeyVersion: null,
+  it.for(["held", "sealed"] as const)(
+    "deletes expired %s ciphertext and rate-limits a deployment",
+    async (status, { storeFixture }) => {
+      const { store, expiringAttempt, now, database, deploymentId, attempt } = storeFixture;
+      const expiring = attemptIdAt(0);
+      await store.createAttempt(expiringAttempt(expiring), now);
+      await database
+        .updateTable("hostedOAuthBrokerAttempts")
+        .set({
+          contextKeyVersion: status === "held" ? 1 : null,
+          encryptedContext: status === "held" ? Buffer.from("receipt") : null,
+          launchTicketHash: null,
+          sealedCiphertext: sealedResult,
+          returnProofHash: "p".repeat(43),
+          browserBindingHash: attemptDigest("launch", expiring),
+          status,
+        })
+        .where("attemptId", "=", expiring)
+        .execute();
+      await store.purgeExpired(new Date(now.getTime() + 1));
+      expect(
+        await store.inspectLaunchAttempt(expiring, attemptDigest("launch", expiring)),
+      ).not.toBeNull();
+      expect(await store.inspectLaunchAttempt(expiring, "x".repeat(43))).toBeNull();
+      await expect(
+        store.getAttemptForHost(deploymentId, expiring, new Date(now.getTime() + 1)),
+      ).resolves.toMatchObject({
+        sealedCiphertext: null,
+        returnProofHash: null,
         encryptedContext: null,
-        launchTicketHash: null,
-        sealedCiphertext: sealedResult,
-        status: "sealed",
-      })
-      .where("attemptId", "=", expiring)
-      .execute();
-    await store.purgeExpired(new Date(now.getTime() + 1));
-    await expect(
-      store.getAttemptForHost(deploymentId, expiring, new Date(now.getTime() + 1)),
-    ).resolves.toMatchObject({ sealedCiphertext: null, status: "expired" });
+        status: "expired",
+      });
 
-    for (let index = 1; index < 10; index += 1) {
-      await store.createAttempt(attempt(attemptIdAt(index), new Date(now.getTime() + 60_000)), now);
-    }
-    await expect(
-      store.createAttempt(attempt(attemptIdAt(10), new Date(now.getTime() + 60_000)), now),
-    ).rejects.toMatchObject({ code: "unavailable" });
-  });
+      for (let index = 1; index < 10; index += 1) {
+        await store.createAttempt(
+          attempt(attemptIdAt(index), new Date(now.getTime() + 60_000)),
+          now,
+        );
+      }
+      await expect(
+        store.createAttempt(attempt(attemptIdAt(10), new Date(now.getTime() + 60_000)), now),
+      ).rejects.toMatchObject({ code: "unavailable" });
+    },
+  );
 
   it("claims duplicate refresh IDs before provider access and consumes rate quota pre-flight", async ({
     storeFixture,

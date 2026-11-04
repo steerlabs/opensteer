@@ -39,14 +39,18 @@ type Row = Omit<
   contextKeyVersion: number | null;
   launchTicketHash: string | null;
   failureCode: string | null;
-  status: "pending" | "launched" | "exchanging" | "sealed" | "failed" | "denied";
+  status: "pending" | "launched" | "exchanging" | "held" | "sealed" | "failed" | "denied";
   createdAt: Date;
   updatedAt: Date;
   retryGeneration: number;
   sealedCiphertext: OAuthBrokerSealedEnvelope | null;
 };
 
-async function scenario(response: object, surface: "desktop" | "web" | "native" = "desktop") {
+async function scenario(
+  response: object,
+  surface: "desktop" | "web" | "native" = "desktop",
+  finish?: "app",
+) {
   const now = new Date("2026-09-18T21:50:00Z");
   const accountId = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
   const deploymentId = createId("deployment");
@@ -90,12 +94,14 @@ async function scenario(response: object, surface: "desktop" | "web" | "native" 
         };
         return row;
       }),
+      inspectLaunchAttempt: vi.fn(async () => current()),
       launchAttempt: vi.fn(async (input: { launchTicketHash: string }) => {
         if (current().status !== "pending" || current().launchTicketHash !== input.launchTicketHash)
           return null;
         row = { ...current(), status: "launched" };
         return row;
       }),
+      callbackAttemptId: vi.fn(async () => current().attemptId),
       claimCallback: vi.fn(
         async (input: {
           stateHash: string;
@@ -118,15 +124,22 @@ async function scenario(response: object, surface: "desktop" | "web" | "native" 
           return row;
         },
       ),
-      sealAttempt: vi.fn(async (_id: string, sealedCiphertext: OAuthBrokerSealedEnvelope) => {
-        row = {
-          ...current(),
-          status: "sealed",
-          encryptedContext: null,
-          contextKeyVersion: null,
-          sealedCiphertext,
-        };
-      }),
+      sealAttempt: vi.fn(
+        async (
+          _id: string,
+          sealedCiphertext: OAuthBrokerSealedEnvelope,
+          _now: Date,
+          held?: { contextKeyVersion: number; encryptedContext: Buffer; returnProofHash: string },
+        ) => {
+          row = {
+            ...current(),
+            status: held ? "held" : "sealed",
+            encryptedContext: held?.encryptedContext ?? null,
+            contextKeyVersion: held?.contextKeyVersion ?? null,
+            sealedCiphertext,
+          };
+        },
+      ),
       failAttempt: vi.fn(async (_id: string, status: "failed" | "denied", failureCode: string) => {
         row = {
           ...current(),
@@ -143,6 +156,7 @@ async function scenario(response: object, surface: "desktop" | "web" | "native" 
     attemptId,
     authorizationDigest: authorizationDigest(slackIntegration),
     clientSurface: surface,
+    ...(finish ? { finish } : {}),
     definitionId: slackIntegration.id,
     deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(binding),
     expiresAt: new Date(now.getTime() + 60_000).toISOString(),
@@ -170,10 +184,42 @@ async function scenario(response: object, surface: "desktop" | "web" | "native" 
       provider: "slack",
       cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${new URL(created.launchUrl).searchParams.get("ticket")!}`,
     });
-  return { attemptId, request, recipient, current, fetch, complete, state, deploymentId };
+  return { attemptId, request, recipient, current, fetch, complete, state, deploymentId, broker };
 }
 
 describe("managed provider authorization contract", () => {
+  it.each(["desktop", "native"] as const)(
+    "holds managed %s consent for its app",
+    async (surface) => {
+      const s = await scenario(validResponse, surface, "app");
+      const result = await s.complete();
+      expect(result.status).toBe("held");
+      expect(new URL(result.returnUrl!).searchParams.get("return")).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+      expect(s.broker.metadata()).toHaveProperty("appFinish", 1);
+      expect(s.broker.metadata(false)).not.toHaveProperty("appFinish");
+    },
+  );
+
+  it.each(["desktop", "native"] as const)(
+    "returns denied and failed %s consent to the app without a proof",
+    async (surface) => {
+      for (const error of ["access_denied", "server_error"]) {
+        const s = await scenario(validResponse, surface, "app");
+        const result = await s.complete(new URLSearchParams({ state: s.state, error }));
+        expect(result.status).toBe(error === "access_denied" ? "denied" : "failed");
+        expect(new URL(result.returnUrl!).searchParams.has("return")).toBe(false);
+        if (surface === "desktop") expect(result.returnKind).toBe("open-app");
+        expect(s.fetch).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("refuses app finish from a web client", async () => {
+    await expect(scenario(validResponse, "web", "app")).rejects.toMatchObject({
+      code: "bad_request",
+    });
+  });
+
   it.each(["desktop", "web", "native"] as const)(
     "preserves Slack bot and workspace identity for %s",
     async (surface) => {
