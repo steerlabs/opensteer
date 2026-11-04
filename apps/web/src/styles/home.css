@@ -387,10 +387,6 @@ a.update-line__source:hover {
   font-size: inherit;
 }
 
-.update-line__ask {
-  margin-left: calc(var(--space-8) * -1);
-}
-
 @media (any-pointer: coarse) {
   .update-line__toggle {
     min-height: var(--touch-target);

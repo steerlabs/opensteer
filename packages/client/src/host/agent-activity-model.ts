@@ -485,6 +485,12 @@ function turnStartHold(turn: Turn): string | null {
  * everywhere else.
  */
 export interface ConversationTurn {
+  /**
+   * Nobody waited on this turn: it is Opensteer acting on its own, such as
+   * relaying a task's result. Only what it says to the reader, or what needs
+   * them, is drawn of it; how its Run ended is said only when it failed.
+   */
+  readonly unprompted: boolean;
   readonly composing: boolean;
   /** What the reply under way is doing, in words, while it is being composed. */
   readonly composingLabel: string | null;
@@ -497,11 +503,14 @@ export interface ConversationTurn {
 }
 
 export function conversationTurn(turn: Turn): ConversationTurn {
-  const startHold = turnStartHold(turn);
-  // A Run working in the background is not writing anything, nobody is writing
-  // for one that has not started, and one a message joined is writing its
-  // reply after that message, not here.
+  const unprompted = turn.personWaiting === false;
+  const startHold = unprompted ? null : turnStartHold(turn);
+  // Nobody is told a reply is coming that they did not ask for. A Run working
+  // in the background is not writing anything, nobody is writing for one that
+  // has not started, and one a message joined is writing its reply after that
+  // message, not here.
   const composing =
+    !unprompted &&
     startHold === null &&
     turn.reply === null &&
     turn.continued !== true &&
@@ -518,6 +527,7 @@ export function conversationTurn(turn: Turn): ConversationTurn {
       )
     : work;
   return {
+    unprompted,
     composing,
     composingLabel: composing ? liveLabel(turn, "live") : null,
     detailed: steps.length > 0,
@@ -563,30 +573,33 @@ export function conversationRows(
   options: ConversationRowOptions,
 ): readonly ConversationRow[] {
   const rows: ConversationRow[] = [];
-  // An automatic turn's row names its source, so its own inputs need no row.
-  // One that joined a person's Run keeps its message.
-  const automaticRuns = new Set(
-    groups.flatMap((group) =>
-      group.kind === "turn" &&
-      group.turn.startedBy !== undefined &&
-      group.turn.startedBy.kind !== "human"
-        ? [group.turn.runId]
-        : [],
-    ),
-  );
-  for (const group of groups) {
+  for (const original of groups) {
+    // Of work nobody waited on, only the tasks that need the reader are theirs to see.
+    const group =
+      original.kind === "turn" && original.turn.personWaiting === false
+        ? {
+            ...original,
+            turn: {
+              ...original.turn,
+              assignments: original.turn.assignments.filter((entry) =>
+                conversationAssignmentNeedsReader(entry, options.waitingRequests),
+              ),
+            },
+          }
+        : original;
     if (
       group.kind === "assignment" &&
       group.entry.assignment.origin !== "run" &&
       !conversationAssignmentNeedsReader(group.entry, options.waitingRequests)
     )
       continue;
+    // What agents, Triggers and Opensteer send a conversation, reports
+    // included, is for its agent, whose reply says what came of it; a turn it
+    // started names it as its source. Nor does the Host count it unread.
     if (
       group.kind === "message" &&
       group.entry.messageKind === "input" &&
-      group.entry.author.kind !== "human" &&
-      group.entry.runId !== null &&
-      automaticRuns.has(group.entry.runId)
+      group.entry.author.kind !== "human"
     )
       continue;
     if (group.kind === "turn" && !conversationTurnShows(group.turn, options)) continue;
@@ -604,14 +617,20 @@ export function conversationRows(
 
 /**
  * Its reply, typing or why it has not started, the tasks it handed out, how
- * its Run ended, or its work on a computer.
+ * its Run ended, or its work on a computer. A turn nobody waited on shows only
+ * a reply, a task that needs the reader, a failure or its work on a computer.
  */
 function conversationTurnShows(turn: Turn, { atComputer, live }: ConversationRowOptions): boolean {
-  const { composing, reply, startHold } = conversationTurn(turn);
+  const { composing, reply, startHold, unprompted } = conversationTurn(turn);
+  const ended =
+    turn.run !== null &&
+    (unprompted
+      ? turn.run.status === "failed"
+      : hasRunOutcome(turn.run) || (turn.run.attempt ?? 1) > 1);
   return (
     reply !== null ||
     turn.assignments.length > 0 ||
-    (turn.run !== null && (hasRunOutcome(turn.run) || (turn.run.attempt ?? 1) > 1)) ||
+    ended ||
     (live && (composing || startHold !== null || atComputer(turn)))
   );
 }
@@ -835,12 +854,8 @@ export function incomingTranscriptMessages(
         live: false,
         atComputer: () => false,
       }).flatMap(({ group }) =>
-        // An automatic input is never a message in a conversation, whichever
-        // Run (if any) it joined: the Host does not count it unread either.
         group.kind === "message"
-          ? group.entry.messageKind === "input" && group.entry.author.kind !== "human"
-            ? []
-            : [group.entry]
+          ? [group.entry]
           : group.kind === "turn" && group.turn.reply !== null
             ? [group.turn.reply]
             : [],

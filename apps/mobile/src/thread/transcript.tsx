@@ -335,7 +335,10 @@ function ConversationTurn(props: {
       ? undefined
       : () => onOpenActivity(activityKey);
   const outcome =
-    turn.run !== null && (hasRunOutcome(turn.run) || restarted(turn.run)) ? (
+    turn.run !== null &&
+    (view.unprompted
+      ? turn.run.status === "failed"
+      : hasRunOutcome(turn.run) || restarted(turn.run)) ? (
       turn.run.status === "completed" && turn.run.replyMessageId === null ? (
         <Pressable accessibilityRole="button" onPress={onActivity}>
           <AppText role="caption" tone="muted" style={{ fontSize: 12.5 }}>
@@ -966,20 +969,14 @@ export function Message(props: {
   }
 
   const author = message.author;
-  if (
-    (props.conversation && author.kind !== "human") ||
-    (author.kind === "platform" && author.cause === "run-recovery")
-  ) {
+  if (author.kind === "platform" && author.cause === "run-recovery") {
     return (
-      <UpdateLine
+      <RecoveryNote
         author={author}
         homeThreadId={props.homeThreadId}
         message={message}
-        askAbout={props.askAbout}
-        onOpenThread={props.onOpenThread}
         onToggle={props.onToggle}
         open={props.open}
-        workspaces={props.workspaces}
       />
     );
   }
@@ -1130,8 +1127,6 @@ function MessageFold(props: {
   );
 }
 
-type UpdateAuthor = Exclude<MessageEntry["author"], { readonly kind: "human" }>;
-
 /** Why Opensteer spoke unprompted: what woke the turn, above its reply. */
 function TurnSource(props: {
   readonly source: NonNullable<Turn["source"]>;
@@ -1169,56 +1164,25 @@ function TurnSource(props: {
   );
 }
 
-/**
- * In a conversation, what another agent or an automation sent its agent: one
- * line saying who, and whether it was left for later or is work now, opening
- * in place to what was said. The conversation stays between the reader and the
- * agent they are talking to.
- */
-function UpdateLine(props: {
-  readonly author: UpdateAuthor;
+/** What Opensteer noted when it recovered a Run: one line naming it, opening in place to what was said. */
+function RecoveryNote(props: {
+  readonly author: Extract<MessageEntry["author"], { readonly kind: "platform" }>;
   readonly homeThreadId: string | null;
   readonly message: MessageEntry;
-  readonly askAbout?: AskAbout | undefined;
-  readonly onOpenThread: (threadId: string) => void;
   /** Whether the reader opened it, which the pane keeps across scrolling. */
   readonly open: boolean;
   readonly onToggle: () => void;
-  readonly workspaces: readonly WorkspaceSummary[];
 }): ReactNode {
   const { author, message, open } = props;
   const said = incomingMessageAction(message);
   const name = messageAuthorName(author, message.messageKind, props.homeThreadId);
-  // Only a Thread the reader can open is a way there. A trigger's own page is a
-  // computer-sized screen this app does not have, so a trigger is named only.
-  const onOpen =
-    author.kind === "agent" && props.workspaces.some(({ id }) => id === author.workspaceId)
-      ? () => props.onOpenThread(author.threadId)
-      : undefined;
   return (
     <View style={styles.updateLine}>
       <View style={styles.updateLineHead}>
-        <Symbol
-          name={author.kind === "trigger" || author.kind === "watch" ? "bolt" : "bubble.left"}
-          size={13}
-          tint={color.muted}
-        />
-        {onOpen === undefined ? (
-          <AppText numberOfLines={1} role="caption" style={styles.updateLineSource} tone="soft">
-            {name}
-          </AppText>
-        ) : (
-          <Pressable
-            accessibilityHint="Opens the thread this came from"
-            accessibilityRole="link"
-            onPress={onOpen}
-            style={styles.updateLineSourcePress}
-          >
-            <AppText numberOfLines={1} role="caption" tone="soft">
-              {name}
-            </AppText>
-          </Pressable>
-        )}
+        <Symbol name="bubble.left" size={13} tint={color.muted} />
+        <AppText numberOfLines={1} role="caption" style={styles.updateLineSource} tone="soft">
+          {name}
+        </AppText>
         <Pressable
           accessibilityRole="button"
           accessibilityState={{ expanded: open }}
@@ -1245,18 +1209,6 @@ function UpdateLine(props: {
         <View style={styles.updateLineBody}>
           <MessageAttachments attachments={message.attachments ?? []} />
           {message.body ? <Markdown text={message.body} /> : null}
-          {props.askAbout !== undefined && author.kind === "agent" && message.body !== "" ? (
-            <Pressable
-              accessibilityHint="Quotes this update into Chat without sending"
-              accessibilityRole="button"
-              onPress={() => props.askAbout?.quote(message)}
-              style={styles.askAbout}
-            >
-              <AppText role="secondaryMedium" tone="ember">
-                {props.askAbout.label}
-              </AppText>
-            </Pressable>
-          ) : null}
         </View>
       ) : null}
     </View>
@@ -1535,7 +1487,6 @@ const styles = StyleSheet.create({
   },
   updateLineHead: { alignItems: "center", flexDirection: "row", gap: space[6] },
   updateLineSource: { flexShrink: 1 },
-  updateLineSourcePress: { flexShrink: 1, justifyContent: "center", minHeight: touchTarget },
   updateLineToggle: {
     alignItems: "center",
     flexDirection: "row",
