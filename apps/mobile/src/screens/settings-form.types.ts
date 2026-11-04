@@ -1,5 +1,6 @@
-import type { BackgroundModelsSettings, BackgroundProviderRow } from "@opensteer/client/host";
-import type { BackgroundModelRole } from "@opensteer/core";
+import type { editAutomaticRole } from "@opensteer/client/host";
+import type { AutomaticModelConfig, AutomaticModelRole, HarnessInstanceId } from "@opensteer/core";
+import type { AutomaticModelsView } from "@opensteer/protocol";
 import type {
   AccountSettingsModel,
   ComputerSettingsDestination,
@@ -24,13 +25,19 @@ export interface AgentNotificationRow {
 }
 
 /** Which models do Opensteer's own small jobs; null settings while loading. */
-export interface BackgroundModelsForm {
-  readonly settings: BackgroundModelsSettings | null;
+export interface AutomaticModelsForm {
+  readonly supported: boolean;
+  readonly view: AutomaticModelsView | null;
   readonly error: string | null;
   readonly pending: boolean;
-  readonly onRole: (role: BackgroundModelRole, value: string) => void;
-  readonly onConsent: (providerId: BackgroundProviderRow["providerId"], allowed: boolean) => void;
-  readonly onNotNow: (providerId: BackgroundProviderRow["providerId"]) => void;
+  readonly explanation: boolean;
+  readonly dismiss: () => void;
+  readonly save: (make: () => AutomaticModelConfig) => void;
+  readonly edit: (
+    role: AutomaticModelRole,
+    action: Parameters<typeof editAutomaticRole>[2],
+  ) => void;
+  readonly toggle: (id: HarnessInstanceId) => void;
 }
 
 export interface EngineUpdateRow {
@@ -92,7 +99,7 @@ export interface SettingsFormProps extends SettingsFormActionHandlers {
   readonly deployment: DeploymentSettingsModel;
   readonly engineUpdates?: readonly EngineUpdateRow[] | undefined;
   /** Null while no Deployment is open. */
-  readonly background?: BackgroundModelsForm | null | undefined;
+  readonly automatic?: AutomaticModelsForm | null | undefined;
   readonly notificationError: string | null;
   /** Null in a build without an Account service, which nothing can notify. */
   readonly notifications: NotificationSettingsModel | null;

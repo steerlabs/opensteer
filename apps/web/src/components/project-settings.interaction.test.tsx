@@ -1,3 +1,4 @@
+import { ModelPolicyEntrySchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -19,7 +20,7 @@ import {
 
 const researcher: SpecialistManifest = {
   version: 1,
-  models: [{ engine: "claude", model: "opus" }],
+  models: [ModelPolicyEntrySchema.parse({ engine: "claude", model: "opus" })],
   fallback: "caller",
   access: [
     { type: "browser-profile", level: "read", reason: "Reads the sites you research in" },

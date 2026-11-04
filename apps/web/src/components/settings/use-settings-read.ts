@@ -60,6 +60,6 @@ export function useSettingsRead<T>(read: () => Promise<T>, key: string, remember
   return {
     data: own ? state.data : last(),
     error: own ? state.error : null,
-    reload: () => void readerRef.current?.refresh(),
+    reload: () => readerRef.current?.refresh() ?? Promise.resolve(),
   };
 }

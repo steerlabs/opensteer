@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { ModelSelectionSchema, ThreadAccessModeSchema } from "@opensteer/core";
+import {
+  catalogDefaultModelSelection,
+  ModelSelectionSchema,
+  ThreadAccessModeSchema,
+} from "@opensteer/core";
 import {
   HarnessInstanceCatalogSchema,
   HarnessModelDescriptorSchema,
@@ -773,3 +777,31 @@ function serverPlacements(
   };
   return threadPlacementOptions([environment], harnesses);
 }
+
+it("uses the core catalog default for empty Chat and task previews", () => {
+  const expected = catalogDefaultModelSelection({ status: "ready", models: codexMain.models });
+  expect(
+    composerExecutionSelection({
+      chosen: null,
+      remembered: null,
+      defaultPlacement: codexMain,
+      placements: [codexMain],
+    })?.modelSelection,
+  ).toEqual(expected);
+  expect(
+    chatExecutionSelection({ chosen: null, existing: null, placements: [codexMain] })
+      ?.modelSelection,
+  ).toEqual(expected);
+  const withoutDefault = {
+    ...codexMain,
+    models: codexMain.models.map((model) => ({ ...model, isDefault: false })),
+  };
+  expect(
+    composerExecutionSelection({
+      chosen: null,
+      remembered: null,
+      defaultPlacement: withoutDefault,
+      placements: [withoutDefault],
+    }),
+  ).toBeNull();
+});

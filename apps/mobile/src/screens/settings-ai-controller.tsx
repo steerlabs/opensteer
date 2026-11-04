@@ -5,8 +5,8 @@ import { useMemo, useState, type ReactNode } from "react";
 import { operationDetail } from "../client/mobile-client.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { AiSettingsForm } from "./settings-ai-form.js";
-import { useBackgroundModelsForm } from "./settings-background-models.js";
-import type { BackgroundModelsForm } from "./settings-form.types.js";
+import { useAutomaticModelsForm } from "./settings-automatic-models.js";
+import type { AutomaticModelsForm } from "./settings-form.types.js";
 import { engineInstallationUpdateModel } from "./settings-model.js";
 import { SettingsPageLayout } from "./settings-page-layout.js";
 import { useSettingsHost } from "./use-settings-host.js";
@@ -37,13 +37,13 @@ export function AiSettingsController(): ReactNode {
     });
   }, [engineUpdateError, engineUpdatePending, snapshot]);
   const hostClient = selection.hostClient;
-  const form = (background: BackgroundModelsForm | null) => (
+  const form = (automatic: AutomaticModelsForm | null) => (
     <AiSettingsForm
       onChooseModel={() => {
         if (selection.deploymentId)
           navigation.navigate("NewThread", { deploymentId: selection.deploymentId });
       }}
-      background={background}
+      automatic={automatic}
       page={page}
       engineUpdates={engineUpdates}
       onEngineUpdate={(environmentId, driverKind) => {
@@ -75,17 +75,17 @@ export function AiSettingsController(): ReactNode {
       {hostClient === null ? (
         form(null)
       ) : (
-        <WithBackgroundModels host={hostClient} key={selection.deploymentId}>
+        <WithAutomaticModels host={hostClient} key={selection.deploymentId}>
           {form}
-        </WithBackgroundModels>
+        </WithAutomaticModels>
       )}
     </SettingsPageLayout>
   );
 }
 
-function WithBackgroundModels(props: {
-  readonly children: (background: BackgroundModelsForm) => ReactNode;
+function WithAutomaticModels(props: {
+  readonly children: (automatic: AutomaticModelsForm) => ReactNode;
   readonly host: HostClient;
 }): ReactNode {
-  return props.children(useBackgroundModelsForm(props.host));
+  return props.children(useAutomaticModelsForm(props.host));
 }

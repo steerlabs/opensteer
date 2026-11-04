@@ -29,7 +29,7 @@ import { SignedInDevicesSection } from "./sections/devices.js";
 import { RemoteAccessSection } from "./sections/remote-access.js";
 import { AccountSection } from "./sections/account.js";
 import { AiEnginesSection } from "./sections/ai-engines.js";
-import { BackgroundModelsSection } from "./sections/background-models.js";
+import { AutomaticModelsSection } from "./sections/automatic-models.js";
 import { BrowserProfilesSection } from "./sections/browser-profiles.js";
 import { ChromeSection } from "./sections/chrome.js";
 import { GeneralSection } from "./sections/general.js";
@@ -274,7 +274,7 @@ export function SettingsSectionRoute({
       content = (
         <>
           <AiEnginesSection />
-          <BackgroundModelsSection />
+          <AutomaticModelsSection />
         </>
       );
       break;

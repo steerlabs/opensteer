@@ -1,4 +1,4 @@
-import { rankedChatModelSelection } from "@opensteer/core";
+import { catalogDefaultModelSelection, rankedChatModelSelection } from "@opensteer/core";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
   harnessDisplayRank,
@@ -379,7 +379,19 @@ export function composerExecutionSelection(options: {
 }): ExecutionSelection | null {
   const decision = options.chosen ?? options.remembered ?? null;
   if (decision) return resolveExecutionSelection(decision, options.placements);
-  return options.defaultPlacement ? executionSelectionForPlacement(options.defaultPlacement) : null;
+  const placement = options.defaultPlacement;
+  if (!placement) return null;
+  const modelSelection = catalogDefaultModelSelection({
+    status: "ready",
+    models: placement.models,
+  });
+  return modelSelection
+    ? {
+        environmentId: placement.environmentId,
+        harnessInstanceId: placement.harnessInstanceId,
+        modelSelection,
+      }
+    : null;
 }
 
 /** The highest-ranked Chat model that any currently runnable placement serves. */
@@ -413,7 +425,17 @@ export function chatExecutionSelection(options: {
   const ranked = rankedChatExecutionSelection(options.placements);
   if (ranked) return ranked;
   const runnable = options.placements.filter(({ available }) => available);
-  return runnable.length === 1 ? executionSelectionForPlacement(runnable[0]!) : null;
+  const placement = runnable.length === 1 ? runnable[0] : null;
+  const modelSelection = placement
+    ? catalogDefaultModelSelection({ status: "ready", models: placement.models })
+    : null;
+  return placement && modelSelection
+    ? {
+        environmentId: placement.environmentId,
+        harnessInstanceId: placement.harnessInstanceId,
+        modelSelection,
+      }
+    : null;
 }
 
 /**

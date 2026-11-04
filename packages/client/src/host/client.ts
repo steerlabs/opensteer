@@ -1223,6 +1223,7 @@ export interface HostClient {
     },
   ) => () => void;
   /** Reads the verified Host descriptor's optional target-control capability. */
+  readonly automaticModelsAvailable?: () => boolean;
   readonly browserTargetControlAvailable?: () => Promise<boolean | null>;
   readonly retainBrowserWatch: (
     sessionId: string,
