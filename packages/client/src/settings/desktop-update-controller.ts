@@ -97,9 +97,11 @@ export class DesktopUpdateController {
       const operation = await this.#updates.request(request);
       this.#unanswered = null;
       const status = this.#snapshot.status;
+      // The long-poll may already have shown this operation further along than this reply.
+      const observed = status?.operation?.id === operation.id;
       this.#publish({
         requesting: false,
-        status: status === null ? null : { ...status, operation },
+        status: status === null || observed ? status : { ...status, operation },
       });
     } catch (error) {
       const failure = failureOf(error);

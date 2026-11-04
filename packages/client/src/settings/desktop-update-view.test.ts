@@ -120,7 +120,7 @@ describe("a running update", () => {
     expect(shown.channelAction).toBeNull();
   });
 
-  it.each(["offline", "unavailable", "unauthorized", "unsupported", "invalid-response"] as const)(
+  it.each(["offline", "unavailable", "unsupported", "invalid-response"] as const)(
     "treats %s during a nonterminal operation as the restart, not an error",
     (failure) => {
       const shown = view({
@@ -143,6 +143,16 @@ describe("a running update", () => {
   it("waits, rather than claims a restart, when nothing has started there", () => {
     const shown = view({ status: status({ state: null, operation: operation() }) });
     expect(shown.progress?.text).toBe("Waiting for Opensteer to open on Studio Mac…");
+  });
+
+  it("offers sign-in beside progress when an update outlives the session", () => {
+    const result = view({
+      status: status({ operation: operation({ state: "installing" }) }),
+      failure: "unauthorized",
+    });
+    expect(result.progress?.text).toBe("Restarting…");
+    expect(result.action).toEqual({ kind: "retry", label: "Sign in again" });
+    expect(result.detail).toContain("Sign in to Studio Mac again");
   });
 
   it("says so when a restart has been silent far too long", () => {

@@ -284,8 +284,16 @@ function settledOrActiveView(input: DesktopUpdateViewInput): DesktopUpdateView {
     channelAction: null,
   };
   if (input.failure === "forbidden") return { ...base, hidden: true };
-  if (operation !== null && desktopUpdateActive(operation))
-    return { ...base, ...activeView(operation, input) };
+  if (operation !== null && desktopUpdateActive(operation)) {
+    const active = { ...base, ...activeView(operation, input) };
+    return input.failure === "unauthorized"
+      ? {
+          ...active,
+          detail: `Sign in to ${name} again to see how this finishes.`,
+          action: { kind: "retry", label: "Sign in again" },
+        }
+      : active;
+  }
   if (input.requesting)
     return {
       ...base,

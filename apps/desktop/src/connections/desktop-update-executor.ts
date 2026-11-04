@@ -1,9 +1,10 @@
+import { delay } from "@opensteer/shared/delay";
 import type { DesktopUpdateOperation } from "@opensteer/protocol/maintenance";
 import type { DesktopUpdateProgress } from "@opensteer/protocol/desktop-supervisor";
 import type { DesktopUpdater } from "../app/desktop-updater.js";
 import { DesktopSupervisorRefusal, type DesktopSupervisor } from "./desktop-supervisor.js";
 
-export const desktopUpdateResultRetryMs = 5_000;
+export const desktopUpdateDeliveryRetryMs = 5_000;
 
 export class DesktopUpdateExecutor {
   readonly #supervisor: DesktopSupervisor;
@@ -14,7 +15,6 @@ export class DesktopUpdateExecutor {
   #running = false;
   #queued: DesktopUpdateOperation | null = null;
   #stopped = false;
-  #retry: ReturnType<typeof setTimeout> | undefined;
   readonly #results = new Map<string, DesktopUpdateProgress>();
   constructor(options: {
     supervisor: DesktopSupervisor;
@@ -33,22 +33,23 @@ export class DesktopUpdateExecutor {
   }
   stop(): void {
     this.#stopped = true;
-    clearTimeout(this.#retry);
     this.#unsubscribe();
     this.#unsubscribeState();
   }
-  /** Delivers the settled message itself: a retry never runs the operation again. */
-  #retryResult(message: DesktopUpdateProgress): void {
-    clearTimeout(this.#retry);
-    this.#retry = setTimeout(() => {
-      if (this.#stopped || this.#results.get(message.operationId) !== message) return;
-      this.#supervisor
-        .acknowledge({ ...message, messageId: crypto.randomUUID() })
-        .catch((error: unknown) => {
-          if (!(error instanceof DesktopSupervisorRefusal)) this.#retryResult(message);
-        });
-    }, desktopUpdateResultRetryMs);
-    this.#retry.unref?.();
+  /**
+   * A lost acknowledgement says nothing about the Host's row, and Squirrel can install a staged
+   * update on any quit, so a phase stays open until the Host answers. Replays are idempotent.
+   */
+  async #deliver(message: DesktopUpdateProgress): Promise<void> {
+    for (;;) {
+      try {
+        await this.#supervisor.acknowledge({ ...message, messageId: crypto.randomUUID() });
+        return;
+      } catch (error) {
+        if (error instanceof DesktopSupervisorRefusal || this.#stopped) throw error;
+      }
+      await delay(desktopUpdateDeliveryRetryMs);
+    }
   }
   #dropQueued(id: string): void {
     if (this.#queued?.id === id) this.#queued = null;
@@ -60,8 +61,6 @@ export class DesktopUpdateExecutor {
     this.#running = true;
     let phase = operation.state;
     let targetVersion = operation.targetVersion;
-    let delivered = false;
-    let refused = false;
     const fromVersion = operation.fromVersion ?? this.#updater.state().currentVersion;
     const progress = async (
       state: DesktopUpdateProgress["state"],
@@ -77,20 +76,16 @@ export class DesktopUpdateExecutor {
         detail,
       };
       if (state === "failed" || state === "succeeded") {
-        clearTimeout(this.#retry);
         this.#results.clear();
         this.#results.set(operation.id, message);
       }
-      await this.#supervisor.acknowledge(message);
+      await this.#deliver(message);
       phase = state;
-      delivered = state === "failed" || state === "succeeded";
     };
     try {
       const result = this.#results.get(operation.id);
       if (result) {
-        await this.#supervisor.acknowledge({ ...result, messageId: crypto.randomUUID() });
-        clearTimeout(this.#retry);
-        delivered = true;
+        await this.#deliver(result);
         return;
       }
       if (targetVersion && operation.incarnationId !== this.#supervisor.incarnationId) {
@@ -122,22 +117,19 @@ export class DesktopUpdateExecutor {
         if (phase === "staged") await progress("installing");
         await action.restart(this.#install);
       });
-    } catch (error) {
-      refused = error instanceof DesktopSupervisorRefusal;
+    } catch {
       // A settled result stands: the store accepts only it, so a failed delivery must not replace it.
-      if (!this.#results.has(operation.id)) {
+      if (!this.#results.has(operation.id) && !this.#stopped) {
         try {
           await progress("failed", phase === "installing" ? "handoff-failed" : "update-failed");
-        } catch (failure) {
-          refused = failure instanceof DesktopSupervisorRefusal;
+        } catch {
+          /* The Host refused it, or the app is stopping: a new process reconciles. */
         }
       }
     } finally {
       this.#running = false;
       // Intermediate publications for this action are obsolete after its acknowledged completion.
       this.#dropQueued(operation.id);
-      const result = this.#results.get(operation.id);
-      if (result && !delivered && !refused && !this.#stopped) this.#retryResult(result);
       void this.#drain();
     }
   }

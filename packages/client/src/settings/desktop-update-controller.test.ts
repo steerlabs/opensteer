@@ -139,6 +139,21 @@ describe("DesktopUpdateController", () => {
     });
   });
 
+  it("keeps newer progress when the request's reply arrives late", async () => {
+    const { controller, follows, request } = shown();
+    follows[0]!.listener(status());
+    const reply = Promise.withResolvers<DesktopUpdateOperation>();
+    request.mockReturnValueOnce(reply.promise);
+    controller.request({ action: "update" });
+    follows[0]!.listener(status(operation("a", "succeeded")));
+    reply.resolve(operation("a", "pending"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getSnapshot()).toMatchObject({
+      requesting: false,
+      status: { operation: { id: "a", state: "succeeded" } },
+    });
+  });
+
   it("calls a restart stalled only after it has been silent for minutes", () => {
     const { controller, follows } = shown();
     follows[0]!.listener(status(operation("a", "installing")));
