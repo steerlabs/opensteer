@@ -11,7 +11,7 @@ import { injectRpcRequest } from "./test-host-api-request.js";
 // The preview itself belongs to the Host's automatic-model sites; this file
 // proves only who it is built for and how the API reaches it.
 const preview = vi.hoisted(() => vi.fn());
-vi.mock("../agents/background-model-settings.js", () => ({ readAutomaticModelPreview: preview }));
+vi.mock("../agents/automatic-models.js", () => ({ readAutomaticModelPreview: preview }));
 
 it("serves and replaces automatic models for the signed-in person only, behind its capability", async () => {
   const userId = createId("user");

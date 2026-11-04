@@ -1583,7 +1583,15 @@ export class ChannelStore {
           candidateEnvironmentIds.length || specificHarnessId
             ? await transaction
                 .selectFrom("harnessInstances")
-                .select(["driverKind", "enabled", "environmentId", "id", "isDefault", "removedAt"])
+                .select([
+                  "driverKind",
+                  "enabled",
+                  "environmentId",
+                  "id",
+                  "isDefault",
+                  "removedAt",
+                  "sourceId",
+                ])
                 .where((eb) =>
                   eb.or([
                     ...(candidateEnvironmentIds.length
@@ -2740,7 +2748,7 @@ async function channelPlacement(
     }[];
     readonly harnesses: readonly Pick<
       Selectable<DatabaseSchema["harnessInstances"]>,
-      "driverKind" | "enabled" | "environmentId" | "id" | "isDefault" | "removedAt"
+      "driverKind" | "enabled" | "environmentId" | "id" | "isDefault" | "removedAt" | "sourceId"
     >[];
     readonly specificHarnessId: HarnessInstanceId | null;
     readonly userId: UserId;
@@ -2807,6 +2815,7 @@ async function channelPlacement(
         driverKind: account.driverKind,
         harnessInstanceId: account.id,
         isDefault: account.isDefault,
+        sourceId: account.sourceId,
         enabled: account.enabled,
         removed: account.removedAt !== null,
         available: true,

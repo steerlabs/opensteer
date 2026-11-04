@@ -294,6 +294,13 @@ describe("automatic model resolver", () => {
     expect(choose()).toBe(preferred.harnessInstanceId);
     expect(choose([preferred.harnessInstanceId])).toBe(fallback.harnessInstanceId);
     expect(choose([preferred.harnessInstanceId, fallback.harnessInstanceId])).toBeUndefined();
+    const endpoint = account("codex", { sourceId: "openai-compatible" });
+    const pick = (accounts: AuthorizedModelAccountSnapshot[]) =>
+      catalogDefaultCandidate({ accounts, excludedAccounts: [], canRun: () => ({ ok: true }) })
+        ?.account.harnessInstanceId;
+    expect(pick([endpoint])).toBeUndefined();
+    const chosenEndpoint = { ...endpoint, isDefault: true };
+    expect(pick([chosenEndpoint])).toBe(chosenEndpoint.harnessInstanceId);
   });
 });
 it("strict executable policies reject mixed/account-bound entries; presentation preserves unknown siblings", () => {

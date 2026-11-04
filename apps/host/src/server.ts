@@ -1,4 +1,4 @@
-import { readAutomaticModelPreview } from "./agents/background-model-settings.js";
+import { readAutomaticModelPreview } from "./agents/automatic-models.js";
 import { ThreadService, assertAccessModeEnforceable } from "./threads/thread-service.js";
 import {
   AdministrationService,

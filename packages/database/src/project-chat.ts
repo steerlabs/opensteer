@@ -40,13 +40,20 @@ export async function ensureProjectChat(
         await database
           .selectFrom("harnessCatalogs")
           .innerJoin("harnessInstances", "harnessInstances.id", "harnessCatalogs.harnessInstanceId")
-          .select(["harnessCatalogs.catalog", "harnessInstances.id", "harnessInstances.isDefault"])
+          .select([
+            "harnessCatalogs.catalog",
+            "harnessInstances.id",
+            "harnessInstances.isDefault",
+            "harnessInstances.sourceId",
+          ])
           .where("harnessInstances.environmentId", "=", environmentId)
           .where("harnessInstances.enabled", "=", true)
           .where("harnessInstances.removedAt", "is", null)
           .orderBy("harnessInstances.id")
           .execute(),
       ).flatMap((account) => {
+        // An arbitrary endpoint runs only when it is the account the person made default.
+        if (account.sourceId === "openai-compatible" && !account.isDefault) return [];
         const modelSelection = catalogDefaultModelSelection(account.catalog);
         return modelSelection ? [{ harnessInstanceId: account.id, modelSelection }] : [];
       })[0];
