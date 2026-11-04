@@ -106,11 +106,16 @@
 .voice-island__glow {
   position: absolute;
   inset: -1px;
+  border: 1px solid color-mix(in srgb, var(--ember) 70%, transparent);
   border-radius: inherit;
-  box-shadow:
-    0 0 0 1px var(--ember-line),
-    0 0 22px 1px color-mix(in srgb, var(--ember) 42%, transparent);
+  background: radial-gradient(
+    120px 80% at 26px 50%,
+    color-mix(in srgb, var(--ember) 30%, transparent),
+    transparent
+  );
+  box-shadow: 0 0 24px 2px color-mix(in srgb, var(--ember) 35%, transparent);
   opacity: 0;
+  transform-origin: 26px 50%;
   pointer-events: none;
 }
 

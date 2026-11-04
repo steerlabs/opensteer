@@ -259,22 +259,33 @@ function Glow({ controller }: { controller: VoiceControls }) {
         const element = glow.current;
         if (typeof element?.animate !== "function") return;
         const still = reducedMotion();
+        // Easing per keyframe: a quick rise to the peak, then a long settle.
+        const rise = "cubic-bezier(0.3, 0, 0.2, 1)";
+        const settle = "cubic-bezier(0.4, 0, 0.6, 1)";
         element.animate(
           still
-            ? [{ opacity: 0 }, { opacity: 0.8, offset: 0.3 }, { opacity: 0 }]
+            ? [
+                { opacity: 0, easing: rise },
+                { opacity: 0.8, offset: 0.3, easing: settle },
+                { opacity: 0 },
+              ]
             : [
-                { opacity: 0, transform: "scale(0.985)" },
-                { opacity: 1, transform: "scale(1)", offset: 0.25 },
-                { opacity: 0, transform: "scale(1.035)" },
+                { opacity: 0, transform: "scale(0.985)", easing: rise },
+                { opacity: 1, transform: "scale(1)", offset: 0.22, easing: settle },
+                { opacity: 0, transform: "scale(1.03)" },
               ],
-          { duration: still ? 500 : 900, easing: "cubic-bezier(0.2, 0.7, 0.2, 1)" },
+          { duration: still ? 500 : 950 },
         );
         if (still) return;
         element.parentElement
           ?.querySelector(".voice-orb__body")
           ?.animate(
-            [{ transform: "scale(1)" }, { transform: "scale(1.16)" }, { transform: "scale(1)" }],
-            { duration: 520, easing: "cubic-bezier(0.34, 1.3, 0.5, 1)" },
+            [
+              { transform: "scale(1)", easing: rise },
+              { transform: "scale(1.18)", offset: 0.3, easing: "cubic-bezier(0.34, 1.3, 0.5, 1)" },
+              { transform: "scale(1)" },
+            ],
+            { duration: 560 },
           );
       }),
     [controller],
