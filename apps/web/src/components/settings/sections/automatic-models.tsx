@@ -36,9 +36,9 @@ export function AutomaticModelsSection() {
       setFailure(null);
       void setAutomaticModels(hostClient, config)
         .then(
-          async () => {
+          () => {
             setJson(null);
-            await read.reload();
+            read.reload();
           },
           (e) => setFailure(actionErrorMessage(e)),
         )
