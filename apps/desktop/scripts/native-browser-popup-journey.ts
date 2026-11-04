@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import path from "node:path";
-import { BrowserVideoClickResultSchema } from "@opensteer/protocol";
+import {
+  BrowserVideoClickResultSchema,
+  BrowserPopupServerMessageSchema,
+} from "@opensteer/protocol";
 import { session, app } from "electron";
 import { chromium, type Page } from "playwright-core";
 import type { NativeBrowserE2EKit } from "./electron-native-browser-kit.js";
@@ -52,6 +55,10 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   const admissions: [number, number] = [0, 0];
   const sessionMatches = [false, false];
   const guardedResults: Record<string, number> = {};
+  const events: string[] = [];
+  const record = (index: number, event: string) => {
+    if (events.length < 128) events.push(`${index}:${event}`);
+  };
   try {
     // These are the journey's temporary owner cookies, held in live memory only.
     const cookies = await session
@@ -90,12 +97,19 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
             if (typeof payload !== "string") return;
             try {
               const m: unknown = JSON.parse(payload);
+              const popup = BrowserPopupServerMessageSchema.safeParse(m);
+              if (popup.success)
+                record(
+                  index,
+                  `${popup.data.type}${"reason" in popup.data ? ":" + popup.data.reason : ""}${"state" in popup.data ? ":" + (typeof popup.data.state === "string" ? popup.data.state : popup.data.state.kind) : ""}`,
+                );
               if (m && typeof m === "object" && "type" in m && m.type === "browser.snapshot")
                 sessionMatches[index] = "sessionId" in m && m.sessionId === context.sessionId;
               const guarded = BrowserVideoClickResultSchema.safeParse(m);
               if (guarded.success) {
                 const key = `${guarded.data.outcome}:${guarded.data.reason ?? guarded.data.hostReason ?? "none"}`;
                 guardedResults[key] = (guardedResults[key] ?? 0) + 1;
+                record(index, `result:${key}`);
               }
               if (m && typeof m === "object" && "type" in m && m.type === "browser.editing")
                 editingContexts[index] = (editingContexts[index] ?? 0) + 1;
@@ -119,6 +133,18 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
               const m: unknown = JSON.parse(payload);
               if (m && typeof m === "object" && "type" in m && typeof m.type === "string")
                 commands[m.type] = (commands[m.type] ?? 0) + 1;
+              if (
+                m &&
+                typeof m === "object" &&
+                "type" in m &&
+                (m.type === "input.cancel" ||
+                  m.type === "input.control" ||
+                  m.type === "input.guarded-click")
+              )
+                record(
+                  index,
+                  `send:${m.type}${"action" in m && (m.action === "acquire" || m.action === "release") ? ":" + m.action : ""}`,
+                );
               if (
                 m &&
                 typeof m === "object" &&
@@ -455,6 +481,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       popupCounts: counts,
       commands,
       guardedResults,
+      events,
       sessionMatches,
       admissions,
       producerResult,
