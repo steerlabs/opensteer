@@ -64,7 +64,7 @@ it("pairs either order, shares duplicate answers and serializes deduplicated spe
   await call.speak("turn:2", "third");
   await f.calls.handle(f.owner, { ...f.command, action: "say", id: "chat:1", text: "second" });
   expect(spoken).toEqual(["first", "second", "third"]);
-  expect(notes).toEqual([expect.stringContaining("Chat told the person: second")]);
+  expect(notes).toEqual([expect.stringContaining("The person was just told: second")]);
   f.abort.abort();
   expect(await f.calls.handle(f.owner, f.command)).toMatchObject({
     ok: false,

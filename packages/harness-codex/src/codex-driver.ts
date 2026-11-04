@@ -2039,15 +2039,20 @@ class CodexHarnessSession implements HarnessSession {
     this.#setActiveTurnId(active, turnId);
     const status = requireString(turn.status, "turn/completed params.turn.status");
     if (this.#context.voiceCall) {
-      if (this.#voiceFinal && status === "completed") {
+      // A failed turn is one request that didn't go through, not the end of the call.
+      const spoken =
+        status === "completed"
+          ? this.#voiceFinal
+          : status === "failed"
+            ? "Sorry, that didn't go through."
+            : "";
+      if (spoken)
         void this.#context.voiceCall
-          .speak(`turn:${turnId}`, this.#voiceFinal)
+          .speak(`turn:${turnId}`, spoken)
           .catch(() => this.#context.voiceCall?.end());
-      }
       delete active.providerTurnId;
       this.#voiceFinal = "";
       active.root = "idle";
-      if (status === "failed") this.#context.voiceCall.end();
       return;
     }
     // The root answered while children it started still run: the Run waits

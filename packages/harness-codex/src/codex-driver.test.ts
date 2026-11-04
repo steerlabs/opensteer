@@ -141,9 +141,17 @@ describe("Codex app-server harness", () => {
         await vi.waitFor(() => expect(answer.promise).resolves.toBe("fake-answer"), {
           timeout: 2000,
         });
-        await vi.waitFor(() => expect(spoken).toEqual(["first answer", "second answer"]), {
-          timeout: 2000,
-        });
+        // A failed turn is spoken as such and leaves the call up.
+        await vi.waitFor(
+          () =>
+            expect(spoken).toEqual([
+              "first answer",
+              "second answer",
+              "Sorry, that didn't go through.",
+            ]),
+          { timeout: 2000 },
+        );
+        expect(lifetime.signal.aborted).toBe(false);
         expect(events.filter((e) => e.type === "run.interrupted")).toHaveLength(0);
         const captured = await fixture.capture();
         expect(captured.some((r) => r.method === "turn/start")).toBe(false);
