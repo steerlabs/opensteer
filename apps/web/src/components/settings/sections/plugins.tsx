@@ -1005,6 +1005,8 @@ export function PluginAddSheet({
             Advanced · Connects through {entry.variant ?? entry.title}
           </summary>
           <SettingsSegmented
+            // Connecting is for the way chosen when it began.
+            disabled={placing}
             label="How it connects"
             onChange={setDefinitionId}
             options={product.variants.map((variant) => ({
@@ -1135,7 +1137,10 @@ function DirectoryRequests() {
           Show all {asks.length}
         </button>
       ) : null}
-      {showAll && requests.data?.window.hasMore && requests.data.window.nextBefore ? (
+      {/* A page mixes kinds of Request, so older ones can wait behind a page with few of these. */}
+      {(showAll || asks.length <= 3) &&
+      requests.data?.window.hasMore &&
+      requests.data.window.nextBefore ? (
         <button
           className="link-btn"
           type="button"

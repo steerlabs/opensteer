@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createSettingsRead } from "@opensteer/client/settings";
 import { useShell } from "../app-shell.js";
 
-/** The last value each remembered read published, per Host client. */
+/** The last value each remembered read published, per Host client and viewer. */
 const lastReads = new WeakMap<object, Map<string, unknown>>();
 
 /**
@@ -12,14 +12,20 @@ const lastReads = new WeakMap<object, Map<string, unknown>>();
  */
 export function useSettingsRead<T>(read: () => Promise<T>, key: string, remember = false) {
   const { hostClient } = useShell();
+  // A Host client outlives a sign-in: a read belongs to the person it was made for,
+  // so what one person saw is never shown to the next.
+  const viewer = hostClient.getSnapshot().user?.id ?? null;
+  const identity = `${viewer ?? ""}\n${key}`;
   const last = () =>
-    remember ? ((lastReads.get(hostClient)?.get(key) as T | undefined) ?? null) : null;
+    remember && viewer
+      ? ((lastReads.get(hostClient)?.get(identity) as T | undefined) ?? null)
+      : null;
   const [state, setState] = useState<{
     owner: object;
-    key: string;
+    identity: string;
     data: T | null;
     error: unknown;
-  }>(() => ({ owner: hostClient, key, data: last(), error: null }));
+  }>(() => ({ owner: hostClient, identity, data: last(), error: null }));
   const readRef = useRef(read);
   readRef.current = read;
   const readerRef = useRef<ReturnType<typeof createSettingsRead<T>> | null>(null);
@@ -27,13 +33,13 @@ export function useSettingsRead<T>(read: () => Promise<T>, key: string, remember
     const reader = createSettingsRead(
       () => readRef.current(),
       (data) => {
-        if (remember) {
+        if (remember && viewer) {
           const reads = lastReads.get(hostClient) ?? new Map<string, unknown>();
-          lastReads.set(hostClient, reads.set(key, data));
+          lastReads.set(hostClient, reads.set(identity, data));
         }
-        setState({ owner: hostClient, key, data, error: null });
+        setState({ owner: hostClient, identity, data, error: null });
       },
-      (error) => setState((previous) => ({ ...previous, owner: hostClient, key, error })),
+      (error) => setState((previous) => ({ ...previous, owner: hostClient, identity, error })),
     );
     readerRef.current = reader;
     void reader.refresh();
@@ -49,8 +55,8 @@ export function useSettingsRead<T>(read: () => Promise<T>, key: string, remember
       unsubscribeConnection();
       reader.dispose();
     };
-  }, [hostClient, key, remember]);
-  const own = state.owner === hostClient && state.key === key;
+  }, [hostClient, identity, remember, viewer]);
+  const own = state.owner === hostClient && state.identity === identity;
   return {
     data: own ? state.data : last(),
     error: own ? state.error : null,

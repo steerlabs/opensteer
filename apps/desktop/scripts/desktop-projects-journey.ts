@@ -100,10 +100,9 @@ try {
     await page.getByRole("button", { name: /Places and menu|:.*Menu$/ }).click();
     await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
     await page.getByRole("link", { name: "Plugins", exact: true }).click();
-    await page.getByRole("link", { name: "Add plugins", exact: true }).click();
-    await page.getByPlaceholder("/Users/you/plugins/tinycrm").fill(plugin);
-    await page.getByRole("button", { name: "Install plugin", exact: true }).click();
-    await page.getByRole("link", { name: "Your plugins", exact: true }).click();
+    await page.getByRole("button", { name: /^Add your own/ }).click();
+    await page.getByPlaceholder("/Users/you/plugins/name").fill(plugin);
+    await page.getByRole("button", { name: "Add plugin", exact: true }).click();
     const row = page.getByRole("link").filter({ hasText: "journey-plugin" });
     await row.waitFor();
     await capture("05-installed-plugin");

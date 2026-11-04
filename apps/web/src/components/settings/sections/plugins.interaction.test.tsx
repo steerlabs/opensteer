@@ -482,6 +482,44 @@ it("offers only what isn't yours yet, finds it by search and opens its add sheet
   expect(dialog.querySelector(".intg-icon--mark svg path")).not.toBeNull();
 });
 
+it("paints a remembered plugin list again only for the person who saw it", async () => {
+  await mount();
+  act(() => root!.unmount());
+  const rpc = client.rpc;
+  // The return visit's own read never answers, so only a remembered list can show.
+  Object.defineProperty(client, "rpc", {
+    value: new Proxy(rpc, {
+      get: (target, key) =>
+        key === "plugins.overview.get" ? () => new Promise(() => {}) : Reflect.get(target, key),
+    }),
+  });
+  const revisit = async () => {
+    const node = document.createElement("div");
+    document.body.append(node);
+    root = createRoot(node);
+    await act(async () =>
+      root!.render(
+        <MemoryRouter initialEntries={["/settings/plugins"]}>
+          <ToastProvider>
+            <PluginsSection view={view} />
+          </ToastProvider>
+        </MemoryRouter>,
+      ),
+    );
+    return node;
+  };
+  expect((await revisit()).querySelector('[aria-label="Enable Gmail"]')).not.toBeNull();
+  act(() => root!.unmount());
+  const snapshot = client.getSnapshot();
+  vi.spyOn(client, "getSnapshot").mockReturnValue({
+    ...snapshot,
+    user: { ...snapshot.user!, id: "usr_00000000-0000-4000-8000-0000000000ff" as never },
+  });
+  const other = await revisit();
+  expect(other.querySelector('[aria-label="Enable Gmail"]')).toBeNull();
+  expect(other.querySelector('[aria-label="Loading plugins"]')).not.toBeNull();
+});
+
 it("releases a rejected switch attempt before the next click", async () => {
   const node = await mount();
   const dispatch = vi

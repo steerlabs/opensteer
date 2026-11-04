@@ -795,7 +795,9 @@ function Plugins({
                             label: variant.variant ?? variant.title,
                           })),
                           onChange: (definitionId: string) => {
-                            if (!addInstalled) openAdd(add.product, definitionId);
+                            // Adding is for the way chosen when it began.
+                            if (!addInstalled && pending === null)
+                              openAdd(add.product, definitionId);
                           },
                         },
                       ],
