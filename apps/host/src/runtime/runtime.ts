@@ -8,6 +8,7 @@ import {
   StaticEncryptionKeyProvider,
 } from "@opensteer/access/host";
 import { assertHostConfigInvariants, type HostConfig } from "@opensteer/config";
+import { createPluginChangeNotices, type PluginChangeNotices } from "./plugin-change-notices.js";
 import { officialOpensteerAccountProviderId } from "@opensteer/control-plane-protocol";
 import {
   harnessDriverLabel,
@@ -436,6 +437,7 @@ export async function createHostRuntime(
   let threadStateDrain: Promise<void> | undefined;
   let threadStateStopped = false;
   let unsubscribePlaceMembership: (() => void) | undefined;
+  let pluginChangeNotices: PluginChangeNotices | undefined;
   try {
     authorityLease = await acquireDeploymentAuthorityLease(database);
     await migrateToLatest(database).catch((error: unknown) => {
@@ -451,6 +453,12 @@ export async function createHostRuntime(
     // from that Run's committed durable events and forgets it at the terminal.
     const liveRuns = new LiveRunRegistry();
     const realtime = new RealtimeHub({ liveRuns, store });
+    const pluginSettings = new PluginSettingsStore(database);
+    const notices = createPluginChangeNotices(
+      (target) => pluginSettings.affectedViewers(target),
+      (viewers) => realtime.sendToUsers(viewers, { type: "host.plugins-changed" }),
+    );
+    pluginChangeNotices = notices;
     const deployment = await store.ensureDeployment({
       ...(config.deploymentIdentity
         ? {
@@ -635,10 +643,7 @@ export async function createHostRuntime(
         app.log.info(status, "Phone display capability changed"),
       onChanged: (runnerId) => {
         notifyMachinesChanged(realtime, "computer-apps.status");
-        void new PluginSettingsStore(database)
-          .affectedViewers({ runnerId })
-          .then((viewers) => realtime.sendToUsers(viewers, { type: "host.plugins-changed" }))
-          .catch((error: unknown) => reportComputerUseSweepError(error));
+        notices.notify({ runnerId });
       },
       onComputerUseEvent: (runnerId, event) => computerUse?.handleHelperEvent(runnerId, event),
       onRunnerDetached: (runnerId, reason) => {
@@ -1292,11 +1297,7 @@ export async function createHostRuntime(
             : "requestId" in event.data
               ? event.data.requestId
               : undefined;
-        if (requestId)
-          void integrationPlatformStore.settings
-            .affectedViewers({ requestId })
-            .then((viewers) => realtime.sendToUsers(viewers, { type: "host.plugins-changed" }))
-            .catch((error: unknown) => reportComputerUseSweepError(error));
+        if (requestId) notices.notify({ requestId });
         void drainThreadStates().catch((error: unknown) =>
           console.warn("Thread state drain failed", error),
         );
@@ -1362,12 +1363,8 @@ export async function createHostRuntime(
         void channelService?.syncRuntimes();
       },
       onSettingsChanged: async ({ installationId, ownerUserId }) => {
-        const viewers = ownerUserId
-          ? [ownerUserId]
-          : await integrationPlatformStore.settings.affectedViewers(
-              installationId ? { installationId } : {},
-            );
-        realtime.sendToUsers(viewers, { type: "host.plugins-changed" });
+        if (ownerUserId) realtime.sendToUsers([ownerUserId], { type: "host.plugins-changed" });
+        else notices.notify(installationId ? { installationId } : {});
       },
       onRequestsChanged: () => notifyIntegrationContinuations(),
       onWorkspaceEvent: publishWorkspaceEvent,
@@ -1580,18 +1577,7 @@ export async function createHostRuntime(
             },
             report,
           );
-          if (changed) {
-            const viewers = await store.database
-              .selectFrom("workspaceMemberships")
-              .select("userId")
-              .where("workspaceId", "=", report.binding.workspaceId)
-              .where("state", "=", "active")
-              .execute();
-            realtime.sendToUsers(
-              viewers.map((v) => v.userId),
-              { type: "host.plugins-changed" },
-            );
-          }
+          if (changed) notices.notify({ workspaceId: report.binding.workspaceId });
         },
         onThreadTitle: async (_identity, report) => {
           const result = await store.applyGeneratedThreadName(report);
@@ -1611,12 +1597,7 @@ export async function createHostRuntime(
           // row is already offline, and a repeated "reread the list" costs a
           // reader nothing.
           notifyMachinesChanged(realtime, "runner.disconnect");
-          realtime.sendToUsers(
-            await integrationPlatformStore.settings.affectedViewers({
-              runnerId: identity.runnerId,
-            }),
-            { type: "host.plugins-changed" },
-          );
+          notices.notify({ runnerId: identity.runnerId });
           // A lost connection costs a Run nothing: it keeps executing on its
           // lease and reattaches. A revoked Runner can never come back, so its
           // Runs end now; a replaced boot's are settled by the new boot's attach.
@@ -1715,12 +1696,7 @@ export async function createHostRuntime(
             // A computer is online the moment it registers, whatever its
             // inventory reconciliation goes on to do.
             notifyMachinesChanged(realtime, "runner.registered");
-            realtime.sendToUsers(
-              await integrationPlatformStore.settings.affectedViewers({
-                runnerId: identity.runnerId,
-              }),
-              { type: "host.plugins-changed" },
-            );
+            notices.notify({ runnerId: identity.runnerId });
             // macOS applies a Full Disk Access grant only once the app has quit
             // and reopened, so the grant usually arrives as a fresh registration
             // whose descriptor already says so — never as a change message.
@@ -2693,6 +2669,7 @@ export async function createHostRuntime(
         await step("thread state loop", () => threadStateLoop?.close());
         await step("thread state drain", () => drainThreadStates());
         threadStateStopped = true;
+        await step("plugin change notices", () => notices.close());
         await step("authority lease", () => authorityLease?.close());
         await step("database", () => database.destroy());
         closingStep = undefined;
@@ -2710,6 +2687,7 @@ export async function createHostRuntime(
     threadStateStopped = true;
     await threadStateLoop?.close();
     await threadStateDrain?.catch(() => undefined);
+    await pluginChangeNotices?.close();
     await authorityLease?.close();
     await database.destroy();
     throw error;
