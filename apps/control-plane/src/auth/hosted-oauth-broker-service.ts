@@ -941,8 +941,13 @@ export class HostedOAuthBrokerService {
         }
       }
       return ReturnHostedOAuthAttemptResponseSchema.parse(await this.status(authority, attemptId));
-    } catch {
-      throw new HostedOAuthBrokerRefusal(attemptId, reason);
+    } catch (error) {
+      // A refusal is final for the Host; a database or vault outage must stay
+      // retryable, so only decided refusals and malformed receipts become one.
+      if (error instanceof ControlPlaneError || error instanceof z.ZodError) {
+        throw new HostedOAuthBrokerRefusal(attemptId, reason);
+      }
+      throw error;
     }
   }
 

@@ -192,6 +192,12 @@ integration("hosted OAuth broker durable boundary", () => {
         .where("accountId", "=", before!.accountSubject)
         .execute();
     }
+    // A database outage is not a refusal: the Host must be able to retry it.
+    const outage = new Error("connection terminated unexpectedly");
+    const read = vi.spyOn(store, "getAttemptForHost").mockRejectedValueOnce(outage);
+    await expect(broker.returnAttempt(authority, attemptId, proof)).rejects.toBe(outage);
+    read.mockRestore();
+    expect(await store.getAttemptForHost(deploymentId, attemptId, now)).toEqual(before);
     const results = await Promise.all([
       broker.returnAttempt(authority, attemptId, proof),
       broker.returnAttempt(authority, attemptId, proof),
