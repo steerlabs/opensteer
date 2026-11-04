@@ -386,7 +386,10 @@ export class HostTransport {
       if (abortRecovery) signal.removeEventListener("abort", abortRecovery);
     }
     deadline.reset(request.timeoutMs ?? hostResponseHeadersTimeoutMs);
-    const response = await deadline.wait(this.#send(selected.resolved, request, signal));
+    const recovered = await deadline.wait(this.current());
+    if (recovered.resolved.key !== selected.resolved.key)
+      throw new HostTransportError("deployment-changed");
+    const response = await deadline.wait(this.#send(recovered.resolved, request, signal));
     deadline.reset(hostResponseStallTimeoutMs);
     return response;
   }

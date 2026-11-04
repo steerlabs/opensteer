@@ -15,7 +15,15 @@ export function PlaceUpdate({ row }: { readonly row: PlaceRow }) {
       bridge === null ? null : new BridgeDesktopUpdates(bridge, DeploymentIdSchema.parse(row.id)),
     [bridge, row.id],
   );
-  const { run, view } = useRemoteDesktopUpdate(updates, row.name, updates !== null);
+  const { run, view } = useRemoteDesktopUpdate(updates, row.name, updates !== null, async () => {
+    if (!places) return;
+    const deployment = places.snapshot.deployments.find((entry) => entry.id === row.id);
+    if (deployment?.source === "manual") {
+      places.onAddPlace();
+      return;
+    }
+    if (places.snapshot.account.status !== "signed-in") await places.bridge.signIn();
+  });
   const [confirming, setConfirming] = useState<Extract<
     DesktopUpdateAction,
     { readonly kind: "request" }

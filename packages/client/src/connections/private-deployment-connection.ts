@@ -63,6 +63,7 @@ export class PrivateDeploymentConnectionService {
     const discoveredRoute = await verifyPersonalAccessEndpoint({
       fetch: this.#fetch,
       origin: parsed.origin,
+      protocol: "maintenance-v1",
     });
     const connection = deploymentConnectionFromVerifiedPersonalRoute({
       accountAccess: null,

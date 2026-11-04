@@ -1,3 +1,6 @@
+import { HostSession } from "../auth/host-session.js";
+import type { NativeOAuthManager } from "../auth/native-oauth.js";
+import type { HostSessionExchange } from "../auth/host-session-exchange.js";
 import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
@@ -15,7 +18,7 @@ import {
 } from "../test-support/host-authority.js";
 import type { HostNetworkRequest } from "./host-transport.js";
 
-function fixture(epoch = hostApiVersion - 1) {
+function fixture(epoch = hostApiVersion - 1, scoped = false) {
   const keys = testHostAuthorityKeys();
   const authority = signTestDiscoveryEnvelope(
     {
@@ -81,9 +84,10 @@ function fixture(epoch = hostApiVersion - 1) {
     return maintenance(input);
   });
   const recoverUnauthorized = vi.fn(async () => "recovered" as const);
+  const authorizationHeader = vi.fn(async () => "PersonalRemote owner-session");
   const service = new DesktopUpdatesService({
     catalog: { load: async () => catalog, subscribe: () => () => {} },
-    credentials: { authorizationHeader: async () => "PersonalRemote owner-session" },
+    credentials: { authorizationHeader },
     localRuntime: { current: async () => null },
     network: {
       request,
@@ -91,10 +95,28 @@ function fixture(epoch = hostApiVersion - 1) {
         throw new Error("Maintenance must not attach a socket");
       },
     },
-    sessions: { recoverUnauthorized },
+    ...(scoped ? { deploymentId: authority.document.deploymentId } : {}),
+    sessions: (attachment) =>
+      scoped
+        ? new HostSession({
+            attachment,
+            clearDeploymentSession: async () => {},
+            exchange: {
+              supports: () => true,
+              probe: async () => "unauthenticated",
+              establish: async () => {
+                await recoverUnauthorized();
+                return {} as Awaited<ReturnType<HostSessionExchange["establish"]>>;
+              },
+            },
+            localOwner: { ownsHostSession: () => false, recoverOwnerSession: async () => false },
+            oauth: { subscribeHostCredentials: () => () => {} } as unknown as NativeOAuthManager,
+          })
+        : { recoverUnauthorized },
   });
   return {
     service,
+    authorizationHeader,
     request,
     maintenance,
     status,
@@ -143,10 +165,11 @@ it.each([hostApiVersion - 1, hostApiVersion + 1])(
 );
 
 it("never sends a session after signature verification fails", async () => {
-  const { descriptor, service, request } = fixture();
+  const { descriptor, service, request, authorizationHeader } = fixture();
   descriptor.authority.signature = "A".repeat(86);
   await expect(service.status()).rejects.toMatchObject({ reason: "invalid-response" });
   expect(request.mock.calls.every(([input]) => input.authorization === null)).toBe(true);
+  expect(authorizationHeader).not.toHaveBeenCalled();
 });
 
 it("reuses session recovery below attachment and identifies desktops needing their first local update", async () => {
@@ -238,4 +261,17 @@ describe("OriginDesktopUpdates", () => {
     closed.abort(reason);
     await expect(updates.status({ signal: closed.signal })).rejects.toBe(reason);
   });
+});
+
+it("recovers the pinned desktop Deployment while another Deployment is selected", async () => {
+  const { service, catalog, maintenance, status, recoverUnauthorized } = fixture(
+    hostApiVersion - 1,
+    true,
+  );
+  const other = fixture().connection;
+  catalog.deployments.push(other);
+  catalog.selectedDeploymentId = other.authority.document.deploymentId;
+  maintenance.mockResolvedValueOnce(Response.json({}, { status: 401 }));
+  await expect(service.status()).resolves.toEqual(status);
+  expect(recoverUnauthorized).toHaveBeenCalledOnce();
 });

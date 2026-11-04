@@ -420,7 +420,11 @@ export class MobileClient {
         this.accountDirectory.accountOrigin !== null &&
         (await this.oauth.state()).account.status === "signed-in",
     });
-    this.#host = options.hostPort({ oauth: this.oauth, sessions: this.sessions });
+    this.#host = options.hostPort({
+      oauth: this.oauth,
+      sessions: this.sessions,
+      sessionExchange: this.sessionExchange,
+    });
     this.#fence = new HostAttachmentFence({
       catalog: this.catalog,
       // Resolve identity and routing before credential refresh can contact a
