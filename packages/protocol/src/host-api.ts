@@ -270,11 +270,8 @@ import {
   machineAccessHistoryMaxSessions,
 } from "./shell.js";
 import {
-  VoiceAnswerInputSchema,
   VoiceContextInputSchema,
   VoiceEmptyResultSchema,
-  VoiceNextInputSchema,
-  VoiceNextResultSchema,
   VoiceRenewInputSchema,
   VoiceSayInputSchema,
   VoiceStartInputSchema,
@@ -1721,27 +1718,21 @@ export const hostApi = defineRpc({
     z.object({ servers: z.array(ModelServerViewSchema).max(maxModelServers) }),
   ),
   /**
-   * A voice call on one of the person's ChatGPT accounts on that work
-   * location's computer. The client's offer goes to the Runner, which creates
-   * the call; audio then flows between the client and the vendor only.
-   * Requires `voice-v1`; errors carry a `VoiceRefusalReason`.
+   * A voice call on one of the person's ChatGPT accounts on that computer,
+   * with its own agent: one Run on a hidden child of Chat. The client's offer
+   * goes to the Runner, which creates the call; audio then flows between the
+   * client and the vendor only. Starting again with the same session id
+   * returns the same call; a new session ends the person's other call.
+   * Requires `voice-run-v1`; errors carry a `VoiceRefusalReason`.
    */
   "voice.start": declaration("POST", VoiceStartInputSchema, VoiceStartResultSchema),
   /** Keeps a call alive for another lease, rechecking the person may still use it. */
   "voice.renew": declaration("POST", VoiceRenewInputSchema, VoiceEmptyResultSchema),
-  /** Has the voice tell the person something, such as Chat's reply. */
+  /** Has the voice tell the person something once, such as Chat's reply. */
   "voice.say": declaration("POST", VoiceSayInputSchema, VoiceEmptyResultSchema),
-  /** Ends a call. Ending one that is already over succeeds. */
+  /** Ends a call by stopping its Run. Ending one that is already over succeeds. */
   "voice.stop": declaration("POST", VoiceStopInputSchema, VoiceEmptyResultSchema),
-  /**
-   * The call agent's next tool call for this device, held open briefly while
-   * there is none. Unanswered calls are delivered again. Requires
-   * `voice-agent-v1` and a call started with `agent`.
-   */
-  "voice.next": declaration("POST", VoiceNextInputSchema, VoiceNextResultSchema),
-  /** This device's result for one tool call; answering twice keeps the first. */
-  "voice.answer": declaration("POST", VoiceAnswerInputSchema, VoiceEmptyResultSchema),
-  /** Replaces what the call's agent knows the person sees and can open. */
+  /** Replaces what the call's agent knows the person is looking at. */
   "voice.context": declaration("POST", VoiceContextInputSchema, VoiceEmptyResultSchema),
   "integration.authorization.get": declaration(
     "GET",

@@ -285,11 +285,8 @@ export const HostCapabilitySchema = z.enum([
   "harness-update-v1",
   /** A person can rename and delete their browser profiles. */
   "browser-profile-manage-v1",
-  /** Clients can hold a voice call through `voice.*` (see docs/voice.md). */
-  "voice-v1",
-  /** A call can run its own agent: `agent` on `voice.start`, then `voice.next`, `voice.answer` and `voice.context`. */
-  "voice-agent-v1",
-  "voice-find-v1",
+  /** Clients can hold a voice call with its own agent through `voice.*`. */
+  "voice-run-v1",
 ]);
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;
 
