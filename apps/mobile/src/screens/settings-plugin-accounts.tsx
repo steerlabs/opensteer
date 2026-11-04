@@ -8,6 +8,10 @@ import {
 } from "@opensteer/client/host";
 import {
   authorizationConnection,
+  canSetUpOwnApp,
+  connectProviderManifest,
+  connectSavedSource,
+  type IntegrationDashboard,
   integrationAccountTitle,
   integrationAuthorizationError,
   type IntegrationOAuthApplicationSource,
@@ -31,6 +35,8 @@ import { color, space, touchTarget } from "../theme.js";
 import { IntegrationIcon } from "../ui/integration-icon.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { AppText, Notice, RowGroup, SecondaryButton, StatusDot } from "../ui/primitives.js";
+import { Sheet } from "../ui/sheet.js";
+import { IntegrationOAuthAppForm } from "../thread/integration-oauth-app-form.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import {
   connectedAppsModel,
@@ -89,6 +95,12 @@ function ConnectedApps(props: {
   const insets = useListContentInsets(space[32]);
   const focused = useIsFocused();
   const online = useHostSelector(hostClient, canRespondToRequests);
+  const [dashboard, setDashboard] = useState<IntegrationDashboard | null>(null);
+  const [ownApp, setOwnApp] = useState(false);
+  const [savedSource, setSavedSource] = useState<{
+    readonly definitionId: string;
+    readonly source: IntegrationOAuthApplicationSource;
+  } | null>(null);
   const [platform, setPlatform] = useState<IntegrationPlatformDashboardView | null>(null);
   const [keyValues, setKeyValues] = useState<Record<string, string>>({});
   const keyAttempt = useRef<{
@@ -117,6 +129,7 @@ function ConnectedApps(props: {
         hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
       ]);
       if (!current()) return null;
+      setDashboard(dashboard);
       setPlatform(platform);
       setApps(connectedAppsModel({ dashboard, hostName, platform }));
       setLoadError(null);
@@ -222,6 +235,10 @@ function ConnectedApps(props: {
           ? `${account.title} is connected.`
           : finishRepositories(account, true);
       });
+    if (savedSource && app.definitionId === savedSource.definitionId) {
+      start(savedSource.source);
+      return;
+    }
     if (app.signIn?.kind === "direct") {
       start(app.signIn.source);
       return;
@@ -260,6 +277,53 @@ function ConnectedApps(props: {
       { style: "cancel", text: "Cancel" },
     ]);
 
+  const definition = platform?.catalog.find(
+    (entry) => entry.definition.id === props.definitionId,
+  )?.definition;
+  const provider = definition?.provider ?? null;
+  const manifest = dashboard && provider ? connectProviderManifest(dashboard, provider) : null;
+  const canSetUp = dashboard && provider ? canSetUpOwnApp(dashboard, provider) : false;
+  const appEditor =
+    ownApp && manifest && provider && dashboard ? (
+      <Sheet open={ownApp} onClose={() => setOwnApp(false)} title="Your own app">
+        <View style={{ padding: space[16], gap: space[16] }}>
+          {error ? <Notice title="App could not be saved" detail={error} /> : null}
+          <IntegrationOAuthAppForm
+            busy={busy !== null}
+            callbackUrl={dashboard.callbackUrls[provider] ?? ""}
+            manifest={manifest}
+            onSave={(draft) =>
+              void run("own-app", async () => {
+                const saved = await hostClient.dispatch({
+                  idempotencyKey: mutationIdempotencyKey(`integration-app:${provider}`),
+                  input: {
+                    availability: "personal",
+                    clientId: draft.clientId,
+                    displayName: draft.displayName,
+                    expectedRevision: null,
+                    ...(draft.installationUrl ? { installationUrl: draft.installationUrl } : {}),
+                    provider,
+                    secrets: draft.secrets,
+                  },
+                  type: "integration.providerApplication.save",
+                });
+                if (saved.type !== "integration.providerApplication.save")
+                  throw new Error("Integration application command mismatch.");
+                if (!current()) return null;
+                const fresh = await load();
+                if (!fresh || !current()) return null;
+                const source = connectSavedSource(fresh, saved.application);
+                setSavedSource(
+                  source && definition ? { definitionId: definition.id, source } : null,
+                );
+                setOwnApp(false);
+                return "App saved. No account is connected yet.";
+              })
+            }
+          />
+        </View>
+      </Sheet>
+    ) : null;
   if (props.render) {
     const button = (
       key: string,
@@ -307,9 +371,6 @@ function ConnectedApps(props: {
           ),
         ],
       });
-    const definition = platform?.catalog.find(
-      (entry) => entry.definition.id === props.definitionId,
-    )?.definition;
     for (const method of definition?.authMethods ?? []) {
       if (method.kind !== "api-key") continue;
       sections.push({
@@ -407,7 +468,23 @@ function ConnectedApps(props: {
         });
       sections.push({ key: `accounts:${app.definitionId}`, title: "Sign in", rows });
     }
-    return props.render(sections);
+    if (canSetUp)
+      sections.push({
+        key: "own-app",
+        title: "Sign-in app",
+        rows: [
+          button("own-app", "Use my own OAuth app", () => {
+            setError(null);
+            setOwnApp(true);
+          }),
+        ],
+      });
+    return (
+      <>
+        {props.render(sections)}
+        {appEditor}
+      </>
+    );
   }
   return (
     <Screen edgeToEdge>
@@ -436,6 +513,17 @@ function ConnectedApps(props: {
             No apps yet. Add one from Opensteer on a computer, or when an agent asks for it.
           </AppText>
         ) : null}
+        {canSetUp ? (
+          <SecondaryButton
+            label="Use my own OAuth app"
+            disabled={busy !== null || !online}
+            onPress={() => {
+              setError(null);
+              setOwnApp(true);
+            }}
+          />
+        ) : null}
+        {appEditor}
         {(apps ?? [])
           .filter((app) => !props.definitionId || app.definitionId === props.definitionId)
           .map((app) => (

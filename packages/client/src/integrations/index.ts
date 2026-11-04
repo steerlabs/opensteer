@@ -43,3 +43,5 @@ export type {
   IntegrationAuthorizationAttempt,
   IntegrationAuthorizationAttemptStore,
 } from "./authorization-attempts.js";
+
+export * from "./connect-card.js";

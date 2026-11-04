@@ -115,7 +115,9 @@ vi.mock("../ui/sheet.js", () => ({
     open ? <div>{children}</div> : null,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("./integration-connect-sheet.js", () => ({ IntegrationConnectSheet: () => null }));
+vi.mock("./integration-connect-sheet.js", () => ({
+  IntegrationConnectCard: () => <span>Inline Connect card</span>,
+}));
 
 const { RequestCard } = await import("./request-card.js");
 
@@ -366,6 +368,30 @@ describe("RequestCard saved-password sign-ins", () => {
  * - promising an account or access, which installing does not give;
  * - Install sending anything but the Request's own choice.
  */
+it("renders an integration access card inline without the intermediate request sheet", async () => {
+  const base = passwordSignInRequest();
+  const request = {
+    ...base,
+    kind: "integration.access",
+    payload: {
+      kind: "integration.access",
+      installationId: null,
+      manifest: null,
+      access: "read",
+      reason: "Read messages",
+      requestedServerId: null,
+      requestedConnectionId: null,
+    },
+    presentation: { kind: "external", title: "Connect Gmail" },
+  } as Request;
+  const dispatch = vi.fn();
+  await render(surface(request), dispatch);
+  expect(text()).toContain("Inline Connect card");
+  expect(text()).not.toContain("Review connection");
+  expect(text()).not.toContain("Review request");
+  expect(dispatch).not.toHaveBeenCalled();
+});
+
 describe("RequestCard install requests", () => {
   it("reviews an agent's proposal in the web's words before Install", async () => {
     const dispatch = vi.fn(async () => ({ type: "request.respond" }));

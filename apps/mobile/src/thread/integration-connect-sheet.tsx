@@ -15,61 +15,37 @@ import {
   accessPlan,
   apiKeyDisclosure,
   authorizationConnection,
-  accessServerChoices,
-  accountConnectable,
-  canSetUpOwnApp,
-  changingOperationCount,
   computerAccessUpgrade,
-  computerAppAccessLabel,
-  computerAppConnectionLabel,
-  computerAppElsewhereDetail,
-  computerAppRunsOnPhone,
   computerAppPermissionNotice,
   computerAppSetupElsewhere,
-  computerAppStateLabel,
   computerConnectionState,
-  connectAvailability,
-  connectChoiceAvailable,
-  connectOption,
-  connectProviderManifest,
-  connectRequestedScopes,
-  connectSavedSource,
-  connectSignInOptions,
-  connectedAccount,
-  effectiveIntegrationAccess,
-  hostedOAuthOutage,
-  initialConnectSource,
-  grantedIntegrationAccess,
-  integrationAccessSummary,
+  connectCard,
   integrationAccountDetail,
   integrationAuthorizationError,
+  integrationRequestStillPending,
   isAndroidPhone,
-  mainConnectAllowsNote,
-  matchingInstallationForManifest,
   repositoryAccountStep,
-  requestedAccountUnavailableDetail,
   resolveIntegrationAccess,
   type AccessPlan,
-  type ConnectSignInOption,
+  type AccessRequestAccount,
   type IntegrationAccess,
   type IntegrationConnectionSummary,
-  type IntegrationOAuthApplicationSource,
   type IntegrationRepositoryAccess,
   type LoadedAccessRequest,
 } from "@opensteer/client/integrations";
+import { useNavigation } from "@react-navigation/native";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Linking, Pressable, StyleSheet, View } from "react-native";
-import { color, space } from "../theme.js";
+import * as Haptics from "expo-haptics";
+import { color, controlFontScaleLimit, space, touchTarget } from "../theme.js";
 import {
   AppText,
   ChoiceRow,
-  CodeBlock,
   Field,
   Notice,
   PrimaryButton,
   RowGroup,
   SecondaryButton,
-  SectionLabel,
   SwitchRow,
 } from "../ui/primitives.js";
 import { Sheet } from "../ui/sheet.js";
@@ -77,142 +53,71 @@ import { IntegrationIcon } from "../ui/integration-icon.js";
 import { ComputerAppPicker, computerAppChoices } from "./computer-app-picker.js";
 import { InstallReview } from "./integration-install-review.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
+import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 
-type Step =
-  "review" | "apps" | "api-key" | "own-app" | "computer" | "repository-access" | "connected";
-
+type Step = "review" | "api-key" | "computer" | "repository-access" | "server";
 const selectHostSnapshot = (snapshot: HostSnapshot): HostSnapshot => snapshot;
 
-/**
- * Connecting an integration account from the phone.
- *
- * The phone runs the same flow the browser does, against the same Host: it
- * shows what the agent asked for, which sign-in app will be used, and — after
- * the system browser returns — the account the Host actually recorded. The
- * browser return is only a wake-up; `MobileClient.beginIntegrationAuthorization`
- * reads the durable attempt with this phone's Host credential, and a Workspace
- * grant is still a separate answer given here.
- */
-export function IntegrationConnectSheet(props: {
+/** The Request stays inline. Only credential entry and device setup need a sheet. */
+export function IntegrationConnectCard(props: {
   readonly hostClient: HostClient;
-  readonly onClose: () => void;
-  /** The Request was answered; the card's Thread state reloads behind the sheet. */
-  readonly onResponded: () => void;
-  readonly open: boolean;
   readonly request: Request;
+  readonly disabled?: boolean;
+  readonly disabledReason?: string | null;
+  readonly canStartResponse?: () => boolean;
+  readonly mutationGate?: ThreadMutationGate;
+  readonly onResponded: () => void;
+  readonly onPresent?: () => void;
+  readonly onClose?: () => void;
 }): ReactNode {
   const mobile = useMobileClient();
+  const navigation = useNavigation();
   const payload =
     props.request.payload.kind === "integration.access" ? props.request.payload : null;
   const [loaded, setLoaded] = useState<LoadedAccessRequest | null>(null);
   const [step, setStep] = useState<Step>("review");
   const [busy, setBusy] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [accountId, setAccountId] = useState<string | null>(null);
   const [allowChanges, setAllowChanges] = useState(false);
-  const [chosen, setChosen] = useState<IntegrationOAuthApplicationSource | null>(null);
+  const [connected, setConnected] = useState<AccessRequestAccount | null>(null);
   const [connectedId, setConnectedId] = useState<IntegrationConnectionSummary["id"] | null>(null);
   const [repositoryAccess, setRepositoryAccess] = useState<IntegrationRepositoryAccess | null>(
     null,
   );
   const [apiKeyValues, setApiKeyValues] = useState<Record<string, string>>({});
   const [apiKeyName, setApiKeyName] = useState("");
+  const [accountName, setAccountName] = useState("");
   const [computerId, setComputerId] = useState<string | null>(null);
-  // The safe level is the default, always: the phone never preselects the
-  // access that lets an agent act on somebody's behalf.
   const [computerAccess, setComputerAccess] = useState<IntegrationAccess>("read");
-  // Every operation takes a new generation, and so does closing the sheet or
-  // changing its request; an operation writes only while its own is current.
+  const [disclosed, setDisclosed] = useState(false);
   const operationGeneration = useRef(0);
-  const sourceSelectionSeeded = useRef(false);
-  const reconnectStepSeeded = useRef(false);
-
-  useEffect(() => {
-    operationGeneration.current += 1;
-    if (!props.open) return;
-    setLoaded(null);
-    setStep("review");
-    setBusy(false);
-    setError(null);
-    setNotice(null);
-    setAccountId(null);
-    setAllowChanges(false);
-    setChosen(null);
-    setConnectedId(null);
-    setRepositoryAccess(null);
-    setApiKeyValues({});
-    setApiKeyName("");
-    setComputerId(null);
-    setComputerAccess("read");
-    sourceSelectionSeeded.current = false;
-    reconnectStepSeeded.current = false;
-    return () => {
-      operationGeneration.current += 1;
-    };
-  }, [props.open, props.request.id]);
-
-  useEffect(() => {
-    if (!props.open || payload === null) return;
-    let cancelled = false;
-    setError(null);
-    Promise.all([
-      props.hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
-      props.hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
-    ])
-      .then(([dashboard, platform]) => {
-        if (cancelled) return;
-        setLoaded({ dashboard, platform, request: payload });
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) setError(describe(reason));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [props.hostClient, props.open, payload, reload]);
-
+  const responding = useRef(false);
+  const presented = useRef(false);
   const snapshot = useHostSelector(props.hostClient, selectHostSnapshot);
   const workspace =
     snapshot.workspaces.find(({ id }) => id === props.request.targetWorkspaceId) ?? null;
   const plan = loaded === null ? null : accessPlan(loaded, accountId);
-  const serverChoices = loaded === null ? [] : accessServerChoices(loaded);
-  const matchingInstallation =
-    loaded === null || payload === null || payload.manifest === null
-      ? null
-      : matchingInstallationForManifest(loaded.platform, payload.manifest);
-  const provider =
-    plan?.requirement.kind === "provider" && plan.requirement.providerApplicationRequired
-      ? plan.requirement.provider
-      : null;
-  const availability =
-    loaded !== null && provider !== null ? connectAvailability(loaded.dashboard, provider) : null;
-  const options =
-    loaded !== null && provider !== null ? connectSignInOptions(loaded.dashboard, provider) : [];
-  const chosenOption = connectOption(options, chosen);
-  const choiceLost = !connectChoiceAvailable(options, chosen);
-  const manifest =
-    loaded !== null && provider !== null
-      ? connectProviderManifest(loaded.dashboard, provider)
-      : null;
-  const scopes = plan?.definition ? connectRequestedScopes(plan.definition) : [];
-  const effectiveAccess =
-    plan === null || workspace?.kind !== "project"
-      ? (plan?.requestedAccess ?? "read")
-      : effectiveIntegrationAccess(plan.requestedAccess, allowChanges);
-  const grantedAccess =
-    plan === null
-      ? effectiveAccess
-      : grantedIntegrationAccess({
+  const card =
+    loaded && workspace
+      ? connectCard({
+          loaded,
+          workspace,
+          selectedAccountId: accountId,
           allowChanges,
-          plan,
-          workspaceKind: workspace?.kind === "main" ? "main" : "project",
-        });
-  // An app on a computer is turned on here, inline: there is no sign-in to hand
-  // off to, so the phone offers it exactly when a computer is reporting the app.
+          agentProposed: props.request.presentation.agentProposed === true,
+          connecting,
+          error,
+          connectedAccount: connected,
+          answered: props.request.status !== "pending",
+          repositories: step === "repository-access",
+        })
+      : null;
   const computerChoices =
-    plan?.requirement.kind === "computer" && plan.definition !== null
+    plan?.requirement.kind === "computer" && plan.definition
       ? computerAppChoices({
           connections: loaded?.dashboard.connections ?? [],
           definition: plan.definition,
@@ -223,108 +128,155 @@ export function IntegrationConnectSheet(props: {
     computerId === null
       ? (computerChoices?.available[0] ?? null)
       : (computerChoices?.available.find(({ machine }) => machine.id === computerId) ?? null);
-  // Asking for changes through a computer that is only allowed to read is not
-  // something a Workspace grant can settle — the tool does not exist yet.
-  const computerUpgrade = plan === null ? null : computerAccessUpgrade(plan, effectiveAccess);
-  // A Request that names an account is answered by that account or not at
-  // all, so the only connection worth making for it is the one that repairs it.
-  const reconnect =
-    plan !== null && plan.requestedAccountMissing ? plan.requestedAccountReconnect : null;
-  const unavailable = plan !== null && plan.requestedAccountMissing && reconnect === null;
-  const connectable =
-    plan !== null &&
-    accountConnectable(plan) &&
-    (plan.requestedConnectionId === null || reconnect !== null) &&
-    (provider !== null ||
-      plan.apiKeyMethod !== null ||
-      plan.requirement.kind === "mcp-oauth" ||
-      (plan.requirement.kind === "computer" && (computerChoices?.available.length ?? 0) > 0)) &&
-    (provider === null || availability?.kind !== "other-surface");
-  // A key reconnects the exact account a Request names: nothing else can say
-  // which account an unidentified key belongs to.
-  const reconnectedConnectionId = reconnect?.method === "api-key" ? reconnect.account.id : null;
-  const close = (): void => {
-    operationGeneration.current += 1;
-    props.onClose();
-  };
+  const reconnect = card?.reconnect ?? null;
+  const effectiveAccess = card?.effectiveAccess ?? "read";
+  const computerUpgrade = card?.upgrade ?? null;
 
-  // The Host's own selection is the only preselection, and it is taken once:
-  // a later reload never moves the app this person chose for this attempt.
   useEffect(() => {
-    if (loaded === null || provider === null || sourceSelectionSeeded.current) return;
-    sourceSelectionSeeded.current = true;
-    setChosen(initialConnectSource(loaded.dashboard, provider));
-  }, [loaded, provider]);
-
-  // A key repair is the key itself, so a Request naming an account that needs
-  // a new one opens on the key, under the account's own name, and once only.
-  const keyReconnectName =
-    connectable && reconnect?.method === "api-key" ? reconnect.account.displayName : null;
-  useEffect(() => {
-    if (keyReconnectName === null || reconnectStepSeeded.current) return;
-    reconnectStepSeeded.current = true;
-    setApiKeyName(keyReconnectName);
-    setStep("api-key");
-  }, [keyReconnectName]);
-
-  const connect = async (): Promise<void> => {
-    if (plan === null || plan.definition === null || chosen === null) return;
-    const generation = operationGeneration.current + 1;
-    operationGeneration.current = generation;
-    setBusy(true);
+    setLoaded(null);
+    setStep("review");
+    setBusy(false);
+    setConnecting(false);
     setError(null);
     setNotice(null);
-    try {
-      const status = await mobile.beginIntegrationAuthorization({
-        applicationSource: chosen,
-        definitionId: plan.definition.id,
+    setAccountId(null);
+    setAllowChanges(false);
+    setConnected(null);
+    setConnectedId(null);
+    setRepositoryAccess(null);
+    setApiKeyValues({});
+    setApiKeyName("");
+    setComputerId(null);
+    setComputerAccess("read");
+    return () => {
+      operationGeneration.current += 1;
+      if (presented.current) props.onClose?.();
+    };
+  }, [props.hostClient, props.request.id]);
+  useEffect(() => {
+    if (!payload) return;
+    let cancelled = false;
+    Promise.all([
+      props.hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
+      props.hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
+    ])
+      .then(([dashboard, platform]) => {
+        if (!cancelled)
+          setLoaded((current) => ({
+            dashboard,
+            platform,
+            request:
+              current &&
+              ((payload.installationId === null && current.request.installationId !== null) ||
+                (payload.requestedServerId === null && current.request.requestedServerId !== null))
+                ? current.request
+                : payload,
+          }));
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) setError(describe(reason));
       });
-      if (operationGeneration.current !== generation) return;
-      const outcome = integrationAuthorizationError(status.status, status.failureCode);
-      if (outcome !== null) {
-        setError(outcome);
-        setStep("apps");
-        return;
-      }
-      const dashboard = unwrapRpcResult(await props.hostClient.rpc["integrations.get"]({}));
-      if (operationGeneration.current !== generation) return;
-      const connection = authorizationConnection(dashboard, status.connectionId);
-      if (connection === null) {
-        setError(
-          `${plan.definition.name} reported success, but no connected account is recorded here. Start the connection again.`,
-        );
-        setStep("apps");
-        return;
-      }
-      if (connection.provider === "github") {
-        setConnectedId(connection.id);
-        setRepositoryAccess(null);
-        const access = await checkRepositories(connection.id, generation);
-        if (access === null || operationGeneration.current !== generation) return;
-        if (!access.ready) {
-          setRepositoryAccess(access);
-          setStep("repository-access");
-          return;
-        }
-      }
-      setAccountId(connection.id);
-      setConnectedId(connection.id);
-      setReload((value) => value + 1);
-      setStep("connected");
-    } catch (reason) {
-      if (operationGeneration.current !== generation) return;
-      setError(describe(reason));
-      setStep("apps");
-    } finally {
-      if (operationGeneration.current === generation) setBusy(false);
+    return () => {
+      cancelled = true;
+    };
+  }, [props.hostClient, payload, reload]);
+
+  const showForm = (next: Step): void => {
+    setStep(next);
+    if (!presented.current) {
+      presented.current = true;
+      props.onPresent?.();
     }
   };
-
-  /**
-   * GitHub's repository check, the first and every recheck. After a refusal
-   * the sheet reloads the account and goes where the Host put it
-   * (`repositoryAccountStep`), and answers no access to show.
-   */
+  const close = (): void => {
+    operationGeneration.current += 1;
+    setBusy(false);
+    setStep("review");
+    setApiKeyValues({});
+    if (presented.current) {
+      presented.current = false;
+      props.onClose?.();
+    }
+  };
+  const run = async (operation: (generation: number) => Promise<void>): Promise<void> => {
+    if (responding.current || props.disabled || props.canStartResponse?.() === false) return;
+    const claim = props.mutationGate?.acquire("request");
+    if (props.mutationGate && !claim) return;
+    responding.current = true;
+    const generation = ++operationGeneration.current;
+    setBusy(true);
+    setError(null);
+    try {
+      await operation(generation);
+    } catch (reason) {
+      if (generation === operationGeneration.current) setError(describe(reason));
+    } finally {
+      responding.current = false;
+      if (claim) props.mutationGate?.release(claim);
+      if (generation === operationGeneration.current) {
+        setBusy(false);
+        setConnecting(false);
+      }
+    }
+  };
+  const finish = async (
+    connectionId: string,
+    generation: number,
+    current = loaded,
+  ): Promise<void> => {
+    if (!current || !workspace) return;
+    const [dashboard, platform] = await Promise.all([
+      props.hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
+      props.hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
+    ]);
+    if (generation !== operationGeneration.current) return;
+    const next = { ...current, dashboard, platform };
+    const nextPlan = accessPlan(next, connectionId);
+    if (!nextPlan?.selectedAccount || nextPlan.selectedAccount.id !== connectionId)
+      throw new Error(
+        "Authorization finished without recording the requested account. Start the connection again.",
+      );
+    if (computerAccessUpgrade(nextPlan, effectiveAccess))
+      throw new Error("Allow changes on this computer before allowing this request.");
+    if (
+      workspace.kind === "project" ||
+      (await integrationRequestStillPending(
+        props.hostClient,
+        props.request.originatingThreadId,
+        props.request.id,
+      ))
+    ) {
+      if (generation !== operationGeneration.current) return;
+      await resolveIntegrationAccess(props.hostClient, {
+        access: effectiveAccess,
+        accountsCount: nextPlan.accounts.length,
+        installationTitle: nextPlan.installationTitle,
+        requestId: props.request.id,
+        selectedAccount: nextPlan.selectedAccount,
+        targetKind: workspace.kind,
+      });
+    }
+    if (generation !== operationGeneration.current) return;
+    if (
+      await integrationRequestStillPending(
+        props.hostClient,
+        props.request.originatingThreadId,
+        props.request.id,
+      )
+    )
+      throw new Error("The account is connected, but this request is still waiting. Try again.");
+    if (generation !== operationGeneration.current) return;
+    setLoaded(next);
+    setAccountId(connectionId);
+    setConnected(nextPlan.selectedAccount);
+    setStep("review");
+    if (presented.current) {
+      presented.current = false;
+      props.onClose?.();
+    }
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    props.onResponded();
+  };
   const checkRepositories = async (
     connectionId: IntegrationConnectionSummary["id"],
     generation: number,
@@ -334,665 +286,601 @@ export function IntegrationConnectSheet(props: {
         await props.hostClient.rpc["integration.repositoryAccess.check"]({ connectionId }),
       );
     } catch (reason) {
-      if (operationGeneration.current !== generation) return null;
-      // An account that cannot be reloaded keeps its saved sign-in and this step.
+      if (generation !== operationGeneration.current) return null;
       const dashboard = await props.hostClient.rpc["integrations.get"]({})
         .then(unwrapRpcResult)
         .catch(() => null);
-      if (operationGeneration.current !== generation) return null;
-      if (dashboard !== null) {
-        setLoaded((current) => (current === null ? current : { ...current, dashboard }));
-      }
-      const next = dashboard === null ? null : repositoryAccountStep(dashboard, connectionId);
-      if (next?.kind === "connected") {
-        setAccountId(connectionId);
-        setReload((value) => value + 1);
-        setStep("connected");
-      } else if (next?.kind === "sign-in") {
+      if (generation !== operationGeneration.current) return null;
+      if (dashboard) setLoaded((current) => (current ? { ...current, dashboard } : current));
+      const next = dashboard ? repositoryAccountStep(dashboard, connectionId) : null;
+      if (next?.kind === "connected") await finish(connectionId, generation);
+      else if (next?.kind === "sign-in") {
         setError(next.detail ?? describe(reason));
-        setStep("apps");
+        setStep("review");
+        if (presented.current) {
+          presented.current = false;
+          props.onClose?.();
+        }
       } else {
         setError(describe(reason));
-        setStep("repository-access");
+        showForm("repository-access");
       }
       return null;
     }
   };
-
-  const recheckRepositories = async (): Promise<void> => {
-    if (connectedId === null) return;
-    const generation = operationGeneration.current + 1;
-    operationGeneration.current = generation;
-    setBusy(true);
-    setError(null);
-    try {
-      const access = await checkRepositories(connectedId, generation);
-      if (access === null || operationGeneration.current !== generation) return;
-      setRepositoryAccess(access);
-      if (!access.ready) return;
-      setAccountId(connectedId);
-      setReload((value) => value + 1);
-      setStep("connected");
-    } finally {
-      if (operationGeneration.current === generation) setBusy(false);
-    }
-  };
-
-  const saveOwnApp = async (draft: {
-    readonly clientId: string;
-    readonly displayName: string;
-    readonly installationUrl?: string;
-    readonly secrets: Record<string, string>;
-  }): Promise<void> => {
-    if (manifest === null || provider === null) return;
-    const generation = operationGeneration.current + 1;
-    operationGeneration.current = generation;
-    setBusy(true);
-    setError(null);
-    try {
-      const saved = await props.hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`integration-app:${provider}`),
-        input: {
-          availability: "personal",
-          clientId: draft.clientId,
-          displayName: draft.displayName,
-          expectedRevision: null,
-          ...(draft.installationUrl ? { installationUrl: draft.installationUrl } : {}),
-          provider,
-          secrets: draft.secrets,
-        },
-        type: "integration.providerApplication.save",
-      });
-      if (saved.type !== "integration.providerApplication.save") {
-        throw new Error("Integration application command mismatch.");
-      }
-      if (operationGeneration.current !== generation) return;
-      const dashboard = unwrapRpcResult(await props.hostClient.rpc["integrations.get"]({}));
-      const platform = unwrapRpcResult(await props.hostClient.rpc["integration.platform.get"]({}));
-      if (operationGeneration.current !== generation) return;
-      if (payload !== null) setLoaded({ dashboard, platform, request: payload });
-      // The Host's answer names the row it wrote; two apps can carry the same
-      // name and client id, so nothing here matches on what was typed.
-      const source = connectSavedSource(dashboard, saved.application);
-      if (source !== null) setChosen(source);
-      setNotice(
-        source === null
-          ? "App saved, but this deployment is not offering it for sign-in yet. No account is connected."
-          : "App saved. No account is connected yet.",
+  const authorize = async (current: LoadedAccessRequest, generation: number): Promise<void> => {
+    if (!workspace) return;
+    const next = connectCard({
+      loaded: current,
+      workspace,
+      allowChanges,
+      selectedAccountId: accountId,
+    });
+    const nextPlan = next.plan;
+    if (!nextPlan) return;
+    setConnecting(true);
+    const status =
+      nextPlan.requirement.kind === "mcp-oauth" && nextPlan.serverId
+        ? await mobile.beginMcpIntegrationAuthorization({
+            displayName: accountName.trim() || `${nextPlan.installationTitle} account`,
+            requestId: props.request.id,
+            serverId: nextPlan.serverId,
+          })
+        : nextPlan.definition && next.source
+          ? await mobile.beginIntegrationAuthorization({
+              applicationSource: next.source,
+              definitionId: nextPlan.definition.id,
+            })
+          : null;
+    if (generation !== operationGeneration.current) return;
+    if (!status) throw new Error("Open integration settings to finish this connection.");
+    const outcome = integrationAuthorizationError(status.status, status.failureCode);
+    if (outcome) throw new Error(outcome);
+    if (!status.connectionId)
+      throw new Error(
+        "Authorization finished without recording an account. Start the connection again.",
       );
-      setStep("apps");
-    } catch (reason) {
-      if (operationGeneration.current !== generation) return;
-      setError(describe(reason));
-    } finally {
-      if (operationGeneration.current === generation) setBusy(false);
+    const dashboard = unwrapRpcResult(await props.hostClient.rpc["integrations.get"]({}));
+    if (generation !== operationGeneration.current) return;
+    const connection = authorizationConnection(dashboard, status.connectionId);
+    if (nextPlan.requirement.kind === "provider" && !connection)
+      throw new Error(
+        `${nextPlan.integrationName} reported success, but no connected account is recorded here. Start the connection again.`,
+      );
+    if (connection?.provider === "github") {
+      setConnectedId(connection.id);
+      setRepositoryAccess(null);
+      const access = await checkRepositories(connection.id, generation);
+      if (!access || generation !== operationGeneration.current) return;
+      if (!access.ready) {
+        setRepositoryAccess(access);
+        setStep("repository-access");
+        if (!presented.current) {
+          presented.current = true;
+          props.onPresent?.();
+        }
+        return;
+      }
     }
+    await finish(status.connectionId, generation, current);
   };
-
-  const install = async (): Promise<void> => {
-    if (payload === null || payload.installationId !== null) return;
-    const generation = operationGeneration.current + 1;
-    operationGeneration.current = generation;
-    setBusy(true);
-    setError(null);
-    try {
+  const install = () =>
+    run(async (generation) => {
+      if (!payload || !loaded || !card?.primary || !workspace) return;
       await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${props.request.id}:install`),
         requestId: props.request.id,
         response: { kind: "choice", optionId: "installed" },
         type: "request.respond",
       });
-      if (operationGeneration.current !== generation) return;
-      setNotice("Installation is ready. Loading the account and access review…");
-      setReload((value) => value + 1);
-    } catch (reason) {
-      if (operationGeneration.current !== generation) return;
-      setError(describe(reason));
-    } finally {
-      if (operationGeneration.current === generation) setBusy(false);
-    }
-  };
-
-  /**
-   * Turning the app on for one computer, or raising the ceiling of the one it
-   * is already on. Both are the same authoritative write, and both leave the
-   * request exactly as the agent pinned it: only the connection changes.
-   */
-  const setComputerApp = async (input: {
-    readonly access: IntegrationAccess;
-    readonly runnerId: string;
-  }): Promise<void> => {
-    if (!plan?.definition) return;
-    const definitionId = plan.definition.id;
-    const generation = operationGeneration.current + 1;
-    operationGeneration.current = generation;
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const command = {
-        idempotencyKey: mutationIdempotencyKey(
-          `integration-computer:${definitionId}:${input.runnerId}:${input.access}`,
-        ),
-        input: {
-          access: input.access,
-          app: null,
-          definitionId,
-          kind: "app" as const,
-          runnerId: RunnerIdSchema.parse(input.runnerId),
-        },
-      };
-      const phone = definitionId === "android-phone";
-      if (phone) {
-        const result = await props.hostClient.dispatch({
-          ...command,
-          type: "integration.computer.setup.set",
-        });
-        if (result.type !== "integration.computer.setup.set")
-          throw new Error("Phone access did not change.");
-      } else {
-        const result = await props.hostClient.dispatch({
-          ...command,
-          type: "integration.computer.setup.request",
-        });
-        if (result.type !== "integration.computer.setup.request")
-          throw new Error("Integration computer command mismatch.");
+      let before: string | undefined;
+      let updated: Request | undefined;
+      do {
+        const page = unwrapRpcResult(
+          await props.hostClient.rpc["thread.requests.list"]({
+            threadId: props.request.originatingThreadId,
+            limit: 100,
+            ...(before ? { before } : {}),
+          }),
+        );
+        updated = page.requests.find((candidate) => candidate.id === props.request.id);
+        if (updated || !page.window.hasMore) break;
+        if (!page.window.nextBefore)
+          throw new Error("Thread Request page is missing its continuation cursor.");
+        before = page.window.nextBefore;
+      } while (before);
+      if (updated?.payload.kind !== "integration.access")
+        throw new Error("This connection request is no longer available.");
+      const [dashboard, platform] = await Promise.all([
+        props.hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
+        props.hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
+      ]);
+      if (generation !== operationGeneration.current) return;
+      const next = { dashboard, platform, request: updated.payload };
+      setLoaded(next);
+      if (card.autoInstall) {
+        const nextCard = connectCard({ loaded: next, workspace, allowChanges });
+        if (nextCard.form === "api-key") showForm("api-key");
+        else if (nextCard.form === "computer") showForm("computer");
+        else if (nextCard.form === "server") showForm("server");
+        else if (nextCard.primary?.kind === "connect") await authorize(next, generation);
+        else if (nextCard.plan?.requirement.kind === "none") {
+          await resolveIntegrationAccess(props.hostClient, {
+            access: nextCard.effectiveAccess,
+            accountsCount: 0,
+            installationTitle: nextCard.plan.installationTitle,
+            requestId: props.request.id,
+            selectedAccount: null,
+            targetKind: workspace.kind,
+          });
+          if (generation === operationGeneration.current) props.onResponded();
+        }
       }
-      if (operationGeneration.current !== generation) return;
-      const computer = snapshot.machines.find((machine) => machine.id === input.runnerId);
-      setNotice(
-        phone && computer !== undefined && isAndroidPhone(computer)
-          ? `Agents can now use ${computer.name} at the access you chose.`
-          : `Setup requested. On ${computer?.name ?? "that computer"}, open Opensteer → Settings → Computers to approve ${plan.definition.name}.`,
-      );
-    } catch (reason) {
-      if (operationGeneration.current !== generation) return;
-      setError(describe(reason));
-    } finally {
-      if (operationGeneration.current === generation) setBusy(false);
-    }
-  };
-
-  const connectApiKey = async (): Promise<void> => {
-    if (plan?.apiKeyMethod === null || !plan?.definition) return;
-    const generation = operationGeneration.current + 1;
-    operationGeneration.current = generation;
-    setBusy(true);
-    setError(null);
-    try {
+    });
+  const connectApiKey = () =>
+    run(async (generation) => {
+      if (!plan?.apiKeyMethod || !plan.definition || !loaded) return;
       await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`integration-key:${plan.definition.id}`),
         input: {
           authMethodId: plan.apiKeyMethod.id,
-          ...(reconnectedConnectionId === null ? {} : { connectionId: reconnectedConnectionId }),
+          ...(reconnect?.method === "api-key" ? { connectionId: reconnect.account.id } : {}),
           definitionId: plan.definition.id,
           ...(apiKeyName.trim() ? { displayName: apiKeyName.trim() } : {}),
           values: apiKeyValues,
         },
         type: "integration.apiKey.connect",
       });
-      if (operationGeneration.current !== generation) return;
+      const dashboard = unwrapRpcResult(await props.hostClient.rpc["integrations.get"]({}));
+      if (generation !== operationGeneration.current) return;
+      const connection = dashboard.connections.find(
+        (account) =>
+          account.definitionId === plan.definition!.id &&
+          account.status === "connected" &&
+          (reconnect
+            ? account.id === reconnect.account.id
+            : !loaded.dashboard.connections.some((previous) => previous.id === account.id)),
+      );
+      if (!connection) throw new Error("No connected account is recorded here. Try again.");
+      setApiKeyValues({});
+      await finish(connection.id, generation);
+    });
+  const recheckRepositories = () =>
+    run(async (generation) => {
+      if (!connectedId) return;
+      const access = await checkRepositories(connectedId, generation);
+      if (!access || generation !== operationGeneration.current) return;
+      setRepositoryAccess(access);
+      if (access.ready) await finish(connectedId, generation);
+    });
+  const setComputerApp = (input: {
+    readonly access: IntegrationAccess;
+    readonly runnerId: string;
+  }) =>
+    run(async (generation) => {
+      if (!plan?.definition) return;
+      const command = {
+        idempotencyKey: mutationIdempotencyKey(
+          `integration-computer:${plan.definition.id}:${input.runnerId}:${input.access}`,
+        ),
+        input: {
+          ...input,
+          runnerId: RunnerIdSchema.parse(input.runnerId),
+          app: null,
+          definitionId: plan.definition.id,
+          kind: "app" as const,
+        },
+      };
+      const phone = plan.definition.id === "android-phone";
+      const result = phone
+        ? await props.hostClient.dispatch({ ...command, type: "integration.computer.setup.set" })
+        : await props.hostClient.dispatch({
+            ...command,
+            type: "integration.computer.setup.request",
+          });
+      if (
+        result.type !== "integration.computer.setup.set" &&
+        result.type !== "integration.computer.setup.request"
+      )
+        throw new Error("Integration computer command mismatch.");
+      if (generation !== operationGeneration.current) return;
+      const computer = snapshot.machines.find((machine) => machine.id === input.runnerId);
+      setNotice(
+        phone && computer && isAndroidPhone(computer)
+          ? `Agents can now use ${computer.name} at the access you chose.`
+          : `Setup requested. On ${computer?.name ?? "that computer"}, open Opensteer → Settings → Computers to approve ${plan.definition.name}.`,
+      );
       setReload((value) => value + 1);
-      setStep("review");
-    } catch (reason) {
-      if (operationGeneration.current !== generation) return;
-      setError(describe(reason));
-    } finally {
-      if (operationGeneration.current === generation) setBusy(false);
-    }
-  };
-
-  const connectMcp = async (): Promise<void> => {
-    if (plan?.requirement.kind !== "mcp-oauth" || plan.serverId === null) return;
-    const generation = operationGeneration.current + 1;
-    operationGeneration.current = generation;
-    setBusy(true);
-    setError(null);
-    try {
-      const status = await mobile.beginMcpIntegrationAuthorization({
-        displayName: `${plan.installationTitle} account`,
-        requestId: props.request.id,
-        serverId: plan.serverId,
-      });
-      if (operationGeneration.current !== generation) return;
-      const outcome = integrationAuthorizationError(status.status, status.failureCode);
-      if (outcome !== null) {
-        setError(outcome);
-        return;
-      }
-      if (status.connectionId === null) {
-        setError(
-          "Authorization finished without recording an account. Start the connection again.",
-        );
-        return;
-      }
-      setAccountId(status.connectionId);
-      setReload((value) => value + 1);
-    } catch (reason) {
-      if (operationGeneration.current !== generation) return;
-      setError(describe(reason));
-    } finally {
-      if (operationGeneration.current === generation) setBusy(false);
-    }
-  };
-
-  const chooseServer = async (serverId: string): Promise<void> => {
-    const generation = operationGeneration.current + 1;
-    operationGeneration.current = generation;
-    setBusy(true);
-    setError(null);
-    try {
+    });
+  const chooseServer = (serverId: string) =>
+    run(async (generation) => {
       await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${props.request.id}:server:${serverId}`),
         requestId: props.request.id,
         response: { kind: "choice", optionId: `server:${serverId}` },
         type: "request.respond",
       });
-      if (operationGeneration.current !== generation) return;
-      setNotice("Server selected. Loading its account and access review…");
+      if (generation !== operationGeneration.current) return;
+      setStep("review");
       setReload((value) => value + 1);
-    } catch (reason) {
-      if (operationGeneration.current !== generation) return;
-      setError(describe(reason));
-    } finally {
-      if (operationGeneration.current === generation) setBusy(false);
-    }
-  };
-
-  const decline = async (): Promise<void> => {
-    const generation = operationGeneration.current + 1;
-    operationGeneration.current = generation;
-    setBusy(true);
-    setError(null);
-    try {
+    });
+  const decline = () =>
+    run(async (generation) => {
       await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${props.request.id}`),
         requestId: props.request.id,
         response: { kind: "external", value: { decision: "declined" } },
         type: "request.respond",
       });
-      if (operationGeneration.current !== generation) return;
-      props.onResponded();
-      close();
-    } catch (reason) {
-      if (operationGeneration.current !== generation) return;
-      setError(describe(reason));
-    } finally {
-      if (operationGeneration.current === generation) setBusy(false);
+      if (generation === operationGeneration.current) props.onResponded();
+    });
+  const allow = () =>
+    run(async (generation) => {
+      if (!plan || !workspace) return;
+      if (plan.selectedAccount) await finish(plan.selectedAccount.id, generation);
+      else {
+        await resolveIntegrationAccess(props.hostClient, {
+          access: effectiveAccess,
+          accountsCount: 0,
+          installationTitle: plan.installationTitle,
+          requestId: props.request.id,
+          selectedAccount: null,
+          targetKind: workspace.kind,
+        });
+        if (generation === operationGeneration.current) props.onResponded();
+      }
+    });
+  const openConnect = (): void => {
+    if (!plan || !loaded) return;
+    if (plan.apiKeyMethod) {
+      if (reconnect) setApiKeyName(reconnect.account.displayName);
+      showForm("api-key");
+    } else if (plan.requirement.kind === "computer") showForm("computer");
+    else void run((generation) => authorize(loaded, generation));
+  };
+  const primary = (): void => {
+    if (!card) return;
+    switch (card.primary?.kind) {
+      case "retry":
+        setError(null);
+        if (step === "repository-access") void recheckRepositories();
+        else if (plan?.selectedAccount) void allow();
+        else if (loaded?.request.installationId === null) void install();
+        else if (plan) openConnect();
+        else setReload((value) => value + 1);
+        break;
+      case "install":
+        void install();
+        break;
+      case "use":
+        void allow();
+        break;
+      case "settings":
+        navigation.navigate("SettingsPlugins", { deploymentId: snapshot.deploymentId! });
+        break;
+      case "server":
+        showForm("server");
+        break;
+      case "repositories":
+        void recheckRepositories();
+        break;
+      case "upgrade":
+        if (computerUpgrade)
+          void setComputerApp({ access: "read-write", runnerId: computerUpgrade.runnerId });
+        break;
+      case "connect":
+        if (loaded?.request.installationId === null) void install();
+        else openConnect();
+        break;
     }
   };
-
-  const allow = async (): Promise<void> => {
-    if (plan === null || workspace === null) return;
-    const generation = operationGeneration.current + 1;
-    operationGeneration.current = generation;
-    setBusy(true);
-    setError(null);
-    try {
-      await resolveIntegrationAccess(props.hostClient, {
-        access: effectiveAccess,
-        accountsCount: plan.accounts.length,
-        installationTitle: plan.installationTitle,
-        requestId: props.request.id,
-        selectedAccount: plan.selectedAccount,
-        targetKind: workspace.kind,
-      });
-      if (operationGeneration.current !== generation) return;
-      props.onResponded();
-      close();
-    } catch (reason) {
-      if (operationGeneration.current !== generation) return;
-      setError(describe(reason));
-    } finally {
-      if (operationGeneration.current === generation) setBusy(false);
-    }
-  };
-
-  // Main uses every account its owner connects, so connecting answers a
-  // request for Main at once. Every stage that connects says so beside its
-  // action, a key repair that opens straight on its key included.
-  const connectNote =
-    workspace?.kind === "main" &&
-    connectable &&
-    plan?.requirement.kind !== "computer" &&
-    ((step === "review" && payload?.installationId !== null && serverChoices.length === 0) ||
-      (step === "apps" && options.length > 0) ||
-      step === "api-key")
-      ? mainConnectAllowsNote(workspace.name)
-      : null;
-
+  if (!card)
+    return (
+      <View style={styles.body}>
+        <AppText role="secondary">{error ?? "Checking account access…"}</AppText>
+        {error ? (
+          <PrimaryButton
+            label="Try again"
+            onPress={() => {
+              setError(null);
+              setReload((value) => value + 1);
+            }}
+          />
+        ) : null}
+      </View>
+    );
+  if (card.phase === "connected")
+    return (
+      <View style={styles.result}>
+        <AppText role="body">{card.success}</AppText>
+      </View>
+    );
+  if (card.phase === "answered") return <AppText role="secondary">Request answered</AppText>;
   const title =
-    payload?.installationId === null
-      ? "Install integration"
-      : serverChoices.length > 0
-        ? "Choose server"
-        : step === "own-app"
-          ? "Your own app"
-          : step === "computer"
-            ? "Choose a computer"
-            : step === "api-key"
-              ? reconnect === null
-                ? "Connect API key"
-                : `Reconnect ${plan?.integrationName ?? "account"}`
-              : step === "repository-access"
-                ? "Choose GitHub repositories"
-                : step === "connected"
-                  ? "Account connected"
-                  : plan === null
-                    ? "Connect account"
-                    : reconnect === null
-                      ? `Connect ${plan.integrationName}`
-                      : `Reconnect ${plan.integrationName}`;
-
+    step === "computer"
+      ? "Choose a computer"
+      : step === "repository-access"
+        ? "Choose GitHub repositories"
+        : step === "server"
+          ? "Choose server"
+          : (card.primary?.label ?? `Connect ${card.name}`);
   return (
-    <Sheet
-      footer={
-        <View style={styles.footer}>
-          {connectNote === null ? null : (
-            <AppText role="secondary" tone="muted">
-              {connectNote}
-            </AppText>
-          )}
-          {step === "review" ? (
-            <>
-              {serverChoices.length > 0 ? (
-                serverChoices.map((server) => (
-                  <PrimaryButton
-                    busy={busy}
-                    key={server.id}
-                    label={`Continue with ${server.name}`}
-                    onPress={() => void chooseServer(server.id)}
-                  />
-                ))
-              ) : payload?.installationId === null ? (
-                loaded !== null &&
-                (loaded.dashboard.isAdministrator || matchingInstallation !== null) ? (
-                  <PrimaryButton
-                    busy={busy}
-                    label={matchingInstallation ? "Continue" : "Install and continue"}
-                    onPress={() => void install()}
-                  />
-                ) : null
-              ) : connectable ? (
-                <SecondaryButton
-                  busy={busy}
-                  label={
-                    reconnect !== null
-                      ? "Reconnect account"
-                      : // An app on a computer is turned on for a computer, never
-                        // signed in to, so the action says which move it is.
-                        plan?.requirement.kind === "computer"
-                        ? plan.accounts.length > 0
-                          ? "Use another computer"
-                          : "Choose a computer"
-                        : plan && plan.accounts.length > 0
-                          ? "Connect another account"
-                          : "Connect account"
-                  }
-                  onPress={() => {
-                    setError(null);
-                    if (plan?.requirement.kind === "mcp-oauth") void connectMcp();
-                    else if (plan?.requirement.kind === "computer") setStep("computer");
-                    else {
-                      if (reconnect?.method === "api-key")
-                        setApiKeyName(reconnect.account.displayName);
-                      setStep(plan?.apiKeyMethod ? "api-key" : "apps");
-                    }
-                  }}
-                />
-              ) : null}
-              {unavailable ? (
-                <SecondaryButton
-                  busy={busy}
-                  label="Decline request"
-                  onPress={() => void decline()}
-                />
-              ) : null}
-              {computerUpgrade === null ? null : (
-                <SecondaryButton
-                  busy={busy}
-                  label={`Request sending access on ${computerUpgrade.displayName}`}
-                  onPress={() =>
-                    void setComputerApp({
-                      access: "read-write",
-                      runnerId: computerUpgrade.runnerId,
-                    })
-                  }
-                />
-              )}
-              {plan !== null &&
-              !plan.requestedAccountMissing &&
-              // Approving would grant an access the connection cannot carry, so
-              // the ceiling is raised first, deliberately, or not at all.
-              computerUpgrade === null &&
-              (plan.requirement.kind === "none" || plan.selectedAccount !== null) &&
-              workspace !== null ? (
-                <PrimaryButton
-                  busy={busy}
-                  label={
-                    workspace.kind === "main" ? "Use this account" : `Allow in ${workspace.name}`
-                  }
-                  onPress={() => void allow()}
-                />
-              ) : null}
-            </>
-          ) : null}
-          {step === "apps" ? (
-            <>
-              {manifest !== null &&
-              loaded !== null &&
-              provider !== null &&
-              canSetUpOwnApp(loaded.dashboard, provider) ? (
-                <SecondaryButton
-                  busy={busy}
-                  label={
-                    options.length > 0
-                      ? `Use my own ${plan?.integrationName ?? ""} app`.trim()
-                      : `Set up my own ${plan?.integrationName ?? ""} app`.trim()
-                  }
-                  onPress={() => {
-                    setError(null);
-                    setNotice(null);
-                    setStep("own-app");
-                  }}
-                />
-              ) : null}
-              {options.length > 0 ? (
-                <PrimaryButton
-                  busy={busy}
-                  disabled={chosenOption === null || choiceLost}
-                  label="Continue in browser"
-                  onPress={() => void connect()}
-                />
-              ) : null}
-            </>
-          ) : null}
-          {step === "computer" ? (
-            <>
-              <SecondaryButton
-                busy={busy}
-                label="Back to the request"
-                onPress={() => {
-                  setError(null);
-                  setStep("review");
-                }}
-              />
-              {computerChosen === null ? null : (
-                <PrimaryButton
-                  busy={busy}
-                  label={`Request setup on ${computerChosen.machine.name}`}
-                  onPress={() =>
-                    void setComputerApp({
-                      access: computerAccess,
-                      runnerId: computerChosen.machine.id,
-                    })
-                  }
-                />
-              )}
-            </>
-          ) : null}
-          {step === "connected" ? (
-            <PrimaryButton
-              label="Back to the request"
-              onPress={() => {
-                setNotice(null);
-                setStep("review");
-              }}
+    <View style={styles.body}>
+      <View style={styles.integrationHeading}>
+        <IntegrationIcon definitionId={card.iconId} name={card.name} />
+        <View style={styles.integrationHeadingText}>
+          <AppText role="title">{card.name}</AppText>
+          <AppText role="secondary" tone="soft">
+            {card.purpose}
+          </AppText>
+        </View>
+      </View>
+      {card.capabilities
+        .filter(
+          (line) => line.includes("connecting also allows") || line.includes("requires read-write"),
+        )
+        .map((line) => (
+          <AppText key={line} role="secondary" tone="muted">
+            {line}
+          </AppText>
+        ))}
+      {plan?.proposed || props.request.presentation.agentProposed ? (
+        <AgentProposedCaption proposed />
+      ) : null}
+      {card.projectNote ? (
+        <AppText role="secondary" tone="muted">
+          {card.projectNote}
+        </AppText>
+      ) : null}
+      {/* Primary action precedes account rows in accessibility focus order. */}
+      {card.primary ? (
+        <PrimaryButton
+          busy={busy}
+          disabled={props.disabled ?? false}
+          label={card.primary.label}
+          onPress={primary}
+        />
+      ) : null}
+      {connecting ? (
+        <AppText role="secondary">Connecting…</AppText>
+      ) : (
+        <SecondaryButton
+          busy={busy}
+          disabled={props.disabled ?? false}
+          label={card.secondary}
+          onPress={() => void decline()}
+        />
+      )}
+      {card.error ? (
+        <Notice detail={card.error} title="This connection did not finish" tone="danger" />
+      ) : null}
+      {props.disabledReason ? (
+        <AppText role="secondary" tone="muted">
+          {props.disabledReason}
+        </AppText>
+      ) : null}
+      {notice ? (
+        <>
+          <Notice detail={notice} title="Saved" tone="neutral" />
+          {plan?.requirement.kind === "computer" ? (
+            <SecondaryButton
+              label="Check setup"
+              disabled={busy}
+              onPress={() => setReload((value) => value + 1)}
             />
           ) : null}
-          {step === "repository-access" ? (
-            <>
-              <SecondaryButton busy={busy} label="Finish later" onPress={close} />
+        </>
+      ) : null}
+      {card.installReview ? (
+        <InstallReview
+          canInstall={loaded?.dashboard.isAdministrator ?? false}
+          continuesToAccess
+          installedTitle={null}
+          manifest={loaded?.request.manifest}
+        />
+      ) : null}
+      {card.accounts.length ? (
+        <RowGroup>
+          {card.accounts.map((account) => (
+            <ChoiceRow
+              disabled={busy || (props.disabled ?? false)}
+              description={`${account.displayName} · ${account.detail}${account.selected ? " · chosen" : ""}`}
+              key={account.id}
+              onPress={() => setAccountId(account.id)}
+              title={account.label}
+            />
+          ))}
+        </RowGroup>
+      ) : null}
+      {card.canConnectAnother && card.accounts.length ? (
+        <SecondaryButton
+          disabled={busy || (props.disabled ?? false)}
+          label={
+            plan?.requirement.kind === "computer"
+              ? "Use another computer"
+              : "Connect another account"
+          }
+          onPress={openConnect}
+        />
+      ) : null}
+      {card.canAllowChanges ? (
+        <SwitchRow
+          disabled={busy || (props.disabled ?? false)}
+          label={
+            plan?.definition?.computerApp
+              ? `Allow changes (${plan.definition.computerApp.accessLabels.readWrite})`
+              : "Allow changes"
+          }
+          onChange={setAllowChanges}
+          value={allowChanges}
+        />
+      ) : null}
+      {plan?.requirement.kind === "mcp-oauth" && !plan.accounts.length ? (
+        <Field
+          label="Account name"
+          input={{
+            value: accountName || `${plan.installationTitle} account`,
+            onChangeText: setAccountName,
+          }}
+        />
+      ) : null}
+      {reconnect ? (
+        <AppText role="secondary">
+          {integrationAccountDetail(reconnect.account, [
+            reconnect.account,
+            ...(plan?.accounts ?? []),
+          ])}{" "}
+          · Needs attention
+        </AppText>
+      ) : null}
+      {computerUpgrade ? (
+        <Notice
+          title="Allow changes on this computer"
+          detail={`${plan?.integrationName} on ${computerUpgrade.displayName} is ${plan?.definition?.computerApp?.accessLabels.read ?? "read only"}. Choose ${plan?.definition?.computerApp?.accessLabels.readWrite ?? "read and write"} before allowing changes in this Workspace; the request itself does not change.`}
+          tone="neutral"
+        />
+      ) : null}
+      {reconnect?.statusDetail ? (
+        <AppText role="secondary" tone="muted">
+          {reconnect.statusDetail}
+        </AppText>
+      ) : null}
+      {plan?.requirement.kind === "computer" ? (
+        <ReviewStep
+          plan={plan}
+          connections={loaded?.dashboard.connections ?? []}
+          machines={snapshot.machines}
+        />
+      ) : null}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: disclosed }}
+        onPress={() => setDisclosed((value) => !value)}
+        style={styles.disclosure}
+      >
+        <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="action">
+          What Opensteer can do
+        </AppText>
+      </Pressable>
+      {disclosed
+        ? card.capabilities
+            .filter(
+              (line) =>
+                !line.includes("connecting also allows") && !line.includes("requires read-write"),
+            )
+            .map((line) => (
+              <AppText key={line} role="secondary" tone="muted">
+                {line}
+              </AppText>
+            ))
+        : null}
+      <Sheet
+        open={step !== "review"}
+        onClose={close}
+        title={title}
+        footer={
+          <View style={styles.footer}>
+            {step === "api-key" && plan?.apiKeyMethod ? (
               <PrimaryButton
                 busy={busy}
+                disabled={
+                  props.disabled ||
+                  plan.apiKeyMethod.inputs.some(
+                    ({ variable }) => !(apiKeyValues[variable] ?? "").trim(),
+                  )
+                }
+                label={
+                  reconnect
+                    ? `Reconnect ${reconnect.account.accountIdentifier ?? reconnect.account.displayName}`
+                    : `Connect ${card.name}`
+                }
+                onPress={() => void connectApiKey()}
+              />
+            ) : null}
+            {step === "computer" && computerChosen ? (
+              <PrimaryButton
+                busy={busy}
+                disabled={props.disabled ?? false}
+                label={`Request setup on ${computerChosen.machine.name}`}
+                onPress={() =>
+                  void setComputerApp({
+                    access: computerAccess,
+                    runnerId: computerChosen.machine.id,
+                  })
+                }
+              />
+            ) : null}
+            {step === "repository-access" ? (
+              <PrimaryButton
+                busy={busy}
+                disabled={props.disabled ?? false}
                 label="Recheck repository access"
                 onPress={() => void recheckRepositories()}
               />
+            ) : null}
+            <SecondaryButton label="Finish later" onPress={close} />
+          </View>
+        }
+      >
+        <View style={styles.body}>
+          {error ? (
+            <Notice detail={error} title="This connection did not finish" tone="danger" />
+          ) : null}
+          {notice ? (
+            <>
+              <Notice detail={notice} title="Saved" tone="neutral" />
+              {plan?.requirement.kind === "computer" ? (
+                <SecondaryButton
+                  label="Check setup"
+                  disabled={busy}
+                  onPress={() => setReload((value) => value + 1)}
+                />
+              ) : null}
             </>
           ) : null}
-          {step === "api-key" && plan?.apiKeyMethod ? (
-            <PrimaryButton
+          {step === "api-key" && plan?.apiKeyMethod && plan.definition ? (
+            <>
+              <AgentProposedCaption proposed={card.proposed} />
+              <ApiKeyStep
+                definition={plan.definition}
+                proposed={card.proposed}
+                displayName={apiKeyName}
+                method={plan.apiKeyMethod}
+                onDisplayName={setApiKeyName}
+                onValue={(variable, value) =>
+                  setApiKeyValues((current) => ({ ...current, [variable]: value }))
+                }
+                values={apiKeyValues}
+              />
+            </>
+          ) : null}
+          {step === "computer" && plan?.definition && computerChoices ? (
+            <ComputerAppPicker
+              access={computerAccess}
               busy={busy}
-              disabled={plan.apiKeyMethod.inputs.some(
-                ({ variable }) => !(apiKeyValues[variable] ?? "").trim(),
-              )}
-              label={reconnect === null ? "Connect account" : "Reconnect account"}
-              onPress={() => void connectApiKey()}
+              chosenId={computerChosen?.machine.id ?? null}
+              definition={plan.definition}
+              onAccess={setComputerAccess}
+              onChoose={setComputerId}
+              targets={computerChoices}
             />
           ) : null}
+          {step === "repository-access" ? <RepositoryAccessStep access={repositoryAccess} /> : null}
+          {step === "server"
+            ? card.serverChoices.map((server) => (
+                <SecondaryButton
+                  key={server.id}
+                  disabled={props.disabled || busy}
+                  label={`Continue with ${server.name}`}
+                  onPress={() => void chooseServer(server.id)}
+                />
+              ))
+            : null}
         </View>
-      }
-      onClose={close}
-      open={props.open}
-      title={title}
-    >
-      <View style={styles.body}>
-        {error === null ? null : (
-          <Notice detail={error} title="This connection did not finish" tone="danger" />
-        )}
-        {notice === null ? null : <Notice detail={notice} title="Saved" tone="neutral" />}
-
-        {payload === null ? (
-          <Notice
-            detail="Ask the agent to request the integration again."
-            title="This request is not an integration request"
-            tone="danger"
-          />
-        ) : payload.installationId === null ? (
-          <InstallReview
-            canInstall={loaded?.dashboard.isAdministrator ?? false}
-            continuesToAccess
-            installedTitle={matchingInstallation?.installation.title ?? null}
-            manifest={payload.manifest}
-          />
-        ) : serverChoices.length > 0 ? (
-          <>
-            <AppText role="body">
-              Choose the {serverChoices[0]!.installationTitle} server this request should use.
-            </AppText>
-            <AppText role="secondary" tone="muted">
-              The account and operations shown next come only from that server.
-            </AppText>
-          </>
-        ) : plan === null ? (
-          <AppText role="secondary" tone="muted">
-            Checking this deployment…
-          </AppText>
-        ) : step === "review" ? (
-          <ReviewStep
-            access={grantedAccess}
-            connections={loaded?.dashboard.connections ?? []}
-            allowChanges={allowChanges}
-            computerAvailable={(computerChoices?.available.length ?? 0) > 0}
-            computerUpgrade={computerUpgrade}
-            availabilityDetail={
-              availability !== null && availability.kind !== "ready" ? availability.detail : null
-            }
-            agentProposed={props.request.presentation.agentProposed === true}
-            onAccount={setAccountId}
-            onAllowChanges={setAllowChanges}
-            plan={plan}
-            reconnect={reconnect}
-            machines={snapshot.machines}
-            scopes={scopes}
-            supportedConnect={connectable}
-            workspaceKind={workspace?.kind ?? null}
-            workspaceName={workspace?.name ?? null}
-          />
-        ) : step === "apps" ? (
-          <>
-            {chosen?.kind === "deployment-oauth" ? (
-              <>
-                <AppText role="secondary">
-                  Existing connections keep working. Before connecting or reconnecting, register
-                  this exact redirect URI in your provider console.
-                </AppText>
-                <CodeBlock label="Required redirect URI" text={chosen.callbackUrl} />
-              </>
-            ) : null}
-            <AppsStep
-              choiceLost={choiceLost}
-              chosen={chosen}
-              hostedOutage={
-                loaded !== null &&
-                provider !== null &&
-                hostedOAuthOutage(loaded.dashboard, provider)
-              }
-              onChoose={setChosen}
-              options={options}
-              unavailable={
-                availability !== null && availability.kind !== "ready" ? availability.detail : null
-              }
-            />
-          </>
-        ) : step === "own-app" && manifest !== null && loaded !== null && provider !== null ? (
-          <OwnAppStep
-            busy={busy}
-            callbackUrl={loaded.dashboard.callbackUrls[provider] ?? ""}
-            manifest={manifest}
-            onSave={(draft) => void saveOwnApp(draft)}
-          />
-        ) : step === "api-key" && plan.apiKeyMethod && plan.definition ? (
-          <>
-            {props.request.presentation.agentProposed === true ? <AgentProposedCaption /> : null}
-            {reconnect === null ? null : (
-              <ReconnectAccount accounts={plan.accounts} reconnect={reconnect} />
-            )}
-            <ApiKeyStep
-              definition={plan.definition}
-              proposed={plan.proposed}
-              displayName={apiKeyName}
-              method={plan.apiKeyMethod}
-              onDisplayName={setApiKeyName}
-              onValue={(variable, value) =>
-                setApiKeyValues((current) => ({ ...current, [variable]: value }))
-              }
-              values={apiKeyValues}
-            />
-          </>
-        ) : step === "computer" && plan.definition !== null && computerChoices !== null ? (
-          <ComputerAppPicker
-            access={computerAccess}
-            busy={busy}
-            chosenId={computerChosen?.machine.id ?? null}
-            definition={plan.definition}
-            onAccess={setComputerAccess}
-            onChoose={setComputerId}
-            targets={computerChoices}
-          />
-        ) : step === "connected" ? (
-          <ConnectedStep
-            connection={loaded !== null ? connectedAccount(loaded.dashboard, connectedId) : null}
-            name={plan.integrationName}
-          />
-        ) : step === "repository-access" ? (
-          <RepositoryAccessStep access={repositoryAccess} />
-        ) : null}
-      </View>
-    </Sheet>
+      </Sheet>
+    </View>
   );
 }
-
 function ApiKeyStep(props: {
   readonly definition: NonNullable<AccessPlan["definition"]>;
   readonly proposed: boolean;
@@ -1055,7 +943,8 @@ function ApiKeyStep(props: {
 }
 
 /** Said under the integration a Request asks about whenever an agent proposed it. */
-function AgentProposedCaption(): ReactNode {
+function AgentProposedCaption({ proposed }: { readonly proposed: boolean }): ReactNode {
+  if (!proposed) return null;
   return (
     <AppText accessibilityHint={requestAgentProposedDetail} role="caption" tone="muted">
       {requestAgentProposedLabel}
@@ -1063,70 +952,12 @@ function AgentProposedCaption(): ReactNode {
   );
 }
 
-/**
- * The account a Request names, when it needs reconnecting: which one it is,
- * and why, as the Host recorded it.
- */
-function ReconnectAccount(props: {
-  readonly accounts: AccessPlan["accounts"];
-  readonly reconnect: NonNullable<AccessPlan["requestedAccountReconnect"]>;
-}): ReactNode {
-  const { account, statusDetail } = props.reconnect;
-  return (
-    <>
-      <SectionLabel>Account</SectionLabel>
-      <RowGroup>
-        <View style={styles.fact}>
-          <AppText role="body">{account.displayName}</AppText>
-          <AppText role="secondary" tone="muted">
-            {`${integrationAccountDetail(account, [account, ...props.accounts])} · Needs attention`}
-          </AppText>
-        </View>
-        {statusDetail === null ? null : (
-          <View style={styles.fact}>
-            <AppText role="secondary" tone="muted">
-              {statusDetail}
-            </AppText>
-          </View>
-        )}
-      </RowGroup>
-    </>
-  );
-}
-
 function ReviewStep(props: {
-  readonly access: "read" | "read-write";
-  readonly agentProposed: boolean;
-  readonly allowChanges: boolean;
-  readonly availabilityDetail: string | null;
   readonly connections: LoadedAccessRequest["dashboard"]["connections"];
-  /** Whether a computer is reporting this app and has it turned off. */
-  readonly computerAvailable: boolean;
-  readonly computerUpgrade: ReturnType<typeof computerAccessUpgrade>;
-  readonly onAccount: (connectionId: string) => void;
-  readonly onAllowChanges: (value: boolean) => void;
   readonly machines: HostSnapshot["machines"];
-  readonly plan: NonNullable<ReturnType<typeof accessPlan>>;
-  readonly reconnect: AccessPlan["requestedAccountReconnect"];
-  readonly scopes: readonly string[];
-  readonly supportedConnect: boolean;
-  readonly workspaceKind: "main" | "project" | null;
-  readonly workspaceName: string | null;
+  readonly plan: AccessPlan;
 }): ReactNode {
   const { plan } = props;
-  const operations = plan.readCount + plan.writeCount;
-  const accounts =
-    plan.requestedConnectionId === null
-      ? plan.accounts
-      : plan.accounts.filter(({ id }) => id === plan.requestedConnectionId);
-  const requestDescription =
-    operations === 0
-      ? `${plan.installationTitle} is asking for access${
-          props.workspaceName === null ? "" : ` in ${props.workspaceName}`
-        }.`
-      : `${plan.installationTitle} is asking to use a ${plan.integrationName} account${
-          props.workspaceName === null ? "" : ` in ${props.workspaceName}`
-        }.`;
   const selectedComputerConnection =
     plan.selectedAccount?.computer === null || plan.selectedAccount?.computer === undefined
       ? null
@@ -1156,131 +987,6 @@ function ReviewStep(props: {
         });
   return (
     <>
-      {plan.definition === null ? (
-        <AppText role="body">{requestDescription}</AppText>
-      ) : (
-        <View style={styles.integrationHeading}>
-          <IntegrationIcon definitionId={plan.definition.id} name={plan.definition.name} />
-          <AppText role="body" style={styles.integrationHeadingText}>
-            {requestDescription}
-          </AppText>
-        </View>
-      )}
-      {props.agentProposed ? <AgentProposedCaption /> : null}
-      {operations === 0 ? null : (
-        <AppText role="secondary" tone="muted">
-          {integrationAccessSummary(plan, props.access)}
-        </AppText>
-      )}
-      {props.scopes.length === 0 ? null : (
-        <>
-          <SectionLabel>Permissions requested at the provider</SectionLabel>
-          <AppText role="secondary" tone="muted">
-            {props.scopes.join(", ")}
-          </AppText>
-        </>
-      )}
-      {plan.requirement.kind === "none" ? null : props.reconnect !== null ? (
-        <ReconnectAccount accounts={plan.accounts} reconnect={props.reconnect} />
-      ) : plan.requestedAccountMissing ? (
-        <Notice
-          detail={requestedAccountUnavailableDetail}
-          title="Account no longer available"
-          tone="neutral"
-        />
-      ) : plan.accounts.length === 0 ? (
-        plan.requirement.kind === "computer" ? (
-          props.computerAvailable ? (
-            <Notice
-              detail={
-                computerAppRunsOnPhone(plan.definition?.computerApp)
-                  ? "Agents see and operate the whole screen of the phone you choose. You set their access here."
-                  : `${plan.integrationName} runs on the computer you choose. Agents reach it through Opensteer, and nothing else on that computer is opened.`
-              }
-              title="Choose a computer"
-              tone="neutral"
-            />
-          ) : (
-            <Notice
-              detail={computerAppElsewhereDetail({
-                integrationName: plan.integrationName,
-                presentation: plan.definition?.computerApp,
-              })}
-              title={`No computer is offering ${plan.integrationName} yet`}
-              tone="neutral"
-            />
-          )
-        ) : (
-          <Notice
-            detail={
-              props.supportedConnect
-                ? "Connect one below. Installing this integration connected nothing."
-                : "Connect this account on a computer, then return here to allow access."
-            }
-            title="No account is connected yet"
-            tone="neutral"
-          />
-        )
-      ) : (
-        <>
-          <SectionLabel>
-            {plan.requirement.kind === "computer" ? "Computer" : "Account"}
-          </SectionLabel>
-          <RowGroup>
-            {accounts.map((account) => {
-              const pinned = plan.requestedConnectionId !== null;
-              const connection = props.connections.find(({ id }) => id === account.id) ?? null;
-              const accountName =
-                connection?.computer && plan.definition
-                  ? computerAppConnectionLabel({
-                      connection,
-                      definition: plan.definition,
-                      machines: props.machines,
-                    })
-                  : account.displayName;
-              const computerState =
-                connection?.computer && plan.definition
-                  ? computerConnectionState({
-                      connection,
-                      definition: plan.definition,
-                      machines: props.machines,
-                    })
-                  : null;
-              const computerPlatform = props.machines.find(
-                ({ id }) => id === connection?.computer?.runnerId,
-              )?.device?.platform;
-              const accountDetail =
-                connection?.computer && plan.definition?.computerApp && computerState
-                  ? `${computerAppAccessLabel(
-                      plan.definition.computerApp,
-                      connection.computer.access,
-                    )} · ${computerAppStateLabel(computerState, computerPlatform)}`
-                  : integrationAccountDetail(account, plan.accounts);
-              return pinned || accounts.length === 1 ? (
-                <View key={account.id} style={styles.fact}>
-                  <AppText role="body">{accountName}</AppText>
-                  <AppText role="secondary" tone="muted">
-                    {pinned
-                      ? `${accountDetail} · Requested ${connection?.computer ? "computer" : "account"}`
-                      : accountDetail}
-                  </AppText>
-                </View>
-              ) : (
-                <ChoiceRow
-                  description={
-                    account.id === plan.selectedAccount?.id
-                      ? `${accountDetail} · chosen`
-                      : accountDetail
-                  }
-                  key={account.id}
-                  onPress={() => props.onAccount(account.id)}
-                  title={accountName}
-                />
-              );
-            })}
-          </RowGroup>
-        </>
-      )}
       {selectedComputerPermission === null || selectedComputerMachine === null ? null : (
         <Notice
           detail={`${selectedComputerPermission.detail} ${computerAppSetupElsewhere(
@@ -1290,196 +996,6 @@ function ReviewStep(props: {
           tone="neutral"
         />
       )}
-      {props.computerUpgrade === null ? null : (
-        <Notice
-          detail={`${plan.integrationName} on ${props.computerUpgrade.displayName} is ${
-            plan.definition?.computerApp?.accessLabels.read ?? "read only"
-          }. Choose ${
-            plan.definition?.computerApp?.accessLabels.readWrite ?? "read and write"
-          } before allowing changes in this Workspace; the request itself does not change.`}
-          title="Allow changes on this computer"
-          tone="neutral"
-        />
-      )}
-      {props.workspaceKind === "project" &&
-      plan.requestedAccess === "read" &&
-      (plan.writeCount > 0 || plan.definition?.computerApp?.accessLevels.length === 2) ? (
-        <SwitchRow
-          label={
-            plan.definition?.computerApp
-              ? `Allow changes (${plan.definition.computerApp.accessLabels.readWrite})`
-              : `Allow changes (${changingOperationCount(plan.writeCount)})`
-          }
-          onChange={props.onAllowChanges}
-          value={props.allowChanges}
-        />
-      ) : null}
-      {props.workspaceKind === "project" && plan.requestedAccess === "read-write" ? (
-        <AppText role="secondary" tone="muted">
-          {plan.writeCount > 0
-            ? `This task requires read-write access, including ${changingOperationCount(plan.writeCount)}.`
-            : "This task requires read-write access. It allows changes when operations become available."}
-        </AppText>
-      ) : null}
-      {props.availabilityDetail === null ? null : (
-        <AppText role="secondary" tone="muted">
-          {props.availabilityDetail}
-        </AppText>
-      )}
-    </>
-  );
-}
-
-function AppsStep(props: {
-  readonly choiceLost: boolean;
-  readonly chosen: IntegrationOAuthApplicationSource | null;
-  readonly hostedOutage: boolean;
-  readonly onChoose: (source: IntegrationOAuthApplicationSource) => void;
-  readonly options: readonly ConnectSignInOption[];
-  readonly unavailable: string | null;
-}): ReactNode {
-  return (
-    <>
-      {props.hostedOutage ? (
-        <Notice
-          detail="This is an outage, not missing setup. Try again in a moment, or continue with another app."
-          title="Opensteer sign-in is temporarily unavailable"
-          tone="neutral"
-        />
-      ) : null}
-      {props.choiceLost ? (
-        <Notice
-          detail="Choose a sign-in app below. Opensteer never switches it for you."
-          title="The app you chose is no longer offered"
-          tone="danger"
-        />
-      ) : null}
-      {props.options.length === 0 ? (
-        <Notice
-          detail={props.unavailable ?? "This deployment has no sign-in app for this service yet."}
-          title="No sign-in app is ready yet"
-          tone="neutral"
-        />
-      ) : (
-        <>
-          <SectionLabel>Sign-in app</SectionLabel>
-          <RowGroup>
-            {props.options.map((option) => (
-              <ChoiceRow
-                description={
-                  sameSource(option.source, props.chosen)
-                    ? `${option.detail} · chosen`
-                    : option.detail
-                }
-                key={optionKey(option)}
-                onPress={() => props.onChoose(option.source)}
-                title={option.label}
-              />
-            ))}
-          </RowGroup>
-          <AppText role="caption" tone="muted">
-            Opensteer opens the provider in a browser and waits for this deployment to record the
-            result. Closing that browser connects nothing.
-          </AppText>
-        </>
-      )}
-    </>
-  );
-}
-
-function OwnAppStep(props: {
-  readonly busy: boolean;
-  readonly callbackUrl: string;
-  readonly manifest: NonNullable<ReturnType<typeof connectProviderManifest>>;
-  readonly onSave: (draft: {
-    readonly clientId: string;
-    readonly displayName: string;
-    readonly installationUrl?: string;
-    readonly secrets: Record<string, string>;
-  }) => void;
-}): ReactNode {
-  const [displayName, setDisplayName] = useState(props.manifest.label);
-  const [clientId, setClientId] = useState("");
-  const [installationUrl, setInstallationUrl] = useState("");
-  const [secrets, setSecrets] = useState<Record<string, string>>({});
-  const complete =
-    displayName.trim() !== "" &&
-    clientId.trim() !== "" &&
-    (!props.manifest.installationUrlRequired || installationUrl.trim() !== "") &&
-    props.manifest.secretFields.every((field) => (secrets[field] ?? "") !== "");
-  return (
-    <>
-      <AppText role="secondary" tone="soft">
-        Create a {props.manifest.setupLabel} at {props.manifest.setupUrl}, then paste its
-        credentials here. Saving the app does not connect an account, and only you can sign in with
-        it.
-      </AppText>
-      {props.manifest.setupSteps.map((setupStep) => (
-        <AppText key={setupStep} role="secondary" tone="muted">
-          {setupStep}
-        </AppText>
-      ))}
-      <CodeBlock label="Authorized callback URL" text={props.callbackUrl} />
-      <Field
-        input={{
-          autoCapitalize: "none",
-          autoCorrect: false,
-          onChangeText: setDisplayName,
-          value: displayName,
-        }}
-        label="App name"
-      />
-      <Field
-        input={{
-          autoCapitalize: "none",
-          autoCorrect: false,
-          onChangeText: setClientId,
-          value: clientId,
-        }}
-        label="Client ID"
-      />
-      {props.manifest.installationUrlRequired ? (
-        <Field
-          hint="Opensteer uses this exact URL after sign-in so people can choose repositories."
-          input={{
-            autoCapitalize: "none",
-            autoCorrect: false,
-            onChangeText: setInstallationUrl,
-            value: installationUrl,
-          }}
-          label="GitHub App installation URL"
-        />
-      ) : null}
-      {props.manifest.secretFields.map((field) => (
-        <Field
-          hint="Encrypted before storage and never shown again."
-          input={{
-            autoCapitalize: "none",
-            autoCorrect: false,
-            onChangeText: (value: string) =>
-              setSecrets((current) => ({ ...current, [field]: value })),
-            secureTextEntry: true,
-            value: secrets[field] ?? "",
-          }}
-          key={field}
-          label={secretLabel(field)}
-        />
-      ))}
-      <PrimaryButton
-        busy={props.busy}
-        disabled={!complete}
-        label="Save app"
-        onPress={() =>
-          props.onSave({
-            clientId: clientId.trim(),
-            displayName: displayName.trim(),
-            ...(props.manifest.installationUrlRequired
-              ? { installationUrl: installationUrl.trim() }
-              : {}),
-            secrets,
-          })
-        }
-      />
     </>
   );
 }
@@ -1536,80 +1052,15 @@ function RepositoryAccessStep({
   );
 }
 
-function ConnectedStep(props: {
-  readonly connection: ReturnType<typeof connectedAccount>;
-  readonly name: string;
-}): ReactNode {
-  if (props.connection === null) {
-    return (
-      <Notice
-        detail="Open this request again to see the account this deployment recorded."
-        title="The connection is not readable here"
-        tone="danger"
-      />
-    );
-  }
-  return (
-    <>
-      <AppText role="body">
-        {props.name} is connected as {props.connection.displayName}.
-      </AppText>
-      <RowGroup>
-        <View style={styles.fact}>
-          <AppText role="secondary" tone="muted">
-            Account
-          </AppText>
-          <AppText role="body">
-            {props.connection.accountIdentifier ?? props.connection.displayName}
-          </AppText>
-        </View>
-        {props.connection.externalTenantId === null ? null : (
-          <View style={styles.fact}>
-            <AppText role="secondary" tone="muted">
-              {props.name} workspace
-            </AppText>
-            <AppText role="body">{props.connection.externalTenantId}</AppText>
-          </View>
-        )}
-      </RowGroup>
-      <AppText role="secondary" tone="muted">
-        Nothing can use it until you answer the request behind this sheet.
-      </AppText>
-    </>
-  );
-}
-
-function optionKey(option: ConnectSignInOption): string {
-  return option.source.kind === "hosted-oauth"
-    ? `hosted:${option.source.brokerIssuer}`
-    : `app:${option.source.providerApplicationId}`;
-}
-
-function sameSource(
-  left: IntegrationOAuthApplicationSource,
-  right: IntegrationOAuthApplicationSource | null,
-): boolean {
-  if (right === null || left.kind !== right.kind) return false;
-  return left.kind === "hosted-oauth"
-    ? left.brokerIssuer === (right as typeof left).brokerIssuer
-    : left.providerApplicationId === (right as typeof left).providerApplicationId;
-}
-
-/** Turns `clientSecret` into the label a provider console uses. */
-function secretLabel(field: string): string {
-  return field
-    .replaceAll(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/\b\w/g, (letter) => letter.toLocaleUpperCase());
-}
-
 function describe(reason: unknown): string {
   return reason instanceof Error ? reason.message : "This deployment could not be reached.";
 }
-
 const styles = StyleSheet.create({
-  body: { gap: space[16], paddingHorizontal: space[16], paddingTop: space[8] },
+  body: { gap: space[12], padding: space[16] },
   fact: { gap: space[2], paddingHorizontal: space[14], paddingVertical: space[12] },
   footer: { backgroundColor: color.surface, gap: space[8] },
   integrationHeading: { alignItems: "center", flexDirection: "row", gap: space[10] },
   integrationHeadingText: { flex: 1 },
+  disclosure: { minHeight: touchTarget, justifyContent: "center" },
+  result: { padding: space[16] },
 });
