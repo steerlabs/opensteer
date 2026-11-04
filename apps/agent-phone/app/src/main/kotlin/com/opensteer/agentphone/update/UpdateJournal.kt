@@ -11,14 +11,14 @@ internal class UpdateJournal(private val journal: SharedPreferences, private val
             it in setOf("installing", "awaiting-user") && sessionExists(journal.getInt("sessionId", -1))
     }
 
-    fun takeCancelled(identity: PhoneIdentity): Boolean {
-        if (state() != "cancelled" || journal.getString("scope", null)?.startsWith("${identity.runnerId} ${identity.hostUrl} ") != true) return false
+    fun takeCancelled(identity: PhoneIdentity): Boolean = locked {
+        if (state() != "cancelled" || journal.getString("scope", null)?.startsWith("${identity.runnerId} ${identity.hostUrl} ") != true) return@locked false
         check(journal.edit().putString("state", "idle").remove("sessionId").commit()) { "Could not record the cancelled update" }
-        return true
+        true
     }
 
-    fun begin(identity: PhoneIdentity, offer: UpdateOffer) {
-        if (pendingState(identity) != null) return
+    fun begin(identity: PhoneIdentity, offer: UpdateOffer) = locked {
+        if (pendingState(identity) != null) return@locked
         val scope = "${identity.runnerId} ${identity.hostUrl} ${offer.sha256}"
         val attempts = if (journal.getString("scope", null) == scope) journal.getInt("attempts", 0) else 0
         check(attempts < 3) { "This release already failed three update attempts. Update over USB to try again." }
@@ -27,8 +27,9 @@ internal class UpdateJournal(private val journal: SharedPreferences, private val
             .putString("state", "downloading").remove("sessionId").commit()) { "Could not save the update attempt" }
     }
 
-    fun clearObsoleteConsent(identity: PhoneIdentity, abandon: (Int) -> Unit, cancelNotification: () -> Unit) = synchronized(lock) {
-        if (!matches(identity) || state() != "awaiting-user") return@synchronized
+    /** Consent is obsolete once the running app is admitted or another release is offered, whichever pairing began it. */
+    fun clearObsoleteConsent(abandon: (Int) -> Unit, cancelNotification: () -> Unit) = locked {
+        if (state() != "awaiting-user") return@locked
         val session = journal.getInt("sessionId", -1)
         // Fence Android's late result before abandoning: abandonSession may itself deliver a result.
         check(journal.edit().putString("state", "idle").remove("sessionId").commit()) { "Could not clear the obsolete update session" }
@@ -36,21 +37,20 @@ internal class UpdateJournal(private val journal: SharedPreferences, private val
         if (session >= 0) abandon(session)
     }
 
-    fun result(session: Int, apply: () -> Unit) = synchronized(lock) {
-        if (session != journal.getInt("sessionId", -1)) return@synchronized
+    fun result(session: Int, apply: () -> Unit) = locked {
+        if (session != journal.getInt("sessionId", -1)) return@locked
         apply()
     }
 
-    fun cancelled() {
-        if (state() == "cancelled") return
+    fun cancelled() = locked {
+        if (state() == "cancelled") return@locked
         check(journal.edit().putString("state", "cancelled").putInt("attempts", (journal.getInt("attempts", 1) - 1).coerceAtLeast(0)).commit())
     }
 
-    private fun matches(identity: PhoneIdentity) =
-        journal.getString("scope", null)?.startsWith("${identity.runnerId} ${identity.hostUrl} ") == true
+    /** Every journal transition takes this lock: receivers and the connection use separate instances over the same preferences. */
+    fun <T> locked(block: () -> T): T = synchronized(lock, block)
 
-    companion object {
-        // Receivers and the connection create separate installer instances over the same preferences.
-        private val lock = Any()
+    private companion object {
+        val lock = Any()
     }
 }

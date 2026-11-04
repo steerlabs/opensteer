@@ -32,8 +32,7 @@ class UpdateInstaller(private val context: Context) {
     fun takeCancelled(identity: PhoneIdentity) = lifecycle.takeCancelled(identity)
     fun begin(identity: PhoneIdentity, offer: UpdateOffer) = lifecycle.begin(identity, offer)
 
-    fun clearObsoleteConsent(identity: PhoneIdentity) = lifecycle.clearObsoleteConsent(
-        identity,
+    fun clearObsoleteConsent() = lifecycle.clearObsoleteConsent(
         abandon = { session -> runCatching { installer.abandonSession(session) } },
         cancelNotification = { context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION) },
     )
@@ -76,7 +75,7 @@ class UpdateInstaller(private val context: Context) {
                     session.fsync(output)
                 } }
                 check(stillPaired()) { "The pairing changed during the update" }
-                check(journal.edit().putInt("sessionId", sessionId).putString("state", "installing").commit()) { "Could not save the install session" }
+                lifecycle.locked { check(journal.edit().putInt("sessionId", sessionId).putString("state", "installing").commit()) { "Could not save the install session" } }
                 val intent = Intent(context, UpdateResultReceiver::class.java).setAction(RESULT)
                 val flags = PendingIntent.FLAG_UPDATE_CURRENT or if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
                 session.commit(PendingIntent.getBroadcast(context, sessionId, intent, flags).intentSender)
@@ -87,12 +86,12 @@ class UpdateInstaller(private val context: Context) {
         } finally { file.delete() }
     }
 
-    fun failed() {
+    fun failed() = lifecycle.locked {
         journal.edit().putString("state", "failed").commit()
         context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION)
     }
 
-    fun finishIfInstalled() {
+    fun finishIfInstalled() = lifecycle.locked {
         if (journal.getLong("version", Long.MAX_VALUE) <= context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode) {
             journal.edit().putString("state", "idle").remove("sessionId").commit()
             context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION)
@@ -129,7 +128,7 @@ class UpdateInstaller(private val context: Context) {
         }
     }
 
-    fun abandon() {
+    fun abandon() = lifecycle.locked {
         val session = journal.getInt("sessionId", -1)
         if (session >= 0) runCatching { installer.abandonSession(session) }
         failed()

@@ -8,6 +8,6 @@ sealed interface PhoneUpdateResult {
 
 interface PhoneUpdater {
     fun check(identity: PhoneIdentity): PhoneUpdateResult
-    fun admitted(identity: PhoneIdentity)
+    fun admitted()
     fun cancel()
 }

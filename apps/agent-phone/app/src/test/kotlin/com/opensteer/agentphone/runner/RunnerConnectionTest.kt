@@ -167,14 +167,14 @@ class RunnerConnectionTest {
         ),
     )
     private val updateChecks = CopyOnWriteArrayList<PhoneIdentity>()
-    private val admissions = CopyOnWriteArrayList<PhoneIdentity>()
+    private val admissions = java.util.concurrent.atomic.AtomicInteger()
     @Volatile private var requiredUpdateResult: PhoneUpdateResult = PhoneUpdateResult.Current
     private val updater = object : PhoneUpdater {
         override fun check(identity: PhoneIdentity): PhoneUpdateResult {
             updateChecks += identity
             return requiredUpdateResult
         }
-        override fun admitted(identity: PhoneIdentity) { admissions += identity }
+        override fun admitted() { admissions.incrementAndGet() }
         override fun cancel() = Unit
     }
     private val connection = RunnerConnection(
@@ -228,7 +228,7 @@ class RunnerConnectionTest {
         connection.start()
         online(nextSocket(PRIMARY))
         assertTrue(updateChecks.isEmpty())
-        assertEquals(listOf(identity), admissions)
+        assertEquals(1, admissions.get())
         stoppedCleanly()
     }
 

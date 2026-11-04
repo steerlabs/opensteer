@@ -50,7 +50,7 @@ class UpdateJournalTest {
         pending("awaiting-user")
         var notificationsCancelled = 0
         var abandoned = 0
-        journal.clearObsoleteConsent(identity, abandon = { session ->
+        journal.clearObsoleteConsent(abandon = { session ->
             assertNull(values["sessionId"])
             assertEquals("idle", journal.state())
             abandoned = session
@@ -64,13 +64,18 @@ class UpdateJournalTest {
     }
 
     @Test
-    fun compatibleAdmissionLeavesInstallingAndOtherPairingsAlone() {
+    fun compatibleAdmissionLeavesActiveInstallsAloneButClearsConsentBegunAtAnEarlierAddress() {
         pending("installing")
-        journal.clearObsoleteConsent(identity, { fail("active install abandoned") }, { fail("active install notification cancelled") })
-        values["state"] = "awaiting-user"
-        values["scope"] = "another identity"
-        journal.clearObsoleteConsent(identity, { fail("foreign session abandoned") }, { fail("foreign notification cancelled") })
+        journal.clearObsoleteConsent({ fail("active install abandoned") }, { fail("active install notification cancelled") })
         assertEquals(7, values["sessionId"])
+        // Setup retargeted the phone to another address of the same Deployment while consent was pending.
+        values["state"] = "awaiting-user"
+        values["scope"] = "${identity.runnerId} https://old-route.example ${offer.sha256}"
+        var abandoned = -1
+        journal.clearObsoleteConsent({ abandoned = it }, {})
+        assertEquals(7, abandoned)
+        assertEquals("idle", journal.state())
+        assertNull(values["sessionId"])
     }
 
     @Test
@@ -97,5 +102,29 @@ class UpdateJournalTest {
         repeat(3) { journal.begin(identity, offer); values["state"] = "failed" }
         assertEquals(3, values["attempts"])
         assertThrows(IllegalStateException::class.java) { journal.begin(identity, offer) }
+    }
+
+    @Test
+    fun aNewAttemptWaitsForAnAndroidResultAlreadyBeingRecorded() {
+        pending("awaiting-user")
+        val next = offer.copy(sha256 = "c".repeat(64), versionCode = 124)
+        lateinit var attempt: Thread
+        journal.result(7) {
+            // Android removed the finished session, so the connection sees nothing pending and begins again.
+            sessions.clear()
+            attempt = Thread { journal.begin(identity, next) }.apply { start() }
+            val deadline = System.nanoTime() + 5_000_000_000
+            while (attempt.state != Thread.State.BLOCKED) {
+                assertTrue("the new attempt never waited for the result being recorded", attempt.isAlive && System.nanoTime() < deadline)
+                Thread.onSpinWait()
+            }
+            assertEquals(offer.sha256, values["sha256"])
+            journal.cancelled()
+        }
+        attempt.join(5_000)
+        assertFalse("the new attempt never finished", attempt.isAlive)
+        assertEquals("downloading", journal.state())
+        assertEquals(next.sha256, values["sha256"])
+        assertEquals(1, values["attempts"])
     }
 }

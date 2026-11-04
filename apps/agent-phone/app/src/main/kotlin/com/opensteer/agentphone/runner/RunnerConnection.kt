@@ -448,7 +448,7 @@ class RunnerConnection(
         // unpairing in between wins, and this connection is abandoned.
         if (!record.replace(identity, identity.welcomed(welcome.fence.connectionGeneration))) throw Interrupted(stop = false)
         welcomed = true
-        updater?.admitted(identity)
+        updater?.admitted()
         return welcome
     }
 

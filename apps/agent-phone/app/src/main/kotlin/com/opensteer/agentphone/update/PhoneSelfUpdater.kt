@@ -41,7 +41,8 @@ class PhoneSelfUpdater(
     @Volatile private var active: WebSocket? = null
     @Volatile private var cancelled = false
 
-    override fun admitted(identity: PhoneIdentity) { journal.clearObsoleteConsent(identity) }
+    // Cleanup must not break a connection the Host already admitted.
+    override fun admitted() { runCatching { journal.clearObsoleteConsent() }.onFailure { Log.w("AgentPhone", "Could not clear an obsolete update prompt", it) } }
 
     private fun cancellation(identity: PhoneIdentity): PhoneUpdateResult.Pending? =
         if (journal.takeCancelled(identity)) PhoneUpdateResult.Pending("Update cancelled. Opensteer will try again.") else null
@@ -80,7 +81,8 @@ class PhoneSelfUpdater(
         }
         fun text(): String = (next() as? Frame.Text)?.value ?: error("Expected update metadata")
         fun sendState(state: String) {
-            val digest = updateDigest ?: journal.digest().takeIf { journal.pendingState(identity) != null } ?: release?.sha256 ?: return
+            // The Host tracks only the release it offers; a retained install of another release stays local.
+            val digest = release?.sha256?.takeIf { it == updateDigest } ?: return
             socket?.send(JsonText.stringify(jsonObject("type" to jsonOf("phone.update.status"), "apkSha256" to jsonOf(digest), "state" to jsonOf(state))))
         }
         try {
@@ -107,7 +109,7 @@ class PhoneSelfUpdater(
             val offerText = text()
             release = UpdateOffer.decode(offerText)
             // Consent for a release the Host no longer offers would install a build it may still refuse.
-            release?.let { if (journal.digest() != it.sha256) journal.clearObsoleteConsent(identity) }
+            release?.let { if (journal.digest() != it.sha256) journal.clearObsoleteConsent() }
             val pending = journal.pendingState(identity) != null
             updateDigest = if (pending) journal.digest() else release?.sha256
             status("Updating Agent Phone…")
