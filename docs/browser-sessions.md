@@ -150,7 +150,9 @@ committed characters and IME commits. Live composition, verified replacements an
 unrepresented editing commands refuse visibly until a separately qualified native
 contract supplies them. Private keyboard input, including stock Space and Enter,
 never falls through to ordinary CDP. The supplied native guard also refuses pages
-containing child frames. Refused and uncertain input is never automatically retried.
+containing child frames and native views using device emulation. A native pane
+smaller than the retained page uses emulation: it can stream, but private input
+requires an uncropped pane. Refused and uncertain input is never automatically retried.
 Only the qualified desktop framework advertises popup support; stock Electron and
 unqualified headless producers cannot enable it. Shipping another framework needs
 new native qualification and the matching admission in

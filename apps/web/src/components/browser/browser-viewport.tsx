@@ -738,6 +738,7 @@ export function BrowserViewport({
       !dragSelect &&
       (event.pointerType === "touch" || event.button === 0)
     ) {
+      discardMove();
       if (!canInputRef.current || !activeSurfaceId) return;
       const canvas = event.currentTarget.querySelector("canvas");
       const sample = canvas && sampleBrowserVideo(canvas, event.clientX, event.clientY);

@@ -19,7 +19,7 @@ export function serveBrowserPopupFixture(
 <button id="local-date">Local date</button><button id="local-color">Local color</button>
 <button id="successor">Successor on next selection</button>
 <script>
-window.fixture={clicks:0};document.addEventListener("click",()=>fixture.clicks++);window.popupResults={};for(const input of document.querySelectorAll('input,select')) {window.popupResults[input.id]={input:0,change:0};for(const kind of ['input','change']) input.addEventListener(kind,()=>{window.popupResults[input.id][kind]++})}
+window.fixture={clicks:0};document.addEventListener("click",()=>fixture.clicks++);window.popupResults={};for(const input of document.querySelectorAll('input,select')) {window.popupResults[input.id]={input:0,change:0,presses:0};input.addEventListener("mousedown",()=>{window.popupResults[input.id].presses++});for(const kind of ['input','change']) input.addEventListener(kind,()=>{window.popupResults[input.id][kind]++})}
 window.mutatePopup=()=>{document.querySelector('#single option').textContent='Changed choice'};
 window.replacePopup=()=>{const old=document.querySelector('#single');const next=old.cloneNode(true);old.replaceWith(next)};
 document.querySelector('#local-date').onclick=()=>document.querySelector('#date').showPicker();

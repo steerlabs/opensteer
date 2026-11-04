@@ -119,6 +119,17 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
               const m: unknown = JSON.parse(payload);
               if (m && typeof m === "object" && "type" in m && typeof m.type === "string")
                 commands[m.type] = (commands[m.type] ?? 0) + 1;
+              if (
+                m &&
+                typeof m === "object" &&
+                "type" in m &&
+                m.type === "input.pointer" &&
+                "action" in m &&
+                ["move", "down", "up", "leave"].includes(String(m.action))
+              ) {
+                const action = `pointer.${String(m.action)}`;
+                commands[action] = (commands[action] ?? 0) + 1;
+              }
             } catch {
               /* No raw data enters evidence. */
             }
@@ -432,12 +443,21 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     assert(closed.ok);
     await a.getByRole("dialog").waitFor({ state: "hidden" });
   } finally {
+    const producerResult = !contents.isDestroyed()
+      ? await contents
+          .executeJavaScript(
+            "({selectFocused:document.activeElement===document.getElementById('single'),counters:window.popupResults.single,childFrames:frames.length})",
+            false,
+          )
+          .catch(() => null)
+      : null;
     kit.artifacts.json("cases/popups/transport.json", {
       popupCounts: counts,
       commands,
       guardedResults,
       sessionMatches,
       admissions,
+      producerResult,
       viewerPid: pid,
       producerPid: process.pid,
       electron: process.versions.electron,

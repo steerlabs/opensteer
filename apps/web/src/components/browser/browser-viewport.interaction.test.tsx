@@ -133,8 +133,26 @@ it("keeps wheel, touch scroll, hover, right/middle buttons and drag on ordered i
     await pointer("pointerdown", { button: 0, buttons: 1 });
     await pointer("pointermove", { clientX: 70, button: 0, buttons: 1 });
     await pointer("pointerup", { clientX: 70, button: 0, buttons: 0 });
+    const hoverCount = commands.filter(
+      (c) => c.type === "input.pointer" && c.action === "move" && c.buttons === 0,
+    ).length;
+    act(() => {
+      viewport.dispatchEvent(
+        new PointerEvent("pointermove", {
+          bubbles: true,
+          clientX: 50,
+          clientY: 50,
+          pointerId: 1,
+          pointerType: "mouse",
+          buttons: 0,
+        }),
+      );
+    });
     await pointer("pointerdown", { button: 0, buttons: 1 });
     await pointer("pointerup", { button: 0, buttons: 0 });
+    expect(
+      commands.filter((c) => c.type === "input.pointer" && c.action === "move" && c.buttons === 0),
+    ).toHaveLength(hoverCount);
     await pointer("pointerdown", { pointerType: "touch", button: 0, buttons: 1 });
     await pointer("pointermove", { pointerType: "touch", clientY: 70, buttons: 1 });
     await pointer("pointerup", { pointerType: "touch", clientY: 70, buttons: 0 });
