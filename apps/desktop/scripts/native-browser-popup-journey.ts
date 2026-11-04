@@ -131,6 +131,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
           .locator('.side-tab[data-group="web"] .side-tab__main')
           .filter({ hasText: "Browser popup fixture" })
           .click();
+        await page.getByRole("button", { name: "Hide the conversation", exact: true }).click();
         await page.locator('canvas[aria-label="Live browser page"]').waitFor({ state: "visible" });
         await page.waitForFunction(
           () => Number(Reflect.get(window, "popupPresented")) > 0,
