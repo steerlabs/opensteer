@@ -1615,6 +1615,10 @@ export async function resumeThreadInputQueue(
       ])
       .where("id", "=", input.threadId)
       .executeTakeFirstOrThrow();
+    await assertThreadCaller(transaction, input.authority, {
+      threadId: input.threadId,
+      activate: true,
+    });
     const membership = await requireActiveWorkspaceMembership(
       transaction,
       thread.workspaceId,
@@ -1701,6 +1705,7 @@ export async function resumeThreadInputQueue(
 export async function renameThread(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly authority?: ThreadCallerAuthority;
     readonly idempotencyKey: string;
     readonly requestedBy: UserId;
     readonly actorRunId?: RunId;
@@ -1714,6 +1719,7 @@ export async function renameThread(
     database,
     async (transaction) => {
       await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+      await lockThreadCaller(transaction, input.authority);
       const payload = { threadId: input.threadId, title };
       const existing = await findCommandByIdempotency(
         transaction,
@@ -1824,6 +1830,7 @@ export async function renameThread(
 export async function setThreadIcon(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly authority?: ThreadCallerAuthority;
     readonly idempotencyKey: string;
     readonly requestedBy: UserId;
     readonly actorRunId?: RunId;
@@ -1837,6 +1844,7 @@ export async function setThreadIcon(
     database,
     async (transaction) => {
       await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+      await lockThreadCaller(transaction, input.authority);
       const payload = { threadId: input.threadId, icon: input.icon };
       const existing = await findCommandByIdempotency(
         transaction,
@@ -2132,7 +2140,10 @@ export async function steerThreadInput(
     await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
     await lockThreadCaller(transaction, input.authority, [input.expectedRunId]);
     const result = await steerThreadInputInTransaction(transaction, input);
-    await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
+    await assertThreadCaller(transaction, input.authority, {
+      threadId: input.threadId,
+      activate: true,
+    });
     return result;
   });
 }
@@ -2172,7 +2183,10 @@ export async function getThreadInputQueue(
   },
 ): Promise<ThreadInputQueue> {
   return withDatabaseTransaction(database, async (transaction) => {
-    await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
+    await assertThreadCaller(transaction, input.authority, {
+      threadId: input.threadId,
+      readOnly: true,
+    });
     return readThreadInputQueue(transaction, input);
   });
 }

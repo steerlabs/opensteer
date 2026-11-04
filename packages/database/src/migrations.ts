@@ -7136,7 +7136,7 @@ export const consentScopeMigration: Migration = {
           raise exception 'thread consent exceeds its durable authority';
         end if;
         if new.specialist_id is not null then
-          if new.parent_thread_id is null or not exists (
+          if not exists (
             select 1 from public.specialists where id = new.specialist_id
               and workspace_id = new.workspace_id and owner_user_id = new.created_by
               and status = 'ready' and removed_at is null for share

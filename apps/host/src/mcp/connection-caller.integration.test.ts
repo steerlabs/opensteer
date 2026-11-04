@@ -443,6 +443,59 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     ).toContain("outside the caller's reach");
   });
 
+  it("refuses Workspace connection activation of Main queues inside the transaction", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("queue-consent");
+    const url = await serveMcp(storeFixture.store);
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      reach: { kind: "workspace", workspaceId: f.workspace.id },
+    });
+    const authority = {
+      kind: "connection" as const,
+      connectionId: agent.id,
+      userId: f.userId,
+      accessMode: "full-access" as const,
+      reach: { kind: "workspace" as const, workspaceId: f.workspace.id },
+    };
+    const queued = await storeFixture.store.enqueueThreadInput({
+      threadId: f.thread.id,
+      requestedBy: f.userId,
+      idempotencyKey: "human-queued",
+      source: { kind: "human" },
+      policy: "queue",
+      content: [{ type: "text", text: "Human work" }],
+    });
+    await expect(
+      storeFixture.store.steerThreadInput({
+        authority,
+        threadId: f.thread.id,
+        requestedBy: f.userId,
+        idempotencyKey: "scoped-steer",
+        messageId: queued.message.id,
+        expectedRunId: f.run.id,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      storeFixture.store.resumeThreadInputQueue({
+        authority,
+        threadId: f.thread.id,
+        requestedBy: f.userId,
+        idempotencyKey: "scoped-resume",
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(
+      (
+        await storeFixture.store.getThreadInputQueue({
+          threadId: f.thread.id,
+          requestedBy: f.userId,
+        })
+      ).items,
+    ).toHaveLength(1);
+  });
+
   it("uses the client's model error and enforces the connection ceiling for configure and interrupt", async ({
     storeFixture,
   }) => {

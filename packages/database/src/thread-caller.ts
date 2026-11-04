@@ -1,5 +1,6 @@
 import {
   OpensteerError,
+  lineageCompatibleForReuse,
   threadAccessModeAtMost,
   threadReachScope,
   type ThreadAccessMode,
@@ -64,12 +65,16 @@ export async function assertThreadCaller(
   tx: Transaction<DatabaseSchema>,
   caller: ThreadCallerAuthority | undefined,
   target?: {
+    readonly activate?: boolean;
+    readonly readOnly?: boolean;
     readonly threadId?: ThreadId;
     readonly workspaceId?: import("@opensteer/core").WorkspaceId;
     readonly accessMode?: ThreadAccessMode;
   },
 ): Promise<void> {
   if (!caller) return;
+  let sourceSpecialistId: string | null = null;
+  let inheritsMain = caller.reach.kind === "user";
   let reach = caller.reach;
   let accessMode = caller.accessMode;
   if (caller.kind === "connection") {
@@ -83,6 +88,7 @@ export async function assertThreadCaller(
       .executeTakeFirst();
     if (!connection || !connection.tokenHash)
       throw forbidden("The connected agent credential is invalid or expired.");
+    inheritsMain = connection.workspaceId === null && caller.reach.kind === "user";
     accessMode = connection.accessMode;
     reach = connection.workspaceId
       ? { kind: "workspace", workspaceId: connection.workspaceId }
@@ -125,6 +131,8 @@ export async function assertThreadCaller(
       .selectAll()
       .where("id", "=", sourceId)
       .executeTakeFirstOrThrow();
+    sourceSpecialistId = source.specialistId;
+    inheritsMain = source.inheritsMain;
     accessMode = source.accessMode;
     reach = threadReachScope(source);
   }
@@ -147,7 +155,24 @@ export async function assertThreadCaller(
         thread?.lineageRootThreadId !== caller.reach.lineageRootThreadId))
   )
     throw forbidden("Target Thread is outside the caller's reach");
+  if (target?.activate && thread) {
+    if (!lineageCompatibleForReuse({ inheritsMain, specialistId: sourceSpecialistId }, thread))
+      throw forbidden("Caller cannot activate work beyond its consent or specialist binding");
+    if (thread.specialistId) {
+      const specialist = await tx
+        .selectFrom("specialists")
+        .select("id")
+        .where("id", "=", thread.specialistId)
+        .where("workspaceId", "=", thread.workspaceId)
+        .where("ownerUserId", "=", caller.userId)
+        .where("status", "=", "ready")
+        .where("removedAt", "is", null)
+        .executeTakeFirst();
+      if (!specialist) throw forbidden("Specialist registration is unavailable");
+    }
+  }
   if (
+    !target?.readOnly &&
     !threadAccessModeAtMost(
       thread?.accessMode ?? target?.accessMode ?? caller.accessMode,
       caller.accessMode,
