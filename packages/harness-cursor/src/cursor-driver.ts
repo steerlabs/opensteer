@@ -426,7 +426,10 @@ class CursorHarnessAdapter implements HarnessAdapter {
               "--plugin-dir",
               plugin.path,
               "--model",
-              modelSelection.nativeModelId ?? modelSelection.modelId,
+              // A chosen variant is already Cursor's full model id.
+              typeof modelSelection.options.variant === "string"
+                ? modelSelection.options.variant
+                : (modelSelection.nativeModelId ?? modelSelection.modelId),
               prompt,
             ],
             cwd: workspace,
