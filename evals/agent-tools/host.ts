@@ -116,6 +116,8 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const clients: Client[] = [];
   const activeCalls = new Map<string, number>();
   const mockOffsets = new Map<string, number>();
+  const triggerWrites = new Map<string, unknown>();
+  const triggerSources = new Map<string, unknown>();
   const endpoints = new Map<
     string,
     {
@@ -253,6 +255,52 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
                 isError: true,
                 content: [{ type: "text", text: result.$error }],
               };
+            }
+            // Keep successful Trigger mutations readable; fixed fixture timestamps otherwise
+            // contradict the real Run clock and provoke spurious repair attempts.
+            if (name === "trigger_write" && isRecord(result) && typeof result.id === "string") {
+              const triggerId = result.id;
+              if (
+                args.action === "create" &&
+                isRecord(args.source) &&
+                typeof args.source.at === "string"
+              )
+                result = { ...result, nextFireAt: new Date(args.source.at).toISOString() };
+              triggerWrites.set(triggerId, result);
+              if (
+                args.action === "update" &&
+                isRecord(args.source) &&
+                args.source.kind === "schedule" &&
+                typeof args.source.cron === "string"
+              )
+                triggerSources.set(triggerId, {
+                  kind: "schedule",
+                  schedule: {
+                    kind: "cron",
+                    expression: args.source.cron,
+                    timezone: args.source.timezone,
+                  },
+                });
+            }
+            if (name === "trigger_read" && isRecord(result)) {
+              if (isRecord(result.trigger) && typeof result.trigger.id === "string") {
+                const triggerId = result.trigger.id;
+                result = {
+                  ...result,
+                  trigger: triggerWrites.get(triggerId) ?? result.trigger,
+                  ...(isRecord(result.revision) && triggerSources.has(triggerId)
+                    ? { revision: { ...result.revision, source: triggerSources.get(triggerId) } }
+                    : {}),
+                };
+              } else if (Array.isArray(result.triggers))
+                result = {
+                  ...result,
+                  triggers: result.triggers.map((trigger) =>
+                    isRecord(trigger) && typeof trigger.id === "string"
+                      ? (triggerWrites.get(trigger.id) ?? trigger)
+                      : trigger,
+                  ),
+                };
             }
             calls[index] = { tool: name, args, valid, result };
             return {

@@ -5,9 +5,9 @@ description: Remember, correct or forget what matters about the person in Main a
 
 # Personal memory
 
-Memory lives in Main only; Projects never see it, so give a Project task the facts it needs.
+Memory lives in Main only; give Project tasks the facts they need.
 
-- **Summary:** the `## Memory` section of Main's `AGENTS.md`, which every Run in Main receives: who the person is, what matters now and links to notes. Under 4 KB; edit only that section.
+- **Summary:** the `## Memory` section of Main's `AGENTS.md`, which every Run in Main receives: who the person is, what matters now and links to notes. Under 4 KB; replace only its contents; keep all other bytes of `AGENTS.md` unchanged.
 - **Notes:** `memory/`, organized however serves future Runs best, each linked from the summary.
 - **Inbox:** one new file per scrap with its source, `memory/inbox/<UTC time like 20261103T142500Z>-<chat|light|nightly|task>-<6 random hex>.md`. Create it exclusively (`set -C` in a shell); never overwrite or edit one.
 

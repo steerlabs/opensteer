@@ -325,3 +325,41 @@ it("accepts source-only tuning and rejects program edits or resuming a paused li
     ).every((check) => check.pass),
   ).toBe(false);
 });
+
+it("models managed workers without Assignments and gives the deletion reminder a known zone", async () => {
+  const cases = await memoryCases();
+  for (const c of cases.filter(
+    (entry) => entry.profile === "delegated" && typeof entry.turns[0] !== "string",
+  ))
+    expect(c.assigned, c.id).toBe(false);
+  expect(cases.find((c) => c.id === "memory-stop-while-running")!.requesterTimeZone).toBe(
+    "America/New_York",
+  );
+});
+
+it("rejects erasure that drops standing instructions outside the Memory section", async () => {
+  const c = (await memoryCases()).find((entry) => entry.id === "memory-stop-when-idle")!;
+  const root = await mkdtemp(join(tmpdir(), "memory-standing-"));
+  try {
+    await writeFile(join(root, "AGENTS.md"), "## Memory\nMemory: off at the person's request.\n");
+    expect((await gradeWorkspaceFiles(c.expect, root)).some((check) => !check.pass)).toBe(true);
+    await writeFile(
+      join(root, "AGENTS.md"),
+      "# Main\n\n## Standing instructions\nUse metric units.\n\n## Memory\nMemory: off at the person's request.\n",
+    );
+    expect((await gradeWorkspaceFiles(c.expect, root)).every((check) => check.pass)).toBe(true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("requires a model decision but accepts an explicit which-model question", async () => {
+  const c = (await memoryCases()).find((c) => c.id === "memory-reenable-after-erasure")!;
+  const e = CaseSchema.shape.expect.parse({ textMust: c.expect.textMust });
+  for (const text of [
+    "Choose a model for the light pass.",
+    "Which model should the light pass use?",
+  ])
+    expect(grade(e, [], text).every((check) => check.pass)).toBe(true);
+  expect(grade(e, [], "The light model is configured.").every((check) => check.pass)).toBe(false);
+});

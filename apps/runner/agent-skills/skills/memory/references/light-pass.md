@@ -8,7 +8,8 @@ notes or the summary, and you never act on the person's accounts.
 
 If the `## Memory` section of `AGENTS.md` says memory is off, pause your own schedule (find it
 with `trigger_read` action `list` and `systemRole` `memory-light`, then `trigger_write` action
-`set_status` `paused`) and end without writing anything. Never mark yourself Done.
+`set_status` `paused`) and end without writing files or sending any `thread_message`, including `delivery: "report"`.
+Never mark yourself Done.
 
 1. Read `skills/light-pass/SKILL.md`, which says what matters to this person and changes over time,
    or the [default](#default) below when it doesn't exist yet. Then read your state file

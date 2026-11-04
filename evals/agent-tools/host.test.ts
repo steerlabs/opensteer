@@ -271,3 +271,86 @@ it("retains ingress file failures even if the agent recreates memory before late
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+it("reads back successful Trigger writes and the requested one-shot time", async () => {
+  const c = parseCases(
+    await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"),
+  ).find((c) => c.id === "memory-stop-while-running")!;
+  const host = await startFakeHost(c);
+  const client = new Client({ name: "eval-trigger-state", version: "1" });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    const pause = c.expect.calls.find(
+      (call) => call.tool === "trigger_write" && call.args.status === "paused",
+    )!;
+    await client.callTool({ name: pause.tool, arguments: pause.args });
+    await client.callTool({
+      name: "trigger_read",
+      arguments: { action: "get", triggerId: pause.args.triggerId },
+    });
+    expect(host.calls.at(-1)?.result).toMatchObject({
+      trigger: { status: "paused", nextFireAt: null },
+    });
+    await client.callTool({
+      name: "trigger_write",
+      arguments: {
+        action: "create",
+        name: "Reminder: finish deleting memory",
+        anchorThreadId: "home",
+        source: { kind: "schedule", at: "2027-01-01T09:05:00-05:00" },
+        program: {
+          language: "typescript",
+          toolContractVersion: 3,
+          source: "export default async function () {}",
+        },
+      },
+    });
+    const created = host.calls.at(-1)?.result;
+    expect(created).toMatchObject({ nextFireAt: "2027-01-01T14:05:00.000Z" });
+    await client.callTool({
+      name: "trigger_read",
+      arguments: { action: "get", triggerId: "trg_00000000-0000-4000-8000-000000000099" },
+    });
+    expect(host.calls.at(-1)?.result).toMatchObject({ trigger: created });
+  } finally {
+    await client.close();
+    await host.close();
+  }
+});
+
+it("reads back a source-only schedule change while retaining the person's pause", async () => {
+  const c = parseCases(
+    await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"),
+  ).find((c) => c.id === "memory-nightly-tunes-paused-light")!;
+  const host = await startFakeHost(c);
+  const client = new Client({ name: "eval-trigger-source", version: "1" });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    const update = c.expect.calls[0]!;
+    await client.callTool({ name: update.tool, arguments: update.args });
+    await client.callTool({
+      name: "trigger_read",
+      arguments: { action: "get", triggerId: update.args.triggerId },
+    });
+    expect(host.calls.at(-1)?.result).toMatchObject({
+      trigger: { status: "paused", nextFireAt: null },
+      revision: {
+        source: {
+          kind: "schedule",
+          schedule: { kind: "cron", expression: "0 9 * * 1-5", timezone: "America/New_York" },
+        },
+      },
+    });
+  } finally {
+    await client.close();
+    await host.close();
+  }
+});

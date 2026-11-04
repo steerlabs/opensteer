@@ -53,6 +53,8 @@ tool error, including inside a response sequence, so refusal cases exercise the
 same result shape as the production service. The transcript contains all native
 engine events, while `calls` contains ordered Opensteer MCP attempts and their
 validation outcomes. Native event arguments are also retained in `nativeCalls`.
+Successful Trigger write fixtures are retained for later reads; one-shot creation echoes the
+requested instant as `nextFireAt` so it agrees with the real Run clock.
 
 A run without a baseline measures current behavior and can legitimately report
 failed cases. Infrastructure or authentication failures are incomplete samples,
@@ -62,7 +64,9 @@ and fails the command for strict-majority regressions beyond the given budget.
 
 Use `--area memory --samples N` to repeat the personal memory, background-pass
 and pass-control cases, or `--area memory --validate` to validate selection without inspecting or
-running an engine. Fixtures seed the disposable Workspace before skill discovery;
+running an engine. Cases may supply `requesterTimeZone` for the production Run context; omitted means unknown.
+Managed worker cases set `assigned: false` because platform provisioning creates no Assignment.
+Fixtures seed the disposable Workspace before skill discovery;
 `AGENTS.md` is also delivered as Workspace instructions. File expectations run
 before cleanup. `expect.files` matches a file or, with `recursive: true`, a subtree
 (`path: "."` means the Workspace; an array of paths searches their union). Each `textMust` pattern must match at least one

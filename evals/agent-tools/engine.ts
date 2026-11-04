@@ -222,7 +222,7 @@ export async function runEngine(input: {
                   parentThreadId: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001"),
                 }
               : null,
-          requesterTimeZone: null,
+          requesterTimeZone: c.requesterTimeZone ?? null,
           threadState: { previousAssignment: null, previousRun: null },
         },
         environment: p.environment,
