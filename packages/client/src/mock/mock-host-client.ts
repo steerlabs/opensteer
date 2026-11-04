@@ -1,3 +1,4 @@
+import { MockDesktopUpdates, type MockDesktopUpdateScenario } from "./mock-desktop-updates.js";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
@@ -1775,6 +1776,7 @@ const mockMachines: readonly MachineSummary[] = [
 ];
 
 export interface MockHostClientOptions {
+  desktopUpdates?: MockDesktopUpdateScenario;
   specialistPlugins?: { id: string; name: string; manifest: SpecialistManifest }[];
   /** Plugins an agent made in Main, from a folder in that Workspace. */
   agentPlugins?: { id: string; name: string }[];
@@ -3612,6 +3614,7 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
+  readonly desktopUpdates: MockDesktopUpdates;
   subscribePluginsChanged(
     listener: (message: { type: "host.plugins-changed" }) => void,
   ): () => void {
@@ -3667,6 +3670,7 @@ export class MockHostClient implements HostClient {
   readonly #lifecycle: ClientLifecycle | null;
 
   constructor(options: MockHostClientOptions = {}) {
+    this.desktopUpdates = new MockDesktopUpdates(options.desktopUpdates);
     this.#lifecycle = options.lifecycle ?? null;
     this.#state = new MockHostState(options);
     this.browserPreferences = new BrowserPreferences(options.browserPreferencesStorage);

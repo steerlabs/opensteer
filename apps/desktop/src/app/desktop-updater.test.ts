@@ -446,3 +446,172 @@ it("offers Stable over the same Beta base and refuses the reverse through electr
     latestVersion: "0.1.396-insider",
   });
 });
+
+it("reserves the full remote action and waits for journal acknowledgements before staging and shutdown", async () => {
+  const { DesktopUpdateExecutor } = await import("../connections/desktop-update-executor.js");
+  const { withTimeout } = await import("@opensteer/shared/withTimeout");
+  const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
+  mocks.updater.checkForUpdates.mockResolvedValue(offer("0.1.450"));
+  mocks.updater.downloadUpdate.mockResolvedValue([]);
+  let receive!: (
+    message: import("@opensteer/protocol/desktop-supervisor").DesktopSupervisorOutput,
+  ) => void;
+  const staged = Promise.withResolvers<void>();
+  const installing = Promise.withResolvers<void>();
+  const phases: string[] = [];
+  const install = vi.fn(async () => {
+    throw new Error("refused handoff");
+  });
+  const executor = new DesktopUpdateExecutor({
+    updater,
+    install,
+    supervisor: {
+      subscribe: (listener: typeof receive) => {
+        receive = listener;
+        return () => {};
+      },
+      state: () => {},
+      acknowledge: async (
+        message: import("@opensteer/protocol/desktop-supervisor").DesktopUpdateProgress,
+      ) => {
+        phases.push(message.state);
+        if (message.state === "staged") {
+          expect(message.targetVersion).toBe("0.1.450");
+          await withTimeout(staged.promise, 1500, {
+            timeoutError: () => new Error("Test never acknowledged target persistence"),
+          });
+        }
+        if (message.state === "installing")
+          await withTimeout(installing.promise, 1500, {
+            timeoutError: () => new Error("Test never acknowledged installing"),
+          });
+      },
+    } as unknown as import("../connections/desktop-supervisor.js").DesktopSupervisor,
+  });
+  try {
+    receive({
+      type: "desktop-update.operation",
+      operation: {
+        id: crypto.randomUUID(),
+        state: "pending",
+        intent: { action: "update" },
+        fromVersion: null,
+        targetVersion: null,
+        incarnationId: null,
+        detail: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    await vi.waitFor(() => expect(phases).toEqual(["running", "staged"]), { timeout: 1000 });
+    expect(mocks.updater.downloadUpdate).not.toHaveBeenCalled();
+    await expect(updater.setChannel("beta")).rejects.toThrow("remote desktop update");
+    await expect(updater.download()).rejects.toThrow("remote desktop update");
+    await expect(updater.restart(install)).rejects.toThrow("remote desktop update");
+    mocks.updater.checkForUpdates.mockResolvedValue(offer("0.1.451"));
+    staged.resolve();
+    await vi.waitFor(() => expect(mocks.updater.downloadUpdate).toHaveBeenCalledOnce(), {
+      timeout: 1000,
+    });
+    expect(updater.state().availableVersion).toBe("0.1.450");
+    expect(phases).toEqual(["running", "staged"]);
+    mocks.native.emit("update-downloaded");
+    await vi.waitFor(() => expect(phases).toEqual(["running", "staged", "installing"]), {
+      timeout: 1000,
+    });
+    expect(install).not.toHaveBeenCalled();
+    installing.resolve();
+    await vi.waitFor(() => expect(phases.at(-1)).toBe("failed"), { timeout: 1000 });
+    expect(install).toHaveBeenCalledOnce();
+    expect(updater.state().reservedBy).toBeNull();
+  } finally {
+    staged.resolve();
+    installing.resolve();
+    executor.stop();
+  }
+});
+
+it.each(["native-error", "native-deadline", "download-deadline"])(
+  "settles a reserved remote update after %s",
+  async (failure) => {
+    vi.useFakeTimers();
+    const { desktopUpdateReadinessMs } = await import("./desktop-updater.js");
+    const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
+    mocks.updater.checkForUpdates.mockResolvedValue(offer("0.1.450"));
+    mocks.updater.downloadUpdate.mockImplementation(() =>
+      failure === "download-deadline" ? new Promise(() => {}) : Promise.resolve([]),
+    );
+    const action = updater.remoteAction(async (reserved) => {
+      await reserved.check();
+      await reserved.download("0.1.450");
+    });
+    const failed = expect(action).rejects.toThrow("staged");
+    await vi.advanceTimersByTimeAsync(0);
+    if (failure === "native-error") mocks.native.emit("error", new Error("private URL"));
+    else await vi.advanceTimersByTimeAsync(desktopUpdateReadinessMs);
+    await failed;
+    expect(updater.state()).toMatchObject({
+      status: "error",
+      failed: "download",
+      reservedBy: null,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);
+
+it("finishes a remote channel selection without staging when the selected track is behind", async () => {
+  const { DesktopUpdateExecutor } = await import("../connections/desktop-update-executor.js");
+  const save = vi.fn(async () => {});
+  const updater = new DesktopUpdater({
+    updates: insider,
+    log: vi.fn(),
+    preference: { channel: "beta", save },
+  });
+  mocks.updater.checkForUpdates.mockResolvedValue({
+    isUpdateAvailable: false,
+    updateInfo: { version: "0.1.390" },
+  });
+  let receive!: (
+    message: import("@opensteer/protocol/desktop-supervisor").DesktopSupervisorOutput,
+  ) => void;
+  const acknowledge = vi.fn(async () => {});
+  const install = vi.fn();
+  const executor = new DesktopUpdateExecutor({
+    updater,
+    install,
+    supervisor: {
+      subscribe: (listener: typeof receive) => {
+        receive = listener;
+        return () => {};
+      },
+      state: () => {},
+      acknowledge,
+    } as unknown as import("../connections/desktop-supervisor.js").DesktopSupervisor,
+  });
+  try {
+    receive({
+      type: "desktop-update.operation",
+      operation: {
+        id: crypto.randomUUID(),
+        state: "pending",
+        intent: { action: "channel", channel: "stable" },
+        fromVersion: null,
+        targetVersion: null,
+        incarnationId: null,
+        detail: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    await vi.waitFor(() => expect(acknowledge).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    expect(save).toHaveBeenCalledExactlyOnceWith("stable");
+    expect(acknowledge.mock.calls[1]).toEqual([
+      expect.objectContaining({ state: "succeeded", detail: "ahead", targetVersion: null }),
+    ]);
+    expect(updater.state()).toMatchObject({ status: "ahead", channel: "stable" });
+    expect(mocks.updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(install).not.toHaveBeenCalled();
+  } finally {
+    executor.stop();
+  }
+});

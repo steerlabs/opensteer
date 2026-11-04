@@ -46,3 +46,4 @@ export { readThreadWaitSnapshot } from "./thread-wait.js";
 export * from "./plugin-settings-store.js";
 export type { WorkspaceSkillInventory } from "./workspace-skill-inventory-store.js";
 export * from "./administration-command.js";
+export * from "./personal-desktop-update-store.js";

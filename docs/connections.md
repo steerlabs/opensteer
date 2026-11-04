@@ -36,8 +36,8 @@ a `host.connections-changed` notice rereads current Host authority.
 ## Remote administration
 
 The Host persists owner intent and progress; the desktop app executes it through its Connect and
-Account coordinators, and every owner device uses the same Host commands. A missing executor leaves
-a visible pending operation. A request persists before it is acknowledged, and execution that can
+Account coordinators, and every owner device uses the same Host commands for remote access. A missing
+executor leaves a visible pending operation. A request persists before it is acknowledged, and execution that can
 remove the current route starts only after that response, under the supervisor's process capability.
 Unlink never needs another request from the session it revokes. Revoked credentials stop
 authenticating before success; their live connections close after the response.
@@ -55,6 +55,14 @@ then atomically revalidates the session and challenge, deletes the key and store
 Expired and cancelled keys are erased. Connector credentials stay on the Host computer and reach
 only the supervisor's private executor channel; owner sessions request intents and read status,
 which clients read only while Settings or first-run setup is open.
+
+Desktop updates reach only the installation supervising its own Personal Host, never a borrowed
+Runner or a server Deployment. The epoch-independent [maintenance v1 contract](../packages/protocol/src/maintenance.ts)
+is its sole browser API; clients verify identity and reuse session authentication below ordinary
+attachment, and long-poll only while Updates is visible. An already-shipped desktop without this
+contract needs one local update first. The target is journaled before native staging, since any
+quit can apply it; only a new desktop process incarnation reconciles the installed version.
+Failed install handoff relaunches the desktop to restore the Personal stack and reconcile the journal.
 
 First-run setup's Phone row composes these steps and adds no authority. Its QR code is
 `<portal>/open#d=<DeploymentId>`: a destination, never a pairing code, Host origin or grant. The
@@ -117,7 +125,7 @@ failures never trigger blind restart, and classification uses typed failures, ne
 Child logs are bounded, private and credential-redacted. Socket diagnostics never persist endpoint
 queries, frame contents, IPC connection IDs or raw surfaces.
 
-Quit is irreversible: stop new work, cancel recovery, continue cleanup after errors, and never
+Ordinary quit is irreversible: stop new work, cancel recovery, continue cleanup after errors, and never
 reopen the app or a modal. Native browsers close without clearing their stores, then Runner, Host
 and database stop in order. A lost parent control pipe must still contain process trees, including
 tunnel and detached engine helpers. See

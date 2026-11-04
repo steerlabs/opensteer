@@ -1,3 +1,5 @@
+import { DesktopSupervisor } from "./connections/desktop-supervisor.js";
+import { DesktopUpdateExecutor } from "./connections/desktop-update-executor.js";
 import { DesktopIntegrationAuthorizations } from "./app/integration-authorizations.js";
 import { desktopBridgeChannels } from "./bridge/desktop-bridge-channels.js";
 import { McpAuthorizationLinks } from "./app/mcp-authorization-links.js";
@@ -741,10 +743,16 @@ async function runDesktop(
     remote: personalRemote,
     runtime: personal,
   });
-  const remoteAdministrationExecutor = new DesktopRemoteAdministrationExecutor({
+  let desktopUpdateExecutor: DesktopUpdateExecutor | null = null;
+  let desktopSupervisorReady = false;
+  const desktopSupervisor = new DesktopSupervisor({
+    state: () => updater.state(),
     authorization: (runtime) => personal.executorAuthorization(runtime),
     network: hostNetwork,
     runtime: personal,
+  });
+  const remoteAdministrationExecutor = new DesktopRemoteAdministrationExecutor({
+    supervisor: desktopSupervisor,
     execute: async (operation, progress) => {
       const detachRemote = personalRemote.subscribe((status) => progress(status.phase));
       const detachAccount = personalAccount.subscribe((status) =>
@@ -782,12 +790,16 @@ async function runDesktop(
     step: "stop",
     order: 19,
     timeoutMs: 1000,
-    stop: async () => remoteAdministrationExecutor.stop(),
+    stop: async () => {
+      remoteAdministrationExecutor.stop();
+      desktopUpdateExecutor?.stop();
+      desktopSupervisor.stop();
+    },
   });
   let personalAccountLinkResumeAttempted = false;
   const detachPersonalRemoteInitialization = personal.subscribe((status) => {
     if (shutdown.requested || status.state !== "ready") return;
-    void remoteAdministrationExecutor.connect();
+    if (desktopSupervisorReady) void desktopSupervisor.connect();
     void personalRemote
       .initialize()
       .catch((error: unknown) =>
@@ -1081,8 +1093,18 @@ async function runDesktop(
     for (const window of BaseWindow.getAllWindows()) window.destroy();
     autoUpdater.quitAndInstall();
   };
-  const restartToUpdate = () => {
-    if (updateReady) shutdown.requestUpdate(installUpdate);
+  shutdown.setUpdateRecovery(() => {
+    autoUpdater.autoInstallOnAppQuit = false;
+    app.relaunch();
+  });
+  desktopUpdateExecutor = new DesktopUpdateExecutor({
+    supervisor: desktopSupervisor,
+    updater,
+    install: () => shutdown.requestUpdate(installUpdate),
+  });
+  const restartToUpdate = () => updater.restart(() => shutdown.requestUpdate(installUpdate));
+  const restartFromMenu = () => {
+    void restartToUpdate().catch(() => reportEvent("desktop.update.restart-refused", {}));
   };
   const checkForUpdates = async () => {
     const state = await updater.check();
@@ -1130,8 +1152,11 @@ async function runDesktop(
                 void checkForUpdates().catch((error: unknown) =>
                   reportNonFatal("desktop.update.menu-check-failed", error),
                 ),
-              download: () => void updater.download(),
-              restart: restartToUpdate,
+              download: () =>
+                void updater
+                  .download()
+                  .catch(() => reportEvent("desktop.update.download-refused", {})),
+              restart: restartFromMenu,
             },
           }
         : {}),
@@ -1182,10 +1207,10 @@ async function runDesktop(
   updater.subscribe((state) => {
     showDesktopUpdateMenuItem(Menu.getApplicationMenu(), state);
     const ready = state.status === "downloaded";
+    shutdown.setUpdateInstaller(ready && state.reservedBy !== "remote" ? installUpdate : undefined);
     if (ready === updateReady) return;
     updateReady = ready;
-    shutdown.setUpdateInstaller(ready ? installUpdate : undefined);
-    tray.setRestartToUpdate(ready ? restartToUpdate : undefined);
+    tray.setRestartToUpdate(ready ? restartFromMenu : undefined);
   });
   await tray.start();
   updater.start(shutdown.signal);
@@ -1273,6 +1298,8 @@ async function runDesktop(
     },
   });
 
+  desktopSupervisorReady = true;
+  if (!shutdown.requested) void desktopSupervisor.connect();
   await mainProcess.start({
     openWindow: shouldOpenDesktopWindowAtLaunch({
       arguments: process.argv,

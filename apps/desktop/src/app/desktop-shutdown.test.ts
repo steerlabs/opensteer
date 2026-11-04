@@ -138,13 +138,15 @@ it.each([false, true])(
       if (throws) throw new Error("private URL must not be logged");
     };
     const prevented = vi.fn();
-    shutdown.requestUpdate(install);
+    const result = shutdown.requestUpdate(install);
+    const failure = expect(result).rejects.toThrow("handoff failed");
     shutdown.request("repeated");
     await vi.advanceTimersByTimeAsync(0);
     expect(sequence).toEqual(["children-stopped", "windows-destroyed-and-install"]);
     expect(prevented).not.toHaveBeenCalled();
     if (!throws) expect(application.exit).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(desktopShutdownTimeoutMs);
+    await failure;
     expect(application.exit).toHaveBeenCalledExactlyOnceWith(1);
     expect(vi.getTimerCount()).toBe(0);
   },
@@ -172,3 +174,35 @@ it("installs a ready update on ordinary quit only after cleanup", async () => {
   await vi.advanceTimersByTimeAsync(desktopShutdownTimeoutMs);
   expect(application.exit).toHaveBeenCalledWith(1);
 });
+
+it.each(["throw", "watchdog"])(
+  "relaunches the Personal stack after a failed update handoff (%s)",
+  async (failure) => {
+    const { shutdown, application, log } = fixture();
+    const calls: string[] = [];
+    const recover = vi.fn(() => calls.push("relaunch"));
+    shutdown.setUpdateRecovery(recover);
+    shutdown.add({
+      component: "personal",
+      step: "stop",
+      order: 1,
+      timeoutMs: 100,
+      stop: () => {
+        calls.push("stop");
+      },
+    });
+    const result = shutdown.requestUpdate(() => {
+      calls.push("install");
+      if (failure === "throw")
+        throw new Error("https://private.example/secret must never be logged");
+    });
+    const rejected = expect(result).rejects.toThrow("handoff failed");
+    await vi.advanceTimersByTimeAsync(failure === "watchdog" ? desktopShutdownTimeoutMs : 0);
+    await rejected;
+    expect(calls).toEqual(["stop", "install", "relaunch"]);
+    expect(recover).toHaveBeenCalledOnce();
+    expect(application.exit).toHaveBeenCalledExactlyOnceWith(1);
+    expect(JSON.stringify(log.mock.calls)).not.toContain("private.example");
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);

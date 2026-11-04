@@ -38,7 +38,7 @@ export function updatesHandlers(
       (event, envelope) => {
         assertAuthorizedRenderer(context, event, envelope);
         z.undefined().parse(envelope.input);
-        void updates.download();
+        return updates.download();
       },
     ],
     [
@@ -46,7 +46,7 @@ export function updatesHandlers(
       (event, envelope) => {
         assertAuthorizedRenderer(context, event, envelope);
         z.undefined().parse(envelope.input);
-        updates.restart();
+        return updates.restart();
       },
     ],
   ];

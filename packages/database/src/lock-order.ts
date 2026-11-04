@@ -196,6 +196,7 @@ export const databaseLockOrder = [
   "auth_sessions",
   "agent_connections",
   "personal_remote_administration",
+  "personal_desktop_update",
   "notification_preview_keys",
   "host_account_adoption_proofs",
   "account_directory_provider",

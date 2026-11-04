@@ -47,8 +47,8 @@ export interface DesktopBridgeOptions {
   readonly dictation?: import("../dictation/dictation-service.js").DictationService;
   readonly downloads: Pick<DesktopDownloads, "snapshot" | "subscribe" | "open" | "show" | "cancel">;
   readonly updates?: Pick<DesktopUpdater, "state" | "subscribe" | "download" | "setChannel"> & {
-    /** Restarts into the downloaded version; does nothing before one is ready. */
-    restart(): void;
+    /** Restarts into the downloaded version, refusing an unavailable or reserved action. */
+    restart(): void | Promise<void>;
   };
   readonly log?: (
     event: string,

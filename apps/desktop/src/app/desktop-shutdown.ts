@@ -23,6 +23,8 @@ export class DesktopShutdown {
   readonly #startup = new AbortController();
   #stopping = false;
   #installing = false;
+  #recoverUpdate: (() => void) | undefined;
+  #updateRejected: ((error: Error) => void) | undefined;
   #quitInstaller: (() => void) | undefined;
 
   constructor(options: {
@@ -63,8 +65,16 @@ export class DesktopShutdown {
     this.#quitInstaller = install;
   }
 
-  requestUpdate(install: () => void): void {
-    this.request("restart-to-update", install);
+  setUpdateRecovery(recover: () => void): void {
+    this.#recoverUpdate = recover;
+  }
+
+  requestUpdate(install: () => void): Promise<void> {
+    if (this.#stopping) return Promise.reject(new Error("The desktop is already shutting down."));
+    return new Promise<void>((_resolve, reject) => {
+      this.#updateRejected = reject;
+      this.request("restart-to-update", install);
+    });
   }
 
   request(reason: string, install = this.#quitInstaller): void {
@@ -78,9 +88,23 @@ export class DesktopShutdown {
     this.#log("desktop.shutdown.started", { reason, timeoutMs: desktopShutdownTimeoutMs });
     // app.exit bypasses window beforeunload handlers, including hidden pages.
     // The watchdog also covers a cleanup implementation that fails to settle.
+    const recoverUpdate = () => {
+      this.#updateRejected?.(new Error("The desktop update handoff failed."));
+      this.#updateRejected = undefined;
+      // Relaunch restores the stopped Personal stack; its new incarnation reconciles the journal.
+      if (this.#recoverUpdate) {
+        try {
+          this.#recoverUpdate();
+        } catch {
+          this.#log("desktop.shutdown.update-recovery-failed", {});
+        }
+      }
+      this.#application.exit(1);
+    };
     const watchdog = setTimeout(() => {
       this.#log("desktop.shutdown.deadline", { elapsedMs: performance.now() - started });
-      this.#application.exit(1);
+      if (install) recoverUpdate();
+      else this.#application.exit(1);
     }, desktopShutdownTimeoutMs);
     this.#startup.abort(new Error("The desktop is quitting."));
     void (async () => {
@@ -105,7 +129,9 @@ export class DesktopShutdown {
           return;
         } catch {
           this.#log("desktop.shutdown.update-handoff-failed", {});
-          failed = true;
+          clearTimeout(watchdog);
+          recoverUpdate();
+          return;
         }
       }
       clearTimeout(watchdog);
