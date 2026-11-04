@@ -12,6 +12,7 @@ vi.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Light: "light" },
 }));
 const navigate = vi.hoisted(() => vi.fn());
+const cardRenders = vi.hoisted(() => vi.fn());
 const openURL = vi.hoisted(() => vi.fn(async () => undefined));
 
 // The native renderer's state and hierarchy, with DOM hosts. Platform controls
@@ -146,7 +147,10 @@ vi.mock("../ui/primitives.js", () => ({
   }) => <button onClick={() => onChange(!value)}>{label}</button>,
 }));
 vi.mock("../ui/integration-icon.js", () => ({
-  IntegrationIcon: ({ name }: { name: string }) => <span aria-hidden>{name} icon</span>,
+  IntegrationIcon: ({ name }: { name: string }) => {
+    cardRenders();
+    return <span aria-hidden>{name} icon</span>;
+  },
 }));
 
 const beginIntegrationAuthorization = vi.fn();
@@ -185,6 +189,37 @@ const mainConnectAllows =
   "Your tasks in Main can read and make changes with every account you connect, so connecting also allows this request.";
 
 describe("IntegrationConnectCard", () => {
+  it("does not render for streaming updates in an unrelated thread", async () => {
+    const client = fakeClient({ sources: [hosted] });
+    await render(client);
+    const before = cardRenders.mock.calls.length;
+    await act(async () => client.streamUnrelatedThread());
+    expect(cardRenders.mock.calls.length).toBe(before);
+  });
+  it("loads an older target Workspace before showing its Connect card", async () => {
+    const client = fakeClient({ sources: [hosted] });
+    const workspaces = client.getSnapshot().workspaces;
+    client.setWorkspaces([], true);
+    const load = vi.spyOn(client, "loadEarlierWorkspaces").mockImplementation(async () => {
+      client.setWorkspaces(workspaces, false);
+    });
+    await render(client);
+    expect(load).toHaveBeenCalledOnce();
+    expect(buttons()).toContain("Connect Slack");
+  });
+  it("offers Decline when the target Workspace is unavailable", async () => {
+    const client = fakeClient({ sources: [hosted] });
+    client.setWorkspaces([], false);
+    await render(client, request(), {}, false);
+    expect(text()).toContain("The target Workspace is no longer available.");
+    await click("Not now");
+    expect(client.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response: { kind: "external", value: { decision: "declined" } },
+      }),
+    );
+  });
+
   it.each(["main", "project"] as const)(
     "connects %s from one tap and shows the committed result in place",
     async (workspaceKind) => {
@@ -213,6 +248,90 @@ describe("IntegrationConnectCard", () => {
         expect(grants[0]?.[0]).toMatchObject({
           response: { value: { access: "read", connectionId: id, decision: "fulfilled" } },
         });
+    },
+  );
+
+  it.each(["denied", "cancelled"] as const)(
+    "keeps the old mobile selection pending after consent is %s",
+    async (status) => {
+      const client = fakeClient({
+        workspaceKind: "project",
+        sources: [hosted],
+        connections: [connection("old")],
+      });
+      beginIntegrationAuthorization.mockResolvedValue({
+        ...completed("old"),
+        connectionId: null,
+        status,
+      });
+      const onResponded = vi.fn();
+      await render(client, request(), { onResponded });
+      await click("oversteer.slack.com —");
+      await click("Connect another account");
+      expect(text()).toContain(
+        status === "denied" ? "Access was not approved." : "Authorization was cancelled.",
+      );
+      expect(client.dispatch).not.toHaveBeenCalled();
+      expect(onResponded).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not grant a different mobile request when consent finishes", async () => {
+    const client = fakeClient({ workspaceKind: "project", sources: [hosted] });
+    let complete!: (value: ReturnType<typeof completed>) => void;
+    beginIntegrationAuthorization.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const onResponded = vi.fn();
+    await render(client, request(), { onResponded });
+    await click("Connect Slack");
+    await act(async () =>
+      roots.at(-1)!.render(
+        <IntegrationConnectCard
+          hostClient={client as never}
+          onResponded={onResponded}
+          request={
+            {
+              ...(request("read-write") as object),
+              id: "req_00000000-0000-4000-8000-000000000002",
+            } as never
+          }
+        />,
+      ),
+    );
+    await act(async () => {
+      client.setConnections([connection("new")]);
+      complete(completed("new"));
+    });
+    expect(client.dispatch).not.toHaveBeenCalled();
+    expect(onResponded).not.toHaveBeenCalled();
+    expect(text()).not.toContain("connected ·");
+  });
+
+  it.each(["main", "project"] as const)(
+    "discloses %s access before catalog Connect without expanding details",
+    async (workspaceKind) => {
+      const client = fakeClient({ isAdministrator: true, workspaceKind, sources: [] });
+      const catalogRequest = preinstallRequest();
+      await render(
+        client,
+        {
+          ...(catalogRequest as object),
+          payload: {
+            ...(catalogRequest as unknown as { payload: object }).payload,
+            access: "read-write",
+          },
+        } as never,
+        {},
+        false,
+      );
+      expect(text()).toContain(
+        workspaceKind === "main" ? mainConnectAllows : "requires read-write access",
+      );
+      expect(buttons()).toContain("Connect Test Calendar");
     },
   );
 
@@ -1166,6 +1285,7 @@ async function render(
   client: ReturnType<typeof fakeClient>,
   currentRequest = request(),
   callbacks: { readonly onClose?: () => void; readonly onResponded?: () => void } = {},
+  disclose = true,
 ): Promise<void> {
   const container = document.createElement("div");
   document.body.append(container);
@@ -1181,7 +1301,7 @@ async function render(
       />,
     );
   });
-  await click("What Opensteer can do");
+  if (disclose) await click("What Opensteer can do");
 }
 
 /** Closes the sheet and opens it again on the same request, as its card does. */
@@ -1333,6 +1453,8 @@ function fakeClient(input: {
   let requestPending = true;
   const listeners = new Set<() => void>();
   let snapshot = {
+    workspaceWindow: { hasMore: false, itemCount: 1 },
+    threadActivities: { unrelated: 0 },
     machines: [...(input.machines ?? [])],
     workspaces: [
       {
@@ -1363,6 +1485,22 @@ function fakeClient(input: {
   );
   return {
     dispatch,
+    loadEarlierWorkspaces: async () => {},
+    setWorkspaces(workspaces: typeof snapshot.workspaces, hasMore: boolean) {
+      snapshot = {
+        ...snapshot,
+        workspaces,
+        workspaceWindow: { hasMore, itemCount: workspaces.length },
+      };
+      for (const listener of listeners) listener();
+    },
+    streamUnrelatedThread() {
+      snapshot = {
+        ...snapshot,
+        threadActivities: { unrelated: snapshot.threadActivities.unrelated + 1 },
+      };
+      for (const listener of listeners) listener();
+    },
     setConnections(next: typeof connections) {
       connections.splice(0, connections.length, ...next);
     },

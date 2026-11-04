@@ -39,7 +39,7 @@ import {
 import {
   createUsageNoticeDismissals,
   mutationIdempotencyKey,
-  HostClientRequestError,
+  isHostRefusal,
   type HostClient,
   type SavedViewStore,
   type UsageNoticeDismissals,
@@ -991,61 +991,81 @@ export class MobileClient {
         assertAttached();
         if (!client)
           throw new Error("Reconnect to that deployment to finish integration authorization.");
-        if (client.getSnapshot().user === null) {
-          await withTimeout(client.load(), Math.min(20_000, remaining()), {
-            signal: controller.signal,
-            timeoutError: () =>
-              new Error("Reconnect to that deployment to finish integration authorization."),
-          });
-        }
         const assertOwner = () => {
           assertAttached();
-          if (entry.userId !== undefined && entry.userId !== client.getSnapshot().user?.id)
+          const user = client.getSnapshot().user;
+          if (user && entry.userId !== undefined && entry.userId !== user.id)
             throw new Error("That sign-in belongs to a different user.");
         };
-        assertOwner();
-        if (callback.returnProof !== null) {
-          const command = {
-            type: "integration.authorization.return" as const,
-            attemptId: callback.attemptId,
-            returnProof: callback.returnProof,
-            idempotencyKey: `integration-auth-return:${callback.attemptId}`,
-          };
-          let backoff = 1_000;
-          while (true) {
-            assertOwner();
-            if (remaining() === 0)
-              return {
-                status: "expired",
-                connectionId: null,
-                failureCode: null,
-                expiresAt: entry.expiresAt,
+        const command =
+          callback.returnProof === null
+            ? null
+            : {
+                type: "integration.authorization.return" as const,
+                attemptId: callback.attemptId,
+                returnProof: callback.returnProof,
+                idempotencyKey: `integration-auth-return:${callback.attemptId}`,
               };
-            let status;
-            try {
-              status = await withTimeout(client.dispatch(command), Math.min(20_000, remaining()), {
+        let backoff = 1_000;
+        while (true) {
+          assertOwner();
+          if (remaining() === 0)
+            return {
+              status: "expired",
+              connectionId: null,
+              failureCode: null,
+              expiresAt: entry.expiresAt,
+            };
+          let status;
+          try {
+            if (client.getSnapshot().user === null) {
+              await withTimeout(client.load(), Math.min(20_000, remaining()), {
                 signal: controller.signal,
                 timeoutError: () => new HostTransportError("timed-out"),
               });
-            } catch (error) {
-              assertOwner();
-              if (
-                (error instanceof HostTransportError && !error.retryable) ||
-                (error instanceof HostClientRequestError &&
-                  error.status < 500 &&
-                  error.status !== 429)
-              )
-                throw error;
-              // Keep the same proof and mutation identity across transient failures.
-              await delay(Math.min(backoff, remaining()), controller.signal);
-              backoff = Math.min(backoff * 2, 30_000);
-              continue;
             }
-            if (status.type !== "integration.authorization.return")
-              throw new Error("Integration authorization command mismatch.");
-            if (integrationAuthorizationTerminalStatuses.has(status.status)) return status;
-            break;
+            assertOwner();
+            if (client.getSnapshot().user === null) throw new HostTransportError("timed-out");
+            if (command === null) break;
+            status = await withTimeout(client.dispatch(command), Math.min(20_000, remaining()), {
+              signal: controller.signal,
+              timeoutError: () => new HostTransportError("timed-out"),
+            });
+          } catch (error) {
+            assertOwner();
+            if ((error instanceof HostTransportError && !error.retryable) || isHostRefusal(error)) {
+              await this.#integrationAttempts.forget(entry);
+              throw error;
+            }
+            // Retain the proof across bootstrap, transport and response timeouts.
+            const wait = Math.min(backoff, remaining());
+            if (client.getSnapshot().user === null) {
+              const deadline = new Error("Retry integration authentication.");
+              let detach = () => {};
+              try {
+                await withTimeout(
+                  new Promise<void>((resolve) => {
+                    detach = client.subscribe(() => {
+                      if (client.getSnapshot().user !== null) resolve();
+                    });
+                  }),
+                  wait,
+                  { signal: controller.signal, timeoutError: () => deadline },
+                ).catch((reason: unknown) => {
+                  if (reason !== deadline) throw reason;
+                });
+              } finally {
+                detach();
+              }
+            } else await delay(wait, controller.signal);
+            backoff = Math.min(backoff * 2, 30_000);
+            continue;
           }
+          assertOwner();
+          if (status.type !== "integration.authorization.return")
+            throw new Error("Integration authorization command mismatch.");
+          if (integrationAuthorizationTerminalStatuses.has(status.status)) return status;
+          break;
         }
         return await waitForIntegrationAuthorization({
           attemptId: callback.attemptId,

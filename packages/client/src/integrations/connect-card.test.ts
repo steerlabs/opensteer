@@ -146,6 +146,10 @@ function preinstall(administrator: boolean, proposal = false) {
 }
 
 describe("connectCard", () => {
+  it("discloses Main inherited changes before catalog installation", () => {
+    const card = connectCard({ loaded: preinstall(true), workspace });
+    expect(card.capabilities.join(" ")).toContain("connecting also allows this request");
+  });
   it("connects Main in one action and discloses inherited changes", () => {
     const card = connectCard({ loaded: loaded(), workspace });
     expect(card).toMatchObject({

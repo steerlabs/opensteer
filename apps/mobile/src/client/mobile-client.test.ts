@@ -563,7 +563,7 @@ describe("MobileClient integration authorization", () => {
     client.dispose();
   });
 
-  it.each(["recover", "dispose", "expire", "refuse"] as const)(
+  it.each(["recover", "408", "dispose", "expire", "refuse"] as const)(
     "retains a mobile redemption proof through transient failure until %s without another callback",
     async (mode) => {
       const returned = vi
@@ -577,7 +577,13 @@ describe("MobileClient integration authorization", () => {
         .mockRejectedValueOnce(
           mode === "refuse"
             ? new HostClientRequestError({ code: "forbidden", message: "Wrong owner", status: 403 })
-            : new Error("offline"),
+            : mode === "408"
+              ? new HostClientRequestError({
+                  code: "unavailable",
+                  message: "Request timed out",
+                  status: 408,
+                })
+              : new Error("offline"),
         );
       const port = testPort({
         held: true,
@@ -613,7 +619,7 @@ describe("MobileClient integration authorization", () => {
         if (mode === "dispose") client.dispose();
         if (mode === "expire") vi.setSystemTime(Date.now() + 600_001);
         await vi.advanceTimersByTimeAsync(1000);
-        if (mode === "recover") {
+        if (mode === "recover" || mode === "408") {
           await expect(outcome).resolves.toMatchObject({ status: "completed" });
           expect(returned).toHaveBeenCalledTimes(2);
           expect(returned.mock.calls[1]).toEqual(returned.mock.calls[0]);
@@ -635,7 +641,15 @@ describe("MobileClient integration authorization", () => {
     },
   );
 
-  it.each(["complete", "owner-changed", "selection-changed", "signed-out", "deadline"] as const)(
+  it.each([
+    "complete",
+    "bootstrap-failed",
+    "attachment-ready",
+    "owner-changed",
+    "selection-changed",
+    "signed-out",
+    "deadline",
+  ] as const)(
     "resumes a persisted return only after bounded authenticated cold-start loading: %s",
     async (mode) => {
       const records = createSecureRecordStore({
@@ -665,6 +679,8 @@ describe("MobileClient integration authorization", () => {
             }));
             host.load = async () => {
               loading();
+              if (mode === "bootstrap-failed" && loading.mock.calls.length === 1)
+                throw new Error("bootstrap unavailable");
               await loaded.promise;
               ready = true;
               await load();
@@ -706,10 +722,16 @@ describe("MobileClient integration authorization", () => {
       cold = true;
       const second = open(port.factory, files, { records }).client;
       await second.initialize();
-      if (mode === "deadline") vi.useFakeTimers();
+      if (mode === "deadline" || mode === "bootstrap-failed" || mode === "attachment-ready")
+        vi.useFakeTimers();
+      let finished = false;
       const outcome = second
         .handleIntegrationAuthorizationCallback(callback)
-        .catch((error: unknown) => error);
+        .catch((error: unknown) => error)
+        .then((result) => {
+          finished = true;
+          return result;
+        });
       await vi.waitFor(() => expect(loading, "Cold Host never began loading").toHaveBeenCalled(), {
         timeout: 1000,
       });
@@ -722,14 +744,15 @@ describe("MobileClient integration authorization", () => {
           await second.select(otherId);
         }
         if (mode === "signed-out") await second.signOut(serverId);
-        if (mode === "deadline") {
-          await vi.advanceTimersByTimeAsync(20_000);
-          await expect(outcome).resolves.toMatchObject({
-            message: "Reconnect to that deployment to finish integration authorization.",
-          });
-          expect(
-            port.commands.filter((type) => type === "integration.authorization.return"),
-          ).toHaveLength(0);
+        if (mode === "deadline" || mode === "bootstrap-failed" || mode === "attachment-ready") {
+          if (mode === "deadline" || mode === "attachment-ready")
+            await vi.advanceTimersByTimeAsync(20_000);
+          loaded.resolve();
+          await vi.advanceTimersByTimeAsync(mode === "attachment-ready" ? 0 : 1000);
+          if (mode === "attachment-ready")
+            expect(finished, "Ready attachment did not resume the retained proof").toBe(true);
+          await expect(outcome).resolves.toMatchObject({ status: "completed" });
+          expect(loading).toHaveBeenCalledTimes(2);
           return;
         }
         loaded.resolve();

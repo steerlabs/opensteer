@@ -1,7 +1,7 @@
 import type { DesktopIntegrationAuthorizationReturn } from "@opensteer/protocol/desktop";
 import { createId } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
-import type { HostClient } from "@opensteer/client/host";
+import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConnectOperations } from "../components/integrations/connect-operations.js";
 import {
@@ -9,6 +9,7 @@ import {
   integrationAuthorizationCompletionPath,
   integrationAuthorizationFinish,
   subscribeIntegrationAuthorizationReturns,
+  waitForIntegrationAuthorization,
 } from "./integration-authorization.js";
 
 const deploymentId = createId("deployment");
@@ -347,5 +348,57 @@ it.each([true, false])(
       }),
     );
     expect(openIntegrationAuthorization).toHaveBeenCalledWith({ ...started, deploymentId, userId });
+  },
+);
+
+it.each([400, 403, 404, 408, 429, 503])(
+  "handles desktop proof redemption HTTP %i according to refusal classification",
+  async (httpStatus) => {
+    const attemptId = createIntegrationId("oauthAttempt");
+    const dispatch = vi.fn(async () => {
+      throw new HostClientRequestError({
+        code: "forbidden",
+        message: "Return refused",
+        status: httpStatus,
+      });
+    });
+    let receive!: (value: DesktopIntegrationAuthorizationReturn) => void;
+    const bridge = {
+      onIntegrationAuthorizationReturn: (_identity: unknown, listener: typeof receive) => {
+        receive = listener;
+        return () => {};
+      },
+      finishIntegrationAuthorization: vi.fn(async () => {}),
+    };
+    const client = {
+      dispatch,
+      subscribe: () => () => {},
+      getSnapshot: () => ({ deploymentId, user: { id: userId } }),
+    } as unknown as HostClient;
+    const stop = subscribeIntegrationAuthorizationReturns(bridge, client);
+    vi.useFakeTimers();
+    try {
+      const callback = { deploymentId, attemptId, returnProof: "r".repeat(43) };
+      receive(callback);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(dispatch).toHaveBeenCalledOnce();
+      if ([400, 403, 404].includes(httpStatus)) {
+        expect(bridge.finishIntegrationAuthorization).toHaveBeenCalledWith({
+          deploymentId,
+          attemptId,
+        });
+        await expect(waitForIntegrationAuthorization({ attemptId, client })).resolves.toMatchObject(
+          { status: "failed", failureCode: "grant-rejected" },
+        );
+      } else {
+        receive(callback);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(dispatch).toHaveBeenCalledTimes(2);
+        expect(bridge.finishIntegrationAuthorization).not.toHaveBeenCalled();
+      }
+    } finally {
+      stop();
+      vi.useRealTimers();
+    }
   },
 );

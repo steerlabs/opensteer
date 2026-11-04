@@ -1,5 +1,5 @@
 import { DeploymentIdSchema } from "@opensteer/core";
-import type { HostClient } from "@opensteer/client/host";
+import { isHostRefusal, type HostClient } from "@opensteer/client/host";
 import {
   integrationAuthorizationStatusReturned,
   integrationAuthorizationTerminalStatuses,
@@ -130,8 +130,20 @@ export function subscribeIntegrationAuthorizationReturns(
           attemptId: callback.attemptId,
         });
     })()
-      .catch(() => {
-        // Retain main's registry entry so another delivery can recover a transient failure.
+      .catch(async (error: unknown) => {
+        if (!isHostRefusal(error)) return;
+        integrationAuthorizationStatusReturned(client, callback.attemptId, {
+          status: "failed",
+          connectionId: null,
+          failureCode: "grant-rejected",
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        });
+        await bridge
+          .finishIntegrationAuthorization({
+            deploymentId: callback.deploymentId,
+            attemptId: callback.attemptId,
+          })
+          .catch(() => undefined);
       })
       .finally(() => {
         inFlight.delete(callback.attemptId);

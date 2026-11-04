@@ -62,6 +62,9 @@ export function connectCard(input: {
   const entry = loaded.platform.installations.find(
     ({ installation }) => installation.id === loaded.request.installationId,
   );
+  const definition =
+    plan?.definition ??
+    (loaded.request.manifest ? installationDefinition(loaded.request.manifest) : null);
   const name = plan?.integrationName ?? review?.name ?? entry?.installation.title ?? "Integration";
   const iconId =
     plan?.definition?.id ??
@@ -122,7 +125,8 @@ export function connectCard(input: {
       : review?.provenance
         ? []
         : (review?.facts ?? [])),
-    ...(workspace.kind === "main" && plan !== null && plan.requirement.kind !== "computer"
+    ...(workspace.kind === "main" &&
+    (plan ? plan.requirement.kind !== "computer" : definition !== null && !definition.computerApp)
       ? [mainConnectAllowsNote(workspace.name)]
       : []),
     ...(workspace.kind === "project" && loaded.request.access === "read-write"

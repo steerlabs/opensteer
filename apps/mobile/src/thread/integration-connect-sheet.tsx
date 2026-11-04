@@ -34,7 +34,7 @@ import {
   type LoadedAccessRequest,
 } from "@opensteer/client/integrations";
 import { useNavigation } from "@react-navigation/native";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Linking, Pressable, StyleSheet, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import { color, controlFontScaleLimit, space, touchTarget } from "../theme.js";
@@ -56,7 +56,15 @@ import { useMobileClient } from "../ui/mobile-client-context.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 
 type Step = "review" | "api-key" | "computer" | "repository-access" | "server";
-const selectHostSnapshot = (snapshot: HostSnapshot): HostSnapshot => snapshot;
+type CardHostState = Pick<HostSnapshot, "deploymentId" | "machines" | "workspaceWindow"> & {
+  readonly workspace: HostSnapshot["workspaces"][number] | null;
+};
+const sameCardHostState = (a: CardHostState, b: CardHostState) =>
+  a.deploymentId === b.deploymentId &&
+  a.machines === b.machines &&
+  a.workspace === b.workspace &&
+  a.workspaceWindow.hasMore === b.workspaceWindow.hasMore &&
+  a.workspaceWindow.itemCount === b.workspaceWindow.itemCount;
 
 /** The Request stays inline. Only credential entry and device setup need a sheet. */
 export function IntegrationConnectCard(props: {
@@ -97,25 +105,52 @@ export function IntegrationConnectCard(props: {
   const operationGeneration = useRef(0);
   const responding = useRef(false);
   const presented = useRef(false);
-  const snapshot = useHostSelector(props.hostClient, selectHostSnapshot);
-  const workspace =
-    snapshot.workspaces.find(({ id }) => id === props.request.targetWorkspaceId) ?? null;
-  const plan = loaded === null ? null : accessPlan(loaded, accountId);
-  const card =
-    loaded && workspace
-      ? connectCard({
-          loaded,
-          workspace,
-          selectedAccountId: accountId,
-          allowChanges,
-          agentProposed: props.request.presentation.agentProposed === true,
-          connecting,
-          error,
-          connectedAccount: connected,
-          answered: props.request.status !== "pending",
-          repositories: step === "repository-access",
-        })
-      : null;
+  const selectCardHostState = useMemo(
+    () =>
+      (snapshot: HostSnapshot): CardHostState => ({
+        deploymentId: snapshot.deploymentId,
+        machines: snapshot.machines,
+        workspaceWindow: snapshot.workspaceWindow,
+        workspace:
+          snapshot.workspaces.find(({ id }) => id === props.request.targetWorkspaceId) ?? null,
+      }),
+    [props.request.targetWorkspaceId],
+  );
+  const snapshot = useHostSelector(props.hostClient, selectCardHostState, sameCardHostState);
+  const { workspace } = snapshot;
+  const plan = useMemo(
+    () => (loaded === null ? null : accessPlan(loaded, accountId)),
+    [loaded, accountId],
+  );
+  const card = useMemo(
+    () =>
+      loaded && workspace
+        ? connectCard({
+            loaded,
+            workspace,
+            selectedAccountId: accountId,
+            allowChanges,
+            agentProposed: props.request.presentation.agentProposed === true,
+            connecting,
+            error,
+            connectedAccount: connected,
+            answered: props.request.status !== "pending",
+            repositories: step === "repository-access",
+          })
+        : null,
+    [
+      loaded,
+      workspace,
+      accountId,
+      allowChanges,
+      props.request.presentation.agentProposed,
+      props.request.status,
+      connecting,
+      error,
+      connected,
+      step,
+    ],
+  );
   const computerChoices =
     plan?.requirement.kind === "computer" && plan.definition
       ? computerAppChoices({
@@ -153,6 +188,23 @@ export function IntegrationConnectCard(props: {
       if (presented.current) props.onClose?.();
     };
   }, [props.hostClient, props.request.id]);
+  useEffect(() => {
+    if (!payload || workspace || !snapshot.workspaceWindow.hasMore) return;
+    let cancelled = false;
+    void props.hostClient.loadEarlierWorkspaces().catch((reason: unknown) => {
+      if (!cancelled) setError(describe(reason));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    props.hostClient,
+    payload,
+    workspace,
+    snapshot.workspaceWindow.hasMore,
+    snapshot.workspaceWindow.itemCount,
+    reload,
+  ]);
   useEffect(() => {
     if (!payload) return;
     let cancelled = false;
@@ -577,7 +629,21 @@ export function IntegrationConnectCard(props: {
   if (!card)
     return (
       <View style={styles.body}>
-        <AppText role="secondary">{error ?? "Checking account access…"}</AppText>
+        <AppText role="secondary">
+          {error ??
+            (!workspace
+              ? snapshot.workspaceWindow.hasMore
+                ? "Checking target Workspace…"
+                : "The target Workspace is no longer available."
+              : "Checking account access…")}
+        </AppText>
+        {error || (!workspace && !snapshot.workspaceWindow.hasMore) ? (
+          <SecondaryButton
+            label="Not now"
+            disabled={busy || (props.disabled ?? false)}
+            onPress={() => void decline()}
+          />
+        ) : null}
         {error ? (
           <PrimaryButton
             label="Try again"

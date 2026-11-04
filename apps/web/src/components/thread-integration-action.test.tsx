@@ -200,6 +200,120 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
     },
   );
 
+  it.each(["denied", "cancelled", "failed"] as const)(
+    "never fulfills an old selection after another account is %s",
+    async (status) => {
+      const loaded = oauthRequest({ connected: true });
+      const dispatch = vi.fn(async (command: { type: string }) => ({
+        type: command.type,
+        attemptId: createIntegrationId("oauthAttempt"),
+        expiresAt: "2099-01-01T00:00:00Z",
+        launchTicket: "t".repeat(43),
+      }));
+      shellState.current = {
+        snapshot: shellSnapshot(),
+        hostClient: {
+          dispatch,
+          getSnapshot: () => shellSnapshot(),
+          rpc: {
+            "integrations.get": async () => ({ ok: true, data: loaded.dashboard }),
+            "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+            "integration.authorization.get": async () => ({
+              ok: true,
+              data: {
+                status,
+                connectionId: null,
+                failureCode: null,
+                expiresAt: "2099-01-01T00:00:00Z",
+              },
+            }),
+          },
+        },
+      };
+      const container = await mountThreadAction(
+        requestRecord(loaded, "Connect"),
+        "Use alex@example.com",
+      );
+      await act(async () => container.querySelector<HTMLButtonElement>('[role="radio"]')!.click());
+      await act(async () => buttonWithText(container, "Connect another account")!.click());
+      expect(container.textContent).not.toContain("connected ·");
+      expect(dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toHaveLength(0);
+    },
+  );
+
+  it("requires explicit Use for an unbound completed return URL", async () => {
+    const loaded = oauthRequest({ connected: true });
+    const dispatch = vi.fn();
+    const record = requestRecord(loaded, "Connect");
+    const attemptId = createIntegrationId("oauthAttempt");
+    shellState.current = {
+      snapshot: shellSnapshot(),
+      hostClient: {
+        dispatch,
+        getSnapshot: () => shellSnapshot(),
+        rpc: {
+          "integrations.get": async () => ({ ok: true, data: loaded.dashboard }),
+          "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+          "integration.authorization.get": async () => ({
+            ok: true,
+            data: {
+              status: "completed",
+              connectionId: "connection-linear",
+              failureCode: null,
+              expiresAt: "2099-01-01T00:00:00Z",
+            },
+          }),
+          "thread.requests.list": async () => ({
+            ok: true,
+            data: {
+              requests: [record],
+              window: { hasMore: false, nextBefore: null },
+            },
+          }),
+        },
+      },
+    };
+    const container = await mountThreadAction(
+      record,
+      "Use alex@example.com",
+      `/threads/thr_test?integrationAttempt=${attemptId}`,
+    );
+    expect(dispatch).not.toHaveBeenCalled();
+    await act(async () => buttonWithText(container, "Use alex@example.com")!.click());
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "request.respond" }));
+  });
+
+  it("shows required read-write access before auto-installing Connect", async () => {
+    const loaded = oauthRequest();
+    loaded.dashboard.isAdministrator = true;
+    const record = requestRecord(loaded, "Connect");
+    const shown = {
+      ...record,
+      payload: {
+        ...loaded.request,
+        access: "read-write",
+        installationId: null,
+        manifest: {
+          kind: "catalog",
+          definition: loaded.platform.installations[0]!.installation.manifest["definition"],
+          digest: "a".repeat(43),
+        },
+      },
+    } as unknown as Request;
+    shellState.current = {
+      snapshot: shellSnapshot(),
+      hostClient: {
+        dispatch: vi.fn(),
+        rpc: {
+          "integrations.get": async () => ({ ok: true, data: loaded.dashboard }),
+          "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+        },
+      },
+    };
+    const container = await mountThreadAction(shown, "Connect Provider integration");
+    expect(container.textContent).toContain("requires read-write access");
+  });
+
   it("adds a credential-free catalog integration and grants access in the same tap", async () => {
     const loaded = genericProjectRequest();
     loaded.dashboard.isAdministrator = true;
@@ -669,6 +783,8 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
     await act(async () => refuse());
     await act(async () => answerRecheck());
 
+    await vi.waitFor(() => expect(container.textContent).toContain("Use steerlabs"));
+    await act(async () => buttonWithText(container, "Use steerlabs")!.click());
     await vi.waitFor(() =>
       expect(container.textContent).toContain("✓ Provider integration connected · steerlabs"),
     );
@@ -1308,12 +1424,14 @@ describe("ThreadIntegrationAction reviewing what a request would install", () =>
     const resend = await mountThreadAction(preset("resend"), "Connect Resend REST");
     expect(["Resend REST", ...notes(resend)]).toEqual([
       "Resend REST",
+      "Your tasks in Main can read and make changes with every account you connect, so connecting also allows this request.",
       "Send transactional email and inspect sending domains through Resend.",
     ]);
 
     const linear = await mountThreadAction(preset("linear"), "Connect Linear GraphQL");
     expect(["Linear GraphQL", ...notes(linear)]).toEqual([
       "Linear GraphQL",
+      "Your tasks in Main can read and make changes with every account you connect, so connecting also allows this request.",
       "Read and update Linear issues, projects, teams, and comments.",
       "Your key is stored encrypted by your Opensteer and sent to api.linear.app when used.",
       "Opensteer checks the key with Linear GraphQL before saving it.",

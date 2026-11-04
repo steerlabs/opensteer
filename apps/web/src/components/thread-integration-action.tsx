@@ -85,7 +85,11 @@ export function ThreadIntegrationAction({
   const [reload, setReload] = useState(0);
   const [requestSettled, setRequestSettled] = useState(false);
   const [connected, setConnected] = useState<AccessRequestAccount | null>(null);
-  const answerAfterConnect = useRef(false);
+  const answerAfterConnect = useRef<{
+    requestId: string;
+    connectionId: string;
+    access: IntegrationAccess;
+  } | null>(null);
   const [authorization, setAuthorization] = useState<IntegrationAuthorizationStart | null>(null);
   const authorizationController = useRef<AbortController | null>(null);
   const operationGeneration = useRef(0);
@@ -152,7 +156,6 @@ export function ThreadIntegrationAction({
             const dashboard = unwrapRpcResult(await hostClient.rpc["integrations.get"]({}));
             if (controller.signal.aborted) return;
             const connection = authorizationConnection(dashboard, status.connectionId);
-            answerAfterConnect.current = true;
             if (connection?.provider === "github") {
               shownReturn.current = parsed.data;
               takeRepositoryStep(controller);
@@ -165,7 +168,6 @@ export function ThreadIntegrationAction({
               }
               closeRepositorySetup(connection.id);
             }
-            answerAfterConnect.current = true;
             setSelectedAccountId(status.connectionId);
           }
           setReload((value) => value + 1);
@@ -286,7 +288,7 @@ export function ThreadIntegrationAction({
     setComputerSetupNotice(null);
     setRepositorySetup(null);
     setPending(false);
-    answerAfterConnect.current = false;
+    answerAfterConnect.current = null;
   }, [request.id, hostClient]);
 
   useEffect(() => {
@@ -335,7 +337,10 @@ export function ThreadIntegrationAction({
     try {
       await operation();
     } catch (reason) {
-      if (operationGeneration.current === generation) setError(errorMessage(reason));
+      if (operationGeneration.current === generation) {
+        answerAfterConnect.current = null;
+        setError(errorMessage(reason));
+      }
     } finally {
       if (operationGeneration.current === generation) setPending(false);
     }
@@ -364,17 +369,27 @@ export function ThreadIntegrationAction({
       !answerAfterConnect.current
     )
       return;
+    const completion = answerAfterConnect.current;
+    const reviewedAccess = effectiveIntegrationAccess(
+      plan.requestedAccess,
+      selectedAccess === "read-write",
+    );
+    if (completion.requestId !== request.id || completion.access !== reviewedAccess) {
+      answerAfterConnect.current = null;
+      return;
+    }
     const selected = plan.selectedAccount;
     if (
       !selected ||
       selected.id !== selectedAccountId ||
+      selected.id !== completion.connectionId ||
       computerAccessUpgrade(
         plan,
         effectiveIntegrationAccess(plan.requestedAccess, selectedAccess === "read-write"),
       )
     )
       return;
-    answerAfterConnect.current = false;
+    answerAfterConnect.current = null;
     void run(async () => {
       if (
         targetWorkspace.kind === "project" ||
@@ -393,7 +408,17 @@ export function ThreadIntegrationAction({
         throw new Error("The account is connected, but this request is still waiting. Try again.");
       setConnected(selected);
     });
-  }, [loaded, plan, targetWorkspace, repositorySetup, authorization, pending]);
+  }, [
+    loaded,
+    plan,
+    targetWorkspace,
+    repositorySetup,
+    authorization,
+    pending,
+    selectedAccess,
+    request.id,
+    selectedAccountId,
+  ]);
   const handOffAuthorization = async (
     started: IntegrationAuthorizationStart,
     context: LoadedAccessRequest | null = loaded,
@@ -402,6 +427,7 @@ export function ThreadIntegrationAction({
     const controller = new AbortController();
     authorizationController.current?.abort();
     authorizationController.current = controller;
+    answerAfterConnect.current = null;
     setAuthorization(started);
     try {
       const status =
@@ -422,7 +448,16 @@ export function ThreadIntegrationAction({
           "Authorization finished without recording an account. Start the connection again.",
         );
       const dashboard = unwrapRpcResult(await hostClient.rpc["integrations.get"]({}));
+      if (controller.signal.aborted) return;
       const connection = authorizationConnection(dashboard, status.connectionId);
+      answerAfterConnect.current = {
+        requestId: request.id,
+        connectionId: status.connectionId,
+        access: effectiveIntegrationAccess(
+          context?.request.access ?? requestPayload!.access,
+          selectedAccess === "read-write",
+        ),
+      };
       if (connection?.provider === "github") {
         takeRepositoryStep(controller);
         setRepositorySetup({ access: null, connectionId: connection.id });
@@ -446,6 +481,7 @@ export function ThreadIntegrationAction({
       setSelectedAccountId(status.connectionId);
       setReload((value) => value + 1);
     } catch (reason) {
+      if (authorizationController.current === controller) answerAfterConnect.current = null;
       if (!controller.signal.aborted) throw reason;
     } finally {
       if (authorizationController.current === controller) {
@@ -599,7 +635,6 @@ export function ThreadIntegrationAction({
           return result;
         },
       });
-      answerAfterConnect.current = true;
       await handOffAuthorization(started, prepared);
     });
   const chooseServer = (serverId: string) =>
@@ -629,6 +664,16 @@ export function ThreadIntegrationAction({
         </div>
         <p>{card.purpose}</p>
         {card.projectNote ? <p className="field__hint">{card.projectNote}</p> : null}
+        {card.capabilities
+          .filter(
+            (line) =>
+              line.includes("connecting also allows") || line.includes("requires read-write"),
+          )
+          .map((line) => (
+            <p className="field__hint" key={line}>
+              {line}
+            </p>
+          ))}
         {card.installReview ? (
           <IntegrationInstallReview manifest={requestPayload.manifest} />
         ) : null}
@@ -794,7 +839,11 @@ export function ThreadIntegrationAction({
               : !loaded.dashboard.connections.some((previous) => previous.id === account.id)),
         );
         if (!connection) throw new Error("No connected account is recorded here. Try again.");
-        answerAfterConnect.current = true;
+        answerAfterConnect.current = {
+          requestId: request.id,
+          connectionId: connection.id,
+          access: effectiveAccess,
+        };
         setSelectedAccountId(connection.id);
         setApiKeyOpen(false);
         setReload((value) => value + 1);
@@ -833,6 +882,7 @@ export function ThreadIntegrationAction({
       setPending(false);
       const outcome = integrationAuthorizationError(status.status, status.failureCode);
       if (outcome) {
+        answerAfterConnect.current = null;
         setError(outcome);
         return;
       }
@@ -864,7 +914,6 @@ export function ThreadIntegrationAction({
           definitionId: plan.definition!.id,
           returnPath: `/threads/${encodeURIComponent(threadId)}`,
         });
-        answerAfterConnect.current = true;
         await handOffAuthorization(started);
       });
       return;
@@ -897,7 +946,6 @@ export function ThreadIntegrationAction({
             return result;
           },
         });
-        answerAfterConnect.current = true;
         await handOffAuthorization(started);
       });
     }
