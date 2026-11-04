@@ -147,6 +147,6 @@ standing rule. Only the nightly pass curates; others write only what the person 
 inbox scraps, and each nightly pass reapplies recorded forgets. Opensteer creates each Main's two
 background passes (the Trigger's `systemRole`); the Host refuses archive, reprogramming and manual
 runs, and inserts them paused when memory is off. Stopping memory writes the off line first, pauses
-both workers and marks them Done, and erases files only once neither is running. Main is not yet a
+both workers and marks them Done, and erases files only once neither is running or waiting. Main is not yet a
 private boundary: a shared channel routed into Main receives its `AGENTS.md`. See
 [`opensteer:memory`](../apps/runner/agent-skills/skills/memory/SKILL.md).
