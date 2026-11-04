@@ -1180,17 +1180,12 @@ export class OpensteerStore {
   async getAutomaticModelConfig(userId: UserId) {
     return backgroundModelStore.getAutomaticModelConfig(this.#database, userId);
   }
+  /** Person-only: agents and filesystem JSON never change automatic-model eligibility. */
   async setAutomaticModelConfig(
     userId: UserId,
     config: import("@opensteer/core").AutomaticModelConfig,
-    administration?: AdministrationCommandIdentity,
   ) {
-    return backgroundModelStore.setAutomaticModelConfig(
-      this.#database,
-      userId,
-      config,
-      administration,
-    );
+    return backgroundModelStore.setAutomaticModelConfig(this.#database, userId, config);
   }
   async getExecutionPreferences(userId: UserId): Promise<ExecutionPreferences> {
     return harnessStore.getExecutionPreferences(this.#database, userId);

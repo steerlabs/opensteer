@@ -344,6 +344,7 @@ describe("Host signing keys", () => {
         authority: testDiscovery,
         bootstrapMethods: ["password"],
         capabilities: [
+          "automatic-models-v1",
           "chat-attachments",
           "voice-run-v1",
           "thread-titles-v1",
@@ -482,6 +483,7 @@ describe("Host signing keys", () => {
       expect(discovery.json()).toMatchObject({
         apiVersion: hostApiVersion,
         capabilities: [
+          "automatic-models-v1",
           "chat-attachments",
           "voice-run-v1",
           "thread-titles-v1",
