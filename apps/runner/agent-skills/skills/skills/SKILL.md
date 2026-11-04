@@ -57,10 +57,8 @@ When repeated work needs skills, scripts or MCP servers together, package it as 
 turn on here; connections still need grants, and local MCP servers need the computer owner's launch
 approval.
 
-Give the plugin a specific `plugin.json` name (`tapo-camera`, not `camera`); a name held by a plugin
-a person turned on here is refused. To change your plugin, edit its folder and call `plugin_install` on it
-again; never install a renamed copy. On the person's own computer an approved server's updates need
-no new approval, but a new secret or server does.
+Name plugins specifically (`tapo-camera`, not `camera`). To change one, edit its folder and call
+`plugin_install` on it again, never on a renamed copy.
 
 A program server that needs a password, key or token declares it in `plugin.json`, never in
 `mcp.json`, files or chat: `"extensions": {"com.opensteer": {"secrets": {"<server>": [{"name":
