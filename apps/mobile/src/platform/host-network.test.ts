@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   createHostAuthorization,
   createHostNetwork,
+  createMaintenanceNetwork,
   isSameHostDestination,
   type HostFetch,
 } from "./host-network.js";
@@ -33,6 +34,48 @@ const network = (tokens: (string | null)[], answer?: () => Response) => {
     sockets,
   };
 };
+
+describe("createMaintenanceNetwork", () => {
+  const request = (url: string) => ({
+    authorization: "PersonalRemote session",
+    canonicalOrigin: "http://127.0.0.1:1",
+    deploymentId: "deployment" as never,
+    request: {
+      body: "{}",
+      headers: { accept: "application/json", contentType: "application/json" },
+      method: "POST",
+      path: "/maintenance/v1/desktop-update",
+    },
+    requestOrigin: origin,
+    signal: new AbortController().signal,
+    url,
+  });
+
+  it("carries the resolved credential and the body, and never an ambient cookie", async () => {
+    const requests: (RequestInit | undefined)[] = [];
+    const network = createMaintenanceNetwork({
+      fetch: async (_input, init) => {
+        requests.push(init);
+        return new Response("{}");
+      },
+      openWebSocket: () => socket,
+    });
+    await network.request(request(`${origin}/maintenance/v1/desktop-update`));
+    expect(new Headers(requests[0]?.headers).get("authorization")).toBe("PersonalRemote session");
+    expect(new Headers(requests[0]?.headers).get("content-type")).toBe("application/json");
+    expect(requests[0]).toMatchObject({ body: "{}", credentials: "omit", method: "POST" });
+  });
+
+  it("refuses to carry that credential anywhere but the resolved route", async () => {
+    const network = createMaintenanceNetwork({
+      fetch: async () => new Response("{}"),
+      openWebSocket: () => socket,
+    });
+    await expect(
+      network.request(request("https://elsewhere.example.com/maintenance/v1/desktop-update")),
+    ).rejects.toThrow(/outside the deployment/iu);
+  });
+});
 
 describe("createHostNetwork", () => {
   it("carries the deployment's credential on every request", async () => {

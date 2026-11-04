@@ -1,3 +1,4 @@
+import type { HostNetwork as ClientHostNetwork } from "@opensteer/client/connections";
 import type { WebSocketClient } from "@opensteer/client/host";
 
 export type HostFetch = (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>;
@@ -96,6 +97,39 @@ export function createHostNetwork(options: {
         url,
         authorization === null ? {} : { Authorization: authorization },
       );
+    },
+  };
+}
+
+/**
+ * The same fence for the shared transport, which resolves the route and the
+ * credential per request and needs no socket: it runs below attachment.
+ */
+export function createMaintenanceNetwork(options: {
+  readonly fetch: HostFetch;
+  readonly openWebSocket: (
+    url: string,
+    headers: Readonly<Record<string, string>>,
+  ) => WebSocketClient;
+}): ClientHostNetwork {
+  return {
+    request: ({ authorization, request, requestOrigin, signal, url }) =>
+      createHostNetwork({
+        authorization: { cached: () => authorization, current: async () => authorization },
+        fetch: options.fetch,
+        openWebSocket: options.openWebSocket,
+        origin: requestOrigin,
+      }).fetch(url, {
+        headers: {
+          ...(request.headers.accept ? { accept: request.headers.accept } : {}),
+          ...(request.headers.contentType ? { "content-type": request.headers.contentType } : {}),
+        },
+        method: request.method,
+        signal,
+        ...(request.body === undefined ? {} : { body: request.body }),
+      }),
+    openWebSocket: () => {
+      throw new Error("Desktop updates do not open a socket.");
     },
   };
 }

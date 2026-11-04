@@ -1,8 +1,11 @@
 import type { NativeOAuthManager } from "@opensteer/client/auth";
 import {
+  DesktopUpdatesService,
   HostVersionMismatchError,
   verifyAccessEndpoint,
+  type DeploymentCatalogStore,
   type DeploymentConnection,
+  type DesktopUpdates,
   type ResolvedConnection,
 } from "@opensteer/client/connections";
 import {
@@ -12,10 +15,12 @@ import {
   type HostCapabilityReader,
   type BrowserPreferencesStorage,
 } from "@opensteer/client/host";
+import type { DeploymentId } from "@opensteer/core";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import { isSameHost } from "@opensteer/deployment-authority";
 import {
   createHostNetwork,
+  createMaintenanceNetwork,
   type HostAuthorization,
   type HostFetch,
 } from "../platform/host-network.js";
@@ -57,6 +62,11 @@ export interface MobileHostPort {
     readonly connection: DeploymentConnection;
     readonly origin: string;
   }): HostClient;
+  /** Below attachment: it must reach a Host on the other side of a protocol epoch. */
+  desktopUpdates(input: {
+    readonly catalog: Pick<DeploymentCatalogStore, "load" | "subscribe">;
+    readonly deploymentId: DeploymentId;
+  }): DesktopUpdates;
   verifyEpoch(
     resolved: ResolvedConnection,
     connection: DeploymentConnection,
@@ -78,8 +88,20 @@ export function createNetworkHostPort(options: {
     headers: Readonly<Record<string, string>>,
   ) => WebSocketClient;
 }): MobileHostPortFactory {
+  const maintenanceNetwork = createMaintenanceNetwork(options);
   return ({ oauth, sessions }) => ({
     credentials: createDeploymentCredentials({ now: options.now, oauth, sessions }),
+
+    desktopUpdates: ({ catalog, deploymentId }) => {
+      const credentials = createDeploymentCredentials({ now: options.now, oauth, sessions });
+      return new DesktopUpdatesService({
+        catalog,
+        credentials: { authorizationHeader: (connection) => credentials.authorization(connection) },
+        deploymentId,
+        localRuntime: { current: async () => null },
+        network: maintenanceNetwork,
+      });
+    },
 
     attach({ authorization, capabilities, origin }): HostClient {
       const network = createHostNetwork({

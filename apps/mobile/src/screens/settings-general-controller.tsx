@@ -13,6 +13,7 @@ import {
   type NotificationSettingsActionModel,
 } from "./settings-model.js";
 import { SettingsPageLayout } from "./settings-page-layout.js";
+import { useDeploymentUpdate } from "./use-deployment-update.js";
 import { useSettingsHost } from "./use-settings-host.js";
 export function GeneralSettingsController(): ReactNode {
   const page = "general";
@@ -25,6 +26,10 @@ export function GeneralSettingsController(): ReactNode {
   const notificationInFlight = useRef(false);
   const snapshot = useSettingsHost(selection.hostClient);
   const selectedRow = rows.find((row) => row.deploymentId === selection.deploymentId) ?? null;
+  const desktopUpdate = useDeploymentUpdate(
+    selectedRow?.deploymentId ?? null,
+    selectedRow?.name ?? "",
+  );
   const agents = useMemo(
     () =>
       snapshot === null
@@ -83,6 +88,7 @@ export function GeneralSettingsController(): ReactNode {
           page={page}
           agents={agents}
           deployment={deploymentModel}
+          desktopUpdate={desktopUpdate}
           notificationError={notificationError}
           notifications={notificationModel}
           onAgentMuteChange={(workspaceId, muted) => {

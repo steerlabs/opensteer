@@ -1,6 +1,6 @@
 import type { DeploymentConnection } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
-import { MockHostClient } from "@opensteer/client/mock";
+import { MockDesktopUpdates, MockHostClient } from "@opensteer/client/mock";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import type { MobileHostPortFactory } from "./host-port.js";
 import { mockSignedOutDeploymentId } from "./mock-mode.js";
@@ -71,6 +71,8 @@ export function createMockHostPort(
       held: async (connection) => signedIn(connection),
     },
     attach: ({ connection }) => attach(connection),
+    desktopUpdates: ({ deploymentId }) =>
+      options.hosts?.get(deploymentId)?.desktopUpdates ?? new MockDesktopUpdates(),
     verifyEpoch: async () => ({ status: "compatible", capabilities: [] }),
   });
 }

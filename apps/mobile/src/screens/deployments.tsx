@@ -212,6 +212,9 @@ export function DeploymentsScreen(): ReactNode {
     (row: DeploymentRow) => {
       if (!deploymentCanOpen(row)) {
         Alert.alert(row.name, deploymentStatusDetail(row) ?? "This deployment cannot open yet.", [
+          ...(row.verification === "host-too-old"
+            ? [{ text: "Update", onPress: () => resetToDeployment(row.deploymentId) }]
+            : []),
           { text: "Done" },
         ]);
         return;
