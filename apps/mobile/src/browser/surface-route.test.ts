@@ -1,8 +1,23 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceSurfaceDestination } from "@opensteer/client/host";
-import { paramsDestination, routeDestination, workspaceRoute } from "./surface-route.js";
+import {
+  paramsDestination,
+  routeDestination,
+  viewedPage,
+  workspaceRoute,
+} from "./surface-route.js";
 
 const source = { kind: "owner-view", viewId: "view", generation: 2 } as const;
+describe("viewedPage", () => {
+  const session = { id: "bsn_00000000-0000-4000-8000-000000000001" };
+  const tab = { active: true, id: "page-1", title: "Example", url: "https://example.com/" };
+
+  it("includes a page the person can see, and not one that failed to load", () => {
+    expect(viewedPage(session, tab as never)).toMatchObject({ url: "https://example.com/" });
+    expect(viewedPage(session, { ...tab, navigationFailed: true } as never)).toBeNull();
+  });
+});
+
 describe("native viewer routes", () => {
   it("round trips an owner window through typed and untyped params", () => {
     const destination = {

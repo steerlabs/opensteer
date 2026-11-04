@@ -1,7 +1,8 @@
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
   browserTabCatalogMaxBytes,
-  HostToClientMessageSchema,
+  isRealtimeWireField,
+  realtimeEnvelopeTypes,
   type HostToClientMessage,
   type RealtimeFrameDiagnostic,
 } from "@opensteer/protocol";
@@ -9,17 +10,20 @@ import { z } from "zod";
 
 export const maxInboundFrameCharacters = browserTabCatalogMaxBytes + 4 * 1024;
 
-export const realtimeEnvelopeTypes = new Set<string>(
-  HostToClientMessageSchema.options.map((schema) => schema.shape.type.value),
-);
-
 /**
- * What losing a frame costs. `replay`: it moves the cursor or the sync state,
- * so it is never skipped. `reread`: something shown goes stale until it is read
- * again. `none`: nothing is owed, because the frame is momentary or the next
- * frame repairs it.
+ * What losing a frame costs, which is what repairs it. `replay`: only
+ * subscribing again brings it back, so it is never skipped. `none`: nothing is
+ * owed. Every other value names the read that answers for what it carried.
  */
-export type RealtimeFrameLoss = "none" | "replay" | "reread";
+export type RealtimeFrameLoss =
+  | "bootstrap"
+  | "browser-history"
+  | "browser-usage"
+  | "machines"
+  | "none"
+  | "place-activity"
+  | "replay"
+  | "triggers";
 
 const realtimeFrameLosses = {
   "host.error": "replay",
@@ -27,33 +31,37 @@ const realtimeFrameLosses = {
   "host.resync-required": "replay",
   "host.snapshot": "replay",
   "host.synchronized": "replay",
+  // Sent while synchronizing, and no read replaces them.
+  "host.read-markers": "replay",
+  "host.read-states": "replay",
+  // No read answers these for a list already on screen.
+  "host.connections-changed": "replay",
+  "host.personal-remote-access-changed": "replay",
+  "host.plugins-changed": "replay",
 
-  "host.browser-history-changed": "reread",
-  "host.browser-presence": "reread",
-  "host.browser-sessions-changed": "reread",
-  "host.browser-tabs-changed": "reread",
-  "host.browser-usage-changed": "reread",
-  "host.computer-presence": "reread",
-  "host.computer-view.changed": "reread",
-  "host.computer-view.removed": "reread",
-  "host.connections-changed": "reread",
-  "host.machine.access.session.ended": "reread",
-  "host.machine.access.session.started": "reread",
-  "host.machines.changed": "reread",
-  "host.notification-preferences": "reread",
-  "host.personal-remote-access-changed": "reread",
-  "host.plugins-changed": "reread",
-  "host.read-markers": "reread",
-  "host.read-states": "reread",
-  "host.requests-changed": "reread",
-  "host.tasks-changed": "reread",
-  "host.triggers-changed": "reread",
+  "host.browser-presence": "bootstrap",
+  "host.browser-sessions-changed": "bootstrap",
+  "host.browser-tabs-changed": "bootstrap",
+  "host.computer-presence": "bootstrap",
+  "host.computer-view.changed": "bootstrap",
+  "host.computer-view.removed": "bootstrap",
+  "host.notification-preferences": "bootstrap",
+  "host.requests-changed": "bootstrap",
+  "host.tasks-changed": "bootstrap",
 
-  // The next frame of a stream shows the gap, and that rereads the stream.
+  "host.browser-history-changed": "browser-history",
+  "host.browser-usage-changed": "browser-usage",
+  "host.machine.access.session.ended": "machines",
+  "host.machine.access.session.started": "machines",
+  "host.machines.changed": "machines",
+  // Only a clear or a newer record removes an agent, so a lost one leaves a ghost.
+  "host.place-activity": "place-activity",
+  "host.place-activity-cleared": "place-activity",
+  "host.triggers-changed": "triggers",
+
+  // The next frame of a stream shows the gap, and its durable event replaces it.
   "host.live": "none",
   "host.notification": "none",
-  "host.place-activity": "none",
-  "host.place-activity-cleared": "none",
   // An unanswered probe replaces its socket.
   "host.pong": "none",
   "host.show": "none",
@@ -67,40 +75,6 @@ const realtimeFrameLossByType = new Map<string, RealtimeFrameLoss>(
 /** A frame with no readable envelope could have been any frame, so it is treated as the worst. */
 export function realtimeFrameLoss(envelopeType: string): RealtimeFrameLoss {
   return realtimeFrameLossByType.get(envelopeType) ?? "replay";
-}
-
-function collectFieldNames(value: unknown, names: Set<string>, seen: Set<unknown>): void {
-  if (Array.isArray(value)) {
-    for (const item of value) collectFieldNames(item, names, seen);
-    return;
-  }
-  if (!(value instanceof z.core.$ZodType) || seen.has(value)) return;
-  seen.add(value);
-  const def = (value as z.core.$ZodTypes)._zod.def;
-  if (def.type === "object") {
-    for (const [name, field] of Object.entries(def.shape)) {
-      names.add(name);
-      collectFieldNames(field, names, seen);
-    }
-  }
-  if (def.type === "lazy") collectFieldNames(def.getter(), names, seen);
-  for (const child of Object.values(def)) collectFieldNames(child, names, seen);
-}
-
-let wireFieldNames: ReadonlySet<string> | undefined;
-
-/**
- * Issue paths can contain record keys supplied by the peer, so a path names
- * only what the wire schemas declare and masks the rest. Walked on first
- * failure: a healthy client never pays for it.
- */
-function isWireFieldName(part: string): boolean {
-  if (!wireFieldNames) {
-    const names = new Set<string>();
-    collectFieldNames(HostToClientMessageSchema, names, new Set());
-    wireFieldNames = names;
-  }
-  return wireFieldNames.has(part);
 }
 
 export function realtimeEnvelopeType(frame: unknown): string {
@@ -137,7 +111,7 @@ export function describeRealtimeFrameFailure(
                     .map((part) =>
                       typeof part === "number"
                         ? "[]"
-                        : typeof part === "string" && isWireFieldName(part)
+                        : typeof part === "string" && isRealtimeWireField(part)
                           ? part
                           : "*",
                     )

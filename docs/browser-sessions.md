@@ -30,6 +30,12 @@ agent script waiting for a person's click cannot block that click. A lost answer
 or insertion is never replayed. Person activity is an observation, not an input gate, and never
 records keys or text.
 
+A failed navigation leaves Chromium's error document committed, and a surface's address stays the
+one it tried to reach, so a person sees where they meant to go and the catalog names a real origin.
+That address was never visited: `navigationFailed` is what says so, and anything that treats a page
+as seen, such as a place's site, retained icons or a sign-in offer, checks it first. Restore,
+history and context reads use the committed URL, which never changes for this.
+
 History belongs to the profile and only its owner reads it; only a person's own navigations record
 visits, never agents or Guest. Search words reach Google only under the person's suggestion
 preference. Cursor hints are a bounded enum; CSS, URLs and images never leave the computer. Site

@@ -392,7 +392,7 @@ describe("desktop bridge", () => {
       category: "schema",
       envelopeType: "host.snapshot",
       event: "host.realtime.frame-rejected",
-      issuePaths: ["snapshot.threads.[].status", "snapshot.threads.[].title"],
+      issuePaths: ["snapshot.threads.[].status", "snapshot.threads.[].modelSelection.options.*"],
     };
     try {
       report(record);
@@ -401,10 +401,17 @@ describe("desktop bridge", () => {
         bytes: 128,
         category: "schema",
         envelopeType: "host.snapshot",
-        issuePaths: "snapshot.threads.[].status;snapshot.threads.[].title",
+        issuePaths: "snapshot.threads.[].status;snapshot.threads.[].modelSelection.options.*",
         suppressed: 0,
       });
-      expect(() => report({ ...record, frame: "os_secret_PRIVATE-FRAME" })).toThrow();
+      const secret = "https://private.test/page?token=os_secret_PRIVATE";
+      for (const smuggled of [
+        { ...record, frame: "os_secret_PRIVATE-FRAME" },
+        { ...record, envelopeType: secret },
+        { ...record, issuePaths: [secret] },
+        { ...record, issuePaths: [`snapshot.threads.[].${secret}`] },
+      ])
+        expect(() => report(smuggled)).toThrow();
       expect(log).toHaveBeenCalledOnce();
 
       log.mockClear();

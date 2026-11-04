@@ -15,6 +15,7 @@ import { downloadsHandlers } from "./methods/downloads.js";
 import { updatesHandlers } from "./methods/updates.js";
 import { browserPresentationHandlers } from "./methods/browser-presentation.js";
 import { z } from "zod";
+import { isRealtimeFrameMetadata } from "@opensteer/protocol";
 import { assertAuthorizedRenderer, trackRenderer } from "./context.js";
 import type { WebContents } from "electron";
 import {
@@ -222,11 +223,10 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   const admitRealtimeDiagnostic = diagnosticBudget();
   register(desktopBridgeChannels.reportRealtimeDiagnostic, (event, envelope) => {
     assertAuthorizedRenderer(context, event, envelope);
-    const {
-      event: name,
-      issuePaths,
-      ...fields
-    } = RealtimeFrameDiagnosticSchema.parse(envelope.input);
+    const record = RealtimeFrameDiagnosticSchema.parse(envelope.input);
+    if (!isRealtimeFrameMetadata(record))
+      throw new Error("A realtime diagnostic may only name what the wire schemas declare.");
+    const { event: name, issuePaths, ...fields } = record;
     const suppressed = admitRealtimeDiagnostic();
     if (suppressed === null) return;
     try {

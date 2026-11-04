@@ -73,6 +73,7 @@ import {
   browserViewerCloseCodes,
   decodeBrowserFrameEnvelope,
   hostApi,
+  realtimeEnvelopeTypes,
   threadPageMaxItems,
   workspaceFilePreviewMaxBytes,
   workspaceSnapshotMaxThreads,
@@ -158,7 +159,6 @@ import {
   describeRealtimeFrameFailure,
   maxInboundFrameCharacters,
   realtimeEnvelopeType,
-  realtimeEnvelopeTypes,
   realtimeFrameLoss,
 } from "./realtime-frames.js";
 
@@ -212,7 +212,10 @@ const realtimeThreadEventSchema = AgentEventViewSchema.options[0]
   .omit({ type: true, data: true })
   .extend({
     type: z.enum(["thread.created", "thread.execution-updated", "thread.listed"]),
-    data: z.object({ thread: z.unknown(), home: z.literal(true).optional() }),
+    data: z.object({
+      thread: ThreadViewSchema.extend({ status: z.string().min(1) }),
+      home: z.literal(true).optional(),
+    }),
   });
 const realtimeResyncSchema = z.object({
   type: z.literal("host.resync-required"),
@@ -364,6 +367,8 @@ interface WorkspaceChannel {
   synchronized: boolean;
   /** Replay and sync frames this client could not read since it last synchronized. */
   unreadableFrames: number;
+  /** While frames are unreadable, when the next attempt may start. */
+  unreadableRetryAt: number;
   workspaceId: string;
 }
 
@@ -396,6 +401,8 @@ interface BrowserChannelState {
   sessionId: string;
   socket: WebSocketClient | null;
   synchronized: boolean;
+  /** Frames this socket's stream could not read since one was read past a snapshot. */
+  unreadableFrames: number;
 }
 
 type BrowserChannel = BrowserChannelState &
@@ -2000,6 +2007,11 @@ export class HttpHostClient {
   }
 
   /** What a triggers notice, or a stream that may have missed one, means for one Workspace. */
+  #triggersChanged(workspaceId: string): void {
+    this.#refreshShownAutomations(workspaceId);
+    this.#update({ ...this.#snapshot, triggerRevision: this.#snapshot.triggerRevision + 1 });
+  }
+
   #refreshShownAutomations(workspaceId: string): void {
     for (const threadId of new Set([this.#activeThreadId, ...this.#observedThreads.keys()])) {
       if (threadId !== null && this.#threadWorkspace.get(threadId) === workspaceId)
@@ -2317,6 +2329,7 @@ export class HttpHostClient {
     if (options?.retryConnection)
       for (const channel of this.#channels.values()) {
         channel.refused = false;
+        channel.unreadableRetryAt = 0;
         if (channel.reconnectTimer) this.#replaceChannel(channel);
       }
     await this.#refresh("refresh");
@@ -2907,6 +2920,7 @@ export class HttpHostClient {
         sessionId,
         socket: null,
         synchronized: false,
+        unreadableFrames: 0,
       } satisfies BrowserChannel);
     const captureRegion = options?.captureRegion === true;
     const previouslyOptedIn =
@@ -4475,6 +4489,7 @@ export class HttpHostClient {
         socket: null,
         synchronized: false,
         unreadableFrames: 0,
+        unreadableRetryAt: 0,
         workspaceId,
       } satisfies WorkspaceChannel);
     this.#channels.set(workspaceId, channel);
@@ -4488,6 +4503,16 @@ export class HttpHostClient {
     // nobody can read. The channel and its cursor stay, so the next foreground
     // or network signal opens the socket and resumes the stream.
     if (this.#workspaceReconnectSuspended()) return;
+    // Each try can cost a whole snapshot, and a phone reports its network often,
+    // so only the person's Retry starts one before its time.
+    const wait = channel.unreadableFrames > 0 ? channel.unreadableRetryAt - Date.now() : 0;
+    if (wait > 0) {
+      channel.reconnectTimer ??= globalThis.setTimeout(() => {
+        channel.reconnectTimer = null;
+        this.#connect(channel);
+      }, wait);
+      return;
+    }
     // A reused channel may now reach a restarted or upgraded Host at the same
     // identity and route. Discovery is refreshed even when no bootstrap is due.
     if (channel.progressAt > 0 || channel.reconnectAttempt > 0) this.#reverifyCapabilities();
@@ -4503,6 +4528,9 @@ export class HttpHostClient {
     }
     channel.socket = socket;
     channel.progressAt = Date.now();
+    if (channel.unreadableFrames > 0)
+      channel.unreadableRetryAt =
+        Date.now() + this.#retryDelay(channel.reconnectAttempt, channel.unreadableFrames);
     // A new socket is a new subscription: a stream reread asked for under the
     // old one answers about streams this one starts over.
     this.#heldLive.delete(channel.workspaceId);
@@ -4610,7 +4638,7 @@ export class HttpHostClient {
             eventType === "thread.listed"
           ) {
             const { thread } = realtimeThreadEventSchema.parse(raw).data;
-            skip = !ThreadViewSchema.safeParse(thread).success;
+            skip = !ThreadStatusSchema.safeParse(thread.status).success;
           }
           if (!skip) return AgentEventViewSchema.parse(raw);
           const parsed = AgentEventViewSchema.safeParse(raw);
@@ -4729,19 +4757,37 @@ export class HttpHostClient {
    * snapshot, because replay cannot get past an event this client cannot read.
    */
   #loseRealtimeFrame(channel: WorkspaceChannel, frame: unknown, error: unknown): void {
-    const envelopeType = realtimeEnvelopeType(frame);
-    const loss = realtimeFrameLoss(envelopeType);
+    const loss = realtimeFrameLoss(realtimeEnvelopeType(frame));
     this.#recordRealtimeFrame(frame, error, loss === "replay" ? "rejected" : "ignored");
-    if (loss === "replay") {
-      channel.unreadableFrames += 1;
-      if (channel.unreadableFrames >= realtimeReplayAttempts) channel.cursor = zeroSequence;
-      this.#closeChannel(channel, true, 4002, "Invalid Host protocol frame");
-      this.#recomputeConnection();
-      return;
+    switch (loss) {
+      case "replay":
+        channel.unreadableFrames += 1;
+        if (channel.unreadableFrames >= realtimeReplayAttempts) channel.cursor = zeroSequence;
+        this.#closeChannel(channel, true, 4002, "Invalid Host protocol frame");
+        this.#recomputeConnection();
+        return;
+      case "none":
+        return;
+      case "place-activity":
+        this.#placeActivity.clear();
+        return;
+      case "browser-history":
+        this.browserHistory.changedAll();
+        return;
+      case "browser-usage":
+        this.#browserUsageChanged([
+          ...new Set([...this.#browserUsageRead.keys(), ...this.#browserUsageReads.keys()]),
+        ]);
+        return;
+      case "triggers":
+        this.#triggersChanged(channel.workspaceId);
+        return;
+      case "machines":
+        this.#update({ ...this.#snapshot, machineRevision: this.#snapshot.machineRevision + 1 });
+        break;
+      case "bootstrap":
+        break;
     }
-    if (loss === "none") return;
-    if (envelopeType === "host.triggers-changed")
-      this.#refreshShownAutomations(channel.workspaceId);
     // Tab frames arrive with every navigation, and the poll repairs what this skips.
     const now = Date.now();
     if (now - this.#lostFrameRereadAt < defaultRefreshIntervalMs) return;
@@ -4855,11 +4901,7 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "host.triggers-changed") {
-      this.#refreshShownAutomations(message.workspaceId);
-      this.#update({
-        ...this.#snapshot,
-        triggerRevision: this.#snapshot.triggerRevision + 1,
-      });
+      this.#triggersChanged(message.workspaceId);
       return;
     }
     if (message.type === "host.browser-history-changed") {
@@ -4949,7 +4991,7 @@ export class HttpHostClient {
       if (this.#snapshot.transcripts[thread.id]?.some((entry) => drawnLiveStream(entry) !== null))
         this.#scheduleLiveRefresh(thread.id, message.workspaceId);
     }
-    const reconnected = channel.reconnectAttempt > 0;
+    const reconnected = channel.reconnectAttempt > 0 || channel.unreadableFrames > 0;
     channel.synchronized = true;
     channel.reconnectAttempt = 0;
     channel.unreadableFrames = 0;
@@ -5343,12 +5385,17 @@ export class HttpHostClient {
     return Math.min(maxDelayMs, Math.round(ceiling * (0.8 + this.#random() * 0.2)));
   }
 
+  #retryDelay(attempt: number, unreadableFrames: number): number {
+    return this.#reconnectDelay(
+      Math.max(attempt, unreadableFrames - 1),
+      unreadableFrames > 0 ? unreadableFrameMaxDelayMs : this.#reconnectMaxDelayMs,
+    );
+  }
+
   #scheduleReconnect(channel: WorkspaceChannel): void {
     if (this.#disposed || channel.reconnectTimer || this.#workspaceReconnectSuspended()) return;
-    const delay = this.#reconnectDelay(
-      Math.max(channel.reconnectAttempt++, channel.unreadableFrames - 1),
-      channel.unreadableFrames > 0 ? unreadableFrameMaxDelayMs : this.#reconnectMaxDelayMs,
-    );
+    const delay = this.#retryDelay(channel.reconnectAttempt++, channel.unreadableFrames);
+    if (channel.unreadableFrames > 0) channel.unreadableRetryAt = Date.now() + delay;
     channel.reconnectTimer = globalThis.setTimeout(() => {
       channel.reconnectTimer = null;
       this.#connect(channel);
@@ -5437,15 +5484,16 @@ export class HttpHostClient {
       viewerState: "connecting",
     });
     socket.addEventListener("message", (event) => {
-      if (channel.socket !== socket) return;
+      if (channel.socket !== socket || socket.readyState >= 2) return;
+      const synchronized = channel.synchronized;
       try {
         this.#handleBrowserFrame(channel, event.data);
-      } catch (error) {
+        // A snapshot alone proves nothing: a frame failing right after one on
+        // every connect would otherwise never back off.
+        if (synchronized) channel.unreadableFrames = 0;
+      } catch {
+        channel.unreadableFrames += 1;
         this.#setBrowserFrame(channel.sessionId, null, channel.mode);
-        this.#patchBrowserViewerState(channel.sessionId, channel.mode, {
-          viewerError: error instanceof Error ? error.message : "Invalid browser protocol frame.",
-          viewerState: "disconnected",
-        });
         socket.close(4002, "Invalid browser protocol frame");
       }
     });
@@ -5462,22 +5510,22 @@ export class HttpHostClient {
         );
         return;
       }
-      if (
-        event.code === browserViewerCloseCodes.protocolViolation ||
-        event.code === browserViewerCloseCodes.accessEnded
-      ) {
+      if (event.code === browserViewerCloseCodes.accessEnded) {
         this.#patchBrowserViewerState(channel.sessionId, channel.mode, {
           viewerError:
             (channel.mode === "watch" ? session.watchViewerError : session.viewerError) ||
             event.reason ||
-            "The browser viewer protocol failed.",
+            "Access to this browser ended.",
           viewerState: "disconnected",
         });
         return;
       }
+      // A snapshot is the whole of a viewer's state, so a new socket repairs
+      // anything lost; retrying one that keeps failing should say so.
+      const unreadable = channel.unreadableFrames > realtimeReplayAttempts;
       this.#patchBrowserViewerState(channel.sessionId, channel.mode, {
-        viewerError: null,
-        viewerState: "connecting",
+        viewerError: unreadable ? "The browser viewer protocol failed." : null,
+        viewerState: unreadable ? "disconnected" : "connecting",
       });
       this.#scheduleBrowserReconnect(channel);
     });
@@ -5581,7 +5629,7 @@ export class HttpHostClient {
   #scheduleBrowserReconnect(channel: BrowserChannel): void {
     if (this.#disposed || channel.retainers === 0 || channel.reconnectTimer) return;
     if (this.#reconnectSuspended()) return;
-    const delay = this.#reconnectDelay(channel.reconnectAttempt++);
+    const delay = this.#retryDelay(channel.reconnectAttempt++, channel.unreadableFrames);
     channel.reconnectTimer = globalThis.setTimeout(() => {
       channel.reconnectTimer = null;
       this.#connectBrowser(channel);

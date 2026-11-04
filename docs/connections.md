@@ -86,7 +86,8 @@ sending; rejecting a frame after it arrives protects nothing.
 A failed acknowledgement send reconnects, keeping applied state. Diagnostics never log payloads,
 discriminator values or validator messages, only envelope metadata and issue paths, which name
 fields the wire schemas declare and mask a peer's record keys. The renderer reports its own failures
-to the desktop log; the main process does not read realtime frames.
+to the desktop log; the main process does not read realtime frames, but it does check that what it
+is told to log names only that vocabulary, because the bridge can be called directly.
 
 Thread and Run state are absolute and sequenced: only newer state replaces event-owned fields, and
 an ended Run never returns active. Request counts come from the Host's projection, not client
