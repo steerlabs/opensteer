@@ -613,10 +613,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       stateKind: "isolated",
     });
     await storeFixture.store.recordHarnessCatalogs({
-      catalogs: [
-        testReadyHarnessCatalog(f.harnessInstance.id),
-        testReadyHarnessCatalog(second.id),
-      ],
+      catalogs: [testReadyHarnessCatalog(f.harnessInstance.id), testReadyHarnessCatalog(second.id)],
       environmentId: f.environmentId,
       expectedRevisions: new Map([
         [f.harnessInstance.id, f.harnessInstance.runtimeRevision],
