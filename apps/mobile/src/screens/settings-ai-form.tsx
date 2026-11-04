@@ -7,7 +7,7 @@ import {
   automaticRoleEntries,
   automaticPreviewLines,
 } from "@opensteer/client/host";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Switch, TextInput, View } from "react-native";
 import { NativeMenu } from "../thread/composer-menu.js";
@@ -57,6 +57,8 @@ export function AiSettingsForm(
 function AutomaticModels({ form }: { readonly form: AutomaticModelsForm }): ReactNode {
   const [advanced, setAdvanced] = useState(false);
   const [json, setJson] = useState<string | null>(null);
+  const configJson = JSON.stringify(form.view?.config ?? {});
+  useEffect(() => setJson(null), [configJson]);
   if (!form.supported) return null;
   const view = form.view;
   return (

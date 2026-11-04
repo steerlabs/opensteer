@@ -136,6 +136,19 @@ describe("Automatic models on a phone", () => {
       const result = await host.rpc["automaticModels.get"]({});
       expect(result.ok && result.data.config.roles.deep).toHaveLength(1);
     });
+    await vi.waitFor(() =>
+      expect(JSON.parse(textarea.value)).toEqual({
+        roles: { deep: [{ engine: "codex", model: "gpt-6.1-sol" }] },
+        excludedAccounts: [],
+      }),
+    );
+    await press(document.querySelector<HTMLInputElement>('input[type="checkbox"]'));
+    await vi.waitFor(() => expect(JSON.parse(textarea.value).excludedAccounts).toHaveLength(1));
+    await press(button("Save JSON"));
+    await vi.waitFor(async () => {
+      const result = await host.rpc["automaticModels.get"]({});
+      expect(result.ok && result.data.config.excludedAccounts).toHaveLength(1);
+    });
   });
   it("hides on an older Host", async () => {
     await open({ automaticModelsAvailable: false });
