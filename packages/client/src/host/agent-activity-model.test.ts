@@ -943,6 +943,16 @@ describe("passwordsSetUpSuggestion", () => {
     expect(offer([...first, input({ runId: null }), ...resumed])).toBeNull();
   });
 
+  it("lets a Chrome Request's ending overrule its pending, and a repeat change nothing", () => {
+    const pending = (extra: object) =>
+      signIn({ replayed: false, requestId: createId("request"), status: "pending", ...extra });
+    const replay = signIn({ replayed: true, requestId: createId("request"), status: "pending" });
+    const ended = (extra: object) => request({ requestKind: "browser.sign-in", ...extra });
+    expect(offer([pending({ passwords: "not-set-up" }), replay, run()])).toBe(site);
+    expect(offer([pending({ passwords: "not-set-up" }), ended({}), run()])).toBeNull();
+    expect(offer([pending({}), ended({ passwordsSetUpSite: site }), run()])).toBe(site);
+  });
+
   it("leaves it to the latest sign-in, and never offers what Passwords can't do", () => {
     const signedIn = { profileName: null, site, sourceName: "Work", status: "applied" };
     expect(offer([signIn(notSetUp), signIn(signedIn), run()])).toBeNull();

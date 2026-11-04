@@ -442,9 +442,10 @@ export function turnState(turn: Turn): TurnState {
 
 /**
  * The site to name when offering Opensteer Passwords, or null. The latest
- * sign-in since the person last spoke decides, and only once the agent has
- * stopped: their next message, or a sign-in that got further, ends the offer,
- * so a Thread shows it once, at its end.
+ * word on a sign-in since the person last spoke decides, and only once the
+ * agent has stopped: their next message, or a sign-in that got further, ends
+ * the offer, so a Thread shows it once, at its end. A Chrome Request's ending
+ * is newer than the `pending` that opened it; a repeated call adds nothing.
  */
 export function passwordsSetUpSuggestion(groups: readonly TranscriptGroup[]): string | null {
   for (let index = groups.length - 1; index >= 0; index -= 1) {
@@ -455,9 +456,13 @@ export function passwordsSetUpSuggestion(groups: readonly TranscriptGroup[]): st
     if (state === "live" || state === "stopping") return null;
     for (let step = group.turn.work.length - 1; step >= 0; step -= 1) {
       const entry = group.turn.work[step]!;
+      if (entry.kind === "request" && entry.requestKind === "browser.sign-in") {
+        return entry.passwordsSetUpSite ?? null;
+      }
       if (entry.kind !== "tool" || !isSignInTool(entry) || !entry.output) continue;
       const result = readBrowserSignInResult(entry.output.text);
-      if (result === null) continue;
+      if (result === null || result.status === "resolved") continue;
+      if (result.status === "pending" && result.replayed) continue;
       const notSetUp =
         ("passwords" in result && result.passwords === "not-set-up") ||
         (result.status === "unavailable" && result.reason === "passwords-not-set-up");
