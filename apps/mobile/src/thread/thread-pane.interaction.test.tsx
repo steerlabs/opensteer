@@ -3568,6 +3568,7 @@ function voiceController(phase: VoiceSnapshot["phase"]) {
     heard: null,
     spoken: null,
     since: null,
+    activity: null,
     notice: null,
   };
   const listeners = new Set<() => void>();

@@ -11,17 +11,21 @@ import {
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
 import Animated, {
   Easing,
+  ZoomIn,
   cancelAnimation,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
   withRepeat,
+  withSequence,
+  withSpring,
   withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { color, material, radius, space } from "../theme.js";
 import { ComposerGlyph } from "../thread/composer-bar.js";
-import { enter, exit } from "../ui/motion.js";
+import { activitySymbol } from "../ui/activity-symbol.js";
+import { appear, enter, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
 import { usePaneInView } from "../ui/pane.js";
 import { Symbol } from "../ui/symbol.js";
@@ -31,6 +35,8 @@ export interface VoiceControls {
   subscribe(listener: () => void): () => void;
   getSnapshot(): VoiceSnapshot;
   subscribeLevel(listener: (levels: VoiceLevels) => void): () => void;
+  /** Fires when the call's agent changed the screen. */
+  subscribeShown?(listener: () => void): () => void;
   start(): Promise<void>;
   stop(): unknown;
   setMuted(muted: boolean): void;
@@ -47,6 +53,7 @@ const idle: VoiceSnapshot = {
   heard: null,
   spoken: null,
   since: null,
+  activity: null,
   notice: null,
 };
 const noSubscribe = () => () => {};
@@ -61,12 +68,13 @@ export function useVoice(): { controller: VoiceControls | null; snapshot: VoiceS
   return { controller, snapshot };
 }
 
-const labels: Record<VoicePhase, string> = {
+/** What a screen reader hears; the orb says the same thing to the eye. */
+const status: Record<VoicePhase, string> = {
   idle: "",
-  connecting: "Connecting…",
+  connecting: "Connecting",
   listening: "Listening",
   hearing: "Listening",
-  thinking: "Working on it",
+  thinking: "Working",
   speaking: "Speaking",
 };
 
@@ -219,37 +227,44 @@ function VoiceBar(props: {
         </Pressable>
       </View>
     );
+  // Live words only; with none, the one word a first-time caller needs to start talking.
   const caption =
     phase === "hearing" || phase === "thinking"
       ? snapshot.heard
       : phase === "speaking"
         ? snapshot.spoken
         : null;
-  const label = muted && phase !== "connecting" ? "Muted" : labels[phase];
+  const quiet =
+    caption ??
+    (muted ? "Muted" : phase === "listening" || phase === "connecting" ? status[phase] : null);
   return (
     <View
-      accessibilityLabel={`Voice: ${label}`}
+      accessibilityLabel={`Voice: ${muted ? "Microphone muted" : status[phase]}`}
       accessibilityLiveRegion="polite"
       style={[shell, (phase === "hearing" || phase === "speaking") && styles.barLive]}
     >
-      <Orb controller={controller} phase={phase} muted={muted} />
+      <Glow controller={controller} />
+      <Orb controller={controller} phase={phase} muted={muted} activity={snapshot.activity} />
       <View style={styles.text}>
-        <AppText
-          role="caption"
-          tone={caption ? "muted" : "soft"}
-          style={caption ? styles.label : styles.labelAlone}
-        >
-          {label}
-        </AppText>
-        {caption ? (
-          <AppText
-            ellipsizeMode="head"
-            numberOfLines={1}
-            role="secondary"
-            tone={phase === "hearing" ? "default" : phase === "speaking" ? "soft" : "muted"}
-          >
-            {caption}
-          </AppText>
+        {quiet ? (
+          <Animated.View entering={appear} key={caption === null ? "quiet" : "live"}>
+            <AppText
+              ellipsizeMode="head"
+              numberOfLines={1}
+              role="secondary"
+              tone={
+                caption === null
+                  ? "muted"
+                  : phase === "hearing"
+                    ? "default"
+                    : phase === "speaking"
+                      ? "soft"
+                      : "muted"
+              }
+            >
+              {quiet}
+            </AppText>
+          </Animated.View>
         ) : null}
       </View>
       <Pressable
@@ -282,18 +297,47 @@ function VoiceBar(props: {
 }
 
 /**
- * The orb swells with whoever is talking and breathes while it waits. Levels
- * go straight into shared values, so meters animate on the UI thread without
- * re-rendering React.
+ * When the agent opens something, the screen changing is the answer; the bar
+ * only glints once to say it was the call. It runs on the UI thread.
+ */
+function Glow(props: { readonly controller: VoiceControls }): ReactNode {
+  const glow = useSharedValue(0);
+  const reduceMotion = useReducedMotion();
+  useEffect(
+    () =>
+      props.controller.subscribeShown?.(() => {
+        glow.value = withSequence(
+          withTiming(1, { duration: reduceMotion ? 150 : 220, easing: Easing.out(Easing.quad) }),
+          withTiming(0, { duration: reduceMotion ? 350 : 680, easing: Easing.inOut(Easing.quad) }),
+        );
+      }),
+    [props.controller, glow, reduceMotion],
+  );
+  const style = useAnimatedStyle(() => ({
+    opacity: glow.value,
+    transform: [{ scale: reduceMotion ? 1 : 0.985 + glow.value * 0.02 }],
+  }));
+  return <Animated.View pointerEvents="none" style={[styles.glow, style]} />;
+}
+
+/**
+ * The orb is the call's face, readable without words: a pale core with a
+ * dialing ring while connecting, a slow breath while listening, swelling with
+ * whoever talks, and, while the agent works, a ring circling a settled core
+ * that holds the glyph of the step it is taking. Levels go straight into
+ * shared values, so meters animate on the UI thread without re-rendering React.
  */
 function Orb(props: {
   readonly controller: VoiceControls;
   readonly phase: VoicePhase;
   readonly muted: boolean;
+  readonly activity: VoiceSnapshot["activity"];
 }): ReactNode {
   const level = useSharedValue(0);
   const breath = useSharedValue(1);
   const turn = useSharedValue(0);
+  const settle = useSharedValue(1);
+  const ring = useSharedValue(0);
   const reduceMotion = useReducedMotion();
   const latest = useRef({ phase: props.phase, muted: props.muted });
   latest.current = { phase: props.phase, muted: props.muted };
@@ -301,45 +345,79 @@ function Orb(props: {
     () =>
       props.controller.subscribeLevel(({ input, output }) => {
         const { phase, muted } = latest.current;
-        const next = phase === "speaking" ? output : muted ? 0 : input;
+        const next = phase === "speaking" ? output : muted || phase === "thinking" ? 0 : input;
         level.value = withTiming(Math.min(1, Math.max(0, next)), { duration: 110 });
       }),
     [props.controller, level],
   );
+  useEffect(
+    () =>
+      props.controller.subscribeShown?.(() => {
+        if (reduceMotion) return;
+        settle.value = withSequence(
+          withTiming(1.16, { duration: 160 }),
+          withSpring(props.phase === "thinking" ? 0.84 : 1),
+        );
+      }),
+    [props.controller, props.phase, reduceMotion, settle],
+  );
+  const working = props.phase === "thinking";
+  const dialing = props.phase === "connecting";
   useEffect(() => {
     cancelAnimation(breath);
     cancelAnimation(turn);
     breath.value = 1;
     turn.value = 0;
+    settle.value = withTiming(working ? 0.84 : dialing ? 0.86 : 1, { duration: 220 });
+    ring.value = withTiming(working ? 1 : dialing ? 0.55 : 0, { duration: 220 });
     if (reduceMotion || props.muted) return;
-    if (props.phase === "listening" || props.phase === "connecting")
+    if (props.phase === "listening")
       breath.value = withRepeat(
-        withTiming(0.94, {
-          duration: props.phase === "connecting" ? 600 : 1300,
-          easing: Easing.inOut(Easing.sin),
-        }),
+        withTiming(0.94, { duration: 1300, easing: Easing.inOut(Easing.sin) }),
         -1,
         true,
       );
-    if (props.phase === "thinking")
-      turn.value = withRepeat(withTiming(360, { duration: 1600, easing: Easing.linear }), -1);
-  }, [props.phase, props.muted, reduceMotion, breath, turn]);
+    if (working || dialing)
+      turn.value = withRepeat(
+        withTiming(360, { duration: working ? 1400 : 1100, easing: Easing.linear }),
+        -1,
+      );
+  }, [props.phase, props.muted, reduceMotion, working, dialing, breath, turn, settle, ring]);
+  const speaking = props.phase === "speaking";
   const core = useAnimatedStyle(() => ({
-    transform: [
-      { scale: (0.88 + level.value * 0.32) * breath.value },
-      { rotate: `${turn.value}deg` },
-    ],
+    transform: [{ scale: (0.88 + level.value * 0.32) * breath.value * settle.value }],
   }));
   const halo = useAnimatedStyle(() => ({
-    opacity: 0.25 + level.value * 0.75,
-    transform: [{ scale: 0.85 + level.value * 0.45 }],
+    opacity: 0.22 + level.value * 0.78,
+    transform: [
+      { scale: reduceMotion ? 1 : (speaking ? 0.9 : 0.84) + level.value * (speaking ? 0.6 : 0.46) },
+    ],
   }));
-  const quiet = props.muted || props.phase === "connecting";
+  const arc = useAnimatedStyle(() => ({
+    opacity: ring.value,
+    transform: [{ rotate: `${turn.value}deg` }],
+  }));
+  const quiet = props.muted || dialing;
   return (
     <View style={styles.orb}>
-      <Animated.View style={[styles.halo, halo, quiet && styles.quiet]} />
+      <Animated.View
+        style={[styles.halo, speaking && styles.haloSpeaking, halo, quiet && styles.quiet]}
+      />
+      <Animated.View
+        style={[styles.ring, reduceMotion && styles.ringStill, dialing && styles.ringDialing, arc]}
+      />
       <Animated.View style={[styles.core, core, quiet && styles.quiet]}>
         <View style={styles.shine} />
+        {props.activity ? (
+          <Animated.View entering={ZoomIn.springify()} key={props.activity} style={styles.glyph}>
+            <Symbol
+              name={activitySymbol[props.activity]}
+              size={12}
+              tint={color.inkOnEmber}
+              weight="bold"
+            />
+          </Animated.View>
+        ) : null}
       </Animated.View>
     </View>
   );
@@ -377,6 +455,29 @@ const styles = StyleSheet.create({
     top: 3,
   },
   dim: { opacity: 0.45 },
+  glow: {
+    borderColor: color.emberLine,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    bottom: -1,
+    left: -1,
+    position: "absolute",
+    right: -1,
+    shadowColor: color.ember,
+    shadowOffset: { height: 0, width: 0 },
+    shadowOpacity: 0.55,
+    shadowRadius: 12,
+    top: -1,
+  },
+  glyph: {
+    alignItems: "center",
+    bottom: 0,
+    justifyContent: "center",
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+  },
   dock: { paddingBottom: space[8], paddingHorizontal: space[4] },
   end: {
     alignItems: "center",
@@ -392,6 +493,7 @@ const styles = StyleSheet.create({
   floating: {
     ...material.float,
   },
+  haloSpeaking: { backgroundColor: "rgba(241, 202, 190, 0.2)" },
   halo: {
     backgroundColor: color.emberWash,
     borderColor: color.emberLine,
@@ -403,8 +505,6 @@ const styles = StyleSheet.create({
     right: -6,
     top: -6,
   },
-  label: { fontSize: 11, lineHeight: 14 },
-  labelAlone: { fontSize: 15, lineHeight: 21 },
   micBox: { alignItems: "center", height: 44, justifyContent: "center", width: 44 },
   micOn: {
     ...material.accent,
@@ -430,6 +530,26 @@ const styles = StyleSheet.create({
   orb: { height: 32, width: 32 },
   overlay: { left: space[12], position: "absolute", right: space[12] },
   quiet: { opacity: 0.45 },
+  // An arc a third of the way round: rotating, it reads as working, never as loading a page.
+  ring: {
+    borderBottomColor: "transparent",
+    borderColor: color.emberBright,
+    borderLeftColor: "transparent",
+    borderRadius: radius.full,
+    borderWidth: 2,
+    bottom: -1,
+    left: -1,
+    position: "absolute",
+    right: -1,
+    top: -1,
+  },
+  ringDialing: {
+    borderColor: color.muted,
+    borderBottomColor: "transparent",
+    borderLeftColor: "transparent",
+  },
+  // Held still, a full ring says the same thing.
+  ringStill: { borderBottomColor: color.emberBright, borderLeftColor: color.emberBright },
   settings: {
     ...material.control,
     borderRadius: radius.full,
