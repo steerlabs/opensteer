@@ -1242,10 +1242,10 @@ class CodexHarnessSession implements HarnessSession {
         data: { content: [{ text, type: "text" }], messageId: createId("message") },
         type: "assistant.message",
       });
-    for (const [blockId, partial] of [...reasoning])
+    for (const [blockId, partial] of reasoning)
       if (partial.trim())
         this.#publish({ data: { blockId, text: partial }, type: "reasoning.completed" });
-    for (const callId of [...tools])
+    for (const callId of tools)
       this.#publish({
         data: {
           callId,
