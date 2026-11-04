@@ -74,7 +74,7 @@ export function createIntegrationAuthorizationRpcHandlers(
 
 export type IntegrationAuthorizationCommand = Extract<
   HostApiCommand,
-  { readonly type: "integration.authorization.cancel" }
+  { readonly type: "integration.authorization.cancel" | "integration.authorization.return" }
 >;
 
 export async function handleIntegrationAuthorizationCommand(
@@ -83,13 +83,33 @@ export async function handleIntegrationAuthorizationCommand(
   context: HostApiServerContext,
 ): Promise<HostApiCommandOutput> {
   const ownerUserId = requireOwner(context);
-  await options.attempts.cancel({ id: command.attemptId, ownerUserId });
-  const status = await options.attempts.status({ id: command.attemptId, ownerUserId });
+  let status;
+  if (command.type === "integration.authorization.return") {
+    const providerId = IntegrationOAuthAttemptIdSchema.safeParse(command.attemptId);
+    const mcpId = McpOAuthAttemptIdSchema.safeParse(command.attemptId);
+    status =
+      providerId.success && options.integrations
+        ? await options.integrations.returnAuthorization({
+            attemptId: providerId.data,
+            ownerUserId,
+            returnProof: command.returnProof,
+          })
+        : mcpId.success && options.mcpOauth
+          ? await options.mcpOauth.returnAuthorization({
+              attemptId: mcpId.data,
+              ownerUserId,
+              returnProof: command.returnProof,
+            })
+          : null;
+  } else {
+    await options.attempts.cancel({ id: command.attemptId, ownerUserId });
+    status = await options.attempts.status({ id: command.attemptId, ownerUserId });
+  }
   if (!status) throw unavailableAttempt();
   return {
     connectionId: status.connectionId,
     expiresAt: status.expiresAt.toISOString(),
-    failureCode: null,
+    failureCode: status.failureCode ?? null,
     status: status.status,
     type: command.type,
   };
@@ -276,6 +296,10 @@ export function finishIntegrationAuthorizationBrowser(
       .header("cache-control", "no-store")
       .header("referrer-policy", "no-referrer")
       .redirect(destination.location);
+  }
+  if (destination.kind === "open-app") {
+    // App-finish returns belong to Account; direct callbacks never carry a proof.
+    throw new TypeError("A direct OAuth callback cannot request an Account app return");
   }
   const completed = input.status === "completed";
   return reply

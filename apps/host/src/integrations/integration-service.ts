@@ -110,6 +110,7 @@ const ProviderOAuthAttemptPayloadSchema = z.discriminatedUnion("applicationSourc
         accountLinkGeneration: IntegrationAccountBindingSchema.shape.linkGeneration,
         accountSubject: z.string().min(1).max(160),
         brokerAttemptId: HostedOAuthAttemptIdSchema,
+        finish: z.literal("app").optional(),
         brokerExpiresAt: z.iso.datetime({ offset: true }),
         deploymentAuthorityDigest: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
         hostPrivateKey: z.string().min(1).max(512),
@@ -127,6 +128,7 @@ const ProviderOAuthAttemptPayloadSchema = z.discriminatedUnion("applicationSourc
     accountSubject: z.string().min(1).max(160),
     applicationSource: z.literal("hosted-oauth"),
     brokerAttemptId: HostedOAuthAttemptIdSchema,
+    finish: z.literal("app").optional(),
     brokerExpiresAt: z.iso.datetime({ offset: true }),
     deploymentAuthorityDigest: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
     hostPrivateKey: z.string().min(1).max(512),
@@ -473,6 +475,7 @@ export class IntegrationService {
   async beginAuthorization(input: {
     readonly applicationSource?: "deployment-oauth" | "hosted-oauth";
     readonly exactApplicationSource?: IntegrationOAuthApplicationSource;
+    readonly finish?: "app";
     readonly definitionId: string;
     readonly ownerUserId: UserId;
     readonly requestSurface: HostSessionSurface;
@@ -549,6 +552,9 @@ export class IntegrationService {
     const attemptId = createIntegrationId("oauthAttempt");
     const posture = await this.#deploymentPosture();
     const usesCallbackRelay = accountLinkedPosture(posture);
+    // Without Account, ignore finish: clients cannot know this Host's posture,
+    // and direct desktop callbacks must keep their existing completion page.
+    const finish = usesCallbackRelay && input.surface !== "web" ? input.finish : undefined;
     const currentCallback = this.#customApplicationCallbackUrl(application.provider, posture);
     if (applicationSource.callbackUrl !== currentCallback) {
       throw new OpensteerError({
@@ -571,7 +577,10 @@ export class IntegrationService {
     }
     if (usesCallbackRelay) {
       const metadata = await hosted!.broker.metadata().catch(() => null);
-      if (!metadata?.callbackRelayProviders.includes(application.provider)) {
+      if (
+        !metadata?.callbackRelayProviders.includes(application.provider) ||
+        (finish === "app" && metadata.appFinish !== 1)
+      ) {
         throw new OpensteerError({
           code: "conflict",
           message: `Opensteer Account must be updated or restored before this sign-in can start. Register this exact callback in your OAuth app: ${applicationSource.callbackUrl}`,
@@ -606,6 +615,7 @@ export class IntegrationService {
                 authorizationUrl: authorization.authorizationUrl,
                 clientId: application.clientId,
                 clientSurface: input.surface,
+                ...(finish ? { finish } : {}),
                 definitionId: definition.id,
                 deploymentAuthorityDigest: hosted.deploymentAuthorityDigest,
                 expiresAt: brokerExpiresAt.toISOString(),
@@ -629,6 +639,7 @@ export class IntegrationService {
                     accountLinkGeneration: account.linkGeneration,
                     accountSubject: account.subject,
                     brokerAttemptId,
+                    ...(finish ? { finish } : {}),
                     brokerExpiresAt: relayed.expiresAt,
                     deploymentAuthorityDigest: hosted.deploymentAuthorityDigest,
                     hostPrivateKey: hostKeyPair.privateKey,
@@ -658,6 +669,7 @@ export class IntegrationService {
   async #beginHostedAuthorization(
     input: {
       readonly brokerReturnPath: string | undefined;
+      readonly finish?: "app";
       readonly definitionId: string;
       readonly ownerUserId: UserId;
       readonly returnPath: string;
@@ -696,6 +708,13 @@ export class IntegrationService {
         message: "Link Opensteer Account or Use your own OAuth app",
       });
     }
+    const finish = input.surface !== "web" ? input.finish : undefined;
+    if (finish === "app" && (await hosted.broker.metadata()).appFinish !== 1) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Opensteer Account must be updated before this sign-in can finish in the app.",
+      });
+    }
     const digest = authorizationDigest(definition);
     const attemptId = createIntegrationId("oauthAttempt");
     const brokerAttemptId = HostedOAuthAttemptIdSchema.parse(
@@ -715,6 +734,7 @@ export class IntegrationService {
           attemptId: brokerAttemptId,
           authorizationDigest: digest,
           clientSurface: input.surface,
+          ...(finish ? { finish } : {}),
           definitionId: definition.id,
           deploymentAuthorityDigest: hosted.deploymentAuthorityDigest,
           expiresAt: brokerExpiresAt.toISOString(),
@@ -733,6 +753,7 @@ export class IntegrationService {
             authMethodId: method.id,
             authorizationDigest: digest,
             brokerAttemptId,
+            ...(finish ? { finish } : {}),
             brokerExpiresAt: created.expiresAt,
             definitionId: definition.id,
             deploymentAuthorityDigest: hosted.deploymentAuthorityDigest,
@@ -746,6 +767,46 @@ export class IntegrationService {
       surface: input.surface,
     });
     return { attemptId, expiresAt: started.expiresAt, launchTicket: started.launchTicket };
+  }
+
+  async returnAuthorization(input: {
+    readonly attemptId: import("@opensteer/integration-core").IntegrationOAuthAttemptId;
+    readonly ownerUserId: UserId;
+    readonly returnProof: string;
+  }) {
+    const local = await this.#attempts.status({
+      id: input.attemptId,
+      ownerUserId: input.ownerUserId,
+    });
+    // Completion erases the attempt payload; a replay only reads the owner's durable result.
+    if (!local || local.status === "completed") return local;
+    const raw = await this.#attempts.inspect?.({
+      id: input.attemptId,
+      ownerUserId: input.ownerUserId,
+    });
+    const payload = raw ? deserializeProviderAttempt(raw) : null;
+    const relay = payload?.applicationSource === "hosted-oauth" ? payload : payload?.callbackRelay;
+    const hosted = this.#hostedOAuth;
+    if (!relay || relay.finish !== "app" || !hosted) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This authorization does not finish through Opensteer Account in the app.",
+      });
+    }
+    const account = validateIntegrationAccountBinding(
+      await hosted.accountSubject(input.ownerUserId),
+    );
+    if (
+      !account ||
+      account.issuer !== relay.accountIssuer ||
+      account.subject !== relay.accountSubject ||
+      account.linkGeneration !== relay.accountLinkGeneration
+    ) {
+      await this.#attempts.fail(input.attemptId, "account-link-mismatch");
+      return this.#attempts.status({ id: input.attemptId, ownerUserId: input.ownerUserId });
+    }
+    await hosted.broker.returnAttempt(relay.brokerAttemptId, input.returnProof);
+    return this.authorizationStatus(input);
   }
 
   async authorizationStatus(input: {
@@ -916,6 +977,9 @@ export class IntegrationService {
     const hosted = this.#hostedOAuth;
     const relay = expected.callbackRelay;
     if (!hosted || !relay) throw new Error("OAuth callback relay is unavailable");
+    // Do not spend the app-finish claim until its result has crossed the network.
+    const returnedResult =
+      relay.finish === "app" ? await hosted.broker.pull(relay.brokerAttemptId) : null;
     const claimed = await this.#attempts.claimHosted?.({
       id: input.attemptId,
       ownerUserId: input.ownerUserId,
@@ -933,7 +997,7 @@ export class IntegrationService {
     ) {
       throw invalidProviderAttempt();
     }
-    const pulled = await hosted.broker.pull(relay.brokerAttemptId);
+    const pulled = returnedResult ?? (await hosted.broker.pull(relay.brokerAttemptId));
     let connection: IntegrationConnectionSummary;
     try {
       if (pulled.status !== "sealed" || !pulled.sealedResult) {
@@ -1095,6 +1159,9 @@ export class IntegrationService {
   ): Promise<void> {
     const hosted = this.#hostedOAuth;
     if (!hosted) throw new Error("Hosted OAuth is unavailable");
+    // Do not spend the app-finish claim until its result has crossed the network.
+    const returnedResult =
+      expected.finish === "app" ? await hosted.broker.pull(expected.brokerAttemptId) : null;
     const claimed = await this.#attempts.claimHosted?.({
       id: input.attemptId,
       ownerUserId: input.ownerUserId,
@@ -1107,9 +1174,7 @@ export class IntegrationService {
     ) {
       throw invalidProviderAttempt();
     }
-    // A sealed result remains pullable until its broker expiry. Keep the
-    // claimed local attempt resumable if this call loses its response.
-    const pulled = await hosted.broker.pull(payload.brokerAttemptId);
+    const pulled = returnedResult ?? (await hosted.broker.pull(payload.brokerAttemptId));
     let connected: IntegrationConnectionId;
     try {
       if (pulled.status !== "sealed" || !pulled.sealedResult) {

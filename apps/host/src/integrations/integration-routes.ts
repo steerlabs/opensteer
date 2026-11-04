@@ -104,6 +104,7 @@ async function executeIntegrationCommand(
         ...(input.exactApplicationSource
           ? { exactApplicationSource: input.exactApplicationSource }
           : {}),
+        ...(input.finish ? { finish: input.finish } : {}),
         definitionId: input.definitionId,
         ownerUserId: session.user.id,
         requestSurface: requireSurface(context),
