@@ -5203,9 +5203,9 @@ class MockHostState {
     } else if (command.type === "plugin.update") {
       if (plugin.scope === "workspace")
         throw new HostClientRequestError({
-          code: "bad_request",
+          code: "forbidden",
           message: "Agent-made plugins update when an agent installs their folder again.",
-          status: 400,
+          status: 403,
         });
       const id = crypto.randomUUID();
       const current = plugin.versions.find((v) => v.id === plugin.currentVersionId);

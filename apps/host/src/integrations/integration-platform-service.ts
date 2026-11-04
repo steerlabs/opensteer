@@ -1040,6 +1040,20 @@ export class IntegrationPlatformService {
       if (owned) input = { ...input, pluginId: owned.id, runnerId: undefined };
     }
     const pluginId = input.pluginId ?? createIntegrationId("installation");
+    // Checked before the folder is read: an agent-made plugin's recorded source is not a Host path.
+    const currentPlugin = input.pluginId
+      ? (await this.#store.plugins.list()).find((p) => p.id === pluginId)
+      : undefined;
+    if (currentPlugin?.scope === "workspace" && currentPlugin.workspaceId !== input.workspaceId)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Agent-made plugins update when an agent installs their folder again.",
+      });
+    if (input.workspaceId && currentPlugin?.scope === "deployment")
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Agents cannot update person-installed plugins. Choose a more specific name.",
+      });
     const previous = input.pluginId
       ? (await this.#store.listInstallations()).find((i) => i.pluginId === pluginId)
       : undefined;
@@ -1061,19 +1075,6 @@ export class IntegrationPlatformService {
       throw new OpensteerError({
         code: "bad_request",
         message: "The plugin name opensteer is reserved",
-      });
-    const currentPlugin = input.pluginId
-      ? (await this.#store.plugins.list()).find((p) => p.id === pluginId)
-      : undefined;
-    if (currentPlugin?.scope === "workspace" && currentPlugin.workspaceId !== input.workspaceId)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Agent-made plugins update when an agent installs their folder again.",
-      });
-    if (input.workspaceId && currentPlugin?.scope === "deployment")
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Agents cannot update person-installed plugins. Choose a more specific name.",
       });
     if (
       previous &&

@@ -82,16 +82,8 @@ export async function executeIntegrationAdministration(
       await options.platform.store.plugins.remove(command.pluginId, administration);
       return { type: command.type };
     }
-    case "plugin.update": {
+    case "plugin.update":
       assertAdministrator(actor);
-      const plugin = (await options.platform.store.plugins.list()).find(
-        (p) => p.id === command.pluginId,
-      );
-      if (plugin?.scope === "workspace")
-        throw new OpensteerError({
-          code: "bad_request",
-          message: "Agent-made plugins update when an agent installs their folder again.",
-        });
       await options.platform.installAgentPlugin({
         administration,
         actorUserId: actor.userId,
@@ -101,7 +93,6 @@ export async function executeIntegrationAdministration(
         ...(command.input.runnerId ? { runnerId: command.input.runnerId } : {}),
       });
       return { type: command.type };
-    }
     case "integration.uninstall": {
       assertAdministrator(actor);
       const outcome = await options.platform.uninstallIntegration({

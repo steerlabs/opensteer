@@ -246,6 +246,29 @@ describe("agent plugin replacement", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+  it("refuses a folder update of an agent-made plugin before reading the folder", async () => {
+    const install = vi.fn();
+    const service = platform({
+      adapters: [],
+      store: {
+        install,
+        plugins: {
+          list: async () => [
+            { id: "made", name: "mine", scope: "workspace", workspaceId: createId("workspace") },
+          ],
+        } as never,
+      },
+    });
+    await expect(
+      service.installAgentPlugin({
+        directory: "/deleted/staging",
+        pluginId: "made",
+        actorUserId: createId("user"),
+        requestId: "update",
+      }),
+    ).rejects.toThrow("Agent-made plugins update when an agent installs their folder again.");
+    expect(install).not.toHaveBeenCalled();
+  });
 });
 
 describe("IntegrationPlatformService definition reconciliation", () => {

@@ -18,31 +18,6 @@ afterEach(async () => {
 });
 
 describe("integration platform OAuth routes", () => {
-  it("refuses folder updates of agent-made plugins before loading a Host path", async () => {
-    const installAgentPlugin = vi.fn();
-    await expect(
-      handleIntegrationPlatformCommand(
-        {
-          authenticator: {} as HostAuthenticator,
-          dashboard: {} as never,
-          mcpOauth: {} as McpOAuthService,
-          platform: {
-            store: { plugins: { list: async () => [{ id: "plugin", scope: "workspace" }] } },
-            installAgentPlugin,
-          } as never,
-        },
-        {
-          type: "plugin.update",
-          pluginId: "plugin",
-          input: { directory: "/deleted/staging" },
-          idempotencyKey: "update",
-        },
-        testHostApiContext(createId("user"), { instanceRole: "administrator" }),
-      ),
-    ).rejects.toThrow("Agent-made plugins update when an agent installs their folder again.");
-    expect(installAgentPlugin).not.toHaveBeenCalled();
-  });
-
   it("keeps plugin uninstall retryable until specialist retirement completes", async () => {
     const order: string[] = [];
     const retirePlugin = vi.fn(async (): Promise<void> => {
