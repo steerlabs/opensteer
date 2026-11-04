@@ -9,6 +9,7 @@ import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import { SpecialistStore } from "@opensteer/database";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import {
+  catalogDefaultCandidate,
   catalogDefaultModelSelection,
   isPlaceContentPart,
   zeroSequence,
@@ -19,6 +20,7 @@ import {
   WorkspaceIdSchema,
   type AgentEvent,
   type EnvironmentId,
+  type UserId,
   type HarnessId,
   type Message,
   type Thread,
@@ -1225,23 +1227,50 @@ export class ProductToolHandlers {
       return { existing, workspace, environmentId, ...placement, specialist };
     }
     const preferred = preferences.history.find((entry) => entry.environmentId === environmentId);
-    const harnessInstanceId =
-      existing?.harnessInstanceId ??
-      input.harnessInstanceId ??
-      preferred?.harnessInstanceId ??
-      (await this.#store.listHarnessInstances({ environmentIds: [environmentId] })).find(
-        (h) => h.enabled && h.isDefault,
-      )?.id;
+    const named =
+      existing?.harnessInstanceId ?? input.harnessInstanceId ?? preferred?.harnessInstanceId;
+    const automatic = named ? null : await this.#automaticDefault(caller.userId, environmentId);
+    const harnessInstanceId = named ?? automatic?.harnessInstanceId;
     if (!harnessInstanceId) throw badRequest("Choose harnessInstanceId for the new task");
     const modelSelection =
       existing?.modelSelection ??
       input.model ??
       (preferred?.harnessInstanceId === harnessInstanceId ? preferred.modelSelection : undefined) ??
+      automatic?.modelSelection ??
       catalogDefaultModelSelection(
         await this.#store.getHarnessCatalog(environmentId, harnessInstanceId),
       );
     if (!modelSelection) throw badRequest("Choose a model for the new task");
     return { existing, workspace, environmentId, harnessInstanceId, modelSelection, specialist };
+  }
+  /** Nobody named an account: the person's automatic default among those they left on. */
+  async #automaticDefault(userId: UserId, environmentId: EnvironmentId) {
+    const [{ excludedAccounts }, harnesses, catalogs] = await Promise.all([
+      this.#store.getAutomaticModelConfig(userId),
+      this.#store.listHarnessInstances({ environmentIds: [environmentId] }),
+      this.#store.listHarnessCatalogs([environmentId]),
+    ]);
+    const chosen = catalogDefaultCandidate({
+      accounts: harnesses.map((harness) => ({
+        harnessInstanceId: harness.id,
+        isDefault: harness.isDefault,
+        sourceId: harness.sourceId,
+        enabled: harness.enabled,
+        removed: harness.removedAt !== null,
+        // A new task waits for its computer like any other.
+        available: true,
+        catalog:
+          catalogs.find((record) => record.harnessInstanceId === harness.id)?.catalog ?? null,
+      })),
+      excludedAccounts,
+      canRun: () => ({ ok: true }),
+    });
+    return chosen
+      ? {
+          harnessInstanceId: chosen.account.harnessInstanceId,
+          modelSelection: chosen.modelSelection,
+        }
+      : null;
   }
   #specialistPlacement(request: Parameters<typeof specialistPlacement>[1]) {
     return specialistPlacement(
