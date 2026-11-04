@@ -2008,7 +2008,8 @@ describe("Workspace route projections", () => {
       expect(payload.workspace).not.toHaveProperty("backing");
       expect(payload.workspace).not.toHaveProperty("capacityPolicy");
       expect(payload.workspace).not.toHaveProperty("createdBy");
-      expect(retry).toHaveBeenCalledWith(workspace.id, ownerId);
+      // A person's retry carries no MCP administration identity.
+      expect(retry).toHaveBeenCalledWith(workspace.id, ownerId, undefined);
     } finally {
       await app.close();
     }
