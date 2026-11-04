@@ -1,8 +1,4 @@
 import {
-  AgentConnectionAuthorizationTargetSchema,
-  type AgentConnectionAuthorizationTarget,
-} from "@opensteer/protocol";
-import {
   IssuePersonalHostAccountLinkChallengeRequestSchema,
   IssuePersonalHostAccountLinkChallengeResponseSchema,
   CompletePersonalHostAccountLinkRequestSchema,
@@ -24,6 +20,8 @@ import {
   DesktopDownloadsSnapshotSchema,
   DesktopUpdateStateSchema,
   DesktopUpdateChannelSchema,
+  AgentConnectionAuthorizationTargetSchema,
+  type AgentConnectionAuthorizationTarget,
   DesktopDownloadActionResultSchema,
   DesktopDownloadTargetSchema,
   type DesktopDownloadsBridge,

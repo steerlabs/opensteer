@@ -1,4 +1,9 @@
 import type { AgentConnectionAuthorizationTarget } from "./agent-connections.js";
+// The sandboxed preload may import only this subpath: the root barrel pulls in Node modules.
+export {
+  AgentConnectionAuthorizationTargetSchema,
+  type AgentConnectionAuthorizationTarget,
+} from "./agent-connections.js";
 import { BrowserOpenIdentitySchema } from "./browser.js";
 import { type DisplayClientDiagnostic } from "./display-stream.js";
 import type { DictationPort } from "./dictation.js";
