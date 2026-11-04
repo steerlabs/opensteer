@@ -511,6 +511,25 @@ describe("Opensteer MCP spine", () => {
     ).rejects.toThrow();
     expect(f.personMessage).not.toHaveBeenCalled();
   });
+  it("reports a result outside its contract as the Host's failure, not the arguments'", async () => {
+    const f = await httpFixture();
+    f.handlers.integration_search = async () => ({ total: "many" }) as never;
+    const client = await connect(f.url, "run");
+    try {
+      const result = await client.callTool(
+        { name: "integration_search", arguments: { query: "notes" } },
+        undefined,
+        { timeout: 5000 },
+      );
+      expect(result).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: "Opensteer produced an invalid result for this tool" }],
+      });
+    } finally {
+      await client.close();
+      await f.service.close();
+    }
+  });
   it("serves a forgotten session with the current request's live token", async () => {
     const f = await httpFixture();
     const client = await connect(f.url, "run");

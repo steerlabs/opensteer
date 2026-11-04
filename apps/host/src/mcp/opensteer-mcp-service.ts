@@ -435,7 +435,10 @@ export class OpensteerMcpService {
       const handler = this.options.handlers[tool.name] as (
         call: ToolCall<typeof tool.name>,
       ) => Promise<unknown>;
-      return tool.output.parse(await handler(call)) as Record<string, unknown> | string;
+      const output = tool.output.safeParse(await handler(call));
+      // A result outside the contract is the Host's fault, never the caller's arguments.
+      if (!output.success) throw new Error("Opensteer produced an invalid result for this tool");
+      return output.data as Record<string, unknown> | string;
     };
     await check();
     return invoke();
