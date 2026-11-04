@@ -10,6 +10,7 @@ import {
 import { session, app } from "electron";
 import { chromium, type Page } from "playwright-core";
 import type { NativeBrowserE2EKit } from "./electron-native-browser-kit.js";
+import type { OpensteerInputOwner } from "../src/browser/electron-browser-presentation.js";
 
 /** Real Personal Host and real web picker, in a separate viewer browser process. */
 export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<void> {
@@ -41,6 +42,36 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     await import("../src/browser/electron-browser-launcher.js")
   ).electronPagePresentation(producer.page)!.view.webContents;
   assert("_createOpensteerInputOwner" in contents, "Private popup/input owner is missing");
+  // Observe the production owner, without creating a second owner or retaining payloads.
+  const patched = contents as typeof contents & {
+    _createOpensteerInputOwner(): OpensteerInputOwner;
+  };
+  const createOwner = patched._createOpensteerInputOwner;
+  const nativeStops: string[] = [];
+  patched._createOpensteerInputOwner = () => {
+    const owner = createOwner.call(contents);
+    owner.on("video-stopped", (...args) => {
+      const reasons = [
+        "stopped",
+        "source changed",
+        "capture stopped",
+        "capture geometry changed; restart video",
+        "presentation cannot be certified",
+        "presentation fence failed",
+        "picture authority changed before publication",
+        "rate budget cannot sustain video",
+        "encode failed",
+        "rate update failed",
+      ];
+      const reason = args[2];
+      if (nativeStops.length < 32)
+        nativeStops.push(typeof reason === "string" && reasons.includes(reason) ? reason : "other");
+    });
+    return owner;
+  };
+  kit.cleanup.push(() => {
+    patched._createOpensteerInputOwner = createOwner;
+  });
   const server = await chromium.launchServer({ executablePath: executable, headless: false });
   const pid = server.process().pid;
   assert(pid);
@@ -492,6 +523,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       popupCounts: counts,
       commands,
       guardedResults,
+      nativeStops,
       events,
       sessionMatches,
       admissions,
