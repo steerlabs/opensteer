@@ -133,6 +133,16 @@ describe("DesktopLoginSession", () => {
     ["text that is not a plist", "ioreg: not available"],
     ["empty output", ""],
     ["output cut off inside an entry", registry(usersKey(consoleUser())).slice(0, 700)],
+    [
+      "output cut off after the array",
+      registry(usersKey(consoleUser())).split("<key>IOKitBuildVersion</key>")[0]!,
+    ],
+    [
+      "a value it does not know after the facts it needs",
+      registry(
+        usersKey(consoleUser().replace("</dict>", "<key>future</key><real>1.5</real></dict>")),
+      ),
+    ],
     ["two arrays", registry(usersKey(consoleUser()) + usersKey(consoleUser()))],
     [
       "something other than a dict in the array",

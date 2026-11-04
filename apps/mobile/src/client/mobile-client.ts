@@ -1022,31 +1022,19 @@ export class MobileClient {
     attempt: Parameters<IntegrationAuthorizationAttempts["register"]>[0],
   ): Promise<IntegrationAuthorizationStatus | null> {
     const epoch = this.#authorizationEpoch;
-    const controller = new AbortController();
-    this.#integrationReturnControllers.set(controller, {
-      attemptId: attempt.attemptId,
-      client: null,
-    });
     const deadline = Date.parse(attempt.expiresAt) + integrationCancelReconcileGraceMilliseconds;
-    try {
-      for (let backoff = 1_000; Date.now() < deadline; backoff = Math.min(backoff * 2, 30_000)) {
-        await delay(backoff, controller.signal);
-        if (epoch !== this.#authorizationEpoch) return null;
-        const client =
-          this.#attachedDeploymentId === attempt.deploymentId ? this.#hostClient : null;
-        if (client === null) continue;
-        try {
-          return await this.#requestIntegrationCancel(client, attempt.attemptId);
-        } catch (error) {
-          if (isHostRefusal(error)) return null;
-        }
+    for (let backoff = 1_000; Date.now() < deadline; backoff = Math.min(backoff * 2, 30_000)) {
+      await delay(backoff);
+      if (epoch !== this.#authorizationEpoch) return null;
+      const client = this.#attachedDeploymentId === attempt.deploymentId ? this.#hostClient : null;
+      if (client === null) continue;
+      try {
+        return await this.#requestIntegrationCancel(client, attempt.attemptId);
+      } catch (error) {
+        if (isHostRefusal(error)) return null;
       }
-      return null;
-    } catch {
-      return null;
-    } finally {
-      this.#integrationReturnControllers.delete(controller);
     }
+    return null;
   }
 
   /** Check local authority before a callback can select a Deployment or contact a Host. */

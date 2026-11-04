@@ -1270,6 +1270,22 @@ describe("MobileClient cancelling an integration sign-in", () => {
       }
     });
 
+    it("stops asking once the attempt is long past its expiry", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      try {
+        const { client, controller, started } = await signingIn({
+          cancelTries: Array.from({ length: 200 }, () => unanswered),
+        });
+        controller.abort();
+        const error = await reconcile(started);
+        await vi.advanceTimersByTimeAsync(20 * 60_000);
+        await expect(error.reconciled).resolves.toBeNull();
+        client.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("stops when the app is torn down", async () => {
       const { client, controller, started } = await signingIn({
         cancelTries: [unanswered, unanswered],
