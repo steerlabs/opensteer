@@ -6885,7 +6885,7 @@ describe("HttpHostClient catalog startup", () => {
 });
 
 describe("HttpHostClient hosted browser", () => {
-  it.each(["profile", "grant", "workspace"] as const)(
+  it.each(["profile", "workspace"] as const)(
     "revokes %s pixels from the catalog before authorization close, even after transport release",
     async (reason) => {
       const workspace = makeWorkspace(),
@@ -6971,7 +6971,6 @@ describe("HttpHostClient hosted browser", () => {
         release();
         notify.mockClear();
         if (reason === "profile") browser.profiles = [];
-        if (reason === "grant") browser.profileGrants = [];
         if (reason === "workspace") {
           const workspaceSocket = sockets.find(
             ({ url }) => !url.includes("/browser-sessions/"),
@@ -6995,6 +6994,100 @@ describe("HttpHostClient hosted browser", () => {
       }
     },
   );
+  it("shows the owner's named profile without any Workspace grant, and keeps it when grants change", async () => {
+    const workspace = makeWorkspace(),
+      sessionId = createBrowserSessionId(),
+      profileId = createId("browserProfile");
+    const grant = {
+      id: createId("browserProfileGrant"),
+      profileId,
+      workspaceId: workspace.id,
+      access: "read-write" as const,
+      createdAt: now,
+    };
+    const browser: HostedBrowserBootstrap = {
+      available: true,
+      placements: [],
+      profiles: [{ id: profileId, name: "Brex" }],
+      // Main reaches the owner's profiles without grant rows; viewing never needs one.
+      profileGrants: [],
+      sessions: [
+        {
+          id: sessionId,
+          workspaceId: workspace.id,
+          profileId,
+          placement: { kind: "runner", runnerId },
+          runtimeId: "runtime",
+          origin: "agent",
+          state: "ready",
+          access: "read-write",
+          createdAt: now,
+          updatedAt: now,
+          tabCatalog: {
+            generation: 1,
+            revision: 1,
+            tabs: [
+              {
+                id: BrowserSurfaceIdSchema.parse("page-1"),
+                title: "Brex",
+                site: "https://dashboard.brex.com",
+                iconRef: null,
+                order: 0,
+                openerId: null,
+                availability: "ready",
+                occupants: [],
+                documentId: null,
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const boot = bootstrap([workspace], browser);
+    const sockets: { url: string; socket: FakeSocket }[] = [];
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      prefetchHome: false,
+      fetch: async () => json(boot),
+      webSocketFactory: (url) => {
+        const socket = new FakeSocket();
+        sockets.push({ url, socket });
+        return socket;
+      },
+    });
+    try {
+      await client.load();
+      const notify = vi.fn();
+      const unsubscribe = client.browserWatchFrames.subscribe(sessionId, notify, "page-1");
+      const release = client.retainBrowserWatch(sessionId, "page-1");
+      const viewer = sockets.find(({ url }) => url.includes("/browser-sessions/"));
+      expect(viewer, "no viewer socket opened for the owner's named profile").toBeDefined();
+      viewer!.socket.open();
+      viewer!.socket.receiveRaw({
+        type: "browser.snapshot",
+        sessionId,
+        state: "ready",
+        access: "read-write",
+        targetedStreamingVersion: 1,
+        dialog: null,
+        surfaces: [
+          { id: "page-1", active: true, title: "Brex", url: "https://dashboard.brex.com" },
+        ],
+      });
+      viewer!.socket.receiveBinary(browserFrame(1, true));
+      const before = client.browserWatchFrames.invalidationKey!(sessionId, "page-1");
+      browser.profileGrants = [grant];
+      await client.refresh();
+      browser.profileGrants = [];
+      await client.refresh();
+      expect(client.browserWatchFrames.invalidationKey!(sessionId, "page-1")).toBe(before);
+      expect(client.browserWatchFrames.get(sessionId, "page-1")).not.toBeNull();
+      release();
+      unsubscribe();
+    } finally {
+      client.dispose();
+    }
+  });
   it("reconciles browser Watch targets learned over HTTP while realtime is disconnected", async () => {
     const workspace = makeWorkspace();
     const sessionId = createBrowserSessionId();

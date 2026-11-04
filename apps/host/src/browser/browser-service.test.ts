@@ -4110,15 +4110,16 @@ describe("BrowserService", () => {
     });
   });
 
-  it("targets only owned project Workspaces and treats profile suggestions as advisory", async () => {
+  it("asks in Main or a Project, never for a profile the Workspace can already use", async () => {
     const keys = generateKeyPairSync("ed25519");
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const signer = new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: keys.privateKey });
+    const mainRepository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
     const main = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId, "main"),
+      repository: mainRepository,
       signer,
     });
     const project = new BrowserService({
@@ -4138,11 +4139,21 @@ describe("BrowserService", () => {
       workspaceId,
     };
 
-    await expect(main.requestAccess(request)).rejects.toMatchObject({
-      code: "bad_request",
-      message:
-        "browser_access_request grants a browser profile only to a project Workspace. From Main, pass that Workspace's workspaceId. To browse in Main, open a session with an inherited profile from browser_profile_list, or with fresh: true for signed-out browsing.",
-    });
+    await expect(
+      main.requestAccess({
+        ...request,
+        suggestion: { kind: "new", suggestedName: "Brex" },
+      }),
+    ).resolves.toMatchObject({ kind: "browser.access", status: "pending" });
+    // Main reaches every profile its owner has, so asking for one would only ask for a yes.
+    const owned = await mainRepository.createBrowserProfile({ ownerId, name: "Personal" });
+    await expect(
+      main.requestAccess({
+        ...request,
+        callId: "browser-access-main-owned",
+        suggestion: { kind: "existing", profileId: owned.id },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
     await expect(
       project.requestAccess({ ...request, workspaceId: createId("workspace") }),
     ).rejects.toMatchObject({ code: "not_found" });

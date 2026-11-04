@@ -11,7 +11,7 @@ Select or reuse the session with the intended identity and observe the exact pag
 
 Use `browser_profile_write` for full-access administration: list, rename/delete, remove history
 or remembered sites, and revoke grants. Revocation reduces access and can be done directly;
-new grants use `browser_access_request`, with the person deciding. Request sign-in with
+new profiles and grants use `browser_profile_request`, with the person deciding. Request sign-in with
 `sign_in`; never read credentials, collect MFA codes or manage sign-in sessions yourself.
 
 Use the supplied Browser Harness for page operations. Preserve the person's pages and arrangement, and inspect the outcome before repeating input that may have happened.

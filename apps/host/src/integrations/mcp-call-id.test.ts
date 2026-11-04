@@ -9,7 +9,7 @@ describe("mcpToolCallId", () => {
     expect(mcpToolCallId("run_1", "session_1", 18, "integration_request")).not.toBe(first);
     expect(mcpToolCallId("run_1", "session_2", 17, "integration_request")).not.toBe(first);
     expect(mcpToolCallId("run_2", "session_1", 17, "integration_request")).not.toBe(first);
-    expect(mcpToolCallId("run_1", "session_1", 17, "browser_access_request")).not.toBe(first);
+    expect(mcpToolCallId("run_1", "session_1", 17, "browser_profile_request")).not.toBe(first);
   });
 
   it("uses an explicit identity while the MCP session is initializing", () => {

@@ -1281,7 +1281,7 @@ describe("Product tool handlers", () => {
         reason: "Sign in to the client portal",
         requestId: toolRequestId,
         suggestion: { kind: "new", suggestedName: "Client portal" },
-        type: "browser.access.request",
+        type: "browser.profile.request",
       }),
     ).resolves.toMatchObject({
       result: {
@@ -1290,14 +1290,14 @@ describe("Product tool handlers", () => {
         requestId: durableRequestId,
         status: "pending",
       },
-      type: "browser.access.request.result",
+      type: "browser.profile.request.result",
     });
     expect(requestAccess).toHaveBeenCalledWith({
       callId: mcpToolCallId(
         `run:${claims.runId}`,
         toolRequestId,
         "operation",
-        "browser_access_request",
+        "browser_profile_request",
       ),
       originatingWorkspaceId: claims.workspaceId,
       ownerId,
@@ -1312,10 +1312,10 @@ describe("Product tool handlers", () => {
         reason: "Sign in to the client portal",
         requestId: crypto.randomUUID(),
         suggestion: { kind: "user_choice" },
-        type: "browser.access.request",
+        type: "browser.profile.request",
         workspaceId: targetWorkspaceId,
       }),
-    ).rejects.toThrow("can request browser access only for its Workspace");
+    ).rejects.toThrow("can request a browser profile only for its Workspace");
     expect(requestAccess).toHaveBeenCalledTimes(1);
   });
 

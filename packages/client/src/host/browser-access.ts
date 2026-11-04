@@ -1,4 +1,5 @@
 import type { BrowserAccessSuggestion, RequestResponse } from "@opensteer/core";
+import type { HostSnapshot } from "./client.js";
 
 /**
  * The owner's answer to a `browser.access` Request,
@@ -57,14 +58,69 @@ export function browserAccessGrantable(
   return name.trim().length > 0;
 }
 
-export function browserAccessGrantLabel(alreadyAvailable: boolean): string {
-  return alreadyAvailable ? "Use profile" : "Allow full control";
+/** Starting names for a new profile: one or two plain words, never ones already taken. */
+const profileNameSuggestions = ["Personal", "Work", "Finance", "Shopping"] as const;
+
+/**
+ * What the owner chooses between, for the Workspace that asked. Main already
+ * reaches every owner profile, so only a Project marks the ones it can use.
+ */
+export interface BrowserAccessChoices {
+  readonly main: boolean;
+  readonly nameSuggestions: readonly string[];
+  readonly profiles: readonly {
+    readonly available: boolean;
+    readonly id: string;
+    readonly name: string;
+  }[];
+  readonly workspaceName: string;
 }
 
-export function browserAccessAvailableLabel(workspaceName: string): string {
-  return `Already available to ${workspaceName}`;
+export function browserAccessChoices(
+  snapshot: Pick<HostSnapshot, "browserProfileGrants" | "browserProfiles" | "workspaces">,
+  targetWorkspaceId: string,
+): BrowserAccessChoices {
+  const workspace = snapshot.workspaces.find(({ id }) => id === targetWorkspaceId);
+  const main = workspace?.kind === "main";
+  const granted = new Set(
+    snapshot.browserProfileGrants
+      .filter((grant) => grant.workspaceId === targetWorkspaceId)
+      .map((grant) => grant.profileId),
+  );
+  const taken = new Set(snapshot.browserProfiles.map(({ name }) => name.trim().toLowerCase()));
+  return {
+    main,
+    nameSuggestions: profileNameSuggestions.filter((name) => !taken.has(name.toLowerCase())),
+    profiles: snapshot.browserProfiles.map(({ id, name }) => ({
+      available: main || granted.has(id),
+      id,
+      name,
+    })),
+    workspaceName: workspace?.name ?? "this Workspace",
+  };
 }
 
-export function browserAccessWarning(workspaceName: string): string {
-  return `Agents in ${workspaceName} will have full control of the selected profile, including every signed-in account, cookie, tab, and site the browser can reach.`;
+/** A row's note: only a Project marks profiles it can already use. */
+export function browserAccessProfileNote(
+  choices: BrowserAccessChoices,
+  profile: BrowserAccessChoices["profiles"][number],
+): string | null {
+  return !choices.main && profile.available
+    ? `Already available to ${choices.workspaceName}`
+    : null;
+}
+
+export function browserAccessGrantLabel(
+  selection: BrowserAccessSelection | null,
+  choices: BrowserAccessChoices,
+): string {
+  if (selection?.kind === "new") return choices.main ? "Create profile" : "Create and allow";
+  const profile = choices.profiles.find(({ id }) => id === selection?.profileId);
+  return profile?.available ? "Use profile" : "Allow full control";
+}
+
+export function browserAccessWarning(choices: BrowserAccessChoices): string {
+  return choices.main
+    ? "Agents in Main can use every browser profile you have, with full control of its signed-in accounts, cookies, and tabs."
+    : `Agents in ${choices.workspaceName} will have full control of the selected profile, including every signed-in account, cookie, tab, and site the browser can reach.`;
 }

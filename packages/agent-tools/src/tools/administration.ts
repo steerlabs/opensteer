@@ -324,7 +324,7 @@ export const browser_profile_write = defineAgentTool({
   minimumReach: "workspace",
   title: "Manage browser profiles",
   description:
-    "List profiles/grants/sites; rename/delete, clear/remove history, remove_site or revoke_grant directly. Full-access within reach. Returns ok/inventory/deletion state. New grants need browser_access_request/the person; pairing/sign-in need the person.",
+    "List profiles/grants/sites; rename/delete, clear/remove history, remove_site or revoke_grant directly. Full-access within reach. Returns ok/inventory/deletion state. New profiles and grants need browser_profile_request/the person; pairing/sign-in need the person.",
   input: z.strictObject({
     action: z.enum([
       "list",

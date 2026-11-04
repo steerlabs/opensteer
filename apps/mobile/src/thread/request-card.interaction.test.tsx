@@ -24,6 +24,7 @@ vi.mock("expo-haptics", () => ({
   NotificationFeedbackType: { Error: "error", Success: "success" },
   impactAsync: vi.fn(async () => undefined),
   notificationAsync: vi.fn(async () => undefined),
+  selectionAsync: vi.fn(async () => undefined),
 }));
 vi.mock("react-native", () => ({
   Modal: ({ children, visible }: { children?: ReactNode; visible?: boolean }) =>
@@ -58,6 +59,21 @@ vi.mock("../client/mobile-client.js", () => ({
 }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  Chip: ({
+    accessibilityLabel,
+    disabled,
+    label,
+    onPress,
+  }: {
+    accessibilityLabel: string;
+    disabled?: boolean;
+    label: string;
+    onPress: () => void;
+  }) => (
+    <button aria-label={accessibilityLabel} disabled={disabled} onClick={onPress}>
+      {label}
+    </button>
+  ),
   Notice: ({
     action,
     detail,
@@ -398,6 +414,52 @@ describe("RequestCard install requests", () => {
   });
 });
 
+describe("RequestCard browser profile requests", () => {
+  it("in Main, names a new profile with one tap and creates it without a grant", async () => {
+    const request = {
+      ...requestBase(),
+      kind: "browser.access",
+      payload: {
+        kind: "browser.access",
+        reason: "Sign in to Brex",
+        suggestion: { kind: "new", suggestedName: "Brex" },
+      },
+      presentation: {
+        detail: "Sign in to Brex",
+        kind: "external",
+        subject: { id: workspaceId, kind: "workspace" },
+        title: "Browser profile",
+      },
+    } as Request;
+    const dispatch = vi.fn(async () => ({ type: "request.respond" }));
+    await render(surface(request), dispatch, {
+      snapshot: {
+        browserProfileGrants: [],
+        browserProfiles: [{ id: "bpr_00000000-0000-4000-8000-000000000001", name: "Personal" }],
+        workspaces: [{ id: workspaceId, kind: "main", name: "Main" }],
+      },
+    });
+
+    await click("Review request");
+    expect(text()).toContain("Agents in Main can use every browser profile you have");
+    expect(text()).not.toContain("Already available");
+    // Personal is taken, so it is never offered as a new name.
+    expect(() => button("Name it Personal")).toThrow();
+    await click("Name it Finance");
+    await click("Create profile");
+
+    expect(dispatch).toHaveBeenCalledWith({
+      idempotencyKey: expect.any(String),
+      requestId: request.id,
+      response: {
+        kind: "external",
+        value: { createProfile: { name: "Finance" }, decision: "fulfilled" },
+      },
+      type: "request.respond",
+    });
+  });
+});
+
 describe("RequestCard external requests", () => {
   it("guides the requester to the target Mac and offers only decline", async () => {
     const request = fullDiskAccessRequest();
@@ -603,12 +665,18 @@ async function render(
     readonly machines?: readonly MachineSummary[];
     readonly passwordRead?: ReturnType<typeof vi.fn>;
     readonly review?: ReturnType<typeof vi.fn>;
+    readonly snapshot?: object;
   } = {},
 ): Promise<void> {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   roots.push(root);
+  const snapshot = {
+    identityConfig: { deployment: { name: "Alex’s Opensteer" } },
+    workspaces: [{ id: workspaceId, name: "Research" }],
+    ...options.snapshot,
+  };
   await act(async () => {
     root.render(
       <RequestCard
@@ -619,12 +687,10 @@ async function render(
         hostClient={
           {
             dispatch,
+            load: async () => undefined,
             refresh: async () => undefined,
             subscribe: () => () => undefined,
-            getSnapshot: () => ({
-              identityConfig: { deployment: { name: "Alex’s Opensteer" } },
-              workspaces: [{ id: workspaceId, name: "Research" }],
-            }),
+            getSnapshot: () => snapshot,
             rpc: {
               "browser.sources.inspect": options.inspect ?? vi.fn(),
               "browser.password-sign-in.get":

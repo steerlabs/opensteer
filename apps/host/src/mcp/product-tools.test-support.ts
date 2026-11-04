@@ -214,11 +214,6 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...requestBase,
-    name: z.string().trim().min(1).max(120),
-    type: z.literal("browser.profile.create"),
-  }),
-  z.strictObject({
-    ...requestBase,
     type: z.literal("browser.profile.list"),
   }),
   z.strictObject({
@@ -243,7 +238,7 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
     ...requestBase,
     reason: z.string().trim().min(1).max(500),
     suggestion: BrowserAccessSuggestionSchema,
-    type: z.literal("browser.access.request"),
+    type: z.literal("browser.profile.request"),
     workspaceId: WorkspaceIdSchema.optional(),
   }),
   /**
@@ -477,11 +472,6 @@ const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...responseBase,
-    profile: z.strictObject({ id: BrowserProfileIdSchema, name: z.string().min(1).max(120) }),
-    type: z.literal("browser.profile.create.result"),
-  }),
-  z.strictObject({
-    ...responseBase,
     type: z.literal("project.create.result"),
     path: z.string().regex(/^(?:\/|[A-Za-z]:[\\/]|\\\\)/u),
     slug: z.string().min(1),
@@ -565,7 +555,7 @@ const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
   z.strictObject({
     ...responseBase,
     result: RequestCreationResultSchema.extend({ kind: z.literal("browser.access") }),
-    type: z.literal("browser.access.request.result"),
+    type: z.literal("browser.profile.request.result"),
   }),
   z.strictObject({
     ...responseBase,
@@ -790,7 +780,7 @@ export class ProductToolsTestClient {
         "thread.delegate",
         "thread.message",
         "sign-in",
-        "browser.access.request",
+        "browser.profile.request",
         "machine.full-disk-access.request",
         "trigger.control",
         "browser.tab.read",

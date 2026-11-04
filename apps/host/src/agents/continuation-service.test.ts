@@ -207,7 +207,7 @@ describe("continuationMessage", () => {
       });
       expect(await continuationMessage(request, inventory())).toBe(
         kind === "browser.access"
-          ? String.raw`Request ${request.id} was fulfilled. Browser profile "Owner \"renamed\" work" (${profile.id}) is now available to this Workspace. Open it with browser_session_open and profileId ${profile.id}, then continue the task.`
+          ? String.raw`Request ${request.id} was fulfilled. The person chose browser profile "Owner \"renamed\" work" (${profile.id}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${profile.id}, then continue the task.`
           : `Request ${request.id} is historical. Create a browser profile before signing in; Guest sign-ins cannot be saved.`,
       );
     },

@@ -22,14 +22,13 @@ import {
   BrowserTabWriteOutputSchema,
   BrowserSessionListOutputSchema,
   BrowserSessionOpenOutputSchema,
-  BrowserProfileCreateOutputSchema,
   BrowserSessionCloseOutputSchema,
 } from "./outputs.js";
 export const browser_profile_list = defineAgentTool({
   name: "browser_profile_list",
   title: "List browser profiles",
   description:
-    "Find usable browser identities and grants. Main inheritance exposes owner profiles; Projects need grants, narrowed by specialist bindings. Named data stays on its computer. Names/data never prove a website login; verify there.",
+    "Find the named browser profiles this Workspace can use: every owner profile in Main, granted ones in a Project, narrowed by specialist bindings. Open the one that fits the task; if none does, use browser_profile_request. Names never prove a website login; verify there.",
   input: z.strictObject({}),
   output: BrowserProfileListOutputSchema,
   access: "read",
@@ -60,17 +59,17 @@ export const sign_in = defineAgentTool({
   callers: ["run"] as const,
 });
 
-export const browser_access_request = defineAgentTool({
-  name: "browser_access_request",
-  title: "Request browser access",
+export const browser_profile_request = defineAgentTool({
+  name: "browser_profile_request",
+  title: "Request a browser profile",
   description:
-    "Ask the person to grant a browser profile to a reachable Project. Run-only. Main already inherits owner profiles; never target it. Omit workspaceId for this Project. Only the person chooses the grant. Returns requestId/status/replayed; pending grants no access. End your turn for continuation. Guest needs no grant.",
+    "Ask the person for a named browser profile only when none you can use fits: this Project lacks one, or the task needs a separate new identity. Signed-out work uses fresh: true; a fitting listed profile is opened, never requested. Suggest an existing profileId or a new one- or two-word name such as Personal, Work or Finance. The person may pick another profile or name. Run-only. Returns requestId/status/replayed; pending gives no profile, so end your turn: the continuation names the chosen profile.",
   input: z
     .strictObject({
-      reason: z.string().trim().min(1).max(500).describe("Why this Project needs the profile."),
+      reason: z.string().trim().min(1).max(500).describe("Why this task needs the profile."),
       suggestion: BrowserAccessSuggestionInputSchema,
       workspaceId: WorkspaceIdSchema.optional().describe(
-        "Target Project; omit for this Project, never Main.",
+        "Workspace that needs the profile; omit for this one.",
       ),
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
@@ -141,22 +140,6 @@ export const browser_session_open = defineAgentTool({
   output: BrowserSessionOpenOutputSchema,
   access: "write",
   callers: ["run"] as const,
-});
-
-export const browser_profile_create = defineAgentTool({
-  name: "browser_profile_create",
-  minimumReach: "user",
-  title: "Create a browser profile",
-  description:
-    "Create an empty named identity where Main inheritance permits. List first to avoid duplicates. Returns profile.id; opens nothing and grants no Project access. Open with browser_session_open, then request sign-in. Names prove no login. Never create replacements to bypass update refusals.",
-  input: z
-    .strictObject({
-      name: z.string().trim().min(1).max(120).describe("Short profile label, such as Work."),
-    })
-    .safeExtend({ operationKey: OperationKeySchema.optional() }),
-  output: BrowserProfileCreateOutputSchema,
-  access: "write",
-  callers: ["run", "program"] as const,
 });
 
 export const browser_session_close = defineAgentTool({

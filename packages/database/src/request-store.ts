@@ -2271,7 +2271,8 @@ export class RequestStore {
             .select("kind")
             .where("id", "=", request.targetWorkspaceId)
             .executeTakeFirstOrThrow();
-          if (request.kind === "browser.access" || targetWorkspace.kind === "project") {
+          // Main already reaches every profile its owner has; only a Project needs a grant.
+          if (targetWorkspace.kind === "project") {
             grant = await ensureBrowserGrant(transaction, {
               createdBy: input.resolvedBy,
               profileId: profile.id,
@@ -3078,12 +3079,6 @@ async function createRequestInTransaction(
     !(await runAssignmentAcceptsRequests(transaction, input.originatingRunId))
   ) {
     throw new OpensteerError({ code: "conflict", message: assignmentClosedToRequestsMessage });
-  }
-  if (input.kind === "browser.access" && authority.targetWorkspace.kind !== "project") {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Browser access Requests must target a project Workspace",
-    });
   }
   if (input.kind === "browser.sign-in") {
     if (input.payload.kind !== "browser.sign-in") {
