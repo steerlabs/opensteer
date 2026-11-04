@@ -633,6 +633,7 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
     hostCredentialState: unavailable,
     recoverHostAuthorization: unavailable,
     signOutHost: unavailable,
+    subscribe: () => () => undefined,
     subscribeHostCredentials: () => () => undefined,
   };
   const exchange = new HostSessionExchange({

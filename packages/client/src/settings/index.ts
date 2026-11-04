@@ -1,6 +1,14 @@
 import { HostClientRequestError } from "../host/client.js";
 export * from "./plugin-add-consent.js";
 export * from "./catalog.js";
+export * from "./desktop-update-controller.js";
+export * from "./desktop-update-view.js";
+export {
+  DesktopUpdatesError,
+  OriginDesktopUpdates,
+  followDesktopUpdates,
+} from "../connections/desktop-updates-contract.js";
+export type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
 import {
   PluginTargetSchema,
   type PluginTarget,

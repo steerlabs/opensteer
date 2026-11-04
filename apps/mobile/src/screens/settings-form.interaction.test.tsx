@@ -271,6 +271,7 @@ async function render(overrides: Partial<SettingsFormProps>): Promise<void> {
       onConnectedApps: vi.fn(),
       onPlugins: vi.fn(),
     },
+    desktopUpdate: null,
     storageError: null,
     version: "1.0.0",
     ...overrides,

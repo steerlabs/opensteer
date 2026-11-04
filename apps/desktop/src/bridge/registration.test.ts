@@ -79,6 +79,9 @@ describe("desktop bridge", () => {
         download: async () => undefined,
         restart: () => undefined,
       },
+      deploymentUpdates: () => {
+        throw new Error("not part of this test");
+      },
       downloads: {
         snapshot: () => ({ downloads: [] }),
         subscribe: () => () => undefined,

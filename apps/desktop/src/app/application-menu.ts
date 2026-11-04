@@ -105,6 +105,7 @@ export function showDesktopUpdateMenuItem(menu: Menu | null, state: DesktopUpdat
  * page first refusal.
  */
 export function createDesktopApplicationMenu(options: {
+  readonly displayName?: string;
   readonly updates?: {
     readonly check: () => void;
     readonly download: () => void;
@@ -152,10 +153,14 @@ export function createDesktopApplicationMenu(options: {
       ? [
           {
             role: "appMenu" as const,
+            label: options.displayName ?? "Opensteer",
             ...(options.updates
               ? {
                   submenu: [
-                    { role: "about" as const },
+                    {
+                      role: "about" as const,
+                      label: `About ${options.displayName ?? "Opensteer"}`,
+                    },
                     {
                       id: "check-for-updates",
                       label: "Check for Updates…",
@@ -182,11 +187,11 @@ export function createDesktopApplicationMenu(options: {
                     { type: "separator" as const },
                     { role: "services" as const },
                     { type: "separator" as const },
-                    { role: "hide" as const },
+                    { role: "hide" as const, label: `Hide ${options.displayName ?? "Opensteer"}` },
                     { role: "hideOthers" as const },
                     { role: "unhide" as const },
                     { type: "separator" as const },
-                    { role: "quit" as const },
+                    { role: "quit" as const, label: `Quit ${options.displayName ?? "Opensteer"}` },
                   ],
                 }
               : {}),
@@ -206,7 +211,9 @@ export function createDesktopApplicationMenu(options: {
           enabled: false,
         },
         command("Close Tab", "CommandOrControl+W", { type: "close-tab" }),
-        ...(mac ? [] : [{ role: "quit" as const }]),
+        ...(mac
+          ? []
+          : [{ role: "quit" as const, label: `Quit ${options.displayName ?? "Opensteer"}` }]),
       ],
     },
     { role: "editMenu" },

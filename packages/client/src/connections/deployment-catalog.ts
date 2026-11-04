@@ -247,6 +247,7 @@ export class HostVersionMismatchError extends ClientOperationError {
 }
 
 interface VerifyAccessEndpointOptions {
+  readonly protocol?: "maintenance-v1";
   readonly expectedDeploymentId?: DeploymentId | string;
   readonly expectedDiscovery?: HostDiscoveryDocument;
   readonly expectedHostKeyFingerprint?: string;
@@ -326,15 +327,15 @@ export async function verifyAccessEndpoint(
     } catch (error) {
       throw new Error("Host discovery document is not valid JSON.", { cause: error });
     }
-    // The first question asked of the answer, before the descriptor is parsed
-    // and before any identity check: everything below — and every credential
-    // exchange a caller runs afterwards — assumes both ends agree on what the
-    // exchange means. It reads the raw document because a Host from before
-    // negotiation serves no epoch at all, and "that deployment is too old" is
-    // a more useful answer than a failed parse.
+    // Ordinary attachment needs epoch agreement before identity parsing;
+    // maintenance verifies the same signed identity across epochs.
     const compatibility = hostApiCompatibility(decoded);
-    if (compatibility !== "compatible") throw new HostVersionMismatchError(compatibility);
-    const descriptor = HostDescriptorSchema.parse(decoded);
+    if (compatibility !== "compatible" && options.protocol !== "maintenance-v1")
+      throw new HostVersionMismatchError(compatibility);
+    const descriptor =
+      options.protocol === "maintenance-v1"
+        ? HostDescriptorSchema.omit({ apiVersion: true }).parse(decoded)
+        : HostDescriptorSchema.parse(decoded);
     const discoveryEnvelope = descriptor.authority;
     const discovery = verifyHostDiscoveryEnvelope(discoveryEnvelope);
     ConnectionOriginSchema.parse(discovery.canonicalOrigin);
@@ -381,6 +382,7 @@ export async function verifyAccessEndpoint(
 }
 
 export async function verifyPersonalAccessEndpoint(options: {
+  readonly protocol?: "maintenance-v1";
   readonly expectedDeploymentId?: DeploymentId | string;
   readonly expectedDiscovery?: HostDiscoveryDocument;
   readonly fetch?: typeof globalThis.fetch;
@@ -455,6 +457,7 @@ export async function verifyPersonalAccessEndpoint(options: {
       throw new Error("Personal access route does not match the expected Host authority.");
     }
     const descriptor = await verifyAccessEndpoint({
+      ...(options.protocol === undefined ? {} : { protocol: options.protocol }),
       ...(options.expectedDeploymentId === undefined
         ? {}
         : { expectedDeploymentId: options.expectedDeploymentId }),

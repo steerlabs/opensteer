@@ -1,8 +1,10 @@
+import { resolveDesktopAppBranding } from "@opensteer/protocol/desktop";
 import { useDesktopUpdate } from "../../../desktop/update-store.js";
 import { Dialog } from "../../dialog.js";
 import { useDesktopPlaces } from "../../../desktop/places-context.js";
 import { PlaceMenuPlaces } from "../../places/place-menu.js";
 import { DesktopUpdatesRow } from "./desktop-updates.js";
+import { RemoteDesktopUpdateSection } from "./remote-desktop-update.js";
 import { useEffect, useState } from "react";
 import {
   requestNotificationPermission,
@@ -59,11 +61,16 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
         <DesktopUpdatesRow />
         <SearchSuggestionsRow />
       </div>
+      <RemoteDesktopUpdateSection view={view} />
       <h2>About</h2>
       <div className="card">
         <SettingsRow
           icon="puzzle"
-          title={update ? `Opensteer ${update.currentVersion}` : "Opensteer"}
+          title={
+            update
+              ? `${resolveDesktopAppBranding(update.currentVersion).displayName} ${update.currentVersion}`
+              : "Opensteer"
+          }
           action={
             <a
               className="btn"

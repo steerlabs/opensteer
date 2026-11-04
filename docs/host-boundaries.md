@@ -82,6 +82,8 @@ Browser-facing RPC goes in [hostApi](../packages/protocol/src/host-api.ts) and i
 `commands.dispatch`. Machine protocols, authentication, bootstrap, webhooks, upgrades, downloads and
 static files are REST exceptions, not permission for parallel browser APIs. Origin protection
 happens once, in authentication; destructive commands add no second origin check.
+The [maintenance contract](../packages/protocol/src/maintenance.ts) is a deliberate REST exception:
+it must work when a client and Host disagree on `hostApiVersion`.
 
 Viewer read and mute state belongs to the person, never to shared Thread or event records; its
 updates go only to that member, ordered with snapshot and replay. Ordinary RPC failures are

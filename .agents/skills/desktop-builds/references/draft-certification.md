@@ -27,5 +27,5 @@ pnpm exec tsx scripts/public-download/eu-run.ts \
 
 On PASS, `$OPENSTEER_UPDATE_JOURNEY_DIR/e2e/<run>/journey.json` records `certifiedZipSha256` and
 stdout prints `certified_zip_sha256=<hash>` and the `gh workflow run release.yml` command for the
-operator; failure prints neither. The release workflow does not read this result: stable publication
-binds to the `promote` job's verified insider ZIP hash.
+operator; failure prints neither. The release workflow does not read this result: Stable publication
+verifies the insider's source provenance instead.

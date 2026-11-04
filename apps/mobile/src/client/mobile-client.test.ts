@@ -10,7 +10,7 @@ import type { DeploymentConnectionInput, PrivateFilesystem } from "@opensteer/cl
 import { createMockHostPort } from "./mock-host-port.js";
 import { mockDeploymentConnections } from "./mock-mode.js";
 import { HostClientRequestError, createMemorySavedViews } from "@opensteer/client/host";
-import { MockHostClient } from "@opensteer/client/mock";
+import { MockDesktopUpdates, MockHostClient } from "@opensteer/client/mock";
 import {
   buildNativeIntegrationAuthorizationCallback,
   IntegrationAuthorizationCancelledError,
@@ -168,6 +168,7 @@ function testPort(options: {
         },
       });
     },
+    desktopUpdates: () => new MockDesktopUpdates(),
     verifyEpoch: async (resolved) => {
       verified.push(resolved.origin);
       return options.verification ?? { status: "compatible", capabilities: [] };

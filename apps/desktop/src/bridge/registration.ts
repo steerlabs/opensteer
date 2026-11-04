@@ -12,6 +12,7 @@ import { dictationHandlers } from "./methods/dictation.js";
 import { passkeyHandlers } from "./methods/passkeys.js";
 import { viewerClipboardHandlers } from "./methods/viewer-clipboard.js";
 import { downloadsHandlers } from "./methods/downloads.js";
+import { deploymentUpdatesHandlers } from "./methods/deployment-updates.js";
 import { updatesHandlers } from "./methods/updates.js";
 import { browserPresentationHandlers } from "./methods/browser-presentation.js";
 import { z } from "zod";
@@ -220,6 +221,7 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   for (const [channel, handler] of viewerClipboardHandlers(context)) register(channel, handler);
   for (const [channel, handler] of downloadsHandlers(context)) register(channel, handler);
   for (const [channel, handler] of updatesHandlers(context)) register(channel, handler);
+  for (const [channel, handler] of deploymentUpdatesHandlers(context)) register(channel, handler);
   for (const [channel, handler] of browserPresentationHandlers(context)) register(channel, handler);
 
   register(desktopBridgeChannels.useComputerViewOnThisMac, handleUseComputerViewOnThisMac(context));

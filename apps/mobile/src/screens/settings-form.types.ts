@@ -1,3 +1,4 @@
+import type { DeploymentUpdateModel } from "./use-deployment-update.js";
 import type {
   AccountSettingsModel,
   ComputerSettingsDestination,
@@ -78,6 +79,8 @@ export interface SettingsFormProps extends SettingsFormActionHandlers {
   /** Where the open Opensteer runs and its computers; empty while none is open. */
   readonly computers: readonly ComputerSettingsRow[];
   readonly deployment: DeploymentSettingsModel;
+  /** Null when there is no open Deployment, or its Host refuses this person. */
+  readonly desktopUpdate: DeploymentUpdateModel | null;
   readonly engineUpdates?: readonly EngineUpdateRow[] | undefined;
   readonly notificationError: string | null;
   /** Null in a build without an Account service, which nothing can notify. */

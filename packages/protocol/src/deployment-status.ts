@@ -91,6 +91,8 @@ export function deploymentUnavailableReasonExplanation(
   return "This deployment is no longer active.";
 }
 
+export const hostNeedsUpdateLabel = "Needs update";
+
 /**
  * What a list of places says about one place on another computer or server,
  * each sentence naming the place and the one thing a person can do. These are
@@ -148,7 +150,7 @@ export const placeStatus = {
   unavailable: (reason: DesktopDeploymentUnavailableReason, name: string): DeploymentStatusInfo => {
     if (reason === "host-too-old") {
       return {
-        label: "Needs update",
+        label: hostNeedsUpdateLabel,
         reason: `${name} needs an Opensteer update to work with this app.`,
         status: "attention",
       };

@@ -4709,6 +4709,7 @@ export function migrationProvider() {
         "0155_connection_message_authors": connectionMessageAuthorsMigration,
         "0156_specialist_auto_bind": specialistAutoBindMigration,
         "0157_voice_calls": voiceCallsMigration,
+        "0158_personal_desktop_update": personalDesktopUpdateMigration,
       };
     },
   };
@@ -7401,6 +7402,32 @@ const voiceCallsMigration: Migration = {
         RETURN NEW;
       END $$;
       CREATE TRIGGER voice_trigger_anchor_fence BEFORE INSERT OR UPDATE OF anchor_thread_id ON triggers FOR EACH ROW EXECUTE FUNCTION refuse_voice_trigger_anchor();`.execute(
+      database,
+    );
+  },
+};
+
+const personalDesktopUpdateMigration: Migration = {
+  async up(database) {
+    await sql`create table personal_desktop_update (
+      position bigserial unique,
+      id uuid primary key,
+      requested_by text not null references users(id),
+      idempotency_key text not null check (length(idempotency_key) between 1 and 128),
+      intent jsonb not null,
+      state text not null check (state in ('pending','running','staged','installing','succeeded','failed')),
+      from_version text check (length(from_version) between 1 and 64),
+      target_version text check (length(target_version) between 1 and 64),
+      incarnation_id uuid,
+      detail text check (detail in ('up-to-date','ahead','not-applied','update-failed','handoff-failed')),
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      unique(requested_by, idempotency_key),
+      check (state not in ('staged','installing') or (target_version is not null and incarnation_id is not null))
+    );
+    create unique index personal_desktop_update_active on personal_desktop_update ((true))
+      where state in ('pending','running','staged','installing');
+    create index personal_desktop_update_latest on personal_desktop_update(position desc)`.execute(
       database,
     );
   },

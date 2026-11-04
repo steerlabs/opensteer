@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { resolveDesktopAppBranding } from "@opensteer/protocol/desktop";
 import { desktopBridge } from "../../../desktop/desktop-bridge.js";
 import {
   desktopUpdateMessage,
@@ -23,7 +24,7 @@ export function DesktopUpdatesRow() {
   return (
     <>
       <SettingsRow
-        title={`Version ${update.currentVersion}`}
+        title={`${resolveDesktopAppBranding(update.currentVersion).displayName} ${update.currentVersion}`}
         icon="download"
         detail={desktopUpdateMessage(update)}
         action={
