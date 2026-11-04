@@ -581,19 +581,19 @@ export function BrowserViewport({
     },
     [discardMove, resetCursor, touchGesture],
   );
+  const popupTarget = useMemo(
+    () => (activeSurfaceId ? frames.popups?.target(sessionId, activeSurfaceId) : undefined),
+    [frames.popups, sessionId, activeSurfaceId],
+  );
   const flushMove = useCallback(() => {
     if (animationFrame.current !== null) cancelAnimationFrame(animationFrame.current);
     animationFrame.current = null;
     const point = pendingMove.current;
     pendingMove.current = null;
-    if (point && canInputRef.current)
+    if (point && canInputRef.current && !popupTarget?.get().popup)
       onCommandRef.current({ action: "move", button: "none", ...point, type: "input.pointer" });
-  }, []);
+  }, [popupTarget]);
   const heldPopupKeys = useRef(new Map<string, EditingKeystroke>());
-  const popupTarget = useMemo(
-    () => (activeSurfaceId ? frames.popups?.target(sessionId, activeSurfaceId) : undefined),
-    [frames.popups, sessionId, activeSurfaceId],
-  );
   const modalPopup = useSyncExternalStore(popupTarget?.subscribe ?? noEditingSubscription, () => {
     const p = popupTarget?.get().popup;
     return !!p && p.state.kind !== "datalist";
@@ -1073,6 +1073,7 @@ export function BrowserViewport({
     discardMove();
     const point = lastPointerPoint.current;
     lastPointerPoint.current = null;
+    if (popupTarget?.get().popup) return;
     if (point && canInputRef.current)
       onCommand({
         ...point,

@@ -2,7 +2,11 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
-import type { BrowserCommand, BrowserFrameStore } from "@opensteer/client/host";
+import {
+  BrowserPopupStore,
+  type BrowserCommand,
+  type BrowserFrameStore,
+} from "@opensteer/client/host";
 import { browserVideoFrameView } from "@opensteer/client/host/browser-video";
 import { browserVideoTestHeader } from "@opensteer/protocol/test-support/browser-video";
 import { BrowserSurfaceIdSchema, TargetedBrowserClientMessageSchema } from "@opensteer/protocol";
@@ -75,7 +79,8 @@ it("keeps wheel, touch scroll, hover, right/middle buttons and drag on ordered i
     keyframe: vi.fn(),
     click: vi.fn(),
   };
-  const frames: BrowserFrameStore = { video, get: () => frame, subscribe: () => () => {} };
+  const popups = new BrowserPopupStore(vi.fn());
+  const frames: BrowserFrameStore = { video, popups, get: () => frame, subscribe: () => () => {} };
   const commands: BrowserCommand[] = [];
   const send = (command: BrowserCommand) => {
     TargetedBrowserClientMessageSchema.parse(command);
@@ -171,6 +176,29 @@ it("keeps wheel, touch scroll, hover, right/middle buttons and drag on ordered i
         expect(commands).toContainEqual(
           expect.objectContaining({ type: "input.pointer", button, action, geometryRevision: 1 }),
         );
+    await pointer("pointermove", { buttons: 0 });
+    act(() => {
+      popups.negotiate("session", surface, true);
+      popups.receive("session", {
+        type: "browser.video.attached",
+        surfaceId: surface,
+        streamId: browserVideoTestHeader.streamId,
+        mediaToken: "a".repeat(43),
+      });
+      popups.receive("session", {
+        type: "browser.popup.opened",
+        surfaceId: surface,
+        streamId: browserVideoTestHeader.streamId,
+        documentGeneration: "d",
+        authorityEpoch: "e",
+        popupId: "p",
+        revision: "1",
+        state: { kind: "select", multiple: false, rtl: false, items: [] },
+      });
+    });
+    const beforeLeave = commands.length;
+    await pointer("pointerout", { buttons: 0, relatedTarget: document.body });
+    expect(commands).toHaveLength(beforeLeave);
   } finally {
     await act(async () => root.unmount());
     delete (HTMLElement.prototype as Partial<HTMLElement>).setPointerCapture;
