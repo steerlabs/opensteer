@@ -906,6 +906,7 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
       generatedTitle: null,
       generatedIcon: null,
       latencyMs: null,
+      namingMs: null,
     };
     try {
       if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
@@ -963,18 +964,34 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
       const latencyMs = Date.now() - started;
       evidence.latencyMs = latencyMs;
       expect(first.assistantText).toMatch(/\bREADY\b/u);
-      const stored = await active.host.store.database
-        .selectFrom("threads")
-        .select(["title", "icon"])
-        .where("id", "=", threadId)
-        .executeTakeFirstOrThrow();
+      // The light model this account names with, as Settings reports it.
+      const background = await active.api["backgroundModels.get"]({});
+      if (!background.ok) throw new Error(background.error.message);
+      evidence.lightModel = background.data.light.effectivePick?.modelSelection ?? null;
+      // Naming is the Host's own job beside the Run; it settles within its deadline.
+      const named = () =>
+        active.host.store.database
+          .selectFrom("threads")
+          .select(["title", "titleSource", "icon", "iconSource"])
+          .where("id", "=", threadId)
+          .executeTakeFirstOrThrow();
+      await vi.waitFor(
+        async () =>
+          expect(await named()).toMatchObject({
+            titleSource: "generated",
+            iconSource: "generated",
+          }),
+        { timeout: 120_000, interval: 250 },
+      );
+      evidence.namingMs = Date.now() - started;
+      const stored = await named();
       evidence.generatedTitle = stored.title;
       evidence.generatedIcon = stored.icon;
       const scratchEntries = (
         await readdir(active.runnerDataDirectory, { recursive: true })
       ).filter((name) =>
-        // Shared naming scratch is `title-*`; an engine's own is `<engine>-title-*`.
-        name.split(/[\\/]/u).some((part) => /^(?:[a-z]+-)?title-/u.test(part)),
+        // Shared background scratch is `text-*`; an engine's own is `<engine>-text-*`.
+        name.split(/[\\/]/u).some((part) => /^(?:[a-z]+-)?text-/u.test(part)),
       );
       evidence.scratchEntries = scratchEntries;
       expect(scratchEntries).toEqual([]);
@@ -1039,6 +1056,8 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
             chosenIcon,
             afterSecond,
             latencyMs,
+            namingMs: evidence.namingMs,
+            lightModel: evidence.lightModel,
             renamedTitle,
             runIds: [first.runId, second.runId],
             secondEngineStart: attempts.data.attempts.at(-1)?.engineStart,

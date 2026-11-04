@@ -18,6 +18,7 @@ import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-su
  */
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
+// Reason: these journeys need the PostgreSQL that `pnpm test:integration` provides.
 const integration = databaseUrl ? describe : describe.skip;
 const fakeCodexAppServer = fileURLToPath(
   new URL(
