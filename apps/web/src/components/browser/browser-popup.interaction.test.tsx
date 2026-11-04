@@ -85,11 +85,11 @@ it("shows groups and disabled rows and commits an empty editable multiple select
     for (const o of select.options) o.selected = false;
     select.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  act(() =>
+  act(() => {
     f.div
       .querySelector("form")!
-      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
-  );
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
   expect(f.send.mock.calls.at(-1)?.[2]).toMatchObject({
     type: "popup.answer",
     answer: { itemIds: [] },
@@ -146,7 +146,9 @@ it("suggestion activation prevents proxy blur and submits its opaque ID once", (
   });
   const row = f.div.querySelector<HTMLButtonElement>('[role="option"]')!;
   const down = new Event("pointerdown", { bubbles: true, cancelable: true });
-  act(() => row.dispatchEvent(down));
+  act(() => {
+    row.dispatchEvent(down);
+  });
   expect(down.defaultPrevented).toBe(true);
   act(() => row.click());
   expect(f.send.mock.calls.at(-1)?.[2]).toMatchObject({ answer: { itemIds: ["id"] } });

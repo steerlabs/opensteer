@@ -182,7 +182,7 @@ function observeRuntimeMessage(
   try {
     const parsed = BrowserClientMessageSchema.safeParse(value);
     if (!parsed.success) {
-      artifacts.event("compat.runtimeInvalid", { boundary, error: parsed.error.message });
+      artifacts.event("compat.runtimeInvalid", { boundary });
       return;
     }
     const message = parsed.data;

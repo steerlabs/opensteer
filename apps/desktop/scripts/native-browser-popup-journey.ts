@@ -103,6 +103,14 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
           .filter({ hasText: "Browser popup fixture" })
           .click();
         await page.locator("canvas").first().waitFor({ state: "visible" });
+        await page.waitForFunction(
+          () => {
+            const canvas = document.querySelector("canvas");
+            return !!canvas?.getContext("2d")?.getImageData(0, 0, 1, 1).data[3];
+          },
+          undefined,
+          { timeout: 4000 },
+        );
         return { viewer, page };
       }),
     );
@@ -308,11 +316,11 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     );
     await tap(b, "single");
     await b.getByRole("dialog").waitFor();
-    await b.getByRole("button", { name: "Cancel", exact: true }).click();
     // Local input retains the stock route and interrupts a pre-existing remote draft.
     await kit.selectNativePage(context.sessionId, surfaceId);
     await kit.focusPage();
     await kit.pageMouse("#single", true);
+    await b.getByRole("dialog").waitFor({ state: "hidden" });
     await kit.snapshot("popups", "local-native");
     const localMenu = await kit.popupInventory();
     assert(
