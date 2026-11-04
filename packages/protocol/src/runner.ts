@@ -770,7 +770,7 @@ export const HarnessModelDescriptorSchema = z.strictObject({
   providerId: ModelProviderIdSchema,
   unavailableReason: z.string().trim().min(1).max(500).optional(),
 });
-const HarnessModelDescriptorViewSchema = z.object({
+export const HarnessModelDescriptorViewSchema = z.object({
   ...HarnessModelDescriptorSchema.shape,
   options: z.array(HarnessModelOptionViewSchema).max(16),
 });

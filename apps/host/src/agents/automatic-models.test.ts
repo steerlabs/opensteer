@@ -15,7 +15,7 @@ import {
 } from "@opensteer/core";
 import type { HarnessInstanceRecord } from "@opensteer/database";
 import { HarnessInstanceCatalogSchema, type HarnessObservedConnection } from "@opensteer/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   readAutomaticModelPreview,
   resolveAutomaticModels,
@@ -251,8 +251,47 @@ describe("automatic model resolution on the Host", () => {
       }),
     );
     expect(view.accounts.map((account) => account.eligible)).toEqual([true, true]);
-    // Each account row carries its catalog once; no internal snapshot rides along.
-    for (const account of view.accounts) expect(account).not.toHaveProperty("account");
+    // Settings is read over cellular links: no snapshot, one selection, no catalog internals.
+    for (const account of view.accounts) {
+      expect(account).not.toHaveProperty("account");
+      expect(Object.keys(account.catalog!.models[0]!).sort()).toEqual([
+        "displayName",
+        "modelId",
+        "providerId",
+      ]);
+    }
+    expect(Object.keys(view.deep.candidates[0]!)).not.toEqual(
+      expect.arrayContaining(["runModelSelection"]),
+    );
+    expect(view.deep.candidates[0]!.modelSelection.modelId).toBe("gpt-6.1-terra");
+  });
+});
+
+describe("Settings preview under concurrent account changes", () => {
+  it("resolves both roles over one snapshot, so a removal between reads can't crash it", async () => {
+    const { dependencies, harnesses } = world([
+      { models: [haiku], light: haiku },
+      { driverKind: "codex", sourceId: "openai", models: [["openai", "gpt-6.1-terra"]] },
+    ]);
+    const listHarnessInstances = vi
+      .fn()
+      .mockResolvedValueOnce(harnesses)
+      .mockResolvedValue(harnesses.slice(1));
+    const getAutomaticModelConfig = vi.fn(dependencies.store.getAutomaticModelConfig);
+    const view = await readAutomaticModelPreview(
+      {
+        ...dependencies,
+        store: {
+          ...dependencies.store,
+          getAutomaticModelConfig,
+          listHarnessInstances,
+        } as never,
+      },
+      userId,
+    );
+    expect(listHarnessInstances).toHaveBeenCalledTimes(1);
+    expect(getAutomaticModelConfig).toHaveBeenCalledTimes(1);
+    expect(view.accounts).toHaveLength(2);
   });
 });
 

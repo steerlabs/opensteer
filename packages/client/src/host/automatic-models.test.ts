@@ -78,7 +78,15 @@ it("binds the account a person picks, so a non-default account is the one that r
     });
     const { candidates } = resolveModelCandidates({
       wants: [choice!.want],
-      accounts: accounts.map((a) => ({ ...a, sourceBoundary: a.sourceId, usage: [] })),
+      accounts: accounts.map((a) => ({
+        ...a,
+        catalog: {
+          ...a.catalog!,
+          models: a.catalog!.models.map((m) => ({ ...m, isDefault: false, options: [] })),
+        },
+        sourceBoundary: a.sourceId,
+        usage: [],
+      })),
       excludedAccounts: [],
       canRun: () => ({ ok: true }),
       now: Date.now(),

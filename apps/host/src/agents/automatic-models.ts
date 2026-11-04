@@ -1,4 +1,5 @@
 import {
+  automaticAccountEligibility,
   automaticModelDefaults,
   automaticModelWants,
   modelLabLabels,
@@ -7,7 +8,6 @@ import {
   type AutomaticModelConfig,
   type EnvironmentId,
   type HarnessInstanceId,
-  type ModelCandidateSkipReason,
   type ModelRunEligibility,
   type ModelSelection,
   type ModelUsageFact,
@@ -20,7 +20,11 @@ import {
 } from "@opensteer/core";
 import type { HarnessInstanceRecord, OpensteerStore } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
-import type { AutomaticModelsView, HarnessInstanceCatalog } from "@opensteer/protocol";
+import {
+  automaticModelCatalogView,
+  type AutomaticModelsView,
+  type HarnessInstanceCatalog,
+} from "@opensteer/protocol";
 
 export interface AutomaticModelDependencies {
   readonly store: Pick<
@@ -185,15 +189,18 @@ export interface AutomaticModelResolution extends AuthorizedModelAccounts {
   readonly skipped: readonly SkippedModelCandidate[];
 }
 
-/** Every automatic site resolves through here: the person's config over their own accounts. */
-export async function resolveAutomaticModels(
-  dependencies: AutomaticModelDependencies,
-  request: AutomaticModelRequest,
-): Promise<AutomaticModelResolution> {
-  const [config, snapshot] = await Promise.all([
-    dependencies.store.getAutomaticModelConfig(request.userId),
-    readAuthorizedModelAccounts(dependencies, request.userId),
+function readAutomaticModelInputs(dependencies: AutomaticModelDependencies, userId: UserId) {
+  return Promise.all([
+    dependencies.store.getAutomaticModelConfig(userId),
+    readAuthorizedModelAccounts(dependencies, userId),
   ]);
+}
+
+function resolveWithin(
+  config: AutomaticModelConfig,
+  snapshot: AuthorizedModelAccounts,
+  request: Omit<AutomaticModelRequest, "userId">,
+): AutomaticModelResolution {
   const resolved = resolveModelCandidates({
     wants: request.wants(config),
     ...(request.original
@@ -207,16 +214,13 @@ export async function resolveAutomaticModels(
   return { ...snapshot, config, ...resolved };
 }
 
-function accountReason(
-  account: AuthorizedModelAccountSnapshot,
-  config: AutomaticModelConfig,
-): ModelCandidateSkipReason | null {
-  if (config.excludedAccounts.includes(account.harnessInstanceId)) return "excluded";
-  if (account.removed) return "removed";
-  if (!account.enabled) return "disabled";
-  if (!account.available) return "offline";
-  if (account.catalog?.status !== "ready") return "catalog-not-ready";
-  return null;
+/** Every automatic site resolves through here: the person's config over their own accounts. */
+export async function resolveAutomaticModels(
+  dependencies: AutomaticModelDependencies,
+  request: AutomaticModelRequest,
+): Promise<AutomaticModelResolution> {
+  const [config, snapshot] = await readAutomaticModelInputs(dependencies, request.userId);
+  return resolveWithin(config, snapshot, request);
 }
 
 /**
@@ -244,19 +248,16 @@ export async function readAutomaticModelPreview(
           original: chat,
         }
       : { canRun: () => ok };
-  const [light, deep] = await Promise.all([
-    resolveAutomaticModels(dependencies, {
-      userId,
-      wants: (config) => automaticModelWants(config, "light"),
-      canRun: () => ok,
-    }),
-    resolveAutomaticModels(dependencies, {
-      userId,
-      wants: (config) => automaticModelWants(config, "deep"),
-      ...memory,
-    }),
-  ]);
-  const { accounts, harnesses, environments, config } = light;
+  const [config, snapshot] = await readAutomaticModelInputs(dependencies, userId);
+  const light = resolveWithin(config, snapshot, {
+    wants: (current) => automaticModelWants(current, "light"),
+    canRun: () => ok,
+  });
+  const deep = resolveWithin(config, snapshot, {
+    wants: (current) => automaticModelWants(current, "deep"),
+    ...memory,
+  });
+  const { accounts, harnesses, environments } = snapshot;
   // Display names only for this person's own accounts.
   const names = (environmentId?: EnvironmentId, harnessInstanceId?: HarnessInstanceId) => {
     const account = accounts.find(
@@ -287,16 +288,19 @@ export async function readAutomaticModelPreview(
     };
   };
   const preview = ({ candidates, skipped }: AutomaticModelResolution) => ({
-    candidates: candidates.map(({ account: _snapshot, ...candidate }) => {
-      const { account, ...own } = names(candidate.environmentId, candidate.harnessInstanceId)!;
-      const { providerId, modelId } = candidate.storedModelSelection;
-      return {
-        ...candidate,
-        ...own,
-        providerDisplayName: modelLabLabels[providerId] ?? providerId,
-        modelDisplayName: modelNames(account, modelId, providerId).modelDisplayName,
-      };
-    }),
+    candidates: candidates.map(
+      ({ account: _snapshot, runModelSelection: _run, storedModelSelection, ...candidate }) => {
+        const { account, ...own } = names(candidate.environmentId, candidate.harnessInstanceId)!;
+        const { providerId, modelId } = storedModelSelection;
+        return {
+          ...candidate,
+          ...own,
+          modelSelection: storedModelSelection,
+          providerDisplayName: modelLabLabels[providerId] ?? providerId,
+          modelDisplayName: modelNames(account, modelId, providerId).modelDisplayName,
+        };
+      },
+    ),
     skipped: skipped.map((skip) => {
       const own = names(skip.environmentId, skip.harnessInstanceId);
       if (!own) return skip;
@@ -323,7 +327,10 @@ export async function readAutomaticModelPreview(
       deep: [...automaticModelDefaults.deep],
     },
     accounts: accounts.map((account) => {
-      const reason = accountReason(account, config);
+      const eligibility = automaticAccountEligibility(account, {
+        excludedAccounts: config.excludedAccounts,
+        canRun: () => ok,
+      });
       const { accountDisplayName, computerDisplayName } = names(
         account.environmentId,
         account.harnessInstanceId,
@@ -340,9 +347,9 @@ export async function readAutomaticModelPreview(
         enabled: account.enabled,
         removed: account.removed,
         available: account.available,
-        catalog: account.catalog,
-        eligible: reason === null,
-        reason,
+        catalog: automaticModelCatalogView(account.catalog),
+        eligible: eligibility.ok,
+        reason: eligibility.ok ? null : eligibility.reason,
       };
     }),
     light: { label: "General preference", ...preview(light) },

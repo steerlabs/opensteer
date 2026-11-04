@@ -14,7 +14,11 @@ import {
   type AutomaticModelConfig,
   type AutomaticModelRole,
 } from "@opensteer/core";
-import { AutomaticModelsViewSchema, type AutomaticModelsView } from "@opensteer/protocol";
+import {
+  automaticModelCatalogView,
+  AutomaticModelsViewSchema,
+  type AutomaticModelsView,
+} from "@opensteer/protocol";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
@@ -4921,24 +4925,16 @@ function mockAutomaticModelsView(state: MockHostState): AutomaticModelsView {
   const parsed = AutomaticModelsViewSchema.parse({
     config: state.automaticModelConfig,
     maintainedDefaults: automaticModelDefaults,
-    accounts,
+    accounts: accounts.map((a) => ({ ...a, catalog: automaticModelCatalogView(a.catalog) })),
     light: { label: "General preference", candidates: [], skipped: [] },
     deep: { candidates: [], skipped: [] },
   });
   const preview = (role: AutomaticModelRole) => {
     const result = resolveModelCandidates({
       wants: automaticModelWants(state.automaticModelConfig, role),
-      accounts: parsed.accounts.map((a) => ({
+      accounts: parsed.accounts.map((a, index) => ({
         ...a,
-        catalog: a.catalog
-          ? {
-              status: a.catalog.status,
-              models: a.catalog.models,
-              ...(a.catalog.status === "ready" && a.catalog.lightModel
-                ? { lightModel: a.catalog.lightModel }
-                : {}),
-            }
-          : null,
+        catalog: accounts[index]!.catalog,
         sourceBoundary: a.sourceId,
         usage: [],
       })),
@@ -4949,6 +4945,7 @@ function mockAutomaticModelsView(state: MockHostState): AutomaticModelsView {
     return {
       candidates: result.candidates.map((c) => ({
         ...c,
+        modelSelection: c.storedModelSelection,
         accountDisplayName:
           accounts.find((a) => a.harnessInstanceId === c.harnessInstanceId)?.accountDisplayName ??
           "Account",
