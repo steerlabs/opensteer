@@ -48,7 +48,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   };
   const createOwner = patched._createOpensteerInputOwner;
   const nativeStops: string[] = [];
-  const nativeCommands: string[] = [];
   patched._createOpensteerInputOwner = () => {
     const owner = createOwner.call(contents);
     owner.on("video-stopped", (...args) => {
@@ -68,29 +67,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       if (nativeStops.length < 32)
         nativeStops.push(typeof reason === "string" && reasons.includes(reason) ? reason : "other");
     });
-    return {
-      on: (event, listener) => owner.on(event, listener),
-      off: (event, listener) => owner.off(event, listener),
-      detach: () => owner.detach(),
-      sendCommand: (method, parameters) => {
-        if (
-          nativeCommands.length < 128 &&
-          [
-            "OpensteerInput.enable",
-            "OpensteerInput.disable",
-            "OpensteerInput.click",
-            "OpensteerInput.captureFocus",
-            "OpensteerInput.edit",
-            "OpensteerPopup.answer",
-            "OpensteerPopup.cancel",
-            "OpensteerVideo.start",
-            "OpensteerVideo.stop",
-          ].includes(method)
-        )
-          nativeCommands.push(method);
-        return owner.sendCommand(method, parameters);
-      },
-    };
+    return owner;
   };
   kit.cleanup.push(() => {
     patched._createOpensteerInputOwner = createOwner;
@@ -547,7 +524,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       commands,
       guardedResults,
       nativeStops,
-      nativeCommands,
       events,
       sessionMatches,
       admissions,
