@@ -1065,7 +1065,7 @@ describeStore("PostgreSQL store", (it) => {
     },
   );
 
-  it("lets the owner answer a Main profile request with another profile, granting nothing", async ({
+  it("lets the owner answer a Main profile request with another profile, granting nothing, even at the limit", async ({
     storeFixture,
   }) => {
     const { startRunFixture, store, database } = storeFixture;
@@ -1096,6 +1096,24 @@ describeStore("PostgreSQL store", (it) => {
         subject: { id: fixture.workspace.id, kind: "workspace" },
       },
     });
+
+    // Approval creates profiles through the owner's one limit, like their own command.
+    for (let index = 1; index < 128; index++)
+      await store.createBrowserProfile({
+        idempotencyKey: `store.integration.test-browser-profile-main-${index}`,
+        ownerId: fixture.userId,
+        name: `Profile ${index}`,
+      });
+    await expect(
+      store.requests.resolveBrowserRequest({
+        requestId: opened.request.id,
+        resolvedBy: fixture.userId,
+        response: {
+          kind: "external",
+          value: { decision: "fulfilled", createProfile: { name: "Brex" } },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "conflict", message: "Browser profile limit reached" });
 
     // The person knows Personal is already signed in, so they choose it over the suggestion.
     const resolved = await store.requests.resolveBrowserRequest({
