@@ -1574,6 +1574,14 @@ export class OpensteerStore {
     return threadStore.setThreadIcon(this.#database, input);
   }
 
+  getThreadNamingInput(threadId: ThreadId) {
+    return executionStore.getThreadNamingInput(this.#database, threadId);
+  }
+
+  listThreadNamingCandidates(limit = 100) {
+    return executionStore.listThreadNamingCandidates(this.#database, limit);
+  }
+
   applyGeneratedThreadName(
     input: Parameters<typeof threadStore.applyGeneratedThreadName>[1],
   ): ReturnType<typeof threadStore.applyGeneratedThreadName> {

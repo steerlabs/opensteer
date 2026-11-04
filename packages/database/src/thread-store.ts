@@ -1,3 +1,5 @@
+import { getThreadNamingInput } from "./execution-store.js";
+import { environmentIsAvailableToUser } from "./environment-store.js";
 import {
   assertThreadCaller,
   lockThreadCaller,
@@ -1961,6 +1963,10 @@ export async function applyGeneratedThreadName(
     readonly threadId: ThreadId;
     readonly title?: string | undefined;
     readonly icon?: WorkspaceIconName | undefined;
+    readonly namingAuthority?: NonNullable<Awaited<ReturnType<typeof getThreadNamingInput>>> & {
+      readonly harnessRevision: number;
+      readonly expiresAt: number;
+    };
   },
 ): Promise<{ readonly event: AgentEvent; readonly events: readonly AgentEvent[] } | null> {
   const title =
@@ -1971,6 +1977,34 @@ export async function applyGeneratedThreadName(
     database,
     async (transaction) => {
       if (!(await lockThreadNameWorkspaces(transaction, input.threadId))) return null;
+      if (input.namingAuthority) {
+        const authority = input.namingAuthority;
+        const current = await getThreadNamingInput(transaction, input.threadId);
+        const account = await transaction
+          .selectFrom("harnessInstances")
+          .selectAll()
+          .where("id", "=", authority.harnessInstanceId)
+          .executeTakeFirst();
+        if (
+          !current ||
+          current.sourceMessageId !== authority.sourceMessageId ||
+          current.principalId !== authority.principalId ||
+          current.requestedBy !== authority.requestedBy ||
+          current.membershipGeneration !== authority.membershipGeneration ||
+          Date.now() >= authority.expiresAt ||
+          !account?.enabled ||
+          account.removedAt ||
+          account.runtimeRevision !== authority.harnessRevision ||
+          account.environmentId !== authority.environmentId ||
+          !(await environmentIsAvailableToUser(
+            transaction,
+            authority.environmentId,
+            authority.requestedBy,
+          ))
+        )
+          return null;
+      }
+
       const renamed =
         title === undefined
           ? undefined

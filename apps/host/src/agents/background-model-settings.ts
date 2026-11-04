@@ -6,10 +6,10 @@ import {
   type BackgroundAccountSnapshot,
 } from "./background-models.js";
 
-export async function readBackgroundModels(
+export async function readBackgroundResolutionInput(
   dependencies: Pick<HostServerDependencies, "store" | "runners">,
   userId: UserId,
-): Promise<BackgroundModelsView> {
+) {
   const environments = await dependencies.store.listEnvironmentsForUser(userId);
   const ids = environments.map((environment) => environment.id);
   const [preferences, harnesses, catalogs] = await Promise.all([
@@ -52,6 +52,17 @@ export async function readBackgroundModels(
         dependencies.runners.canRunHarness(harness.environmentId, harness.driverKind),
     };
   });
+  return { accounts, preferences, now: Date.now(), environments, harnesses };
+}
+
+export async function readBackgroundModels(
+  dependencies: Pick<HostServerDependencies, "store" | "runners">,
+  userId: UserId,
+): Promise<BackgroundModelsView> {
+  const { accounts, preferences, environments, harnesses } = await readBackgroundResolutionInput(
+    dependencies,
+    userId,
+  );
   const roleView = (role: "light" | "deep") => {
     const candidates = inspectBackgroundCandidates(role, {
       accounts,

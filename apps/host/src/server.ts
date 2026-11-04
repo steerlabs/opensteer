@@ -3247,7 +3247,6 @@ function runnerMessageLane(message: Parameters<RunnerRegistry["handle"]>[1]): st
       return `run:${message.event.runId}`;
     case "runner.live":
       return `run:${message.progress.runId}`;
-    case "runner.thread-title":
     case "runner.session-bound":
       return `run:${message.runId}`;
     case "runner.command-accepted":

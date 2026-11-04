@@ -6,7 +6,6 @@ import {
   AssignmentRunContextSchema,
   CommandIdSchema,
   EnvironmentIdSchema,
-  GeneratedThreadTitleSchema,
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   HarnessInstanceStateKindSchema,
@@ -39,7 +38,6 @@ import {
   threadReportBatchMaxEntries,
   threadReportBatchMaxSerializedBytes,
   ThreadRoleSchema,
-  threadTitleRequestMaxLength,
   TriggerIdSchema,
   TriggerOccurrenceIdSchema,
   TriggerRevisionIdSchema,
@@ -47,7 +45,6 @@ import {
   UserIdSchema,
   utf8ByteLength,
   WorkspaceBackingKindSchema,
-  WorkspaceIconNameSchema,
   WorkspaceIdSchema,
   WorkspaceKindSchema,
   type EnvironmentId,
@@ -266,21 +263,6 @@ export const RunExecutionContextSchema = z.strictObject({
   threadId: ThreadIdSchema,
   threadRole: ThreadRoleSchema,
   threadState: RunThreadStateSchema,
-  /**
-   * Present while the Thread still shows the first line of what started it,
-   * sent only to a Runner that advertises `thread-title-v1`: that first
-   * message, for this Run's engine to name the Thread with this Run's account.
-   * The Runner answers with `runner.thread-title`, or says nothing. `icon`
-   * asks for the Thread's symbol too; the Host sends it, and sends a request
-   * whose title is already settled, only to a Runner advertising
-   * `thread-icon-v1`.
-   */
-  titleRequest: z
-    .strictObject({
-      icon: z.literal(true).optional(),
-      request: z.string().min(1).max(threadTitleRequestMaxLength),
-    })
-    .optional(),
   workspaceId: WorkspaceIdSchema,
   workspaceKind: WorkspaceKindSchema,
   workspaceAccess: WorkspaceExecutionAccessPlanSchema,
@@ -1861,28 +1843,6 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     environmentId: EnvironmentIdSchema,
     progress: LiveRunProgressSchema,
     type: z.literal("runner.live"),
-  }),
-  /**
-   * The name a Run's engine gave its Thread, answering the Run's
-   * `titleRequest`. Like live progress it is never durable or acknowledged: a
-   * lost one leaves the Thread's first-line title, and its next Run asks again.
-   */
-  z.strictObject({
-    ...fencedMessageBase,
-    bindingGeneration: z.number().int().positive(),
-    environmentId: EnvironmentIdSchema,
-    runId: RunIdSchema,
-    threadId: ThreadIdSchema,
-    /**
-     * The symbol, only when the request asked with `icon`: one of
-     * `taskSymbolNames`, or `defaultTaskSymbol` when nothing fits. The Runner
-     * sends at least one of `title` and `icon`; a request whose title was
-     * already settled may be answered with `icon` alone.
-     */
-    icon: WorkspaceIconNameSchema.optional(),
-    title: GeneratedThreadTitleSchema.optional(),
-    type: z.literal("runner.thread-title"),
-    workspaceId: WorkspaceIdSchema,
   }),
   z.strictObject({
     ...fencedMessageBase,

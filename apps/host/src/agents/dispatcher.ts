@@ -12,6 +12,7 @@ import {
   ThreadIdSchema,
   threadReachScope,
   type AgentEvent,
+  type ThreadId,
   type WorkspaceId,
   type UserId,
 } from "@opensteer/core";
@@ -129,6 +130,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
   readonly #onTriggerChanged: (workspaceId: WorkspaceId) => void;
   readonly #runners: RunnerRegistry;
+  readonly #onRunAdmitted: (threadId: ThreadId) => void;
   readonly #executionLeaseMs: number;
   readonly #executionNow: () => number;
   readonly #store: OpensteerStore;
@@ -161,6 +163,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly executionClock?: Pick<import("@opensteer/shared/clock").Clock, "now">;
     readonly publicUrl: URL;
     readonly runners: RunnerRegistry;
+    readonly onRunAdmitted?: (threadId: ThreadId) => void;
     readonly store: OpensteerStore;
     readonly triggerControlTokens: TriggerControlTokenService;
     readonly triggers: TriggerStore;
@@ -183,6 +186,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
     this.#onTriggerChanged = options.onTriggerChanged ?? (() => undefined);
     this.#runners = options.runners;
+    this.#onRunAdmitted = options.onRunAdmitted ?? (() => undefined);
     this.#executionLeaseMs = options.executionLeaseMs;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
     this.#store = options.store;
@@ -226,6 +230,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     if (!command.runId) throw new CommandDispatchError("Run command is missing its run", "failed");
     const context = await this.#store.loadRunDispatchContext(command.id);
+    this.#onRunAdmitted(context.thread.id);
     if (context.thread.specialistId) {
       try {
         await new SpecialistStore(this.#store.database).assertRunnable(
@@ -548,19 +553,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         accessMode: context.run.accessMode,
         threadRole: context.thread.role,
         threadState,
-        ...(identity.capabilities.includes("thread-title-v1") &&
-        context.titleRequest &&
-        (context.titleProvisional ||
-          (context.titleRequest.icon && identity.capabilities.includes("thread-icon-v1")))
-          ? {
-              titleRequest: {
-                request: context.titleRequest.request,
-                ...(context.titleRequest.icon && identity.capabilities.includes("thread-icon-v1")
-                  ? { icon: true as const }
-                  : {}),
-              },
-            }
-          : {}),
         assignment: assignment
           ? {
               id: assignment.id,
