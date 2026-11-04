@@ -1,4 +1,8 @@
 import {
+  matchModelSelection,
+  storedModelSelection as coreStoredModelSelection,
+} from "@opensteer/core";
+import {
   emptyBackgroundModelPreferences,
   modelLabLabels,
   type BackgroundModelRole,
@@ -11996,22 +12000,9 @@ function storedModelSelection(
   selection: ModelSelection,
   model: HarnessModelDescriptor,
 ): ModelSelection {
-  for (const [optionId, value] of Object.entries(selection.options)) {
-    const option = model.options.find((candidate) => candidate.id === optionId);
-    const listed =
-      option?.type === "toggle"
-        ? typeof value === "boolean"
-        : option?.type === "select" &&
-          typeof value === "string" &&
-          option.values.some((candidate) => candidate.value === value);
-    if (!listed)
-      throw new Error(`Model option ${optionId} is not available for ${model.displayName}`);
-  }
-  const { nativeModelId: _clientSupplied, ...requested } = selection;
-  return {
-    ...requested,
-    ...(model.nativeModelId === undefined ? {} : { nativeModelId: model.nativeModelId }),
-  };
+  if (matchModelSelection([model], selection, "refuse").kind !== "offered")
+    throw new Error(`Model options are not available for ${model.displayName}`);
+  return coreStoredModelSelection(selection, model);
 }
 
 function buildAssistantReply(prompt: string, steered: readonly string[] = []): string {

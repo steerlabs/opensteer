@@ -1,4 +1,4 @@
-import type { BackgroundModelPreferences } from "@opensteer/core";
+import type { AutomaticModelConfig } from "@opensteer/core";
 import type { BrowserProfileAccess } from "@opensteer/browser-profile/grant";
 import type {
   ChannelAccountId,
@@ -2096,7 +2096,7 @@ export interface DatabaseSchema {
   harnessCatalogs: HarnessCatalogTable;
   userBackgroundModelPreferences: {
     userId: UserId;
-    preferences: JsonColumn<BackgroundModelPreferences>;
+    preferences: JsonColumn<AutomaticModelConfig>;
     updatedAt: Timestamp;
   };
   userExecutionPreferences: UserExecutionPreferenceTable;

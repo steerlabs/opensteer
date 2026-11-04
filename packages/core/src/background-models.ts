@@ -1,45 +1,52 @@
 import { z } from "zod";
-import { ExecutionSelectionSchema } from "./execution-preferences.js";
-import { HarnessIdSchema, HarnessRuntimeRevisionSchema, ModelSelectionSchema } from "./models.js";
+import { HarnessIdSchema, ModelSelectionSchema } from "./models.js";
+import { HarnessInstanceIdSchema } from "./ids.js";
+import { harnessKinds } from "./harness-catalog.js";
 
-export const BackgroundModelRoleSchema = z.enum(["light", "deep"]);
-export type BackgroundModelRole = z.infer<typeof BackgroundModelRoleSchema>;
-export const BackgroundModelModeSchema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("automatic") }),
-  z.strictObject({ kind: z.literal("pinned"), selection: ExecutionSelectionSchema }),
-]);
-export type BackgroundModelMode = z.infer<typeof BackgroundModelModeSchema>;
-export const BackgroundProviderConsentSchema = z
-  .array(ModelSelectionSchema.shape.providerId)
-  .max(256);
-export const BackgroundModelPreferencesSchema = z.strictObject({
-  backgroundModels: z.strictObject({
-    light: BackgroundModelModeSchema,
-    deep: BackgroundModelModeSchema,
-  }),
-  backgroundProviderConsent: BackgroundProviderConsentSchema,
+export const AutomaticModelRoleSchema = z.enum(["light", "deep"]);
+export type AutomaticModelRole = z.infer<typeof AutomaticModelRoleSchema>;
+export const ExactModelWantSchema = z.strictObject({
+  engine: HarnessIdSchema.refine(
+    (value) => harnessKinds.some((kind) => kind === value),
+    "Unknown engine",
+  ),
+  model: ModelSelectionSchema.shape.modelId,
+  options: ModelSelectionSchema.shape.options.optional(),
 });
-export type BackgroundModelPreferences = z.infer<typeof BackgroundModelPreferencesSchema>;
-export const emptyBackgroundModelPreferences: BackgroundModelPreferences = {
-  backgroundModels: { light: { kind: "automatic" }, deep: { kind: "automatic" } },
-  backgroundProviderConsent: [],
-};
-export const BackgroundModelRankSchema = z.discriminatedUnion("kind", [
+export const AutomaticModelWantSchema = ExactModelWantSchema.extend({
+  harnessInstanceId: HarnessInstanceIdSchema.optional(),
+});
+export type AutomaticModelWant = z.infer<typeof AutomaticModelWantSchema>;
+export const ModelPolicyEntrySchema = z.union([
+  ExactModelWantSchema,
+  z.strictObject({ role: AutomaticModelRoleSchema }),
+]);
+export type ModelPolicyEntry = z.infer<typeof ModelPolicyEntrySchema>;
+export const AutomaticModelConfigSchema = z.strictObject({
+  roles: z.strictObject({
+    light: z.array(AutomaticModelWantSchema).min(1).max(16).optional(),
+    deep: z.array(AutomaticModelWantSchema).min(1).max(16).optional(),
+  }),
+  excludedAccounts: z.array(HarnessInstanceIdSchema).max(256),
+});
+export type AutomaticModelConfig = z.infer<typeof AutomaticModelConfigSchema>;
+export const emptyAutomaticModelConfig: AutomaticModelConfig = { roles: {}, excludedAccounts: [] };
+export const AutomaticModelRankSchema = z.discriminatedUnion("kind", [
   ModelSelectionSchema.omit({ nativeModelId: true }).extend({
     kind: z.literal("model"),
     driverKind: HarnessIdSchema,
   }),
   z.strictObject({ kind: z.literal("catalog-light"), driverKind: HarnessIdSchema }),
 ]);
-export type BackgroundModelRank = z.infer<typeof BackgroundModelRankSchema>;
+export type AutomaticModelRank = z.infer<typeof AutomaticModelRankSchema>;
 const fixed = (
   driverKind: string,
   providerId: string,
   modelIds: readonly string[],
   effort: string,
-): BackgroundModelRank[] =>
+): AutomaticModelRank[] =>
   modelIds.map((modelId) =>
-    BackgroundModelRankSchema.parse({
+    AutomaticModelRankSchema.parse({
       kind: "model",
       driverKind,
       providerId,
@@ -47,8 +54,8 @@ const fixed = (
       options: { effort },
     }),
   );
-export const backgroundModelRankings: Readonly<
-  Record<BackgroundModelRole, readonly BackgroundModelRank[]>
+export const automaticModelDefaults: Readonly<
+  Record<AutomaticModelRole, readonly AutomaticModelRank[]>
 > = {
   light: [
     ...fixed(
@@ -70,7 +77,7 @@ export const backgroundModelRankings: Readonly<
 };
 /** Catalog owners use the same fixed ranking as background resolution. */
 export function backgroundLightModels(driverKind: string) {
-  return backgroundModelRankings.light.flatMap((entry) =>
+  return automaticModelDefaults.light.flatMap((entry) =>
     entry.kind === "model" && entry.driverKind === driverKind
       ? [{ modelId: entry.modelId, options: entry.options }]
       : [],
@@ -80,8 +87,19 @@ const opencodeSmallModelFamilies = ["gemini-flash", "gpt-nano", "claude-haiku"];
 export function opencodeLightModelFamilies(providerId: string): readonly string[] {
   return providerId.startsWith("opencode") ? ["gpt-nano"] : opencodeSmallModelFamilies;
 }
-export const ResolvedBackgroundCandidateSchema = ExecutionSelectionSchema.extend({
-  harnessRevision: HarnessRuntimeRevisionSchema,
-  reason: z.enum(["ranked", "pinned", "task-model"]),
-});
-export type ResolvedBackgroundCandidate = z.infer<typeof ResolvedBackgroundCandidateSchema>;
+
+export type ModelWant = AutomaticModelWant | AutomaticModelRank;
+export function automaticModelWants(
+  config: AutomaticModelConfig,
+  role: AutomaticModelRole,
+): readonly ModelWant[] {
+  return config.roles[role] ?? automaticModelDefaults[role];
+}
+export function expandModelWants(
+  entries: readonly ModelPolicyEntry[],
+  config: AutomaticModelConfig,
+): ModelWant[] {
+  return entries.flatMap<ModelWant>((entry) =>
+    "role" in entry ? [...automaticModelWants(config, entry.role)] : [entry],
+  );
+}

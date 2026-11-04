@@ -8,16 +8,19 @@ Canonical model identity groups labels; the matched live catalog supplies the na
 
 A remembered selection is a decision: keep an unavailable choice visible with its reason. Later preferences never rewrite an existing Thread. Engine defaults apply when the person leaves an option at default; accounts do not invent their own model defaults.
 
-Background work has two roles, `light` and `deep`. Their cross-engine rankings
-live in `packages/core/src/background-models.ts`; catalogs remain authoritative
-for availability and native IDs. Automatic choices are recomputed from the
-current authorized accounts, never frozen as a preference. A pin goes first,
-then the automatic ranking continues. Cross-provider work requires the person's
-durable, revocable consent. A memory pass's own provider is Chat's: Main's
-memory already reaches it, so only other providers need consent. Observed usage
-only demotes: a window can read 100% while work still succeeds, so a limited
-ranked model runs after the unlimited ones and is never skipped. Ordinary work
-keeps its exact chosen model.
+Automatic selection preserves declared preferences, considers authorized configured accounts,
+and treats relevant usage exhaustion as advisory ordering. An eligible original remains once
+at the final position. Eligibility and endpoint checks always prevail. Selection never replays
+accepted or uncertain work. Within each want, the default account precedes other configured
+accounts; unlike T3's defaults-after-exhaustion policy, declared want order is preserved before
+advisory usage demotion. Naming may advance after a contained generation failure; memory and
+specialists freeze their selection before admission and do not reselect after a Run failure.
+
+The person's automatic config replaces either role's maintained ranking when present; an
+absent role follows future maintained defaults. Exclusions only subtract from current account
+authority. Unbound wants never select arbitrary OpenAI-compatible endpoints; only the person's
+explicit account binding can select those destinations. Portable specialists may expand roles
+but cannot bind accounts or confer authority. Ordinary work keeps its exact chosen model.
 
 ## What a driver declares
 

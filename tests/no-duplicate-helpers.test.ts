@@ -28,13 +28,9 @@ const sources = new Map(
 const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
   freePort: "packages/shared/src/loopbackPort.test-support.ts",
   assertRegularFile: "packages/shared/src/privateFiles.ts",
-  /**
-   * The rule that a client never chooses a native model id. The mock host
-   * client mirrors it because a mock cannot import from an app, and this pin
-   * is what keeps the two copies from drifting apart unnoticed.
-   */
+  /** The mock validates admission, then delegates native-ID storage to core. */
   storedModelSelection: [
-    "apps/host/src/agents/model-selection.ts",
+    "packages/core/src/model-selection.ts",
     "packages/client/src/mock/mock-host-client.ts",
   ],
   /**

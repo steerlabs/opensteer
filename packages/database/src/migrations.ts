@@ -7408,6 +7408,7 @@ const voiceCallsMigration: Migration = {
   },
 };
 
+/** Person-owned automatic config only; absent roles follow maintained defaults. No provider consent is stored. */
 export const backgroundModelPreferencesMigration: Migration = {
   async up(database) {
     await sql`create table user_background_model_preferences (

@@ -1177,18 +1177,18 @@ export class OpensteerStore {
     return harnessStore.getHarnessCatalog(this.#database, environmentId, harnessInstanceId);
   }
 
-  async getBackgroundModelPreferences(userId: UserId) {
-    return backgroundModelStore.getBackgroundModelPreferences(this.#database, userId);
+  async getAutomaticModelConfig(userId: UserId) {
+    return backgroundModelStore.getAutomaticModelConfig(this.#database, userId);
   }
-  async updateBackgroundModelPreferences(
+  async setAutomaticModelConfig(
     userId: UserId,
-    change: backgroundModelStore.BackgroundModelPreferenceChange,
+    config: import("@opensteer/core").AutomaticModelConfig,
     administration?: AdministrationCommandIdentity,
   ) {
-    return backgroundModelStore.updateBackgroundModelPreferences(
+    return backgroundModelStore.setAutomaticModelConfig(
       this.#database,
       userId,
-      change,
+      config,
       administration,
     );
   }

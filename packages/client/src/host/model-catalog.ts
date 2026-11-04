@@ -1,7 +1,6 @@
+import { rankedChatModelSelection } from "@opensteer/core";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
-  canonicalModelReference,
-  chatModelPreferences,
   harnessDisplayRank,
   modelLabLabels,
   type ModelSelection,
@@ -14,11 +13,7 @@ import {
   type UsageModelScope,
 } from "./connection-usage.js";
 import type { ExecutionSelection } from "./execution-preferences.js";
-import {
-  selectionForModel,
-  selectionForModelEffort,
-  type ThreadPlacementOption,
-} from "./thread-placement.js";
+import { selectionForModel, type ThreadPlacementOption } from "./thread-placement.js";
 
 /**
  * The composer's picker reads the way a choice is stored: an engine, one of its
@@ -391,24 +386,14 @@ export function composerExecutionSelection(options: {
 export function rankedChatExecutionSelection(
   placements: readonly ThreadPlacementOption[],
 ): ExecutionSelection | null {
-  for (const preferred of chatModelPreferences) {
-    for (const placement of placements) {
-      if (!placement.available) continue;
-      const model = placement.models.find((candidate) => {
-        const reference = canonicalModelReference(candidate.modelId, candidate.providerId);
-        return (
-          reference.providerId === preferred.providerId && reference.modelId === preferred.modelId
-        );
-      });
-      if (!model) continue;
-      return {
-        environmentId: placement.environmentId,
-        harnessInstanceId: placement.harnessInstanceId,
-        modelSelection: selectionForModelEffort(model, preferred.effort),
-      };
-    }
-  }
-  return null;
+  const ranked = rankedChatModelSelection(placements.filter((placement) => placement.available));
+  return ranked
+    ? {
+        environmentId: ranked.placement.environmentId,
+        harnessInstanceId: ranked.placement.harnessInstanceId,
+        modelSelection: ranked.modelSelection,
+      }
+    : null;
 }
 
 /**

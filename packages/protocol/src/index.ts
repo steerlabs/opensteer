@@ -44,4 +44,4 @@ export * from "./agent-connections.js";
 export * from "./settings.js";
 export * from "./runner-skill-metadata.js";
 
-export * from "./background-models.js";
+export * from "./automatic-models.js";
