@@ -26,6 +26,7 @@ import {
   hostApi,
   type HostToClientMessage,
   type HostedBrowserBootstrap,
+  type RealtimeFrameDiagnostic,
   type WorkspaceTabLineage,
   type WorkspaceView,
 } from "@opensteer/protocol";
@@ -46,6 +47,7 @@ import {
   type HttpHostClientOptions,
   type WebSocketClient,
 } from "./host-session-client.js";
+import { describeHostConnection } from "./host-connection.js";
 import type { ClientLifecycle, ClientLifecycleSnapshot, ClientNetworkState } from "./lifecycle.js";
 import { placeList } from "./places.js";
 import { visibleTranscript } from "./transcript.js";
@@ -13298,22 +13300,25 @@ describe("realtime review regressions", () => {
 
   it("F1 refuses malformed known snapshot members instead of silently dropping the snapshot", async () => {
     const f = await fixture();
+    const diagnostics = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
       f.sockets[0]!.receiveRaw({
         type: "host.snapshot",
         snapshot: {
           ...workspaceSnapshot(f.workspace, "10"),
-          threads: [
-            f.thread,
-            { ...makeThread(f.workspace.id), status: "future-status", inputQueuePaused: "invalid" },
-          ],
+          readStates: "invalid",
+          threads: [f.thread],
         },
       });
-      expect(f.client.getSnapshot().connection).toBe("offline");
+      expect(f.client.getSnapshot().connection).toBe("connecting");
       expect(f.sockets[0]!.closeEvents).toEqual([
         { code: 4002, reason: "Invalid Host protocol frame" },
       ]);
       expect(f.client.getSnapshot().threads.map(({ id }) => id)).not.toContain(f.thread.id);
+      expect(JSON.parse(diagnostics.mock.calls[0]![0] as string)).toMatchObject({
+        event: "host.realtime.frame-rejected",
+        issuePaths: ["snapshot.readStates"],
+      });
     } finally {
       f.client.dispose();
     }
@@ -13413,7 +13418,10 @@ describe("realtime review regressions", () => {
     const platform = fakeLifecycle();
     const f = await fixture({ lifecycle: platform.lifecycle, refreshIntervalMs: 10 });
     try {
-      f.sockets[0]!.receiveRaw({ type: "host.events", events: [] });
+      f.sockets[0]!.receiveRaw({
+        type: "host.error",
+        error: { code: "forbidden", message: "Not on this channel.", retryable: false },
+      });
       expect(f.client.getSnapshot().connection).toBe("offline");
       await vi.advanceTimersByTimeAsync(30);
       expect(f.sockets).toHaveLength(1);
@@ -13537,55 +13545,137 @@ describe("realtime protocol recovery journey", () => {
     }
   });
 
-  it("stops malformed replay without acknowledging it and logs only envelope metadata and schema paths", async () => {
+  async function synchronizedClient(options: Partial<TestHostClientOptions> = {}) {
     vi.useFakeTimers();
     const workspace = makeWorkspace();
     const thread = makeThread(workspace.id);
     const sockets: FakeSocket[] = [];
+    let bootstrapReads = 0;
     const diagnostics = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const client = createHttpHostClient({
-      fetch: async () => json(bootstrap([workspace])),
-      refreshIntervalMs: 15,
-      reconnectBaseDelayMs: 1,
-      reconnectMaxDelayMs: 1,
+      fetch: async (input) => {
+        if ((input instanceof Request ? input.url : input.toString()).includes("bootstrap.get"))
+          bootstrapReads += 1;
+        return json(bootstrap([workspace]));
+      },
+      random: () => 1,
+      reconnectBaseDelayMs: 10,
+      refreshIntervalMs: 0,
+      ...options,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
         return socket;
       },
     });
+    await client.load();
+    sockets[0]!.open();
+    sockets[0]!.receiveRaw({
+      type: "host.snapshot",
+      snapshot: { ...workspaceSnapshot(workspace, "10"), threads: [thread] },
+    });
+    sockets[0]!.receiveRaw({
+      type: "host.synchronized",
+      sequence: "10",
+      workspaceId: workspace.id,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    return {
+      acknowledged: () =>
+        sockets.flatMap((socket) =>
+          socket.sent
+            .map((sent) => JSON.parse(sent) as { type: string; sequence?: string })
+            .filter(({ type }) => type === "client.ack")
+            .map(({ sequence }) => sequence),
+        ),
+      bootstrapReads: () => bootstrapReads,
+      client,
+      diagnostics,
+      records: () =>
+        diagnostics.mock.calls.map(
+          ([record]) => JSON.parse(record as string) as RealtimeFrameDiagnostic,
+        ),
+      sockets,
+      thread,
+      workspace,
+    };
+  }
+
+  type Synchronized = Awaited<ReturnType<typeof synchronizedClient>>;
+
+  /** The socket that opens exactly `delayMs` from now, and the cursor it asked to resume from. */
+  async function reconnectAfter(f: Synchronized, delayMs: number) {
+    const opened = f.sockets.length;
+    await vi.advanceTimersByTimeAsync(delayMs - 1);
+    expect(f.sockets).toHaveLength(opened);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.sockets).toHaveLength(opened + 1);
+    const socket = f.sockets.at(-1)!;
+    socket.open();
+    const { afterSequence } = JSON.parse(socket.sent[0]!) as { afterSequence: string };
+    return { afterSequence, socket };
+  }
+
+  const stateEvent = (f: Synchronized, sequence: string, status: Thread["status"]) =>
+    agentEvent(f.workspace.id, f.thread.id, null, sequence, "thread.state-changed", {
+      inputQueuePaused: false,
+      pendingRequests: 0,
+      status,
+    });
+
+  const unreadableEvents = (f: Synchronized, sequence: string) => ({
+    type: "host.events",
+    events: [
+      {
+        ...stateEvent(f, sequence, "running"),
+        data: {
+          inputQueuePaused: "os_secret_DO_NOT_LOG",
+          pendingRequests: -1,
+          status: "running",
+          "PRIVATE-FIELD-SENTINEL": "PRIVATE-VALUE-SENTINEL",
+        },
+      },
+    ],
+  });
+
+  const unreadableSnapshot = (f: Synchronized) => ({
+    type: "host.snapshot",
+    snapshot: { ...workspaceSnapshot(f.workspace, "12"), readStates: "invalid" },
+  });
+
+  /** Fails three times at one position, which leaves the fourth socket asking for a snapshot. */
+  async function exhaustReplay(f: Synchronized) {
+    const frame = unreadableEvents(f, "11");
+    f.sockets[0]!.receiveRaw(frame);
+    (await reconnectAfter(f, 10)).socket.receiveRaw(frame);
+    (await reconnectAfter(f, 20)).socket.receiveRaw(frame);
+    return reconnectAfter(f, 40);
+  }
+
+  function readableSnapshot(f: Synchronized, socket: FakeSocket, sequence: string) {
+    socket.receiveRaw({
+      type: "host.snapshot",
+      snapshot: {
+        ...workspaceSnapshot(f.workspace, sequence),
+        threads: [{ ...f.thread, status: "running" }],
+      },
+    });
+    socket.receiveRaw({ type: "host.synchronized", sequence, workspaceId: f.workspace.id });
+  }
+
+  it("backs off from the same cursor on malformed replay without acknowledging it, and logs only envelope metadata and schema paths", async () => {
+    const reported: RealtimeFrameDiagnostic[] = [];
+    const f = await synchronizedClient({
+      reportRealtimeFrame: (record) => reported.push(record),
+    });
     try {
-      await client.load();
-      const socket = sockets[0]!;
-      socket.open();
-      const frame = {
-        type: "host.events",
-        events: [
-          {
-            ...agentEvent(workspace.id, thread.id, null, "1", "thread.state-changed", {
-              inputQueuePaused: false,
-              pendingRequests: 0,
-              status: "running",
-            }),
-            data: {
-              inputQueuePaused: "os_secret_DO_NOT_LOG",
-              pendingRequests: -1,
-              status: "running",
-              "PRIVATE-FIELD-SENTINEL": "PRIVATE-VALUE-SENTINEL",
-            },
-          },
-        ],
-      };
+      const socket = f.sockets[0]!;
+      const frame = unreadableEvents(f, "11");
       socket.receiveRaw(frame);
-      await vi.advanceTimersByTimeAsync(100);
-      expect(sockets).toHaveLength(1);
       expect(socket.closeEvents).toEqual([{ code: 4002, reason: "Invalid Host protocol frame" }]);
-      expect(client.getSnapshot().connection).toBe("offline");
-      expect(socket.sent.map((sent) => JSON.parse(sent))).not.toContainEqual(
-        expect.objectContaining({ type: "client.ack" }),
-      );
-      expect(diagnostics).toHaveBeenCalledExactlyOnceWith(expect.any(String));
-      const record = JSON.parse(diagnostics.mock.calls[0]![0] as string);
+      expect(f.client.getSnapshot().connection).toBe("connecting");
+      expect(f.diagnostics).toHaveBeenCalledExactlyOnceWith(expect.any(String));
+      const [record] = f.records();
       expect(record).toMatchObject({
         event: "host.realtime.frame-rejected",
         envelopeType: "host.events",
@@ -13596,8 +13686,289 @@ describe("realtime protocol recovery journey", () => {
       expect(JSON.stringify(record)).not.toMatch(
         /DO_NOT_LOG|PRIVATE-FIELD|PRIVATE-VALUE|os_secret/,
       );
+      expect(reported).toEqual([record]);
+
+      const second = await reconnectAfter(f, 10);
+      expect(second.afterSequence).toBe("10");
+      second.socket.receiveRaw(frame);
+      // A socket opening proved nothing, so the next wait is longer, not reset.
+      const third = await reconnectAfter(f, 20);
+      expect(third.afterSequence).toBe("10");
+      expect(f.acknowledged()).toEqual(["10"]);
+      expect(f.client.getSnapshot().threads.find(({ id }) => id === f.thread.id)?.status).toBe(
+        "idle",
+      );
     } finally {
-      client.dispose();
+      f.client.dispose();
+    }
+  });
+
+  it("lets no diagnostic failure decide what becomes of an unreadable frame", async () => {
+    const f = await synchronizedClient({
+      reportRealtimeFrame: () => {
+        throw new Error("The log is gone.");
+      },
+    });
+    try {
+      f.sockets[0]!.receiveRaw(unreadableEvents(f, "11"));
+      expect(f.sockets[0]!.closeEvents).toEqual([
+        { code: 4002, reason: "Invalid Host protocol frame" },
+      ]);
+      expect((await reconnectAfter(f, 10)).afterSequence).toBe("10");
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it("keeps growing the wait when the network dies after an unreadable frame", async () => {
+    const f = await synchronizedClient();
+    try {
+      f.sockets[0]!.receiveRaw(unreadableEvents(f, "11"));
+      (await reconnectAfter(f, 10)).socket.serverClose();
+      (await reconnectAfter(f, 20)).socket.serverClose();
+      (await reconnectAfter(f, 40)).socket.serverClose();
+      expect((await reconnectAfter(f, 80)).afterSequence).toBe("10");
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it("recovers by itself once the replay is readable, and only then forgets its failures", async () => {
+    const f = await synchronizedClient();
+    try {
+      f.sockets[0]!.receiveRaw(unreadableEvents(f, "11"));
+      const { socket } = await reconnectAfter(f, 10);
+      socket.receiveRaw({ type: "host.events", events: [stateEvent(f, "11", "running")] });
+      socket.receiveRaw({
+        type: "host.synchronized",
+        sequence: "11",
+        workspaceId: f.workspace.id,
+      });
+      expect(f.client.getSnapshot().connection).toBe("connected");
+      expect(f.client.getSnapshot().threads.find(({ id }) => id === f.thread.id)?.status).toBe(
+        "running",
+      );
+      expect(f.acknowledged()).toEqual(["10", "11", "11"]);
+      socket.receiveRaw(unreadableEvents(f, "12"));
+      expect((await reconnectAfter(f, 10)).afterSequence).toBe("11");
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it("starts over from a snapshot when one position keeps failing, past the event it cannot read", async () => {
+    const f = await synchronizedClient();
+    try {
+      const { afterSequence, socket } = await exhaustReplay(f);
+      expect(afterSequence).toBe("0");
+      expect(f.client.getSnapshot().connection).toBe("connecting");
+      readableSnapshot(f, socket, "12");
+      expect(f.client.getSnapshot().connection).toBe("connected");
+      expect(f.client.getSnapshot().threads.find(({ id }) => id === f.thread.id)?.status).toBe(
+        "running",
+      );
+      expect(f.acknowledged().at(-1)).toBe("12");
+      expect(socket.closeEvents).toEqual([]);
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it("retries a snapshot it cannot read at a capped pace, showing the problem, until a later Host recovers it", async () => {
+    const f = await synchronizedClient();
+    try {
+      const { socket } = await exhaustReplay(f);
+      socket.receiveRaw(unreadableSnapshot(f));
+      expect(describeHostConnection(f.client.getSnapshot())).toMatchObject({
+        action: "retry",
+        label: "Unavailable",
+      });
+      // Ten milliseconds doubled fifteen times has passed five minutes.
+      for (let failures = 4; failures < 16; failures += 1) {
+        const next = await reconnectAfter(f, 10 * 2 ** (failures - 1));
+        next.socket.receiveRaw(unreadableSnapshot(f));
+        expect(f.client.getSnapshot().connection).toBe("offline");
+      }
+      const later = await reconnectAfter(f, 5 * 60_000);
+      expect(later.afterSequence).toBe("0");
+      expect(f.client.getSnapshot().connection).toBe("offline");
+      readableSnapshot(f, later.socket, "12");
+      expect(f.client.getSnapshot().connection).toBe("connected");
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it("Retry tries at once instead of waiting out the backoff, which a plain refresh does not", async () => {
+    const f = await synchronizedClient();
+    try {
+      const { socket } = await exhaustReplay(f);
+      socket.receiveRaw(unreadableSnapshot(f));
+      const opened = f.sockets.length;
+      await f.client.refresh();
+      expect(f.sockets).toHaveLength(opened);
+      await f.client.refresh({ retryConnection: true });
+      expect(f.sockets).toHaveLength(opened + 1);
+      f.sockets.at(-1)!.open();
+      readableSnapshot(f, f.sockets.at(-1)!, "12");
+      expect(f.client.getSnapshot().connection).toBe("connected");
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it("drops an unreadable tab catalog with the socket up, and rereads once however many follow", async () => {
+    const f = await synchronizedClient();
+    try {
+      const socket = f.sockets[0]!;
+      const frame = {
+        type: "host.browser-tabs-changed",
+        sessionId: "bsn_00000000-0000-4000-8000-000000000001",
+        catalog: { generation: -1, revision: 1, tabs: [] },
+      };
+      const reads = f.bootstrapReads();
+      socket.receiveRaw(frame);
+      socket.receiveRaw(frame);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.bootstrapReads()).toBe(reads + 1);
+      expect(f.records()[0]).toMatchObject({
+        event: "host.realtime.frame-ignored",
+        envelopeType: "host.browser-tabs-changed",
+        issuePaths: ["catalog.generation"],
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      socket.receiveRaw(frame);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.bootstrapReads()).toBe(reads + 2);
+      socket.receiveRaw({ type: "host.events", events: [stateEvent(f, "11", "running")] });
+      expect(f.acknowledged().at(-1)).toBe("11");
+      expect(socket.closeEvents).toEqual([]);
+      expect(f.sockets).toHaveLength(1);
+      expect(f.client.getSnapshot().connection).toBe("connected");
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it.each([
+    ["host.live", { progress: {}, afterSequence: "10" }],
+    ["host.notification", { notification: {} }],
+    ["host.pong", { nonce: "x".repeat(256) }],
+  ])("drops an unreadable %s with nothing to reread", async (type, fields) => {
+    const f = await synchronizedClient();
+    try {
+      const reads = f.bootstrapReads();
+      f.sockets[0]!.receiveRaw({ type, workspaceId: f.workspace.id, ...fields });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.bootstrapReads()).toBe(reads);
+      expect(f.sockets[0]!.closeEvents).toEqual([]);
+      expect(f.client.getSnapshot().connection).toBe("connected");
+      expect(f.records()).toMatchObject([{ event: "host.realtime.frame-ignored" }]);
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it("applies nothing addressed to another Workspace: a notice is dropped and a sync frame replayed", async () => {
+    const f = await synchronizedClient();
+    try {
+      const socket = f.sockets[0]!;
+      const elsewhere = makeWorkspace().id;
+      socket.receiveRaw({
+        type: "host.read-markers",
+        workspaceId: elsewhere,
+        markers: [{ threadId: f.thread.id, readSequence: "9" }],
+      });
+      expect(socket.closeEvents).toEqual([]);
+      expect(f.records()).toMatchObject([{ event: "host.realtime.frame-ignored" }]);
+      socket.receiveRaw({ type: "host.synchronized", sequence: "99", workspaceId: elsewhere });
+      expect(socket.closeEvents).toEqual([{ code: 4002, reason: "Invalid Host protocol frame" }]);
+      expect((await reconnectAfter(f, 10)).afterSequence).toBe("10");
+      expect(f.acknowledged()).toEqual(["10"]);
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it("skips one unreadable Thread in a snapshot, naming its field and masking a peer's record key", async () => {
+    const f = await synchronizedClient();
+    try {
+      const socket = f.sockets[0]!;
+      const sibling = makeThread(f.workspace.id);
+      const unreadable = { ...makeThread(f.workspace.id), inputQueuePaused: "invalid" };
+      const peerKeyed = {
+        ...makeThread(f.workspace.id),
+        modelSelection: {
+          ...f.thread.modelSelection,
+          options: { "private.sentinel": { nested: "PRIVATE-VALUE" } },
+        },
+      };
+      socket.receiveRaw({
+        type: "host.snapshot",
+        snapshot: {
+          ...workspaceSnapshot(f.workspace, "11"),
+          threads: [sibling, unreadable, peerKeyed],
+        },
+      });
+      socket.receiveRaw({
+        type: "host.synchronized",
+        sequence: "11",
+        workspaceId: f.workspace.id,
+      });
+      const shown = f.client.getSnapshot().threads.map(({ id }) => id);
+      expect(shown).toContain(sibling.id);
+      expect(shown).not.toContain(unreadable.id);
+      expect(shown).not.toContain(peerKeyed.id);
+      expect(f.client.getSnapshot().connection).toBe("connected");
+      expect(socket.closeEvents).toEqual([]);
+      const [record] = f.records();
+      expect(record).toMatchObject({
+        envelopeType: "host.snapshot",
+        event: "host.realtime.frame-ignored",
+        issuePaths: [
+          "snapshot.threads.[].inputQueuePaused",
+          "snapshot.threads.[].modelSelection.options.*",
+        ],
+      });
+      expect(JSON.stringify(record)).not.toMatch(/sentinel|PRIVATE/);
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it("skips an event carrying an unreadable Thread and keeps its batch and position", async () => {
+    const f = await synchronizedClient();
+    try {
+      const socket = f.sockets[0]!;
+      const sibling = makeThread(f.workspace.id);
+      const unreadable = { ...makeThread(f.workspace.id), inputQueuePaused: "invalid" };
+      socket.receiveRaw({
+        type: "host.events",
+        events: [
+          {
+            ...agentEvent(f.workspace.id, unreadable.id, null, "11", "thread.listed", {
+              thread: makeThread(f.workspace.id),
+            }),
+            data: { thread: unreadable },
+          },
+          agentEvent(f.workspace.id, sibling.id, null, "12", "thread.created", {
+            thread: sibling,
+          }),
+        ],
+      });
+      const shown = f.client.getSnapshot().threads.map(({ id }) => id);
+      expect(shown).toContain(sibling.id);
+      expect(shown).not.toContain(unreadable.id);
+      expect(f.acknowledged().at(-1)).toBe("12");
+      expect(socket.closeEvents).toEqual([]);
+      expect(f.records()).toMatchObject([
+        {
+          event: "host.realtime.frame-ignored",
+          issuePaths: ["events.[].data.thread.inputQueuePaused"],
+        },
+      ]);
+    } finally {
+      f.client.dispose();
     }
   });
 });

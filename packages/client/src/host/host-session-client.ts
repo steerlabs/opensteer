@@ -69,7 +69,6 @@ import {
   HarnessModelSettingsMapSchema,
   HostToClientMessageSchema,
   WorkspaceSnapshotSchema,
-  browserTabCatalogMaxBytes,
   browserUsageRunBatchSize,
   browserViewerCloseCodes,
   decodeBrowserFrameEnvelope,
@@ -90,6 +89,7 @@ import {
   type HostedBrowserSession,
   type MachineAccessPolicy,
   type MachineSummary,
+  type RealtimeFrameDiagnostic,
   type RpcResult,
   type WorkspaceSnapshot,
   type WorkspaceTabLineage,
@@ -154,8 +154,14 @@ import {
   upsertEntry,
   withoutClosedLiveStreams,
 } from "./transcript.js";
+import {
+  describeRealtimeFrameFailure,
+  maxInboundFrameCharacters,
+  realtimeEnvelopeType,
+  realtimeEnvelopeTypes,
+  realtimeFrameLoss,
+} from "./realtime-frames.js";
 
-const maxInboundFrameCharacters = browserTabCatalogMaxBytes + 4 * 1024;
 const defaultRefreshIntervalMs = 15_000;
 const historyPageTurns = 10;
 const historyScanMaxPages = 20;
@@ -166,9 +172,6 @@ const liveRefreshDelayMs = 250;
 /** Progress one Workspace may hold for durable events still on their way. */
 const maxHeldLiveFrames = 256;
 
-const realtimeEnvelopeTypes = new Set<string>(
-  HostToClientMessageSchema.options.map((schema) => schema.shape.type.value),
-);
 const realtimeEventsSchema = z.object({
   events: z.array(z.unknown()).min(1).max(2_000),
 });
@@ -189,69 +192,13 @@ const realtimeLiveKindSchema = z.object({
 });
 type RealtimeEvent = AgentEvent | (z.infer<typeof realtimeEventPositionSchema> & { type: null });
 
-// Issue paths can contain record keys supplied by the peer. Only these schema
-// field names are diagnostics; values and validator messages never are.
-const realtimeDiagnosticFields = new Set([
-  "type",
-  "events",
-  "data",
-  "snapshot",
-  "sequence",
-  "workspaceId",
-  "threadId",
-  "runId",
-  "eventId",
-  "environmentId",
-  "createdAt",
-  "progress",
-  "items",
-  "stream",
-  "op",
-  "text",
-  "at",
-  "length",
-  "status",
-  "inputQueuePaused",
-  "pendingRequests",
-  "notification",
-  "states",
-  "markers",
-  "preferences",
-  "sessions",
-  "view",
-  "reference",
-  "catalog",
-  "activity",
-  "place",
-  "reason",
-  "error",
-  "retryable",
-  "nonce",
-  "threads",
-  "messages",
-  "messagesOmitted",
-  "runQueue",
-]);
-
 const realtimeHeaderSchema = z.object({ type: z.string().min(1) });
 const realtimeEventTypes = new Set<string>(
   AgentEventViewSchema.options.map((schema) => schema.shape.type.value),
 );
-const realtimeReadableThreadSchema = ThreadViewSchema.extend({
-  status: z.string().min(1),
-}).transform((thread) => {
-  const status = ThreadStatusSchema.safeParse(thread.status);
-  return status.success ? { ...thread, status: status.data } : null;
+const realtimeSnapshotFrameSchema = z.object({
+  snapshot: z.looseObject({ threads: z.array(z.unknown()).max(workspaceSnapshotMaxThreads) }),
 });
-const realtimeSnapshotSchema = z
-  .object({
-    ...WorkspaceSnapshotSchema.shape,
-    threads: z
-      .array(realtimeReadableThreadSchema)
-      .max(workspaceSnapshotMaxThreads)
-      .transform((threads) => threads.filter((thread) => thread !== null)),
-  })
-  .transform((snapshot) => WorkspaceSnapshotSchema.parse(snapshot));
 const realtimeThreadStateEventSchema = AgentEventViewSchema.options[0]
   .omit({ type: true, data: true })
   .extend({
@@ -265,7 +212,7 @@ const realtimeThreadEventSchema = AgentEventViewSchema.options[0]
   .omit({ type: true, data: true })
   .extend({
     type: z.enum(["thread.created", "thread.execution-updated", "thread.listed"]),
-    data: z.object({ thread: realtimeReadableThreadSchema, home: z.literal(true).optional() }),
+    data: z.object({ thread: z.unknown(), home: z.literal(true).optional() }),
   });
 const realtimeResyncSchema = z.object({
   type: z.literal("host.resync-required"),
@@ -278,79 +225,11 @@ type RealtimeMessage =
   | { type: "host.events"; events: RealtimeEvent[] }
   | z.infer<typeof realtimeResyncSchema>;
 
-export function describeRealtimeFrameFailure(frame: unknown, error: unknown) {
-  let envelopeType = "unknown";
-  if (typeof frame === "string" && frame.length <= maxInboundFrameCharacters) {
-    try {
-      const value: unknown = JSON.parse(frame);
-      if (
-        typeof value === "object" &&
-        value !== null &&
-        "type" in value &&
-        typeof value.type === "string" &&
-        realtimeEnvelopeTypes.has(value.type)
-      )
-        envelopeType = value.type;
-    } catch {
-      /* Invalid JSON has no trustworthy envelope. */
-    }
-  }
-  const issuePaths =
-    error instanceof z.ZodError
-      ? [
-          ...new Set(
-            error.issues.slice(0, 8).map(({ path }) =>
-              path.length === 0
-                ? "$"
-                : path
-                    .slice(0, 12)
-                    .map((part) =>
-                      typeof part === "number"
-                        ? "[]"
-                        : typeof part === "string" && realtimeDiagnosticFields.has(part)
-                          ? part
-                          : "*",
-                    )
-                    .join("."),
-            ),
-          ),
-        ]
-      : ["$"];
-  const bytes =
-    typeof frame === "string"
-      ? new TextEncoder().encode(frame).byteLength
-      : frame instanceof ArrayBuffer
-        ? frame.byteLength
-        : ArrayBuffer.isView(frame)
-          ? frame.byteLength
-          : 0;
-  return {
-    envelopeType,
-    apiEpoch: hostApiVersion,
-    bytes,
-    issuePaths,
-    category:
-      error instanceof z.ZodError ? "schema" : error instanceof SyntaxError ? "json" : "frame",
-  };
-}
-
-function realtimeFrameDiagnostic(
-  frame: unknown,
-  error: unknown,
-  action: "ignored" | "rejected",
-): void {
-  try {
-    console.warn(
-      JSON.stringify({
-        event: `host.realtime.frame-${action}`,
-        ...describeRealtimeFrameFailure(frame, error),
-      }),
-    );
-  } catch {
-    /* Diagnostics cannot decide whether the channel is stopped. */
-  }
-}
 const defaultReconnectMaxDelayMs = 12_000;
+/** Times a channel fails at one position before it starts over from a snapshot. */
+const realtimeReplayAttempts = 3;
+/** Each try can cost a whole snapshot over cellular, so a frame that keeps failing waits longest. */
+const unreadableFrameMaxDelayMs = 5 * 60_000;
 const maxBrowserFrameBytes = 8 * 1_024 * 1_024;
 const workspacePrefetchDebounceMs = 150;
 /** Notification ids remembered after delivery, enough to cover every socket's copy. */
@@ -473,7 +352,6 @@ export interface WebSocketClient {
 
 interface WorkspaceChannel {
   refused: boolean;
-  protocolFailed?: boolean;
   cursor: Sequence;
   /** The nonce of the liveness probe this channel is waiting on, if any. */
   probeNonce: string | null;
@@ -484,6 +362,8 @@ interface WorkspaceChannel {
   reconnectTimer: Timer | null;
   socket: WebSocketClient | null;
   synchronized: boolean;
+  /** Replay and sync frames this client could not read since it last synchronized. */
+  unreadableFrames: number;
   workspaceId: string;
 }
 
@@ -546,6 +426,8 @@ export interface HttpHostClientOptions {
   readonly reconnectBaseDelayMs?: number;
   readonly reconnectMaxDelayMs?: number;
   readonly refreshIntervalMs?: number;
+  /** Where a platform keeps a record of realtime frames this client could not read. */
+  readonly reportRealtimeFrame?: (record: RealtimeFrameDiagnostic) => void;
   /**
    * Starts Home's history as soon as bootstrap names it. For a client that
    * opens on Chat (the phone), activation follows at once and joins the read;
@@ -1144,6 +1026,8 @@ export class HttpHostClient {
   #livenessTimer: Timer | null = null;
   readonly #reconnectBaseDelayMs: number;
   readonly #reconnectMaxDelayMs: number;
+  readonly #reportRealtimeFrame: ((record: RealtimeFrameDiagnostic) => void) | undefined;
+  #lostFrameRereadAt = Number.NEGATIVE_INFINITY;
   readonly #refreshIntervalMs: number;
   readonly #prefetchHome: boolean;
   readonly #webSocketFactory: (url: string) => WebSocketClient;
@@ -1255,6 +1139,7 @@ export class HttpHostClient {
       options.reconnectMaxDelayMs ?? defaultReconnectMaxDelayMs,
     );
     this.#refreshIntervalMs = Math.max(0, options.refreshIntervalMs ?? defaultRefreshIntervalMs);
+    this.#reportRealtimeFrame = options.reportRealtimeFrame;
     this.#prefetchHome = options.prefetchHome === true;
     this.#webSocketFactory = options.webSocketFactory ?? ((url) => new globalThis.WebSocket(url));
     this.#socketTrustWindowMs = options.lifecycle?.socketTrustWindowMs ?? socketTrustWindowMs;
@@ -2432,7 +2317,7 @@ export class HttpHostClient {
     if (options?.retryConnection)
       for (const channel of this.#channels.values()) {
         channel.refused = false;
-        channel.protocolFailed = false;
+        if (channel.reconnectTimer) this.#replaceChannel(channel);
       }
     await this.#refresh("refresh");
   }
@@ -4589,6 +4474,7 @@ export class HttpHostClient {
         reconnectTimer: null,
         socket: null,
         synchronized: false,
+        unreadableFrames: 0,
         workspaceId,
       } satisfies WorkspaceChannel);
     this.#channels.set(workspaceId, channel);
@@ -4668,12 +4554,7 @@ export class HttpHostClient {
       try {
         message = this.#readRealtimeFrame(channel, event.data);
       } catch (error) {
-        if (channel.socket !== socket) return;
-        realtimeFrameDiagnostic(event.data, error, "rejected");
-        channel.refused = true;
-        channel.protocolFailed = true;
-        this.#closeChannel(channel, false, 4002, "Invalid Host protocol frame");
-        this.#recomputeConnection();
+        if (channel.socket === socket) this.#loseRealtimeFrame(channel, event.data, error);
         return;
       }
       if (!message) return;
@@ -4707,7 +4588,7 @@ export class HttpHostClient {
     const { type } = realtimeHeaderSchema.parse(value);
     if (!realtimeEnvelopeTypes.has(type)) {
       const parsed = HostToClientMessageSchema.safeParse(value);
-      if (!parsed.success) realtimeFrameDiagnostic(frame, parsed.error, "ignored");
+      if (!parsed.success) this.#recordRealtimeFrame(frame, parsed.error, "ignored");
       return null;
     }
     if (type === "host.events") {
@@ -4728,7 +4609,8 @@ export class HttpHostClient {
             eventType === "thread.execution-updated" ||
             eventType === "thread.listed"
           ) {
-            skip = realtimeThreadEventSchema.parse(raw).data.thread === null;
+            const { thread } = realtimeThreadEventSchema.parse(raw).data;
+            skip = !ThreadViewSchema.safeParse(thread).success;
           }
           if (!skip) return AgentEventViewSchema.parse(raw);
           const parsed = AgentEventViewSchema.safeParse(raw);
@@ -4749,14 +4631,32 @@ export class HttpHostClient {
         }
       });
       if (ignoredIssues.length > 0)
-        realtimeFrameDiagnostic(frame, new z.ZodError(ignoredIssues), "ignored");
+        this.#recordRealtimeFrame(frame, new z.ZodError(ignoredIssues), "ignored");
       return { type: "host.events", events };
     }
     if (type === "host.snapshot") {
-      const { snapshot } = z.object({ snapshot: realtimeSnapshotSchema }).parse(value);
+      const raw = realtimeSnapshotFrameSchema.parse(value).snapshot;
+      const { snapshot } = z
+        .object({ snapshot: WorkspaceSnapshotSchema })
+        .parse({ snapshot: { ...raw, threads: [] } });
       if (snapshot.workspace.id !== channel.workspaceId)
         throw new Error("Workspace snapshot mismatch.");
-      return { type: "host.snapshot", snapshot };
+      // One Thread this build cannot read costs that Thread, not the Workspace.
+      const ignoredIssues: z.ZodError["issues"] = [];
+      const threads = raw.threads.flatMap((thread, index) => {
+        const parsed = ThreadViewSchema.safeParse(thread);
+        if (parsed.success) return [parsed.data];
+        ignoredIssues.push(
+          ...parsed.error.issues.map((issue) => ({
+            ...issue,
+            path: ["snapshot", "threads", index, ...issue.path],
+          })),
+        );
+        return [];
+      });
+      if (ignoredIssues.length > 0)
+        this.#recordRealtimeFrame(frame, new z.ZodError(ignoredIssues), "ignored");
+      return { type: "host.snapshot", snapshot: { ...snapshot, threads } };
     }
     if (type === "host.resync-required") {
       const message = realtimeResyncSchema.parse(value);
@@ -4778,7 +4678,7 @@ export class HttpHostClient {
         ) {
           const parsed = realtimeLiveKindSchema.safeParse(raw);
           if (!parsed.success)
-            realtimeFrameDiagnostic(
+            this.#recordRealtimeFrame(
               frame,
               new z.ZodError(
                 parsed.error.issues.map((issue) => ({
@@ -4807,6 +4707,46 @@ export class HttpHostClient {
     )
       throw new Error("Workspace mismatch.");
     return message;
+  }
+
+  #recordRealtimeFrame(frame: unknown, error: unknown, action: "ignored" | "rejected"): void {
+    try {
+      const record = {
+        event: `host.realtime.frame-${action}` as const,
+        ...describeRealtimeFrameFailure(frame, error),
+      };
+      console.warn(JSON.stringify(record));
+      this.#reportRealtimeFrame?.(record);
+    } catch {
+      /* Diagnostics cannot decide what becomes of the channel. */
+    }
+  }
+
+  /**
+   * What losing an unreadable frame costs decides what happens. A notice is
+   * dropped and its data reread. A replay or sync frame is never applied or
+   * acknowledged: the channel reconnects from the same cursor, then from a
+   * snapshot, because replay cannot get past an event this client cannot read.
+   */
+  #loseRealtimeFrame(channel: WorkspaceChannel, frame: unknown, error: unknown): void {
+    const envelopeType = realtimeEnvelopeType(frame);
+    const loss = realtimeFrameLoss(envelopeType);
+    this.#recordRealtimeFrame(frame, error, loss === "replay" ? "rejected" : "ignored");
+    if (loss === "replay") {
+      channel.unreadableFrames += 1;
+      if (channel.unreadableFrames >= realtimeReplayAttempts) channel.cursor = zeroSequence;
+      this.#closeChannel(channel, true, 4002, "Invalid Host protocol frame");
+      this.#recomputeConnection();
+      return;
+    }
+    if (loss === "none") return;
+    if (envelopeType === "host.triggers-changed")
+      this.#refreshShownAutomations(channel.workspaceId);
+    // Tab frames arrive with every navigation, and the poll repairs what this skips.
+    const now = Date.now();
+    if (now - this.#lostFrameRereadAt < defaultRefreshIntervalMs) return;
+    this.#lostFrameRereadAt = now;
+    this.#reread("host.frame-lost");
   }
 
   #applyRealtimeMessage(
@@ -4883,8 +4823,6 @@ export class HttpHostClient {
       // fault and takes the backoff; a final one leaves the channel down, and
       // the connection state is where a reader learns that.
       channel.refused = !message.error.retryable;
-      channel.protocolFailed =
-        !message.error.retryable && message.error.reason !== "workspace-forbidden";
       this.#closeChannel(channel, message.error.retryable);
       if (message.error.reason === "workspace-forbidden")
         this.#refuseWorkspace(channel.workspaceId);
@@ -5014,6 +4952,7 @@ export class HttpHostClient {
     const reconnected = channel.reconnectAttempt > 0;
     channel.synchronized = true;
     channel.reconnectAttempt = 0;
+    channel.unreadableFrames = 0;
     this.#invalidatePersonalRemoteAccess();
     if (reconnected) this.#reread("reconnect");
     this.#sendAck(channel);
@@ -5399,17 +5338,17 @@ export class HttpHostClient {
     );
   }
 
-  #reconnectDelay(attempt: number): number {
-    const ceiling = Math.min(
-      this.#reconnectMaxDelayMs,
-      this.#reconnectBaseDelayMs * 2 ** Math.min(attempt, 8),
-    );
-    return Math.min(this.#reconnectMaxDelayMs, Math.round(ceiling * (0.8 + this.#random() * 0.2)));
+  #reconnectDelay(attempt: number, maxDelayMs = this.#reconnectMaxDelayMs): number {
+    const ceiling = Math.min(maxDelayMs, this.#reconnectBaseDelayMs * 2 ** Math.min(attempt, 16));
+    return Math.min(maxDelayMs, Math.round(ceiling * (0.8 + this.#random() * 0.2)));
   }
 
   #scheduleReconnect(channel: WorkspaceChannel): void {
     if (this.#disposed || channel.reconnectTimer || this.#workspaceReconnectSuspended()) return;
-    const delay = this.#reconnectDelay(channel.reconnectAttempt++);
+    const delay = this.#reconnectDelay(
+      Math.max(channel.reconnectAttempt++, channel.unreadableFrames - 1),
+      channel.unreadableFrames > 0 ? unreadableFrameMaxDelayMs : this.#reconnectMaxDelayMs,
+    );
     channel.reconnectTimer = globalThis.setTimeout(() => {
       channel.reconnectTimer = null;
       this.#connect(channel);
@@ -5447,13 +5386,19 @@ export class HttpHostClient {
       (channel) =>
         !channel.synchronized &&
         (!channel.refused ||
-          channel.protocolFailed ||
+          !this.#forbiddenWorkspaces.has(channel.workspaceId) ||
           channel.workspaceId === this.#activeWorkspaceId),
     );
+    // Retrying a snapshot this client cannot read is no reconnection in
+    // progress: it says so, and offers Retry, between and during the attempts.
     const connection: HostConnectionState =
       pending.length === 0
         ? "connected"
-        : pending.some((channel) => !channel.socket && !channel.reconnectTimer)
+        : pending.some(
+              (channel) =>
+                (!channel.socket && !channel.reconnectTimer) ||
+                channel.unreadableFrames > realtimeReplayAttempts,
+            )
           ? "offline"
           : "connecting";
     if (connection !== this.#snapshot.connection || this.#network !== this.#snapshot.network) {

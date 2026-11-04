@@ -67,10 +67,26 @@ discard the lower events it overtook; the [hub](../packages/orchestration/src/re
 publication holes from the store. Readers skip unknown kinds and Thread statuses, validate every
 event's Workspace before changing batch state, and advance cursors in order.
 
-A malformed known frame stops that Workspace channel with no automatic retry, because replay cannot
-repair it; only explicit Retry or a new client retries. A failed acknowledgement send reconnects
-instead, keeping applied state. Diagnostics never log payloads, discriminator values or validator
-messages, only allowlisted envelope metadata and bounded issue paths.
+A frame a client cannot read costs what [losing it costs](../packages/client/src/host/realtime-frames.ts),
+and never strands the channel. Nothing replays a notice, so it is dropped with the socket up and
+what it spoke of is reread. A replay or sync frame is never applied or acknowledged: the channel
+reconnects from the same cursor, and only `host.synchronized` forgets the failures, so a frame that
+fails on every connect keeps backing off. Replay cannot get past an event this build will never
+read, so a position that keeps failing starts over from a snapshot. If the snapshot is unreadable
+too, the connection reads Unavailable with Retry while it keeps trying on a long cap: each try can
+cost a whole snapshot over cellular, and a later Host or app update must recover it unattended. A Thread this build cannot read is skipped on its own, in a snapshot or in an event that
+carries it. Only a Host's `host.error` refusal stops a channel until Retry.
+
+Wire schemas must answer the same in Node, Chromium and Hermes, and `URL` does not: Chromium treats
+`chrome-error:`, `chrome:` and `devtools:` as standard schemes and refuses them bare, which Node and
+Hermes accept. So a Host-side parse proves nothing about a client's, and a check on a value a client
+receives reads the text instead. A client view does not repeat a rule the Host enforces before
+sending; rejecting a frame after it arrives protects nothing.
+
+A failed acknowledgement send reconnects, keeping applied state. Diagnostics never log payloads,
+discriminator values or validator messages, only envelope metadata and issue paths, which name
+fields the wire schemas declare and mask a peer's record keys. The renderer reports its own failures
+to the desktop log; the main process does not read realtime frames.
 
 Thread and Run state are absolute and sequenced: only newer state replaces event-owned fields, and
 an ended Run never returns active. Request counts come from the Host's projection, not client

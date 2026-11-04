@@ -100,6 +100,7 @@ import type {
 } from "@opensteer/protocol/desktop";
 import {
   DisplayClientDiagnosticSchema,
+  RealtimeFrameDiagnosticSchema,
   DesktopWorkspaceTabCommandSchema,
   DeploymentAccessSnapshotSchema,
   DesktopChooseUsbDeviceInputSchema,
@@ -338,6 +339,12 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     await invoke(
       desktopBridgeChannels.reportDisplayDiagnostic,
       DisplayClientDiagnosticSchema.parse(record),
+    );
+  },
+  reportRealtimeDiagnostic: async (record: z.input<typeof RealtimeFrameDiagnosticSchema>) => {
+    await invoke(
+      desktopBridgeChannels.reportRealtimeDiagnostic,
+      RealtimeFrameDiagnosticSchema.parse(record),
     );
   },
   getLocalVisibility: async () =>
