@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+import { subscribeIntegrationAuthorizationReturns } from "./integrations/integration-authorization.js";
 import { useEffect, useRef, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import {
@@ -100,6 +101,13 @@ export function App({
   readonly openSetup?: boolean;
 }) {
   const { loadError, reload, snapshot } = useHostSnapshot(hostClient, sameAppGateSnapshot);
+  useEffect(
+    () =>
+      desktopBridge
+        ? subscribeIntegrationAuthorizationReturns(desktopBridge, hostClient)
+        : undefined,
+    [desktopBridge, hostClient],
+  );
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
   const [onboardingPending, setOnboardingPending] = useState(false);
   const autoOidcStarted = useRef(false);

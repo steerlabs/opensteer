@@ -884,6 +884,7 @@ export interface HostSnapshot {
   threadRenameAvailable: boolean;
   /** The Host serves `task-marks-v1`: task icons and project colours can be chosen. */
   taskMarksAvailable: boolean;
+  integrationAppFinishAvailable?: boolean;
   sharedTaskDoneAvailable?: boolean;
   /** The Host accepts installed-engine update commands. */
   harnessUpdateAvailable?: boolean;

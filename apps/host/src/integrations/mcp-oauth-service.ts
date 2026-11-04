@@ -102,6 +102,7 @@ const McpOAuthAttemptPayloadSchema = z.strictObject({
   relay: z
     .strictObject({
       binding: IntegrationAccountBindingSchema,
+      finish: z.literal("app").optional(),
       context: OAuthBrokerMcpCallbackRelayContextSchema,
       hostPrivateKey: z.string().min(1).max(512),
     })
@@ -198,6 +199,7 @@ export class McpOAuthService {
 
   async beginAuthorization(input: {
     readonly displayName: string;
+    readonly finish?: "app" | undefined;
     readonly ownerUserId: UserId;
     readonly requestId: RequestId;
     readonly requestSurface: HostSessionSurface;
@@ -227,7 +229,13 @@ export class McpOAuthService {
     }
     if (!relayed && input.requestSurface === "personal-remote")
       throw canonicalAuthorizationRequired();
-    if (hosted && (await hosted.broker.metadata()).mcpCallbackRelay !== 1) {
+    // Direct callbacks ignore finish because clients do not know the Host posture.
+    const finish = hosted && input.surface !== "web" ? input.finish : undefined;
+    const metadata = hosted ? await hosted.broker.metadata() : null;
+    if (
+      hosted &&
+      (metadata?.mcpCallbackRelay !== 1 || (finish === "app" && metadata.appFinish !== 1))
+    ) {
       throw new OpensteerError({
         code: "conflict",
         message: "Opensteer Account must be updated before MCP sign-in can use its HTTPS callback.",
@@ -324,6 +332,7 @@ export class McpOAuthService {
             authorizationUrl: launchUrl,
             clientId: relayContext.clientId,
             clientSurface: input.surface,
+            ...(finish ? { finish } : {}),
             definitionId: context.server.id,
             deploymentAuthorityDigest: relayContext.deploymentAuthorityDigest,
             expiresAt: relayContext.expiresAt,
@@ -335,6 +344,7 @@ export class McpOAuthService {
           });
           relay = {
             binding,
+            ...(finish ? { finish } : {}),
             context: { ...relayContext, expiresAt: created.expiresAt },
             hostPrivateKey: keys.privateKey,
           };
@@ -504,6 +514,44 @@ export class McpOAuthService {
     };
   }
 
+  async returnAuthorization(input: {
+    readonly attemptId: McpOAuthAttemptId;
+    readonly ownerUserId: UserId;
+    readonly returnProof: string;
+  }) {
+    const local = await this.#attempts.status({
+      id: input.attemptId,
+      ownerUserId: input.ownerUserId,
+    });
+    if (!local || (local.status !== "pending" && local.status !== "launched")) return local;
+    const raw = await this.#attempts.inspect?.({
+      id: input.attemptId,
+      ownerUserId: input.ownerUserId,
+    });
+    const relay = raw ? deserializeAttempt(raw).relay : null;
+    const hosted = this.#hostedOAuth;
+    if (!relay || relay.finish !== "app" || !hosted) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This authorization does not finish through Opensteer Account in the app.",
+      });
+    }
+    const binding = validateIntegrationAccountBinding(
+      await hosted.accountSubject(input.ownerUserId),
+    );
+    if (
+      !binding ||
+      binding.issuer !== relay.binding.issuer ||
+      binding.subject !== relay.binding.subject ||
+      binding.linkGeneration !== relay.binding.linkGeneration
+    ) {
+      await this.#attempts.fail(input.attemptId, "account-link-mismatch");
+      return this.#attempts.status({ id: input.attemptId, ownerUserId: input.ownerUserId });
+    }
+    await hosted.broker.returnAttempt(relay.context.attemptId, input.returnProof);
+    return this.authorizationStatus(input);
+  }
+
   async authorizationStatus(input: {
     readonly attemptId: McpOAuthAttemptId;
     readonly ownerUserId: UserId;
@@ -566,8 +614,11 @@ export class McpOAuthService {
     relay: NonNullable<z.infer<typeof McpOAuthAttemptPayloadSchema>["relay"]>,
   ) {
     const hosted = this.#hostedOAuth!;
+    // A lost app-finish result response must leave the attempt available for another return.
+    const returnedResult =
+      relay.finish === "app" ? await hosted.broker.pull(relay.context.attemptId) : null;
     try {
-      const pulled = await hosted.broker.pull(relay.context.attemptId);
+      const pulled = returnedResult ?? (await hosted.broker.pull(relay.context.attemptId));
       if (pulled.status !== "sealed" || !pulled.sealedResult)
         throw new Error("MCP consent result is unavailable");
       const bundle = OAuthBrokerMcpAuthorizationResponseSchema.parse(

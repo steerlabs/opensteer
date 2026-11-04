@@ -379,8 +379,8 @@ export function App(): ReactNode {
 
     /**
      * One reader for everything the scheme delivers. The broker accepts only
-     * this build's two token callbacks; the integration reader accepts only a
-     * Deployment and durable attempt id; `resolveThreadLink` accepts only a
+     * this build's two token callbacks; the integration reader requires an
+     * attempt this app started before it can use a return proof; `resolveThreadLink` accepts only a
      * Thread link naming a Deployment this phone already holds. Anything else
      * is dropped, because a link is a destination, never an authority.
      */

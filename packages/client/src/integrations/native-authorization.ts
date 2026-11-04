@@ -1,85 +1,97 @@
-import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
 import {
-  IntegrationAuthorizationAttemptIdSchema,
+  buildIntegrationAuthorizationAppReturn,
+  integrationAuthorizationAppReturnBase,
+  parseIntegrationAuthorizationAppReturn,
+  type IntegrationAuthorizationAppReturn,
   type IntegrationAuthorizationStart,
   type IntegrationAuthorizationStatus,
 } from "@opensteer/integration-core";
+import { integrationAuthorizationTerminalStatuses } from "./authorization-outcome.js";
+export { integrationAuthorizationTerminalStatuses } from "./authorization-outcome.js";
 import type { HostApiClient } from "@opensteer/protocol";
 import { unwrapRpcResult } from "../host/host-session-client.js";
 
 export const opensteerMobileIntegrationAuthorizationCallback =
-  "com.opensteer.mobile:/oauth/integration-callback";
+  integrationAuthorizationAppReturnBase("native");
 
-export interface NativeIntegrationAuthorizationCallback {
-  readonly attemptId: IntegrationAuthorizationStart["attemptId"];
-  readonly deploymentId: DeploymentId;
-}
+export type NativeIntegrationAuthorizationCallback = IntegrationAuthorizationAppReturn;
 
 /**
- * Builds the notification-only return from the system browser. The identifiers
- * select authenticated Host state; the URL never carries a provider result,
- * credential, launch ticket, or Host address.
+ * Uses the shared fixed mobile callback, including an optional app return proof.
  */
 export function buildNativeIntegrationAuthorizationCallback(
-  input: NativeIntegrationAuthorizationCallback,
+  input: Omit<NativeIntegrationAuthorizationCallback, "returnProof"> & {
+    readonly returnProof?: string | null;
+  },
 ): string {
-  const url = new URL(opensteerMobileIntegrationAuthorizationCallback);
-  url.searchParams.set("deployment_id", DeploymentIdSchema.parse(input.deploymentId));
-  url.searchParams.set(
-    "attempt_id",
-    IntegrationAuthorizationAttemptIdSchema.parse(input.attemptId),
-  );
-  return url.toString();
+  return buildIntegrationAuthorizationAppReturn("native", {
+    ...input,
+    returnProof: input.returnProof ?? null,
+  });
 }
 
 /** Accepts exactly this build's integration return shape and nothing else. */
 export function parseNativeIntegrationAuthorizationCallback(
   rawUrl: string,
 ): NativeIntegrationAuthorizationCallback | null {
-  if (rawUrl.length > 8_192) return null;
-  let url: URL;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    return null;
-  }
-  const callback = new URL(opensteerMobileIntegrationAuthorizationCallback);
-  if (
-    url.protocol !== callback.protocol ||
-    url.host !== callback.host ||
-    url.pathname !== callback.pathname ||
-    url.username ||
-    url.password ||
-    url.port ||
-    url.hash
-  ) {
-    return null;
-  }
-  const keys = [...url.searchParams.keys()];
-  if (
-    keys.length !== 2 ||
-    keys.some((key) => key !== "deployment_id" && key !== "attempt_id") ||
-    url.searchParams.getAll("deployment_id").length !== 1 ||
-    url.searchParams.getAll("attempt_id").length !== 1
-  ) {
-    return null;
-  }
-  const deploymentId = DeploymentIdSchema.safeParse(url.searchParams.get("deployment_id"));
-  const attemptId = IntegrationAuthorizationAttemptIdSchema.safeParse(
-    url.searchParams.get("attempt_id"),
-  );
-  return deploymentId.success && attemptId.success
-    ? { deploymentId: deploymentId.data, attemptId: attemptId.data }
-    : null;
+  return parseIntegrationAuthorizationAppReturn("native", rawUrl);
 }
 
-const terminalStatuses = new Set<IntegrationAuthorizationStatus["status"]>([
-  "completed",
-  "denied",
-  "failed",
-  "cancelled",
-  "expired",
-]);
+const returnedStatuses = new WeakMap<object, Map<string, IntegrationAuthorizationStatus>>();
+const returnListeners = new WeakMap<object, Map<string, Set<() => void>>>();
+
+/** Wakes existing UI waiters with the Host's committed response, without another polling interval. */
+export function integrationAuthorizationStatusReturned(
+  client: object,
+  attemptId: string,
+  status: IntegrationAuthorizationStatus,
+): void {
+  let statuses = returnedStatuses.get(client);
+  if (!statuses) returnedStatuses.set(client, (statuses = new Map()));
+  for (const [id, value] of statuses)
+    if (Date.parse(value.expiresAt) <= Date.now()) statuses.delete(id);
+  if (statuses.size >= 32) statuses.delete(statuses.keys().next().value!);
+  statuses.set(attemptId, status);
+  for (const wake of returnListeners.get(client)?.get(attemptId) ?? []) wake();
+}
+
+function returnedStatus(
+  client: object,
+  attemptId: string,
+): IntegrationAuthorizationStatus | undefined {
+  const status = returnedStatuses.get(client)?.get(attemptId);
+  return status && integrationAuthorizationTerminalStatuses.has(status.status) ? status : undefined;
+}
+
+function waitForReturnOrInterval(
+  client: object,
+  attemptId: string,
+  milliseconds: number,
+  sleep: (milliseconds: number, signal?: AbortSignal) => Promise<void>,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (returnedStatus(client, attemptId)) return Promise.resolve();
+  let attempts = returnListeners.get(client);
+  if (!attempts) returnListeners.set(client, (attempts = new Map()));
+  let listeners = attempts.get(attemptId);
+  if (!listeners) attempts.set(attemptId, (listeners = new Set()));
+  const waiting = listeners;
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  let wake!: () => void;
+  return new Promise<void>((resolve, reject) => {
+    wake = resolve;
+    waiting.add(wake);
+    void sleep(milliseconds, controller.signal).then(resolve, reject);
+  }).finally(() => {
+    waiting.delete(wake);
+    if (waiting.size === 0) attempts.delete(attemptId);
+    signal?.removeEventListener("abort", abort);
+    controller.abort();
+  });
+}
 
 /**
  * Reads the Host's durable attempt until it reaches a terminal state. A browser
@@ -103,10 +115,12 @@ export async function waitForIntegrationAuthorization(input: {
   const sleep = input.sleep ?? abortableSleep;
   while (true) {
     if (input.signal?.aborted) throw abortReason(input.signal);
+    const returned = returnedStatus(input.client, input.attemptId);
+    if (returned) return returned;
     const status = unwrapRpcResult(
       await input.client.rpc["integration.authorization.get"]({ attemptId: input.attemptId }),
     );
-    if (terminalStatuses.has(status.status)) return status;
+    if (integrationAuthorizationTerminalStatuses.has(status.status)) return status;
     expiresAt ??= new Date(status.expiresAt).getTime();
     if (!Number.isFinite(expiresAt))
       throw new Error("Integration authorization expiry is invalid.");
@@ -119,7 +133,13 @@ export async function waitForIntegrationAuthorization(input: {
         status: "expired",
       };
     }
-    await sleep(Math.min(interval, remaining), input.signal);
+    await waitForReturnOrInterval(
+      input.client,
+      input.attemptId,
+      Math.min(interval, remaining),
+      sleep,
+      input.signal,
+    );
   }
 }
 
@@ -146,4 +166,12 @@ function abortReason(signal: AbortSignal): Error {
   return signal.reason instanceof Error
     ? signal.reason
     : new Error("Integration authorization was stopped.");
+}
+
+export { IntegrationAuthorizationAttempts } from "./authorization-attempts.js";
+
+export class IntegrationAuthorizationCancelledError extends Error {
+  constructor() {
+    super("Integration authorization was cancelled.");
+  }
 }

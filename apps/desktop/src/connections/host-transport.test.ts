@@ -1,3 +1,5 @@
+import { createDesktopHostFetch } from "../../../web/src/desktop/desktop-host-transport.js";
+import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import type { DesktopHostWebSocketEvent } from "@opensteer/protocol/desktop";
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
@@ -1670,5 +1672,54 @@ it("bounds app streams independently so a full app pool leaves ordinary Host req
     await Promise.all(responses.map((response) => response.body?.cancel().catch(() => undefined)));
     await vi.advanceTimersByTimeAsync(0);
     vi.useRealTimers();
+  }
+});
+
+it("refuses a return proof when main selects B before processing renderer A's request", async () => {
+  const first = deployment("A", "https://a.example.test");
+  const second = deployment("B", "https://b.example.test");
+  const deploymentId = first.authority.document.deploymentId;
+  const catalog = catalogStore([first, second], deploymentId);
+  const request = vi.fn(async () => new Response("{}"));
+  const transport = desktopHostTransport({
+    catalog,
+    network: { request, openWebSocket: () => socket() },
+  });
+  await transport.current();
+  const bridge = {
+    hostRequest: async (input: unknown) => ({ ok: true, data: await transport.request(input) }),
+  } as unknown as OpensteerDesktopBridge;
+  const fetch = createDesktopHostFetch(
+    bridge,
+    first.authority.document.canonicalOrigin,
+    deploymentId,
+  );
+  await catalog.select(second.authority.document.deploymentId);
+  try {
+    await expect(
+      fetch(new URL("/v1/rpc/commands.dispatch", first.authority.document.canonicalOrigin), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "integration.authorization.return",
+          returnProof: "r".repeat(43),
+        }),
+      }),
+    ).rejects.toMatchObject({ code: "deployment-changed" });
+    expect(request).not.toHaveBeenCalled();
+    await catalog.select(deploymentId);
+    await expect(
+      fetch(new URL("/v1/rpc/commands.dispatch", first.authority.document.canonicalOrigin), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "integration.authorization.return",
+          returnProof: "r".repeat(43),
+        }),
+      }),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ deploymentId }));
+  } finally {
+    transport.closeAllSockets();
   }
 });

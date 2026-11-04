@@ -2,6 +2,7 @@ import type { NativeOAuthIdentity } from "@opensteer/client/auth";
 import {
   opensteerMobileIntegrationAuthorizationCallback,
   parseNativeIntegrationAuthorizationCallback,
+  IntegrationAuthorizationCancelledError,
 } from "@opensteer/client/integrations";
 
 /** `expo-web-browser`'s authentication session, as this adapter needs it. */
@@ -50,7 +51,7 @@ export function createAuthorizationBrowser(options: {
   };
 }
 
-/** Opens a provider flow whose only native return is the durable-attempt wake-up link. */
+/** Opens a provider flow that returns its attempt and optional finish proof to this app. */
 export function createIntegrationAuthorizationBrowser(options: {
   readonly browser: AuthorizationSessionOpener;
 }): (url: string) => Promise<string> {
@@ -69,7 +70,7 @@ export function createIntegrationAuthorizationBrowser(options: {
       opensteerMobileIntegrationAuthorizationCallback,
       { preferEphemeralSession: false },
     );
-    if (result.type !== "success") throw new Error("Integration authorization was cancelled.");
+    if (result.type !== "success") throw new IntegrationAuthorizationCancelledError();
     if (
       result.url === undefined ||
       parseNativeIntegrationAuthorizationCallback(result.url) === null

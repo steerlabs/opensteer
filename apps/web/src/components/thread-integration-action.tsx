@@ -4,16 +4,19 @@ import {
   IntegrationAuthorizationAttemptIdSchema,
   type IntegrationAccess,
   type IntegrationAuthorizationStart,
+  type IntegrationAuthorizationStatus,
   type IntegrationRepositoryAccess,
 } from "@opensteer/integration-core";
 // Deep import: the package index pulls in node:crypto, which cannot load in the browser.
 import { IntegrationServerIdSchema } from "@opensteer/integration-core/ids";
 import { Link, useSearchParams } from "react-router";
-import type { Request } from "@opensteer/core";
+import { requestAgentProposedDetail, type Request } from "@opensteer/core";
 import { desktopBridge } from "../desktop/desktop-bridge.js";
 import {
   integrationAuthorizationError,
   integrationAuthorizationSurface,
+  integrationAuthorizationFinish,
+  finishDesktopIntegrationAuthorization,
   beginIntegrationAuthorization,
   waitForIntegrationAuthorization,
 } from "../integrations/integration-authorization.js";
@@ -22,11 +25,16 @@ import { ActionNote } from "./action-rows.js";
 import { Icon } from "./icon.js";
 import { IntegrationInstallReview } from "./integration-install-review.js";
 import { useShell } from "./app-shell.js";
-import { accountOptionLabel, IntegrationAccountIdentity } from "./integrations/account-identity.js";
 import { ApiKeyForm } from "./integrations/api-key-form.js";
-import { ConnectFlow, RepositoryAccessSetup } from "./integrations/connect-flow.js";
-import { Dialog } from "./dialog.js";
+import { RepositoryAccessSetup } from "./integrations/connect-flow.js";
+import { IntegrationIcon } from "./integrations/integration-icon.js";
 import {
+  connectCard,
+  integrationRequestStillPending,
+  integrationInstallNextStep,
+  integrationAccountDetail,
+  installationDefinition,
+  type AccessRequestAccount,
   accessPlan,
   authorizationConnection,
   accessServerChoices,
@@ -35,14 +43,7 @@ import {
   computerAccessUpgrade,
   connectAvailability,
   effectiveIntegrationAccess,
-  grantedIntegrationAccess,
-  integrationAccessSummary,
-  integrationInstallNextStep,
-  mainConnectAllowsNote,
-  matchingInstallationForManifest,
-  operationCount,
   repositoryAccountStep,
-  requestedAccountUnavailableDetail,
   resolveIntegrationAccess,
   type AccessPlan,
   type LoadedAccessRequest,
@@ -83,8 +84,21 @@ export function ThreadIntegrationAction({
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [requestSettled, setRequestSettled] = useState(false);
+  const [connected, setConnected] = useState<AccessRequestAccount | null>(null);
+  /**
+   * The last thing the person asked the card to do. Try again repeats exactly
+   * that: a failed sign-in for another account must never become approval of
+   * the account already selected.
+   */
+  const lastAction = useRef<"allow" | "connect" | null>(null);
+  const answerAfterConnect = useRef<{
+    requestId: string;
+    connectionId: string;
+    access: IntegrationAccess;
+  } | null>(null);
   const [authorization, setAuthorization] = useState<IntegrationAuthorizationStart | null>(null);
   const authorizationController = useRef<AbortController | null>(null);
+  const operationGeneration = useRef(0);
   /**
    * The browser return whose repository step this card has shown. Opening a
    * new sign-in cancels the return, and closing that sheet would run it again
@@ -140,6 +154,7 @@ export function ThreadIntegrationAction({
       .then(async (status) => {
         if (controller.signal.aborted) return;
         terminal = true;
+        await finishDesktopIntegrationAuthorization(desktopBridge(), hostClient, parsed.data);
         const outcome = integrationAuthorizationError(status.status, status.failureCode);
         if (outcome) setError(outcome);
         else {
@@ -264,19 +279,45 @@ export function ThreadIntegrationAction({
   );
 
   useEffect(() => {
+    operationGeneration.current += 1;
+    authorizationController.current?.abort();
+    setAuthorization(null);
     setRequestSettled(false);
-  }, [request.id]);
+    setLoaded(null);
+    setConnected(null);
+    setSelectedAccountId(null);
+    setSelectedAccess(null);
+    setError(null);
+    setApiKeyError(null);
+    setApiKeyOpen(false);
+    setConnectOpen(false);
+    setComputerSetupNotice(null);
+    setRepositorySetup(null);
+    setPending(false);
+    answerAfterConnect.current = null;
+  }, [request.id, hostClient]);
 
   useEffect(() => {
     let cancelled = false;
     if (!requestPayload || !targetWorkspaceKind) return;
-    setLoaded(null);
     Promise.all([
       hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
       hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
     ])
       .then(([dashboard, platform]) => {
-        if (!cancelled) setLoaded({ dashboard, platform, request: requestPayload });
+        if (!cancelled)
+          setLoaded((current) => ({
+            dashboard,
+            platform,
+            request:
+              current &&
+              ((requestPayload.installationId === null &&
+                current.request.installationId !== null) ||
+                (requestPayload.requestedServerId === null &&
+                  current.request.requestedServerId !== null))
+                ? current.request
+                : requestPayload,
+          }));
       })
       .catch((reason: unknown) => {
         if (!cancelled) setError(errorMessage(reason));
@@ -296,14 +337,18 @@ export function ThreadIntegrationAction({
   // else: the app-wide banner would repeat it and outlive the Request.
   const run = async (operation: () => Promise<void>) => {
     if (pending || disabled) return;
+    const generation = ++operationGeneration.current;
     setPending(true);
     setError(null);
     try {
       await operation();
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (operationGeneration.current === generation) {
+        answerAfterConnect.current = null;
+        setError(errorMessage(reason));
+      }
     } finally {
-      setPending(false);
+      if (operationGeneration.current === generation) setPending(false);
     }
   };
 
@@ -319,136 +364,372 @@ export function ThreadIntegrationAction({
         .then(() => undefined),
     );
 
-  if (requestSettled) return null;
-  if (!requestPayload) {
-    return <ActionNote alert>This integration access Request is invalid.</ActionNote>;
-  }
+  useEffect(() => {
+    if (
+      !loaded ||
+      !targetWorkspace ||
+      !plan ||
+      repositorySetup ||
+      authorization ||
+      pending ||
+      !answerAfterConnect.current
+    )
+      return;
+    const completion = answerAfterConnect.current;
+    const reviewedAccess = effectiveIntegrationAccess(
+      plan.requestedAccess,
+      selectedAccess === "read-write",
+    );
+    if (completion.requestId !== request.id || completion.access !== reviewedAccess) {
+      answerAfterConnect.current = null;
+      return;
+    }
+    const selected = plan.selectedAccount;
+    if (
+      !selected ||
+      selected.id !== selectedAccountId ||
+      selected.id !== completion.connectionId ||
+      computerAccessUpgrade(
+        plan,
+        effectiveIntegrationAccess(plan.requestedAccess, selectedAccess === "read-write"),
+      )
+    )
+      return;
+    answerAfterConnect.current = null;
+    void run(async () => {
+      if (
+        targetWorkspace.kind === "project" ||
+        (await integrationRequestStillPending(hostClient, request.originatingThreadId, request.id))
+      ) {
+        await resolveIntegrationAccess(hostClient, {
+          access: effectiveIntegrationAccess(plan.requestedAccess, selectedAccess === "read-write"),
+          accountsCount: plan.accounts.length,
+          installationTitle: plan.installationTitle,
+          requestId: request.id,
+          selectedAccount: selected,
+          targetKind: targetWorkspace.kind,
+        });
+      }
+      if (await integrationRequestStillPending(hostClient, request.originatingThreadId, request.id))
+        throw new Error("The account is connected, but this request is still waiting. Try again.");
+      setConnected(selected);
+    });
+  }, [
+    loaded,
+    plan,
+    targetWorkspace,
+    repositorySetup,
+    authorization,
+    pending,
+    selectedAccess,
+    request.id,
+    selectedAccountId,
+  ]);
+  const handOffAuthorization = async (
+    started: IntegrationAuthorizationStart,
+    context: LoadedAccessRequest | null = loaded,
+    returned?: IntegrationAuthorizationStatus,
+  ) => {
+    const controller = new AbortController();
+    authorizationController.current?.abort();
+    authorizationController.current = controller;
+    answerAfterConnect.current = null;
+    setAuthorization(started);
+    try {
+      const status =
+        returned ??
+        (await waitForIntegrationAuthorization({
+          attemptId: started.attemptId,
+          client: hostClient,
+          expiresAt: started.expiresAt,
+          signal: controller.signal,
+        }));
+      if (controller.signal.aborted) return;
+      await finishDesktopIntegrationAuthorization(desktopBridge(), hostClient, started.attemptId);
+      tracking.finished(started.attemptId);
+      const outcome = integrationAuthorizationError(status.status, status.failureCode);
+      if (outcome) throw new Error(outcome);
+      if (!status.connectionId)
+        throw new Error(
+          "Authorization finished without recording an account. Start the connection again.",
+        );
+      const dashboard = unwrapRpcResult(await hostClient.rpc["integrations.get"]({}));
+      if (controller.signal.aborted) return;
+      const connection = authorizationConnection(dashboard, status.connectionId);
+      answerAfterConnect.current = {
+        requestId: request.id,
+        connectionId: status.connectionId,
+        access: effectiveIntegrationAccess(
+          context?.request.access ?? requestPayload!.access,
+          selectedAccess === "read-write",
+        ),
+      };
+      if (connection?.provider === "github") {
+        takeRepositoryStep(controller);
+        setRepositorySetup({ access: null, connectionId: connection.id });
+        const access = await checkRepositorySetup(connection.id, controller.signal);
+        if (!access) return;
+        if (!access.ready) {
+          updateRepositorySetup(connection.id, access);
+          return;
+        }
+        closeRepositorySetup(connection.id);
+      }
+      const platform = unwrapRpcResult(await hostClient.rpc["integration.platform.get"]({}));
+      if (controller.signal.aborted) return;
+      const next = context ? { ...context, dashboard, platform } : null;
+      const nextPlan = next ? accessPlan(next, status.connectionId) : null;
+      if (!nextPlan?.selectedAccount || nextPlan.selectedAccount.id !== status.connectionId)
+        throw new Error(
+          "Authorization finished without recording the requested account. Start the connection again.",
+        );
+      setLoaded(next);
+      setSelectedAccountId(status.connectionId);
+      setReload((value) => value + 1);
+    } catch (reason) {
+      if (authorizationController.current === controller) answerAfterConnect.current = null;
+      if (!controller.signal.aborted) throw reason;
+    } finally {
+      if (authorizationController.current === controller) {
+        authorizationController.current = null;
+        setAuthorization(null);
+      }
+    }
+  };
 
-  if (error) {
+  if (!requestPayload)
+    return <ActionNote alert>This integration access Request is invalid.</ActionNote>;
+  if (!targetWorkspace || !loaded)
     return (
       <>
-        <ActionNote alert>{error}</ActionNote>
-        <div className="action-buttons">
-          <button className="btn" disabled={pending} onClick={decline} type="button">
+        <ActionNote alert={Boolean(error)}>
+          {error ??
+            (!targetWorkspace
+              ? snapshot.workspaceWindow.hasMore
+                ? "Checking target Workspace…"
+                : "The target Workspace is no longer available."
+              : "Checking account access…")}
+        </ActionNote>
+        {error || (!targetWorkspace && !snapshot.workspaceWindow.hasMore) ? (
+          <button className="btn" disabled={disabled || pending} onClick={decline} type="button">
             Not now
           </button>
+        ) : null}
+        {error ? (
           <button
             className="btn btn--primary"
-            disabled={pending}
             onClick={() => {
-              setLoaded(null);
               setError(null);
               setReload((value) => value + 1);
             }}
-            type="button"
           >
             Try again
           </button>
-        </div>
+        ) : null}
       </>
     );
-  }
-  if (!targetWorkspace) {
-    if (snapshot.workspaceWindow.hasMore) {
-      return <ActionNote>Checking target Workspace…</ActionNote>;
-    }
-    return (
-      <>
-        <ActionNote alert>The target Workspace is no longer available.</ActionNote>
-        <div className="action-buttons">
-          <button className="btn" disabled={pending} onClick={decline} type="button">
-            Decline request
-          </button>
-        </div>
-      </>
-    );
-  }
-  if (!loaded) return <ActionNote>Checking account access…</ActionNote>;
-  if (requestPayload.installationId === null) {
-    const alreadyInstalled = matchingInstallationForManifest(
-      loaded.platform,
-      requestPayload.manifest,
-    );
-    const install = () =>
-      void run(() =>
-        hostClient
-          .dispatch({
-            idempotencyKey: mutationIdempotencyKey(`request:${request.id}:install`),
+  const card = connectCard({
+    loaded,
+    workspace: targetWorkspace,
+    selectedAccountId,
+    allowChanges: selectedAccess === "read-write",
+    agentProposed: request.presentation.agentProposed === true,
+    connecting: authorization !== null,
+    error,
+    connectedAccount: connected,
+    answered: requestSettled,
+    repositories: repositorySetup !== null,
+  });
+  const install = () =>
+    void run(async () => {
+      const definition = requestPayload.manifest
+        ? installationDefinition(requestPayload.manifest)
+        : null;
+      const oauth =
+        card.autoInstall && definition?.authMethods.some((method) => method.kind === "oauth");
+      let prepared: LoadedAccessRequest | null = null;
+      const prepare = async () => {
+        await hostClient.dispatch({
+          idempotencyKey: mutationIdempotencyKey(`request:${request.id}:install`),
+          requestId: request.id,
+          response: { kind: "choice", optionId: "installed" },
+          type: "request.respond",
+        });
+        let before: string | undefined;
+        let updated: Request | undefined;
+        do {
+          const page = unwrapRpcResult(
+            await hostClient.rpc["thread.requests.list"]({
+              threadId: request.originatingThreadId,
+              limit: 100,
+              ...(before ? { before } : {}),
+            }),
+          );
+          updated = page.requests.find((candidate) => candidate.id === request.id);
+          if (updated || !page.window.hasMore) break;
+          if (!page.window.nextBefore)
+            throw new Error("Thread Request page is missing its continuation cursor.");
+          before = page.window.nextBefore;
+        } while (before);
+        if (updated?.payload.kind !== "integration.access")
+          throw new Error("This connection request is no longer available.");
+        const [dashboard, platform] = await Promise.all([
+          hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
+          hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
+        ]);
+        const next = { dashboard, platform, request: updated.payload };
+        prepared = next;
+        setLoaded(next);
+        return next;
+      };
+      if (!oauth) {
+        const next = await prepare();
+        const nextPlan = accessPlan(next, null);
+        if (card.autoInstall && nextPlan?.requirement.kind === "none") {
+          await resolveIntegrationAccess(hostClient, {
+            access: effectiveIntegrationAccess(
+              nextPlan.requestedAccess,
+              selectedAccess === "read-write",
+            ),
+            accountsCount: 0,
+            installationTitle: nextPlan.installationTitle,
             requestId: request.id,
-            response: { kind: "choice", optionId: "installed" },
-            type: "request.respond",
-          })
-          .then(() => undefined),
-      );
+            selectedAccount: null,
+            targetKind: targetWorkspace.kind,
+          });
+          if (
+            await integrationRequestStillPending(
+              hostClient,
+              request.originatingThreadId,
+              request.id,
+            )
+          )
+            throw new Error("This request is still waiting. Try again.");
+          setRequestSettled(true);
+        }
+        return;
+      }
+      const started = await beginIntegrationAuthorization({
+        bridge: desktopBridge(),
+        client: hostClient,
+        onStarted: tracking.started,
+        returnPath: `/threads/${encodeURIComponent(threadId)}`,
+        begin: async (returnPath) => {
+          const next = await prepare();
+          const nextCard = connectCard({
+            loaded: next,
+            workspace: targetWorkspace,
+            allowChanges: selectedAccess === "read-write",
+          });
+          if (!nextCard.plan?.definition || !nextCard.source)
+            throw new Error("Open integration settings to finish this connection.");
+          const result = await hostClient.dispatch({
+            idempotencyKey: mutationIdempotencyKey(
+              `integration-auth:${nextCard.plan.definition.id}`,
+            ),
+            input: {
+              definitionId: nextCard.plan.definition.id,
+              exactApplicationSource: nextCard.source,
+              returnPath,
+              surface: integrationAuthorizationSurface(desktopBridge()),
+              ...integrationAuthorizationFinish(desktopBridge(), hostClient),
+            },
+            type: "integration.authorization.begin",
+          });
+          if (result.type !== "integration.authorization.begin")
+            throw new Error("Integration authorization command mismatch.");
+          return result;
+        },
+      });
+      await handOffAuthorization(started, prepared);
+    });
+  const chooseServer = (serverId: string) =>
+    void run(async () => {
+      await hostClient.dispatch({
+        idempotencyKey: mutationIdempotencyKey(`request:${request.id}:server:${serverId}`),
+        requestId: request.id,
+        response: { kind: "choice", optionId: `server:${serverId}` },
+        type: "request.respond",
+      });
+      await hostClient.refresh();
+      setReload((value) => value + 1);
+    });
+  if (connected)
     return (
-      <>
-        <IntegrationInstallReview manifest={requestPayload.manifest} />
-        <ActionNote>
-          {integrationInstallNextStep({
-            canInstall: loaded.dashboard.isAdministrator,
-            continuesToAccess: true,
-            installedTitle: alreadyInstalled?.installation.title ?? null,
-          })}
-        </ActionNote>
-        <div className="action-buttons">
-          <button className="btn" disabled={pending} onClick={decline} type="button">
-            Not now
-          </button>
-          {loaded.dashboard.isAdministrator || alreadyInstalled !== null ? (
-            <button className="btn btn--primary" disabled={pending} onClick={install} type="button">
-              {alreadyInstalled ? "Continue" : "Install and continue"}
+      <div className="connect-card__result" role="status">
+        {card.success}
+      </div>
+    );
+  if (requestSettled) return <ActionNote>Request answered</ActionNote>;
+  if (!plan)
+    return (
+      <div className="connect-card">
+        <div className="connect-card__heading">
+          <IntegrationIcon id={card.iconId} name={card.name} />
+          <strong>{card.name}</strong>
+        </div>
+        <p>{card.purpose}</p>
+        {card.projectNote ? <p className="field__hint">{card.projectNote}</p> : null}
+        {card.capabilities
+          .filter(
+            (line) =>
+              line.includes("connecting also allows") || line.includes("requires read-write"),
+          )
+          .map((line) => (
+            <p className="field__hint" key={line}>
+              {line}
+            </p>
+          ))}
+        {card.installReview ? (
+          <IntegrationInstallReview manifest={requestPayload.manifest} />
+        ) : null}
+        {card.installReview ? (
+          <ActionNote>
+            {integrationInstallNextStep({
+              canInstall: loaded.dashboard.isAdministrator,
+              continuesToAccess: true,
+              installedTitle: null,
+            })}
+          </ActionNote>
+        ) : null}
+        {card.error ? <ActionNote alert>{card.error}</ActionNote> : null}
+        <div className="connect-card__actions action-buttons">
+          {card.primary && card.primary.kind !== "server" ? (
+            <button className="btn btn--primary" disabled={pending || disabled} onClick={install}>
+              {pending ? "Connecting…" : card.primary.label}
             </button>
           ) : null}
-        </div>
-      </>
-    );
-  }
-  if (serverChoices.length > 0) {
-    const chooseServer = (serverId: string) =>
-      void run(() =>
-        hostClient
-          .dispatch({
-            idempotencyKey: mutationIdempotencyKey(`request:${request.id}:server:${serverId}`),
-            requestId: request.id,
-            response: { kind: "choice", optionId: `server:${serverId}` },
-            type: "request.respond",
-          })
-          .then(() => undefined),
-      );
-    return (
-      <>
-        <ActionNote>{`Choose the ${serverChoices[0]!.installationTitle} server this request should use.`}</ActionNote>
-        <div className="action-buttons">
-          <button className="btn" disabled={pending} onClick={decline} type="button">
+          <button className="btn" disabled={pending || disabled} onClick={decline}>
             Not now
           </button>
-          {serverChoices.map((server) => (
-            <button
-              className="btn btn--primary"
-              disabled={pending}
-              key={server.id}
-              onClick={() => chooseServer(server.id)}
-              type="button"
-            >
-              Continue with {server.name}
-            </button>
-          ))}
         </div>
-      </>
-    );
-  }
-  if (!plan) {
-    return (
-      <>
-        <ActionNote alert>The requested integration is no longer installed.</ActionNote>
-        <div className="action-buttons">
-          <button className="btn" disabled={pending} onClick={decline} type="button">
-            Decline request
+        <details className="connect-card__disclosure">
+          <summary>What Opensteer can do</summary>
+          {card.capabilities
+            .filter(
+              (line) =>
+                !line.includes("connecting also allows") &&
+                !line.includes("requires read-write") &&
+                line !== requestAgentProposedDetail,
+            )
+            .map((line) => (
+              <p className="field__hint" key={line}>
+                {line}
+              </p>
+            ))}
+        </details>
+        {serverChoices.map((server) => (
+          <button
+            className="btn"
+            key={server.id}
+            disabled={pending || disabled}
+            onClick={() => chooseServer(server.id)}
+          >
+            Continue with {server.name}
           </button>
-        </div>
-      </>
+        ))}
+      </div>
     );
-  }
 
   // Only an OAuth posture depends on a provider application; an API-key
   // integration is connectable with no deployment configuration at all.
@@ -467,7 +748,6 @@ export function ThreadIntegrationAction({
   // all, so the only connection worth making for it is the one that repairs it.
   const pinned = plan.requestedConnectionId !== null;
   const reconnect = plan.requestedAccountMissing ? plan.requestedAccountReconnect : null;
-  const unavailable = plan.requestedAccountMissing && reconnect === null;
   // A key repair is the key itself, so its form is the reconnect, shown at once.
   const showApiKeyForm =
     canConnectAccount &&
@@ -482,25 +762,15 @@ export function ThreadIntegrationAction({
   const computerRequirement = plan.requirement.kind === "computer";
   // A computer is chosen here, inline: there is no sign-in to hand off to.
   const showComputerPicker = computerRequirement && !pinned && (connectOpen || !hasAccount);
-  const connectOffered =
-    (!pinned || reconnect?.method === "sign-in") && canConnectAccount && !showComputerPicker;
   const effectiveAccess: IntegrationAccess = effectiveIntegrationAccess(
     plan.requestedAccess,
     selectedAccess === "read-write",
   );
-  const grantedAccess = grantedIntegrationAccess({
-    allowChanges: selectedAccess === "read-write",
-    plan,
-    workspaceKind: targetWorkspace.kind,
-  });
   // A Workspace cannot receive access above the selected computer's ceiling.
   // This uses the access the person is about to grant, including an optional
   // expansion of a read Request, rather than only the Request's original floor.
   const sendUpgrade = computerAccessUpgrade(plan, effectiveAccess);
   const computerAppPresentation = plan.definition?.computerApp;
-  const optionalWriteAccess =
-    plan.writeCount > 0 || computerAppPresentation?.accessLevels.length === 2;
-
   const setComputerApp = (input: {
     readonly access: IntegrationAccess;
     readonly runnerId: string;
@@ -564,40 +834,25 @@ export function ThreadIntegrationAction({
         },
         type: "integration.apiKey.connect",
       })
-      .then(() => {
+      .then((result) => {
+        if (result.type !== "integration.apiKey.connect") {
+          throw new Error("No connected account is recorded here. Try again.");
+        }
+        // An older Host does not say which account the key made; the person
+        // then chooses it with Use rather than the card guessing.
+        if (result.connectionId) {
+          answerAfterConnect.current = {
+            requestId: request.id,
+            connectionId: result.connectionId,
+            access: effectiveAccess,
+          };
+          setSelectedAccountId(result.connectionId);
+        }
         setApiKeyOpen(false);
         setReload((value) => value + 1);
       })
       .catch((reason: unknown) => setApiKeyError(errorMessage(reason)))
       .finally(() => setPending(false));
-  };
-
-  const handOffAuthorization = async (started: IntegrationAuthorizationStart) => {
-    const controller = new AbortController();
-    authorizationController.current?.abort();
-    authorizationController.current = controller;
-    setAuthorization(started);
-    try {
-      const status = await waitForIntegrationAuthorization({
-        attemptId: started.attemptId,
-        client: hostClient,
-        expiresAt: started.expiresAt,
-        signal: controller.signal,
-      });
-      if (controller.signal.aborted) return;
-      tracking.finished(started.attemptId);
-      const outcome = integrationAuthorizationError(status.status, status.failureCode);
-      if (outcome) throw new Error(outcome);
-      if (status.connectionId) setSelectedAccountId(status.connectionId);
-      setReload((value) => value + 1);
-    } catch (reason) {
-      if (!controller.signal.aborted) throw reason;
-    } finally {
-      if (authorizationController.current === controller) {
-        authorizationController.current = null;
-        setAuthorization(null);
-      }
-    }
   };
 
   /**
@@ -616,35 +871,62 @@ export function ThreadIntegrationAction({
       if (status.type !== "integration.authorization.cancel") {
         throw new Error("Integration authorization cancellation command mismatch.");
       }
+      await finishDesktopIntegrationAuthorization(
+        desktopBridge(),
+        hostClient,
+        authorization.attemptId,
+      );
       tracking.finished(authorization.attemptId);
       if (authorizationController.current !== controller) return;
+      const generation = ++operationGeneration.current;
       controller?.abort();
+      authorizationController.current = null;
       setAuthorization(null);
+      setPending(false);
       const outcome = integrationAuthorizationError(status.status, status.failureCode);
-      if (outcome !== null) {
+      if (outcome) {
+        answerAfterConnect.current = null;
         setError(outcome);
         return;
       }
-      if (status.connectionId) setSelectedAccountId(status.connectionId);
-      setError(null);
-      setReload((value) => value + 1);
+      setPending(true);
+      try {
+        await handOffAuthorization(authorization, loaded, status);
+      } catch (reason) {
+        if (operationGeneration.current === generation) setError(errorMessage(reason));
+      } finally {
+        if (operationGeneration.current === generation) setPending(false);
+      }
     } catch (reason) {
       if (authorizationController.current === controller) setError(errorMessage(reason));
     }
   };
 
   const connect = () => {
+    lastAction.current = "connect";
     const bridge = desktopBridge();
-    // A provider connection is the shared Connect sheet: it owns the choice of
-    // sign-in app, its own-app setup, and the durable attempt.
-    if (provider) {
-      setConnectOpen(true);
+    repositoryCheck.current?.abort();
+    if (provider && plan.definition) {
+      const source = card.source;
+      if (source === null) {
+        setError("Choose a sign-in account in Settings to continue.");
+        return;
+      }
+      void run(async () => {
+        const started = await connectOperations.beginAuthorization({
+          applicationSource: source,
+          definitionId: plan.definition!.id,
+          returnPath: `/threads/${encodeURIComponent(threadId)}`,
+        });
+        await handOffAuthorization(started);
+      });
       return;
     }
-    if (plan.requirement.kind === "mcp-oauth" && requestPayload.requestedServerId) {
+    if (plan.requirement.kind === "mcp-oauth" && loaded.request.requestedServerId) {
       void run(async () => {
         const started = await beginIntegrationAuthorization({
           bridge,
+          client: hostClient,
           onStarted: tracking.started,
           returnPath: `/threads/${encodeURIComponent(threadId)}`,
           begin: async (returnPath) => {
@@ -656,8 +938,9 @@ export function ThreadIntegrationAction({
                 requestId: request.id,
                 displayName: accountName.trim() || `${plan.installationTitle} account`,
                 returnPath,
-                serverId: IntegrationServerIdSchema.parse(requestPayload.requestedServerId),
+                serverId: IntegrationServerIdSchema.parse(loaded.request.requestedServerId),
                 surface: integrationAuthorizationSurface(bridge),
+                ...integrationAuthorizationFinish(bridge, hostClient),
               },
               type: "integration.mcp.authorization.begin",
             });
@@ -672,99 +955,199 @@ export function ThreadIntegrationAction({
     }
   };
 
-  const allow = () =>
-    void run(() =>
-      resolveIntegrationAccess(hostClient, {
+  const allow = () => {
+    lastAction.current = "allow";
+    void run(async () => {
+      await resolveIntegrationAccess(hostClient, {
         access: effectiveAccess,
         accountsCount: plan.accounts.length,
         installationTitle: plan.installationTitle,
         requestId: request.id,
         selectedAccount: plan.selectedAccount,
         targetKind: targetWorkspace.kind,
-      }),
-    );
+      });
+      if (await integrationRequestStillPending(hostClient, request.originatingThreadId, request.id))
+        throw new Error("This request is still waiting. Try again.");
+      if (plan.selectedAccount) setConnected(plan.selectedAccount);
+      else setRequestSettled(true);
+    });
+  };
 
-  const declineButton = (
-    <button className="btn" disabled={pending} onClick={decline} type="button">
-      {unavailable ? "Decline request" : "Not now"}
-    </button>
-  );
-
+  const primary = () => {
+    if (card.primary?.kind === "retry") {
+      setError(null);
+      if (repositorySetup) setReload((value) => value + 1);
+      else if (lastAction.current === "allow" && plan.selectedAccount) allow();
+      else if (card.source || plan.requirement.kind === "mcp-oauth") connect();
+      else setReload((value) => value + 1);
+      return;
+    }
+    if (card.primary?.kind === "repositories") {
+      void recheckRepositorySetup();
+      return;
+    }
+    if (card.primary?.kind === "use") {
+      allow();
+      return;
+    }
+    if (sendUpgrade) {
+      setComputerApp({ access: "read-write", runnerId: sendUpgrade.runnerId });
+      return;
+    }
+    if (computerRequirement) setConnectOpen(true);
+    else if (apiKeyMethod) setApiKeyOpen(true);
+    else connect();
+  };
   return (
-    <>
-      {computerSetupNotice ? <ActionNote>{computerSetupNotice}</ActionNote> : null}
-      <ActionNote>
-        {plan.readCount + plan.writeCount === 0
-          ? `Allow ${plan.installationTitle} in ${targetWorkspace.name}`
-          : integrationAccessSummary(plan, grantedAccess)}
-      </ActionNote>
-      {targetWorkspace.kind === "project" ? (
-        <ActionNote>{`Access will be granted to ${targetWorkspace.name}.`}</ActionNote>
-      ) : !computerRequirement && (showApiKeyForm || connectOffered) ? (
-        <ActionNote>{mainConnectAllowsNote(targetWorkspace.name)}</ActionNote>
-      ) : null}
-      {plan.selectedAccount ? (
-        <div className="action-field">
-          <span>Account</span>
-          {plan.accounts.length > 1 && integrationAccountCanChange(plan) ? (
-            <select
-              aria-label="Account"
-              className="select-input"
-              onChange={(event) => setSelectedAccountId(event.target.value)}
-              value={plan.selectedAccount.id}
-            >
-              {plan.accounts.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {accountOptionLabel(account, plan.accounts)}
-                </option>
-              ))}
-            </select>
-          ) : null}
-          <div className="intg-account-selection">
-            <span className="intg-account-selection__icon">
-              <Icon name="user" />
-            </span>
-            <IntegrationAccountIdentity account={plan.selectedAccount} accounts={plan.accounts} />
-            <span className="chip chip--ok">Connected</span>
-          </div>
+    <div
+      className="connect-card"
+      onKeyDown={(event) => {
+        if (
+          event.key === "Enter" &&
+          event.target === event.currentTarget &&
+          !pending &&
+          !disabled
+        ) {
+          event.preventDefault();
+          primary();
+        }
+      }}
+    >
+      <div className="connect-card__heading">
+        <IntegrationIcon id={card.iconId} name={card.name} />
+        <div>
+          <strong>{card.name}</strong>
+          <p>{card.purpose}</p>
         </div>
+      </div>
+      {card.projectNote ? <p className="field__hint">{card.projectNote}</p> : null}
+      {card.capabilities
+        .filter(
+          (line) =>
+            line.includes("connecting also allows") ||
+            line.includes("requires read-write") ||
+            line === requestAgentProposedDetail,
+        )
+        .map((line) => (
+          <p className="field__hint" key={line}>
+            {line}
+          </p>
+        ))}
+      {/* First in focus order, placed at the foot of the card by CSS. */}
+      {!showApiKeyForm ? (
+        <>
+          <div className="connect-card__actions action-buttons">
+            {!showApiKeyForm && card.primary ? (
+              card.primary.kind === "settings" ? (
+                <Link className="btn btn--primary" to={settingsPath}>
+                  {card.primary.label}
+                </Link>
+              ) : (
+                <button
+                  className="btn btn--primary"
+                  disabled={pending || disabled}
+                  onClick={primary}
+                  type="button"
+                >
+                  {pending ? "Connecting…" : card.primary.label}
+                </button>
+              )
+            ) : null}
+            {authorization ? (
+              <button className="btn" onClick={() => void cancelAuthorization()} type="button">
+                Cancel
+              </button>
+            ) : (
+              <button
+                className="btn"
+                disabled={pending || disabled}
+                onClick={decline}
+                type="button"
+              >
+                {card.secondary}
+              </button>
+            )}
+          </div>
+        </>
+      ) : null}
+      {authorization ? <p role="status">Connecting…</p> : null}
+      {card.error ? <ActionNote alert>{card.error}</ActionNote> : null}
+      {computerSetupNotice ? (
+        <>
+          <ActionNote>{computerSetupNotice}</ActionNote>
+          <button
+            className="btn"
+            disabled={pending || disabled}
+            onClick={() => setReload((value) => value + 1)}
+            type="button"
+          >
+            Check setup
+          </button>
+        </>
+      ) : null}
+      {card.accounts.length > 0 ? (
+        <div aria-label="Account" className="connect-card__accounts" role="radiogroup">
+          {card.accounts.map((account, index) => (
+            <button
+              aria-checked={account.selected}
+              className={`connect-card__account${account.selected ? " connect-card__account--selected" : ""}`}
+              disabled={pending || disabled}
+              key={account.id}
+              onClick={() => setSelectedAccountId(account.id)}
+              onKeyDown={(event) => {
+                if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key))
+                  return;
+                event.preventDefault();
+                const offset = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1;
+                const next = (index + offset + card.accounts.length) % card.accounts.length;
+                setSelectedAccountId(card.accounts[next]!.id);
+                (
+                  event.currentTarget.parentElement?.children[next] as HTMLElement | undefined
+                )?.focus();
+              }}
+              role="radio"
+              tabIndex={account.selected ? 0 : -1}
+              type="button"
+            >
+              <Icon name="user" />
+              <span>
+                <strong>{account.label}</strong>
+                <small>{account.detail}</small>
+              </span>
+              {account.selected ? <Icon name="check" /> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {card.canConnectAnother && hasAccount && !showApiKeyForm ? (
+        <button
+          className="connect-card__account btn"
+          disabled={pending || disabled}
+          onClick={() => {
+            if (computerRequirement) setConnectOpen(true);
+            else if (apiKeyMethod) setApiKeyOpen(true);
+            else connect();
+          }}
+          type="button"
+        >
+          {computerRequirement ? "Use another computer" : "Connect another account"}
+        </button>
       ) : null}
       {reconnect ? (
-        <div className="action-field">
-          <span className="action-field__title">{`Reconnect ${plan.integrationName}`}</span>
-          <div className="intg-account-selection">
-            <span className="intg-account-selection__icon">
-              <Icon name="user" />
-            </span>
-            <IntegrationAccountIdentity
-              account={reconnect.account}
-              accounts={[reconnect.account, ...plan.accounts]}
-            />
-            <span className="chip chip--warn">Needs attention</span>
-          </div>
-          {reconnect.statusDetail ? <ActionNote>{reconnect.statusDetail}</ActionNote> : null}
+        <div>
+          <strong>{reconnect.account.displayName}</strong>
+          <p>
+            {integrationAccountDetail(reconnect.account, [reconnect.account, ...plan.accounts])} ·
+            Needs attention
+          </p>
         </div>
-      ) : unavailable ? (
-        <ActionNote alert>{requestedAccountUnavailableDetail}</ActionNote>
       ) : null}
-      {plan.requirement.kind === "mcp-oauth" && plan.accounts.length === 0 ? (
-        <label className="action-field">
-          <span>Account name</span>
-          <input
-            className="text-input"
-            maxLength={160}
-            onChange={(event) => setAccountName(event.target.value)}
-            placeholder={`${plan.installationTitle} account`}
-            value={accountName}
-          />
-        </label>
-      ) : null}
-      {targetWorkspace.kind === "project" &&
-      optionalWriteAccess &&
-      plan.requestedAccess === "read" ? (
+      {reconnect?.statusDetail ? <ActionNote>{reconnect.statusDetail}</ActionNote> : null}
+      {card.canAllowChanges ? (
         <label className="check-item">
           <input
             checked={effectiveAccess === "read-write"}
+            disabled={pending || disabled}
             onChange={(event) => setSelectedAccess(event.target.checked ? "read-write" : "read")}
             type="checkbox"
           />
@@ -779,36 +1162,37 @@ export function ThreadIntegrationAction({
           </span>
         </label>
       ) : null}
-      {targetWorkspace.kind === "project" && plan.requestedAccess === "read-write" ? (
-        <ActionNote>
-          {plan.writeCount > 0
-            ? `This task requires read-write access, including ${changingOperationCount(plan.writeCount)}.`
-            : "This task requires read-write access. It allows changes when operations become available."}
-        </ActionNote>
-      ) : null}
-      {availability && availability.kind !== "ready" ? (
-        <ActionNote>{availability.detail}</ActionNote>
-      ) : null}
-      {authorization ? (
-        <ActionNote>
-          Finish connecting in your browser. Opensteer will update automatically.
-        </ActionNote>
+      {plan.requirement.kind === "mcp-oauth" && !hasAccount ? (
+        <label className="action-field">
+          <span>Account name</span>
+          <input
+            className="text-input"
+            maxLength={160}
+            onChange={(event) => setAccountName(event.target.value)}
+            value={accountName || `${plan.installationTitle} account`}
+          />
+        </label>
       ) : null}
       {showApiKeyForm && apiKeyMethod && plan.definition ? (
         <ApiKeyForm
           definition={plan.definition}
-          proposed={plan.proposed}
+          proposed={card.proposed}
           {...(reconnect?.method === "api-key"
             ? { displayName: reconnect.account.displayName }
             : {})}
+          primaryLabel={
+            apiKeyError
+              ? "Try again"
+              : reconnect
+                ? `Reconnect ${reconnect.account.accountIdentifier ?? reconnect.account.displayName}`
+                : `Connect ${card.name}`
+          }
           error={apiKeyError}
           method={apiKeyMethod}
           onSubmit={connectApiKey}
-          pending={pending}
+          pending={pending || disabled}
           secondaryAction={
-            // A form the person opened beside an account they could use closes
-            // back to it; otherwise the form is the answer, and declining the other.
-            apiKeyOpen ? (
+            apiKeyOpen && hasAccount ? (
               <button
                 className="btn"
                 disabled={pending}
@@ -818,14 +1202,21 @@ export function ThreadIntegrationAction({
                 Cancel
               </button>
             ) : (
-              declineButton
+              <button
+                className="btn"
+                disabled={pending || disabled}
+                onClick={decline}
+                type="button"
+              >
+                Not now
+              </button>
             )
           }
         />
       ) : null}
       {showComputerPicker && plan.definition ? (
         <ComputerAppPicker
-          busy={pending}
+          busy={pending || disabled}
           connections={loaded.dashboard.connections}
           definition={plan.definition}
           machines={snapshot.machines}
@@ -833,182 +1224,40 @@ export function ThreadIntegrationAction({
         />
       ) : null}
       {sendUpgrade ? (
-        <ActionNote>
-          {`${plan.definition?.computerApp?.accessLabels.readWrite ?? "Changes"} must be enabled on ${sendUpgrade.displayName} before this access can be allowed. ${
-            plan.definition?.computerApp?.accessSummaries.readWrite ?? ""
-          }`}
-        </ActionNote>
-      ) : null}
-      {/* While the key form is shown, its own row holds the answers. */}
-      {showApiKeyForm ? null : (
-        <div className="action-buttons">
-          {authorization ? (
-            <button className="btn" onClick={() => void cancelAuthorization()} type="button">
-              Cancel
-            </button>
-          ) : (
-            declineButton
-          )}
-          {availability?.kind === "other-surface" ? (
-            <Link className="btn" to={settingsPath}>
-              Open integration settings
-            </Link>
-          ) : null}
-          {sendUpgrade ? (
-            <button
-              className="btn btn--primary"
-              disabled={pending}
-              onClick={() =>
-                setComputerApp({ access: "read-write", runnerId: sendUpgrade.runnerId })
-              }
-              type="button"
-            >
-              {plan.definition?.id === androidPhoneDefinitionId
-                ? `Allow ${plan.definition.computerApp?.accessLabels.readWrite ?? "control"} on ${sendUpgrade.displayName}`
-                : `Request sending access on ${sendUpgrade.displayName}`}
-            </button>
-          ) : null}
-          <IntegrationAccountActions
-            authorizationActive={authorization !== null}
-            canAllow={
-              !plan.requestedAccountMissing &&
-              // Approving would grant an access the connection cannot carry, so
-              // the ceiling is raised first, deliberately, or not at all.
-              sendUpgrade === null &&
-              (plan.requirement.kind === "none" || plan.selectedAccount !== null)
-            }
-            canConnect={connectOffered}
-            computerApp={computerRequirement}
-            hasAccount={hasAccount}
-            onAllow={allow}
-            onConnect={
-              computerRequirement
-                ? () => setConnectOpen(true)
-                : apiKeyMethod
-                  ? () => setApiKeyOpen(true)
-                  : connect
-            }
-            pending={pending}
-            reconnectRequired={reconnect !== null}
-            primaryLabel={
-              targetWorkspace.kind === "main"
-                ? "Use this account"
-                : `Allow in ${targetWorkspace.name}`
-            }
-          />
-        </div>
-      )}
-      {connectOpen && provider && plan.definition ? (
-        <ConnectFlow
-          dashboard={loaded.dashboard}
-          definition={plan.definition}
-          onClose={() => setConnectOpen(false)}
-          onConnected={(connectionId) => {
-            setSelectedAccountId(connectionId);
-            setReload((value) => value + 1);
-          }}
-          operations={connectOperations}
-          purpose={connectPurpose(plan, grantedAccess)}
-          requestedBy={plan.installationTitle}
-          returnPath={`/threads/${encodeURIComponent(threadId)}`}
-        />
+        <ActionNote>{`${plan.definition?.computerApp?.accessLabels.readWrite ?? "Changes"} must be enabled on ${sendUpgrade.displayName} before this access can be allowed. ${plan.definition?.computerApp?.accessSummaries.readWrite ?? ""}`}</ActionNote>
       ) : null}
       {repositorySetup ? (
-        <Dialog
-          footer={
-            <>
-              <button className="btn" onClick={() => setRepositorySetup(null)} type="button">
-                Finish later
-              </button>
-              <button
-                className="btn btn--primary"
-                disabled={pending}
-                onClick={() => void recheckRepositorySetup()}
-                type="button"
-              >
-                {pending ? "Checking…" : "Recheck repository access"}
-              </button>
-            </>
-          }
-          labelledBy="github-repository-access"
-          onClose={() => setRepositorySetup(null)}
-          title="Choose GitHub repositories"
-        >
+        <div className="action-field">
+          <strong>Choose GitHub repositories</strong>
           <RepositoryAccessSetup access={repositorySetup.access} />
-        </Dialog>
+          <button
+            className="btn"
+            onClick={() => {
+              repositoryCheck.current?.abort();
+              setRepositorySetup(null);
+            }}
+            type="button"
+          >
+            Finish later
+          </button>
+        </div>
       ) : null}
-    </>
-  );
-}
-
-/**
- * The sentence a person approves, built from the operations this Request can
- * actually reach — not from the access it asked for.
- */
-export function connectPurpose(
-  plan: Pick<AccessPlan, "integrationName" | "readCount" | "writeCount">,
-  access: IntegrationAccess,
-): string {
-  const total = plan.readCount + (access === "read-write" ? plan.writeCount : 0);
-  if (total === 0) {
-    return `Connect a ${plan.integrationName} account for this integration.`;
-  }
-  return access === "read-write"
-    ? `Connect a ${plan.integrationName} account so this integration can read and make changes through ${operationCount(total)} you approve.`
-    : `Connect a ${plan.integrationName} account so this integration can read through ${operationCount(total)} you approve.`;
-}
-
-export function IntegrationAccountActions({
-  authorizationActive,
-  canAllow,
-  canConnect,
-  computerApp = false,
-  hasAccount,
-  onAllow,
-  onConnect,
-  pending,
-  primaryLabel,
-  reconnectRequired = false,
-}: {
-  readonly authorizationActive: boolean;
-  readonly canAllow: boolean;
-  readonly canConnect: boolean;
-  /** An app on a computer is turned on for a computer, never signed in to. */
-  readonly computerApp?: boolean;
-  readonly hasAccount: boolean;
-  readonly onAllow: () => void;
-  readonly onConnect: () => void;
-  readonly pending: boolean;
-  readonly primaryLabel: string;
-  readonly reconnectRequired?: boolean;
-}) {
-  if (authorizationActive) return null;
-  return (
-    <>
-      {canConnect ? (
-        <button
-          className={hasAccount && !reconnectRequired ? "btn" : "btn btn--primary"}
-          disabled={pending}
-          onClick={onConnect}
-          type="button"
-        >
-          {reconnectRequired
-            ? "Reconnect account"
-            : computerApp
-              ? hasAccount
-                ? "Use another computer"
-                : "Choose a computer"
-              : hasAccount
-                ? "Connect another account"
-                : "Connect account"}
-        </button>
-      ) : null}
-      {canAllow ? (
-        <button className="btn btn--primary" disabled={pending} onClick={onAllow} type="button">
-          {primaryLabel}
-        </button>
-      ) : null}
-    </>
+      <details className="connect-card__disclosure">
+        <summary>What Opensteer can do</summary>
+        {card.capabilities
+          .filter(
+            (line) =>
+              !line.includes("connecting also allows") &&
+              !line.includes("requires read-write") &&
+              line !== requestAgentProposedDetail,
+          )
+          .map((line) => (
+            <p className="field__hint" key={line}>
+              {line}
+            </p>
+          ))}
+      </details>
+    </div>
   );
 }
 

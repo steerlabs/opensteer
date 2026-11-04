@@ -75,10 +75,11 @@ export function accountFrontDoorBody(): string {
 export function signInBody(input: {
   readonly hiddenFields: string;
   readonly reauthorization: boolean;
+  readonly hostedOAuth?: boolean;
 }): string {
   return card({
     head: `${brandMark()}<h1 class="title">${input.reauthorization ? "Confirm it’s you" : "Sign in to Opensteer"}</h1>`,
-    content: `<form method="post" action="/sign-in/google">${input.hiddenFields}<button class="btn btn--block" type="submit">${googleMark()}Continue with Google</button></form>`,
+    content: `${input.hostedOAuth ? '<p class="lead">Use the Opensteer Account linked to that Opensteer to continue connecting.</p>' : ""}<form method="post" action="/sign-in/google">${input.hiddenFields}<button class="btn btn--block" type="submit">${googleMark()}Continue with Google</button></form>`,
   });
 }
 

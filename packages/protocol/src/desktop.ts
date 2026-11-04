@@ -32,7 +32,11 @@ import {
   isSecureOrLoopbackOrigin,
 } from "@opensteer/core";
 import { z } from "zod";
-import { IntegrationAccessSchema } from "@opensteer/integration-core";
+import {
+  IntegrationAuthorizationAttemptIdSchema,
+  IntegrationAuthorizationReturnProofSchema,
+  IntegrationAccessSchema,
+} from "@opensteer/integration-core";
 import {
   ComputerUsePermissionsViewSchema,
   ComputerUsePermissionPaneSchema,
@@ -349,11 +353,10 @@ export type DesktopOpenComputerUsePermissionsPanelResult = z.infer<
 >;
 
 export const DesktopOpenIntegrationAuthorizationInputSchema = z.strictObject({
-  attemptId: z
-    .string()
-    .regex(
-      /^(?:ioa|imo)_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu,
-    ),
+  attemptId: IntegrationAuthorizationAttemptIdSchema,
+  deploymentId: DeploymentIdSchema,
+  userId: UserIdSchema.optional(),
+  expiresAt: IsoDateTimeSchema,
   launchTicket: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
 });
 export type DesktopOpenIntegrationAuthorizationInput = z.infer<
@@ -364,6 +367,28 @@ export const DesktopOpenIntegrationAuthorizationResultSchema = z.strictObject({
 });
 export type DesktopOpenIntegrationAuthorizationResult = z.infer<
   typeof DesktopOpenIntegrationAuthorizationResultSchema
+>;
+
+export const DesktopIntegrationAuthorizationReturnSchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  attemptId: IntegrationAuthorizationAttemptIdSchema,
+  returnProof: IntegrationAuthorizationReturnProofSchema.nullable(),
+});
+export type DesktopIntegrationAuthorizationReturn = z.infer<
+  typeof DesktopIntegrationAuthorizationReturnSchema
+>;
+export const DesktopIntegrationAuthorizationSubscriptionSchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  userId: UserIdSchema,
+  generation: z.uuid(),
+  ready: z.boolean(),
+});
+export const DesktopFinishIntegrationAuthorizationInputSchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  attemptId: IntegrationAuthorizationAttemptIdSchema.optional(),
+});
+export type DesktopFinishIntegrationAuthorizationInput = z.infer<
+  typeof DesktopFinishIntegrationAuthorizationInputSchema
 >;
 
 /**
@@ -950,6 +975,7 @@ const DesktopIdempotencyKeySchema = z.string().regex(/^[\x21-\x7e]{1,255}$/u);
 const DesktopApiVersionSchema = z.string().regex(/^[0-9]{1,6}$/u);
 
 export const DesktopHostHttpRequestSchema = z.strictObject({
+  expectedDeploymentId: DeploymentIdSchema.optional(),
   body: boundedUtf8String(0, 1 * 1_024 * 1_024).optional(),
   headers: z.strictObject({
     accept: DesktopAcceptHeaderSchema.optional(),
@@ -1638,6 +1664,11 @@ export interface OpensteerDesktopBridge {
   openIntegrationAuthorization(
     input: DesktopOpenIntegrationAuthorizationInput,
   ): Promise<DesktopOpenIntegrationAuthorizationResult>;
+  onIntegrationAuthorizationReturn(
+    identity: { readonly deploymentId: string; readonly userId: string },
+    listener: (callback: DesktopIntegrationAuthorizationReturn) => void,
+  ): () => void;
+  finishIntegrationAuthorization(input: DesktopFinishIntegrationAuthorizationInput): Promise<void>;
   openHostWebSocket(input: DesktopOpenHostWebSocketInput): Promise<DesktopOpenHostWebSocketResult>;
   pickFolder(): Promise<DesktopPickFolderResult>;
   /** The grant as the helper sees it right now, on this Mac. */

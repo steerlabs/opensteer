@@ -1,3 +1,4 @@
+import { DesktopIntegrationAuthorizations } from "./app/integration-authorizations.js";
 import { desktopBridgeChannels } from "./bridge/desktop-bridge-channels.js";
 import { McpAuthorizationLinks } from "./app/mcp-authorization-links.js";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
@@ -161,6 +162,18 @@ const oauthDeepLinks = new OAuthDeepLinkBroker({
   ...embeddedRelease.oauth,
   application: "desktop",
 });
+let openIntegrationReturn: ((deploymentId: string) => Promise<void>) | null = null;
+const integrationAuthorizations = new DesktopIntegrationAuthorizations(
+  { ...embeddedRelease.oauth, application: "desktop" },
+  (deploymentId) => {
+    void openIntegrationReturn?.(deploymentId).catch(() =>
+      reportEvent("desktop.integration-return.failed", {}),
+    );
+  },
+);
+const desktopOAuthLinks = {
+  accept: (url: string) => integrationAuthorizations.accept(url) || oauthDeepLinks.accept(url),
+};
 const mcpAuthorizationLinks = new McpAuthorizationLinks(
   new URL(embeddedRelease.oauth.hostCallback).protocol.slice(0, -1),
 );
@@ -183,7 +196,7 @@ app.on("open-url", (event, url) => {
     if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
     return;
   }
-  if (oauthDeepLinks.accept(url)) {
+  if (desktopOAuthLinks.accept(url)) {
     event.preventDefault();
     return;
   }
@@ -193,7 +206,7 @@ app.on("open-url", (event, url) => {
 });
 app.on("second-instance", (_event, argv) => {
   for (const url of argv)
-    if (!mcpAuthorizationLinks.accept(url)) routeDesktopUrl(url, oauthDeepLinks, webLinks);
+    if (!mcpAuthorizationLinks.accept(url)) routeDesktopUrl(url, desktopOAuthLinks, webLinks);
   if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
 });
 
@@ -244,7 +257,7 @@ async function startDesktop(): Promise<void> {
   if (loaded.config.updates && (await offerMoveToApplications(reportEvent))) return;
   shutdown.signal.throwIfAborted();
   for (const url of process.argv)
-    if (!mcpAuthorizationLinks.accept(url)) routeDesktopUrl(url, oauthDeepLinks, webLinks);
+    if (!mcpAuthorizationLinks.accept(url)) routeDesktopUrl(url, desktopOAuthLinks, webLinks);
   await runDesktop(loaded, privateFiles);
 }
 
@@ -952,6 +965,7 @@ async function runDesktop(
       restart: () => restartToUpdate(),
     },
     webLinks,
+    integrationAuthorizations,
     mcpAuthorizationLinks,
     isWorkspaceContents: (sender) => sender === workspaceContents,
     passkeys,
@@ -1146,6 +1160,12 @@ async function runDesktop(
     },
   });
   activeMainProcess = mainProcess;
+  openIntegrationReturn = async (deploymentId) => {
+    if (shutdown.requested) return;
+    if (access.snapshot().selectedDeploymentId !== deploymentId) await access.select(deploymentId);
+    await mainProcess.activate();
+  };
+
   const tray = new DesktopTrayService({
     catalog: deploymentCatalog,
     iconPath: path.join(import.meta.dirname, "trayTemplate.png"),

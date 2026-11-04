@@ -528,3 +528,59 @@
     min-height: 44px;
   }
 }
+
+.connect-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+.connect-card__heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.connect-card__heading p {
+  margin: 4px 0 0;
+}
+.connect-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  order: 10;
+}
+.connect-card__accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.connect-card__account {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.connect-card__account span {
+  flex: 1;
+}
+.connect-card__account small {
+  display: block;
+  margin-top: 4px;
+}
+.connect-card__account--selected {
+  border-color: var(--ember-line);
+  background: var(--ember-wash);
+}
+.connect-card__disclosure summary {
+  cursor: pointer;
+}
+.connect-card__result {
+  padding: 8px 0;
+}

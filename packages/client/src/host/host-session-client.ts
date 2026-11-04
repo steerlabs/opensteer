@@ -1266,6 +1266,8 @@ export class HttpHostClient {
       savedViewReadiness: this.#savedViewReadiness,
       threadRenameAvailable: this.#capabilities?.includes("thread-titles-v1") === true,
       taskMarksAvailable: this.#capabilities?.includes("task-marks-v1") === true,
+      integrationAppFinishAvailable:
+        this.#capabilities?.includes("integration-app-finish-v1") === true,
       sharedTaskDoneAvailable: this.#capabilities?.includes("shared-task-done-v1") === true,
       harnessUpdateAvailable: this.#capabilities?.includes("harness-update-v1") === true,
       workspaceTabReopenAvailable: this.#capabilities?.includes("workspace-tab-reopen-v1") === true,
@@ -3947,6 +3949,7 @@ export class HttpHostClient {
       ...this.#snapshot,
       threadRenameAvailable: capabilities.includes("thread-titles-v1"),
       taskMarksAvailable: capabilities.includes("task-marks-v1"),
+      integrationAppFinishAvailable: capabilities.includes("integration-app-finish-v1"),
       sharedTaskDoneAvailable: capabilities.includes("shared-task-done-v1"),
       harnessUpdateAvailable: capabilities.includes("harness-update-v1"),
       workspaceTabReopenAvailable: capabilities.includes("workspace-tab-reopen-v1"),
@@ -6267,6 +6270,8 @@ export class HttpHostClient {
       savedViewReadiness: this.#savedViewReadiness,
       threadRenameAvailable: this.#capabilities?.includes("thread-titles-v1") === true,
       taskMarksAvailable: this.#capabilities?.includes("task-marks-v1") === true,
+      integrationAppFinishAvailable:
+        this.#capabilities?.includes("integration-app-finish-v1") === true,
       sharedTaskDoneAvailable: this.#capabilities?.includes("shared-task-done-v1") === true,
       harnessUpdateAvailable: this.#capabilities?.includes("harness-update-v1") === true,
       workspaceTabReopenAvailable: this.#capabilities?.includes("workspace-tab-reopen-v1") === true,

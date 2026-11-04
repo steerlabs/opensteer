@@ -280,6 +280,8 @@ live source with an older one.
 
 Deploy Account's additive browser-binding migration, custom/MCP callback-relay reader, browser-bound callback claim and static MCP client-metadata document on every replica before distributing Hosts that require Account callbacks for all new consent. An older or unavailable Account causes an update/unavailable refusal; Hosts never switch linked consent back to loopback. Existing connections continue using and refreshing their grants. In-flight callbacks launched before the browser-binding rollout must restart consent.
 
+Deploy Account's app-finish support (`appFinish` metadata, held results and `/return`) on every replica before distributing Hosts that advertise `integration-app-finish-v1`. A Host refuses an app finish when the Account lacks it rather than switching that consent to an Account browser sign-in; clients and Hosts without the capability keep the sign-in path.
+
 Deploy Account's additive operation-refusal reasons and completed-operation results
 on every replica before distributing Hosts that use them to settle their Account
 journals. A reasonless response from an older Account remains retryable and keeps

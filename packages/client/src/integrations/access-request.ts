@@ -21,7 +21,7 @@ import type { HostClient, WorkspaceSummary } from "../host/index.js";
 
 /**
  * What one integration access Request comes to, shared by the browser card and
- * the phone's sheet: which installation and server it names, which of this
+ * the phone's card: which installation and server it names, which of this
  * person's accounts can answer it, and how many operations each access class
  * actually reaches. Both surfaces must read the same Request the same way — an
  * approval that means one thing on a laptop and another on a phone is a bug
@@ -99,7 +99,7 @@ export function matchingInstallationForManifest(
 
 /**
  * What a person decides an installation on, read the same way by the browser
- * card and the phone's sheet: what it will be called and what it does, where it
+ * card and the phone's card: what it will be called and what it does, where it
  * came from when that is not Opensteer's own catalog, and where its key would
  * go. How much it can do is left to the access step, which counts what is
  * actually granted.

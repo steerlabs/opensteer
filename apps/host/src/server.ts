@@ -2869,6 +2869,7 @@ export function advertisedCapabilities(
     "iphone-apps-v1",
     "ownerViewWindows",
     "browser-target-control-v1",
+    "integration-app-finish-v1",
     ...(dependencies.passkeys === true ? ["browser-passkeys-v1" as const] : []),
     "browser-frame-window-v1",
     "browser-raster-demand-v1",

@@ -1,5 +1,6 @@
+import { HostedOAuthAttemptIdSchema } from "@opensteer/control-plane-protocol";
 import { OpensteerError } from "@opensteer/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { HostedOAuthBrokerClient } from "./hosted-oauth-broker-client.js";
 
 function client(respond: () => Response) {
@@ -11,6 +12,64 @@ function client(respond: () => Response) {
 }
 
 describe("HostedOAuthBrokerClient refusals", () => {
+  it("redeems only a valid app return with the Host credential and validates the status", async () => {
+    const attemptId = HostedOAuthAttemptIdSchema.parse(`hoa_${crypto.randomUUID()}`);
+    const result = {
+      attemptId,
+      expiresAt: "2030-01-01T00:00:00.000Z",
+      failureCode: null,
+      retryGeneration: 0,
+      status: "sealed",
+    };
+    const fetch = vi.fn(async () => Response.json(result));
+    const broker = new HostedOAuthBrokerClient({
+      fetch,
+      hostCredential: "osc_host",
+      issuer: new URL("https://accounts.example.test"),
+    });
+    await expect(broker.returnAttempt(attemptId, "r".repeat(43))).resolves.toEqual(result);
+    const [url, init] = fetch.mock.calls[0]! as unknown as [URL, RequestInit];
+    expect(url.toString()).toBe(
+      `https://accounts.example.test/v1/host/oauth-broker/attempts/${attemptId}/return`,
+    );
+    expect(init.method).toBe("POST");
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer osc_host");
+    expect(JSON.parse(String(init.body))).toEqual({ attemptId, returnProof: "r".repeat(43) });
+    await expect(broker.returnAttempt(attemptId, "bad")).rejects.toThrow();
+    expect(fetch).toHaveBeenCalledOnce();
+    fetch.mockResolvedValueOnce(Response.json({ ...result, status: "held" }));
+    await expect(broker.returnAttempt(attemptId, "r".repeat(43))).rejects.toThrow();
+  });
+
+  it.each(["request", "response"])(
+    "makes %s transport failures retryable without exposing the return proof",
+    async (phase) => {
+      const broker = new HostedOAuthBrokerClient({
+        fetch: async () => {
+          if (phase === "request") throw new Error("network");
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.error(new Error("response interrupted"));
+              },
+            }),
+          );
+        },
+        hostCredential: "osc_host",
+        issuer: new URL("https://accounts.example.test"),
+      });
+      await expect(
+        broker.returnAttempt(
+          HostedOAuthAttemptIdSchema.parse(`hoa_${crypto.randomUUID()}`),
+          "r".repeat(43),
+        ),
+      ).rejects.toMatchObject({
+        retryable: true,
+        code: "conflict",
+        message: "Opensteer hosted OAuth service is unavailable",
+      });
+    },
+  );
   it("authenticates and validates hosted revocation requests and responses", async () => {
     const transactionId = `hov_${crypto.randomUUID()}`;
     const request = {

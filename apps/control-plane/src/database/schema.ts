@@ -275,12 +275,14 @@ interface HostedOAuthBrokerAttemptTable {
   requestedScopeDigest: string;
   launchTicketHash: string | null;
   browserBindingHash: Generated<string | null>;
+  returnProofHash: Generated<string | null>;
   stateHash: string | null;
   expiresAt: Timestamp;
   status:
     | "pending"
     | "launched"
     | "exchanging"
+    | "held"
     | "sealed"
     | "acknowledged"
     | "denied"

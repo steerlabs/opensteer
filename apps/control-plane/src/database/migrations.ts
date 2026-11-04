@@ -460,6 +460,7 @@ const migrationProvider = {
       "0013_better_auth_17": betterAuth17Migration,
       "0014_notification_previews": notificationPreviewsMigration,
       "0015_oauth_browser_binding": oauthBrowserBindingMigration,
+      "0016_oauth_app_finish": oauthAppFinishMigration,
     };
   },
 };
@@ -495,5 +496,28 @@ const oauthBrowserBindingMigration: Migration = {
       check (browser_binding_hash is null or browser_binding_hash ~ '^[A-Za-z0-9_-]{43}$')`.execute(
       database,
     );
+  },
+};
+
+// Broaden existing constraints so old replicas can keep writing their original rows.
+const oauthAppFinishMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table hosted_oauth_broker_attempts
+        add column return_proof_hash text check (return_proof_hash is null or return_proof_hash ~ '^[A-Za-z0-9_-]{43}$'),
+        drop constraint hosted_oauth_broker_attempt_status_check,
+        add constraint hosted_oauth_broker_attempt_status_check check (status in ('pending','launched','exchanging','held','sealed','acknowledged','denied','failed','expired')),
+        drop constraint hosted_oauth_broker_attempt_result_check,
+        add constraint hosted_oauth_broker_attempt_result_check check ((status in ('held','sealed') and sealed_ciphertext is not null) or (status not in ('held','sealed') and sealed_ciphertext is null)),
+        drop constraint hosted_oauth_broker_attempt_session_context_check,
+        add constraint hosted_oauth_broker_attempt_session_context_check check (
+          (status = 'pending' and state_hash is not null and launch_ticket_hash is not null and encrypted_context is not null and octet_length(encrypted_context) between 1 and 524288 and context_key_version >= 0)
+          or (status in ('launched','exchanging') and state_hash is not null and launch_ticket_hash is null and encrypted_context is not null and octet_length(encrypted_context) between 1 and 524288 and context_key_version >= 0)
+          or (status in ('held','sealed','acknowledged') and launch_ticket_hash is null and (
+            (encrypted_context is null and context_key_version is null and status <> 'held')
+            or (encrypted_context is not null and octet_length(encrypted_context) between 1 and 524288 and context_key_version >= 0)))
+          or (status in ('denied','failed','expired') and launch_ticket_hash is null and encrypted_context is null and context_key_version is null)
+        )
+    `.execute(database);
   },
 };

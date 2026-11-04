@@ -25,6 +25,11 @@ const session: AuthenticatedSession = {
   },
 };
 const commands = [
+  {
+    type: "integration.authorization.return",
+    attemptId: createIntegrationId("oauthAttempt"),
+    returnProof: "r".repeat(43),
+  },
   { type: "connection.revoke", connectionId: `mcn_${crypto.randomUUID()}` },
   {
     type: "connection.authorize",
