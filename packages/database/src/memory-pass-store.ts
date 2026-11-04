@@ -220,6 +220,13 @@ export async function startMemoryPassInTransaction(
     .where("waitingReason", "is not", null)
     .execute();
   await transaction
+    .selectFrom("providerSessions")
+    .select("id")
+    .where("threadId", "=", worker.id)
+    .orderBy("id", "asc")
+    .forNoKeyUpdate()
+    .execute();
+  await transaction
     .updateTable("providerSessions")
     .set({ active: false, updatedAt: new Date() })
     .where("threadId", "=", worker.id)

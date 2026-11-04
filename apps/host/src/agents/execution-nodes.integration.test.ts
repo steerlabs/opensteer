@@ -616,7 +616,7 @@ function fakeClaudeSdk(script: ClaudeScript): ClaudeAgentSdk {
         tool_use_id: "agent-call-1",
         type: "system",
       });
-      const abort = new AbortController();
+      const abort = parameters.options.abortController ?? new AbortController();
       const ask = () =>
         canUseTool(
           "Bash",
