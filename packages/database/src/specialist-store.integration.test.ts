@@ -78,7 +78,10 @@ describeStore("specialist registration", (test) => {
         );
         await platform.plugins.repinSpecialists(tx, pluginId);
       });
-    await update("same-access", { ...manifest, models: [{ engine: "claude", model: "haiku" }] });
+    await update("same-access", {
+      ...manifest,
+      models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
+    });
     const rows = () =>
       fixture.database
         .selectFrom("specialists")
