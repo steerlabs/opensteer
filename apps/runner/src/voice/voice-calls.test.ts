@@ -1,283 +1,128 @@
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import { mkdtemp, mkdir, readdir, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
-import { Deferred } from "@opensteer/harness";
 import { voiceLeaseMs, voiceMaxCallMs } from "@opensteer/protocol";
-import { VoiceCalls, type RunnerVoiceCall } from "./voice-calls.js";
-const owners: VoiceCalls[] = [];
-const directories: string[] = [];
+import { VoiceCalls } from "./voice-calls.js";
+const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
-  await Promise.all(owners.splice(0).map((owner) => owner.close()));
+  for (const cleanup of cleanups.splice(0)) await cleanup();
   vi.useRealTimers();
-  await Promise.all(
-    directories.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
-  );
 });
-const user = createId("user"),
-  other = createId("user"),
-  harnessInstanceId = createId("harnessInstance");
-function fakeCall(): RunnerVoiceCall & {
-  stop: ReturnType<typeof vi.fn>;
-  say: ReturnType<typeof vi.fn>;
-} {
-  const closed = new Deferred<void>();
+async function fixture() {
+  const directory = await mkdtemp(join(tmpdir(), "voice-owner-"));
+  const calls = new VoiceCalls(directory, 100);
+  const owner = createId("user"),
+    runId = createId("run"),
+    sessionId = randomUUID();
+  const abort = new AbortController();
+  cleanups.push(async () => {
+    await calls.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const admit = (admittedAt = Date.now()) =>
+    calls.admit({
+      owner,
+      runId,
+      sessionId,
+      admittedAt,
+      signal: abort.signal,
+      end: () => abort.abort(),
+    });
   return {
-    answer: "answer",
-    closed: closed.promise,
-    say: vi.fn(async () => undefined),
-    stop: vi.fn(async () => {
-      closed.resolve();
-    }),
+    calls,
+    owner,
+    runId,
+    sessionId,
+    abort,
+    admit,
+    command: { action: "start" as const, runId, sessionId, offer: "offer" },
   };
 }
-async function fixture(open: ConstructorParameters<typeof VoiceCalls>[1] = async () => fakeCall()) {
-  const launch = vi.fn(open);
-  const directory = await mkdtemp(join(tmpdir(), "opensteer-voice-owner-"));
-  directories.push(directory);
-  await mkdir(join(directory, "call-leftover"));
-  const owner = new VoiceCalls(directory, launch);
-  owners.push(owner);
-  return { owner, open: launch, directory };
-}
-const start = (sessionId = randomUUID()) => ({
-  action: "start" as const,
-  harnessInstanceId,
-  sessionId,
-  offer: "offer",
-});
-describe("Runner voice owner", () => {
-  it.each([false, true])(
-    "routes agent calls with find=%s while keeping legacy answers strict",
-    async (find) => {
-      const call = {
-        ...fakeCall(),
-        next: vi.fn(async () => ({
-          id: "opaque",
-          tool: "show",
-          input: { link: "opensteer://chat" },
-          heard: ["Show me Chat."],
-        })),
-        answerCall: vi.fn(async () => undefined),
-        context: vi.fn(async () => undefined),
-      };
-      const f = await fixture(async () => call);
-      const command = start();
-      expect(
-        await f.owner.handle(user, {
-          ...command,
-          agent: true,
-          ...(find ? { find: true as const } : {}),
-        }),
-      ).toEqual({
-        ok: true,
-        answer: "answer",
-        agent: true,
-        ...(find ? { find: true } : {}),
-      });
-      expect(f.open).toHaveBeenCalledWith(expect.objectContaining({ agent: true, find }));
-      const address = { sessionId: command.sessionId, harnessInstanceId };
-      expect(await f.owner.handle(user, { ...address, action: "next" })).toMatchObject({
-        ok: true,
-        call: { id: "opaque" },
-      });
-      await f.owner.handle(user, {
-        ...address,
-        action: "answer",
-        callId: "opaque",
-        ok: true,
-        text: "Shown",
-      });
-      expect(call.answerCall).toHaveBeenCalledWith("opaque", true, "Shown");
-      await f.owner.handle(user, { ...address, action: "context", text: "screen" });
-      expect(call.context).toHaveBeenCalledWith("screen");
-      const legacy = start();
-      expect(await f.owner.handle(user, legacy)).toEqual({ ok: true, answer: "answer" });
-      expect(await f.owner.handle(user, { ...legacy, action: "next" })).toMatchObject({
-        ok: false,
-        reason: "voice-ended",
-      });
+it("pairs either order, shares duplicate answers and serializes deduplicated speech", async () => {
+  const f = await fixture();
+  const start = f.calls.handle(f.owner, f.command);
+  const call = f.admit();
+  expect(await call.offer).toBe("offer");
+  call.answer("answer");
+  expect(await start).toEqual({ ok: true, answer: "answer" });
+  expect(await f.calls.handle(f.owner, f.command)).toEqual(await start);
+  const spoken: string[] = [],
+    notes: string[] = [];
+  call.connect({
+    speak: async (text) => {
+      spoken.push(text);
     },
-  );
-  it("deduplicates pending and started admission, checks owners and sweeps leftovers", async () => {
-    const ready = new Deferred<RunnerVoiceCall>();
-    const opened = new Deferred<void>();
-    const f = await fixture(
-      vi.fn(async () => {
-        opened.resolve();
-        return ready.promise;
-      }),
-    );
-    const command = start();
-    const first = f.owner.handle(user, command);
-    const second = f.owner.handle(user, command);
-    await withTimeout(opened.promise, 1_000, {
-      timeoutError: () => new Error("Voice startup never reached the driver"),
-    });
-    expect(await readdir(f.directory)).toEqual([]);
-    expect(await f.owner.handle(other, command)).toMatchObject({
-      ok: false,
-      reason: "voice-ended",
-    });
-    const call = fakeCall();
-    ready.resolve(call);
-    expect(await first).toEqual({ ok: true, answer: "answer" });
-    expect(await second).toEqual(await first);
-    expect(await f.owner.handle(user, command)).toEqual(await first);
-    expect(f.open).toHaveBeenCalledTimes(1);
-    for (const action of ["say", "renew", "stop"] as const)
-      expect(
-        await f.owner.handle(
-          other,
-          action === "say"
-            ? { action, sessionId: command.sessionId, harnessInstanceId, text: "no" }
-            : { action, sessionId: command.sessionId, harnessInstanceId },
-        ),
-      ).toMatchObject({ ok: false, reason: "voice-ended" });
-    await f.owner.handle(user, {
-      action: "say",
-      sessionId: command.sessionId,
-      harnessInstanceId,
-      text: "hello",
-    });
-    expect(call.say).toHaveBeenCalledWith("hello");
-    await f.owner.handle(user, { action: "stop", sessionId: command.sessionId, harnessInstanceId });
-    expect(call.stop).toHaveBeenCalledTimes(1);
-    expect(
-      await f.owner.handle(user, {
-        action: "stop",
-        sessionId: command.sessionId,
-        harnessInstanceId,
-      }),
-    ).toEqual({ ok: true });
-    expect(await f.owner.handle(user, command)).toMatchObject({
-      reason: "voice-ended",
-    });
+    note: async (text) => {
+      notes.push(text);
+    },
   });
-  it("replaces the same person's call and fences late close callbacks", async () => {
-    const f = await fixture();
-    const first = start(),
-      second = start();
-    await f.owner.handle(user, first);
-    const call = await f.open.mock.results[0]!.value;
-    await f.owner.handle(user, second);
-    expect(call.stop).toHaveBeenCalledTimes(1);
-    expect(
-      await f.owner.handle(user, {
-        action: "renew",
-        sessionId: first.sessionId,
-        harnessInstanceId,
-      }),
-    ).toMatchObject({ reason: "voice-ended" });
-    expect(
-      await f.owner.handle(user, {
-        action: "renew",
-        sessionId: second.sessionId,
-        harnessInstanceId,
-      }),
-    ).toEqual({ ok: true });
-    await f.owner.close();
-    expect((await f.open.mock.results[1]!.value).stop).toHaveBeenCalledTimes(1);
+  await call.speak("turn:1", "first");
+  await f.calls.handle(f.owner, { ...f.command, action: "say", id: "chat:1", text: "second" });
+  await call.speak("turn:2", "third");
+  await f.calls.handle(f.owner, { ...f.command, action: "say", id: "chat:1", text: "second" });
+  expect(spoken).toEqual(["first", "second", "third"]);
+  expect(notes).toEqual([expect.stringContaining("Chat told the person: second")]);
+  f.abort.abort();
+  expect(await f.calls.handle(f.owner, f.command)).toMatchObject({
+    ok: false,
+    reason: "voice-ended",
   });
-  it("refuses an account mismatch for every operation without ending the owner's call", async () => {
-    const f = await fixture();
-    const command = start();
-    await f.owner.handle(user, command);
-    const wrongAccount = createId("harnessInstance");
-    expect(
-      await f.owner.handle(user, { ...command, harnessInstanceId: wrongAccount }),
-    ).toMatchObject({ reason: "voice-ended" });
-    for (const action of ["renew", "say", "stop"] as const) {
-      const input =
-        action === "say"
-          ? { action, sessionId: command.sessionId, harnessInstanceId: wrongAccount, text: "no" }
-          : { action, sessionId: command.sessionId, harnessInstanceId: wrongAccount };
-      expect(await f.owner.handle(user, input)).toMatchObject({ reason: "voice-ended" });
-    }
-    const call = await f.open.mock.results[0]!.value;
-    expect(call.stop).not.toHaveBeenCalled();
-    expect(
-      await f.owner.handle(user, {
-        action: "renew",
-        sessionId: command.sessionId,
-        harnessInstanceId,
-      }),
-    ).toEqual({ ok: true });
+});
+it("bounds unknown Runs and offers", async () => {
+  const f = await fixture();
+  vi.useFakeTimers();
+  const unknown = f.calls.handle(f.owner, f.command);
+  await vi.advanceTimersByTimeAsync(101);
+  expect(await unknown).toMatchObject({ ok: false, reason: "voice-ended" });
+});
+it("renews the lease, expires it, and enforces admission cap", async () => {
+  const f = await fixture();
+  vi.useFakeTimers();
+  const call = f.admit();
+  const start = f.calls.handle(f.owner, f.command);
+  call.answer("a");
+  await start;
+  await vi.advanceTimersByTimeAsync(voiceLeaseMs - 1);
+  expect(await f.calls.handle(f.owner, { ...f.command, action: "renew" })).toEqual({ ok: true });
+  await vi.advanceTimersByTimeAsync(voiceLeaseMs);
+  expect(call.signal.aborted).toBe(true);
+  const g = await fixture();
+  const capped = g.admit(Date.now() - voiceMaxCallMs + 10);
+  await vi.advanceTimersByTimeAsync(10);
+  expect(capped.signal.aborted).toBe(true);
+});
+it("notes view changes once, rejects mismatched controls and bounds a missing offer", async () => {
+  const f = await fixture();
+  const call = f.admit();
+  const notes: string[] = [];
+  call.connect({
+    speak: async () => undefined,
+    note: async (text) => {
+      notes.push(text);
+    },
   });
-  it("renews the lease but never beyond the hard cap", async () => {
-    const f = await fixture();
-    vi.useFakeTimers();
-    const command = start();
-    await f.owner.handle(user, command);
-    const call = await f.open.mock.results[0]!.value;
-    await vi.advanceTimersByTimeAsync(voiceLeaseMs - 1);
-    expect(
-      await f.owner.handle(user, {
-        action: "renew",
-        sessionId: command.sessionId,
-        harnessInstanceId,
-      }),
-    ).toEqual({ ok: true });
-    await vi.advanceTimersByTimeAsync(voiceLeaseMs);
-    expect(call.stop).toHaveBeenCalledOnce();
-    const capped = start();
-    await f.owner.handle(user, capped);
-    const second = await f.open.mock.results[1]!.value;
-    for (let elapsed = 0; elapsed < voiceMaxCallMs; elapsed += 20_000) {
-      await vi.advanceTimersByTimeAsync(20_000);
-      await f.owner.handle(user, {
-        action: "renew",
-        sessionId: capped.sessionId,
-        harnessInstanceId,
-      });
-    }
-    expect(second.stop).toHaveBeenCalledOnce();
-    expect(
-      await f.owner.handle(user, {
-        action: "say",
-        sessionId: capped.sessionId,
-        harnessInstanceId,
-        text: "late",
-      }),
-    ).toMatchObject({ reason: "voice-ended" });
+  const view = { threadId: createId("thread"), tabId: null };
+  const command = { ...f.command, action: "context" as const, view };
+  expect(await f.calls.handle(f.owner, command)).toEqual({ ok: true });
+  expect(await f.calls.handle(f.owner, command)).toEqual({ ok: true });
+  expect(notes).toHaveLength(1);
+  expect(notes[0]).toContain(`thread ${view.threadId} / tab none`);
+  expect(await f.calls.handle(createId("user"), command)).toMatchObject({
+    ok: false,
+    reason: "voice-ended",
   });
-  it("refuses an expired lease even before its timer callback runs", async () => {
-    const f = await fixture();
-    vi.useFakeTimers();
-    const command = start();
-    await f.owner.handle(user, command);
-    const call = await f.open.mock.results[0]!.value;
-    vi.setSystemTime(Date.now() + voiceLeaseMs);
-    expect(
-      await f.owner.handle(user, {
-        action: "renew",
-        sessionId: command.sessionId,
-        harnessInstanceId,
-      }),
-    ).toMatchObject({ reason: "voice-ended" });
-    expect(call.stop).toHaveBeenCalledOnce();
+  expect(await f.calls.handle(f.owner, { ...command, runId: createId("run") })).toMatchObject({
+    ok: false,
+    reason: "voice-ended",
   });
-  it("stops pending startup and every call on shutdown", async () => {
-    const begun = new Deferred<void>();
-    const open = vi.fn(async (input?: { signal: AbortSignal }) => {
-      begun.resolve();
-      await new Promise<void>((_resolve, reject) =>
-        input?.signal.addEventListener("abort", () => reject(input.signal.reason), { once: true }),
-      );
-      return fakeCall();
-    });
-    const f = await fixture(open);
-    const starting = f.owner.handle(user, start());
-    await withTimeout(begun.promise, 1_000, {
-      timeoutError: () => new Error("Voice startup never reached the driver"),
-    });
-    await f.owner.close();
-    expect(await starting).toMatchObject({ ok: false });
-    expect(await f.owner.handle(user, start())).toMatchObject({
-      reason: "voice-ended",
-    });
-  });
+  vi.useFakeTimers();
+  const g = await fixture();
+  const missing = g.admit();
+  const timed = expect(missing.offer).rejects.toMatchObject({ reason: "voice-ended" });
+  await vi.advanceTimersByTimeAsync(100);
+  await timed;
+  expect(missing.signal.aborted).toBe(true);
 });

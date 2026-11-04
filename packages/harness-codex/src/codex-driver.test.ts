@@ -27,6 +27,7 @@ import {
   type Message,
 } from "@opensteer/core";
 import {
+  Deferred,
   isolatedServiceHarnessRuntimeBoundary,
   nativeUserHarnessRuntimeBoundary,
   threadTitlePrompt,
@@ -71,6 +72,108 @@ afterEach(async () => {
 });
 
 describe("Codex app-server harness", () => {
+  it("ends the call when Codex never returns an SDP answer", async () => {
+    const fixture = await setup("voice-no-answer", { startupTimeoutMs: 500 });
+    const lifetime = new AbortController();
+    const answer = vi.fn();
+    const session = await fixture.adapter.startSession({
+      ...fixture.context,
+      voiceCall: {
+        offer: Promise.resolve("offer"),
+        signal: lifetime.signal,
+        answer,
+        connect: () => undefined,
+        speak: async () => undefined,
+        end: () => lifetime.abort(),
+      },
+    });
+    const events: HarnessEvent[] = [];
+    const consume = (async () => {
+      for await (const event of session.events) events.push(event);
+    })();
+    const execution = session.execute(fixture.turn("seed"));
+    try {
+      await vi.waitFor(() => expect(lifetime.signal.aborted).toBe(true), { timeout: 2000 });
+      await execution;
+      await consume;
+      expect(answer).not.toHaveBeenCalled();
+      expect(events.filter((event) => event.type === "run.interrupted")).toHaveLength(1);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it.each([nativeUserHarnessRuntimeBoundary, isolatedServiceHarnessRuntimeBoundary])(
+    "runs realtime on the Run thread at $kind with no seed turn",
+    async (runtimeBoundary) => {
+      const fixture = await setup("voice-run", {
+        runtimeBoundary,
+        accessMode: "auto-accept-edits",
+      });
+      const offer = new Deferred<string>(),
+        answer = new Deferred<string>();
+      const lifetime = new AbortController();
+      const spoken: string[] = [];
+      let writer:
+        { speak(text: string): Promise<void>; note(text: string): Promise<void> } | undefined;
+      const call = {
+        offer: offer.promise,
+        signal: lifetime.signal,
+        answer: (sdp: string) => answer.resolve(sdp),
+        connect: (value: typeof writer) => {
+          writer = value;
+        },
+        speak: async (_id: string, text: string) => {
+          spoken.push(text);
+          await writer!.speak(text);
+        },
+        end: () => lifetime.abort(),
+      };
+      const session = await fixture.adapter.startSession({ ...fixture.context, voiceCall: call });
+      const events: HarnessEvent[] = [];
+      const consume = (async () => {
+        for await (const event of session.events) events.push(event);
+      })();
+      const execution = session.execute(fixture.turn("Voice call seed must never be sent"));
+      try {
+        offer.resolve("private-offer");
+        await vi.waitFor(() => expect(answer.promise).resolves.toBe("fake-answer"), {
+          timeout: 2000,
+        });
+        await vi.waitFor(() => expect(spoken).toEqual(["first answer", "second answer"]), {
+          timeout: 2000,
+        });
+        expect(events.filter((e) => e.type === "run.interrupted")).toHaveLength(0);
+        const captured = await fixture.capture();
+        expect(captured.some((r) => r.method === "turn/start")).toBe(false);
+        const start = captured.find((r) => r.method === "thread/start")!.params as JsonRecord;
+        expect(start).toMatchObject({
+          approvalPolicy: "on-request",
+          model: "gpt-5.6-sol",
+          developerInstructions: expect.stringContaining("workspace instructions"),
+        });
+        expect(start.config).toMatchObject({ model_reasoning_effort: "low" });
+        if (runtimeBoundary.kind === "native-user")
+          expect(start).toMatchObject({
+            sandbox: "workspace-write",
+            config: { sandbox_workspace_write: { writable_roots: fixture.context.writableRoots } },
+          });
+        else expect(start.permissions).toBeTruthy();
+      } finally {
+        lifetime.abort();
+        await execution;
+        await session.stop();
+        await consume;
+        await fixture.adapter.close();
+      }
+      expect(events.filter((e) => e.type === "run.interrupted")).toHaveLength(1);
+      const captured = await fixture.capture();
+      expect(captured.filter((r) => r.method === "thread/realtime/stop")).toHaveLength(1);
+      expect(captured.some((r) => r.method === "turn/interrupt")).toBe(true);
+    },
+  );
+
   it.each([["host_only_tool"], ["thread_read", "integration_call", "computer"]])(
     "enables exactly the Host plan %j",
     async (...tools) => {
