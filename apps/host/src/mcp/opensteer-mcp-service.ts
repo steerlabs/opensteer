@@ -1,4 +1,4 @@
-import { AgentMediaContentSchema } from "@opensteer/agent-tools/outputs";
+import { IntegrationCallOutputSchema } from "@opensteer/agent-tools/outputs";
 import { z } from "zod";
 import { formatIssues } from "@opensteer/shared/validationIssues";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -322,7 +322,9 @@ export class OpensteerMcpService {
         annotations,
         description: tool.description,
         title: tool.title,
-        inputSchema: tool.input as z.ZodObject,
+        // callTool validates every call against the tool's own schema, so a
+        // refusal names its field; the SDK only hands the arguments through.
+        inputSchema: z.looseObject({}),
       };
       advertisedTools.push({
         name: tool.name,
@@ -351,14 +353,16 @@ export class OpensteerMcpService {
                 ? AbortSignal.any([extra.signal, extra.authInfo.extra.disconnected])
                 : extra.signal,
           });
-          const media = Array.isArray(result.content)
-            ? result.content.flatMap((item: unknown) => {
-                const parsed = AgentMediaContentSchema.safeParse(item);
-                return parsed.success ? [parsed.data] : [];
-              })
-            : [];
+          // A text result is the whole answer, sent once as written.
+          // Each result goes out once, in the shape a model reads best: text as
+          // written, a provider's content (text, images, its error) as it came,
+          // and a record as JSON with its structured copy.
+          if (typeof result === "string")
+            return { content: [{ type: "text" as const, text: result }] };
+          if (tool.output === IntegrationCallOutputSchema)
+            return IntegrationCallOutputSchema.parse(result);
           return {
-            content: [{ type: "text" as const, text: JSON.stringify(result) }, ...media],
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
             structuredContent: result,
             ...(result.isError === true ? { isError: true } : {}),
           };
@@ -392,7 +396,7 @@ export class OpensteerMcpService {
       readonly signal?: AbortSignal;
       readonly caller?: AgentCaller;
     },
-  ): Promise<Record<string, unknown>> {
+  ): Promise<Record<string, unknown> | string> {
     const found = agentTools.find((spec) => spec.name === name);
     if (!found) throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
     const tool = found;
@@ -431,7 +435,7 @@ export class OpensteerMcpService {
       const handler = this.options.handlers[tool.name] as (
         call: ToolCall<typeof tool.name>,
       ) => Promise<unknown>;
-      return tool.output.parse(await handler(call)) as Record<string, unknown>;
+      return tool.output.parse(await handler(call)) as Record<string, unknown> | string;
     };
     await check();
     return invoke();

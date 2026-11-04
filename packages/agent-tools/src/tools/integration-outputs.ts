@@ -129,7 +129,8 @@ export const IntegrationSearchOutputSchema = z.object({
   total: z.number(),
   nextOffset: z.number().nullable(),
 });
-export const IntegrationDescribeOutputSchema = z.object({ description: z.string() });
+/** A bounded page of rendered text; models read it as is, so it is never wrapped in JSON. */
+export const IntegrationDescribeOutputSchema = z.string();
 // Content is provider data, already checked against the operation's pinned output
 // schema by the integration platform. The Host envelope is projected independently.
 export const AgentImageContentSchema = z.object({

@@ -366,7 +366,7 @@ export const TriggerOutputSchema = z.object({
   replayed: z.boolean().optional(),
 });
 
-export { AgentMediaContentSchema } from "./integration-outputs.js";
+export { AgentMediaContentSchema, IntegrationCallOutputSchema } from "./integration-outputs.js";
 
 export const ThreadWaitOutputSchema = z.object({
   status: z.enum(["running", "settled", "offline", "timed_out"]),

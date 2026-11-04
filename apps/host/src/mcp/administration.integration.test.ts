@@ -57,8 +57,11 @@ function mcp(dependencies: AdministrationDependencies, userId: UserId) {
   });
   return {
     service,
-    call: (name: string, input: Record<string, unknown>) =>
-      service.callTool("token", name, input, { operationKey: randomUUID() }),
+    call: async (name: string, input: Record<string, unknown>) => {
+      const result = await service.callTool("token", name, input, { operationKey: randomUUID() });
+      if (typeof result === "string") throw new Error(`${name} returned text, not a record`);
+      return result;
+    },
     scope: (workspaceId: Parameters<typeof dependencies.store.getWorkspaceForOwner>[0]) => {
       caller = { ...caller, reach: { kind: "workspace", workspaceId } };
     },

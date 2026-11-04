@@ -146,7 +146,7 @@ export class IntegrationToolHandlers {
   }
   async integration_describe(call: ToolCall<"integration_describe">) {
     const result = await this.#describe(await this.#readScope(call.caller), call.input);
-    return { description: result.content.map((c) => c.text).join("\n") };
+    return result.content.map((c) => c.text).join("\n");
   }
   async integration_call(call: ToolCall<"integration_call">) {
     return this.#call(

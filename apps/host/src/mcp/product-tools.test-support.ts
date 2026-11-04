@@ -783,6 +783,7 @@ export class ProductToolsTestClient {
       }
     }
     const result = await this.service.callTool(token, name, input, { operationKey: requestId });
+    if (typeof result === "string") throw new Error(`${name} returned text, not a record`);
     let fields: Record<string, unknown> = result;
     if (
       [

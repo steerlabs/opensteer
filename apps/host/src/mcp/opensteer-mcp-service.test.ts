@@ -351,7 +351,7 @@ describe("Opensteer MCP spine", () => {
       await f.service.close();
     }
   });
-  it("keeps safe image metadata in native and structured MCP results", async () => {
+  it("keeps safe image metadata and sends each image once", async () => {
     const f = await httpFixture();
     const image = {
       type: "image" as const,
@@ -369,8 +369,10 @@ describe("Opensteer MCP spine", () => {
         undefined,
         { timeout: 5000 },
       );
-      expect(result.content).toContainEqual(image);
-      expect(result.structuredContent).toEqual({ content: [image] });
+      expect(result.content).toEqual([image]);
+      expect(JSON.stringify(result)).not.toContain("surpriseSecret");
+      // A screenshot is large; a structured copy would send it to the model twice.
+      expect(result.structuredContent).toBeUndefined();
     } finally {
       await client.close();
       await f.service.close();

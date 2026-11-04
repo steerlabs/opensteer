@@ -466,8 +466,9 @@ describe("Opensteer MCP integration access classes", () => {
       { params: { arguments: { toolRef }, name: "integration_describe" } },
       callExtra("describe"),
     );
-    const text = (described as { structuredContent: { description: string } }).structuredContent
-      .description;
+    // The page is the whole answer, sent once as text and never wrapped in JSON.
+    expect(described).not.toHaveProperty("structuredContent");
+    const text = (described as { content: [{ text: string }] }).content[0].text;
     const newline = text.indexOf("\n");
     expect(JSON.parse(text.slice(0, newline))).toMatchObject({
       account: { alias: "Work", connectionId: callable.grant.connectionId, isDefault: true },
