@@ -336,11 +336,13 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     if (dimensions.width !== expected.width || dimensions.height !== expected.height) {
       const fitted = Promise.withResolvers<void>();
       void fitted.promise.catch(() => undefined);
-      const remove = producer.onEvent((event) => {
-        if (event.type !== "geometry") return;
-        const size = event.geometry.agent ?? event.geometry.person;
-        if (size.width === expected.width && size.height === expected.height) fitted.resolve();
-      });
+      const checkGeometry = () => {
+        const geometry = producer.geometry()?.geometry;
+        const size = geometry?.agent ?? geometry?.person;
+        if (size?.width === expected.width && size.height === expected.height) fitted.resolve();
+      };
+      const remove = producer.onEvent(checkGeometry);
+      checkGeometry();
       const timer = setTimeout(
         () => fitted.reject(new Error("Viewer Fit geometry never applied")),
         4000,
