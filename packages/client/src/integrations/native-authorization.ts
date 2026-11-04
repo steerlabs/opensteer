@@ -175,3 +175,41 @@ export class IntegrationAuthorizationCancelledError extends Error {
     super("Integration authorization was cancelled.");
   }
 }
+
+/**
+ * A Cancel the Host has not answered. No proof leaves this device any more, but
+ * one already sent may have finished the attempt, so nothing can be said yet.
+ * `reconciled` settles with the Host's durable status, or with null once that can
+ * no longer be read.
+ */
+export class IntegrationAuthorizationCancelUnconfirmedError extends Error {
+  readonly attemptId: string;
+  readonly reconciled: Promise<IntegrationAuthorizationStatus | null>;
+
+  constructor(attemptId: string, reconciled: Promise<IntegrationAuthorizationStatus | null>) {
+    super("This sign-in's Cancel is not confirmed yet.");
+    this.attemptId = attemptId;
+    this.reconciled = reconciled;
+  }
+}
+
+export const integrationAuthorizationCancelUnconfirmedDetail =
+  "Checking whether this was cancelled…";
+export const integrationAuthorizationCancelUnknownDetail =
+  "Opensteer could not confirm the Cancel. Check your connected accounts to see whether it finished.";
+
+/** A sign-in's outcome, waiting for the Host when a Cancel could not be confirmed. */
+export async function integrationAuthorizationSettled(
+  signIn: Promise<IntegrationAuthorizationStatus>,
+  onUnconfirmed: () => void,
+): Promise<IntegrationAuthorizationStatus> {
+  try {
+    return await signIn;
+  } catch (error) {
+    if (!(error instanceof IntegrationAuthorizationCancelUnconfirmedError)) throw error;
+    onUnconfirmed();
+    const status = await error.reconciled;
+    if (status === null) throw new Error(integrationAuthorizationCancelUnknownDetail);
+    return status;
+  }
+}

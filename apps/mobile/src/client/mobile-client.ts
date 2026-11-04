@@ -50,6 +50,7 @@ import {
   parseNativeIntegrationAuthorizationCallback,
   IntegrationAuthorizationAttempts,
   IntegrationAuthorizationCancelledError,
+  IntegrationAuthorizationCancelUnconfirmedError,
   integrationAuthorizationTerminalStatuses,
   type NativeIntegrationAuthorizationCallback,
   IntegrationAuthorizationAttemptIdSchema,
@@ -125,8 +126,10 @@ export interface MobileDirectoryState {
   readonly unavailable: readonly AccountDeploymentDirectoryUnavailable[];
 }
 
-/** Bounds the Cancel a person is waiting on; the Host may be out of reach on a weak link. */
+/** Bounds each Cancel request; the Host may be out of reach on a weak link. */
 const integrationCancelTimeoutMilliseconds = 10_000;
+/** How long past an attempt's expiry an unanswered Cancel keeps asking. */
+const integrationCancelReconcileGraceMilliseconds = 5 * 60_000;
 
 /** A person's own Cancel, which an app-link delivery ends on without reporting a failure. */
 class IntegrationAuthorizationCancelledByPerson extends IntegrationAuthorizationCancelledError {}
@@ -968,33 +971,82 @@ export class MobileClient {
   /**
    * Ends a started attempt. Its return stops first, including one the app link
    * started without this caller, so a proof still on this phone never leaves.
-   * Only the Host knows whether a proof already sent finished the attempt.
+   * Only the Host knows whether a proof already sent finished the attempt, so
+   * without its answer this is unconfirmed, never cancelled.
    */
   async #cancelIntegrationAuthorization(
     client: HostClient,
-    attempt: Parameters<IntegrationAuthorizationAttempts["forget"]>[0],
+    attempt: Parameters<IntegrationAuthorizationAttempts["register"]>[0],
   ): Promise<IntegrationAuthorizationStatus> {
     for (const [controller, running] of this.#integrationReturnControllers)
       if (running.attemptId === attempt.attemptId)
         controller.abort(new IntegrationAuthorizationCancelledByPerson());
     await this.#integrationAttempts.forget(attempt);
+    const answer = await this.#requestIntegrationCancel(client, attempt.attemptId).catch(
+      () => null,
+    );
+    if (answer === null)
+      throw new IntegrationAuthorizationCancelUnconfirmedError(
+        attempt.attemptId,
+        this.#reconcileIntegrationCancel(attempt),
+      );
+    if (answer.status === "completed") return answer;
+    throw new IntegrationAuthorizationCancelledError();
+  }
+
+  async #requestIntegrationCancel(
+    client: HostClient,
+    attemptId: IntegrationAuthorizationStart["attemptId"],
+  ): Promise<IntegrationAuthorizationStatus> {
     const answer = await withTimeout(
       client.dispatch({
-        attemptId: IntegrationAuthorizationAttemptIdSchema.parse(attempt.attemptId),
-        idempotencyKey: mutationIdempotencyKey(`integration-auth:${attempt.attemptId}`),
+        attemptId,
+        idempotencyKey: mutationIdempotencyKey(`integration-auth:${attemptId}`),
         type: "integration.authorization.cancel",
       }),
       integrationCancelTimeoutMilliseconds,
       { timeoutError: () => new HostTransportError("timed-out") },
-    ).catch(() => null);
-    if (answer?.type === "integration.authorization.cancel" && answer.status === "completed")
-      return {
-        connectionId: answer.connectionId,
-        expiresAt: answer.expiresAt,
-        failureCode: answer.failureCode,
-        status: answer.status,
-      };
-    throw new IntegrationAuthorizationCancelledError();
+    );
+    if (answer.type !== "integration.authorization.cancel")
+      throw new Error("Integration authorization command mismatch.");
+    return {
+      connectionId: answer.connectionId,
+      expiresAt: answer.expiresAt,
+      failureCode: answer.failureCode,
+      status: answer.status,
+    };
+  }
+
+  /** Asks again until the Host answers; its reply is the attempt's durable status. */
+  async #reconcileIntegrationCancel(
+    attempt: Parameters<IntegrationAuthorizationAttempts["register"]>[0],
+  ): Promise<IntegrationAuthorizationStatus | null> {
+    const epoch = this.#authorizationEpoch;
+    const controller = new AbortController();
+    this.#integrationReturnControllers.set(controller, {
+      attemptId: attempt.attemptId,
+      client: null,
+    });
+    const deadline = Date.parse(attempt.expiresAt) + integrationCancelReconcileGraceMilliseconds;
+    try {
+      for (let backoff = 1_000; Date.now() < deadline; backoff = Math.min(backoff * 2, 30_000)) {
+        await delay(backoff, controller.signal);
+        if (epoch !== this.#authorizationEpoch) return null;
+        const client =
+          this.#attachedDeploymentId === attempt.deploymentId ? this.#hostClient : null;
+        if (client === null) continue;
+        try {
+          return await this.#requestIntegrationCancel(client, attempt.attemptId);
+        } catch (error) {
+          if (isHostRefusal(error)) return null;
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      this.#integrationReturnControllers.delete(controller);
+    }
   }
 
   /** Check local authority before a callback can select a Deployment or contact a Host. */

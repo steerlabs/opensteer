@@ -16,6 +16,8 @@ import {
   integrationAuthorizationError,
   type IntegrationOAuthApplicationSource,
   type IntegrationPlatformDashboardView,
+  integrationAuthorizationSettled,
+  integrationAuthorizationCancelUnconfirmedDetail,
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import { useIsFocused } from "@react-navigation/native";
@@ -118,6 +120,7 @@ function ConnectedApps(props: {
   /** The row whose action is under way; every other action waits for it. */
   const [busy, setBusy] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState<AbortController | null>(null);
+  const [cancelUnconfirmed, setCancelUnconfirmed] = useState(false);
   const [foreground, setForeground] = useState(AppState.currentState === "active");
   /** The GitHub account sent to choose repositories, checked again when the person is back. */
   const awaitingRepositories = useRef<{ readonly id: string; readonly title: string } | null>(null);
@@ -214,13 +217,16 @@ function ConnectedApps(props: {
       void run(key, async () => {
         const controller = new AbortController();
         setSigningIn(controller);
-        const status = await mobile
-          .beginIntegrationAuthorization({
-            applicationSource: source,
-            definitionId: app.definitionId,
-            signal: controller.signal,
-          })
-          .finally(() => setSigningIn(null));
+        const status = await integrationAuthorizationSettled(
+          mobile
+            .beginIntegrationAuthorization({
+              applicationSource: source,
+              definitionId: app.definitionId,
+              signal: controller.signal,
+            })
+            .finally(() => setSigningIn(null)),
+          () => setCancelUnconfirmed(true),
+        ).finally(() => setCancelUnconfirmed(false));
         if (!current()) return null;
         const outcome = integrationAuthorizationError(status.status, status.failureCode);
         if (outcome !== null) throw new Error(outcome);
@@ -348,7 +354,13 @@ function ConnectedApps(props: {
         key: "pending",
         title: "Connecting",
         rows: [
-          { key: "pending", kind: "text", label: "Waiting for sign-in and saving placement…" },
+          {
+            key: "pending",
+            kind: "text",
+            label: cancelUnconfirmed
+              ? integrationAuthorizationCancelUnconfirmedDetail
+              : "Waiting for sign-in and saving placement…",
+          },
           ...(signingIn
             ? [{ ...button("cancel", "Cancel sign-in", () => signingIn.abort()), disabled: false }]
             : []),
@@ -510,6 +522,13 @@ function ConnectedApps(props: {
         )}
         {signingIn ? (
           <SecondaryButton label="Cancel sign-in" onPress={() => signingIn.abort()} />
+        ) : null}
+        {cancelUnconfirmed ? (
+          <Notice
+            detail={integrationAuthorizationCancelUnconfirmedDetail}
+            title="Not cancelled yet"
+            tone="neutral"
+          />
         ) : null}
         {done === null ? null : <Notice detail={done} title="Done" tone="neutral" />}
         {error === null ? null : <Notice detail={error} title="That did not finish" />}

@@ -169,6 +169,10 @@ vi.mock("../ui/integration-icon.js", () => ({
   },
 }));
 
+const {
+  IntegrationAuthorizationCancelUnconfirmedError,
+  integrationAuthorizationCancelUnknownDetail,
+} = await import("@opensteer/client/integrations");
 const beginIntegrationAuthorization = vi.fn();
 const beginMcpIntegrationAuthorization = vi.fn();
 vi.mock("../ui/mobile-client-context.js", () => ({
@@ -263,6 +267,65 @@ describe("IntegrationConnectCard", () => {
       await press("Cancel");
       expect(beginMcpIntegrationAuthorization.mock.calls[0]?.[0].signal.aborted).toBe(true);
       expect(text()).not.toContain("Finish signing in");
+    });
+
+    describe("when the Host has not answered the Cancel", () => {
+      const unconfirmed = (reconciled: Promise<unknown>) =>
+        waits((reject) =>
+          reject(
+            new IntegrationAuthorizationCancelUnconfirmedError(
+              "ioa_00000000-0000-4000-8000-000000000001",
+              reconciled as never,
+            ),
+          ),
+        );
+
+      it("says so instead of Cancelled, then shows the completion that won", async () => {
+        const client = fakeClient({ sources: [hosted], selected: hosted, workspaceKind: "main" });
+        const id = "con_00000000-0000-4000-8000-0000000000ce";
+        let settle = (_status: unknown) => {};
+        beginIntegrationAuthorization.mockImplementation(
+          unconfirmed(new Promise((resolve) => (settle = resolve))),
+        );
+        await render(client);
+        await press("Connect");
+        await press("Cancel");
+        expect(text()).toContain("Checking whether this was cancelled");
+        expect(text()).not.toMatch(/was cancelled\./u);
+        expect(buttons()).not.toContain("Cancel");
+        client.setConnections([connection(id)]);
+        client.settleRequest();
+        await act(async () => settle(completed(id)));
+        expect(text()).toContain("Slack connected · oversteer.slack.com");
+      });
+
+      it("reports the cancel once the Host confirms it", async () => {
+        let settle = (_status: unknown) => {};
+        beginIntegrationAuthorization.mockImplementation(
+          unconfirmed(new Promise((resolve) => (settle = resolve))),
+        );
+        await render(fakeClient({ sources: [hosted], selected: hosted }));
+        await press("Connect");
+        await press("Cancel");
+        await act(async () =>
+          settle({
+            connectionId: null,
+            expiresAt: "2099-01-01T00:00:00Z",
+            failureCode: null,
+            status: "cancelled",
+          }),
+        );
+        expect(text()).toContain("Authorization was cancelled.");
+        expect(text()).not.toContain("Checking whether");
+      });
+
+      it("says it could not tell when the Host can no longer answer", async () => {
+        beginIntegrationAuthorization.mockImplementation(unconfirmed(Promise.resolve(null)));
+        await render(fakeClient({ sources: [hosted], selected: hosted }));
+        await press("Connect");
+        await press("Cancel");
+        expect(text()).toContain(integrationAuthorizationCancelUnknownDetail);
+      });
     });
 
     it("shows the connection when it finished before Cancel reached the Host", async () => {

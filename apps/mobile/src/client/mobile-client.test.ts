@@ -11,10 +11,12 @@ import type { DeploymentConnectionInput, PrivateFilesystem } from "@opensteer/cl
 import { createMockHostPort } from "./mock-host-port.js";
 import { mockDeploymentConnections } from "./mock-mode.js";
 import { HostClientRequestError, createMemorySavedViews } from "@opensteer/client/host";
+import { HostTransportError } from "@opensteer/client/connections";
 import { MockDesktopUpdates, MockHostClient } from "@opensteer/client/mock";
 import {
   buildNativeIntegrationAuthorizationCallback,
   IntegrationAuthorizationCancelledError,
+  IntegrationAuthorizationCancelUnconfirmedError,
   IntegrationOAuthAttemptIdSchema,
   IntegrationAuthorizationAttemptIdSchema,
 } from "@opensteer/client/integrations";
@@ -1076,21 +1078,27 @@ describe("MobileClient cancelling an integration sign-in", () => {
   const expiresAt = new Date(Date.now() + 600_000).toISOString();
   const proof = "r".repeat(43);
 
+  const answered = (status: "cancelled" | "completed") => ({
+    connectionId: status === "completed" ? "con_00000000-0000-4000-8000-0000000000aa" : null,
+    expiresAt,
+    failureCode: null,
+    status,
+    type: "integration.authorization.cancel" as const,
+  });
+
   async function signingIn(
     input: {
       readonly answer?: "cancelled" | "completed";
+      /** Answers the Host's cancel in order; once they run out, `answer` applies. */
+      readonly cancelTries?: readonly (() => Promise<unknown>)[];
       readonly returned?: () => Promise<unknown>;
     } = {},
   ) {
-    const cancels = vi.fn(async (command: { attemptId: unknown }) => ({
-      attemptId: command.attemptId,
-      connectionId:
-        input.answer === "completed" ? "con_00000000-0000-4000-8000-0000000000aa" : null,
-      expiresAt,
-      failureCode: null,
-      status: input.answer ?? ("cancelled" as const),
-      type: "integration.authorization.cancel" as const,
-    }));
+    const tries = [...(input.cancelTries ?? [])];
+    const cancels = vi.fn(
+      async (_command: { attemptId: unknown }) =>
+        (await tries.shift()?.()) ?? answered(input.answer ?? "cancelled"),
+    );
     const returns = vi.fn(
       async () =>
         (await input.returned?.()) ?? {
@@ -1154,6 +1162,123 @@ describe("MobileClient cancelling an integration sign-in", () => {
     await expect(client.handleIntegrationAuthorizationCallback(callback)).resolves.toBeNull();
     expect(returns).not.toHaveBeenCalled();
     client.dispose();
+  });
+
+  describe("when the Host does not answer the Cancel", () => {
+    const unanswered = () => Promise.reject(new HostTransportError("unreachable"));
+    const reconcile = async (started: Promise<unknown>) => {
+      const error = await started.then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+      expect(error).toBeInstanceOf(IntegrationAuthorizationCancelUnconfirmedError);
+      return error as IntegrationAuthorizationCancelUnconfirmedError;
+    };
+
+    it("says it is unconfirmed, and the completion that won still wins", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { callback, cancels, client, controller, returns, started } = await signingIn({
+          answer: "completed",
+          cancelTries: [unanswered],
+        });
+        controller.abort();
+        const error = await reconcile(started);
+        expect(error.attemptId).toMatch(/^ioa_/u);
+        await expect(client.handleIntegrationAuthorizationCallback(callback)).resolves.toBeNull();
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expect(error.reconciled).resolves.toMatchObject({ status: "completed" });
+        expect(cancels).toHaveBeenCalledTimes(2);
+        expect(returns).not.toHaveBeenCalled();
+        client.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("treats a request that hangs past its deadline the same way", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { client, controller, started } = await signingIn({
+          answer: "completed",
+          cancelTries: [() => new Promise(() => {})],
+        });
+        controller.abort();
+        await vi.advanceTimersByTimeAsync(10_000);
+        const error = await reconcile(started);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expect(error.reconciled).resolves.toMatchObject({ status: "completed" });
+        client.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("reports the cancel once the Host confirms it", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { client, controller, started } = await signingIn({ cancelTries: [unanswered] });
+        controller.abort();
+        const error = await reconcile(started);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expect(error.reconciled).resolves.toMatchObject({ status: "cancelled" });
+        client.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps trying until the Host answers, backing off", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { cancels, client, controller, started } = await signingIn({
+          answer: "completed",
+          cancelTries: [unanswered, unanswered, unanswered],
+        });
+        controller.abort();
+        const error = await reconcile(started);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(cancels).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(cancels).toHaveBeenCalledTimes(3);
+        await vi.advanceTimersByTimeAsync(4_000);
+        await expect(error.reconciled).resolves.toMatchObject({ status: "completed" });
+        client.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops claiming anything when the Host refuses the question", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const refused = new HostClientRequestError({
+          code: "forbidden",
+          message: "Wrong owner",
+          status: 403,
+        });
+        const { client, controller, started } = await signingIn({
+          cancelTries: [unanswered, () => Promise.reject(refused)],
+        });
+        controller.abort();
+        const error = await reconcile(started);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expect(error.reconciled).resolves.toBeNull();
+        client.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops when the app is torn down", async () => {
+      const { client, controller, started } = await signingIn({
+        cancelTries: [unanswered, unanswered],
+      });
+      controller.abort();
+      const error = await reconcile(started);
+      client.dispose();
+      await expect(error.reconciled).resolves.toBeNull();
+    });
   });
 
   it("reports the completion that won instead of Cancelled", async () => {
