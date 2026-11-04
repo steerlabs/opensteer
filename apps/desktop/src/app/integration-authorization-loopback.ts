@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
   integrationAuthorizationAppReturnBase,
@@ -47,7 +48,8 @@ export class IntegrationAuthorizationLoopback {
   readonly #now: () => number;
   readonly #pendingUntil: () => number | null;
   readonly #ports: readonly number[];
-  #grace: number[] = [];
+  /** Each open until its attempt registers or it expires, by the id its renderer carries. */
+  readonly #preparations = new Map<string, { readonly owner: string; readonly until: number }>();
   /** Kept across a session change, because the attempts in flight were sealed to it. */
   #port: number | null = null;
   #server: Server | null = null;
@@ -86,20 +88,34 @@ export class IntegrationAuthorizationLoopback {
       );
   }
 
-  /** The port to give the Host, or null when this attempt must use the app link. */
-  async prepare(): Promise<number | null> {
+  /**
+   * The port to give the Host and the id its attempt registers with, or null when
+   * this attempt must use the app link. `owner` is the Deployment it is for.
+   */
+  async prepare(
+    owner: string,
+  ): Promise<{ readonly port: number; readonly preparation: string } | null> {
     if (!(await this.#loginAllowed())) return null;
-    this.#grace.push(this.#now() + registrationGrace);
+    const preparation = randomUUID();
+    this.#preparations.set(preparation, { owner, until: this.#now() + registrationGrace });
     const port = await this.#listen(
       this.#port === null ? this.#ports : [this.#port, ...this.#ports],
     );
+    if (port === null) this.#preparations.delete(preparation);
     this.sync();
-    return port;
+    return port === null ? null : { port, preparation };
   }
 
-  /** A preparation became an attempt, which now keeps the listener open itself. */
-  registered(): void {
-    this.#grace.shift();
+  /** An attempt registered, and keeps the listener open itself; a no-port one has no id. */
+  registered(preparation: string | undefined): void {
+    if (preparation !== undefined) this.#preparations.delete(preparation);
+    this.sync();
+  }
+
+  /** Ends preparations that will never register, for one Deployment or for all of them. */
+  release(owner?: string): void {
+    for (const [id, prepared] of this.#preparations)
+      if (owner === undefined || prepared.owner === owner) this.#preparations.delete(id);
     this.sync();
   }
 
@@ -108,15 +124,23 @@ export class IntegrationAuthorizationLoopback {
     clearTimeout(this.#timer);
     this.#timer = undefined;
     if (this.#server === null) return;
-    const now = this.#now();
-    this.#grace = this.#grace.filter((until) => until > now);
-    const remaining = Math.max(this.#pendingUntil() ?? 0, ...this.#grace) - now;
+    const remaining = this.#openUntil() - this.#now();
     if (remaining <= 0) {
       void this.close();
       return;
     }
     this.#timer = setTimeout(() => this.sync(), remaining);
     this.#timer.unref?.();
+  }
+
+  #openUntil(): number {
+    const now = this.#now();
+    for (const [id, { until }] of this.#preparations)
+      if (until <= now) this.#preparations.delete(id);
+    return Math.max(
+      this.#pendingUntil() ?? 0,
+      ...[...this.#preparations.values()].map(({ until }) => until),
+    );
   }
 
   /**
@@ -132,7 +156,7 @@ export class IntegrationAuthorizationLoopback {
       return;
     }
     if (this.#port === null) return;
-    if (this.#pendingUntil() === null) {
+    if (this.#openUntil() <= this.#now()) {
       this.#port = null;
       return;
     }
@@ -143,7 +167,7 @@ export class IntegrationAuthorizationLoopback {
   async close(): Promise<void> {
     clearTimeout(this.#timer);
     this.#timer = undefined;
-    this.#grace = [];
+    this.#preparations.clear();
     this.#port = null;
     await this.#stop();
   }

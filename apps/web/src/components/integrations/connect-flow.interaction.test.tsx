@@ -363,6 +363,13 @@ describe("ConnectFlow", () => {
       await click("Continue to");
       expect(buttons()).not.toContain(label);
     });
+
+    it("asks about the attempt that ended", async () => {
+      const operations = fakeOperations({ appButton: true, status: ended("expired") });
+      render({ operations });
+      await click("Continue to");
+      expect(operations.appButtonOffered).toHaveBeenCalledWith(started.attemptId, "expired");
+    });
   });
 
   it("returns to sign-in when GitHub rejects the sign-in on a recheck", async () => {
@@ -712,7 +719,7 @@ function fakeOperations(
   let repositoryCheck = 0;
   return {
     appButtonOffered: vi.fn(
-      (status: IntegrationAuthorizationStatus["status"]) =>
+      (_attemptId: string, status: IntegrationAuthorizationStatus["status"]) =>
         input.appButton === true && status !== "denied",
     ),
     // Without a status the sign-in is still waiting at the provider.

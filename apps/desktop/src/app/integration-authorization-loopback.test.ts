@@ -9,6 +9,7 @@ import {
 const attemptId = "ioa_00000000-0000-4000-8000-000000000001";
 const deploymentId = "dep_00000000-0000-4000-8000-000000000001";
 const proof = "P".repeat(43);
+const owner = "dep_owner";
 const form = `deployment_id=${deploymentId}&attempt_id=${attemptId}&return=${proof}`;
 const appReturn = `${integrationAuthorizationAppReturnBase("desktop")}?${form}`;
 
@@ -149,17 +150,21 @@ describe("IntegrationAuthorizationLoopback binding", () => {
       pendingUntil: () => null,
     });
     open.push(instance);
-    const port = await instance.prepare();
+    const port = (await instance.prepare(owner))?.port;
     expect(port).toBeGreaterThanOrEqual(48_200);
     expect(port).toBeLessThanOrEqual(48_215);
   });
 
   it("listens only on 127.0.0.1 and reuses one server", async () => {
     const { instance } = loopback();
-    const port = await instance.prepare();
+    const port = (await instance.prepare(owner))?.port;
     expect(port).toBe(free[0]);
-    expect(await instance.prepare()).toBe(port);
-    expect(await Promise.all([instance.prepare(), instance.prepare()])).toEqual([port, port]);
+    expect((await instance.prepare(owner))?.port).toBe(port);
+    expect(
+      (await Promise.all([instance.prepare(owner), instance.prepare(owner)])).map(
+        (prepared) => prepared?.port,
+      ),
+    ).toEqual([port, port]);
   });
 
   it("takes the next port when one is in use, and offers none when all are", async () => {
@@ -167,17 +172,17 @@ describe("IntegrationAuthorizationLoopback binding", () => {
     squatters.push(squatter);
     await new Promise<void>((resolve) => squatter.listen(free[0], "127.0.0.1", () => resolve()));
     const { instance } = loopback();
-    expect(await instance.prepare()).toBe(free[1]);
+    expect((await instance.prepare(owner))?.port).toBe(free[1]);
     await instance.close();
     const { instance: blocked } = loopback({ ports: [free[0]] });
-    expect(await blocked.prepare()).toBeNull();
+    expect(await blocked.prepare(owner)).toBeNull();
   });
 });
 
 describe("IntegrationAuthorizationLoopback requests", () => {
   it("rebuilds the strict app return from the form and sends it to the existing path", async () => {
     const { accept, instance } = loopback();
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     const reply = await post(port);
     expect(reply.status).toBe(200);
     expect(accept).toHaveBeenCalledTimes(1);
@@ -189,7 +194,7 @@ describe("IntegrationAuthorizationLoopback requests", () => {
 
   it("answers an unknown attempt the same as anything else it refuses", async () => {
     const { accept, instance } = loopback({ accept: () => false });
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     const unknown = await post(port);
     expect(accept).toHaveBeenCalledTimes(1);
     expect(unknown.status).toBe(404);
@@ -212,7 +217,7 @@ describe("IntegrationAuthorizationLoopback requests", () => {
     ["a body without a proof", () => ({ body: `deployment_id=d&attempt_id=a` })],
   ] as const)("never reaches accept for %s", async (_label, overrides) => {
     const { accept, instance } = loopback();
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     const reply = await post(port, overrides(port));
     expect(accept).not.toHaveBeenCalled();
     expect(reply.status).toBe(404);
@@ -221,7 +226,7 @@ describe("IntegrationAuthorizationLoopback requests", () => {
 
   it("drops an oversized body without reading the rest of it", async () => {
     const { accept, instance } = loopback();
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     const reply = await post(port, {
       body: `${form}&x=${"x".repeat(integrationAuthorizationLoopbackBodyLimit)}`,
     });
@@ -231,7 +236,7 @@ describe("IntegrationAuthorizationLoopback requests", () => {
 
   it("refuses a chunked body it cannot bound in advance", async () => {
     const { accept, instance } = loopback();
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     const reply = await raw(
       port,
       `POST /oauth/integration-callback HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nContent-Type: application/x-www-form-urlencoded\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n`,
@@ -242,7 +247,7 @@ describe("IntegrationAuthorizationLoopback requests", () => {
 
   it("refuses over-long headers and a second request on the same socket", async () => {
     const { accept, instance } = loopback();
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     const long = await raw(
       port,
       `POST /oauth/integration-callback HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nX-Pad: ${"p".repeat(32_000)}\r\n\r\n`,
@@ -256,7 +261,7 @@ describe("IntegrationAuthorizationLoopback requests", () => {
 
   it("sends no reflected input and a closed-down response on both outcomes", async () => {
     const { instance } = loopback({ accept: (url) => url.length < 0 });
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     for (const reply of [
       await post(port),
       await post(port, { path: "/<script>alert(1)</script>" }),
@@ -277,19 +282,19 @@ describe("IntegrationAuthorizationLoopback deadlines", () => {
 
   it("destroys a socket that never sends anything", async () => {
     const { instance } = loopback({ deadlines });
-    const socket = await connected((await instance.prepare())!);
+    const socket = await connected((await instance.prepare(owner))!.port);
     await closedWithin(socket, 2_000, "An idle socket");
   });
 
   it("holds a socket to its own idle deadline, shorter than the request's", async () => {
     const { instance } = loopback({ deadlines: { headers: 5_000, request: 5_000, socket: 100 } });
-    const socket = await connected((await instance.prepare())!);
+    const socket = await connected((await instance.prepare(owner))!.port);
     await closedWithin(socket, 1_000, "An idle socket");
   });
 
   it("destroys a socket that drips its headers", async () => {
     const { accept, instance } = loopback({ deadlines });
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     const socket = await connected(port);
     socket.write("POST /oauth/integration-callback HTTP/1.1\r\n");
     const drip = setInterval(() => socket.write("X-Drip: 1\r\n"), 50);
@@ -303,7 +308,7 @@ describe("IntegrationAuthorizationLoopback deadlines", () => {
 
   it("destroys a socket that never finishes its body", async () => {
     const { accept, instance } = loopback({ deadlines });
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     const socket = await connected(port);
     socket.write(
       `POST /oauth/integration-callback HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 200\r\n\r\nabc`,
@@ -314,7 +319,7 @@ describe("IntegrationAuthorizationLoopback deadlines", () => {
 
   it("drops connections past the cap", async () => {
     const { instance } = loopback();
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     const held = await Promise.all(Array.from({ length: 8 }, () => connected(port)));
     const over = await connected(port);
     await closedWithin(over, 2_000, "A connection over the cap");
@@ -331,13 +336,13 @@ describe("IntegrationAuthorizationLoopback login session", () => {
         return false;
       },
     });
-    expect(await instance.prepare()).toBeNull();
+    expect(await instance.prepare(owner)).toBeNull();
     expect(bound).toEqual([false]);
   });
 
   it("closes the listener and a request in progress when the session resigns", async () => {
     const { accept, instance } = loopback();
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     const socket = await connected(port);
     socket.write("POST /oauth/integration-callback HTTP/1.1\r\nHost: 127.0.0.1\r\n");
     await vi.waitFor(() => expect(socket.bytesWritten).toBeGreaterThan(0), { timeout: 500 });
@@ -354,14 +359,14 @@ describe("IntegrationAuthorizationLoopback login session", () => {
       .mockReturnValueOnce(true)
       .mockReturnValue(false);
     const { instance } = loopback({ active });
-    expect(await instance.prepare()).toBeNull();
+    expect(await instance.prepare(owner)).toBeNull();
     expect(await refused(free[0])).toBe(true);
   });
 
   it("refuses at acceptance when a login appeared with no notification", async () => {
     let active = true;
     const { accept, instance } = loopback({ active: () => active });
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     active = false;
     const reply = await post(port);
     expect(accept).not.toHaveBeenCalled();
@@ -378,7 +383,7 @@ describe("IntegrationAuthorizationLoopback login session", () => {
         throw new Error("The login registry could not be read.");
       },
     });
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     read = false;
     expect((await post(port)).status).toBe(404);
     expect(accept).not.toHaveBeenCalled();
@@ -387,7 +392,7 @@ describe("IntegrationAuthorizationLoopback login session", () => {
   it("does not read the logins for a request it refuses anyway", async () => {
     const active = vi.fn(() => true);
     const { instance } = loopback({ active });
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     const reads = active.mock.calls.length;
     await post(port, { path: "/elsewhere" });
     await post(port, { body: "deployment_id=d&attempt_id=a" });
@@ -397,7 +402,7 @@ describe("IntegrationAuthorizationLoopback login session", () => {
   it("recovers the same port for pending attempts when the session returns", async () => {
     let active = true;
     const { accept, instance } = loopback({ active: () => active });
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     active = false;
     await instance.sessionChanged(false);
     active = true;
@@ -409,7 +414,7 @@ describe("IntegrationAuthorizationLoopback login session", () => {
   it("leaves pending attempts to a fresh retry when the port was taken meanwhile", async () => {
     let active = true;
     const { accept, instance } = loopback({ active: () => active });
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     active = false;
     await instance.sessionChanged(false);
     const squatter = createTcpServer();
@@ -418,20 +423,21 @@ describe("IntegrationAuthorizationLoopback login session", () => {
     active = true;
     await instance.sessionChanged(true);
     expect(accept).not.toHaveBeenCalled();
-    expect(await instance.prepare()).not.toBe(port);
+    expect((await instance.prepare(owner))?.port).not.toBe(port);
   });
 
   it("stays closed when the session returns with nothing pending", async () => {
     let active = true;
     let pending: number | null = Date.now() + 60_000;
     const { instance } = loopback({ active: () => active, pendingUntil: () => pending });
-    const port = (await instance.prepare())!;
+    const prepared = (await instance.prepare(owner))!;
+    instance.registered(prepared.preparation);
     active = false;
     await instance.sessionChanged(false);
     pending = null;
     active = true;
     await instance.sessionChanged(true);
-    expect(await refused(port)).toBe(true);
+    expect(await refused(prepared.port)).toBe(true);
   });
 });
 
@@ -439,7 +445,7 @@ describe("IntegrationAuthorizationLoopback lifetime", () => {
   it("closes after the grace when preparation never registers an attempt", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const { instance } = loopback({ pendingUntil: () => null });
-    const port = (await instance.prepare())!;
+    const port = (await instance.prepare(owner))!.port;
     await vi.advanceTimersByTimeAsync(59_000);
     expect(await refused(port)).toBe(false);
     await vi.advanceTimersByTimeAsync(2_000);
@@ -452,8 +458,9 @@ describe("IntegrationAuthorizationLoopback lifetime", () => {
     const { accept, instance } = loopback({
       pendingUntil: () => (Date.now() < expiry ? expiry : null),
     });
-    const port = (await instance.prepare())!;
-    instance.registered();
+    const prepared = (await instance.prepare(owner))!;
+    const port = prepared.port;
+    instance.registered(prepared.preparation);
     await vi.advanceTimersByTimeAsync(9 * 60_000);
     expect((await post(port)).status).toBe(200);
     expect(accept).toHaveBeenCalledTimes(1);
@@ -464,21 +471,74 @@ describe("IntegrationAuthorizationLoopback lifetime", () => {
   it("closes as soon as the last attempt ends, without waiting out a spent grace", async () => {
     let pending: number | null = Date.now() + 60_000;
     const { instance } = loopback({ pendingUntil: () => pending });
-    const port = (await instance.prepare())!;
-    instance.registered();
+    const prepared = (await instance.prepare(owner))!;
+    instance.registered(prepared.preparation);
     pending = null;
     instance.sync();
-    expect(await refused(port)).toBe(true);
+    expect(await refused(prepared.port)).toBe(true);
   });
 
   it("stays open for a second preparation that has not registered yet", async () => {
     let pending: number | null = Date.now() + 60_000;
     const { instance } = loopback({ pendingUntil: () => pending });
-    const port = (await instance.prepare())!;
-    await instance.prepare();
-    instance.registered();
+    const first = (await instance.prepare(owner))!;
+    await instance.prepare(owner);
+    instance.registered(first.preparation);
     pending = null;
     instance.sync();
+    expect(await refused(first.port)).toBe(false);
+  });
+
+  it("leaves a preparation alone when a no-port attempt registers and ends", async () => {
+    let pending: number | null = null;
+    const { accept, instance } = loopback({ pendingUntil: () => pending });
+    const delayed = (await instance.prepare(owner))!;
+    pending = Date.now() + 60_000;
+    instance.registered(undefined);
+    pending = null;
+    instance.sync();
+    expect(await refused(delayed.port)).toBe(false);
+    pending = Date.now() + 60_000;
+    instance.registered(delayed.preparation);
+    expect((await post(delayed.port)).status).toBe(200);
+    expect(accept).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a repeated registration spend another preparation", async () => {
+    const { instance } = loopback({ pendingUntil: () => null });
+    const first = (await instance.prepare(owner))!;
+    await instance.prepare(owner);
+    instance.registered(first.preparation);
+    instance.registered(first.preparation);
+    expect(await refused(first.port)).toBe(false);
+  });
+
+  it("releases only that Deployment's preparations on its sign-out", async () => {
+    const { instance } = loopback({ pendingUntil: () => null });
+    const port = (await instance.prepare(owner))!.port;
+    await instance.prepare("dep_other");
+    instance.release(owner);
+    expect(await refused(port)).toBe(false);
+    instance.release("dep_other");
+    expect(await refused(port)).toBe(true);
+  });
+
+  it("releases every preparation on a full sign-out", async () => {
+    const { instance } = loopback({ pendingUntil: () => null });
+    const port = (await instance.prepare(owner))!.port;
+    await instance.prepare("dep_other");
+    instance.release();
+    expect(await refused(port)).toBe(true);
+  });
+
+  it("keeps a recovering port for a preparation that has not registered yet", async () => {
+    let active = true;
+    const { instance } = loopback({ active: () => active, pendingUntil: () => null });
+    const port = (await instance.prepare(owner))!.port;
+    active = false;
+    await instance.sessionChanged(false);
+    active = true;
+    await instance.sessionChanged(true);
     expect(await refused(port)).toBe(false);
   });
 });

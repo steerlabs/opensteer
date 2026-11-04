@@ -16,7 +16,6 @@ import {
   integrationAppButtonOffered,
   integrationAuthorizationError,
   integrationAuthorizationSurface,
-  integrationAuthorizationFinish,
   finishDesktopIntegrationAuthorization,
   beginIntegrationAuthorization,
   waitForIntegrationAuthorization,
@@ -460,7 +459,9 @@ export function ThreadIntegrationAction({
       tracking.finished(started.attemptId);
       const outcome = integrationAuthorizationError(status.status, status.failureCode);
       if (outcome) {
-        setAppButtonOffered(integrationAppButtonOffered(hostClient, status.status));
+        setAppButtonOffered(
+          integrationAppButtonOffered(tracking, started.attemptId, status.status),
+        );
         throw new Error(outcome);
       }
       if (!status.connectionId)
@@ -634,7 +635,7 @@ export function ThreadIntegrationAction({
         client: hostClient,
         onStarted: tracking.started,
         returnPath: `/threads/${encodeURIComponent(threadId)}`,
-        begin: async (returnPath) => {
+        begin: async (returnPath, finish) => {
           const next = await prepare();
           const nextCard = connectCard({
             loaded: next,
@@ -652,7 +653,7 @@ export function ThreadIntegrationAction({
               exactApplicationSource: nextCard.source,
               returnPath,
               surface: integrationAuthorizationSurface(desktopBridge()),
-              ...(await integrationAuthorizationFinish(desktopBridge(), hostClient)),
+              ...finish,
             },
             type: "integration.authorization.begin",
           });
@@ -910,7 +911,9 @@ export function ThreadIntegrationAction({
       if (outcome) {
         answerAfterConnect.current = null;
         setError(outcome);
-        setAppButtonOffered(integrationAppButtonOffered(hostClient, status.status));
+        setAppButtonOffered(
+          integrationAppButtonOffered(tracking, authorization.attemptId, status.status),
+        );
         return;
       }
       setPending(true);
@@ -955,7 +958,8 @@ export function ThreadIntegrationAction({
           client: hostClient,
           onStarted: tracking.started,
           returnPath: `/threads/${encodeURIComponent(threadId)}`,
-          begin: async (returnPath) => {
+          ...(returnRoute ? { returnRoute } : {}),
+          begin: async (returnPath, finish) => {
             const result = await hostClient.dispatch({
               idempotencyKey: mutationIdempotencyKey(
                 `integration-mcp:${requestPayload.requestedServerId}`,
@@ -966,7 +970,7 @@ export function ThreadIntegrationAction({
                 returnPath,
                 serverId: IntegrationServerIdSchema.parse(loaded.request.requestedServerId),
                 surface: integrationAuthorizationSurface(bridge),
-                ...(await integrationAuthorizationFinish(bridge, hostClient, returnRoute)),
+                ...finish,
               },
               type: "integration.mcp.authorization.begin",
             });

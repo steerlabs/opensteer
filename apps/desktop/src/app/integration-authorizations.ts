@@ -51,15 +51,15 @@ export class DesktopIntegrationAuthorizations {
       detach();
     };
   }
-  prepareReturn(): Promise<number | null> {
-    return this.#loopback.prepare();
+  prepareReturn(deploymentId: string) {
+    return this.#loopback.prepare(deploymentId);
   }
   find(attempt: Attempt): IntegrationAuthorizationAttempt | null {
     return this.#attempts.find(attempt);
   }
-  async register(entry: IntegrationAuthorizationAttempt): Promise<void> {
+  async register(entry: IntegrationAuthorizationAttempt, preparation?: string): Promise<void> {
     await this.#attempts.register(entry);
-    this.#loopback.registered();
+    this.#loopback.registered(preparation);
   }
   async forget(attempt: Attempt): Promise<void> {
     await this.#attempts.forget(attempt);
@@ -67,7 +67,7 @@ export class DesktopIntegrationAuthorizations {
   }
   async clear(deploymentId?: string): Promise<void> {
     await this.#attempts.clear(deploymentId);
-    this.#loopback.sync();
+    this.#loopback.release(deploymentId);
   }
   close(): Promise<void> {
     return this.#loopback.close();

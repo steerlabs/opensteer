@@ -9,6 +9,9 @@ import { DesktopLoginSession } from "./login-session.js";
 const attemptId = IntegrationAuthorizationAttemptIdSchema.parse(
   "ioa_00000000-0000-4000-8000-000000000001",
 );
+const otherAttemptId = IntegrationAuthorizationAttemptIdSchema.parse(
+  "ioa_00000000-0000-4000-8000-000000000002",
+);
 const deploymentId = DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000001");
 const userId = UserIdSchema.parse("usr_00000000-0000-4000-8000-000000000001");
 const returnProof = "P".repeat(43);
@@ -83,7 +86,7 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
     const { instance, open } = authorizations();
     const received = vi.fn();
     instance.attach({ deploymentId, userId }, received);
-    const port = (await instance.prepareReturn())!;
+    const port = (await instance.prepareReturn(deploymentId))!.port;
     await instance.register(started());
     expect(await post(port)).toBe(200);
     await vi.waitFor(() =>
@@ -96,7 +99,7 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
     const { instance, open } = authorizations();
     const received = vi.fn();
     instance.attach({ deploymentId, userId }, received);
-    const port = (await instance.prepareReturn())!;
+    const port = (await instance.prepareReturn(deploymentId))!.port;
     expect(await post(port)).toBe(404);
     expect(received).not.toHaveBeenCalled();
     expect(open).not.toHaveBeenCalled();
@@ -104,13 +107,13 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
 
   it("has no authority after a restart, whatever the old attempt id", async () => {
     const before = authorizations();
-    await before.instance.prepareReturn();
+    await before.instance.prepareReturn(deploymentId);
     await before.instance.register(started());
     await before.instance.close();
     const after = authorizations();
     const received = vi.fn();
     after.instance.attach({ deploymentId, userId }, received);
-    const port = (await after.instance.prepareReturn())!;
+    const port = (await after.instance.prepareReturn(deploymentId))!.port;
     expect(after.instance.find({ attemptId, deploymentId })).toBeNull();
     expect(await post(port)).toBe(404);
     expect(received).not.toHaveBeenCalled();
@@ -118,7 +121,7 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
 
   it("holds a return across a renderer reload", async () => {
     const { instance } = authorizations();
-    const port = (await instance.prepareReturn())!;
+    const port = (await instance.prepareReturn(deploymentId))!.port;
     await instance.register(started());
     expect(await post(port)).toBe(200);
     const received = vi.fn();
@@ -130,12 +133,12 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
 
   it("offers no port before it can read the login session", async () => {
     const { instance } = authorizations({ sessionless: true });
-    expect(await instance.prepareReturn()).toBeNull();
+    expect(await instance.prepareReturn(deploymentId)).toBeNull();
   });
 
   it("offers no port while another login is on this Mac", async () => {
     const { instance } = authorizations({ logins: () => [501, 502] });
-    expect(await instance.prepareReturn()).toBeNull();
+    expect(await instance.prepareReturn(deploymentId)).toBeNull();
   });
 
   it("refuses a proof at acceptance once another login appears", async () => {
@@ -143,7 +146,7 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
     const { instance } = authorizations({ logins: () => logins });
     const received = vi.fn();
     instance.attach({ deploymentId, userId }, received);
-    const port = (await instance.prepareReturn())!;
+    const port = (await instance.prepareReturn(deploymentId))!.port;
     await instance.register(started());
     logins = [501, 502];
     expect(await post(port)).toBe(404);
@@ -153,13 +156,13 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
   it("closes the listener on the session's resign and keeps the attempt pending", async () => {
     let logins: readonly number[] = [501];
     const { instance, power } = authorizations({ logins: () => logins });
-    const port = (await instance.prepareReturn())!;
+    const port = (await instance.prepareReturn(deploymentId))!.port;
     await instance.register(started());
     logins = [502];
     power.emit("user-did-resign-active");
     await vi.waitFor(async () => expect(await listening(port)).toBe(false));
     expect(instance.find({ attemptId, deploymentId })).not.toBeNull();
-    expect(await instance.prepareReturn()).toBeNull();
+    expect(await instance.prepareReturn(deploymentId)).toBeNull();
     logins = [501];
     power.emit("user-did-become-active");
     await vi.waitFor(async () => expect(await listening(port)).toBe(true));
@@ -167,13 +170,34 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
 
   it("closes the listener when the last attempt is forgotten or cleared", async () => {
     const { instance } = authorizations();
-    const port = (await instance.prepareReturn())!;
-    await instance.register(started());
+    const first = (await instance.prepareReturn(deploymentId))!;
+    await instance.register(started(), first.preparation);
     await instance.forget({ attemptId, deploymentId });
-    expect(await listening(port)).toBe(false);
-    const again = (await instance.prepareReturn())!;
-    await instance.register(started());
+    expect(await listening(first.port)).toBe(false);
+    const again = (await instance.prepareReturn(deploymentId))!;
+    await instance.register(started(), again.preparation);
     await instance.clear(deploymentId);
-    expect(await listening(again)).toBe(false);
+    expect(await listening(again.port)).toBe(false);
+  });
+
+  it("keeps a delayed attempt's listener when a no-port attempt comes and goes", async () => {
+    const { instance } = authorizations();
+    const received = vi.fn();
+    instance.attach({ deploymentId, userId }, received);
+    const delayed = (await instance.prepareReturn(deploymentId))!;
+    const other = { ...started(), attemptId: otherAttemptId };
+    await instance.register(other);
+    await instance.forget(other);
+    expect(await listening(delayed.port)).toBe(true);
+    await instance.register(started(), delayed.preparation);
+    expect(await post(delayed.port)).toBe(200);
+    await vi.waitFor(() => expect(received).toHaveBeenCalled());
+  });
+
+  it("releases an outstanding preparation on sign-out instead of waiting out its grace", async () => {
+    const { instance } = authorizations();
+    const prepared = (await instance.prepareReturn(deploymentId))!;
+    await instance.clear();
+    expect(await listening(prepared.port)).toBe(false);
   });
 });

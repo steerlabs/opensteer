@@ -12,6 +12,7 @@ import type {
   IntegrationAuthorizationStart,
 } from "@opensteer/integration-core";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
+import type { IntegrationAuthorizationTracking } from "./use-integration-authorization-tracking.js";
 export {
   integrationAuthorizationError,
   waitForIntegrationAuthorization,
@@ -27,11 +28,21 @@ export function integrationAuthorizationSurface(
 
 /** Open while the click still has browser activation, before any asynchronous work. */
 export async function beginIntegrationAuthorization(input: {
-  readonly bridge: Pick<OpensteerDesktopBridge, "openIntegrationAuthorization"> | null;
+  readonly bridge: Pick<
+    OpensteerDesktopBridge,
+    "openIntegrationAuthorization" | "prepareIntegrationAuthorizationReturn"
+  > | null;
   readonly client?: Pick<HostClient, "getSnapshot">;
-  readonly begin: (returnPath: string) => Promise<IntegrationAuthorizationStart>;
-  readonly onStarted?: (attemptId: IntegrationAuthorizationStart["attemptId"]) => void;
+  readonly begin: (
+    returnPath: string,
+    finish: IntegrationAuthorizationFinish,
+  ) => Promise<IntegrationAuthorizationStart>;
+  readonly onStarted?: (
+    attemptId: IntegrationAuthorizationStart["attemptId"],
+    returnsByItself: boolean,
+  ) => void;
   readonly returnPath: string;
+  readonly returnRoute?: IntegrationAuthorizationReturnRoute;
 }): Promise<IntegrationAuthorizationStart> {
   const tab = input.bridge ? null : window.open(integrationAuthorizationCompletionPath, "_blank");
   if (!input.bridge && !tab) {
@@ -41,9 +52,14 @@ export async function beginIntegrationAuthorization(input: {
   try {
     if (tab) tab.opener = null;
     const initiating = input.bridge ? input.client?.getSnapshot() : undefined;
+    const { finish, preparation } = input.client
+      ? await integrationAuthorizationFinish(input.bridge, input.client, input.returnRoute)
+      : { finish: {}, preparation: undefined };
     const started = await input.begin(
       input.bridge ? input.returnPath : integrationAuthorizationCompletionPath,
+      finish,
     );
+    const returnsByItself = preparation !== undefined;
     if (input.bridge) {
       const snapshot = input.client?.getSnapshot();
       if (
@@ -53,16 +69,17 @@ export async function beginIntegrationAuthorization(input: {
         initiating.user?.id !== snapshot.user.id
       )
         throw new Error("Reconnect to this deployment before connecting an integration.");
-      input.onStarted?.(started.attemptId);
+      input.onStarted?.(started.attemptId, returnsByItself);
       await input.bridge.openIntegrationAuthorization({
         attemptId: started.attemptId,
         launchTicket: started.launchTicket,
         deploymentId: DeploymentIdSchema.parse(snapshot.deploymentId),
         userId: snapshot.user.id,
         expiresAt: started.expiresAt,
+        ...(preparation === undefined ? {} : { returnPreparation: preparation }),
       });
     } else {
-      input.onStarted?.(started.attemptId);
+      input.onStarted?.(started.attemptId, returnsByItself);
       const target = new URL(
         `/v1/integration-authorizations/${encodeURIComponent(started.attemptId)}/launch`,
         window.location.origin,
@@ -81,38 +98,49 @@ export async function beginIntegrationAuthorization(input: {
 /** `app-button`: the person chose to return by the page's button, so no listener opens. */
 export type IntegrationAuthorizationReturnRoute = "app-button";
 
-/** Whether a client's latest sign-in tried to return by itself. */
-const automaticReturns = new WeakMap<object, boolean>();
+/** What an attempt's begin command says about how it finishes. */
+export interface IntegrationAuthorizationFinish {
+  readonly appReturnPort?: number;
+  readonly finish?: "app";
+}
 
 export async function integrationAuthorizationFinish(
   bridge: Pick<OpensteerDesktopBridge, "prepareIntegrationAuthorizationReturn"> | null,
   client: Pick<HostClient, "getSnapshot">,
   route?: IntegrationAuthorizationReturnRoute,
-): Promise<{ readonly appReturnPort?: number; readonly finish?: "app" }> {
-  automaticReturns.delete(client);
+): Promise<{ readonly finish: IntegrationAuthorizationFinish; readonly preparation?: string }> {
   const snapshot = client.getSnapshot();
-  if (!bridge || !snapshot.integrationAppFinishAvailable) return {};
-  if (route === "app-button" || !snapshot.integrationAppReturnPortAvailable)
-    return { finish: "app" };
-  const { port } = await bridge
-    .prepareIntegrationAuthorizationReturn()
+  if (!bridge || !snapshot.integrationAppFinishAvailable) return { finish: {} };
+  if (
+    route === "app-button" ||
+    !snapshot.integrationAppReturnPortAvailable ||
+    !snapshot.deploymentId
+  )
+    return { finish: { finish: "app" } };
+  const prepared = await bridge
+    .prepareIntegrationAuthorizationReturn({
+      deploymentId: DeploymentIdSchema.parse(snapshot.deploymentId),
+    })
     .catch(() => ({ port: null }));
-  if (port === null) return { finish: "app" };
-  automaticReturns.set(client, true);
-  return { appReturnPort: port, finish: "app" };
+  return prepared.port === null
+    ? { finish: { finish: "app" } }
+    : {
+        finish: { appReturnPort: prepared.port, finish: "app" },
+        preparation: prepared.preparation,
+      };
 }
 
 /**
- * A sign-in that tried to return by itself and ended this way may have lost that
- * return, so the person may choose the button. One that used it has nothing to offer.
+ * This attempt tried to return by itself and ended this way, so it may have lost
+ * that return and the person may choose the button. One that used it has nothing
+ * to offer. Asked of the attempt: another card's sign-in says nothing about it.
  */
 export function integrationAppButtonOffered(
-  client: Pick<HostClient, "getSnapshot">,
+  tracking: Pick<IntegrationAuthorizationTracking, "returnsByItself">,
+  attemptId: IntegrationAuthorizationStart["attemptId"],
   status: IntegrationAuthorizationStatus["status"],
 ): boolean {
-  return (
-    automaticReturns.get(client) === true && integrationAuthorizationReturnMayHaveFailed(status)
-  );
+  return tracking.returnsByItself(attemptId) && integrationAuthorizationReturnMayHaveFailed(status);
 }
 
 type ReturnBridge = Pick<

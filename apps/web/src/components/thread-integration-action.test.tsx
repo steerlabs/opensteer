@@ -1031,10 +1031,18 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
 
 describe("ThreadIntegrationAction on a desktop app that returns by itself", () => {
   const label = "Use the Open Opensteer button";
-  const attemptId = createIntegrationId("oauthAttempt");
 
-  async function signIn(answer: (attempt: number) => Promise<unknown>) {
-    const prepare = vi.fn(async () => ({ port: 48_203 }));
+  async function signIn(
+    answer: (attempt: number) => Promise<unknown>,
+    ports: readonly (number | null)[] = [48_203],
+  ) {
+    let preparations = 0;
+    const prepare = vi.fn(async () => {
+      const port = ports[preparations++] ?? null;
+      return port === null
+        ? { port }
+        : { port, preparation: "00000000-0000-4000-8000-000000000009" };
+    });
     Object.assign(window, {
       opensteerDesktop: {
         finishIntegrationAuthorization: vi.fn(async () => undefined),
@@ -1050,8 +1058,8 @@ describe("ThreadIntegrationAction on a desktop app that returns by itself", () =
       integrationAppReturnPortAvailable: true,
       user: { id: "usr_00000000-0000-4000-8000-000000000001" },
     };
-    const dispatch = vi.fn(async (command: { type: string }) => ({
-      attemptId,
+    const dispatch = vi.fn(async (command: { type: string; attemptId?: string }) => ({
+      attemptId: command.attemptId ?? createIntegrationId("oauthAttempt"),
       connectionId: null,
       expiresAt: "2099-01-01T00:00:00Z",
       failureCode: null,
@@ -1085,6 +1093,28 @@ describe("ThreadIntegrationAction on a desktop app that returns by itself", () =
 
   afterEach(() => {
     Reflect.deleteProperty(window, "opensteerDesktop");
+  });
+
+  // The ways it could fail: one flag for the whole client, so a card's recovery
+  // answers for whichever sign-in began last, in either direction.
+  it.each([
+    ["the first tried to return by itself, the second did not", [48_203, null], true],
+    ["the first did not, the second tried to", [null, 48_203], false],
+  ] as const)("answers for its own attempt when %s", async (_label, ports, offered) => {
+    const first = await signIn(() => new Promise(() => {}), ports);
+    await vi.waitFor(() => expect(buttonWithText(first.container, "Cancel")).not.toBeNull());
+    const second = await mountThreadAction({
+      ...requestRecord(oauthRequest(), "Connect Linear"),
+      id: "req_00000000-0000-4000-8000-000000000002",
+    } as Request);
+    await act(async () => second.querySelector<HTMLButtonElement>(".btn--primary")?.click());
+    await vi.waitFor(() => expect(buttonWithText(second, "Cancel")).not.toBeNull());
+    await act(async () => buttonWithText(first.container, "Cancel")?.click());
+    await vi.waitFor(() => expect(buttonWithText(first.container, "Try again")).not.toBeNull());
+    expect(buttonWithText(first.container, label) !== null).toBe(offered);
+    await act(async () => buttonWithText(second, "Cancel")?.click());
+    await vi.waitFor(() => expect(buttonWithText(second, "Try again")).not.toBeNull());
+    expect(buttonWithText(second, label) !== null).toBe(!offered);
   });
 
   it("says what to do while it waits", async () => {

@@ -1,6 +1,7 @@
 import {
   DesktopOpenIntegrationAuthorizationInputSchema,
   DesktopOpenIntegrationAuthorizationResultSchema,
+  DesktopPrepareIntegrationAuthorizationReturnInputSchema,
   DesktopPrepareIntegrationAuthorizationReturnResultSchema,
 } from "@opensteer/protocol/desktop";
 import {
@@ -14,9 +15,14 @@ export const handlePrepareIntegrationAuthorizationReturn =
   (context: DesktopBridgeContext): DesktopBridgeHandler =>
   async (event, envelope) => {
     assertAuthorizedRenderer(context, event, envelope);
-    return DesktopPrepareIntegrationAuthorizationReturnResultSchema.parse({
-      port: (await context.options.integrationAuthorizations?.prepareReturn()) ?? null,
-    });
+    const { deploymentId } = DesktopPrepareIntegrationAuthorizationReturnInputSchema.parse(
+      envelope.input,
+    );
+    return DesktopPrepareIntegrationAuthorizationReturnResultSchema.parse(
+      (await context.options.integrationAuthorizations?.prepareReturn(deploymentId)) ?? {
+        port: null,
+      },
+    );
   };
 
 export const handleOpenIntegrationAuthorization =
@@ -37,12 +43,15 @@ export const handleOpenIntegrationAuthorization =
     target.searchParams.set("ticket", input.launchTicket);
     const authorizations = context.options.integrationAuthorizations;
     if (!authorizations) throw new Error("Integration authorization returns are unavailable.");
-    await authorizations.register({
-      deploymentId: input.deploymentId,
-      attemptId: input.attemptId,
-      expiresAt: input.expiresAt,
-      ...(input.userId ? { userId: input.userId } : {}),
-    });
+    await authorizations.register(
+      {
+        deploymentId: input.deploymentId,
+        attemptId: input.attemptId,
+        expiresAt: input.expiresAt,
+        ...(input.userId ? { userId: input.userId } : {}),
+      },
+      input.returnPreparation,
+    );
     await context.options.portal.openExternal(target.toString());
     return DesktopOpenIntegrationAuthorizationResultSchema.parse({ opened: true });
   };

@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConnectOperations } from "../components/integrations/connect-operations.js";
 import {
   beginIntegrationAuthorization,
-  integrationAppButtonOffered,
   integrationAuthorizationCompletionPath,
   integrationAuthorizationFinish,
   subscribeIntegrationAuthorizationReturns,
@@ -28,35 +27,41 @@ afterEach(() => {
 describe("integrationAuthorizationFinish", () => {
   const capable = {
     getSnapshot: () => ({
+      deploymentId,
       integrationAppFinishAvailable: true,
       integrationAppReturnPortAvailable: true,
     }),
   } as unknown as HostClient;
+  const preparation = "00000000-0000-4000-8000-000000000009";
   const prepared = (port: number | null) => ({
-    prepareIntegrationAuthorizationReturn: vi.fn(async () => ({ port })),
+    prepareIntegrationAuthorizationReturn: vi.fn(async () =>
+      port === null ? { port } : { port, preparation },
+    ),
   });
 
   it("asks a capable app for its port before the attempt begins", async () => {
-    await expect(integrationAuthorizationFinish(prepared(48_203), capable)).resolves.toEqual({
-      appReturnPort: 48_203,
-      finish: "app",
+    const bridge = prepared(48_203);
+    await expect(integrationAuthorizationFinish(bridge, capable)).resolves.toEqual({
+      finish: { appReturnPort: 48_203, finish: "app" },
+      preparation,
     });
+    expect(bridge.prepareIntegrationAuthorizationReturn).toHaveBeenCalledWith({ deploymentId });
   });
 
   it("sends no port to a Host that would refuse it, and opens no listener", async () => {
     const bridge = prepared(48_203);
     const finishOnly = {
-      getSnapshot: () => ({ integrationAppFinishAvailable: true }),
+      getSnapshot: () => ({ deploymentId, integrationAppFinishAvailable: true }),
     } as unknown as HostClient;
     await expect(integrationAuthorizationFinish(bridge, finishOnly)).resolves.toEqual({
-      finish: "app",
+      finish: { finish: "app" },
     });
     expect(bridge.prepareIntegrationAuthorizationReturn).not.toHaveBeenCalled();
   });
 
   it("goes on through the app link when no port is free", async () => {
     await expect(integrationAuthorizationFinish(prepared(null), capable)).resolves.toEqual({
-      finish: "app",
+      finish: { finish: "app" },
     });
     await expect(
       integrationAuthorizationFinish(
@@ -65,35 +70,52 @@ describe("integrationAuthorizationFinish", () => {
         },
         capable,
       ),
-    ).resolves.toEqual({ finish: "app" });
+    ).resolves.toEqual({ finish: { finish: "app" } });
   });
 
   it("opens no listener for a person who chose the app button", async () => {
     const bridge = prepared(48_203);
     await expect(integrationAuthorizationFinish(bridge, capable, "app-button")).resolves.toEqual({
-      finish: "app",
+      finish: { finish: "app" },
     });
     expect(bridge.prepareIntegrationAuthorizationReturn).not.toHaveBeenCalled();
   });
 
   it("asks nothing of a browser", async () => {
-    await expect(integrationAuthorizationFinish(null, capable)).resolves.toEqual({});
+    await expect(integrationAuthorizationFinish(null, capable)).resolves.toEqual({ finish: {} });
   });
 
-  it("offers the app button only after a sign-in that tried to return by itself", async () => {
+  it("carries the preparation to registration and the route to tracking", async () => {
+    const openIntegrationAuthorization = vi.fn(async () => ({ opened: true as const }));
+    const onStarted = vi.fn();
+    const begin = vi.fn(async () => started);
     const client = {
-      getSnapshot: capable.getSnapshot,
+      getSnapshot: () => ({
+        deploymentId,
+        integrationAppFinishAvailable: true,
+        integrationAppReturnPortAvailable: true,
+        user: { id: userId },
+      }),
     } as unknown as HostClient;
-    expect(integrationAppButtonOffered(client, "expired")).toBe(false);
-    await integrationAuthorizationFinish(prepared(48_203), client);
-    expect(integrationAppButtonOffered(client, "expired")).toBe(true);
-    expect(integrationAppButtonOffered(client, "denied")).toBe(false);
-    // No port was free, or this computer offers none: that sign-in already used the button.
-    await integrationAuthorizationFinish(prepared(null), client);
-    expect(integrationAppButtonOffered(client, "expired")).toBe(false);
-    await integrationAuthorizationFinish(prepared(48_203), client);
-    await integrationAuthorizationFinish(prepared(48_203), client, "app-button");
-    expect(integrationAppButtonOffered(client, "expired")).toBe(false);
+    const bridge = { ...prepared(48_203), openIntegrationAuthorization };
+    await beginIntegrationAuthorization({ begin, bridge, client, onStarted, returnPath: "/" });
+    expect(begin).toHaveBeenCalledWith("/", { appReturnPort: 48_203, finish: "app" });
+    expect(onStarted).toHaveBeenCalledWith(started.attemptId, true);
+    expect(openIntegrationAuthorization).toHaveBeenCalledWith(
+      expect.objectContaining({ returnPreparation: preparation }),
+    );
+    await beginIntegrationAuthorization({
+      begin,
+      bridge,
+      client,
+      onStarted,
+      returnPath: "/",
+      returnRoute: "app-button",
+    });
+    expect(onStarted).toHaveBeenLastCalledWith(started.attemptId, false);
+    expect(openIntegrationAuthorization.mock.lastCall).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ returnPreparation: expect.anything() })]),
+    );
   });
 });
 
@@ -122,8 +144,8 @@ describe("integration authorization client", () => {
 
     expect(events).toEqual(["open", "begin", "navigate"]);
     expect(browser.open).toHaveBeenCalledWith(integrationAuthorizationCompletionPath, "_blank");
-    expect(begin).toHaveBeenCalledWith(integrationAuthorizationCompletionPath);
-    expect(onStarted).toHaveBeenCalledWith(started.attemptId);
+    expect(begin).toHaveBeenCalledWith(integrationAuthorizationCompletionPath, {});
+    expect(onStarted).toHaveBeenCalledWith(started.attemptId, false);
     expect(onStarted).not.toHaveBeenCalledWith(expect.stringContaining(started.launchTicket));
     expect(browser.href()).toBe("https://host.example/integrations?section=connected#github");
     expect(tab.location.replace).toHaveBeenCalledWith(
@@ -188,7 +210,10 @@ describe("integration authorization client", () => {
 
     await expect(
       beginIntegrationAuthorization({
-        bridge: { openIntegrationAuthorization },
+        bridge: {
+          openIntegrationAuthorization,
+          prepareIntegrationAuthorizationReturn: vi.fn(),
+        },
         client: {
           getSnapshot: () => ({ deploymentId, user: { id: userId } }),
         } as unknown as HostClient,
@@ -198,7 +223,7 @@ describe("integration authorization client", () => {
     ).resolves.toEqual(started);
 
     expect(browser.open).not.toHaveBeenCalled();
-    expect(begin).toHaveBeenCalledWith("/threads/thread_123?panel=apps#request");
+    expect(begin).toHaveBeenCalledWith("/threads/thread_123?panel=apps#request", {});
     expect(openIntegrationAuthorization).toHaveBeenCalledWith({
       attemptId: started.attemptId,
       launchTicket: started.launchTicket,
@@ -221,7 +246,7 @@ describe("integration authorization client", () => {
       events.push("dispatch");
       return { ...started, type: "integration.authorization.begin" as const };
     });
-    const tracking = { finished: vi.fn(), started: vi.fn() };
+    const tracking = { finished: vi.fn(), returnsByItself: vi.fn(), started: vi.fn() };
     const operations = createConnectOperations(
       {
         dispatch,
@@ -242,7 +267,7 @@ describe("integration authorization client", () => {
         expect.objectContaining({ input: expect.objectContaining({ finish: "app" }) }),
       ]),
     );
-    expect(tracking.started).toHaveBeenCalledWith(started.attemptId);
+    expect(tracking.started).toHaveBeenCalledWith(started.attemptId, false);
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         input: expect.objectContaining({
@@ -293,7 +318,7 @@ describe("integration authorization client", () => {
     });
 
     expect(onStarted).toHaveBeenCalledOnce();
-    expect(onStarted).toHaveBeenCalledWith(started.attemptId);
+    expect(onStarted).toHaveBeenCalledWith(started.attemptId, false);
     expect(JSON.stringify(onStarted.mock.calls)).not.toContain(started.launchTicket);
     expect(browser.href()).toBe("https://host.example/threads/thread_123?panel=apps#request-9");
     expect(browser.href()).not.toContain(started.launchTicket);
@@ -336,11 +361,13 @@ it("opts only a capable desktop into app finish", async () => {
   const client = {
     getSnapshot: () => ({ integrationAppFinishAvailable: true }),
   } as unknown as HostClient;
-  await expect(integrationAuthorizationFinish(bridge, client)).resolves.toEqual({ finish: "app" });
-  await expect(integrationAuthorizationFinish(null, client)).resolves.toEqual({});
+  await expect(integrationAuthorizationFinish(bridge, client)).resolves.toEqual({
+    finish: { finish: "app" },
+  });
+  await expect(integrationAuthorizationFinish(null, client)).resolves.toEqual({ finish: {} });
   await expect(
     integrationAuthorizationFinish(bridge, { getSnapshot: () => ({}) } as unknown as HostClient),
-  ).resolves.toEqual({});
+  ).resolves.toEqual({ finish: {} });
 });
 it("dispatches a desktop return to its exact attachment once and wakes its waiter", async () => {
   const { createId } = await import("@opensteer/core");
@@ -405,7 +432,11 @@ it.each([true, false])(
         integrationAppFinishAvailable: capable,
       }),
     } as unknown as HostClient;
-    const operations = createConnectOperations(client, { started: vi.fn(), finished: vi.fn() });
+    const operations = createConnectOperations(client, {
+      started: vi.fn(),
+      finished: vi.fn(),
+      returnsByItself: vi.fn(),
+    });
     await operations.beginAuthorization({
       applicationSource: null,
       definitionId: "github",

@@ -23,7 +23,7 @@ describe("integration authorization route tracking", () => {
     const rendered = renderTracking();
     const attemptId = createIntegrationId("oauthAttempt");
 
-    await act(async () => rendered.tracking.started(attemptId));
+    await act(async () => rendered.tracking.started(attemptId, false));
 
     expect(rendered.router.state.location).toMatchObject({
       hash: "#request-9",
@@ -34,14 +34,26 @@ describe("integration authorization route tracking", () => {
     expect(rendered.router.state.location.search).not.toContain("ticket");
   });
 
+  it("remembers each attempt's return, still after it finishes", async () => {
+    const { tracking } = renderTracking();
+    const automatic = createIntegrationId("oauthAttempt");
+    const button = createIntegrationId("oauthAttempt");
+    await act(async () => tracking.started(automatic, true));
+    await act(async () => tracking.started(button, false));
+    await act(async () => tracking.finished(automatic));
+    await act(async () => tracking.finished(button));
+    expect(tracking.returnsByItself(automatic)).toBe(true);
+    expect(tracking.returnsByItself(button)).toBe(false);
+  });
+
   it("does not navigate after its owning page unmounts", async () => {
     const rendered = renderTracking();
     const attemptId = createIntegrationId("oauthAttempt");
-    await act(async () => rendered.tracking.started(attemptId));
+    await act(async () => rendered.tracking.started(attemptId, false));
     act(() => rendered.unmount());
     await rendered.router.navigate("/settings");
     rendered.tracking.finished(attemptId);
-    rendered.tracking.started(createIntegrationId("oauthAttempt"));
+    rendered.tracking.started(createIntegrationId("oauthAttempt"), false);
     expect(rendered.router.state.location.pathname).toBe("/settings");
     expect(rendered.router.state.location.search).toBe("");
   });
@@ -52,8 +64,8 @@ describe("integration authorization route tracking", () => {
     const first = createIntegrationId("oauthAttempt");
     const newer = createIntegrationId("oauthAttempt");
 
-    await act(async () => saved.started(first));
-    await act(async () => saved.started(newer));
+    await act(async () => saved.started(first, false));
+    await act(async () => saved.started(newer, false));
     await act(async () => saved.finished(first));
 
     expect(rendered.router.state.location).toMatchObject({

@@ -361,6 +361,8 @@ export const DesktopOpenIntegrationAuthorizationInputSchema = z.strictObject({
   userId: UserIdSchema.optional(),
   expiresAt: IsoDateTimeSchema,
   launchTicket: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
+  /** The preparation this attempt's port came from; a no-port attempt has none. */
+  returnPreparation: z.uuid().optional(),
 });
 export type DesktopOpenIntegrationAuthorizationInput = z.infer<
   typeof DesktopOpenIntegrationAuthorizationInputSchema
@@ -372,9 +374,16 @@ export type DesktopOpenIntegrationAuthorizationResult = z.infer<
   typeof DesktopOpenIntegrationAuthorizationResultSchema
 >;
 
-export const DesktopPrepareIntegrationAuthorizationReturnResultSchema = z.strictObject({
-  port: IntegrationAuthorizationReturnPortSchema.nullable(),
+export const DesktopPrepareIntegrationAuthorizationReturnInputSchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
 });
+export type DesktopPrepareIntegrationAuthorizationReturnInput = z.infer<
+  typeof DesktopPrepareIntegrationAuthorizationReturnInputSchema
+>;
+export const DesktopPrepareIntegrationAuthorizationReturnResultSchema = z.union([
+  z.strictObject({ port: IntegrationAuthorizationReturnPortSchema, preparation: z.uuid() }),
+  z.strictObject({ port: z.null() }),
+]);
 export type DesktopPrepareIntegrationAuthorizationReturnResult = z.infer<
   typeof DesktopPrepareIntegrationAuthorizationReturnResultSchema
 >;
@@ -1712,7 +1721,9 @@ export interface OpensteerDesktopBridge {
   setBadgeCount(input: DesktopBadgeCountInput): Promise<void>;
   openExternalUrl(input: DesktopOpenExternalUrlInput): Promise<DesktopOpenExternalUrlResult>;
   /** Called before `begin`, because the Account seals the port into the attempt. */
-  prepareIntegrationAuthorizationReturn(): Promise<DesktopPrepareIntegrationAuthorizationReturnResult>;
+  prepareIntegrationAuthorizationReturn(
+    input: DesktopPrepareIntegrationAuthorizationReturnInput,
+  ): Promise<DesktopPrepareIntegrationAuthorizationReturnResult>;
   openIntegrationAuthorization(
     input: DesktopOpenIntegrationAuthorizationInput,
   ): Promise<DesktopOpenIntegrationAuthorizationResult>;

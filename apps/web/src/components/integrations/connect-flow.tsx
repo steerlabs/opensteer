@@ -211,6 +211,7 @@ export function ConnectFlow({
    * the two answered.
    */
   const finishAttempt = async (
+    started: IntegrationAuthorizationStart,
     status: IntegrationAuthorizationStatus,
     controller: AbortController,
     unrecorded: string,
@@ -219,7 +220,7 @@ export function ConnectFlow({
       const outcome = integrationAuthorizationError(status.status, status.failureCode);
       if (outcome) {
         setError(outcome);
-        setAppButtonOffered(operations.appButtonOffered(status.status));
+        setAppButtonOffered(operations.appButtonOffered(started.attemptId, status.status));
         setStep({ kind: "choose" });
         return;
       }
@@ -252,6 +253,7 @@ export function ConnectFlow({
       const status = await operations.awaitAuthorization(started, controller.signal);
       if (!owns(controller)) return;
       await finishAttempt(
+        started,
         status,
         controller,
         `${definition.name} reported success, but no connected account is recorded here. Start the connection again.`,
@@ -302,6 +304,7 @@ export function ConnectFlow({
     const controller = start();
     try {
       await finishAttempt(
+        started,
         status,
         controller,
         `${definition.name} completed while cancellation was requested, but no connected account is recorded here. Reload and try again.`,

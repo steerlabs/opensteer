@@ -13,7 +13,6 @@ import { desktopBridge } from "../../desktop/desktop-bridge.js";
 import {
   integrationAppButtonOffered,
   integrationAuthorizationSurface,
-  integrationAuthorizationFinish,
   finishDesktopIntegrationAuthorization,
   beginIntegrationAuthorization,
   waitForIntegrationAuthorization,
@@ -25,8 +24,11 @@ import {
  * both entry points speak to the same typed rpc members.
  */
 export interface ConnectOperations {
-  /** Whether to offer a fresh sign-in by the app button after one ended this way. */
-  readonly appButtonOffered: (status: IntegrationAuthorizationStatus["status"]) => boolean;
+  /** Whether to offer a fresh sign-in by the app button after this attempt ended this way. */
+  readonly appButtonOffered: (
+    attemptId: IntegrationAuthorizationStart["attemptId"],
+    status: IntegrationAuthorizationStatus["status"],
+  ) => boolean;
   /**
    * Observe the same durable attempt while authorization runs in another
    * surface. It answers a terminal status, or rejects once aborted.
@@ -64,7 +66,8 @@ export function createConnectOperations(
   tracking: IntegrationAuthorizationTracking,
 ): ConnectOperations {
   return {
-    appButtonOffered: (status) => integrationAppButtonOffered(client, status),
+    appButtonOffered: (attemptId, status) =>
+      integrationAppButtonOffered(tracking, attemptId, status),
     checkRepositoryAccess: async (connectionId) =>
       unwrapRpcResult(
         await client.rpc["integration.repositoryAccess.check"]({
@@ -88,7 +91,8 @@ export function createConnectOperations(
         client,
         onStarted: tracking.started,
         returnPath,
-        begin: async (authorizationReturnPath) => {
+        ...(returnRoute ? { returnRoute } : {}),
+        begin: async (authorizationReturnPath, finish) => {
           const started = await client.dispatch({
             idempotencyKey: mutationIdempotencyKey(`integration-auth:${definitionId}`),
             input: {
@@ -96,7 +100,7 @@ export function createConnectOperations(
               definitionId,
               returnPath: authorizationReturnPath,
               surface: integrationAuthorizationSurface(desktopBridge()),
-              ...(await integrationAuthorizationFinish(desktopBridge(), client, returnRoute)),
+              ...finish,
             },
             type: "integration.authorization.begin",
           });
