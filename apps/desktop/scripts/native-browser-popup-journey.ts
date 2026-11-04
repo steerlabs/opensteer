@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { access } from "node:fs/promises";
+import { access, appendFile } from "node:fs/promises";
 import path from "node:path";
 import {
   BrowserVideoClickResultSchema,
@@ -130,6 +130,61 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     kit.ownedPids.delete(pid);
   });
   const browser = await chromium.connect(server.wsEndpoint());
+  const startupTrace = await browser.newBrowserCDPSession();
+  await startupTrace.send("Tracing.start", {
+    transferMode: "ReturnAsStream",
+    traceConfig: {
+      recordMode: "recordContinuously",
+      traceBufferSizeInKb: 32768,
+      includedCategories: [
+        "toplevel",
+        "cc",
+        "viz",
+        "gpu",
+        "renderer.scheduler",
+        "devtools.timeline",
+        "disabled-by-default-cc.debug",
+        "disabled-by-default-renderer.scheduler",
+      ],
+    },
+  });
+  let traceCompletion: Promise<void> | undefined;
+  const stopStartupTrace = () => {
+    traceCompletion ??= (async () => {
+      const complete = Promise.withResolvers<{ stream: string }>();
+      startupTrace.once("Tracing.tracingComplete", complete.resolve);
+      const timer = setTimeout(
+        () => complete.reject(new Error("Startup native trace did not finish")),
+        4000,
+      );
+      void complete.promise.catch(() => undefined);
+      try {
+        await startupTrace.send("Tracing.end");
+        const { stream } = await complete.promise;
+        try {
+          let eof = false;
+          while (!eof) {
+            const chunk = await startupTrace.send("IO.read", { handle: stream, size: 1048576 });
+            await appendFile(
+              path.join(kit.run, "cases/popups/startup-native-trace.json"),
+              chunk.base64Encoded ? Buffer.from(chunk.data, "base64") : chunk.data,
+            );
+            eof = chunk.eof;
+          }
+        } finally {
+          await startupTrace.send("IO.close", { handle: stream });
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
+    return traceCompletion;
+  };
+  const traceDeadline = setTimeout(() => void stopStartupTrace().catch(() => undefined), 30000);
+  kit.cleanup.push(async () => {
+    clearTimeout(traceDeadline);
+    await stopStartupTrace();
+  });
   const counts: [number, number, number] = [0, 0, 0];
   const commands: Record<string, number> = {};
   const editingContexts: [number, number] = [0, 0];
@@ -160,6 +215,21 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         );
         const page = await viewer.newPage();
         page.setDefaultTimeout(4000);
+        const profiler = await viewer.newCDPSession(page);
+        await profiler.send("Profiler.enable");
+        await profiler.send("Profiler.start");
+        let profileCompletion: Promise<void> | undefined;
+        const stopProfile = () => {
+          profileCompletion ??= profiler.send("Profiler.stop").then(({ profile }) => {
+            kit.artifacts.json(`cases/popups/startup-${index}.cpuprofile`, profile);
+          });
+          return profileCompletion;
+        };
+        const profileDeadline = setTimeout(() => void stopProfile().catch(() => undefined), 30000);
+        kit.cleanup.push(async () => {
+          clearTimeout(profileDeadline);
+          await stopProfile();
+        });
         await page.addInitScript(() => {
           Object.assign(window, { popupPresented: 0 });
           document.addEventListener("browser-picture-presented", (event) => {
@@ -260,23 +330,37 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
             }
           });
         });
-        await page.goto(context.hostOrigin);
-        const sidebar = page.getByRole("button", { name: "Open sidebar", exact: true });
-        if (await sidebar.isVisible()) await sidebar.click();
-        await page
-          .locator('.side-tab[data-group="web"] .side-tab__main')
-          .filter({ hasText: "Browser popup fixture" })
-          .click();
-        await page.getByRole("button", { name: "Hide the conversation", exact: true }).click();
-        await page.locator('canvas[aria-label="Live browser page"]').waitFor({ state: "visible" });
-        await page.waitForFunction(
-          () => Number(Reflect.get(window, "popupPresented")) > 0,
-          undefined,
-          { timeout: 4000 },
-        );
+        try {
+          record(index, "startup.navigation");
+          await page.goto(context.hostOrigin);
+          const sidebar = page.getByRole("button", { name: "Open sidebar", exact: true });
+          if (await sidebar.isVisible()) await sidebar.click();
+          record(index, "startup.tab-control");
+          await page
+            .locator('.side-tab[data-group="web"] .side-tab__main')
+            .filter({ hasText: "Browser popup fixture" })
+            .click();
+          record(index, "startup.conversation-control");
+          await page.getByRole("button", { name: "Hide the conversation", exact: true }).click();
+          record(index, "startup.pixel-wait");
+          await page
+            .locator('canvas[aria-label="Live browser page"]')
+            .waitFor({ state: "visible" });
+          await page.waitForFunction(
+            () => Number(Reflect.get(window, "popupPresented")) > 0,
+            undefined,
+            { timeout: 4000 },
+          );
+          record(index, "startup.pixel-presented");
+        } finally {
+          clearTimeout(profileDeadline);
+          await stopProfile();
+        }
         return { viewer, page };
       }),
     );
+    clearTimeout(traceDeadline);
+    await stopStartupTrace();
     const a = viewers[0]!.page,
       b = viewers[1]!.page;
     await b.evaluate(
@@ -621,6 +705,8 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     assert(closed.ok);
     await a.getByRole("dialog").waitFor({ state: "hidden" });
   } finally {
+    clearTimeout(traceDeadline);
+    await stopStartupTrace();
     const producerResult = !contents.isDestroyed()
       ? await contents
           .executeJavaScript(
