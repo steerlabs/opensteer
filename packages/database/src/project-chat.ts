@@ -1,4 +1,9 @@
-import { DEFAULT_THREAD_ACCESS_MODE, type Workspace } from "@opensteer/core";
+import {
+  automaticAccountOrder,
+  catalogDefaultModelSelection,
+  DEFAULT_THREAD_ACCESS_MODE,
+  type Workspace,
+} from "@opensteer/core";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { createThread } from "./thread-store.js";
@@ -27,31 +32,33 @@ export async function ensureProjectChat(
     .orderBy("threads.updatedAt", "desc")
     .limit(1)
     .executeTakeFirst();
-  const catalog = previous
+  // No history: the account a person means when they name none, then their
+  // other accounts here, on that account's catalog default.
+  const fresh = previous
     ? null
-    : await database
-        .selectFrom("harnessCatalogs")
-        .innerJoin("harnessInstances", "harnessInstances.id", "harnessCatalogs.harnessInstanceId")
-        .select(["harnessCatalogs.catalog", "harnessInstances.id"])
-        .where("harnessInstances.environmentId", "=", environmentId)
-        .where("harnessInstances.enabled", "=", true)
-        .where("harnessInstances.removedAt", "is", null)
-        .orderBy("harnessInstances.isDefault", "desc")
-        .orderBy("harnessInstances.id")
-        .executeTakeFirst();
-  const model = catalog?.catalog.models.find((m) => m.isDefault) ?? catalog?.catalog.models[0];
+    : automaticAccountOrder(
+        await database
+          .selectFrom("harnessCatalogs")
+          .innerJoin("harnessInstances", "harnessInstances.id", "harnessCatalogs.harnessInstanceId")
+          .select(["harnessCatalogs.catalog", "harnessInstances.id", "harnessInstances.isDefault"])
+          .where("harnessInstances.environmentId", "=", environmentId)
+          .where("harnessInstances.enabled", "=", true)
+          .where("harnessInstances.removedAt", "is", null)
+          .orderBy("harnessInstances.id")
+          .execute(),
+      ).flatMap((account) => {
+        const modelSelection = catalogDefaultModelSelection(account.catalog);
+        return modelSelection ? [{ harnessInstanceId: account.id, modelSelection }] : [];
+      })[0];
   // With no engine yet, reconciliation will create the chat once one is connected.
-  if (!previous && (!catalog || !model)) return workspace;
+  const choice = previous ?? fresh;
+  if (!choice) return workspace;
   const result = await createThread(database, {
     accessMode: previous?.accessMode ?? DEFAULT_THREAD_ACCESS_MODE,
     createdBy: workspace.createdBy,
     environmentId,
-    harnessInstanceId: previous?.harnessInstanceId ?? catalog!.id,
-    modelSelection: previous?.modelSelection ?? {
-      modelId: model!.modelId,
-      providerId: model!.providerId,
-      options: {},
-    },
+    harnessInstanceId: choice.harnessInstanceId,
+    modelSelection: choice.modelSelection,
     home: true,
     idempotencyKey: `project-chat:${workspace.id}`,
     title: "Chat",

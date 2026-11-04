@@ -3518,8 +3518,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
           noRoute: "No route",
           notAMember: "Not a member",
         },
-        placementCandidates: [
-          { environmentId: placementEnvironmentId, harnessInstanceId: placementHarness.id },
+        availableEngines: [
+          { environmentId: placementEnvironmentId, driverKinds: [placementHarness.driverKind] },
         ],
       });
       void adopting.catch(() => undefined);
@@ -3730,9 +3730,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
             noRoute: "No route",
             notAMember: "Not a member",
           },
-          placementCandidates: [
-            { environmentId: run.environmentId, harnessInstanceId: run.harnessInstanceId },
-          ],
+          availableEngines: [{ environmentId: run.environmentId, driverKinds: [HarnessIdSchema.parse("native")] }],
         });
       // Exercise the production revocation transaction without its outer retry:
       // either deadlock victim must be visible to this regression.

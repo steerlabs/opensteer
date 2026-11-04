@@ -1,5 +1,7 @@
 import {
+  catalogDefaultModel,
   OpensteerError,
+  selectionForModelEffort,
   type UserId,
   type EnvironmentId,
   type HarnessInstanceId,
@@ -171,24 +173,15 @@ export async function startVoiceCall(
       .select("catalog")
       .where("environmentId", "=", input.environmentId)
       .where("harnessInstanceId", "=", input.harnessInstanceId)
-      .executeTakeFirstOrThrow();
-    const model = catalog.catalog.models.find((m) => m.isDefault) ?? catalog.catalog.models[0];
+      .executeTakeFirst();
+    // The call's own account only: its default model, at low effort for latency.
+    const model = catalogDefaultModel(catalog?.catalog ?? null);
     if (!model)
       throw new OpensteerError({
         code: "conflict",
         reason: "voice-account-unavailable",
         message: "Voice model unavailable.",
       });
-    const options = Object.fromEntries(
-      model.options.flatMap((o) => (o.defaultValue === undefined ? [] : [[o.id, o.defaultValue]])),
-    );
-    for (const option of model.options)
-      if (
-        option.type === "select" &&
-        ["reasoning-effort", "effort", "reasoning_effort"].includes(option.id) &&
-        option.values.some((v) => v.value === "low")
-      )
-        options[option.id] = "low";
     const insertThread = await prepareThreadInsertion(tx, {
       createdBy: input.ownerId,
       environmentId: input.environmentId,
@@ -216,12 +209,7 @@ export async function startVoiceCall(
         role: "work",
         title: "Voice call",
         workspaceId: workspace.id,
-        modelSelection: {
-          providerId: model.providerId,
-          modelId: model.modelId,
-          ...(model.nativeModelId ? { nativeModelId: model.nativeModelId } : {}),
-          options,
-        },
+        modelSelection: selectionForModelEffort(model, "low"),
       },
       { insertThread, unlisted: true },
     );
