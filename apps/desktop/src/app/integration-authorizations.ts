@@ -31,20 +31,48 @@ export class DesktopIntegrationAuthorizations {
     identity: { readonly deploymentId: string; readonly userId: string },
     receive: (callback: IntegrationAuthorizationAppReturn) => void,
   ): () => void {
-    return this.#broker.attach(async (url) => {
-      const callback = parseIntegrationAuthorizationAppReturn("desktop", url);
-      if (!callback) return true;
-      const entry = this.attempts.find(callback);
-      if (!entry) return true;
-      if (
-        entry.deploymentId !== identity.deploymentId ||
-        (entry.userId !== undefined && entry.userId !== identity.userId)
-      )
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let delay = 1_000;
+    let detachBroker: () => void;
+    const attach = () => {
+      detachBroker = this.#broker.attach(async (url) => {
+        const callback = parseIntegrationAuthorizationAppReturn("desktop", url);
+        if (!callback) return true;
+        const entry = this.attempts.find(callback);
+        if (!entry) return true;
+        if (
+          entry.deploymentId !== identity.deploymentId ||
+          (entry.userId !== undefined && entry.userId !== identity.userId)
+        )
+          return false;
+        receive(callback);
+        // Emitting an IPC event is not acknowledgement. Keep the proof queued
+        // until the renderer confirms a durable terminal outcome.
+        if (active && timer === undefined) {
+          timer = setTimeout(
+            () => {
+              timer = undefined;
+              if (!active) return;
+              detachBroker();
+              attach();
+            },
+            Math.min(delay, Math.max(0, Date.parse(entry.expiresAt) - Date.now())),
+          );
+          timer.unref?.();
+          delay = Math.min(delay * 2, 30_000);
+        }
         return false;
-      receive(callback);
-      return true;
-    });
+      });
+    };
+    attach();
+    return () => {
+      active = false;
+      if (timer !== undefined) clearTimeout(timer);
+      detachBroker();
+    };
   }
+
   settled(): Promise<void> {
     return this.#broker.settled();
   }

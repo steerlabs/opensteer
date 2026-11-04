@@ -967,6 +967,7 @@ const DesktopIdempotencyKeySchema = z.string().regex(/^[\x21-\x7e]{1,255}$/u);
 const DesktopApiVersionSchema = z.string().regex(/^[0-9]{1,6}$/u);
 
 export const DesktopHostHttpRequestSchema = z.strictObject({
+  expectedDeploymentId: DeploymentIdSchema.optional(),
   body: boundedUtf8String(0, 1 * 1_024 * 1_024).optional(),
   headers: z.strictObject({
     accept: DesktopAcceptHeaderSchema.optional(),

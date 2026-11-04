@@ -1,3 +1,4 @@
+import { createId } from "@opensteer/core";
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import type {
   DesktopHostWebSocketEvent,
@@ -8,6 +9,8 @@ import {
   createDesktopHostFetch,
   createDesktopHostWebSocketFactory,
 } from "./desktop-host-transport.js";
+
+const deploymentId = createId("deployment");
 
 describe("Desktop Host renderer adapter", () => {
   it("closes before binding and waits for main's terminal event", async () => {
@@ -141,7 +144,11 @@ describe("Desktop Host renderer adapter", () => {
       })),
       hostBinaryClose: vi.fn(async () => ({ ok: true, data: null })),
     } as unknown as OpensteerDesktopBridge;
-    const fetch = createDesktopHostFetch(bridge, "https://home.connect.opensteer.test");
+    const fetch = createDesktopHostFetch(
+      bridge,
+      "https://home.connect.opensteer.test",
+      deploymentId,
+    );
     const body = JSON.stringify({ fileKey: "a".repeat(5_462), workspaceId: "wsp_test" });
     const response = await fetch(
       "https://home.connect.opensteer.test/v1/rpc/workspace.files.preview",
@@ -176,6 +183,7 @@ describe("Desktop Host renderer adapter", () => {
     const fetch = createDesktopHostFetch(
       { hostRequest } as unknown as OpensteerDesktopBridge,
       "https://home.connect.opensteer.test",
+      deploymentId,
     );
 
     const response = await fetch("https://home.connect.opensteer.test/v1/workspaces?limit=10", {
@@ -189,6 +197,7 @@ describe("Desktop Host renderer adapter", () => {
     });
 
     expect(hostRequest).toHaveBeenCalledWith({
+      expectedDeploymentId: deploymentId,
       body: '{"name":"Home"}',
       headers: {
         accept: "application/json",
@@ -209,6 +218,7 @@ describe("Desktop Host renderer adapter", () => {
     const fetch = createDesktopHostFetch(
       { hostRequest } as unknown as OpensteerDesktopBridge,
       "https://home.test",
+      deploymentId,
     );
     const summary = JSON.stringify({ windowMs: 3000, triggers: { load: 6 }, starts: { load: 6 } });
     await fetch("https://home.test/v1/rpc/bootstrap.get", {
@@ -225,6 +235,7 @@ describe("Desktop Host renderer adapter", () => {
     const fetch = createDesktopHostFetch(
       { hostRequest: vi.fn() } as unknown as OpensteerDesktopBridge,
       "https://home.connect.opensteer.test",
+      deploymentId,
     );
 
     await expect(fetch("https://attacker.test/v1/bootstrap")).rejects.toThrow(

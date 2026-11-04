@@ -778,8 +778,8 @@ export class IntegrationService {
       id: input.attemptId,
       ownerUserId: input.ownerUserId,
     });
-    // Completion erases the attempt payload; a replay only reads the owner's durable result.
-    if (!local || local.status === "completed") return local;
+    // Terminal transitions erase the payload; retries read only the owner's durable result.
+    if (!local || (local.status !== "pending" && local.status !== "launched")) return local;
     const raw = await this.#attempts.inspect?.({
       id: input.attemptId,
       ownerUserId: input.ownerUserId,

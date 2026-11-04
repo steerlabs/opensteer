@@ -27,6 +27,8 @@ const deploymentChangedCloseCode = 4_001;
 
 /** One Host request, in the terms every platform's network adapter accepts. */
 export interface HostTransportRequest {
+  /** The initiating client identity must survive a newer main-process selection. */
+  readonly expectedDeploymentId?: DeploymentId | undefined;
   readonly body?: string | Blob | ReadableStream<Uint8Array> | undefined;
   readonly credentials?: "omit";
   readonly redirect?: "manual";
@@ -168,6 +170,11 @@ export class HostTransport {
     try {
       const selected = await this.current();
       const { resolved } = selected;
+      if (
+        request.expectedDeploymentId !== undefined &&
+        request.expectedDeploymentId !== resolved.deploymentId
+      )
+        throw new HostTransportError("deployment-changed");
       const selectionGeneration = this.#fence.generation;
       const deadline = new HostResponseDeadline(request.signal);
       const controller = deadline.controller;

@@ -9,7 +9,7 @@ import {
 import type { DeploymentConnectionInput, PrivateFilesystem } from "@opensteer/client/connections";
 import { createMockHostPort } from "./mock-host-port.js";
 import { mockDeploymentConnections } from "./mock-mode.js";
-import { createMemorySavedViews } from "@opensteer/client/host";
+import { HostClientRequestError, createMemorySavedViews } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import {
   buildNativeIntegrationAuthorizationCallback,
@@ -563,58 +563,198 @@ describe("MobileClient integration authorization", () => {
     client.dispose();
   });
 
-  it("resumes only a persisted started attempt after a cold start", async () => {
-    const records = createSecureRecordStore({
-      keyPrefix: "test",
-      secureStore: new MemorySecureStore(),
-    });
-    const files = new MemoryPrivateFilesystem();
-    let callback = "";
-    const port = testPort({
-      held: true,
-      verification: { status: "compatible", capabilities: ["integration-app-finish-v1"] },
-      configureClient: (host) => {
-        const dispatch = host.dispatch.bind(host);
-        host.dispatch = async (command) =>
-          command.type === "integration.authorization.return"
-            ? {
-                type: "integration.authorization.return",
-                status: "completed",
-                connectionId: null,
-                expiresAt: new Date(Date.now() + 600_000).toISOString(),
-                failureCode: null,
-              }
-            : dispatch(command);
-      },
-    });
-    const first = open(port.factory, files, {
-      records,
-      openIntegrationAuthorization: async (url) => {
-        callback = buildNativeIntegrationAuthorizationCallback({
-          deploymentId: DeploymentIdSchema.parse(serverId),
-          attemptId: IntegrationOAuthAttemptIdSchema.parse(new URL(url).pathname.split("/").at(-2)),
-          returnProof: "r".repeat(43),
-        });
-        throw new Error("browser unavailable");
-      },
-    }).client;
-    await first.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
-    await first.initialize();
-    await first.select(serverId);
-    await expect(first.beginIntegrationAuthorization({ definitionId: "slack" })).rejects.toThrow(
-      "browser unavailable",
-    );
-    first.dispose();
-    const second = open(port.factory, files, { records }).client;
-    await second.initialize();
-    await expect(second.handleIntegrationAuthorizationCallback(callback)).resolves.toMatchObject({
-      status: "completed",
-    });
-    expect(
-      port.commands.filter((type) => type === "integration.authorization.return"),
-    ).toHaveLength(1);
-    second.dispose();
-  });
+  it.each(["recover", "dispose", "expire", "refuse"] as const)(
+    "retains a mobile redemption proof through transient failure until %s without another callback",
+    async (mode) => {
+      const returned = vi
+        .fn(async (_command: unknown) => ({
+          type: "integration.authorization.return" as const,
+          status: "completed" as const,
+          connectionId: null,
+          failureCode: null,
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        }))
+        .mockRejectedValueOnce(
+          mode === "refuse"
+            ? new HostClientRequestError({ code: "forbidden", message: "Wrong owner", status: 403 })
+            : new Error("offline"),
+        );
+      const port = testPort({
+        held: true,
+        verification: { status: "compatible", capabilities: ["integration-app-finish-v1"] },
+        configureClient: (host) => {
+          const dispatch = host.dispatch.bind(host);
+          host.dispatch = async (command) =>
+            command.type === "integration.authorization.return"
+              ? returned(command)
+              : dispatch(command);
+        },
+      });
+      const { client } = open(port.factory, new MemoryPrivateFilesystem(), {
+        openIntegrationAuthorization: async (url) =>
+          buildNativeIntegrationAuthorizationCallback({
+            deploymentId: DeploymentIdSchema.parse(serverId),
+            attemptId: IntegrationOAuthAttemptIdSchema.parse(
+              new URL(url).pathname.split("/").at(-2),
+            ),
+            returnProof: "r".repeat(43),
+          }),
+      });
+      await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+      await client.initialize();
+      await client.select(serverId);
+      vi.useFakeTimers();
+      try {
+        const outcome = client
+          .beginIntegrationAuthorization({ definitionId: "slack" })
+          .catch((error: unknown) => error);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(returned).toHaveBeenCalledOnce();
+        if (mode === "dispose") client.dispose();
+        if (mode === "expire") vi.setSystemTime(Date.now() + 600_001);
+        await vi.advanceTimersByTimeAsync(1000);
+        if (mode === "recover") {
+          await expect(outcome).resolves.toMatchObject({ status: "completed" });
+          expect(returned).toHaveBeenCalledTimes(2);
+          expect(returned.mock.calls[1]).toEqual(returned.mock.calls[0]);
+        } else {
+          await expect(outcome).resolves.toMatchObject(
+            mode === "expire"
+              ? { status: "expired" }
+              : mode === "refuse"
+                ? { message: "Wrong owner" }
+                : { name: "Error" },
+          );
+          await vi.advanceTimersByTimeAsync(30_000);
+          expect(returned).toHaveBeenCalledOnce();
+        }
+      } finally {
+        client.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["complete", "owner-changed", "selection-changed", "signed-out", "deadline"] as const)(
+    "resumes a persisted return only after bounded authenticated cold-start loading: %s",
+    async (mode) => {
+      const records = createSecureRecordStore({
+        keyPrefix: "test",
+        secureStore: new MemorySecureStore(),
+      });
+      const files = new MemoryPrivateFilesystem();
+      let callback = "";
+      let cold = false;
+      const loaded = deferred<void>();
+      const loading = vi.fn();
+      const port = testPort({
+        held: true,
+        verification: { status: "compatible", capabilities: ["integration-app-finish-v1"] },
+        configureClient: (host) => {
+          if (cold) {
+            let ready = false;
+            const snapshot = host.getSnapshot.bind(host);
+            const load = host.load.bind(host);
+            vi.spyOn(host, "getSnapshot").mockImplementation(() => ({
+              ...snapshot(),
+              ...(!ready
+                ? { user: null }
+                : mode === "owner-changed"
+                  ? { user: { ...snapshot().user!, id: createId("user") } }
+                  : {}),
+            }));
+            host.load = async () => {
+              loading();
+              await loaded.promise;
+              ready = true;
+              await load();
+            };
+          }
+          const dispatch = host.dispatch.bind(host);
+          host.dispatch = async (command) =>
+            command.type === "integration.authorization.return"
+              ? {
+                  type: "integration.authorization.return",
+                  status: "completed",
+                  connectionId: null,
+                  expiresAt: new Date(Date.now() + 600_000).toISOString(),
+                  failureCode: null,
+                }
+              : dispatch(command);
+        },
+      });
+      const first = open(port.factory, files, {
+        records,
+        openIntegrationAuthorization: async (url) => {
+          callback = buildNativeIntegrationAuthorizationCallback({
+            deploymentId: DeploymentIdSchema.parse(serverId),
+            attemptId: IntegrationOAuthAttemptIdSchema.parse(
+              new URL(url).pathname.split("/").at(-2),
+            ),
+            returnProof: "r".repeat(43),
+          });
+          throw new Error("browser unavailable");
+        },
+      }).client;
+      await first.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+      await first.initialize();
+      await first.select(serverId);
+      await expect(first.beginIntegrationAuthorization({ definitionId: "slack" })).rejects.toThrow(
+        "browser unavailable",
+      );
+      first.dispose();
+      cold = true;
+      const second = open(port.factory, files, { records }).client;
+      await second.initialize();
+      if (mode === "deadline") vi.useFakeTimers();
+      const outcome = second
+        .handleIntegrationAuthorizationCallback(callback)
+        .catch((error: unknown) => error);
+      await vi.waitFor(() => expect(loading, "Cold Host never began loading").toHaveBeenCalled(), {
+        timeout: 1000,
+      });
+      expect(
+        port.commands.filter((type) => type === "integration.authorization.return"),
+      ).toHaveLength(0);
+      try {
+        if (mode === "selection-changed") {
+          await second.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: otherId })));
+          await second.select(otherId);
+        }
+        if (mode === "signed-out") await second.signOut(serverId);
+        if (mode === "deadline") {
+          await vi.advanceTimersByTimeAsync(20_000);
+          await expect(outcome).resolves.toMatchObject({
+            message: "Reconnect to that deployment to finish integration authorization.",
+          });
+          expect(
+            port.commands.filter((type) => type === "integration.authorization.return"),
+          ).toHaveLength(0);
+          return;
+        }
+        loaded.resolve();
+        if (mode === "complete") {
+          await expect(outcome).resolves.toMatchObject({ status: "completed" });
+          expect(
+            port.commands.filter((type) => type === "integration.authorization.return"),
+          ).toHaveLength(1);
+        } else {
+          await expect(outcome).resolves.toMatchObject(
+            mode === "owner-changed"
+              ? { message: "That sign-in belongs to a different user." }
+              : { name: "Error" },
+          );
+          expect(
+            port.commands.filter((type) => type === "integration.authorization.return"),
+          ).toHaveLength(0);
+        }
+      } finally {
+        loaded.resolve();
+        second.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it.each([true, false])(
     "uses the same verified native return for MCP authorization (app finish: %s)",

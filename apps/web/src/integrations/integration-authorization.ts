@@ -1,5 +1,5 @@
 import { DeploymentIdSchema } from "@opensteer/core";
-import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
+import type { HostClient } from "@opensteer/client/host";
 import {
   integrationAuthorizationStatusReturned,
   integrationAuthorizationTerminalStatuses,
@@ -117,7 +117,7 @@ export function subscribeIntegrationAuthorizationReturns(
           type: "integration.authorization.return",
           attemptId: callback.attemptId,
           returnProof: callback.returnProof,
-          idempotencyKey: mutationIdempotencyKey(`integration-auth-return:${callback.attemptId}`),
+          idempotencyKey: `integration-auth-return:${callback.attemptId}`,
         });
         if (returned.type !== "integration.authorization.return")
           throw new Error("Integration authorization command mismatch.");

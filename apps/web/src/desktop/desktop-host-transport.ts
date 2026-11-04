@@ -1,3 +1,4 @@
+import type { DeploymentId } from "@opensteer/core";
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { HostTransportError } from "@opensteer/client/connections";
 import { hostApiVersionHeader } from "@opensteer/protocol";
@@ -14,6 +15,7 @@ const socketRegistries = new WeakMap<OpensteerDesktopBridge, DesktopHostSocketRe
 export function createDesktopHostFetch(
   bridge: OpensteerDesktopBridge,
   canonicalOrigin: string,
+  expectedDeploymentId?: DeploymentId,
 ): typeof globalThis.fetch {
   const origin = new URL(canonicalOrigin).origin;
   return async (input, init) => {
@@ -34,6 +36,7 @@ export function createDesktopHostFetch(
     const body = request.method === "GET" ? undefined : await request.text();
     const result = await hostBridgeResult(
       bridge.hostRequest({
+        ...(expectedDeploymentId ? { expectedDeploymentId } : {}),
         ...(body ? { body } : {}),
         headers: {
           ...headers,

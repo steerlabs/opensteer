@@ -2925,3 +2925,38 @@ function apiKeyService(input: {
     vault: { open: vi.fn(), seal: input.seal },
   });
 }
+
+it.each(["failed", "denied", "cancelled", "expired"] as const)(
+  "returns the owner's durable %s outcome on an app-return retry after payload erasure",
+  async (status) => {
+    const ownerUserId = createId("user");
+    const attemptId = createIntegrationId("oauthAttempt");
+    const outcome = {
+      status,
+      failureCode: "provider-denied",
+      connectionId: null,
+      expiresAt: new Date(),
+    };
+    const inspect = vi.fn(async () => null);
+    const attempts = {
+      status: vi.fn(async (input: { ownerUserId: string }) =>
+        input.ownerUserId === ownerUserId ? outcome : null,
+      ),
+      inspect,
+    };
+    const service = new IntegrationService({
+      attempts: attempts as never,
+      deploymentPosture: async () => "independent-self-hosted",
+      repository: {} as never,
+      publicUrl: new URL("http://127.0.0.1:4310"),
+      onConnectionConnected: async () => undefined,
+      vault: {} as never,
+    });
+    const input = { attemptId, ownerUserId, returnProof: "r".repeat(43) };
+    await expect(service.returnAuthorization(input)).resolves.toEqual(outcome);
+    await expect(
+      service.returnAuthorization({ ...input, ownerUserId: createId("user") }),
+    ).resolves.toBeNull();
+    expect(inspect).not.toHaveBeenCalled();
+  },
+);

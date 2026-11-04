@@ -26,7 +26,7 @@ describe("Desktop preview Host simulation", () => {
     // the simulator only answers. Driving both proves the emulation still fits.
     const rpc = createHttpHostApiClient({
       baseUrl: new URL(canonicalOrigin),
-      fetch: createDesktopHostFetch(bridge, canonicalOrigin),
+      fetch: createDesktopHostFetch(bridge, canonicalOrigin, snapshot.deployments[0]!.id),
       onAuthenticationRequired: () => undefined,
     });
     const result = await rpc["bootstrap.get"]({});

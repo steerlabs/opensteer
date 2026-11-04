@@ -638,14 +638,16 @@ integration("hosted OAuth broker durable boundary", () => {
       )!;
       const method = definition.authMethods.find((candidate) => candidate.kind === "oauth")!;
       if (method.kind !== "oauth") throw new Error("Google OAuth definition is unavailable");
-      const providerFetch = vi.fn(async () =>
-        Response.json({
+      const exchange = Promise.withResolvers<Response>();
+      const providerFetch = vi.fn(async () => {
+        if (mode === "expired-app") return exchange.promise;
+        return Response.json({
           access_token: "managed-member-access",
           refresh_token: "managed-member-refresh",
           scope: method.oauth.scopes.join(method.oauth.scopeSeparator),
           token_type: "Bearer",
-        }),
-      );
+        });
+      });
       const broker = new HostedOAuthBrokerService({
         applications: [
           {
@@ -695,7 +697,7 @@ integration("hosted OAuth broker durable boundary", () => {
       );
       expect(await broker.inspectLaunch(attemptId, ticket)).toEqual({ status: "used" });
       expect(await broker.inspectLaunch(attemptId, "X".repeat(43))).toEqual({ status: "invalid" });
-      const outcome = await broker.completeAuthorization({
+      const completion = broker.completeAuthorization({
         cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${ticket}`,
         parameters: new URLSearchParams({
           code: "managed-member-code",
@@ -704,6 +706,53 @@ integration("hosted OAuth broker durable boundary", () => {
         }),
         provider: "google",
       });
+      if (mode === "expired-app") {
+        await vi.waitFor(() =>
+          expect(providerFetch, "Token exchange never started").toHaveBeenCalledOnce(),
+        );
+        brokerNow = new Date(expiresAt);
+        exchange.resolve(Response.json({ access_token: "expired-access", token_type: "Bearer" }));
+      }
+      const outcome = await completion;
+      if (mode === "expired-app") {
+        expect(outcome.status).toBe("failed");
+        expect(
+          outcome.returnUrl && new URL(outcome.returnUrl).searchParams.get("return"),
+        ).toBeNull();
+        expect(
+          await database
+            .selectFrom("hostedOAuthBrokerAttempts")
+            .selectAll()
+            .where("attemptId", "=", attemptId)
+            .executeTakeFirstOrThrow(),
+        ).toMatchObject({
+          status: "expired",
+          sealedCiphertext: null,
+          returnProofHash: null,
+          encryptedContext: null,
+          contextKeyVersion: null,
+          launchTicketHash: null,
+        });
+        expect(
+          await broker.pull(
+            {
+              credentialHash: "unused",
+              deploymentId,
+              hostInstanceId: binding.activeHostInstanceId,
+            },
+            attemptId,
+          ),
+        ).toMatchObject({ status: "expired", sealedResult: null });
+        expect(await store.getAttemptForHost(deploymentId, attemptId, brokerNow)).toMatchObject({
+          status: "expired",
+          sealedCiphertext: null,
+          returnProofHash: null,
+          encryptedContext: null,
+          contextKeyVersion: null,
+          launchTicketHash: null,
+        });
+        return;
+      }
       expect(outcome).toMatchObject({ attemptId, status: appFinish ? "held" : "sealed" });
       if (appFinish)
         await proveAppReturn(broker, storeFixture, attemptId, outcome.returnUrl!, true);

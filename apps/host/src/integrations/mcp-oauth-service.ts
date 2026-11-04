@@ -523,7 +523,7 @@ export class McpOAuthService {
       id: input.attemptId,
       ownerUserId: input.ownerUserId,
     });
-    if (!local || local.status === "completed") return local;
+    if (!local || (local.status !== "pending" && local.status !== "launched")) return local;
     const raw = await this.#attempts.inspect?.({
       id: input.attemptId,
       ownerUserId: input.ownerUserId,
