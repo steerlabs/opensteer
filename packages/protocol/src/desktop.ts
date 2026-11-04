@@ -36,6 +36,7 @@ import {
 import { z } from "zod";
 import {
   IntegrationAuthorizationAttemptIdSchema,
+  IntegrationAuthorizationReturnPortSchema,
   IntegrationAuthorizationReturnProofSchema,
   IntegrationAccessSchema,
 } from "@opensteer/integration-core";
@@ -369,6 +370,13 @@ export const DesktopOpenIntegrationAuthorizationResultSchema = z.strictObject({
 });
 export type DesktopOpenIntegrationAuthorizationResult = z.infer<
   typeof DesktopOpenIntegrationAuthorizationResultSchema
+>;
+
+export const DesktopPrepareIntegrationAuthorizationReturnResultSchema = z.strictObject({
+  port: IntegrationAuthorizationReturnPortSchema.nullable(),
+});
+export type DesktopPrepareIntegrationAuthorizationReturnResult = z.infer<
+  typeof DesktopPrepareIntegrationAuthorizationReturnResultSchema
 >;
 
 export const DesktopIntegrationAuthorizationReturnSchema = z.strictObject({
@@ -1703,6 +1711,8 @@ export interface OpensteerDesktopBridge {
   showNotification(input: DesktopNotificationTarget): Promise<DesktopNotificationResult>;
   setBadgeCount(input: DesktopBadgeCountInput): Promise<void>;
   openExternalUrl(input: DesktopOpenExternalUrlInput): Promise<DesktopOpenExternalUrlResult>;
+  /** Called before `begin`, because the Account seals the port into the attempt. */
+  prepareIntegrationAuthorizationReturn(): Promise<DesktopPrepareIntegrationAuthorizationReturnResult>;
   openIntegrationAuthorization(
     input: DesktopOpenIntegrationAuthorizationInput,
   ): Promise<DesktopOpenIntegrationAuthorizationResult>;

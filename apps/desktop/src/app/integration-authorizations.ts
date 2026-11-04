@@ -1,15 +1,30 @@
 import { OAuthDeepLinkBroker, type NativeOAuthIdentity } from "@opensteer/client/auth";
-import { IntegrationAuthorizationAttempts } from "@opensteer/client/integrations";
+import {
+  IntegrationAuthorizationAttempts,
+  type IntegrationAuthorizationAttempt,
+} from "@opensteer/client/integrations";
 import {
   parseIntegrationAuthorizationAppReturn,
   type IntegrationAuthorizationAppReturn,
 } from "@opensteer/integration-core";
+import { IntegrationAuthorizationLoopback } from "./integration-authorization-loopback.js";
+import type { DesktopLoginSession } from "./login-session.js";
 
-/** Main owns the local authority; the bounded OAuth broker holds returns until the owning renderer is ready. */
+type Attempt = Pick<IntegrationAuthorizationAttempt, "attemptId" | "deploymentId"> & {
+  readonly userId?: string | undefined;
+};
+
+/**
+ * Main owns the local authority; the bounded OAuth broker holds returns until the
+ * owning renderer is ready. The authority lives in memory, so a restarted app
+ * refuses earlier attempts and the person starts a fresh one.
+ */
 export class DesktopIntegrationAuthorizations {
-  readonly attempts = new IntegrationAuthorizationAttempts();
+  readonly #attempts = new IntegrationAuthorizationAttempts();
   readonly #broker: OAuthDeepLinkBroker;
+  readonly #loopback: IntegrationAuthorizationLoopback;
   readonly #open: (deploymentId: IntegrationAuthorizationAppReturn["deploymentId"]) => void;
+  #session: DesktopLoginSession | null = null;
   constructor(
     oauth: NativeOAuthIdentity,
     open: (deploymentId: IntegrationAuthorizationAppReturn["deploymentId"]) => void,
@@ -19,10 +34,47 @@ export class DesktopIntegrationAuthorizations {
       oauth,
       (url) => parseIntegrationAuthorizationAppReturn("desktop", url) !== null,
     );
+    this.#loopback = new IntegrationAuthorizationLoopback({
+      accept: (url) => this.accept(url),
+      pendingUntil: () => this.#attempts.latestExpiry(),
+      sessionActive: () => this.#session?.active() === true,
+    });
+  }
+  /** Until there is a session to read, attempts use the app link. */
+  useLoginSession(session: DesktopLoginSession): () => void {
+    this.#session = session;
+    const detach = session.subscribe((active) => {
+      void this.#loopback.sessionChanged(active);
+    });
+    return () => {
+      this.#session = null;
+      detach();
+    };
+  }
+  prepareReturn(): Promise<number | null> {
+    return this.#loopback.prepare();
+  }
+  find(attempt: Attempt): IntegrationAuthorizationAttempt | null {
+    return this.#attempts.find(attempt);
+  }
+  async register(entry: IntegrationAuthorizationAttempt): Promise<void> {
+    await this.#attempts.register(entry);
+    this.#loopback.registered();
+  }
+  async forget(attempt: Attempt): Promise<void> {
+    await this.#attempts.forget(attempt);
+    this.#loopback.sync();
+  }
+  async clear(deploymentId?: string): Promise<void> {
+    await this.#attempts.clear(deploymentId);
+    this.#loopback.sync();
+  }
+  close(): Promise<void> {
+    return this.#loopback.close();
   }
   accept(url: string): boolean {
     const callback = parseIntegrationAuthorizationAppReturn("desktop", url);
-    if (!callback || !this.attempts.find(callback)) return false;
+    if (!callback || !this.#attempts.find(callback)) return false;
     this.#broker.accept(url);
     this.#open(callback.deploymentId);
     return true;
@@ -39,7 +91,7 @@ export class DesktopIntegrationAuthorizations {
       detachBroker = this.#broker.attach(async (url) => {
         const callback = parseIntegrationAuthorizationAppReturn("desktop", url);
         if (!callback) return true;
-        const entry = this.attempts.find(callback);
+        const entry = this.#attempts.find(callback);
         if (!entry) return true;
         if (
           entry.deploymentId !== identity.deploymentId ||

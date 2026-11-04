@@ -1,12 +1,23 @@
 import {
   DesktopOpenIntegrationAuthorizationInputSchema,
   DesktopOpenIntegrationAuthorizationResultSchema,
+  DesktopPrepareIntegrationAuthorizationReturnResultSchema,
 } from "@opensteer/protocol/desktop";
 import {
   assertAuthorizedRenderer,
   type DesktopBridgeContext,
   type DesktopBridgeHandler,
 } from "../context.js";
+
+/** Opens the listener a coming attempt returns to; null means it uses the app link. */
+export const handlePrepareIntegrationAuthorizationReturn =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  async (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    return DesktopPrepareIntegrationAuthorizationReturnResultSchema.parse({
+      port: (await context.options.integrationAuthorizations?.prepareReturn()) ?? null,
+    });
+  };
 
 export const handleOpenIntegrationAuthorization =
   (context: DesktopBridgeContext): DesktopBridgeHandler =>
@@ -26,7 +37,7 @@ export const handleOpenIntegrationAuthorization =
     target.searchParams.set("ticket", input.launchTicket);
     const authorizations = context.options.integrationAuthorizations;
     if (!authorizations) throw new Error("Integration authorization returns are unavailable.");
-    await authorizations.attempts.register({
+    await authorizations.register({
       deploymentId: input.deploymentId,
       attemptId: input.attemptId,
       expiresAt: input.expiresAt,

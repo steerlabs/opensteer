@@ -128,7 +128,7 @@ describe("desktop bridge", () => {
       attemptId: createIntegrationId("oauthAttempt"),
       expiresAt: "2099-01-01T00:00:00.000Z",
     };
-    await integrationAuthorizations.attempts.register(started);
+    await integrationAuthorizations.register(started);
     const callback = {
       deploymentId: started.deploymentId,
       attemptId: started.attemptId,

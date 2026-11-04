@@ -35,7 +35,7 @@ it("drops unknown returns, queues registered returns before renderer subscriptio
   const url = buildIntegrationAuthorizationAppReturn("desktop", callback);
   expect(returns.accept(url)).toBe(false);
   expect(focus).not.toHaveBeenCalled();
-  await returns.attempts.register(started);
+  await returns.register(started);
   expect(returns.accept(url)).toBe(true);
   expect(focus).toHaveBeenCalledWith(started.deploymentId);
   const deliver = vi.fn();
@@ -46,7 +46,7 @@ it("drops unknown returns, queues registered returns before renderer subscriptio
   const detach = returns.attach(started, deliver);
   await returns.settled();
   expect(deliver).toHaveBeenCalledWith(callback);
-  await returns.attempts.forget(started);
+  await returns.forget(started);
   expect(returns.accept(url)).toBe(false);
   detach();
 });
@@ -54,7 +54,7 @@ it("registers before browser launch and refuses another attached Deployment", as
   const returns = new DesktopIntegrationAuthorizations(oauth, () => {});
   const started = entry();
   const openExternal = vi.fn(async () => {
-    expect(returns.attempts.find(started)).toEqual(started);
+    expect(returns.find(started)).toEqual(started);
   });
   const frame = { url: "app://opensteer/" };
   const context = {
@@ -89,7 +89,7 @@ it("redelivers a retained proof after transient redemption failure without anoth
   vi.useFakeTimers();
   const returns = new DesktopIntegrationAuthorizations(oauth, () => {});
   const started = entry();
-  await returns.attempts.register(started);
+  await returns.register(started);
   const status = {
     type: "integration.authorization.return",
     status: "completed",
@@ -105,7 +105,7 @@ it("redelivers a retained proof after transient redemption failure without anoth
   } as unknown as HostClient;
   const bridge = {
     onIntegrationAuthorizationReturn: returns.attach.bind(returns),
-    finishIntegrationAuthorization: async () => returns.attempts.forget(started),
+    finishIntegrationAuthorization: async () => returns.forget(started),
   };
   const stop = subscribeIntegrationAuthorizationReturns(bridge, client);
   try {
@@ -124,7 +124,7 @@ it("redelivers a retained proof after transient redemption failure without anoth
     await returns.settled();
     expect(dispatch).toHaveBeenCalledTimes(2);
     expect(dispatch.mock.calls[1]).toEqual(dispatch.mock.calls[0]);
-    expect(returns.attempts.find(started)).toBeNull();
+    expect(returns.find(started)).toBeNull();
   } finally {
     stop();
     vi.useRealTimers();

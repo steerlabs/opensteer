@@ -98,6 +98,7 @@ export const desktopBridgeChannels = {
   integrationAuthorizationSubscription: "opensteer.desktop.integration-authorization.subscription",
   finishIntegrationAuthorization: "opensteer.desktop.integration-authorization.finish",
   openIntegrationAuthorization: "opensteer.desktop.integration-authorization.open",
+  prepareIntegrationAuthorizationReturn: "opensteer.desktop.integration-authorization.prepare",
   openHostWebSocket: "opensteer.desktop.host.websocket.open",
   pickFolder: "opensteer.desktop.folder.pick",
   agentPhoneAdbOpen: "opensteer.desktop.agent-phone.adb.open",
