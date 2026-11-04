@@ -1010,6 +1010,7 @@ export const HarnessInstanceCatalogViewSchema = z.discriminatedUnion("status", [
     ...HarnessSetupCatalogViewFields,
     capturedAt: IsoDateTimeSchema.optional(),
     continuationIdentity: ProviderContinuationIdentityViewSchema,
+    lightModel: DelegationModelChoiceSchema.strip().optional(),
     models: z.array(HarnessModelDescriptorViewSchema).min(1).max(maxHarnessModelsPerCatalog),
   }),
   z.object({
