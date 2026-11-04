@@ -91,7 +91,7 @@ export function createHostApiHandlers(
     | "attachment.content"
     | "bootstrap.get"
     | "harness.authentication.get"
-    | "backgroundModels.get"
+    | "automaticModels.get"
     | "harness.catalog.refresh"
     | "harness.modelServers.discover"
     | "voice.start"

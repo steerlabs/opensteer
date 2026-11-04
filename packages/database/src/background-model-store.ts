@@ -6,10 +6,7 @@ import {
 } from "@opensteer/core";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
-import {
-  withAdministrationTransaction,
-  type AdministrationCommandIdentity,
-} from "./administration-command.js";
+import { withDatabaseTransaction } from "./connection.js";
 import { jsonValue } from "./store-primitives.js";
 
 export async function getAutomaticModelConfig(
@@ -29,9 +26,8 @@ export async function setAutomaticModelConfig(
   database: Kysely<DatabaseSchema>,
   userId: UserId,
   config: AutomaticModelConfig,
-  administration?: AdministrationCommandIdentity,
 ): Promise<AutomaticModelConfig> {
-  return withAdministrationTransaction(database, administration, async (transaction) => {
+  return withDatabaseTransaction(database, async (transaction) => {
     // Lock the person, including when no preferences row exists yet.
     await transaction
       .selectFrom("users")

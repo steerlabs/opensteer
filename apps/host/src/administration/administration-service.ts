@@ -303,11 +303,7 @@ export class AdministrationService {
             },
           };
         }
-        if (
-          command.type === "execution.preferences.remember" ||
-          command.type.startsWith("automaticModels.")
-        )
-          fields = { preferences: result };
+        if (command.type === "execution.preferences.remember") fields = { preferences: result };
         if (command.type === "viewer.timeZone.update") fields = { timeZone: result };
         if (command.type === "workspace.notifications.update")
           fields = z.record(z.string(), z.unknown()).parse(result);
@@ -481,11 +477,7 @@ export class AdministrationService {
       case "automaticModels.set": {
         return {
           type: command.type,
-          config: await dependencies.store.setAutomaticModelConfig(
-            userId,
-            command.config,
-            administration,
-          ),
+          config: await dependencies.store.setAutomaticModelConfig(userId, command.config),
         };
       }
       case "execution.preferences.remember": {

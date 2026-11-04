@@ -1,4 +1,4 @@
-import { readBackgroundModels } from "./agents/background-model-settings.js";
+import { readAutomaticModelPreview } from "./agents/background-model-settings.js";
 import { ThreadService, assertAccessModeEnforceable } from "./threads/thread-service.js";
 import {
   AdministrationService,
@@ -1207,8 +1207,8 @@ export async function createHostServer(
         }),
       );
     },
-    "backgroundModels.get": async (_input, context) =>
-      rpcSuccess(await readBackgroundModels(dependencies, requireRpcSession(context).user.id)),
+    "automaticModels.get": async (_input, context) =>
+      rpcSuccess(await readAutomaticModelPreview(dependencies, requireRpcSession(context).user.id)),
     "harness.authentication.get": async (input, context) => {
       const target = await admitHarnessAuthentication(requireRpcSession(context), input);
       const envelope = await harnessAuthenticationCoordinator.read(
@@ -1564,7 +1564,7 @@ export async function createHostServer(
     | "attachment.content"
     | "bootstrap.get"
     | "harness.authentication.get"
-    | "backgroundModels.get"
+    | "automaticModels.get"
     | "harness.catalog.refresh"
     | "harness.modelServers.discover"
     | "voice.start"
@@ -2848,6 +2848,7 @@ export function advertisedCapabilities(
   >,
 ): readonly HostCapability[] {
   return [
+    "automatic-models-v1",
     "chat-attachments",
     ...(dependencies.notificationPreviews ? ["notification-preview-v1" as const] : []),
     "voice-run-v1",

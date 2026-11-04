@@ -421,6 +421,78 @@ integration.sequential("thread input queue promotion", () => {
     expect(await threadStatus(second.threadId)).toBe("archived");
   });
 
+  it("starts voice on its own account's catalog default at low effort, never another model", async ({
+    storeFixture,
+  }) => {
+    const { fixture, store, database } = storeFixture;
+    const f = await fixture("voice-model");
+    await store.createThread({
+      createdBy: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      idempotencyKey: "voice-model-home",
+      modelSelection,
+      title: "Chat",
+      workspaceId: f.workspace.id,
+      home: true,
+    });
+    const effort = {
+      defaultValue: "medium",
+      id: "effort",
+      label: "Effort",
+      type: "select" as const,
+      values: ["low", "medium", "high"].map((value) => ({ label: value, value })),
+    };
+    const record = (defaultModelId: string | null) =>
+      store.recordHarnessCatalogs({
+        catalogs: [
+          HarnessInstanceCatalogSchema.parse({
+            continuationIdentity,
+            driverKind: "native",
+            harnessInstanceId: f.harness.id,
+            models: ["gpt-6-luna", "gpt-5.6-sol"].map((modelId) => ({
+              displayName: modelId,
+              isDefault: modelId === defaultModelId,
+              modelId,
+              nativeModelId: `gateway/${modelId}`,
+              options: [effort],
+              providerId: "openai",
+            })),
+            status: "ready",
+          }),
+        ],
+        environmentId: f.environmentId,
+        expectedRevisions: new Map([[f.harness.id, f.harness.runtimeRevision]]),
+      });
+    const input = {
+      ownerId: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      sessionId: randomUUID(),
+    };
+    await record("gpt-5.6-sol");
+    const call = await store.startVoiceCall(input);
+    expect(
+      await database
+        .selectFrom("threads")
+        .select("modelSelection")
+        .where("id", "=", call.threadId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      modelSelection: {
+        modelId: "gpt-5.6-sol",
+        nativeModelId: "gateway/gpt-5.6-sol",
+        options: { effort: "low" },
+        providerId: "openai",
+      },
+    });
+    // No default is no voice model on this account; its first model is not a stand-in.
+    await record(null);
+    await expect(store.startVoiceCall({ ...input, sessionId: randomUUID() })).rejects.toMatchObject(
+      { reason: "voice-account-unavailable" },
+    );
+  });
+
   it("admits one fenced voice Run, replays, replaces, and never recovers it", async ({
     storeFixture,
   }) => {

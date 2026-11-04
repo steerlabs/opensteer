@@ -128,6 +128,38 @@ export function modelCandidateKey(
     Object.entries(selection.options).sort(([a], [b]) => a.localeCompare(b)),
   ]);
 }
+type AccountEligibilityFacts = Pick<
+  AuthorizedModelAccountSnapshot,
+  "harnessInstanceId" | "enabled" | "removed" | "available" | "catalog"
+>;
+interface AccountEligibilityInput<T> {
+  readonly excludedAccounts: readonly HarnessInstanceId[];
+  readonly canRun: (account: T) => ModelRunEligibility;
+}
+/** Each engine's default account first, then the person's other configured accounts. */
+export function automaticAccountOrder<T extends { readonly isDefault: boolean }>(
+  accounts: readonly T[],
+): T[] {
+  return [...accounts].sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
+}
+/** Account-level eligibility every automatic site applies before anything about a model. */
+export function automaticAccountEligibility<T extends AccountEligibilityFacts>(
+  account: T,
+  input: AccountEligibilityInput<T>,
+): ModelRunEligibility {
+  if (input.excludedAccounts.includes(account.harnessInstanceId))
+    return { ok: false, reason: "excluded" };
+  if (account.removed) return { ok: false, reason: "removed" };
+  if (!account.enabled) return { ok: false, reason: "disabled" };
+  if (!account.available) return { ok: false, reason: "offline" };
+  const eligibility = input.canRun(account);
+  if (!eligibility.ok) return eligibility;
+  if (account.catalog?.status !== "ready") {
+    const detail = account.catalog?.detail ?? account.catalog?.status;
+    return { ok: false, reason: "catalog-not-ready", ...(detail ? { detail } : {}) };
+  }
+  return { ok: true };
+}
 export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
   candidates: ResolvedModelCandidate[];
   skipped: SkippedModelCandidate[];
@@ -148,29 +180,12 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
     });
     return null;
   };
-  /** Account-level eligibility, checked before anything about a model. */
   const usable = (
     account: AuthorizedModelAccountSnapshot,
     want: ModelWant | null,
   ): account is AuthorizedModelAccountSnapshot & { readonly catalog: SelectionCatalog } => {
-    if (input.excludedAccounts.includes(account.harnessInstanceId))
-      return skip(account, want, "excluded") ?? false;
-    if (account.removed) return skip(account, want, "removed") ?? false;
-    if (!account.enabled) return skip(account, want, "disabled") ?? false;
-    if (!account.available) return skip(account, want, "offline") ?? false;
-    const eligibility = input.canRun(account);
-    if (!eligibility.ok)
-      return skip(account, want, eligibility.reason, eligibility.detail) ?? false;
-    if (account.catalog?.status !== "ready")
-      return (
-        skip(
-          account,
-          want,
-          "catalog-not-ready",
-          account.catalog?.detail ?? account.catalog?.status,
-        ) ?? false
-      );
-    return true;
+    const eligibility = automaticAccountEligibility(account, input);
+    return eligibility.ok || (skip(account, want, eligibility.reason, eligibility.detail) ?? false);
   };
   const inspect = (
     account: AuthorizedModelAccountSnapshot,
@@ -227,7 +242,7 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
   }
   const seen = new Set<string>(original ? [modelCandidateKey(original)] : []);
   const candidates: ResolvedModelCandidate[] = [];
-  const accounts = [...input.accounts].sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
+  const accounts = automaticAccountOrder(input.accounts);
   for (const want of input.wants)
     for (const account of accounts) {
       const engine = "kind" in want ? want.driverKind : want.engine;
@@ -294,16 +309,38 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
   if (original) candidates.push(original);
   return { candidates, skipped };
 }
+/** The model a ready catalog runs when nobody names one. */
+export function catalogDefaultModel<T extends SelectionModelDescriptor>(
+  catalog: (Omit<SelectionCatalog, "models"> & { readonly models: readonly T[] }) | null,
+): T | null {
+  if (catalog?.status !== "ready") return null;
+  return catalog.models.find((model) => model.isDefault && !model.unavailableReason) ?? null;
+}
 /** Catalog default, preserving engine defaults by leaving options unspecified. */
 export function catalogDefaultModelSelection(
   catalog: SelectionCatalog | null,
 ): ModelSelection | null {
-  if (catalog?.status !== "ready") return null;
-  const model = catalog.models.find((model) => model.isDefault && !model.unavailableReason);
+  const model = catalogDefaultModel(catalog);
   return model
     ? storedModelSelection(
         { providerId: model.providerId, modelId: model.modelId, options: {} },
         model,
       )
     : null;
+}
+/**
+ * A site with no model preference (channel ingress): the catalog default of the
+ * first eligible account, in the shared account order.
+ */
+export function catalogDefaultCandidate<
+  T extends AccountEligibilityFacts & { readonly isDefault: boolean },
+>(
+  input: AccountEligibilityInput<T> & { readonly accounts: readonly T[] },
+): { readonly account: T; readonly modelSelection: ModelSelection } | null {
+  for (const account of automaticAccountOrder(input.accounts)) {
+    if (!automaticAccountEligibility(account, input).ok) continue;
+    const modelSelection = catalogDefaultModelSelection(account.catalog);
+    if (modelSelection) return { account, modelSelection };
+  }
+  return null;
 }

@@ -23,7 +23,7 @@ import {
   AutomaticModelRankViewSchema,
   ModelPolicyEntryViewSchema,
 } from "./background-models.js";
-import { catalogDefaultModelSelection } from "./model-candidates.js";
+import { catalogDefaultCandidate, catalogDefaultModelSelection } from "./model-candidates.js";
 import { rankedChatModelSelection } from "./chat-models.js";
 const selection = (modelId = "gpt-6-luna", options = {}) =>
   ModelSelectionSchema.parse({
@@ -273,6 +273,27 @@ describe("automatic model resolver", () => {
     expect(rankedChatModelSelection([{ models: [preferred] }])?.modelSelection.options).toEqual({
       effort: "high",
     });
+  });
+  it("picks a catalog default in the shared account order, never from an ineligible account", () => {
+    const other = account("claude");
+    const fallback = account();
+    const preferred = account("codex", { isDefault: true });
+    const unready = account("codex", {
+      isDefault: true,
+      catalog: { status: "signed-out", models: [] },
+    });
+    const choose = (excludedAccounts: AuthorizedModelAccountSnapshot["harnessInstanceId"][] = []) =>
+      catalogDefaultCandidate({
+        accounts: [other, fallback, unready, preferred],
+        excludedAccounts,
+        canRun: (candidate) =>
+          candidate.driverKind === "claude"
+            ? { ok: false, reason: "unsupported-capability" }
+            : { ok: true },
+      })?.account.harnessInstanceId;
+    expect(choose()).toBe(preferred.harnessInstanceId);
+    expect(choose([preferred.harnessInstanceId])).toBe(fallback.harnessInstanceId);
+    expect(choose([preferred.harnessInstanceId, fallback.harnessInstanceId])).toBeUndefined();
   });
 });
 it("strict executable policies reject mixed/account-bound entries; presentation preserves unknown siblings", () => {
