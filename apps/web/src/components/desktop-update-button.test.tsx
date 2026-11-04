@@ -49,7 +49,7 @@ it("offers the download, its progress and the restart, and confirms a download f
     );
   await render(true);
   expect(bridge.get).toHaveBeenCalledOnce();
-  expect(container.querySelector("button")).toBeNull();
+  expect(container.querySelector("button.sidebar__update")).toBeNull();
   const button = () => container.querySelector<HTMLButtonElement>(".sidebar__update")!;
   const show = (change: Partial<DesktopUpdateState>) => act(() => push(state(change)));
 
@@ -87,10 +87,11 @@ it("offers the download, its progress and the restart, and confirms a download f
   expect(container.textContent).toContain("Updates resume after Stable passes it");
   expect(button().getAttribute("aria-label")).toContain("latest is 0.1.390");
   const selector = () =>
-    container.querySelector<HTMLSelectElement>('select[aria-label="Update channel"]')!;
+    container.querySelector<HTMLInputElement>(
+      'input[role="switch"][aria-label="Get Beta updates"]',
+    )!;
   await act(async () => {
-    selector().value = "beta";
-    selector().dispatchEvent(new Event("change", { bubbles: true }));
+    selector().click();
   });
   expect(bridge.setChannel).toHaveBeenCalledWith("beta");
   show({ status: "error", failed: "check", availableVersion: null });
@@ -101,11 +102,11 @@ it("offers the download, its progress and the restart, and confirms a download f
   expect(selector().disabled).toBe(true);
   show({ status: "unavailable", channel: "beta" });
   expect(selector().disabled).toBe(false);
-  expect(selector().value).toBe("beta");
+  expect(selector().checked).toBe(true);
   expect(container.textContent).toContain("Automatic updates unavailable");
   Object.assign(window, { opensteerDesktop: undefined });
   await render(true);
-  expect(container.querySelector("select")).toBeNull();
+  expect(container.querySelector('[role="switch"]')).toBeNull();
   expect(container.querySelector("button.sidebar__update")).toBeNull();
   act(() => root.unmount());
 });

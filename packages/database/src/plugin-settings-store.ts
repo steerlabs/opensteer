@@ -1,3 +1,4 @@
+import { lockPluginOwnerConsent } from "./plugin-settings-locks.js";
 import { SpecialistStore } from "./specialist-store.js";
 import { listWorkspaceSkillInventory } from "./workspace-skill-inventory-store.js";
 import { PluginStore } from "./plugin-store.js";
@@ -460,12 +461,8 @@ export class PluginSettingsStore {
     return this.database.transaction().execute(async (tx) => {
       await lockCommandIdempotency(tx, owner, command.idempotencyKey);
       // Project creation holds this same owner lock before reading consent.
-      await tx
-        .selectFrom("users")
-        .select("id")
-        .where("id", "=", owner)
-        .forNoKeyUpdate()
-        .executeTakeFirstOrThrow();
+      await lockPluginOwnerConsent(tx, owner);
+      await tx.selectFrom("users").select("id").where("id", "=", owner).executeTakeFirstOrThrow();
       const store = new PluginSettingsStore(tx);
       const detail = await store.detail(owner, command.target);
       if (!detail.row.permissions.canEnable)
@@ -704,6 +701,7 @@ export class PluginSettingsStore {
           personalEverywhere: template !== null,
         };
       }
+      await sql`select opensteer_flush_plugin_settings_revisions()`.execute(tx);
       const savedSetting = await tx
         .insertInto("pluginOwnerSettings")
         .values({

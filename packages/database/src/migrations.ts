@@ -7125,7 +7125,46 @@ export const workspaceSkillInventoryMigration: Migration = {
 
 export const pluginSettingsRevisionsMigration: Migration = {
   async up(database) {
+    // Capture targets before source deletion; acquire consent rows after source mutations.
     await sql`
+      create table plugin_settings_revision_pending (
+        transaction_id xid8 not null, owner_user_id text not null,
+        target_key text not null, target jsonb not null, revision integer not null,
+        primary key(transaction_id, owner_user_id, target_key)
+      );
+      create function opensteer_flush_plugin_settings_revisions() returns void language plpgsql as $$
+      declare pending record;
+      begin
+        for pending in select * from plugin_settings_revision_pending
+          where transaction_id = pg_current_xact_id() order by owner_user_id, target_key loop
+          if exists(select 1 from users where id = pending.owner_user_id) then
+            insert into plugin_owner_settings(owner_user_id,target_key,target,revision)
+              values(pending.owner_user_id,pending.target_key,pending.target,pending.revision)
+              on conflict(owner_user_id,target_key) do update
+                set revision = plugin_owner_settings.revision + excluded.revision;
+          end if;
+        end loop;
+        delete from plugin_settings_revision_pending where transaction_id = pg_current_xact_id();
+      end $$;
+      create or replace function public.opensteer_flush_integration_authority() returns trigger
+      language plpgsql as $$
+      declare authority_owner_id text;
+      begin
+        perform opensteer_flush_plugin_settings_revisions();
+        for authority_owner_id in
+          select owner_user_id from public.integration_authority_pending
+          where transaction_id = pg_current_xact_id() order by owner_user_id
+        loop
+          insert into public.integration_authority_generations (owner_user_id, generation, updated_at)
+          values (authority_owner_id, 1, now())
+          on conflict (owner_user_id) do update
+          set generation = integration_authority_generations.generation + 1,
+              updated_at = excluded.updated_at;
+        end loop;
+        delete from public.integration_authority_pending where transaction_id = pg_current_xact_id();
+        return null;
+      end;
+      $$;
       create function opensteer_advance_plugin_setting(consent_owner text, setting_target jsonb) returns void language plpgsql as $$
       declare setting_key text;
       begin
@@ -7134,9 +7173,12 @@ export const pluginSettingsRevisionsMigration: Migration = {
           when 'plugin' then '["plugin",' || to_json(setting_target->>'pluginId')::text || ']'
           when 'specialist' then '["specialist",' || to_json(setting_target->>'pluginId')::text || ',' || to_json(setting_target->>'ownerUserId')::text || ']'
           else '[' || to_json(setting_target->>'kind')::text || ',' || to_json(setting_target->>'definitionId')::text || ']' end;
-        insert into plugin_owner_settings(owner_user_id,target_key,target,revision)
-          values(consent_owner,setting_key,setting_target,1)
-          on conflict(owner_user_id,target_key) do update set revision = plugin_owner_settings.revision + 1;
+        insert into plugin_settings_revision_pending(transaction_id,owner_user_id,target_key,target,revision)
+          values(pg_current_xact_id(),consent_owner,setting_key,setting_target,1)
+          on conflict(transaction_id,owner_user_id,target_key) do update
+            set revision = plugin_settings_revision_pending.revision + 1;
+        insert into integration_authority_pending(transaction_id,owner_user_id)
+          values(pg_current_xact_id(),consent_owner) on conflict do nothing;
       end $$;
       create function opensteer_legacy_plugin_revision() returns trigger language plpgsql as $$
       declare changed jsonb; consent_owner text; definition_id text; target_kind text;

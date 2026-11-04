@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   discoverWorkspaceSkills,
   type DiscoveredWorkspaceSkills,
@@ -79,11 +80,22 @@ export class LocalWorkspaceService {
     binding: LocalWorkspaceBindingRef,
     signal: AbortSignal,
   ): Promise<RunnerSkillMetadataReport["result"]> {
+    const lifetime = new AbortController();
+    const scanSignal = AbortSignal.any([signal, lifetime.signal]);
     try {
-      const read = await this.#authority.resolveReadAuthority(binding, signal);
-      return this.skillMetadata(await discoverWorkspaceSkills(read.root));
+      return await withTimeout(
+        (async () => {
+          const read = await this.#authority.resolveReadAuthority(binding, scanSignal);
+          scanSignal.throwIfAborted();
+          return this.skillMetadata(await discoverWorkspaceSkills(read.root, scanSignal));
+        })(),
+        30_000,
+        { signal, timeoutError: () => new Error("Workspace skill scan timed out") },
+      );
     } catch {
       return { status: "failed", reason: "unreadable" };
+    } finally {
+      lifetime.abort();
     }
   }
 

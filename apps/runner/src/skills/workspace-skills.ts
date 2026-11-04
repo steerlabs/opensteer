@@ -31,19 +31,24 @@ export interface DiscoveredWorkspaceSkills {
  */
 export async function discoverWorkspaceSkills(
   workspacePath: string,
+  signal?: AbortSignal,
 ): Promise<DiscoveredWorkspaceSkills> {
+  signal?.throwIfAborted();
   const root = join(workspacePath, "skills");
   const rootStat = await optionalLstat(root);
+  signal?.throwIfAborted();
   if (!rootStat) return empty();
   if (rootStat.isSymbolicLink()) return warned("The Workspace skills path is a symlink");
   if (!rootStat.isDirectory()) return warned("The Workspace skills path is not a directory");
   const entries = await readdir(root, { withFileTypes: true });
+  signal?.throwIfAborted();
   const skills: HarnessSkill[] = [];
   const metadata: CompleteInventory["skills"] = [];
   const warningCodes = new Set<CompleteInventory["warnings"][number]>();
   const digest = createHash("sha256");
   const warnings: string[] = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    signal?.throwIfAborted();
     const name = entry.name;
     if (entry.isSymbolicLink()) {
       warningCodes.add("symlink");
@@ -54,6 +59,7 @@ export async function discoverWorkspaceSkills(
     const path = join(root, name);
     const skillFile = join(path, "SKILL.md");
     const stat = await optionalLstat(skillFile);
+    signal?.throwIfAborted();
     // A directory without SKILL.md is ordinary Workspace content, not a skill.
     if (!stat) continue;
     if (stat.isSymbolicLink() || !stat.isFile()) {
@@ -69,6 +75,7 @@ export async function discoverWorkspaceSkills(
       continue;
     }
     const read = await readSkill(name, skillFile, stat.size);
+    signal?.throwIfAborted();
     if ("problem" in read) {
       warningCodes.add("invalid-metadata");
       warnings.push(`Workspace skill ${name} was skipped: ${read.problem}`);

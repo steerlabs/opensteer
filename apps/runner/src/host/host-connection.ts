@@ -1226,6 +1226,7 @@ class AgentsWorkSession implements RunnerWorkSession {
    * of the connection itself.
    */
   readonly #voiceResponses = new Set<Promise<void>>();
+  readonly #initialSkills: Promise<void>;
   #ordered: Promise<void> = Promise.resolve();
   #orderedPending = 0;
 
@@ -1249,7 +1250,7 @@ class AgentsWorkSession implements RunnerWorkSession {
       );
     });
     this.#signal = AbortSignal.any([options.signal, this.#lifetime.signal]);
-    this.#ordered = this.#reportInitialSkills().catch(() =>
+    this.#initialSkills = this.#reportInitialSkills().catch(() =>
       options.fail("Workspace skill inventory reporting failed"),
     );
     this.#unsubscribePreparation = options.agents.runtime.subscribeHarnessPreparation(
@@ -1359,6 +1360,7 @@ class AgentsWorkSession implements RunnerWorkSession {
     await withTimeout(
       Promise.allSettled([
         this.#ordered,
+        this.#initialSkills,
         ...this.#catalogResponses,
         ...this.#authenticationResponses,
         ...this.#modelServerResponses,
@@ -1607,9 +1609,14 @@ class AgentsWorkSession implements RunnerWorkSession {
         ownerEnvironmentId: this.#options.environmentId(),
         storageAuthorityId: inventory.storageAuthorityId,
       };
+      const sequence = ++this.#skillSequence;
       await this.#reportSkills(
         binding,
-        await local.service.scanSkills(binding, AbortSignal.timeout(30_000)),
+        await local.service.scanSkills(
+          binding,
+          AbortSignal.any([this.#signal, AbortSignal.timeout(30_000)]),
+        ),
+        sequence,
       );
     }
   }
@@ -1619,7 +1626,9 @@ class AgentsWorkSession implements RunnerWorkSession {
   async #reportSkills(
     binding: import("@opensteer/protocol").LocalWorkspaceBindingRef,
     result: import("@opensteer/protocol").RunnerSkillMetadataReport["result"],
+    sequence = ++this.#skillSequence,
   ): Promise<void> {
+    if (this.#signal.aborted) return;
     // Construct the wire object explicitly: the local inventory also contains paths.
     await this.#options.sink.send({
       ...this.#options.fence.fence,
@@ -1633,7 +1642,7 @@ class AgentsWorkSession implements RunnerWorkSession {
         storageAuthorityId: binding.storageAuthorityId,
         workspaceId: binding.workspaceId,
       },
-      scanSequence: ++this.#skillSequence,
+      scanSequence: sequence,
       scannedAt: new Date().toISOString(),
       result,
     });
@@ -1659,9 +1668,14 @@ class AgentsWorkSession implements RunnerWorkSession {
       result.type === "runner.workspace.local.provisioned" ||
       (result.type === "runner.workspace.local.inspected" && result.health.status === "ready")
     ) {
+      const sequence = ++this.#skillSequence;
       await this.#reportSkills(
         request.binding,
-        await local.service.scanSkills(request.binding, AbortSignal.timeout(30_000)),
+        await local.service.scanSkills(
+          request.binding,
+          AbortSignal.any([this.#signal, AbortSignal.timeout(30_000)]),
+        ),
+        sequence,
       );
     }
   }

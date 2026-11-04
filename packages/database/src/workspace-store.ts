@@ -1,7 +1,14 @@
+import { lockPluginOwnerConsent } from "./plugin-settings-locks.js";
 import { SpecialistStore } from "./specialist-store.js";
 import { PluginSettingsStore } from "./plugin-settings-store.js";
-import { writeIntegrationGrantInTransaction } from "./integration-grant-write.js";
-import type { IntegrationProviderAuthorization } from "@opensteer/integration-core";
+import {
+  lockIntegrationGrantScopeInTransaction,
+  writeIntegrationGrantInTransaction,
+} from "./integration-grant-write.js";
+import type {
+  IntegrationInstallationId,
+  IntegrationProviderAuthorization,
+} from "@opensteer/integration-core";
 import { PluginStore } from "./plugin-store.js";
 import {
   type AgentEvent,
@@ -155,11 +162,11 @@ export async function createWorkspace(
     }
 
     const id = input.id ?? createId("workspace");
+    await lockPluginOwnerConsent(transaction, input.createdBy);
     await transaction
       .selectFrom("users")
       .select("id")
       .where("id", "=", input.createdBy)
-      .forNoKeyUpdate()
       .executeTakeFirstOrThrow(databaseOperationOptions());
     const currentMain = await transaction
       .selectFrom("workspaces")
@@ -184,6 +191,39 @@ export async function createWorkspace(
           .orderBy("id", "desc")
           .limit(6)
           .execute(databaseOperationOptions());
+    const deployment =
+      kind === "project"
+        ? await transaction.selectFrom("deployments").select("deploymentShape").executeTakeFirst()
+        : undefined;
+    const consent =
+      deployment?.deploymentShape.kind === "personal"
+        ? await transaction
+            .selectFrom("pluginOwnerSettings")
+            .select(["target", "personalEverywhereAccounts"])
+            .where("ownerUserId", "=", input.createdBy)
+            .where("personalEverywhereAccounts", "is not", null)
+            .orderBy("targetKey", "asc")
+            .execute()
+        : [];
+    const accountPlacements = new Map<string, IntegrationInstallationId>();
+    for (const { target } of consent) {
+      if (target.kind !== "service" && target.kind !== "device-app") continue;
+      const detail = await new PluginSettingsStore(transaction).detail(input.createdBy, target);
+      const installationId = detail.installationIds[0];
+      if (!installationId)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Consented installation is unavailable",
+        });
+      accountPlacements.set(`${target.kind}:${target.definitionId}`, installationId);
+    }
+    // The slug trigger locks the User on insert; reserve grant scopes before it.
+    for (const installationId of [...new Set(accountPlacements.values())].sort())
+      await lockIntegrationGrantScopeInTransaction(transaction, {
+        installationId,
+        ownerUserId: input.createdBy,
+        workspaceId: id,
+      });
     const row = await transaction
       .insertInto("workspaces")
       .values({
@@ -214,56 +254,33 @@ export async function createWorkspace(
         workspaceId: id,
       })
       .executeTakeFirstOrThrow(databaseOperationOptions());
-    if (kind === "project") {
-      const deployment = await transaction
-        .selectFrom("deployments")
-        .select("deploymentShape")
-        .executeTakeFirst();
-      if (deployment?.deploymentShape.kind === "personal") {
-        const consent = await transaction
-          .selectFrom("pluginOwnerSettings")
-          .select(["target", "personalEverywhereAccounts"])
-          .where("ownerUserId", "=", input.createdBy)
-          .where("personalEverywhereAccounts", "is not", null)
-          .execute();
-        for (const { target, personalEverywhereAccounts } of consent) {
-          if (target.kind === "plugin")
-            await new PluginStore(transaction).activateIn(
-              transaction,
-              target.pluginId,
-              id,
-              input.createdBy,
-            );
-          else if (target.kind === "specialist")
-            await new SpecialistStore(transaction).addIn(transaction, {
-              workspaceId: id,
-              pluginId: target.pluginId,
-              actorUserId: input.createdBy,
-            });
-          else if (target.kind === "service" || target.kind === "device-app") {
-            const detail = await new PluginSettingsStore(transaction).detail(
-              input.createdBy,
-              target,
-            );
-            const installationId = detail.installationIds[0];
-            if (!installationId)
-              throw new OpensteerError({
-                code: "conflict",
-                message: "Consented installation is unavailable",
-              });
-            for (const account of personalEverywhereAccounts ?? [])
-              await writeIntegrationGrantInTransaction(transaction, {
-                ...account,
-                installationId,
-                ownerUserId: input.createdBy,
-                createdBy: input.createdBy,
-                workspaceId: id,
-                alias: account.connectionId,
-                isDefault: false,
-                providerAuthorizations: input.providerAuthorizations ?? {},
-              });
-          }
-        }
+    for (const { target, personalEverywhereAccounts } of consent) {
+      if (target.kind === "plugin")
+        await new PluginStore(transaction).activateIn(
+          transaction,
+          target.pluginId,
+          id,
+          input.createdBy,
+        );
+      else if (target.kind === "specialist")
+        await new SpecialistStore(transaction).addIn(transaction, {
+          workspaceId: id,
+          pluginId: target.pluginId,
+          actorUserId: input.createdBy,
+        });
+      else if (target.kind === "service" || target.kind === "device-app") {
+        const installationId = accountPlacements.get(`${target.kind}:${target.definitionId}`)!;
+        for (const account of personalEverywhereAccounts ?? [])
+          await writeIntegrationGrantInTransaction(transaction, {
+            ...account,
+            installationId,
+            ownerUserId: input.createdBy,
+            createdBy: input.createdBy,
+            workspaceId: id,
+            alias: account.connectionId,
+            isDefault: false,
+            providerAuthorizations: input.providerAuthorizations ?? {},
+          });
       }
     }
     await transaction

@@ -590,7 +590,7 @@ describeStore("plugin Settings authority", (test) => {
     expect(await platform.plugins.current(project.id, run.userId)).toHaveLength(1);
     const barrier = pauseAfterLock(
       f.database,
-      (node) => node.includes('"name":"users"') && node.includes("ForNoKeyUpdate"),
+      (node) => node.includes("pg_advisory_xact_lock") && node.includes("plugin-owner-consent:"),
     );
     const edit = new PluginSettingsStore(barrier.database).setPlacement(
       run.userId,
