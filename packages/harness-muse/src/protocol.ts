@@ -278,6 +278,7 @@ export const MuseUsageReadResultSchema = z.looseObject({
 });
 
 export interface MuseHostOptions {
+  readonly maxOutputBytes?: number;
   readonly args: readonly string[];
   readonly cwd: string;
   readonly environment: Readonly<Record<string, string>>;
@@ -319,7 +320,7 @@ export class MuseHost {
     });
     const process = spawnSupervised({
       ...launch,
-      maxOutputBytes: Number.MAX_SAFE_INTEGER,
+      maxOutputBytes: options.maxOutputBytes ?? Number.MAX_SAFE_INTEGER,
       ...(options.signal ? { signal: options.signal } : {}),
     });
     process.child.stdin.on("error", () => undefined);

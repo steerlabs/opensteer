@@ -2,7 +2,6 @@ import type {
   HarnessCapabilities,
   HarnessProcessLaunch,
   HarnessSessionContext,
-  HarnessTitleInput,
 } from "@opensteer/harness";
 import type { OpensteerError, PendingRequest, ThreadAccessMode } from "@opensteer/core";
 
@@ -167,8 +166,6 @@ export interface AcpNativeHooks {
   rewritePromptText?(text: string, context: HarnessSessionContext): Promise<string> | string;
   /** Removes engine-owned non-JSON lines before the ACP SDK sees stdout. */
   transformStdout?(stdout: AsyncIterable<Buffer>): AsyncIterable<Buffer>;
-  /** Becomes the session's `generateTitle`, given the context the session opened with. */
-  generateTitle?(context: HarnessSessionContext, input: HarnessTitleInput): Promise<string>;
 }
 
 export interface AcpLaunchOptions {

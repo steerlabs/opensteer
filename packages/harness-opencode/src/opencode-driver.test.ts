@@ -1912,22 +1912,26 @@ describe("opencode Thread naming", () => {
   it("names with the task model when no light model is listed", async () => {
     const fixture = await setup("happy");
     let titleArgs: readonly string[] | undefined;
-    const session = await fixture.adapter.startSession({
+    const namingContext = {
       ...fixture.context,
-      wrapProcessLaunch: (launch) => {
-        if (launch.cwd.includes("title-")) titleArgs = launch.args;
+      wrapProcessLaunch: (launch: import("@opensteer/harness").HarnessProcessLaunch) => {
+        if (launch.cwd.includes("text-")) titleArgs = launch.args;
         return launch;
       },
-    });
+    };
     try {
       expect(
-        await session.generateTitle!({ prompt: "Name it", signal: AbortSignal.timeout(2_000) }),
-      ).toBe("Support migration\nheadphones");
+        await fixture.adapter.generateText!({
+          context: { ...namingContext, scratchDirectory: namingContext.threadStateDirectory },
+          modelSelection: namingContext.modelSelection,
+          prompt: "Name it",
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: true, text: "Support migration\nheadphones" });
       expect(titleArgs).toContain(
         `opencode/${fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId}`,
       );
     } finally {
-      await session.stop();
       await fixture.adapter.close();
     }
   });
@@ -1936,24 +1940,34 @@ describe("opencode Thread naming", () => {
     const fixture = await setup("light-model");
     let namingConfig: unknown;
     let namingLaunch: import("@opensteer/harness").HarnessProcessLaunch | undefined;
+    let launches = 0;
     const prompt = threadTitlePrompt("Migrate support", { icon: true });
-    const session = await fixture.adapter.startSession({
+    const namingContext = {
       ...fixture.context,
-      wrapProcessLaunch: (launch) => {
-        if (!launch.cwd.includes("title-")) return launch;
+      wrapProcessLaunch: (launch: import("@opensteer/harness").HarnessProcessLaunch) => {
+        if (!launch.cwd.includes("text-")) return launch;
         namingLaunch = launch;
+        launches++;
         namingConfig = JSON.parse(readFileSync(launch.environment.OPENCODE_CONFIG!, "utf8"));
         return launch;
       },
-    });
+    };
     try {
-      expect(await session.generateTitle!({ prompt, signal: AbortSignal.timeout(2_000) })).toBe(
-        "Support migration\nheadphones",
-      );
+      expect(
+        await fixture.adapter.generateText!({
+          context: { ...namingContext, scratchDirectory: namingContext.threadStateDirectory },
+          modelSelection: namingContext.modelSelection,
+          prompt,
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: true, text: "Support migration\nheadphones" });
+      expect(launches).toBe(1);
       const launch = namingLaunch!;
-      expect(launch.cwd).toContain("title-");
+      expect(launch.cwd).toContain("text-");
       expect(launch.args).toEqual(
-        expect.arrayContaining(["opencode/gpt-6-nano", "--variant", "low"]),
+        expect.arrayContaining([
+          `opencode/${fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId}`,
+        ]),
       );
 
       const config = namingConfig;
@@ -1967,8 +1981,7 @@ describe("opencode Thread naming", () => {
         agent: {
           title: { disable: true },
           "opensteer-title": {
-            prompt:
-              "You name tasks. Reply exactly in the format the request asks for. Never use tools.",
+            prompt: "Follow the prompt. Never use tools.",
             tools: { "*": false },
             permission: { "*": "deny" },
           },
@@ -1977,11 +1990,10 @@ describe("opencode Thread naming", () => {
 
       expect(
         (await readdir(fixture.context.threadStateDirectory)).filter((name) =>
-          name.startsWith("title-"),
+          name.startsWith("text-"),
         ),
       ).toEqual([]);
     } finally {
-      await session.stop();
       await fixture.adapter.close();
     }
   });

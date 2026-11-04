@@ -2113,21 +2113,29 @@ describe("pi Thread naming", () => {
   it("returns both lines from an isolated, tool-free naming process", async () => {
     const fixture = await setup({});
     let namingLaunch: import("@opensteer/harness").HarnessProcessLaunch | undefined;
+    let launches = 0;
     const prompt = threadTitlePrompt("Migrate support", { icon: true });
-    const session = await fixture.adapter.startSession({
+    const namingContext = {
       ...fixture.context,
-      wrapProcessLaunch: (launch) => {
-        if (!launch.cwd.includes("title-")) return launch;
+      wrapProcessLaunch: (launch: import("@opensteer/harness").HarnessProcessLaunch) => {
+        if (!launch.cwd.includes("text-")) return launch;
         namingLaunch = launch;
+        launches++;
         return launch;
       },
-    });
+    };
     try {
-      expect(await session.generateTitle!({ prompt, signal: AbortSignal.timeout(2_000) })).toBe(
-        "Support migration\nheadphones",
-      );
+      expect(
+        await fixture.adapter.generateText!({
+          context: { ...namingContext, scratchDirectory: namingContext.threadStateDirectory },
+          modelSelection: namingContext.modelSelection,
+          prompt,
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: true, text: "Support migration\nheadphones" });
+      expect(launches).toBe(1);
       const launch = namingLaunch!;
-      expect(launch.cwd).toContain("title-");
+      expect(launch.cwd).toContain("text-");
 
       expect(launch.args).toEqual(
         expect.arrayContaining([
@@ -2140,16 +2148,15 @@ describe("pi Thread naming", () => {
         ]),
       );
       expect(launch.args[launch.args.indexOf("--system-prompt") + 1]).toBe(
-        "You name tasks. Reply exactly in the format the request asks for. Never use tools.",
+        "Follow the prompt. Never use tools.",
       );
 
       expect(
         (await readdir(fixture.context.threadStateDirectory)).filter((name) =>
-          name.startsWith("title-"),
+          name.startsWith("text-"),
         ),
       ).toEqual([]);
     } finally {
-      await session.stop();
       await fixture.adapter.close();
     }
   });

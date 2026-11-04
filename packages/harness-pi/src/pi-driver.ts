@@ -30,8 +30,10 @@ import { maxHarnessModelsPerCatalog } from "@opensteer/protocol";
 import {
   Deferred,
   runTitleProcess,
-  withTitleDirectory,
-  type HarnessTitleInput,
+  withBackgroundTextDirectory,
+  backgroundTextResult,
+  type HarnessGenerateTextInput,
+  type HarnessGenerateTextResult,
   HarnessSteerDeliveryUnknownError,
   HarnessSessionRegistry,
   TurnPublisher,
@@ -498,6 +500,54 @@ class PiHarnessAdapter implements HarnessAdapter {
     this.#dependencies = dependencies;
   }
 
+  async generateText({
+    context,
+    modelSelection,
+    prompt,
+    signal,
+  }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
+    if (context.runtimeBoundary.kind !== "native-user")
+      return { ok: false, failure: "unavailable" };
+    return backgroundTextResult(signal, async () => {
+      const environment = await piProcessEnvironment(context.environment, context.providerState);
+      return withBackgroundTextDirectory(context, signal, (directory) =>
+        runTitleProcess(
+          context,
+          {
+            executable: this.#dependencies.nodeExecutable,
+            args: [
+              this.#dependencies.executable,
+              "--print",
+              "--no-session",
+              "--no-tools",
+              "--no-extensions",
+              "--no-skills",
+              "--no-context-files",
+              "--no-prompt-templates",
+              // no-context-files excludes AGENTS.md, but 0.87.1 discovers
+              // SYSTEM.md and APPEND_SYSTEM.md separately unless overridden.
+              "--system-prompt",
+              "Follow the prompt. Never use tools.",
+              "--append-system-prompt",
+              " ",
+              "--provider",
+              this.#row.provider,
+              "--model",
+              piModelSelectionId(modelSelection),
+              "--thinking",
+              "off",
+              "--no-approve",
+            ],
+            cwd: directory,
+            environment,
+          },
+          signal,
+          prompt,
+        ),
+      );
+    });
+  }
+
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     assertFreshProviderSessionContext(context);
@@ -656,48 +706,6 @@ class PiHarnessSession implements HarnessSession {
       });
     }
     return this.#providerSessionReference;
-  }
-
-  async generateTitle({ prompt, signal }: HarnessTitleInput): Promise<string> {
-    const environment = await piProcessEnvironment(
-      this.#context.environment,
-      this.#context.providerState,
-    );
-    return withTitleDirectory(this.#context, (directory) =>
-      runTitleProcess(
-        this.#context,
-        {
-          executable: this.#dependencies.nodeExecutable,
-          args: [
-            this.#dependencies.executable,
-            "--print",
-            "--no-session",
-            "--no-tools",
-            "--no-extensions",
-            "--no-skills",
-            "--no-context-files",
-            "--no-prompt-templates",
-            // no-context-files excludes AGENTS.md, but 0.87.1 discovers
-            // SYSTEM.md and APPEND_SYSTEM.md separately unless overridden.
-            "--system-prompt",
-            "You name tasks. Reply exactly in the format the request asks for. Never use tools.",
-            "--append-system-prompt",
-            " ",
-            "--provider",
-            this.#row.provider,
-            "--model",
-            piModelSelectionId(this.#context.modelSelection),
-            "--thinking",
-            "off",
-            "--no-approve",
-          ],
-          cwd: directory,
-          environment,
-        },
-        signal,
-        prompt,
-      ),
-    );
   }
 
   async execute(run: HarnessRunInput): Promise<void> {
