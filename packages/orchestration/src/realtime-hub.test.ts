@@ -693,6 +693,18 @@ describe("connection-addressed messages", () => {
     ]);
   });
 
+  it("tells the Host's own observers when a person's agent connections change", () => {
+    const hub = new RealtimeHub({ store: {} as unknown as OpensteerStore });
+    const observed: string[] = [];
+    hub.observe((change) => observed.push(change.type));
+
+    // Open MCP sessions and waits learn of a revoked connection this way, even
+    // when none of the person's devices is connected.
+    hub.publishConnectionsChanged(createId("user"));
+
+    expect(observed).toEqual(["host.connections-changed"]);
+  });
+
   it("keeps a failing socket from starving the rest of a broadcast", async () => {
     const hub = new RealtimeHub({ store: {} as unknown as OpensteerStore });
     const userId = createId("user");

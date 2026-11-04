@@ -929,7 +929,9 @@ export class RealtimeHub {
   }
 
   publishConnectionsChanged(userId: UserId): void {
-    this.#sendViewerMessage(userId, { type: "host.connections-changed" });
+    const message = { type: "host.connections-changed" } as const;
+    for (const observer of this.#observers) observer(message);
+    this.#sendViewerMessage(userId, message);
   }
 
   publishNotificationPreference(userId: UserId, preference: WorkspaceNotificationPreference): void {
