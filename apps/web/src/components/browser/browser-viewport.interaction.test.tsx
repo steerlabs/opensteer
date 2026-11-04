@@ -186,6 +186,12 @@ it("keeps wheel, touch scroll, hover, right/middle buttons and drag on ordered i
         mediaToken: "a".repeat(43),
       });
       popups.receive("session", {
+        type: "browser.input.control",
+        surfaceId: surface,
+        streamId: browserVideoTestHeader.streamId,
+        state: "self",
+      });
+      popups.receive("session", {
         type: "browser.popup.opened",
         surfaceId: surface,
         streamId: browserVideoTestHeader.streamId,
@@ -196,6 +202,7 @@ it("keeps wheel, touch scroll, hover, right/middle buttons and drag on ordered i
         state: { kind: "select", multiple: false, rtl: false, items: [] },
       });
     });
+    expect(popups.target("session", surface).get().popup).not.toBeNull();
     const beforeLeave = commands.length;
     await pointer("pointerout", { buttons: 0, relatedTarget: document.body });
     expect(commands).toHaveLength(beforeLeave);
