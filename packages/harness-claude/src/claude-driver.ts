@@ -1,3 +1,4 @@
+import { backgroundLightModels } from "@opensteer/core";
 import { type HarnessModelDescriptor, resolveLightModel } from "@opensteer/harness";
 import { type ClaudeExecutableInspection } from "./executable.js";
 import { delay } from "@opensteer/shared/delay";
@@ -3537,9 +3538,7 @@ class BoundedTextCollector {
   }
 }
 
-const claudeLightModels = ["claude-haiku-5-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001"].map(
-  (modelId) => ({ modelId, options: { effort: "low" } }),
-);
+const claudeLightModels = backgroundLightModels("claude");
 
 function claudeCatalogModels(models: readonly ModelInfo[]): readonly HarnessModelDescriptor[] {
   const providerId = ModelProviderIdSchema.parse("anthropic");

@@ -460,7 +460,30 @@ export interface HarnessSession {
  * instructions are typically rendered once per conversation and would leave a
  * resumed conversation holding an earlier Run's facts.
  */
+/** Runner-owned account state only; never a Workspace or a Run tool proxy. */
+export interface HarnessGenerateTextContext {
+  readonly environment: Readonly<Record<string, string>>;
+  readonly providerState: HarnessProviderState;
+  readonly runtimeBoundary: HarnessRuntimeBoundary;
+  readonly wrapProcessLaunch: HarnessProcessLaunchWrapper;
+  readonly scratchDirectory: string;
+}
+export interface HarnessGenerateTextInput {
+  readonly context: HarnessGenerateTextContext;
+  readonly modelSelection: ModelSelection;
+  readonly prompt: string;
+  readonly signal: AbortSignal;
+}
+export type HarnessGenerateTextResult =
+  | { readonly ok: true; readonly text: string }
+  | {
+      readonly ok: false;
+      readonly failure:
+        "refused" | "signed-out" | "usage-limit" | "timeout" | "unavailable" | "failed";
+    };
+
 export interface HarnessAdapter {
+  generateText?(input: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult>;
   readonly capabilities: HarnessCapabilities;
   readonly instanceId: HarnessInstanceId;
   startSession(context: HarnessSessionContext): Promise<HarnessSession>;

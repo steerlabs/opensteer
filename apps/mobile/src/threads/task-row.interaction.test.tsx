@@ -339,8 +339,10 @@ it("repaints a memoized row on icon/color-only arrival and leaves unnamed or col
   expect(container.querySelector("svg")!.getAttribute("color")).toBe(color.muted);
   expect(tile()).toContain(color.surfaceRaised);
   render(<TaskMark mark={taskMark({ icon: null, color: "blue" })} />);
-  expect(container.querySelector("svg")).toBeNull();
-  expect(tile()).toContain(color.surfaceRaised);
+  expect(container.querySelector("svg")).not.toBeNull();
+  expect(tile()).toContain(markColorPaint.blue.wash);
+  render(<TaskMark mark={{ icon: null, color: null }} />);
+  expect(container.querySelector("svg")).not.toBeNull();
   harness.reducedMotion = true;
   draw({ ...original, tone: "working" });
   expect(container.querySelector("[data-spinner]")).toBeNull();

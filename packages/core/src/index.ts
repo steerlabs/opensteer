@@ -36,3 +36,5 @@ export * from "./person-show.js";
 export * from "./resource-access.js";
 
 export * from "./specialists.js";
+
+export * from "./background-models.js";

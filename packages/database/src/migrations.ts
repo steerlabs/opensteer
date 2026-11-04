@@ -4708,6 +4708,7 @@ export function migrationProvider() {
         "0154_agent_connections": agentConnectionsMigration,
         "0155_connection_message_authors": connectionMessageAuthorsMigration,
         "0156_specialist_auto_bind": specialistAutoBindMigration,
+        "0157_background_model_preferences": backgroundModelPreferencesMigration,
       };
     },
   };
@@ -7376,5 +7377,15 @@ const specialistAutoBindMigration: Migration = {
     await sql`ALTER TABLE specialists ADD COLUMN auto_bind boolean NOT NULL DEFAULT true`.execute(
       database,
     );
+  },
+};
+
+export const backgroundModelPreferencesMigration: Migration = {
+  async up(database) {
+    await sql`create table user_background_model_preferences (
+      user_id text primary key references users(id) on delete cascade,
+      preferences jsonb not null,
+      updated_at timestamptz not null default now()
+    )`.execute(database);
   },
 };

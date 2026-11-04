@@ -1,3 +1,4 @@
+import { defaultTaskSymbol } from "@opensteer/core";
 import type { MarkColor, WorkspaceIconName } from "@opensteer/core";
 import type { HostSnapshot } from "./client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
@@ -36,9 +37,7 @@ export const markColorPaint: Readonly<
 export const homeCursorPaint = "#a46149";
 
 /**
- * What a task's mark draws: its symbol, or null while it has none (not yet
- * named, or from before tasks had symbols), and its colour, or null when an
- * older Host sent none. Either missing leaves the tile neutral.
+ * What a task's mark draws: its symbol, with a presentation-only default while unnamed, and its colour.
  */
 export interface TaskMark {
   readonly icon: WorkspaceIconName | null;
@@ -49,7 +48,7 @@ export function taskMark(thread: {
   readonly icon: WorkspaceIconName | null;
   readonly color?: MarkColor | null | undefined;
 }): TaskMark {
-  return { icon: thread.icon, color: thread.color ?? null };
+  return { icon: thread.icon ?? defaultTaskSymbol, color: thread.color ?? null };
 }
 
 /**

@@ -1,3 +1,4 @@
+import { backgroundLightModels } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { rm, stat, mkdir, copyFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
@@ -1629,7 +1630,4 @@ function truncateCursorReasoning(text: string): string {
     : text;
 }
 
-const cursorLightModels = ["composer-2.5", "composer-2"].map((modelId) => ({
-  modelId,
-  options: { effort: "low" },
-}));
+const cursorLightModels = backgroundLightModels("cursor");

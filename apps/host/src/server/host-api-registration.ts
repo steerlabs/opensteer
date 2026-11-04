@@ -19,6 +19,7 @@ import { afterResponse } from "./after-response.js";
 import { requestAbortSignal } from "./request-abort-signal.js";
 
 const hostApiScopes = {
+  "backgroundModels.get": "session",
   "plugins.overview.get": "session",
   "plugins.detail.get": "session",
   "plugins.directory.get": "session",

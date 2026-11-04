@@ -8,6 +8,14 @@ Canonical model identity groups labels; the matched live catalog supplies the na
 
 A remembered selection is a decision: keep an unavailable choice visible with its reason. Later preferences never rewrite an existing Thread. Engine defaults apply when the person leaves an option at default; accounts do not invent their own model defaults.
 
+Background work has two roles, `light` and `deep`. Their cross-engine rankings
+live in `packages/core/src/background-models.ts`; catalogs remain authoritative
+for availability and native IDs. Automatic choices are recomputed from the
+current authorized accounts, never frozen as a preference. A pin goes first,
+then the automatic ranking continues. Cross-provider work requires the person's
+durable, revocable consent; memory requires consent for every provider because
+it has no originating task provider. Ordinary work keeps its exact chosen model.
+
 ## What a driver declares
 
 Use `packages/core/src/harness-catalog.ts` for declarations and `packages/harness/src/types.ts` for contracts. Keep driver imports out of client-bundled core. Launch Node through `HarnessDriverRuntime.nodeExecutable`, since Desktop's `process.execPath` is Electron.

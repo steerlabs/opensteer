@@ -1,3 +1,4 @@
+import { defaultTaskSymbol } from "@opensteer/core";
 import { memo, type CSSProperties } from "react";
 import {
   markColorPaint,
@@ -11,8 +12,8 @@ export type TaskMarkSize = 16 | 20 | 22;
 
 /**
  * Subject and identity only; lifecycle belongs beside it. A tile tinted with
- * the task's colour under its symbol, and a neutral tile, empty until the
- * task has a symbol, where either is missing.
+ * the task's colour under its symbol, and a neutral tile when colour is missing.
+ * Unnamed tasks show the default symbol.
  */
 export const TaskMark = memo(function TaskMark({
   mark,
@@ -23,7 +24,7 @@ export const TaskMark = memo(function TaskMark({
   readonly size: TaskMarkSize;
   readonly quiet?: boolean;
 }) {
-  const paint = mark.icon === null || mark.color === null ? null : markColorPaint[mark.color];
+  const paint = mark.color === null ? null : markColorPaint[mark.color];
   return (
     <span
       aria-hidden="true"
@@ -32,7 +33,7 @@ export const TaskMark = memo(function TaskMark({
       data-color={mark.color ?? "neutral"}
       style={paint ? { background: paint.wash, color: paint.glyph } : undefined}
     >
-      {mark.icon ? <WorkspaceIconGlyph icon={mark.icon} /> : null}
+      <WorkspaceIconGlyph icon={mark.icon ?? defaultTaskSymbol} />
     </span>
   );
 });
@@ -104,7 +105,7 @@ export function WorkingRing({
       className="working-ring"
       data-settling={settling || undefined}
       style={
-        mark && mark.icon !== null && mark.color !== null
+        mark && mark.color !== null
           ? ({ "--working-hue": markColorPaint[mark.color].glyph } as CSSProperties)
           : undefined
       }

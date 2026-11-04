@@ -1,3 +1,9 @@
+import { BackgroundModelsViewSchema } from "./background-models.js";
+import {
+  BackgroundModelModeSchema,
+  BackgroundModelRoleSchema,
+  BackgroundModelPreferencesSchema,
+} from "@opensteer/core";
 import {
   AgentConnectionSchema,
   AgentConnectionIdSchema,
@@ -595,6 +601,18 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
     type: z.literal("thread.access.update"),
+  }),
+  z.strictObject({
+    type: z.literal("backgroundModels.role.set"),
+    idempotencyKey: idempotencyKeySchema,
+    role: BackgroundModelRoleSchema,
+    mode: BackgroundModelModeSchema,
+  }),
+  z.strictObject({
+    type: z.literal("backgroundModels.consent.set"),
+    idempotencyKey: idempotencyKeySchema,
+    providerId: ModelSelectionSchema.shape.providerId,
+    acknowledged: z.boolean(),
   }),
   // A choice a person just made, to start their next Thread from. The Host
   // folds it into the one record it keeps per person, so a phone and a desktop
@@ -1300,6 +1318,14 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     preferences: ExecutionPreferencesViewSchema,
     type: z.literal("execution.preferences.remember"),
   }),
+  z.object({
+    type: z.literal("backgroundModels.role.set"),
+    preferences: BackgroundModelPreferencesSchema,
+  }),
+  z.object({
+    type: z.literal("backgroundModels.consent.set"),
+    preferences: BackgroundModelPreferencesSchema,
+  }),
   z.object({ type: z.literal("run.interrupt"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("request.respond") }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.create") }),
@@ -1722,6 +1748,7 @@ export const hostApi = defineRpc({
     }),
     harnessAuthenticationEnvelopeSchema,
   ),
+  "backgroundModels.get": declaration("GET", z.strictObject({}), BackgroundModelsViewSchema),
   "harness.catalog.refresh": declaration(
     "POST",
     z.strictObject({

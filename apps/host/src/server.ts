@@ -1,3 +1,4 @@
+import { readBackgroundModels } from "./agents/background-model-settings.js";
 import { ThreadService, assertAccessModeEnforceable } from "./threads/thread-service.js";
 import {
   AdministrationService,
@@ -1206,6 +1207,8 @@ export async function createHostServer(
         }),
       );
     },
+    "backgroundModels.get": async (_input, context) =>
+      rpcSuccess(await readBackgroundModels(dependencies, requireRpcSession(context).user.id)),
     "harness.authentication.get": async (input, context) => {
       const target = await admitHarnessAuthentication(requireRpcSession(context), input);
       const envelope = await harnessAuthenticationCoordinator.read(
@@ -1561,6 +1564,7 @@ export async function createHostServer(
     | "attachment.content"
     | "bootstrap.get"
     | "harness.authentication.get"
+    | "backgroundModels.get"
     | "harness.catalog.refresh"
     | "harness.modelServers.discover"
     | "voice.start"

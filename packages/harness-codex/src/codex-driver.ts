@@ -1,3 +1,4 @@
+import { backgroundLightModels } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { startCodexVoiceCall, type CodexVoiceInput, type CodexVoiceCall } from "./voice.js";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
@@ -2447,10 +2448,7 @@ const codexModelListPageSize = 256;
  * Codex 0.162.0's own thread titles use and its successor. The first the
  * account lists wins; an account listing none names with the Run's model.
  */
-const codexLightModels = ["gpt-6-luna", "gpt-5.6-luna"].map((modelId) => ({
-  modelId,
-  options: { effort: "low" },
-}));
+const codexLightModels = backgroundLightModels("codex");
 
 /**
  * Every page of `model/list`. The protocol's catalog limit bounds the walk, in

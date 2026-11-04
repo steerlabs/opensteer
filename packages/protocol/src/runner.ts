@@ -1747,7 +1747,39 @@ export const RunnerVoiceResultSchema = z.discriminatedUnion("ok", [
 ]);
 export type RunnerVoiceResult = z.infer<typeof RunnerVoiceResultSchema>;
 
+export const BackgroundTextAttemptIdSchema = z.string().min(1).max(200);
+export const BackgroundTextFailureSchema = z.enum([
+  "refused",
+  "signed-out",
+  "usage-limit",
+  "timeout",
+  "unavailable",
+  "failed",
+]);
+export const BackgroundTextResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true), text: z.string().max(20_000) }),
+  z.strictObject({ ok: z.literal(false), failure: BackgroundTextFailureSchema }),
+]);
+export const HostBackgroundTextSchema = z.strictObject({
+  ...fencedMessageBase,
+  type: z.literal("host.background-text"),
+  attemptId: BackgroundTextAttemptIdSchema,
+  environmentId: EnvironmentIdSchema,
+  harnessInstanceId: HarnessInstanceIdSchema,
+  harnessRevision: HarnessRuntimeRevisionSchema,
+  modelSelection: ModelSelectionSchema,
+  prompt: z.string().min(1).max(20_000),
+  deadline: IsoDateTimeSchema,
+});
+export const RunnerBackgroundTextResultSchema = z.strictObject({
+  ...fencedMessageBase,
+  type: z.literal("runner.background-text-result"),
+  attemptId: BackgroundTextAttemptIdSchema,
+  result: BackgroundTextResultSchema,
+});
+
 export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
+  RunnerBackgroundTextResultSchema,
   RunnerSkillMetadataReportSchema,
   RunnerAppResultSchema,
   ...RunnerWorkspaceLocalResultSchema.options,
@@ -1976,6 +2008,7 @@ export const RunnerToHostMessageSchema = z.discriminatedUnion("type", [
 export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
 
 export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
+  HostBackgroundTextSchema,
   RunnerChallengeSchema,
   ...HostWorkspaceLocalRequestSchema.options,
   ...HostAppRequestSchema.options,

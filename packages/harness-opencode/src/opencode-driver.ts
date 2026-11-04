@@ -1,3 +1,4 @@
+import { opencodeLightModelFamilies } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -2186,7 +2187,6 @@ const OpencodeTitleCandidateSchema = z.looseObject({
 });
 
 /** 1.18.32 `Provider.getSmallModel`'s families, which OpenCode's own titles prefer. */
-const opencodeSmallModelFamilies = ["gemini-flash", "gpt-nano", "claude-haiku"];
 
 function opencodeLightModel(provider: z.infer<typeof OpencodeProviderSchema>, sourceId: string) {
   const models = opencodeCatalogModels(provider, undefined, sourceId);
@@ -2194,7 +2194,7 @@ function opencodeLightModel(provider: z.infer<typeof OpencodeProviderSchema>, so
     const parsed = OpencodeTitleCandidateSchema.safeParse(model);
     return parsed.success ? [parsed.data] : [];
   });
-  const families = provider.id.startsWith("opencode") ? ["gpt-nano"] : opencodeSmallModelFamilies;
+  const families = opencodeLightModelFamilies(provider.id);
   const ranking = families.flatMap((family) =>
     candidates
       .filter((model) => model.family === family)

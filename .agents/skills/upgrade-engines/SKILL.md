@@ -18,6 +18,8 @@ Replace `Codex` with the suite's engine label. Also run the `installed <label>` 
 
 Antigravity is downloaded rather than shipped or found on `PATH`. A pin bump must update and re-verify every platform's archive size, SHA-256 and complete member manifest in its driver, then run the `downloaded Antigravity` qualification against a temporary Runner runtime cache.
 
+Review the role rankings in `packages/core/src/background-models.ts` when models change. During account qualification, report ranked IDs missing from that account's live catalog; one account's absence is not evidence of global retirement. Keep driver light-model selection derived from that shared ranking.
+
 For a new model, first check the account's real engine catalog. Update its engine when required; never hardcode a model the engine cannot describe. Check native ID routing, context/output limits and options in affected driver tests. Review protocol and sandbox changes, including Codex's approved feature list. Reconnect the Runner to refresh accounts after release.
 
 For a running local oMLX server, qualify a model that fits that computer:

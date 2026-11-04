@@ -1,3 +1,4 @@
+import * as backgroundModelStore from "./background-model-store.js";
 import * as workspaceSkillInventoryStore from "./workspace-skill-inventory-store.js";
 import {
   replayAdministrationCommand,
@@ -1159,6 +1160,21 @@ export class OpensteerStore {
     return harnessStore.getHarnessCatalog(this.#database, environmentId, harnessInstanceId);
   }
 
+  async getBackgroundModelPreferences(userId: UserId) {
+    return backgroundModelStore.getBackgroundModelPreferences(this.#database, userId);
+  }
+  async updateBackgroundModelPreferences(
+    userId: UserId,
+    change: backgroundModelStore.BackgroundModelPreferenceChange,
+    administration?: AdministrationCommandIdentity,
+  ) {
+    return backgroundModelStore.updateBackgroundModelPreferences(
+      this.#database,
+      userId,
+      change,
+      administration,
+    );
+  }
   async getExecutionPreferences(userId: UserId): Promise<ExecutionPreferences> {
     return harnessStore.getExecutionPreferences(this.#database, userId);
   }

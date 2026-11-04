@@ -1,3 +1,4 @@
+import { emptyBackgroundModelPreferences } from "@opensteer/core";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
@@ -2120,6 +2121,20 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         })
         .catch(mockRefusal),
     "harness.authentication.get": async () => rpcSuccess(await client.getHarnessAuthentication()),
+    "backgroundModels.get": async () =>
+      rpcSuccess({
+        backgroundProviderConsent: client.backgroundModelPreferences.backgroundProviderConsent,
+        light: {
+          mode: client.backgroundModelPreferences.backgroundModels.light,
+          effectivePick: null,
+          candidates: [],
+        },
+        deep: {
+          mode: client.backgroundModelPreferences.backgroundModels.deep,
+          effectivePick: null,
+          candidates: [],
+        },
+      }),
     "harness.catalog.refresh": async () => rpcSuccess({}),
     "harness.modelServers.discover": async (input) =>
       rpcSuccess({ servers: mockModelServers(input.address) }),
@@ -2726,6 +2741,27 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "thread.input.move":
       client.moveThreadInput(command.threadId, command.messageId, command.beforeMessageId);
       return rpcSuccess({ type: command.type });
+    case "backgroundModels.role.set":
+      client.backgroundModelPreferences.backgroundModels[command.role] = command.mode;
+      return rpcSuccess({
+        type: command.type,
+        preferences: structuredClone(client.backgroundModelPreferences),
+      });
+    case "backgroundModels.consent.set":
+      client.backgroundModelPreferences.backgroundProviderConsent = command.acknowledged
+        ? [
+            ...new Set([
+              ...client.backgroundModelPreferences.backgroundProviderConsent,
+              command.providerId,
+            ]),
+          ]
+        : client.backgroundModelPreferences.backgroundProviderConsent.filter(
+            (id) => id !== command.providerId,
+          );
+      return rpcSuccess({
+        type: command.type,
+        preferences: structuredClone(client.backgroundModelPreferences),
+      });
     case "execution.preferences.remember":
       return rpcSuccess(
         hostApi["commands.dispatch"].success.parse({
@@ -4876,6 +4912,7 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  backgroundModelPreferences = structuredClone(emptyBackgroundModelPreferences);
   private connections: import("@opensteer/protocol").AgentConnection[];
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
   private connectionDecision: { requestId: string; fingerprint: string } | null = null;
