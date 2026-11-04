@@ -262,22 +262,23 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
         continue;
       }
       let selection: ModelSelection;
-      if ("kind" in want) {
-        if (want.kind === "catalog-light") {
-          if (!usable(account, want)) continue;
-          const light = account.catalog.lightModel;
-          if (!light) {
-            skip(account, want, "model-unavailable", "This account has no small model");
-            continue;
-          }
-          selection = { ...light, options: light.options ?? {} };
-        } else
-          selection = { providerId: want.providerId, modelId: want.modelId, options: want.options };
+      const exact = "kind" in want || !("model" in want) ? null : want;
+      if (exact === null && !("kind" in want && want.kind === "model")) {
+        if (!usable(account, want)) continue;
+        const light = account.catalog.lightModel;
+        if (!light) {
+          skip(account, want, "model-unavailable", "This account has no small model");
+          continue;
+        }
+        selection = { ...light, options: light.options ?? {} };
+      } else if (exact === null) {
+        if (!("kind" in want) || want.kind !== "model") continue;
+        selection = { providerId: want.providerId, modelId: want.modelId, options: want.options };
       } else {
-        const reference = canonicalModelReference(want.model, account.driverKind);
+        const reference = canonicalModelReference(exact.model, account.driverKind);
         const matches = (account.catalog?.models ?? []).filter(
           (model) =>
-            model.modelId === want.model ||
+            model.modelId === exact.model ||
             (model.providerId === reference.providerId && model.modelId === reference.modelId),
         );
         // A bare canonical ID is portable only when this catalog identifies one lab for it.
@@ -285,7 +286,7 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
         selection = {
           providerId: model?.providerId ?? (reference.providerId as ModelSelection["providerId"]),
           modelId: model?.modelId ?? (reference.modelId as ModelSelection["modelId"]),
-          options: want.options ?? {},
+          options: exact.options ?? {},
         };
         if (matches.length > 1) {
           skipped.push({

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   AutomaticModelConfigSchema,
   AutomaticModelWantSchema,
+  ExactModelWantSchema,
   automaticModelWants,
   emptyAutomaticModelConfig,
   expandModelWants,
@@ -70,7 +71,7 @@ function account(
   };
 }
 const want = (engine = "codex", model = "gpt-6-luna", options?: Record<string, string>) =>
-  AutomaticModelWantSchema.parse({ engine, model, ...(options ? { options } : {}) });
+  ExactModelWantSchema.parse({ engine, model, ...(options ? { options } : {}) });
 function resolve(
   accounts: readonly AuthorizedModelAccountSnapshot[],
   extra: Partial<ResolveModelCandidatesInput> = {},
@@ -88,6 +89,24 @@ function own(account: AuthorizedModelAccountSnapshot): OriginalModelSelection {
   return { ...account, modelSelection: selection() };
 }
 describe("automatic model resolver", () => {
+  it("lets a person keep an engine's own small model in their list", () => {
+    const small = AutomaticModelWantSchema.parse({ engine: "codex" });
+    expect(AutomaticModelWantSchema.safeParse({ engine: "codex", options: {} }).success).toBe(
+      false,
+    );
+    const lightAccount = account("codex", {
+      catalog: {
+        ...account().catalog!,
+        lightModel: selection(),
+      },
+    });
+    expect(resolve([lightAccount], { wants: [small] }).candidates).toMatchObject([
+      { storedModelSelection: { modelId: "gpt-6-luna" } },
+    ]);
+    expect(resolve([account()], { wants: [small] }).skipped).toMatchObject([
+      { reason: "model-unavailable", detail: "This account has no small model" },
+    ]);
+  });
   it("says why an account or model was skipped, account readiness first", () => {
     const signedOut = account("opencode", {
       catalog: { status: "authentication-required", detail: "Sign in to OpenCode Go", models: [] },
