@@ -35,16 +35,27 @@ export class SpecialistStore {
       });
   }
 
-  async add(input: { workspaceId: WorkspaceId; pluginId: string; actorUserId: UserId }) {
+  async add(input: {
+    workspaceId: WorkspaceId;
+    pluginId: string;
+    actorUserId: UserId;
+    activate?: boolean;
+  }) {
     return this.database.transaction().execute((tx) => this.addIn(tx, input));
   }
 
   async addIn(
     tx: Kysely<DatabaseSchema>,
-    input: { workspaceId: WorkspaceId; pluginId: string; actorUserId: UserId },
+    input: { workspaceId: WorkspaceId; pluginId: string; actorUserId: UserId; activate?: boolean },
   ) {
     await new SpecialistStore(tx).authorize(input.workspaceId, input.actorUserId);
-    await new PluginStore(tx).activateIn(tx, input.pluginId, input.workspaceId, input.actorUserId);
+    if (input.activate !== false)
+      await new PluginStore(tx).activateIn(
+        tx,
+        input.pluginId,
+        input.workspaceId,
+        input.actorUserId,
+      );
     const plugin = await tx
       .selectFrom("plugins")
       .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
@@ -178,10 +189,12 @@ export class SpecialistStore {
       ])
       .where("specialists.id", "=", id)
       .executeTakeFirstOrThrow();
-    const manifest = SpecialistManifestSchema.parse(row.specialistManifest);
+    const manifest = row.specialistManifest
+      ? SpecialistManifestSchema.parse(row.specialistManifest)
+      : null;
     const bindings: SpecialistBinding[] = [];
     const states = [];
-    for (const [index, requirement] of (manifest.access ?? []).entries()) {
+    for (const [index, requirement] of (manifest?.access ?? []).entries()) {
       const previous = row.bindings.find((binding) => binding.requirement === index);
       const candidates = await this.candidates(row.workspaceId, row.ownerUserId, requirement);
       const resourceId =
@@ -212,7 +225,7 @@ export class SpecialistStore {
       ? row.status === "removal-failed"
         ? ("removal-failed" as const)
         : ("removing" as const)
-      : states.every((s) => s.state === "bound")
+      : manifest && states.every((s) => s.state === "bound")
         ? ("ready" as const)
         : ("pending" as const);
     const update = await this.database
@@ -239,8 +252,8 @@ export class SpecialistStore {
       plugin: row.name,
       version: row.digest,
       status,
-      models: manifest.models,
-      fallback: manifest.fallback,
+      models: manifest?.models ?? [],
+      fallback: manifest?.fallback ?? "none",
       access: states,
     };
   }
@@ -376,10 +389,13 @@ export class SpecialistStore {
     if (registration.status !== "ready")
       throw new OpensteerError({
         code: "conflict",
-        message: `Specialist is ${registration.status}: ${registration.access
-          .filter((a) => a.state !== "bound")
-          .map((a) => `${a.type}: ${a.state} (${a.reason})`)
-          .join("; ")}`,
+        message:
+          registration.models.length === 0
+            ? "This plugin no longer provides a specialist"
+            : `Specialist is ${registration.status}: ${registration.access
+                .filter((a) => a.state !== "bound")
+                .map((a) => `${a.type}: ${a.state} (${a.reason})`)
+                .join("; ")}`,
       });
     return registration;
   }

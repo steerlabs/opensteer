@@ -10,6 +10,38 @@ import { testContinuationIdentity } from "./store.integration.test-support.js";
 import { describeStore } from "./store.integration.test-support.js";
 
 describeStore("plugin activation", (test) => {
+  test("updates only the owning Workspace and preserves activation", async ({
+    storeFixture: fixture,
+  }) => {
+    const f = await fixture.createRunFixture("plugin-update");
+    const platform = new IntegrationPlatformStore(fixture.database);
+    const id = randomUUID();
+    await platform.plugins.install({
+      id,
+      name: "mine",
+      workspaceId: f.workspace.id,
+      actorUserId: f.userId,
+      source: {},
+      digest: "old",
+      manifest: { name: "mine" },
+    });
+    await platform.plugins.setActivation({
+      pluginId: id,
+      workspaceId: f.workspace.id,
+      actorUserId: f.userId,
+      active: false,
+    });
+    const update = { pluginId: id, digest: "new", manifest: { name: "mine" } };
+    await expect(
+      platform.plugins.update({ ...update, workspaceId: createId("workspace") }),
+    ).rejects.toThrow("Workspace");
+    await expect(platform.plugins.update(update)).rejects.toThrow("Workspace");
+    await platform.plugins.update({ ...update, workspaceId: f.workspace.id });
+    const plugin = (await platform.plugins.list()).find((p) => p.id === id)!;
+    expect(plugin.versions).toHaveLength(2);
+    expect(plugin.activations).toEqual([]);
+  });
+
   test("lists growing inventories with four queries and keeps Workspace filtering", async ({
     storeFixture: fixture,
   }) => {

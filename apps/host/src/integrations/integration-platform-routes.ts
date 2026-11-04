@@ -344,8 +344,16 @@ async function executeIntegrationPlatformCommand(
       await options.platform.store.plugins.remove(command.pluginId);
       return { type: command.type };
     }
-    case "plugin.update":
+    case "plugin.update": {
       requireAdministrator(context);
+      const plugin = (await options.platform.store.plugins.list()).find(
+        (p) => p.id === command.pluginId,
+      );
+      if (plugin?.scope === "workspace")
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Agent-made plugins update when an agent installs their folder again.",
+        });
       await options.platform.installAgentPlugin({
         actorUserId: session.user.id,
         directory: command.input.directory,
@@ -354,6 +362,7 @@ async function executeIntegrationPlatformCommand(
         ...(command.input.runnerId ? { runnerId: command.input.runnerId } : {}),
       });
       return { type: command.type };
+    }
     case "plugin.install": {
       requireAdministrator(context);
       const result = await options.platform.installAgentPlugin({

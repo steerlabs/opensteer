@@ -21,11 +21,13 @@ import {
 } from "../runtime/computer-apps.test-support.js";
 import {
   connectCallerMachine,
+  configurePersonalRemoteAccess,
   createMachineAccessDatabase,
   dispatchCallerRun,
   enrollmentToken,
   resetMachineAccessDatabase,
   startMachineAccessHost,
+  startPersonalMachineAccessHost,
   waitForCondition,
   type MachineAccessHost,
 } from "../runtime/machine-access.test-support.js";
@@ -454,182 +456,300 @@ integration("MCP servers on a computer", () => {
     }
   }, 240_000);
 
-  it("starts a server with the secrets its Mac's owner entered, and only them", async () => {
-    const work = await mkdtemp(join(tmpdir(), "opensteer-local-mcp-secrets-"));
-    const fixture = await secretPluginFixture(work);
-    const host = await startMachineAccessHost(databaseUrl, { signupPolicy: "open" });
-    const closers: (() => Promise<void>)[] = [() => host.close()];
-    closeCurrent = async () => {
-      for (const close of closers) await close().catch(() => undefined);
-    };
-    const desktop = await startFakeDesktop();
-    closers.unshift(() => desktop.close());
-    const prepared = prepareIntegrationsModule({
-      computerUseBridge: { token: desktop.token, url: desktop.url },
-      dataDirectory: join(work, "runner"),
-      platform: "darwin",
-    });
-    if (!prepared?.computerUse || !prepared.localMcp) throw new Error("A Mac runs MCP servers");
-    const { computerUse, localMcp } = prepared;
-    closers.push(async () => computerUse.close());
-    const computer = await connectComputerAppMachine(host, prepared.providers, {
-      desktop: { computerUse, localMcp },
-    });
-    closers.unshift(() => computer.close());
-    const dispatch = (key: string, command: Record<string, unknown>) =>
-      testRpcData(
-        host.origin,
-        "commands.dispatch",
-        { idempotencyKey: `${key}:${randomUUID()}`, ...command } as never,
-        { headers: host.ownerHeaders },
-      );
-    const pluginId = async () =>
-      (
-        await host.store.database
-          .selectFrom("integrationInstallations")
-          .select("pluginId")
-          .executeTakeFirstOrThrow()
-      ).pluginId!;
-    const started = (value: string) =>
-      waitForCondition(async () => (await readText(fixture.seenFile)) === value, 30_000);
-
-    await dispatch("install", {
-      input: { directory: fixture.plugin, runnerId: computer.runnerId },
-      type: "plugin.install",
-    });
-    const server = await serverRow(host);
-    const launch = (server.transport as { readonly launch: LocalMcpLaunch }).launch;
-    expect(launch).toMatchObject({
-      env: expect.not.objectContaining({ CAMERA_PASSWORD: expect.anything() }),
-      secrets: [{ name: "CAMERA_PASSWORD", title: "Camera password" }],
-    });
-    const asked = await waitingRequest(host, server.id);
-    const review = (id: string) =>
-      testRpcData(
-        host.origin,
-        "integration.computer.setup.review",
-        { setupRequestId: id },
-        { headers: host.ownerHeaders },
-      );
-    expect((await review(asked.id)).savedSecrets).toEqual([]);
-    const yours = () =>
-      testRpcData(
-        host.origin,
-        "integration.server.secrets.list",
-        {},
-        { headers: host.ownerHeaders },
-      ).then(({ servers }) => servers);
-    // Listed for its computer's owner to change only once allowed there.
-    expect(await yours()).toEqual([]);
-
-    // Allowing needs every secret, and only the ones its launch declares.
-    const answer = (id: string, secrets?: Record<string, string>) =>
-      dispatch("answer", {
-        decision: "allow",
-        setupRequestId: id,
-        ...(secrets ? { secrets } : {}),
-        type: "integration.computer.setup.respond",
+  it.each([false, true])(
+    "starts and updates sealed-secret servers (Personal: %s)",
+    async (personal) => {
+      const work = await mkdtemp(join(tmpdir(), "opensteer-local-mcp-secrets-"));
+      const fixture = await secretPluginFixture(work);
+      const host = personal
+        ? await startPersonalMachineAccessHost(databaseUrl)
+        : await startMachineAccessHost(databaseUrl, { signupPolicy: "open" });
+      const closers: (() => Promise<void>)[] = [() => host.close()];
+      closeCurrent = async () => {
+        for (const close of closers) await close().catch(() => undefined);
+      };
+      if (personal)
+        await configurePersonalRemoteAccess(host, {
+          mode: "private",
+          routeOrigin: "https://personal.local-mcp.test",
+        });
+      const desktop = await startFakeDesktop();
+      closers.unshift(() => desktop.close());
+      const prepared = prepareIntegrationsModule({
+        computerUseBridge: { token: desktop.token, url: desktop.url },
+        dataDirectory: join(work, "runner"),
+        platform: "darwin",
       });
-    await expect(answer(asked.id)).rejects.toThrow("Enter Camera password.");
-    await expect(answer(asked.id, { CAMERA_PASSWORD: "x", OTHER: "y" })).rejects.toThrow(
-      "This server doesn't ask for OTHER.",
-    );
-    expect(await readText(fixture.seenFile)).toBeNull();
-    expect((await waitingRequest(host, server.id)).id).toBe(asked.id);
+      if (!prepared?.computerUse || !prepared.localMcp) throw new Error("A Mac runs MCP servers");
+      const { computerUse, localMcp } = prepared;
+      closers.push(async () => computerUse.close());
+      const computer = await connectComputerAppMachine(host, prepared.providers, {
+        desktop: { computerUse, localMcp },
+      });
+      closers.unshift(() => computer.close());
+      const dispatch = (key: string, command: Record<string, unknown>) =>
+        testRpcData(
+          host.origin,
+          "commands.dispatch",
+          { idempotencyKey: `${key}:${randomUUID()}`, ...command } as never,
+          { headers: host.ownerHeaders },
+        );
+      const pluginId = async () =>
+        (
+          await host.store.database
+            .selectFrom("integrationInstallations")
+            .select("pluginId")
+            .executeTakeFirstOrThrow()
+        ).pluginId!;
+      const started = (value: string) =>
+        waitForCondition(async () => (await readText(fixture.seenFile)) === value, 30_000);
 
-    await answer(asked.id, { CAMERA_PASSWORD: "hunter2" });
-    await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
-    await started("hunter2");
-    const sealed = await host.store.database
-      .selectFrom("integrationServerSecrets")
-      .select("encryptedPayload")
-      .where("serverId", "=", server.id)
-      .executeTakeFirstOrThrow();
-    expect(sealed.encryptedPayload.includes("hunter2")).toBe(false);
-    const listed = JSON.stringify(
-      await testRpcData(host.origin, "plugin.list", {}, { headers: host.ownerHeaders }),
-    );
-    expect(listed).not.toContain("hunter2");
-    expect(listed).not.toContain("encryptedPayload");
-    expect(await yours()).toEqual([
-      expect.objectContaining({
-        id: server.id,
-        name: "camera",
-        plugin: "camera-fixture",
-        secrets: [expect.objectContaining({ name: "CAMERA_PASSWORD" })],
-      }),
-    ]);
-    expect(JSON.stringify(await yours())).not.toContain("hunter2");
+      await dispatch("install", {
+        input: { directory: fixture.plugin, runnerId: computer.runnerId },
+        type: "plugin.install",
+      });
+      const server = await serverRow(host);
+      const launch = (server.transport as { readonly launch: LocalMcpLaunch }).launch;
+      expect(launch).toMatchObject({
+        env: expect.not.objectContaining({ CAMERA_PASSWORD: expect.anything() }),
+        secrets: [{ name: "CAMERA_PASSWORD", title: "Camera password" }],
+      });
+      const asked = await waitingRequest(host, server.id);
+      const review = (id: string) =>
+        testRpcData(
+          host.origin,
+          "integration.computer.setup.review",
+          { setupRequestId: id },
+          { headers: host.ownerHeaders },
+        );
+      expect((await review(asked.id)).savedSecrets).toEqual([]);
+      const yours = () =>
+        testRpcData(
+          host.origin,
+          "integration.server.secrets.list",
+          {},
+          { headers: host.ownerHeaders },
+        ).then(({ servers }) => servers);
+      // Listed for its computer's owner to change only once allowed there.
+      expect(await yours()).toEqual([]);
 
-    // Changed: its running process ends, and the next starts with the new value.
-    await dispatch("change", {
-      secrets: { CAMERA_PASSWORD: "swordfish" },
-      serverId: server.id,
-      type: "integration.server.secrets.set",
-    });
-    await started("swordfish");
-    // Values aren't part of the launch, so changing one asks nothing again.
-    expect(
-      await host.store.database
-        .selectFrom("computerAppSetupRequests")
-        .select("id")
-        .where("kind", "=", "server")
-        .execute(),
-    ).toEqual([]);
+      // Allowing needs every secret, and only the ones its launch declares.
+      const answer = (id: string, secrets?: Record<string, string>) =>
+        dispatch("answer", {
+          decision: "allow",
+          setupRequestId: id,
+          ...(secrets ? { secrets } : {}),
+          type: "integration.computer.setup.respond",
+        });
+      await expect(answer(asked.id)).rejects.toThrow("Enter Camera password.");
+      await expect(answer(asked.id, { CAMERA_PASSWORD: "x", OTHER: "y" })).rejects.toThrow(
+        "This server doesn't ask for OTHER.",
+      );
+      expect(await readText(fixture.seenFile)).toBeNull();
+      expect((await waitingRequest(host, server.id)).id).toBe(asked.id);
 
-    // A server that prints its secret as it fails: the reason the Host keeps,
-    // lists and tells agents quotes its output, never the secret.
-    await dispatch("leak", {
-      secrets: { CAMERA_PASSWORD: "leaky-hunter3" },
-      serverId: server.id,
-      type: "integration.server.secrets.set",
-    });
-    await waitForCondition(
-      async () => (await serverRow(host)).statusDetail?.includes("could not sign in") ?? false,
-      30_000,
-    );
-    expect((await serverRow(host)).statusDetail).not.toContain("leaky-hunter3");
-    expect(
-      JSON.stringify(
+      await answer(asked.id, { CAMERA_PASSWORD: "hunter2" });
+      await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
+      await started("hunter2");
+      const sealed = await host.store.database
+        .selectFrom("integrationServerSecrets")
+        .select("encryptedPayload")
+        .where("serverId", "=", server.id)
+        .executeTakeFirstOrThrow();
+      expect(sealed.encryptedPayload.includes("hunter2")).toBe(false);
+      const listed = JSON.stringify(
         await testRpcData(host.origin, "plugin.list", {}, { headers: host.ownerHeaders }),
-      ),
-    ).not.toContain("leaky-hunter3");
-    await dispatch("unleak", {
-      secrets: { CAMERA_PASSWORD: "swordfish" },
-      serverId: server.id,
-      type: "integration.server.secrets.set",
-    });
-    await started("swordfish");
+      );
+      expect(listed).not.toContain("hunter2");
+      expect(listed).not.toContain("encryptedPayload");
+      expect(await yours()).toEqual([
+        expect.objectContaining({
+          id: server.id,
+          name: "camera",
+          plugin: "camera-fixture",
+          secrets: [expect.objectContaining({ name: "CAMERA_PASSWORD" })],
+        }),
+      ]);
+      expect(JSON.stringify(await yours())).not.toContain("hunter2");
 
-    // A new launch is asked about again; leaving the field blank keeps the value.
-    await fixture.changeLaunch();
-    await dispatch("update", {
-      input: { directory: fixture.plugin, runnerId: computer.runnerId },
-      pluginId: await pluginId(),
-      type: "plugin.update",
-    });
-    const askedAgain = await waitingRequest(host, server.id);
-    expect((await review(askedAgain.id)).savedSecrets).toEqual(["CAMERA_PASSWORD"]);
-    await expect(
-      dispatch("early", {
-        secrets: { CAMERA_PASSWORD: "too-early" },
+      // Changed: its running process ends, and the next starts with the new value.
+      await dispatch("change", {
+        secrets: { CAMERA_PASSWORD: "swordfish" },
         serverId: server.id,
         type: "integration.server.secrets.set",
-      }),
-    ).rejects.toThrow("It's waiting for approval.");
-    await writeFile(fixture.seenFile, "");
-    await answer(askedAgain.id);
-    await started("swordfish");
+      });
+      await started("swordfish");
+      // Values aren't part of the launch, so changing one asks nothing again.
+      expect(
+        await host.store.database
+          .selectFrom("computerAppSetupRequests")
+          .select("id")
+          .where("kind", "=", "server")
+          .execute(),
+      ).toEqual([]);
 
-    // Uninstalled: its secrets go with it.
-    await dispatch("uninstall", {
-      installationId: server.installationId,
-      type: "integration.uninstall",
-    });
-    expect(
-      await host.store.database.selectFrom("integrationServerSecrets").select("serverId").execute(),
-    ).toEqual([]);
-  }, 180_000);
+      // A server that prints its secret as it fails: the reason the Host keeps,
+      // lists and tells agents quotes its output, never the secret.
+      await dispatch("leak", {
+        secrets: { CAMERA_PASSWORD: "leaky-hunter3" },
+        serverId: server.id,
+        type: "integration.server.secrets.set",
+      });
+      await waitForCondition(
+        async () => (await serverRow(host)).statusDetail?.includes("could not sign in") ?? false,
+        30_000,
+      );
+      expect((await serverRow(host)).statusDetail).not.toContain("leaky-hunter3");
+      expect(
+        JSON.stringify(
+          await testRpcData(host.origin, "plugin.list", {}, { headers: host.ownerHeaders }),
+        ),
+      ).not.toContain("leaky-hunter3");
+      await dispatch("unleak", {
+        secrets: { CAMERA_PASSWORD: "swordfish" },
+        serverId: server.id,
+        type: "integration.server.secrets.set",
+      });
+      await started("swordfish");
+
+      // A new launch is asked about again; leaving the field blank keeps the value.
+      await fixture.changeLaunch();
+      await dispatch("update", {
+        input: { directory: fixture.plugin },
+        pluginId: await pluginId(),
+        type: "plugin.update",
+      });
+      if (personal) {
+        await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
+        expect((await serverRow(host)).transport).toMatchObject({ runnerId: computer.runnerId });
+        expect(
+          await host.store.database
+            .selectFrom("computerAppSetupRequests")
+            .select("id")
+            .where("kind", "=", "server")
+            .execute(),
+        ).toEqual([]);
+        const before = await serverRow(host);
+        const versions = await host.store.database
+          .selectFrom("pluginVersions")
+          .select("id")
+          .execute();
+        await dispatch("unchanged", {
+          input: { directory: fixture.plugin },
+          pluginId: await pluginId(),
+          type: "plugin.update",
+        });
+        expect(await serverRow(host)).toEqual(before);
+        expect(
+          await host.store.database.selectFrom("pluginVersions").select("id").execute(),
+        ).toEqual(versions);
+        await started("swordfish:2");
+      } else {
+        const askedAgain = await waitingRequest(host, server.id);
+        expect((await review(askedAgain.id)).savedSecrets).toEqual(["CAMERA_PASSWORD"]);
+        await expect(
+          dispatch("early", {
+            secrets: { CAMERA_PASSWORD: "too-early" },
+            serverId: server.id,
+            type: "integration.server.secrets.set",
+          }),
+        ).rejects.toThrow("It's waiting for approval.");
+        await writeFile(fixture.seenFile, "");
+        await answer(askedAgain.id);
+        await started("swordfish:2");
+      }
+
+      if (personal) {
+        const declare = async (names: string[]) => {
+          const path = join(fixture.plugin, "plugin.json");
+          const manifest = JSON.parse(await readFile(path, "utf8")) as {
+            extensions: Record<string, unknown>;
+          };
+          manifest.extensions["com.opensteer"] = names.length
+            ? { secrets: { camera: names.map((name) => ({ name, title: name })) } }
+            : {};
+          await writeFile(path, JSON.stringify(manifest));
+          await dispatch("declare", {
+            input: { directory: fixture.plugin },
+            pluginId: await pluginId(),
+            type: "plugin.update",
+          });
+        };
+        await declare(["CAMERA_PASSWORD", "EXTRA_PASSWORD"]);
+        let next = await waitingRequest(host, server.id);
+        expect((await review(next.id)).savedSecrets).toEqual(["CAMERA_PASSWORD"]);
+        await answer(next.id, { EXTRA_PASSWORD: "extra" });
+        await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
+        await declare(["RENAMED_PASSWORD"]);
+        next = await waitingRequest(host, server.id);
+        expect((await review(next.id)).savedSecrets).toEqual([]);
+        expect(
+          await host.store.database
+            .selectFrom("integrationServerSecrets")
+            .select("serverId")
+            .execute(),
+        ).toEqual([]);
+        await answer(next.id, { RENAMED_PASSWORD: "renamed" });
+        await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
+        await declare([]);
+        await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
+        expect(
+          await host.store.database
+            .selectFrom("integrationServerSecrets")
+            .select("serverId")
+            .execute(),
+        ).toEqual([]);
+        expect(
+          await host.store.database
+            .selectFrom("computerAppSetupRequests")
+            .select("id")
+            .where("kind", "=", "server")
+            .execute(),
+        ).toEqual([]);
+        const mcpPath = join(fixture.plugin, "mcp.json");
+        const mcp = JSON.parse(await readFile(mcpPath, "utf8")) as {
+          mcpServers: Record<string, unknown>;
+        };
+        mcp.mcpServers.second = mcp.mcpServers.camera;
+        await writeFile(mcpPath, JSON.stringify(mcp));
+        await dispatch("new-server", {
+          input: { directory: fixture.plugin },
+          pluginId: await pluginId(),
+          type: "plugin.update",
+        });
+        const second = await host.store.database
+          .selectFrom("integrationServers")
+          .selectAll()
+          .where("name", "=", "second")
+          .executeTakeFirstOrThrow();
+        const secondRequest = await waitingRequest(host, second.id);
+        await dispatch("decline", {
+          type: "integration.computer.setup.respond",
+          decision: "deny",
+          setupRequestId: secondRequest.id,
+        });
+        await dispatch("reinstall-declined", {
+          input: { directory: fixture.plugin },
+          pluginId: await pluginId(),
+          type: "plugin.update",
+        });
+        expect((await waitingRequest(host, second.id)).id).not.toBe(secondRequest.id);
+      }
+
+      // Uninstalled: its secrets go with it.
+      await dispatch("uninstall", {
+        installationId: server.installationId,
+        type: "integration.uninstall",
+      });
+      expect(
+        await host.store.database
+          .selectFrom("integrationServerSecrets")
+          .select("serverId")
+          .execute(),
+      ).toEqual([]);
+    },
+    180_000,
+  );
 });
 
 async function readText(file: string): Promise<string | null> {
@@ -690,7 +810,7 @@ async function secretPluginFixture(work: string) {
 const { Server } = require(${sdk("server/index.js")});
 const { StdioServerTransport } = require(${sdk("server/stdio.js")});
 const { ListToolsRequestSchema } = require(${sdk("types.js")});
-writeFileSync(process.env.SEEN_FILE, process.env.CAMERA_PASSWORD ?? "");
+writeFileSync(process.env.SEEN_FILE, (process.env.CAMERA_PASSWORD ?? "") + (process.env.CAMERA_EDITION ? ":" + process.env.CAMERA_EDITION : ""));
 if (process.env.CAMERA_PASSWORD?.startsWith("leaky")) {
   console.error("could not sign in with " + process.env.CAMERA_PASSWORD);
   process.exit(1);

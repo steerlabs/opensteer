@@ -1,3 +1,4 @@
+import { replaceSecrets, type LocalMcpSecretsUpdate } from "./local-mcp-server-store.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { resolveResourceAccess } from "./resource-access.js";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
@@ -17,6 +18,7 @@ import { revokeChannelConnectionsInTransaction } from "./channel-deliveries.js";
 import { jsonValue } from "./store-primitives.js";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
+  localMcpLaunchDigest,
   authorizationDigest,
   integrationDefinitionDigest,
 } from "@opensteer/integration-core/digest";
@@ -37,6 +39,7 @@ import {
   IntegrationDefinitionSummarySchema,
   IntegrationInstallationSchema,
   IntegrationServerSchema,
+  IntegrationServerTransportSchema,
   IntegrationToolSchema,
   IntegrationToolMaterialSchema,
   type IntegrationToolMaterial,
@@ -427,6 +430,16 @@ abstract class IntegrationPlatformStoreBase {
 }
 
 export interface InstallIntegrationInput {
+  readonly beforeServerTools?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
+  readonly retainedServerSecrets?: (
+    existing: {
+      id: IntegrationServerId;
+      status: string;
+      approvedLaunchDigest: string | null;
+      transport: IntegrationServer["transport"];
+    },
+    discovered: DiscoveredIntegrationServer,
+  ) => { carryApproval: boolean; update: LocalMcpSecretsUpdate } | null;
   readonly beforeInstall?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
   readonly settlementSessionId?: string | undefined;
   readonly adapterSnapshot: IntegrationAdapterSnapshot | null;
@@ -1121,6 +1134,29 @@ export async function installIntegrationInTransaction(
         .returningAll()
         .executeTakeFirstOrThrow();
 
+  const retainedUpdates = new Map<
+    IntegrationServerId,
+    { carryApproval: boolean; update: LocalMcpSecretsUpdate }
+  >();
+  for (const existing of existingServers) {
+    const discovered = input.servers.find((s) => s.name === existing.name);
+    if (!discovered) continue;
+    const retained = input.retainedServerSecrets?.(
+      { ...existing, transport: IntegrationServerTransportSchema.parse(existing.transport) },
+      discovered,
+    );
+    if (retained && discovered.transport.type === "runner" && discovered.transport.runnerId) {
+      retainedUpdates.set(existing.id, retained);
+      await replaceSecrets(
+        transaction,
+        existing.id,
+        discovered.transport.runnerId,
+        retained.update,
+        now,
+      );
+    }
+  }
+  await input.beforeServerTools?.(transaction);
   if (existingServers.length > 0) {
     const serverIds = existingServers.map(({ id }) => id);
     await transaction
@@ -1136,10 +1172,14 @@ export async function installIntegrationInTransaction(
   const retainedServerIds: IntegrationServerId[] = [];
   for (const discovered of input.servers) {
     const existing = serverByName.get(discovered.name);
+    const retained = existing ? retainedUpdates.get(existing.id) : undefined;
     const server = existing
       ? await transaction
           .updateTable("integrationServers")
           .set({
+            ...(retained?.carryApproval && discovered.transport.type === "runner"
+              ? { approvedLaunchDigest: localMcpLaunchDigest(discovered.transport.launch) }
+              : {}),
             connectionRequirement: jsonValue(discovered.connectionRequirement),
             status: discovered.status,
             statusDetail: discovered.statusDetail,

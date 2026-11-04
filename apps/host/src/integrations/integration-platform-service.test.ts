@@ -1,3 +1,6 @@
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
@@ -127,6 +130,129 @@ function computerStatus(
     operations: operations.map((operation) => ({ operation, ...observation })),
   };
 }
+
+describe("agent plugin replacement", () => {
+  it("replaces its own inactive package, records its Workspace folder and skips identical snapshots", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "plugin-replace-"));
+    try {
+      await writeFile(
+        join(directory, "plugin.json"),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+          name: "mine",
+        }),
+      );
+      const workspaceId = createId("workspace"),
+        actorUserId = createId("user");
+      const owned = {
+        id: "owned",
+        name: "mine",
+        scope: "workspace",
+        workspaceId,
+        currentVersionId: "old",
+        versions: [{ id: "old", digest: "old" }],
+        activations: [],
+      };
+      const update = vi.fn(async (input: { digest: string }) => {
+        owned.versions.push({ id: "new", digest: input.digest });
+        owned.currentVersionId = "new";
+      });
+      const installNew = vi.fn();
+      let previous: IntegrationInstallation | undefined;
+      const install = vi.fn(async (input: Parameters<IntegrationPlatformStore["install"]>[0]) => {
+        await input.beforeInstall?.({} as never);
+        previous = { ...input.installation, createdAt: now, revision: 1, updatedAt: now };
+        return { installation: previous, requestEvents: [] };
+      });
+      const service = platform({
+        adapters: [],
+        store: {
+          plugins: {
+            list: async () => [
+              owned,
+              { ...owned, id: "other", workspaceId: createId("workspace") },
+            ],
+            update,
+            install: installNew,
+          } as never,
+          localMcp: { list: async () => [] } as never,
+          listInstallations: async () => (previous ? [previous] : []),
+          install,
+        },
+      });
+      const input = {
+        directory,
+        workspaceDirectory: "plugins/mine",
+        workspaceId,
+        actorUserId,
+        requestId: "install",
+      };
+      const first = await service.installAgentPlugin(input);
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pluginId: "owned",
+          workspaceId,
+          source: { workspaceDirectory: "plugins/mine" },
+        }),
+        expect.anything(),
+      );
+      expect(installNew).not.toHaveBeenCalled();
+      expect(owned.activations).toEqual([]);
+      expect((await service.installAgentPlugin(input)).installation).toEqual(first.installation);
+      expect(install).toHaveBeenCalledTimes(1);
+      await mkdir(join(directory, "extra"));
+      await writeFile(join(directory, "extra/code.js"), "new code");
+      await service.installAgentPlugin(input);
+      expect(install).toHaveBeenCalledTimes(2);
+      const elsewhere = createId("workspace");
+      await service.installAgentPlugin({ ...input, workspaceId: elsewhere });
+      expect(installNew).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: elsewhere, name: "mine" }),
+        expect.anything(),
+      );
+      expect(update).toHaveBeenCalledTimes(2);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an active person-installed name before modifying the installation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "plugin-clash-"));
+    try {
+      await writeFile(
+        join(directory, "plugin.json"),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+          name: "mine",
+        }),
+      );
+      const workspaceId = createId("workspace");
+      const install = vi.fn();
+      const service = platform({
+        adapters: [],
+        store: {
+          install,
+          plugins: {
+            list: async () => [
+              { name: "mine", scope: "deployment", activations: [{ workspaceId }] },
+            ],
+          } as never,
+        },
+      });
+      await expect(
+        service.installAgentPlugin({
+          directory,
+          workspaceId,
+          actorUserId: createId("user"),
+          requestId: "clash",
+        }),
+      ).rejects.toThrow("Choose a more specific name");
+      expect(install).not.toHaveBeenCalled();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("IntegrationPlatformService definition reconciliation", () => {
   it.each(["startup", "install"] as const)(

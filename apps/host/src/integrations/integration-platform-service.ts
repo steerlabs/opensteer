@@ -13,7 +13,12 @@ import type {
 } from "@opensteer/integration-core";
 import { computerAppIdentityKey } from "@opensteer/integration-core";
 import { safeMessage } from "@opensteer/shared/safeMessage";
-import { loadAgentPlugin, type LoadedAgentPluginServer } from "@opensteer/agent-plugins";
+import { localMcpLaunchSecrets } from "@opensteer/integration-core";
+import {
+  readAgentPluginName,
+  loadAgentPlugin,
+  type LoadedAgentPluginServer,
+} from "@opensteer/agent-plugins";
 
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
@@ -315,6 +320,7 @@ export class IntegrationPlatformService {
   readonly #publicFetch: typeof fetch;
   readonly #store: IntegrationPlatformStore;
   readonly #localSecrets: LocalMcpSecrets;
+  readonly #personal: boolean;
   readonly #mcpOauth: Pick<McpOAuthService, "providerFor">;
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
   readonly #onConnectionsChanged: () => void;
@@ -336,6 +342,7 @@ export class IntegrationPlatformService {
   readonly computerAppApprovals: ComputerAppApprovalService;
 
   constructor(options: {
+    readonly personal?: boolean;
     readonly listConnections: (
       ownerUserId: UserId,
     ) => Promise<readonly IntegrationConnectionSummary[]>;
@@ -397,6 +404,7 @@ export class IntegrationPlatformService {
   }) {
     this.#publicFetch = options.publicFetch ?? createPublicHttpsFetch();
     this.#localSecrets = new LocalMcpSecrets(options.secretVault);
+    this.#personal = options.personal ?? false;
     this.#authorizationSource = options.authorizationSource;
     this.#listConnections = options.listConnections;
     this.#computerApps = options.computerApps;
@@ -995,20 +1003,41 @@ export class IntegrationPlatformService {
   async installAgentPlugin(input: {
     readonly actorUserId: UserId;
     readonly directory: string;
+    readonly workspaceDirectory?: string;
     readonly workspaceId?: import("@opensteer/core").WorkspaceId;
     readonly pluginId?: string;
     readonly requestId: string;
     /**
      * The computer that runs the plugin's servers that start a program or
-     * listen on loopback, which never run inside the Host. The Deployment's
-     * Main computer when omitted.
+     * listen on loopback, which never run inside the Host. The existing computer on update, otherwise the Deployment's Main computer.
      */
-    readonly runnerId?: RunnerId;
+    readonly runnerId?: RunnerId | undefined;
   }): Promise<{
     readonly installation: IntegrationInstallation;
     readonly issues: readonly unknown[];
     readonly specialist: boolean;
+    readonly unchanged?: boolean;
   }> {
+    if (input.workspaceId && !input.pluginId) {
+      const name = await readAgentPluginName(input.directory);
+      const plugins = await this.#store.plugins.list(input.workspaceId);
+      const clash = plugins.find(
+        (p) =>
+          p.name === name &&
+          p.scope === "deployment" &&
+          p.activations.some((a) => a.workspaceId === input.workspaceId),
+      );
+      if (clash)
+        throw new OpensteerError({
+          code: "conflict",
+          message:
+            "A person-installed plugin already uses that name here. Choose a more specific name.",
+        });
+      const owned = plugins.find(
+        (p) => p.name === name && p.scope === "workspace" && p.workspaceId === input.workspaceId,
+      );
+      if (owned) input = { ...input, pluginId: owned.id, runnerId: undefined };
+    }
     const pluginId = input.pluginId ?? createIntegrationId("installation");
     const previous = input.pluginId
       ? (await this.#store.listInstallations()).find((i) => i.pluginId === pluginId)
@@ -1019,14 +1048,46 @@ export class IntegrationPlatformService {
       dataDirectory: `${this.#dataDirectory}/plugins/data`,
       directory: input.directory,
     });
+    const previousServers = previous
+      ? (await this.#store.localMcp.list()).filter((s) => s.installationId === previous.id)
+      : [];
     const runnerId = plugin.servers.some(runsOnComputer)
-      ? await this.#pluginComputer(input.runnerId)
+      ? await this.#pluginComputer(
+          input.runnerId ?? previousServers.find((s) => s.runnerId)?.runnerId ?? undefined,
+        )
       : null;
     if (plugin.manifest.name === "opensteer")
       throw new OpensteerError({
         code: "bad_request",
         message: "The plugin name opensteer is reserved",
       });
+    const currentPlugin = input.pluginId
+      ? (await this.#store.plugins.list()).find((p) => p.id === pluginId)
+      : undefined;
+    if (currentPlugin?.scope === "workspace" && currentPlugin.workspaceId !== input.workspaceId)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Agent-made plugins update when an agent installs their folder again.",
+      });
+    if (input.workspaceId && currentPlugin?.scope === "deployment")
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Agents cannot update person-installed plugins. Choose a more specific name.",
+      });
+    if (
+      previous &&
+      currentPlugin?.versions.find((v) => v.id === currentPlugin.currentVersionId)?.digest ===
+        basename(plugin.root) &&
+      previousServers
+        .filter((s) => plugin.servers.some((next) => next.name === s.name))
+        .every((s) => s.runnerId === runnerId && s.status !== "disabled")
+    )
+      return {
+        unchanged: true,
+        installation: previous,
+        issues: plugin.issues,
+        specialist: plugin.specialistManifest !== null,
+      };
     const installationId = createIntegrationId("installation");
     const servers = await Promise.all(
       plugin.servers.map((server) =>
@@ -1049,19 +1110,58 @@ export class IntegrationPlatformService {
     };
     const mutation = await this.#store.install({
       beforeInstall: async (transaction) => {
-        if (input.pluginId) await this.#store.plugins.update({ pluginId, ...version }, transaction);
+        if (input.pluginId)
+          await this.#store.plugins.update(
+            {
+              pluginId,
+              ...(input.workspaceId
+                ? {
+                    workspaceId: input.workspaceId,
+                    source: { workspaceDirectory: input.workspaceDirectory },
+                  }
+                : {}),
+              ...version,
+              deferSpecialists: true,
+            },
+            transaction,
+          );
         else
           await this.#store.plugins.install(
             {
               id: pluginId,
               name: plugin.manifest.name,
               actorUserId: input.actorUserId,
-              source: { directory: input.directory },
+              source: input.workspaceId
+                ? { workspaceDirectory: input.workspaceDirectory }
+                : { directory: input.directory },
               ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
               ...version,
             },
             transaction,
           );
+      },
+      beforeServerTools: async (transaction) => {
+        if (input.pluginId) await this.#store.plugins.repinSpecialists(transaction, pluginId);
+      },
+      retainedServerSecrets: (existing, discovered) => {
+        if (existing.transport.type !== "runner" || discovered.transport.type !== "runner")
+          return null;
+        const old = existing.transport;
+        const next = discovered.transport;
+        const carry =
+          this.#personal &&
+          old.runnerId === next.runnerId &&
+          existing.status !== "disabled" &&
+          existing.approvedLaunchDigest === localMcpLaunchDigest(old.launch) &&
+          localMcpLaunchSecrets(next.launch).every(({ name }) =>
+            localMcpLaunchSecrets(old.launch).some((s) => s.name === name),
+          );
+        return {
+          carryApproval: carry,
+          update: carry
+            ? this.#localSecrets.update(existing.id, next.launch, {})
+            : this.#localSecrets.prune(existing.id, next.launch),
+        };
       },
       actorUserId: input.actorUserId,
       adapterSnapshot: null,
