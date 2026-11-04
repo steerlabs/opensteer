@@ -69,10 +69,26 @@ before cleanup. `expect.files` matches a file or, with `recursive: true`, a subt
 file; each `textMustNot` must match none. `exclude` omits relative subtrees; the
 harness's reserved `.eval-*` directories are always omitted. Missing paths fail
 positive matches and pass prohibitions; symlinks make the sample incomplete.
-Memory cases use synthetic fixtures in Main; the cold-read pair tests two plain
-Markdown styles on both engines, not a live cross-engine write/read handoff.
-Nightly replay after forgetting and the repeat-source light wake use seeded prior
-state; the important-item case separately requires recording the reported source
-ID. Opensteer provisions the passes, so cases start from existing passes woken
-with the Host's wake text, and control cases find them through `trigger_read`
-`systemRole` mocks. The Host's own tests cover the wake program.
+Memory cases start with synthetic fixtures in Main. An `after` link transfers the
+producer's actual Workspace files into a fresh session of the same engine before
+applying the next stage's fixtures. These chains cover correction/cold-task
+recall, forget/nightly replay, repeat-source light wakes, and
+stop/continuation/erasure/re-enable. Nightly replay deliberately injects stale
+note and light-state files after the transfer to test healing from the producer's
+forget marker.
+
+The cold-read pair uses hand-authored Markdown in two styles. It does not prove
+that either engine can consume the other's actual output. Live Claude-to-Codex
+and Codex-to-Claude handoffs remain unproven, blocked until Claude 2.1.317 runs
+([PR #411](https://github.com/steerlabs/opensteer/pull/411)).
+
+Erasure cases check file-content snapshots at each Opensteer MCP boundary and at
+stage end until both successful Done calls and subsequent quiescent reads. They
+preserve the seeded note, light state and personalized light skill; the summary
+may change to the required off line. These snapshots cannot detect native file
+changes that an agent undoes entirely between MCP calls.
+
+The important-item case requires recording the reported source ID. Opensteer
+provisions the passes, so cases start from existing passes woken with the Host's
+wake text, and control cases find them through `trigger_read` `systemRole` mocks.
+The Host's own tests cover the wake program.
