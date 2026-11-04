@@ -2,9 +2,12 @@
 
 Optionally installs a draft's actual ZIP in disposable VMs; it never rebuilds N, publishes or
 pushes. Its N+1 build signs and notarizes with Tim's local Developer ID signing file and notary
-profile, so run it only when Tim has prepared them and asks. From a clean public-main checkout with
-full history, Node, pnpm, Go, Tart, the subject's pinned Xcode and a `gh` login that can read the
-draft:
+profile, and reads the local-install configuration (`~/.config/opensteer/install-mac-local.json`,
+or `--config`; schema `localInstallConfigSchema` in
+[install-mac-local.ts](../../../../scripts/install-mac-local.ts)), which carries the Agent Phone
+release signing and the Passwords provisioning profile. Run it only when Tim has prepared all of
+them and asks. From a clean public-main checkout with full history, Node, pnpm, Go, Tart, the
+subject's pinned Xcode and a `gh` login that can read the draft:
 
 ```sh
 export OPENSTEER_UPDATE_JOURNEY_DIR=/absolute/physical/journey-work

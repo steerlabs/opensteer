@@ -14,8 +14,8 @@ pnpm --filter @opensteer/mobile exec expo export --platform ios --output-dir /tm
 The last checks only that the Metro graph resolves. The package's `ios`, `android` and `export`
 scripts set `EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN=https://accounts.opensteer.com` and
 `EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN=https://app.opensteer.com`; set them on direct Expo, Xcode or
-Gradle builds too, or the bundle cannot register Account push or use Connect. Add
-`--configuration Release` to see the app as it ships. In the iOS Simulator, `pnpm dev` is at
+Gradle builds too, or the bundle cannot register Account push or use Connect. To see the app as it
+ships, add `--configuration Release` to `run:ios` or `--variant release` to `run:android`. In the iOS Simulator, `pnpm dev` is at
 `http://localhost:43100`, with no push.
 
 **Mock mode.** `EXPO_PUBLIC_OPENSTEER_MOCK=1`, set on the build command, runs every screen against

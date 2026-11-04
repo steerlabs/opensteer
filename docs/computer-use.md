@@ -63,7 +63,9 @@ before effects. Preparation protects the person's front app and key window, and 
 sent if they switch elsewhere. Once delivery starts, a person's click does not stop it; only Stop,
 lost authority, lock or target loss do, and text can interleave with their typing. Saved-login and
 secure-field text need exact-element delivery and never fall back to a click or another field. Key
-protection reads destinations and notices, never physical typed contents.
+protection reads destinations and notices, never physical typed contents. It does not cover focus
+theft through macOS's shared ViewBridge helper, which cannot be attributed to one app, or keys a
+remote view receives ([focus-steal preventer](../apps/desktop/native/computer-use/Sources/ComputerUseCore/Focus/FocusStealPreventer.swift)).
 
 A target can raise itself; it then stays forward and observation reports `focusChanged`. Chromium
 tab and window shortcuts can switch Spaces, so they are refused in the background. Posted events

@@ -77,8 +77,8 @@ and network state is re-read on foreground because Expo gets no listener events 
 
 Media is visibility-bound: release pictures when hidden, backgrounded or no longer authorized, and
 return picture credit even when decoding fails. Routes name exact tabs or owner-view generations; a
-closed target stays closed and is never replaced by a sibling. Approving an app, starting browsers
-and connecting Chrome stay on computers.
+closed target stays closed and is never replaced by a sibling. Starting browsers and connecting
+Chrome stay on computers.
 
 A zero-reorder H.264 stream does not guarantee immediate Android output: the software AVC decoder
 can hold pictures until more input arrives, and
@@ -133,13 +133,13 @@ recalled.
 
 Phone push needs an Account channel and raw APNs or FCM tokens. The Account gets routing
 identifiers, expiry and optional encrypted previews, never plaintext or preview keys: the Host seals
-each title and body separately per registered installation. An Account that predates sealed
-previews rejects them, and the Host resends the generic alert. Preview keys are native secure random, one per Deployment. iOS shares them
-with the notification service extension through an App Group Keychain group, while credentials keep
-their private group; Android wraps them with AndroidKeyStore in `noBackupFilesDir`. Backup-excluded
-installation markers fence surviving keys after a reinstall. The extension and Android service
-authenticate routing and expiry before decrypting, need no network or JavaScript, and fall back to
-generic text.
+title and body together in a separate envelope for each registered installation. An Account that
+predates sealed previews rejects them, and the Host resends the generic alert. Preview keys are
+native secure random, one per Deployment. iOS shares them with the notification service extension
+through an App Group Keychain group, while credentials keep their private group; Android wraps them
+with AndroidKeyStore in `noBackupFilesDir`. Backup-excluded installation markers fence surviving
+keys after a reinstall. The extension and Android service authenticate routing and expiry before
+decrypting, need no network or JavaScript, and fall back to generic text.
 
 Sign-out erases the local preview key, and Account sign-out withdraws the push device, before
 credentials are revoked; a cancelled sign-in keeps the live login and its key. The pinned

@@ -16,8 +16,9 @@ Procedures for anything that drives a macOS screen, and for Mac app control.
 - Never drive the host screen: GUI and Electron checks run only in the VM (`pnpm test:vm`).
 - Never read or operate signing keys, Apple accounts or release credentials.
 - Never use a person's real profile, credentials, saved passwords, Messages or personal stores.
-- Never touch the live install: `~/Library/Application Support/Opensteer`, `~/Opensteer`,
-  `Opensteer Beta`.
+- Never point dev, tests or scripts at the live install (`~/Library/Application Support/Opensteer`,
+  `~/Opensteer`, `Opensteer Beta`), and never modify, migrate or repair it. Reading its logs
+  read-only to diagnose a live view is the one exception.
 - Skipped, blocked or unrun checks are unverified, never passed.
 - VM checks run after merge or on request, never as a pre-merge gate. Never boot a golden.
 

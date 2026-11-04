@@ -25,8 +25,9 @@ A Deployment with an active Account link returns every OAuth consent through the
 the device, route or public origin. Managed apps exchange through the broker; custom apps and MCP
 keep discovery, PKCE verifiers, client secrets, token exchange and identity on the Host, and the
 callback relay receives only the authorization response, sealed to that Host. A missing relay is an
-actionable failure, never permission for a direct callback. Without an Account link, direct
-callbacks keep working and there is no remote OAuth. Before connecting a custom app through the
+actionable failure, never permission for a direct callback. Without an Account link, consent
+returns directly to the Host's own callback on its public origin; a Personal Host reached remotely
+refuses to start OAuth until an Account is linked. Before connecting a custom app through the
 Account, the person registers the exact redirect URI the Host shows; an old loopback registration
 cannot accept the Account callback.
 
