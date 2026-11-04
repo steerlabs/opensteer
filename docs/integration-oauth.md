@@ -79,21 +79,41 @@ and receive the recipient's account. Each Account attempt is proven one way, fix
 creation, never chosen by the browser:
 
 - **App finish** (desktop and native). The callback holds the sealed result and returns a one-use
-  proof to the app's fixed return URL. The app hands it only to the Deployment it started that
-  attempt on, whose Host redeems it once before the result is released. A forwarded link ends on a
-  device whose app never started the attempt (RFC 8252's native-app pattern).
+  proof to the app that started the attempt, which hands it only to that attempt's Deployment; its
+  Host redeems it once before the result is released. A forwarded link ends on a device whose app
+  never started the attempt, so the proof goes nowhere (RFC 8252's native-app pattern). Phones
+  return through their fixed app link. Desktop browsers open app links only on a click, so a
+  desktop attempt can also carry a port, and the callback page posts the proof to the app's
+  listener on `127.0.0.1` with no click; the app link stays on the page as the fallback.
 - **Account session** (web, and peers without `integration-app-finish-v1`). Launch needs the
   initiating member's exact Account identity in the browser. A mismatch never consumes the ticket,
   and the page never names the expected Account. A web origin cannot be the proof, because an
   attacker's Host serves a real Opensteer origin.
 
+A hostile Host chooses the port of its own attempts, which is why three things hold. The port is
+limited to a reserved block, so it can never name a service a person happens to run. The proof
+travels only in the form body, because the attacker is that Host: a proof left in an address bar or
+history after a failed return would be one paste away from redemption. And a second opaque token
+would change nothing, since the attacker owns the initiating app; the app's own registry of attempts
+it started is what refuses the proof.
+
+Every login on a computer shares loopback ports, while the operating system routes an app link to
+the current login's app. So a desktop listener runs only while its app's login session owns the
+console, and otherwise the attempt uses the app link. It closes when that session resigns; pending
+attempts keep their authority and get their sealed port back if it is still free. The app's
+attempts live in memory, so a restarted app refuses them and the person starts again.
+
 This covers links from Deployments the person does not belong to, not a hostile operator of a joined
-server Deployment or malware on the device. Launch consumes a one-use ticket, and the atomic
-callback claim matches state, provider and that attempt's own browser-binding cookie. A relay claim
+server Deployment, malware on the device, or a deliberately hostile process under another login on
+the same computer. Launch consumes a one-use ticket, and the atomic
+callback claim matches state, provider and that attempt's own browser-binding cookie. That ticket
+is known to the Host that created the attempt, so its cookie can never authorize releasing a proof.
+A relay claim
 authorizes one exchange; a failed exchange needs fresh consent. Completion rechecks the Account-link
 generation in the transaction that stores credentials, and a replayed relay response cannot replace
-them. Return only to the initiating Deployment's verified origin and stored relative path, or the
-fixed native callback, never a caller-supplied URL. Failures persist with safe classifications and
+them. Return only to the initiating Deployment's verified origin and stored relative path, the
+fixed native callback, or a sealed port in the reserved block on `127.0.0.1` at the fixed path,
+never a caller-supplied URL. Failures persist with safe classifications and
 never log provider bodies or credentials.
 
 ## Integration access requests

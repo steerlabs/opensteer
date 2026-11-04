@@ -235,6 +235,53 @@ describe("IntegrationConnectCard", () => {
     );
   });
 
+  describe("Cancel while a sign-in waits", () => {
+    const waits =
+      (settle: (reject: (reason: Error) => void, resolve: (value: unknown) => void) => void) =>
+      ({ signal }: { readonly signal: AbortSignal }) =>
+        new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () => settle(reject, resolve));
+        });
+    const cancelled = (reject: (reason: Error) => void) =>
+      reject(new Error("Integration authorization was cancelled."));
+
+    it("ends a provider sign-in and offers it again", async () => {
+      beginIntegrationAuthorization.mockImplementation(waits(cancelled));
+      await render(fakeClient({ sources: [hosted], selected: hosted }));
+      await press("Connect");
+      expect(text()).toContain("Finish signing in");
+      await press("Cancel");
+      expect(beginIntegrationAuthorization.mock.calls[0]?.[0].signal.aborted).toBe(true);
+      expect(text()).not.toContain("Finish signing in");
+      expect(buttons()).not.toContain("Cancel");
+    });
+
+    it("ends an MCP sign-in", async () => {
+      beginMcpIntegrationAuthorization.mockImplementation(waits(cancelled));
+      await render(fakeClient({ requirementKind: "mcp-oauth", sources: [] }));
+      await press("Connect");
+      await press("Cancel");
+      expect(beginMcpIntegrationAuthorization.mock.calls[0]?.[0].signal.aborted).toBe(true);
+      expect(text()).not.toContain("Finish signing in");
+    });
+
+    it("shows the connection when it finished before Cancel reached the Host", async () => {
+      const client = fakeClient({ sources: [hosted], selected: hosted, workspaceKind: "main" });
+      const id = "con_00000000-0000-4000-8000-0000000000cd";
+      beginIntegrationAuthorization.mockImplementation(
+        waits((_reject, resolve) => {
+          client.setConnections([connection(id)]);
+          client.settleRequest();
+          resolve(completed(id));
+        }),
+      );
+      await render(client);
+      await press("Connect");
+      await press("Cancel");
+      expect(text()).toContain("Slack connected · oversteer.slack.com");
+    });
+  });
+
   it.each(["main", "project"] as const)(
     "connects %s from one tap and shows the committed result in place",
     async (workspaceKind) => {
@@ -251,6 +298,7 @@ describe("IntegrationConnectCard", () => {
       expect(beginIntegrationAuthorization).toHaveBeenCalledExactlyOnceWith({
         applicationSource: hosted,
         definitionId: "slack",
+        signal: expect.any(AbortSignal),
       });
       expect(text()).toContain("Slack connected · oversteer.slack.com");
       expect(text()).not.toMatch(/Back to the request|Account connected|Review connection/u);
@@ -431,6 +479,7 @@ describe("IntegrationConnectCard", () => {
     await press("Connect");
 
     expect(beginMcpIntegrationAuthorization).toHaveBeenCalledWith({
+      signal: expect.any(AbortSignal),
       displayName: "Slack account",
       requestId: "req_00000000-0000-4000-8000-000000000001",
       serverId: "isv_00000000-0000-4000-8000-000000000001",

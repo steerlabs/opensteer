@@ -198,10 +198,44 @@ describe("Connected apps on the phone", () => {
     expect(state.begin).toHaveBeenCalledWith({
       applicationSource: dashboard.providerAuthorizations.google?.selectedSource,
       definitionId: "google-calendar",
+      signal: expect.any(AbortSignal),
     });
     await vi.waitFor(() =>
       expect(container.textContent).toContain("alex@example.com is connected."),
     );
+  });
+
+  it("cancels a sign-in that is still waiting", async () => {
+    const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
+    await client.load();
+    state.hostClient = client;
+    const begin = vi.fn(
+      ({ signal }: { readonly signal: AbortSignal }) =>
+        new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("Cancelled here.")));
+        }),
+    );
+    state.begin = begin;
+    const container = await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Google Calendar"));
+    const cancel = () =>
+      [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Cancel sign-in",
+      );
+    expect(cancel()).toBeUndefined();
+    const row = [...container.querySelectorAll<HTMLElement>("[role=button]")].find((candidate) =>
+      candidate.getAttribute("aria-label")?.startsWith("alex@example.com,"),
+    );
+    await act(async () =>
+      [...(row?.querySelectorAll("button") ?? [])]
+        .find((button) => button.textContent === "Reconnect")
+        ?.click(),
+    );
+    await vi.waitFor(() => expect(cancel()).toBeDefined());
+    await act(async () => cancel()?.click());
+    await vi.waitFor(() => expect(container.textContent).toContain("Cancelled here."));
+    expect(begin.mock.calls[0]?.[0].signal.aborted).toBe(true);
+    expect(cancel()).toBeUndefined();
   });
 
   // The ways it could fail: a GitHub sign-in announced as connected while the
@@ -443,6 +477,7 @@ it("sets up a custom OAuth app in Settings, then connects through the exact save
   await act(async () => add.onPress());
   expect(begin).toHaveBeenCalledWith({
     definitionId: "slack",
+    signal: expect.any(AbortSignal),
     applicationSource: expect.objectContaining({
       providerApplicationId: saved.application.id,
       providerApplicationRevision: saved.application.revision,

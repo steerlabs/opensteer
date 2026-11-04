@@ -89,6 +89,7 @@ export function IntegrationConnectCard(props: {
   const [step, setStep] = useState<Step>("review");
   const [busy, setBusy] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const signingIn = useRef<AbortController | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
@@ -380,17 +381,21 @@ export function IntegrationConnectCard(props: {
     const nextPlan = next.plan;
     if (!nextPlan) return;
     setConnecting(true);
+    const signIn = new AbortController();
+    signingIn.current = signIn;
     const status =
       nextPlan.requirement.kind === "mcp-oauth" && nextPlan.serverId
         ? await mobile.beginMcpIntegrationAuthorization({
             displayName: accountName.trim() || `${nextPlan.installationTitle} account`,
             requestId: props.request.id,
             serverId: nextPlan.serverId,
+            signal: signIn.signal,
           })
         : nextPlan.definition && next.source
           ? await mobile.beginIntegrationAuthorization({
               applicationSource: next.source,
               definitionId: nextPlan.definition.id,
+              signal: signIn.signal,
             })
           : null;
     if (generation !== operationGeneration.current) return;
@@ -836,7 +841,9 @@ export function IntegrationConnectCard(props: {
           machines={snapshot.machines}
         />
       ) : null}
-      {connecting ? null : (
+      {connecting ? (
+        <SecondaryButton label="Cancel" onPress={() => signingIn.current?.abort()} />
+      ) : (
         <View style={styles.actions}>
           <View style={styles.actionSecondary}>
             <SecondaryButton

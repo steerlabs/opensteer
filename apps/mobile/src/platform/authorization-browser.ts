@@ -7,6 +7,7 @@ import {
 
 /** `expo-web-browser`'s authentication session, as this adapter needs it. */
 export interface AuthorizationSessionOpener {
+  dismissAuthSession(): void;
   openAuthSessionAsync(
     url: string,
     redirectUrl: string,
@@ -54,8 +55,8 @@ export function createAuthorizationBrowser(options: {
 /** Opens a provider flow that returns its attempt and optional finish proof to this app. */
 export function createIntegrationAuthorizationBrowser(options: {
   readonly browser: AuthorizationSessionOpener;
-}): (url: string) => Promise<string> {
-  return async (url) => {
+}): (url: string, signal?: AbortSignal) => Promise<string> {
+  return async (url, signal) => {
     let launch: URL;
     try {
       launch = new URL(url);
@@ -65,11 +66,22 @@ export function createIntegrationAuthorizationBrowser(options: {
     if (launch.protocol !== "https:" && launch.protocol !== "http:") {
       throw new Error("An integration authorization address must be served over HTTP.");
     }
-    const result = await options.browser.openAuthSessionAsync(
-      launch.toString(),
-      opensteerMobileIntegrationAuthorizationCallback,
-      { preferEphemeralSession: false },
-    );
+    let abort = () => {};
+    const aborted = new Promise<never>((_, reject) => {
+      abort = () => {
+        options.browser.dismissAuthSession();
+        reject(new IntegrationAuthorizationCancelledError());
+      };
+    });
+    signal?.addEventListener("abort", abort, { once: true });
+    const result = await Promise.race([
+      options.browser.openAuthSessionAsync(
+        launch.toString(),
+        opensteerMobileIntegrationAuthorizationCallback,
+        { preferEphemeralSession: false },
+      ),
+      aborted,
+    ]).finally(() => signal?.removeEventListener("abort", abort));
     if (result.type !== "success") throw new IntegrationAuthorizationCancelledError();
     if (
       result.url === undefined ||

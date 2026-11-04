@@ -1071,6 +1071,140 @@ describe("MobileClient integration authorization", () => {
   });
 });
 
+describe("MobileClient cancelling an integration sign-in", () => {
+  const expiresAt = new Date(Date.now() + 600_000).toISOString();
+  const proof = "r".repeat(43);
+
+  async function signingIn(
+    input: {
+      readonly answer?: "cancelled" | "completed";
+      readonly returned?: () => Promise<unknown>;
+    } = {},
+  ) {
+    const cancels = vi.fn(async (command: { attemptId: unknown }) => ({
+      attemptId: command.attemptId,
+      connectionId: input.answer === "completed" ? "con_00000000-0000-4000-8000-0000000000aa" : null,
+      expiresAt,
+      failureCode: null,
+      status: input.answer ?? ("cancelled" as const),
+      type: "integration.authorization.cancel" as const,
+    }));
+    const returns = vi.fn(
+      async () =>
+        (await input.returned?.()) ?? {
+          connectionId: null,
+          expiresAt,
+          failureCode: null,
+          status: "completed" as const,
+          type: "integration.authorization.return" as const,
+        },
+    );
+    const port = testPort({
+      held: true,
+      verification: { status: "compatible", capabilities: ["integration-app-finish-v1"] },
+      configureClient: (host) => {
+        const dispatch = host.dispatch.bind(host);
+        host.dispatch = async (command) => {
+          if (command.type === "integration.authorization.cancel")
+            return cancels(command) as never;
+          if (command.type === "integration.authorization.return") return returns() as never;
+          return dispatch(command);
+        };
+      },
+    });
+    let opened!: (url: string) => void;
+    const browserOpened = new Promise<string>((resolve) => {
+      opened = resolve;
+    });
+    const { client } = open(port.factory, new MemoryPrivateFilesystem(), {
+      // Stays open like a real session, and ends only when its signal says so.
+      openIntegrationAuthorization: (url, signal) =>
+        new Promise((_, reject) => {
+          opened(url);
+          signal?.addEventListener("abort", () =>
+            reject(new IntegrationAuthorizationCancelledError()),
+          );
+        }),
+    });
+    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.initialize();
+    await client.select(serverId);
+    const controller = new AbortController();
+    const started = client.beginIntegrationAuthorization({
+      definitionId: "slack",
+      signal: controller.signal,
+    });
+    started.catch(() => undefined);
+    const callback = buildNativeIntegrationAuthorizationCallback({
+      attemptId: IntegrationOAuthAttemptIdSchema.parse(
+        new URL(await browserOpened).pathname.split("/").at(-2),
+      ),
+      deploymentId: DeploymentIdSchema.parse(serverId),
+      returnProof: proof,
+    });
+    return { callback, cancels, client, controller, returns, started };
+  }
+
+  it("tells the Host, ends the browser wait and refuses a late return", async () => {
+    const { callback, cancels, client, controller, returns, started } = await signingIn();
+    controller.abort();
+    await expect(started).rejects.toBeInstanceOf(IntegrationAuthorizationCancelledError);
+    expect(cancels).toHaveBeenCalledTimes(1);
+    await expect(client.handleIntegrationAuthorizationCallback(callback)).resolves.toBeNull();
+    expect(returns).not.toHaveBeenCalled();
+    client.dispose();
+  });
+
+  it("reports the completion that won instead of Cancelled", async () => {
+    const { client, controller, started } = await signingIn({ answer: "completed" });
+    controller.abort();
+    await expect(started).resolves.toMatchObject({ status: "completed" });
+    client.dispose();
+  });
+
+  it("stops an app-link delivery that started first, before its proof goes out", async () => {
+    const { callback, cancels, client, controller, returns, started } = await signingIn();
+    const load = client.catalog.load.bind(client.catalog);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const catalogRead = vi.spyOn(client.catalog, "load").mockImplementationOnce(async () => {
+      await held;
+      return load();
+    });
+    const delivery = client.handleIntegrationAuthorizationCallback(callback);
+    await vi.waitFor(() => expect(catalogRead).toHaveBeenCalled());
+    controller.abort();
+    await expect(started).rejects.toBeInstanceOf(IntegrationAuthorizationCancelledError);
+    release();
+    await expect(delivery).resolves.toBeNull();
+    expect(returns).not.toHaveBeenCalled();
+    expect(cancels).toHaveBeenCalledTimes(1);
+    client.dispose();
+  });
+
+  it("lets the Host decide when the proof had already gone out", async () => {
+    let sent!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      sent = resolve;
+    });
+    const { callback, client, controller, started } = await signingIn({
+      answer: "completed",
+      returned: () => {
+        sent();
+        return new Promise(() => {});
+      },
+    });
+    const delivery = client.handleIntegrationAuthorizationCallback(callback);
+    await reached;
+    controller.abort();
+    await expect(started).resolves.toMatchObject({ status: "completed" });
+    await expect(delivery).resolves.toBeNull();
+    client.dispose();
+  });
+});
+
 describe("MobileClient startup selection", () => {
   it("distinguishes local hydration from a settled empty selection", async () => {
     const { client } = open(testPort({ held: false }).factory);

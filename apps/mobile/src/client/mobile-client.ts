@@ -125,6 +125,12 @@ export interface MobileDirectoryState {
   readonly unavailable: readonly AccountDeploymentDirectoryUnavailable[];
 }
 
+/** Bounds the Cancel a person is waiting on; the Host may be out of reach on a weak link. */
+const integrationCancelTimeoutMilliseconds = 10_000;
+
+/** A person's own Cancel, which an app-link delivery ends on without reporting a failure. */
+class IntegrationAuthorizationCancelledByPerson extends IntegrationAuthorizationCancelledError {}
+
 export interface MobileClientOptions {
   readonly notificationPreviews?: NotificationPreviews | null;
   readonly lifecycle?: ClientLifecycle;
@@ -147,7 +153,7 @@ export interface MobileClientOptions {
   readonly now?: () => Date;
   readonly oauthIdentity: NativeOAuthIdentity;
   readonly openAuthorization: (url: string) => Promise<void>;
-  readonly openIntegrationAuthorization: (url: string) => Promise<string>;
+  readonly openIntegrationAuthorization: (url: string, signal?: AbortSignal) => Promise<string>;
   readonly privateFiles: PrivateFilesystem;
   readonly randomBytes: (size: number) => Uint8Array;
   readonly records: SecureRecordStore;
@@ -213,7 +219,7 @@ export class MobileClient {
   readonly #desktopUpdates = new Map<DeploymentId, DesktopUpdates>();
   readonly #iphoneApps: IphoneAppsOwner | null;
   readonly #integrationAttempts: IntegrationAuthorizationAttempts;
-  readonly #openIntegrationAuthorization: (url: string) => Promise<string>;
+  readonly #openIntegrationAuthorization: (url: string, signal?: AbortSignal) => Promise<string>;
   readonly #listeners = new Set<() => void>();
   /** Selection, reconciliation and sign-out, one at a time and in the order asked. */
   readonly #operations = new MutationQueue();
@@ -233,7 +239,10 @@ export class MobileClient {
   #accountSubject: string | null = null;
   /** Invalidates authorization work before queued credential cleanup can begin. */
   #authorizationEpoch = 0;
-  readonly #integrationReturnControllers = new Map<AbortController, HostClient | null>();
+  readonly #integrationReturnControllers = new Map<
+    AbortController,
+    { readonly attemptId: string; readonly client: HostClient | null }
+  >();
   #directoryGeneration = 0;
   #directoryState: MobileDirectoryState = idleDirectoryState();
   #attachedDeploymentId: DeploymentId | null = null;
@@ -917,21 +926,22 @@ export class MobileClient {
       ...(input.userId ? { userId: input.userId } : {}),
     };
     await this.#integrationAttempts.register(attempt);
-    if (this.#authorizationEpoch !== input.authorizationEpoch || input.signal?.aborted) {
+    if (this.#authorizationEpoch !== input.authorizationEpoch) {
       await this.#integrationAttempts.forget(attempt);
       throw new IntegrationAuthorizationCancelledError();
     }
+    if (input.signal?.aborted) return this.#cancelIntegrationAuthorization(client, attempt);
     const launch = new URL(
       `/v1/integration-authorizations/${encodeURIComponent(attemptId)}/launch`,
       origin,
     );
     launch.searchParams.set("ticket", result.launchTicket);
-    const cancel = () => {
-      void this.#integrationAttempts.forget(attempt).catch(noop);
-    };
-    input.signal?.addEventListener("abort", cancel, { once: true });
+    let cancelling: Promise<IntegrationAuthorizationStatus> | null = null;
+    const cancel = () => (cancelling ??= this.#cancelIntegrationAuthorization(client, attempt));
+    const abort = () => void cancel().catch(noop);
+    input.signal?.addEventListener("abort", abort, { once: true });
     try {
-      const callback = await this.#openIntegrationAuthorization(launch.toString());
+      const callback = await this.#openIntegrationAuthorization(launch.toString(), input.signal);
       const returned = parseNativeIntegrationAuthorizationCallback(callback);
       if (
         returned === null ||
@@ -944,12 +954,47 @@ export class MobileClient {
       if (status === null) throw new Error("That sign-in wasn't started here.");
       return status;
     } catch (error) {
-      if (error instanceof IntegrationAuthorizationCancelledError || input.signal?.aborted)
+      if (cancelling !== null) return await cancelling;
+      if (error instanceof IntegrationAuthorizationCancelledError) {
+        if (this.#authorizationEpoch === input.authorizationEpoch) return await cancel();
         await this.#integrationAttempts.forget(attempt);
+      }
       throw error;
     } finally {
-      input.signal?.removeEventListener("abort", cancel);
+      input.signal?.removeEventListener("abort", abort);
     }
+  }
+
+  /**
+   * Ends a started attempt. Its return stops first, including one the app link
+   * started without this caller, so a proof still on this phone never leaves.
+   * Only the Host knows whether a proof already sent finished the attempt.
+   */
+  async #cancelIntegrationAuthorization(
+    client: HostClient,
+    attempt: Parameters<IntegrationAuthorizationAttempts["forget"]>[0],
+  ): Promise<IntegrationAuthorizationStatus> {
+    for (const [controller, running] of this.#integrationReturnControllers)
+      if (running.attemptId === attempt.attemptId)
+        controller.abort(new IntegrationAuthorizationCancelledByPerson());
+    await this.#integrationAttempts.forget(attempt);
+    const answer = await withTimeout(
+      client.dispatch({
+        attemptId: IntegrationAuthorizationAttemptIdSchema.parse(attempt.attemptId),
+        idempotencyKey: mutationIdempotencyKey(`integration-auth:${attempt.attemptId}`),
+        type: "integration.authorization.cancel",
+      }),
+      integrationCancelTimeoutMilliseconds,
+      { timeoutError: () => new HostTransportError("timed-out") },
+    ).catch(() => null);
+    if (answer?.type === "integration.authorization.cancel" && answer.status === "completed")
+      return {
+        connectionId: answer.connectionId,
+        expiresAt: answer.expiresAt,
+        failureCode: answer.failureCode,
+        status: answer.status,
+      };
+    throw new IntegrationAuthorizationCancelledError();
   }
 
   /** Check local authority before a callback can select a Deployment or contact a Host. */
@@ -957,7 +1002,11 @@ export class MobileClient {
     rawUrl: string,
   ): Promise<IntegrationAuthorizationStatus | null> {
     const callback = parseNativeIntegrationAuthorizationCallback(rawUrl);
-    return callback === null ? null : this.#deliverIntegrationAuthorizationReturn(callback);
+    if (callback === null) return null;
+    return this.#deliverIntegrationAuthorizationReturn(callback).catch((error: unknown) => {
+      if (error instanceof IntegrationAuthorizationCancelledByPerson) return null;
+      throw error;
+    });
   }
 
   #deliverIntegrationAuthorizationReturn(
@@ -965,24 +1014,18 @@ export class MobileClient {
     signal?: AbortSignal,
   ): Promise<IntegrationAuthorizationStatus | null> {
     const epoch = this.#authorizationEpoch;
+    const attemptId = callback.attemptId;
     return this.#integrationAttempts.deliver(callback, async (entry) => {
-      const catalog = await this.catalog.load();
-      if (
-        !catalog.deployments.some(
-          ({ authority }) => authority.document.deploymentId === callback.deploymentId,
-        )
-      ) {
-        throw new Error("That integration attempt belongs to an unknown deployment.");
-      }
-      if (epoch !== this.#authorizationEpoch) throw new IntegrationAuthorizationCancelledError();
       let client: HostClient | null = null;
       let selecting = true;
       const controller = new AbortController();
       const abort = () => controller.abort(new IntegrationAuthorizationCancelledError());
       signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) abort();
-      this.#integrationReturnControllers.set(controller, null);
+      this.#integrationReturnControllers.set(controller, { attemptId, client: null });
       const assertAttached = () => {
+        if (controller.signal.reason instanceof IntegrationAuthorizationCancelledByPerson)
+          throw controller.signal.reason;
         if (controller.signal.aborted || epoch !== this.#authorizationEpoch)
           throw new IntegrationAuthorizationCancelledError();
         if (
@@ -994,6 +1037,17 @@ export class MobileClient {
       };
       const remaining = () => Math.max(0, Date.parse(entry.expiresAt) - Date.now());
       try {
+        // A cancel can land between admission and this line, before anything could abort.
+        if (this.#integrationAttempts.find(entry) === null)
+          throw new IntegrationAuthorizationCancelledByPerson();
+        const catalog = await this.catalog.load();
+        if (
+          !catalog.deployments.some(
+            ({ authority }) => authority.document.deploymentId === callback.deploymentId,
+          )
+        ) {
+          throw new Error("That integration attempt belongs to an unknown deployment.");
+        }
         assertAttached();
         const assertOwner = () => {
           assertAttached();
@@ -1050,7 +1104,7 @@ export class MobileClient {
               assertAttached();
               client = this.#hostClient;
               if (client === null) throw new HostTransportError("unreachable");
-              this.#integrationReturnControllers.set(controller, client);
+              this.#integrationReturnControllers.set(controller, { attemptId, client });
             }
             if (client.getSnapshot().user === null) {
               await withTimeout(client.load(), Math.min(20_000, remaining()), {
@@ -1788,7 +1842,7 @@ export class MobileClient {
   }
 
   #disposeHostClient(): void {
-    for (const [controller, client] of this.#integrationReturnControllers) {
+    for (const [controller, { client }] of this.#integrationReturnControllers) {
       // A callback still waiting for its first attachment survives reattachment.
       if (client === null) continue;
       controller.abort(new IntegrationAuthorizationCancelledError());
