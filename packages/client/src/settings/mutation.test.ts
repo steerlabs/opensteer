@@ -11,3 +11,13 @@ it("distinguishes confirmed refusal from an unknown commit outcome", () => {
     code: "internal", status: 500, message: "Unavailable",
   }))).toBe(false);
 });
+
+it("requires exact reviewed accounts for a new placement, including provider accounts", async () => {
+  const { pluginPlacementAccounts } = await import("./index.js");
+  expect(() => pluginPlacementAccounts([], [], true)).toThrow("Choose");
+  expect(pluginPlacementAccounts([], [{ connectionId: "account", access: "read-write" }], true))
+    .toEqual([{ connectionId: "account", access: "read-write" }]);
+  expect(pluginPlacementAccounts([{ connectionId: "old", access: "read" }], [], true))
+    .toEqual([{ connectionId: "old", access: "read" }]);
+  expect(pluginPlacementAccounts([], [], false)).toEqual([]);
+});

@@ -199,3 +199,11 @@ export function settingsMutationRejected(reason: unknown): boolean {
   return reason instanceof HostClientRequestError &&
     ["conflict", "bad_request", "forbidden", "not_found", "unauthorized"].includes(reason.code);
 }
+
+export function pluginPlacementAccounts<T extends { connectionId: string; access: "read" | "read-write" }>(
+  existing: readonly T[], reviewed: readonly T[], requiresAccount: boolean,
+): T[] {
+  if (existing.length) return [...existing];
+  if (requiresAccount && !reviewed.length) throw new Error("Choose an account and its access first.");
+  return [...reviewed];
+}

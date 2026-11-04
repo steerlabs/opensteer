@@ -17,6 +17,7 @@ import { Link, useLocation, useNavigate } from "react-router";
 import type { PluginRow, PluginDetailView } from "@opensteer/protocol";
 import {
   settingsMutationRejected,
+  pluginPlacementAccounts,
   pluginGroups,
   pluginState,
   pluginPath,
@@ -450,6 +451,8 @@ function Placement({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const attempt = useRef<Parameters<typeof hostClient.dispatch>[0] | null>(null);
+  const [accounts, setAccounts] = useState<PluginDetailView["places"][number]["accounts"]>([]);
+  const requiresAccount = detail.row.target.kind === "service" || detail.row.target.kind === "device-app";
   function change(mainIncluded: boolean, selected: string[], everywhere: boolean) {
     if (pending) return;
     const command = attempt.current ?? {
@@ -460,14 +463,10 @@ function Placement({
       mainIncluded,
       projects: detail.places
         .filter((place) => place.kind !== "main" && selected.includes(place.workspaceId))
-        .map((place) => ({ workspaceId: place.workspaceId, accounts: place.accounts })),
+        .map((place) => ({ workspaceId: place.workspaceId, accounts: pluginPlacementAccounts(everywhere ? [] : place.accounts, accounts, requiresAccount) })),
       personalEverywhere: everywhere
         ? {
-            accounts: detail.accounts.flatMap((account) =>
-              account.access
-                ? [{ connectionId: account.connectionId, access: account.access }]
-                : [],
-            ),
+            accounts: pluginPlacementAccounts([], accounts, requiresAccount),
           }
         : null,
     };
@@ -501,6 +500,21 @@ function Placement({
     <section className="settings-group" id="plugin-placement">
       <h2 className="settings-group__title">Where it’s on</h2>
       <div className="card">
+        {requiresAccount ? detail.accounts.map((account) => (
+          <label className="card__row" key={account.connectionId}>
+            <span>{account.displayName}</span>
+            <select aria-label={`Access for ${account.displayName}`} value={accounts.find((a) => a.connectionId === account.connectionId)?.access ?? ""}
+              disabled={pending} onChange={(event) => {
+                const access = event.currentTarget.value;
+                setAccounts((previous) => [
+                  ...previous.filter((a) => a.connectionId !== account.connectionId),
+                  ...(access === "read" || access === "read-write" ? [{ connectionId: account.connectionId, access: access === "read" ? "read" as const : "read-write" as const }] : []),
+                ]);
+              }}>
+              <option value="">Choose access</option><option value="read">Read</option><option value="read-write">Read and update</option>
+            </select>
+          </label>
+        )) : null}
         {personal &&
         detail.row.target.kind !== "skill" &&
         detail.row.source.kind !== "workspace" ? (
@@ -511,7 +525,7 @@ function Placement({
               type="checkbox"
               role="switch"
               checked={detail.row.placement.personalEverywhere}
-              disabled={pending || !detail.row.permissions.canPlace}
+              disabled={pending || !detail.row.permissions.canPlace || (requiresAccount && !accounts.length && !detail.row.placement.personalEverywhere)}
               onChange={(event) =>
                 change(
                   true,
@@ -535,7 +549,7 @@ function Placement({
                   checked={
                     place.kind === "main" ? detail.row.placement.mainIncluded : place.selected
                   }
-                  disabled={pending || !place.canSelect || !detail.row.permissions.canPlace}
+                  disabled={pending || !place.canSelect || (requiresAccount && place.kind === "project" && !place.selected && !accounts.length) || !detail.row.permissions.canPlace}
                   onChange={(event) =>
                     change(
                       place.kind === "main"

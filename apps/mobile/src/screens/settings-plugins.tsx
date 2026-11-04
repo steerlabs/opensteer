@@ -9,6 +9,7 @@ import {
   completePluginConsent,
   type PluginAddConsent,
   settingsMutationRejected,
+  pluginPlacementAccounts,
   pluginGroups,
   pluginState,
   pluginTargetKey,
@@ -70,8 +71,9 @@ function Plugins({
   const [serverEntries, setServerEntries] = useState<
     SettingsRpcData<"integration.platform.get">["installations"]
   >([]);
+  const [placementAccounts, setPlacementAccounts] = useState<PluginDetailView["places"][number]["accounts"]>([]);
   const [detailTarget, setDetailTarget] = useState(target);
-  useEffect(() => setDetailTarget(target), [target]);
+  useEffect(() => { setDetailTarget(target); setPlacementAccounts([]); }, [target]);
   const detailRead = useSettingsRead(host, async () => {
     if (!detailTarget) return null;
     return unwrapRpcResult(await host.rpc["plugins.detail.get"]({
@@ -335,6 +337,16 @@ function Plugins({
       key: "places",
       title: "Where it’s on",
       rows: [
+        ...detail.accounts.map((account): NativeSettingsRow => ({
+          key: `access:${account.connectionId}`, kind: "chips", label: `Access for ${account.displayName}`,
+          value: placementAccounts.find((a) => a.connectionId === account.connectionId)?.access ?? "",
+          choices: [{ value: "", label: "Choose access" }, { value: "read", label: "Read" }, { value: "read-write", label: "Read and update" }],
+          onChange: (access) => setPlacementAccounts((previous) => [
+            ...previous.filter((a) => a.connectionId !== account.connectionId),
+            ...(access === "read" || access === "read-write" ? [{ connectionId: account.connectionId, access: access === "read" ? "read" as const : "read-write" as const }] : []),
+          ]),
+        })),
+
         ...(host.getSnapshot().deploymentShape?.kind === "personal"
           ? [
               {
@@ -342,7 +354,7 @@ function Plugins({
                 kind: "toggle" as const,
                 label: "Everywhere, including new Projects",
                 value: row.placement.personalEverywhere,
-                disabled: pending !== null || !row.permissions.canPlace,
+                disabled: pending !== null || !row.permissions.canPlace || (detail.accounts.length > 0 && !placementAccounts.length && !row.placement.personalEverywhere),
                 onChange: (enabled: boolean) =>
                   command("everywhere", {
                     type: "settings.plugin.placement.set",
@@ -353,15 +365,11 @@ function Plugins({
                       .filter((place) => place.kind === "project" && (enabled || place.selected))
                       .map((place) => ({
                         workspaceId: place.workspaceId,
-                        accounts: place.accounts,
+                        accounts: pluginPlacementAccounts(enabled ? [] : place.accounts, placementAccounts, detail.accounts.length > 0),
                       })),
                     personalEverywhere: enabled
                       ? {
-                          accounts: detail.accounts.flatMap((account) =>
-                            account.access
-                              ? [{ connectionId: account.connectionId, access: account.access }]
-                              : [],
-                          ),
+                          accounts: pluginPlacementAccounts([], placementAccounts, detail.accounts.length > 0),
                         }
                       : null,
                     idempotencyKey: mutationIdempotencyKey("settings-plugin-everywhere"),
@@ -376,7 +384,7 @@ function Plugins({
               kind: "toggle",
               label: place.name,
               value: place.selected,
-              disabled: pending !== null || !place.canSelect || !row.permissions.canPlace,
+              disabled: pending !== null || !place.canSelect || !row.permissions.canPlace || (detail.accounts.length > 0 && place.kind === "project" && !place.selected && !placementAccounts.length),
               onChange: (selected) =>
                 command(`${row.target.kind}:${pluginTargetKey(row.target)}`, {
                   type: "settings.plugin.placement.set",
@@ -389,7 +397,7 @@ function Plugins({
                         p.kind === "project" &&
                         (p.workspaceId === place.workspaceId ? selected : p.selected),
                     )
-                    .map((p) => ({ workspaceId: p.workspaceId, accounts: p.accounts })),
+                    .map((p) => ({ workspaceId: p.workspaceId, accounts: pluginPlacementAccounts(p.accounts, placementAccounts, detail.accounts.length > 0) })),
                   personalEverywhere: null,
                   idempotencyKey: mutationIdempotencyKey("settings-plugin-placement"),
                 }),
