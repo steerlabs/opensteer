@@ -34,7 +34,7 @@ beforeEach(async () => {
 function loopback(
   input: {
     accept?: (url: string) => boolean;
-    active?: () => boolean;
+    active?: () => boolean | Promise<boolean>;
     pendingUntil?: () => number | null;
     now?: () => number;
     deadlines?: { readonly headers: number; readonly request: number; readonly socket: number };
@@ -44,8 +44,8 @@ function loopback(
   const accept = vi.fn(input.accept ?? (() => true));
   const instance = new IntegrationAuthorizationLoopback({
     accept,
+    loginAllowed: async () => (input.active ? input.active() : true),
     pendingUntil: input.pendingUntil ?? (() => Date.now() + 60_000),
-    sessionActive: input.active ?? (() => true),
     ...(input.now ? { now: input.now } : {}),
     ...(input.deadlines ? { deadlines: input.deadlines } : {}),
     ports: input.ports ?? free,
@@ -145,8 +145,8 @@ describe("IntegrationAuthorizationLoopback binding", () => {
   it("binds the reserved block by default", async () => {
     const instance = new IntegrationAuthorizationLoopback({
       accept: () => false,
+      loginAllowed: async () => true,
       pendingUntil: () => null,
-      sessionActive: () => true,
     });
     open.push(instance);
     const port = await instance.prepare();
@@ -323,9 +323,16 @@ describe("IntegrationAuthorizationLoopback deadlines", () => {
 });
 
 describe("IntegrationAuthorizationLoopback login session", () => {
-  it("refuses to prepare while another login session is at the console", async () => {
-    const { instance } = loopback({ active: () => false });
+  it("binds nothing while logins do not allow it, and offers no port", async () => {
+    const bound: boolean[] = [];
+    const { instance } = loopback({
+      active: async () => {
+        bound.push(!(await refused(free[0])));
+        return false;
+      },
+    });
     expect(await instance.prepare()).toBeNull();
+    expect(bound).toEqual([false]);
   });
 
   it("closes the listener and a request in progress when the session resigns", async () => {
@@ -351,7 +358,7 @@ describe("IntegrationAuthorizationLoopback login session", () => {
     expect(await refused(free[0])).toBe(true);
   });
 
-  it("never accepts a request that is already in flight once the session has gone", async () => {
+  it("refuses at acceptance when a login appeared with no notification", async () => {
     let active = true;
     const { accept, instance } = loopback({ active: () => active });
     const port = (await instance.prepare())!;
@@ -359,6 +366,32 @@ describe("IntegrationAuthorizationLoopback login session", () => {
     const reply = await post(port);
     expect(accept).not.toHaveBeenCalled();
     expect(reply.status).toBe(404);
+    active = true;
+    expect((await post(port)).status).toBe(200);
+  });
+
+  it("refuses when the logins cannot be read at acceptance", async () => {
+    let read = true;
+    const { accept, instance } = loopback({
+      active: async () => {
+        if (read) return true;
+        throw new Error("The login registry could not be read.");
+      },
+    });
+    const port = (await instance.prepare())!;
+    read = false;
+    expect((await post(port)).status).toBe(404);
+    expect(accept).not.toHaveBeenCalled();
+  });
+
+  it("does not read the logins for a request it refuses anyway", async () => {
+    const active = vi.fn(() => true);
+    const { instance } = loopback({ active });
+    const port = (await instance.prepare())!;
+    const reads = active.mock.calls.length;
+    await post(port, { path: "/elsewhere" });
+    await post(port, { body: "deployment_id=d&attempt_id=a" });
+    expect(active).toHaveBeenCalledTimes(reads);
   });
 
   it("recovers the same port for pending attempts when the session returns", async () => {

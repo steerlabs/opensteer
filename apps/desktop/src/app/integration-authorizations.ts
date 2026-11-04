@@ -36,8 +36,8 @@ export class DesktopIntegrationAuthorizations {
     );
     this.#loopback = new IntegrationAuthorizationLoopback({
       accept: (url) => this.accept(url),
+      loginAllowed: () => this.#session?.soleLogin() ?? Promise.resolve(false),
       pendingUntil: () => this.#attempts.latestExpiry(),
-      sessionActive: () => this.#session?.active() === true,
     });
   }
   /** Until there is a session to read, attempts use the app link. */

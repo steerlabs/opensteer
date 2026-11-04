@@ -21,7 +21,15 @@ const oauth = {
 
 const instances: DesktopIntegrationAuthorizations[] = [];
 
-function authorizations(input: { sessionless?: boolean; consoleOwner?: () => number } = {}) {
+const consoleUser = (userId: number) => `<dict>
+  <key>kCGSSessionOnConsoleKey</key><true/>
+  <key>kCGSSessionUserIDKey</key><integer>${userId}</integer>
+  <key>kCGSessionLoginDoneKey</key><true/>
+</dict>`;
+const registry = (...users: readonly number[]) =>
+  `<plist><dict><key>IOConsoleUsers</key><array>${users.map(consoleUser).join("")}</array></dict></plist>`;
+
+function authorizations(input: { sessionless?: boolean; logins?: () => readonly number[] } = {}) {
   const open = vi.fn();
   const power = new EventEmitter();
   const instance = new DesktopIntegrationAuthorizations(oauth, open);
@@ -29,7 +37,7 @@ function authorizations(input: { sessionless?: boolean; consoleOwner?: () => num
   if (!input.sessionless)
     instance.useLoginSession(
       new DesktopLoginSession(power, "darwin", {
-        consoleOwner: input.consoleOwner ?? (() => 501),
+        read: async () => registry(...(input.logins?.() ?? [501])),
         user: 501,
       }),
     );
@@ -125,22 +133,34 @@ describe("DesktopIntegrationAuthorizations loopback return", () => {
     expect(await instance.prepareReturn()).toBeNull();
   });
 
-  it("offers no port to an app started in a session that is switched away", async () => {
-    const { instance } = authorizations({ consoleOwner: () => 502 });
+  it("offers no port while another login is on this Mac", async () => {
+    const { instance } = authorizations({ logins: () => [501, 502] });
     expect(await instance.prepareReturn()).toBeNull();
   });
 
-  it("closes the listener on the session's resign and keeps the attempt pending", async () => {
-    let owner = 501;
-    const { instance, power } = authorizations({ consoleOwner: () => owner });
+  it("refuses a proof at acceptance once another login appears", async () => {
+    let logins: readonly number[] = [501];
+    const { instance } = authorizations({ logins: () => logins });
+    const received = vi.fn();
+    instance.attach({ deploymentId, userId }, received);
     const port = (await instance.prepareReturn())!;
     await instance.register(started());
-    owner = 502;
+    logins = [501, 502];
+    expect(await post(port)).toBe(404);
+    expect(received).not.toHaveBeenCalled();
+  });
+
+  it("closes the listener on the session's resign and keeps the attempt pending", async () => {
+    let logins: readonly number[] = [501];
+    const { instance, power } = authorizations({ logins: () => logins });
+    const port = (await instance.prepareReturn())!;
+    await instance.register(started());
+    logins = [502];
     power.emit("user-did-resign-active");
     await vi.waitFor(async () => expect(await listening(port)).toBe(false));
     expect(instance.find({ attemptId, deploymentId })).not.toBeNull();
     expect(await instance.prepareReturn()).toBeNull();
-    owner = 501;
+    logins = [501];
     power.emit("user-did-become-active");
     await vi.waitFor(async () => expect(await listening(port)).toBe(true));
   });

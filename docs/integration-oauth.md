@@ -97,12 +97,16 @@ history after a failed return would be one paste away from redemption. And a sec
 would change nothing, since the attacker owns the initiating app; the app's own registry of attempts
 it started is what refuses the proof.
 
-Every login on a computer shares loopback ports, while the operating system routes an app link to
-the current login's app. So a desktop listener runs only while its app's login session owns the
-console, and otherwise the attempt uses the app link. Only macOS reports that, so other desktops
-always use the app link. The listener closes when its session resigns; pending attempts keep their
-authority and get their sealed port back if it is still free. The app's attempts live in memory, so
-a restarted app refuses them and the person starts again.
+Every login on a computer shares loopback ports, and nothing a listener can see says which login's
+browser connected, while the operating system routes an app link to the current login's app. A
+person on a virtual display approves in a browser that reaches a listener in the console's login, so
+checking the receiving app's own session proves nothing. A desktop return therefore uses loopback
+only when the Mac has exactly one GUI login, which is the app's and on the console. That is read
+from the IORegistry when the attempt is prepared and again for every return, and anything that
+cannot establish it means the app link. Only macOS reports it, so other desktops always use the app
+link. The resign notification only closes the listener sooner; pending attempts keep their authority
+and get their sealed port back if it is still free. The app's attempts live in memory, so a
+restarted app refuses them and the person starts again.
 
 This covers links from Deployments the person does not belong to, not a hostile operator of a joined
 server Deployment, malware on the device, or a deliberately hostile process under another login on

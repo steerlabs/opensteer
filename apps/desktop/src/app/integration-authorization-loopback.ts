@@ -43,10 +43,10 @@ export class IntegrationAuthorizationLoopback {
     readonly request: number;
     readonly socket: number;
   };
+  readonly #loginAllowed: () => Promise<boolean>;
   readonly #now: () => number;
   readonly #pendingUntil: () => number | null;
   readonly #ports: readonly number[];
-  readonly #sessionActive: () => boolean;
   #grace: number[] = [];
   /** Kept across a session change, because the attempts in flight were sealed to it. */
   #port: number | null = null;
@@ -61,14 +61,16 @@ export class IntegrationAuthorizationLoopback {
       readonly request: number;
       readonly socket: number;
     };
+    /** Whether this computer's logins allow a return on loopback right now. */
+    readonly loginAllowed: () => Promise<boolean>;
     readonly now?: () => number;
     /** When the last registered attempt expires; null with none pending. */
     readonly pendingUntil: () => number | null;
     readonly ports?: readonly number[];
-    readonly sessionActive: () => boolean;
   }) {
     this.#accept = options.accept;
     this.#deadlines = options.deadlines ?? defaultDeadlines;
+    this.#loginAllowed = options.loginAllowed;
     this.#now = options.now ?? (() => Date.now());
     this.#pendingUntil = options.pendingUntil;
     this.#ports =
@@ -82,12 +84,11 @@ export class IntegrationAuthorizationLoopback {
         },
         (_, index) => integrationAuthorizationReturnPorts.first + index,
       );
-    this.#sessionActive = options.sessionActive;
   }
 
   /** The port to give the Host, or null when this attempt must use the app link. */
   async prepare(): Promise<number | null> {
-    if (!this.#sessionActive()) return null;
+    if (!(await this.#loginAllowed())) return null;
     this.#grace.push(this.#now() + registrationGrace);
     const port = await this.#listen(
       this.#port === null ? this.#ports : [this.#port, ...this.#ports],
@@ -163,7 +164,7 @@ export class IntegrationAuthorizationLoopback {
         server.listen({ exclusive: true, host: "127.0.0.1", port }, () => resolve(true));
       });
       if (!bound) continue;
-      if (!this.#sessionActive()) {
+      if (!(await this.#loginAllowed())) {
         await closeServer(server);
         return null;
       }
@@ -213,19 +214,23 @@ export class IntegrationAuthorizationLoopback {
       else if (literal) chunks.push(chunk);
     });
     request.on("end", () => {
-      const delivered =
-        literal &&
-        server === this.#server &&
-        this.#sessionActive() &&
-        this.#deliver(Buffer.concat(chunks).toString("utf8"));
-      send(response, delivered);
+      const body = Buffer.concat(chunks).toString("utf8");
+      void (literal ? this.#deliver(server, body) : Promise.resolve(false)).then(
+        (delivered) => send(response, delivered),
+        () => send(response, false),
+      );
     });
   }
 
-  /** The form's fields become the app return, so the strict app-link parser still decides. */
-  #deliver(body: string): boolean {
+  /**
+   * The form's fields become the app return, so the strict app-link parser still
+   * decides. Logins can change while this listener is open, with no notification
+   * here, so they are read again for every return.
+   */
+  async #deliver(server: Server, body: string): Promise<boolean> {
     const fields = new URLSearchParams(body);
     if (!fields.has("return")) return false;
+    if (!(await this.#loginAllowed()) || server !== this.#server) return false;
     const appReturn = new URL(integrationAuthorizationAppReturnBase("desktop"));
     appReturn.search = fields.toString();
     return this.#accept(appReturn.toString());
