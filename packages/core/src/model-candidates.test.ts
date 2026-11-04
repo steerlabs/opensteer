@@ -88,6 +88,33 @@ function own(account: AuthorizedModelAccountSnapshot): OriginalModelSelection {
   return { ...account, modelSelection: selection() };
 }
 describe("automatic model resolver", () => {
+  it("says why an account or model was skipped, account readiness first", () => {
+    const signedOut = account("opencode", {
+      catalog: { status: "authentication-required", detail: "Sign in to OpenCode Go", models: [] },
+    });
+    const light = { kind: "catalog-light", driverKind: HarnessIdSchema.parse("opencode") } as const;
+    expect(resolve([signedOut], { wants: [light] }).skipped).toMatchObject([
+      { reason: "catalog-not-ready", detail: "Sign in to OpenCode Go" },
+    ]);
+    const base = account();
+    const retired = account("codex", {
+      catalog: {
+        status: "ready",
+        models: base.catalog!.models.map((model) => ({
+          ...model,
+          unavailableReason: "Not on your plan",
+        })),
+      },
+    });
+    expect(resolve([retired]).skipped).toMatchObject([
+      { reason: "model-unavailable", detail: "Not on your plan" },
+    ]);
+    expect(
+      resolve([base], { wants: [want("codex", "gpt-6-luna", { effort: "max" })] }).skipped,
+    ).toMatchObject([
+      { reason: "options-unavailable", detail: expect.stringContaining("it takes low, high") },
+    ]);
+  });
   it("keeps cross-engine want order and puts default first within each want", () => {
     const secondary = account(),
       defaultAccount = account("codex", { isDefault: true }),

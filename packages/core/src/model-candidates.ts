@@ -3,7 +3,12 @@ import type { EnvironmentId, HarnessInstanceId } from "./ids.js";
 import type { HarnessId, ModelSelection } from "./models.js";
 import type { ModelWant } from "./background-models.js";
 import { canonicalModelReference } from "./model-registry.js";
-import { matchModelSelection, storedModelSelection, runModelSelection } from "./model-selection.js";
+import {
+  matchModelSelection,
+  modelOptionUnavailableMessage,
+  runModelSelection,
+  storedModelSelection,
+} from "./model-selection.js";
 
 /** Structural catalog contract: protocol catalogs supply these facts without a core → protocol dependency. */
 export interface SelectionModelDescriptor {
@@ -24,6 +29,8 @@ export interface SelectionModelDescriptor {
 }
 export interface SelectionCatalog {
   readonly status: string;
+  /** Nonsecret display text for a catalog that isn't ready, such as a sign-in prompt. */
+  readonly detail?: string | undefined;
   readonly models: readonly SelectionModelDescriptor[];
   readonly lightModel?: Pick<ModelSelection, "providerId" | "modelId"> & {
     readonly options?: ModelSelection["options"] | undefined;
@@ -124,34 +131,57 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
   skipped: SkippedModelCandidate[];
 } {
   const skipped: SkippedModelCandidate[] = [];
+  const skip = (
+    account: AuthorizedModelAccountSnapshot,
+    want: ModelWant | null,
+    reason: ModelCandidateSkipReason,
+    detail?: string,
+  ) => {
+    skipped.push({
+      want,
+      harnessInstanceId: account.harnessInstanceId,
+      environmentId: account.environmentId,
+      reason,
+      ...(detail ? { detail } : {}),
+    });
+    return null;
+  };
+  /** Account-level eligibility, checked before anything about a model. */
+  const usable = (
+    account: AuthorizedModelAccountSnapshot,
+    want: ModelWant | null,
+  ): account is AuthorizedModelAccountSnapshot & { readonly catalog: SelectionCatalog } => {
+    if (input.excludedAccounts.includes(account.harnessInstanceId))
+      return skip(account, want, "excluded") ?? false;
+    if (account.removed) return skip(account, want, "removed") ?? false;
+    if (!account.enabled) return skip(account, want, "disabled") ?? false;
+    if (!account.available) return skip(account, want, "offline") ?? false;
+    const eligibility = input.canRun(account);
+    if (!eligibility.ok)
+      return skip(account, want, eligibility.reason, eligibility.detail) ?? false;
+    if (account.catalog?.status !== "ready")
+      return (
+        skip(
+          account,
+          want,
+          "catalog-not-ready",
+          account.catalog?.detail ?? account.catalog?.status,
+        ) ?? false
+      );
+    return true;
+  };
   const inspect = (
     account: AuthorizedModelAccountSnapshot,
     selection: ModelSelection,
     want: ModelWant | null,
     original: boolean,
   ): ResolvedModelCandidate | null => {
-    const reject = (reason: ModelCandidateSkipReason, detail?: string) => {
-      skipped.push({
-        want,
-        harnessInstanceId: account.harnessInstanceId,
-        environmentId: account.environmentId,
-        reason,
-        ...(detail ? { detail } : {}),
-      });
-      return null;
-    };
-    if (input.excludedAccounts.includes(account.harnessInstanceId)) return reject("excluded");
-    if (account.removed) return reject("removed");
-    if (!account.enabled) return reject("disabled");
-    if (!account.available) return reject("offline");
-    const eligibility = input.canRun(account);
-    if (!eligibility.ok) return reject(eligibility.reason, eligibility.detail);
-    if (account.catalog?.status !== "ready") return reject("catalog-not-ready");
+    if (!usable(account, want)) return null;
     const match = matchModelSelection(account.catalog.models, selection, "refuse");
-    if (match.kind !== "offered")
-      return reject(
-        match.kind === "option-unavailable" ? "options-unavailable" : "model-unavailable",
-      );
+    if (match.kind === "model-unavailable")
+      return skip(account, want, "model-unavailable", match.reason);
+    if (match.kind === "option-unavailable")
+      return skip(account, want, "options-unavailable", modelOptionUnavailableMessage(match));
     const stored = storedModelSelection(selection, match.model);
     return {
       account,
@@ -217,13 +247,10 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
       let selection: ModelSelection;
       if ("kind" in want) {
         if (want.kind === "catalog-light") {
-          const light = account.catalog?.lightModel;
+          if (!usable(account, want)) continue;
+          const light = account.catalog.lightModel;
           if (!light) {
-            skipped.push({
-              want,
-              harnessInstanceId: account.harnessInstanceId,
-              reason: "model-unavailable",
-            });
+            skip(account, want, "model-unavailable", "This account has no small model");
             continue;
           }
           selection = { ...light, options: light.options ?? {} };
