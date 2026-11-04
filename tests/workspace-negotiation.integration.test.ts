@@ -10,7 +10,7 @@ import {
   unsupportedVersionCloseCode,
 } from "../packages/protocol/src/index.js";
 import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
@@ -189,9 +189,10 @@ integration("workspace epoch and producer negotiation", () => {
 });
 
 async function until(condition: () => boolean | Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + 10_000;
-  while (!(await condition())) {
-    if (Date.now() >= deadline) throw new Error("Negotiation state did not settle");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
+  await vi.waitFor(
+    async () => {
+      if (!(await condition())) throw new Error("Negotiation state did not settle");
+    },
+    { timeout: 10_000, interval: 20 },
+  );
 }
