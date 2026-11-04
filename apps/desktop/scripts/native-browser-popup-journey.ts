@@ -26,6 +26,10 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     );
   });
   const context = kit.context;
+  const events: string[] = [];
+  const record = (index: number, event: string) => {
+    if (events.length < 128) events.push(`${index}:${event}`);
+  };
   const opened = await context.api["commands.dispatch"]({
     type: "browser.tab.open",
     sessionId: context.sessionId,
@@ -48,8 +52,44 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   };
   const createOwner = patched._createOpensteerInputOwner;
   const nativeStops: string[] = [];
+  const port = producer.page.presentation!;
+  const start = port.start.bind(port);
+  const stop = port.stop.bind(port);
+  port.start = async (options) => {
+    record(-1, "producer.start");
+    try {
+      const result = await start({
+        ...options,
+        onStopped: (reason) => {
+          record(
+            -1,
+            `producer.ended:${["protocol", "source-ended", "capacity"].includes(reason) ? reason : "other"}`,
+          );
+          options.onStopped(reason);
+        },
+      });
+      record(-1, "producer.started");
+      return result;
+    } catch (error) {
+      record(-1, "producer.start-failed");
+      throw error;
+    }
+  };
+  port.stop = () => {
+    const stack = new Error().stack ?? "";
+    record(
+      -1,
+      `producer.stop:${stack.includes("onFrame") ? "frame" : stack.includes(".video") ? "control" : stack.includes(".start") ? "startup" : "other"}`,
+    );
+    return stop();
+  };
+  kit.cleanup.push(() => {
+    port.start = start;
+    port.stop = stop;
+  });
   patched._createOpensteerInputOwner = () => {
     const owner = createOwner.call(contents);
+    owner.on("detach", () => record(-1, "producer.detached"));
     owner.on("video-stopped", (...args) => {
       const reasons = [
         "stopped",
@@ -66,6 +106,10 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       const reason = args[2];
       if (nativeStops.length < 32)
         nativeStops.push(typeof reason === "string" && reasons.includes(reason) ? reason : "other");
+      record(
+        -1,
+        `producer.native-stop:${typeof reason === "string" && reasons.includes(reason) ? reason : "other"}`,
+      );
     });
     return owner;
   };
@@ -87,10 +131,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   const admissions: [number, number] = [0, 0];
   const sessionMatches = [false, false];
   const guardedResults: Record<string, number> = {};
-  const events: string[] = [];
-  const record = (index: number, event: string) => {
-    if (events.length < 128) events.push(`${index}:${event}`);
-  };
   try {
     // These are the journey's temporary owner cookies, held in live memory only.
     const cookies = await session
