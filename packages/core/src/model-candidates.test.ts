@@ -16,7 +16,12 @@ import {
   type OriginalModelSelection,
   type ResolveModelCandidatesInput,
 } from "./model-candidates.js";
-import { ModelPolicyEntryViewSchema, SpecialistManifestSchema } from "./specialists.js";
+import { SpecialistManifestSchema } from "./specialists.js";
+import {
+  AutomaticModelConfigViewSchema,
+  AutomaticModelRankViewSchema,
+  ModelPolicyEntryViewSchema,
+} from "./background-models.js";
 import { catalogDefaultModelSelection } from "./model-candidates.js";
 import { rankedChatModelSelection } from "./chat-models.js";
 const selection = (modelId = "gpt-6-luna", options = {}) =>
@@ -245,6 +250,24 @@ it("strict executable policies reject mixed/account-bound entries; presentation 
     { unknown },
     { role: "deep" },
   ]);
+});
+
+it("reads newer Host responses tolerantly while executable input stays strict", () => {
+  expect(ModelPolicyEntryViewSchema.parse({ ...want(), futureField: true })).toEqual(want());
+  expect(AutomaticModelRankViewSchema.parse({ kind: "future-rank", driverKind: "codex" })).toEqual({
+    unknown: { kind: "future-rank", driverKind: "codex" },
+  });
+  expect(
+    AutomaticModelConfigViewSchema.parse({
+      roles: { light: [{ ...want(), futureField: 1 }, { future: true }], newRole: [] },
+      excludedAccounts: [],
+      futureSetting: true,
+    }),
+  ).toEqual({ roles: { light: [want(), { unknown: { future: true } }] }, excludedAccounts: [] });
+  expect(
+    AutomaticModelConfigSchema.safeParse({ roles: {}, excludedAccounts: [], futureSetting: true })
+      .success,
+  ).toBe(false);
 });
 
 it("keeps role-only and unknown entries in the registration presentation", () => {

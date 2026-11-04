@@ -2,15 +2,17 @@ import { HarnessIdSchema, ModelCandidateSkipReasonSchema } from "@opensteer/core
 import { HarnessInstanceCatalogViewSchema } from "./runner.js";
 import { z } from "zod";
 import {
-  AutomaticModelConfigSchema,
-  AutomaticModelRankSchema,
-  AutomaticModelWantSchema,
+  AutomaticModelConfigViewSchema,
+  AutomaticModelRankViewSchema,
+  AutomaticModelSourceViewSchema,
   EnvironmentIdSchema,
   HarnessInstanceIdSchema,
   HarnessRuntimeRevisionSchema,
   ModelSelectionViewSchema,
 } from "@opensteer/core";
 
+/** A reason this client predates reads as plain text rather than failing the view. */
+const SkipReasonViewSchema = z.union([ModelCandidateSkipReasonSchema, z.string()]);
 /** Clients gate the read and the person-only command on this Host capability. */
 export const automaticModelsCapability = "automatic-models-v1" as const;
 const displayNames = {
@@ -30,10 +32,10 @@ export const AutomaticModelCandidateViewSchema = z.object({
   ...displayNames,
 });
 export const AutomaticModelSkipViewSchema = z.object({
-  want: z.union([AutomaticModelWantSchema, AutomaticModelRankSchema]).nullable(),
+  want: AutomaticModelSourceViewSchema.nullable(),
   harnessInstanceId: HarnessInstanceIdSchema.optional(),
   environmentId: EnvironmentIdSchema.optional(),
-  reason: ModelCandidateSkipReasonSchema,
+  reason: SkipReasonViewSchema,
   detail: z.string().optional(),
   accountDisplayName: z.string().optional(),
   computerDisplayName: z.string().optional(),
@@ -45,10 +47,10 @@ const preview = z.object({
   skipped: z.array(AutomaticModelSkipViewSchema),
 });
 export const AutomaticModelsViewSchema = z.object({
-  config: AutomaticModelConfigSchema,
+  config: AutomaticModelConfigViewSchema,
   maintainedDefaults: z.object({
-    light: z.array(AutomaticModelRankSchema),
-    deep: z.array(AutomaticModelRankSchema),
+    light: z.array(AutomaticModelRankViewSchema),
+    deep: z.array(AutomaticModelRankViewSchema),
   }),
   /** Available to this viewer only. Execution sites apply their own additional requirements. */
   accounts: z.array(
@@ -65,7 +67,7 @@ export const AutomaticModelsViewSchema = z.object({
       available: z.boolean(),
       catalog: HarnessInstanceCatalogViewSchema.nullable(),
       eligible: z.boolean(),
-      reason: ModelCandidateSkipReasonSchema.nullable(),
+      reason: SkipReasonViewSchema.nullable(),
     }),
   ),
   light: preview.extend({ label: z.literal("General preference") }),

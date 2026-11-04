@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ComputerAppBundleIdSchema } from "./computer-app.js";
-import { ModelPolicyEntrySchema } from "./background-models.js";
+import { ModelPolicyEntrySchema, ModelPolicyEntryViewSchema } from "./background-models.js";
 import { ResourceAccessLevelSchema } from "./resource-access.js";
 
 const reason = z.string().trim().min(1).max(4_000);
@@ -41,11 +41,6 @@ const SpecialistAccessRequirementViewSchema = z.discriminatedUnion("type", [
   SpecialistAccessRequirementSchema.options[2].strip(),
   SpecialistAccessRequirementSchema.options[3].strip(),
 ]);
-
-export const ModelPolicyEntryViewSchema = z.unknown().transform((value) => {
-  const parsed = ModelPolicyEntrySchema.safeParse(value);
-  return parsed.success ? parsed.data : { unknown: value };
-});
 
 export const SpecialistRegistrationViewSchema = z.object({
   id: z.string().min(1),

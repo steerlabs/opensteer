@@ -39,6 +39,57 @@ export const AutomaticModelRankSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("catalog-light"), driverKind: HarnessIdSchema }),
 ]);
 export type AutomaticModelRank = z.infer<typeof AutomaticModelRankSchema>;
+
+// Response readers. Executable input stays strict above; what a Host sends
+// back must survive additive fields and variants a newer Host adds.
+/** A known variant, read tolerantly, or `{ unknown }` for one this client predates. */
+export function tolerantVariant<T>(variants: readonly z.ZodType<T>[]) {
+  return z.unknown().transform((value): T | { readonly unknown: unknown } => {
+    for (const variant of variants) {
+      const parsed = variant.safeParse(value);
+      if (parsed.success) return parsed.data;
+    }
+    return { unknown: value };
+  });
+}
+const ExactModelWantViewSchema = z.object({
+  engine: HarnessIdSchema,
+  model: ModelSelectionSchema.shape.modelId,
+  options: ModelSelectionSchema.shape.options.optional(),
+});
+const PersonWantViewSchema = ExactModelWantViewSchema.extend({
+  harnessInstanceId: HarnessInstanceIdSchema.optional(),
+});
+const RankViewSchemas = [
+  z.object({
+    kind: z.literal("model"),
+    driverKind: HarnessIdSchema,
+    providerId: ModelSelectionSchema.shape.providerId,
+    modelId: ModelSelectionSchema.shape.modelId,
+    options: ModelSelectionSchema.shape.options,
+  }),
+  z.object({ kind: z.literal("catalog-light"), driverKind: HarnessIdSchema }),
+] as const;
+type RankView = z.infer<(typeof RankViewSchemas)[number]>;
+type PersonWantView = z.infer<typeof PersonWantViewSchema>;
+export const AutomaticModelWantViewSchema = tolerantVariant<PersonWantView>([PersonWantViewSchema]);
+export const ModelPolicyEntryViewSchema = tolerantVariant<
+  z.infer<typeof ExactModelWantViewSchema> | { readonly role: AutomaticModelRole }
+>([ExactModelWantViewSchema, z.object({ role: AutomaticModelRoleSchema })]);
+export const AutomaticModelRankViewSchema = tolerantVariant<RankView>(RankViewSchemas);
+/** What a skipped preview entry came from: a person's want or a maintained rank. */
+export const AutomaticModelSourceViewSchema = tolerantVariant<PersonWantView | RankView>([
+  ...RankViewSchemas,
+  PersonWantViewSchema,
+]);
+export const AutomaticModelConfigViewSchema = z.object({
+  roles: z.object({
+    light: z.array(AutomaticModelWantViewSchema).optional(),
+    deep: z.array(AutomaticModelWantViewSchema).optional(),
+  }),
+  excludedAccounts: z.array(HarnessInstanceIdSchema),
+});
+export type AutomaticModelConfigView = z.infer<typeof AutomaticModelConfigViewSchema>;
 const fixed = (
   driverKind: string,
   providerId: string,

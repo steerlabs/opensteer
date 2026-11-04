@@ -1,5 +1,5 @@
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
-import { AutomaticModelConfigSchema } from "@opensteer/core";
+import { AutomaticModelConfigSchema, AutomaticModelConfigViewSchema } from "@opensteer/core";
 import {
   AgentConnectionSchema,
   AgentConnectionIdSchema,
@@ -1304,7 +1304,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     preferences: ExecutionPreferencesViewSchema,
     type: z.literal("execution.preferences.remember"),
   }),
-  z.object({ type: z.literal("automaticModels.set"), config: AutomaticModelConfigSchema }),
+  z.object({ type: z.literal("automaticModels.set"), config: AutomaticModelConfigViewSchema }),
   z.object({ type: z.literal("run.interrupt"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("request.respond") }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.create") }),
