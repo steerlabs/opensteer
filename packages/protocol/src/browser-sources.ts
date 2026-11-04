@@ -223,6 +223,8 @@ export const BrowserSignInRequestResponseSchema = z.discriminatedUnion("outcome"
     sourceName: BrowserSourceNameSchema,
   }),
   z.strictObject({ outcome: z.literal("session-closed") }),
+  /** Chrome connected after the Request opened, and no Chrome has a sign-in to the site. */
+  z.strictObject({ outcome: z.literal("not-signed-in") }),
 ]);
 export type BrowserSignInRequestResponse = z.infer<typeof BrowserSignInRequestResponseSchema>;
 

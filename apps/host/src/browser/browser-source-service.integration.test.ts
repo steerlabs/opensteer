@@ -552,7 +552,10 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     );
   }
 
-  async function connectChrome(paired: { sourceId: string; token: string }): Promise<FakeChrome> {
+  async function connectChrome(
+    paired: { sourceId: string; token: string },
+    status: BrowserSourceStatus = "available",
+  ): Promise<FakeChrome> {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Expected socket server port");
     const socket = new WebSocket(`ws://127.0.0.1:${address.port}`);
@@ -577,6 +580,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       });
     });
     const chrome = new FakeChrome(socket);
+    chrome.status = status;
     socket.send(
       JSON.stringify({
         ...sourceDestination,
@@ -2273,6 +2277,60 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       await sourceStore.authenticate(createHash("sha256").update(second.token).digest("hex")),
     ).toBeNull();
     expect(await sourceStore.getGrant({ ownerId, site, workspaceId })).not.toBeNull();
+    expect(serviceErrors).toEqual([]);
+  });
+
+  it("ends an unallowed Request when Chrome connects without the site's sign-in", async () => {
+    const { agent, connection, ownerId } = await scene();
+    const site = "https://example.test";
+    const callId = randomUUID();
+    const asked = await service.agentSignIn({ ...agent, callId, site });
+    if (asked.status !== "pending") throw new Error("Expected a pending Request");
+
+    const paired = await pairChrome(ownerId, "Chrome");
+    const chrome = await connectChrome(paired, "no-state");
+    await waitFor(async () => (await store.requests.get(asked.requestId))?.status === "fulfilled");
+    expect(await store.requests.get(asked.requestId)).toMatchObject({
+      response: { kind: "external", value: { outcome: "not-signed-in" } },
+    });
+    expect(
+      (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
+    ).toContain(asked.requestId);
+    expect(await service.agentSignIn({ ...agent, callId, site })).toEqual({
+      site,
+      status: "not-signed-in",
+    });
+    expect(chrome.exports).toBe(0);
+    expect(connection.imports()).toHaveLength(0);
+
+    // Chrome reconnects and finishes its check while the next Request is still being stored.
+    await chrome.close();
+    const opening = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const create = store.requests.create.bind(store.requests);
+    const creating = vi.spyOn(store.requests, "create").mockImplementationOnce(async (input) => {
+      opening.resolve();
+      await release.promise;
+      return create(input);
+    });
+    const checked = vi.spyOn(store.requests, "listUngrantedBrowserSignIns");
+    try {
+      const late = service.agentSignIn({ ...agent, callId: randomUUID(), site });
+      await opening.promise;
+      const again = await connectChrome(paired, "no-state");
+      await vi.waitFor(() => expect(checked).toHaveBeenCalled(), { timeout: 5_000 });
+      await checked.mock.results[0]!.value;
+      release.resolve();
+      const lateAsk = await late;
+      if (lateAsk.status !== "pending") throw new Error("Expected a pending Request");
+      await waitFor(
+        async () => (await store.requests.get(lateAsk.requestId))?.status === "fulfilled",
+      );
+      await again.close();
+    } finally {
+      creating.mockRestore();
+      checked.mockRestore();
+    }
     expect(serviceErrors).toEqual([]);
   });
 

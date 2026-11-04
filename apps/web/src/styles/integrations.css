@@ -529,58 +529,304 @@
   }
 }
 
+/* An integration access Request: head, accounts, then the answer at the foot. */
 .connect-card {
+  --connect-row: 40px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-12);
   width: 100%;
+  min-width: 0;
 }
 .connect-card__heading {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  align-items: flex-start;
+  gap: var(--space-12);
+  min-width: 0;
 }
-.connect-card__heading p {
-  margin: 4px 0 0;
-}
-.connect-card__actions {
+.connect-card__titles {
   display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  order: 10;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.connect-card__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4) var(--space-8);
+  min-height: 20px;
+  color: var(--text);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  line-height: 20px;
+}
+.connect-card__reason {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-lg);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+/* One framed list: accounts, "Show more", then adding one. */
+.connect-card__list {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-md);
+  background: var(--fill-match);
 }
 .connect-card__accounts {
   display: flex;
   flex-direction: column;
-  gap: 4px;
 }
-.connect-card__account {
+.connect-card__accounts--expanded {
+  max-height: calc(var(--connect-row) * 5.5);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.connect-card__row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 44px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  gap: var(--space-10);
+  width: 100%;
+  min-height: var(--connect-row);
+  padding: var(--space-6) var(--space-12) var(--space-6) var(--space-8);
+  border: 0;
+  border-top: 1px solid var(--line);
   background: transparent;
-  color: inherit;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-xl);
   text-align: left;
   cursor: pointer;
+  transition: background-color 120ms ease;
 }
-.connect-card__account span {
+.connect-card__list > .connect-card__row:first-child,
+.connect-card__accounts > .connect-card__row:first-child {
+  border-top: 0;
+}
+.connect-card__row:hover:not(:disabled) {
+  background-color: var(--fill-quiet);
+}
+.connect-card__row:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: -2px;
+}
+.connect-card__row:disabled {
+  cursor: default;
+}
+.connect-card__row > svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--muted);
+}
+.connect-card__account[aria-checked="true"],
+.connect-card__account[aria-checked="true"]:hover:not(:disabled) {
+  background-color: var(--ember-wash);
+  box-shadow: inset 0 0 0 1px var(--ember-line);
+}
+.connect-card__account:disabled:not([aria-checked="true"]) {
+  opacity: 0.55;
+}
+.connect-card__row-text {
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  min-width: 0;
 }
-.connect-card__account small {
-  display: block;
-  margin-top: 4px;
+.connect-card__row-label {
+  overflow: hidden;
+  font-weight: var(--weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.connect-card__account--selected {
-  border-color: var(--ember-line);
-  background: var(--ember-wash);
+.connect-card__row-text small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.connect-card__disclosure summary {
+.connect-card__avatar {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  background: var(--surface-raised);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+}
+.connect-card__avatar--add {
+  border: 1px dashed var(--ember-line);
+  background: transparent;
+  color: var(--ember);
+}
+.connect-card__avatar--add svg {
+  width: 13px;
+  height: 13px;
+}
+.connect-card__radio {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border: 1.5px solid var(--rim-control);
+  border-radius: var(--radius-full);
+  transition: border-color 120ms ease;
+}
+[aria-checked="true"] > .connect-card__radio {
+  border-color: var(--ember);
+  background: radial-gradient(circle, var(--ember) 0 3.5px, transparent 4px);
+}
+.connect-card__more {
+  color: var(--text-soft);
+}
+.connect-card__add {
+  color: var(--ember);
+  font-weight: var(--weight-medium);
+}
+.connect-card__pending {
+  color: var(--text-soft);
+  cursor: default;
+}
+.connect-card__pending .spinner {
+  margin: 0 5px;
+}
+
+/* First in the markup for focus order; last on screen. */
+.connect-card__foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  order: 10;
+}
+.connect-card__foot--lead {
+  order: 0;
+}
+.connect-card__foot-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+}
+.connect-card__scope {
+  display: inline-flex;
+  flex: 1 1 auto;
+  order: 2;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-4) 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-md);
+  text-align: left;
+}
+.connect-card__scope span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.connect-card__scope {
   cursor: pointer;
 }
+button.connect-card__scope:hover {
+  color: var(--text-soft);
+}
+.connect-card__scope svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  transition: transform 160ms ease;
+}
+.connect-card__scope[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+.connect-card__scope-gap {
+  flex: 1 1 auto;
+  order: 2;
+}
+/* Primary first in the markup, rightmost on screen. */
+.connect-card__actions {
+  display: flex;
+  flex: none;
+  flex-direction: row-reverse;
+  gap: var(--space-6);
+  order: 3;
+  margin-left: auto;
+}
+.connect-card__access {
+  order: 1;
+}
+.connect-card__details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-10) var(--space-12);
+  border-radius: var(--radius-sm);
+  background: var(--fill-quiet);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+.connect-card__details p {
+  margin: 0;
+}
+.connect-card__reconnect p {
+  margin: var(--space-2) 0 0;
+  color: var(--muted);
+}
 .connect-card__result {
-  padding: 8px 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-4) 0;
+  color: var(--text-soft);
+  font-size: var(--text-xl);
+}
+.connect-card__result-mark {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: var(--radius-full);
+  background: var(--green-wash);
+  color: var(--green);
+}
+.connect-card__result-mark svg {
+  width: 11px;
+  height: 11px;
+}
+.spinner--on-accent {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+  border-color: color-mix(in srgb, var(--ink-on-ember) 25%, transparent);
+  border-top-color: var(--ink-on-ember);
+}
+
+@media (any-pointer: coarse) {
+  .connect-card {
+    --connect-row: var(--touch-target);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connect-card__row,
+  .connect-card__radio,
+  .connect-card__scope svg {
+    transition: none;
+  }
 }

@@ -270,13 +270,18 @@ export async function continuationMessage(
         throw new Error("Browser sign-in Request payload is invalid");
       const { sessionId, site } = request.payload;
       if (request.status === "declined")
-        return `Request ${request.id} was declined by the user. Continue without signing in to ${site} and do not ask for it again unless the user asks.`;
+        return `Request ${request.id} to reuse the user's Chrome sign-in was declined by the user. Continue without signing in to ${site} and do not ask for it again unless the user asks.`;
       const response = BrowserSignInRequestResponseSchema.parse(
         request.response.kind === "external" ? request.response.value : undefined,
       );
-      return response.outcome === "applied"
-        ? `Request ${request.id} was fulfilled. Signed in to ${site} with ${response.sourceName} in Browser Session ${sessionId}. Reload the page and confirm the account before continuing.`
-        : `Request ${request.id} was fulfilled. The user allowed ${site}. Your Browser Session had closed; call sign_in again in your current session.`;
+      switch (response.outcome) {
+        case "applied":
+          return `Request ${request.id} was fulfilled. Signed in to ${site} with ${response.sourceName} in Browser Session ${sessionId}. Reload the page and confirm the account before continuing.`;
+        case "not-signed-in":
+          return `Request ${request.id} ended without signing in: Chrome is connected but not signed in to ${site}, so there is no Chrome sign-in to reuse. The user did not decline. Ask them to sign in to ${site} themselves in Browser Session ${sessionId}, or to save the login in Opensteer Passwords, then call sign_in again.`;
+        case "session-closed":
+          return `Request ${request.id} was fulfilled. The user allowed ${site}. Your Browser Session had closed; call sign_in again in your current session.`;
+      }
     }
     case "browser.password-sign-in": {
       if (request.payload.kind !== "browser.password-sign-in")

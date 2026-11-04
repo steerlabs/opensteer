@@ -1,5 +1,4 @@
 import type { IntegrationOAuthApplicationSource } from "@opensteer/integration-core";
-import { requestAgentProposedDetail } from "@opensteer/core";
 import {
   accessPlan,
   accessServerChoices,
@@ -9,7 +8,7 @@ import {
   integrationAccessSummary,
   integrationInstallReview,
   installationDefinition,
-  mainConnectAllowsNote,
+  mainAccessDetail,
   matchingInstallationForManifest,
   requestedAccountUnavailableDetail,
   type AccessRequestAccount,
@@ -83,8 +82,6 @@ export function connectCard(input: {
         });
   const accounts = plan?.accounts ?? [];
   const selected = plan?.selectedAccount ?? null;
-  const accountLabel = (account: Pick<AccessRequestAccount, "accountIdentifier" | "displayName">) =>
-    account.accountIdentifier ?? account.displayName;
   const serverChoices = accessServerChoices(loaded);
   const reconnect = plan?.requestedAccountMissing ? plan.requestedAccountReconnect : null;
   const upgrade = plan ? computerAccessUpgrade(plan, effectiveAccess) : null;
@@ -105,7 +102,7 @@ export function connectCard(input: {
     : null;
   let phase: ConnectCardPhase = "ask";
   let form: ConnectCardForm | null = null;
-  let primary: ConnectCardAction | null = { kind: "connect", label: `Connect ${name}` };
+  let primary: ConnectCardAction | null = { kind: "connect", label: "Connect" };
   let error = input.error ?? null;
   const installReview =
     loaded.request.installationId === null && review?.provenance ? review : null;
@@ -118,22 +115,33 @@ export function connectCard(input: {
     plan?.requestedAccess === "read" &&
     (plan.writeCount > 0 || plan.definition?.computerApp?.accessLevels.length === 2);
   const proposed = plan?.proposed === true || input.agentProposed === true;
-  const capabilities = [
-    ...(proposed ? [requestAgentProposedDetail] : []),
+  // Said on the card's foot: where the access lands, or how much a project gets
+  // when the card offers no choice about it.
+  const scope =
+    workspace.kind === "main"
+      ? `All tasks in ${workspace.name}`
+      : canAllowChanges
+        ? null
+        : grantedAccess === "read-write"
+          ? "Read and write"
+          : "Read only";
+  // Behind the card's details control: the facts a person may want before
+  // deciding, none of which changes what the buttons do.
+  const details = [
+    ...(workspace.kind === "project"
+      ? [`Only ${workspace.name} gets access.`]
+      : (
+            plan
+              ? plan.requirement.kind !== "computer"
+              : definition !== null && !definition.computerApp
+          )
+        ? [mainAccessDetail(workspace.name, name)]
+        : []),
     ...(plan
       ? [integrationAccessSummary(plan, grantedAccess)]
       : review?.provenance
         ? []
         : (review?.facts ?? [])),
-    ...(workspace.kind === "main" &&
-    (plan ? plan.requirement.kind !== "computer" : definition !== null && !definition.computerApp)
-      ? [mainConnectAllowsNote(workspace.name)]
-      : []),
-    ...(workspace.kind === "project" && loaded.request.access === "read-write"
-      ? [
-          "This task requires read-write access. It allows changes when operations become available.",
-        ]
-      : []),
     ...(plan?.definition?.computerApp
       ? [plan.definition.computerApp.accessSummaries.readWrite]
       : []),
@@ -170,16 +178,13 @@ export function connectCard(input: {
     primary = { kind: "upgrade", label: `Request sending access on ${upgrade.displayName}` };
   } else if (selected || plan.requirement.kind === "none") {
     phase = selected ? "choose-account" : "ask";
-    primary = {
-      kind: "use",
-      label: selected ? `Use ${accountLabel(selected)}` : `Allow in ${workspace.name}`,
-    };
+    primary = { kind: "use", label: "Allow" };
   } else if (plan.apiKeyMethod) {
     phase = "needs-form";
     form = "api-key";
     primary = {
       kind: "connect",
-      label: reconnect ? `Reconnect ${accountLabel(reconnect.account)}` : `Connect ${name}`,
+      label: reconnect ? `Reconnect ${accountLabel(reconnect.account)}` : "Connect",
     };
   } else if (plan.requirement.kind === "computer") {
     phase = "needs-form";
@@ -210,7 +215,7 @@ export function connectCard(input: {
     primary = null;
   }
   const success = input.connectedAccount
-    ? `✓ ${name} connected · ${accountLabel(input.connectedAccount)}`
+    ? `${name} connected · ${accountLabel(input.connectedAccount)}`
     : null;
   if (success) {
     phase = "connected";
@@ -220,27 +225,33 @@ export function connectCard(input: {
     phase = "answered";
     primary = null;
   }
+  const rows = accounts.filter(
+    ({ id }) => plan?.requestedConnectionId === null || id === plan?.requestedConnectionId,
+  );
+  // "Use" once there is an account to answer with; until then the card asks
+  // for a connection. A project's name is in the title because that is the
+  // whole of where the access goes.
+  const verb = selected || plan?.requirement.kind === "none" ? "Use" : "Connect";
   return {
     phase,
     proposed,
     name,
     iconId,
-    purpose: loaded.request.reason,
+    title: `${verb} ${name}${workspace.kind === "project" ? ` in ${workspace.name}` : ""}`,
+    reason: loaded.request.reason,
     primary,
     secondary: "Not now" as const,
-    accounts: accounts
-      .filter(
-        ({ id }) => plan?.requestedConnectionId === null || id === plan?.requestedConnectionId,
-      )
-      .map((account) => ({
-        ...account,
-        label: accountLabel(account),
-        detail: integrationAccountDetail(account, accounts),
-        selected: account.id === selected?.id,
-      })),
+    accounts: rows.map((account) => ({
+      ...account,
+      label: accountLabel(account),
+      // Told apart from every account of this integration, shown or not: a
+      // Request pinned to one still has to say which of two look-alikes it is.
+      detail: accountRowDetail(account, accounts),
+      selected: account.id === selected?.id,
+    })),
     selectedAccount: selected,
-    projectNote: workspace.kind === "project" ? `Only ${workspace.name} gets access` : null,
-    capabilities,
+    scope,
+    details,
     error,
     form,
     source,
@@ -255,5 +266,47 @@ export function connectCard(input: {
     serverChoices,
     success,
   };
+}
+
+const accountLabel = (account: Pick<AccessRequestAccount, "accountIdentifier" | "displayName">) =>
+  account.accountIdentifier ?? account.displayName;
+
+/**
+ * A row's second line, only where its label alone does not tell it from
+ * another row: a name only it has, or else when it was added.
+ */
+function accountRowDetail(
+  account: AccessRequestAccount,
+  accounts: readonly AccessRequestAccount[],
+): string | null {
+  const comparable = (value: string) => value.trim().toLocaleLowerCase();
+  const label = comparable(accountLabel(account));
+  const alike = accounts.filter((other) => comparable(accountLabel(other)) === label);
+  if (alike.length < 2) return null;
+  const name = comparable(account.displayName);
+  const nameSetsItApart =
+    name !== label &&
+    alike.every(({ displayName, id }) => id === account.id || comparable(displayName) !== name);
+  if (nameSetsItApart) return account.displayName;
+  // Without identifiers the detail is the date: the identifier is the label already.
+  const dated = (other: AccessRequestAccount) => ({ ...other, accountIdentifier: null });
+  return integrationAccountDetail(dated(account), alike.map(dated));
+}
+
+/**
+ * The account rows a card shows before "Show more": the first `limit`, always
+ * including the selected one so the account Allow answers with is on screen.
+ * A list one longer than the limit is shown whole, since a row that only
+ * reveals one more account costs as much space as the account itself.
+ */
+export function collapsedAccountRows<Row extends { readonly selected: boolean }>(
+  rows: readonly Row[],
+  limit: number,
+): { readonly rows: readonly Row[]; readonly hidden: number } {
+  if (rows.length <= limit + 1) return { rows, hidden: 0 };
+  const shown = rows.slice(0, limit);
+  const selected = rows.find((row) => row.selected);
+  if (selected && !shown.includes(selected)) shown[limit - 1] = selected;
+  return { rows: shown, hidden: rows.length - limit };
 }
 export type ConnectCard = ReturnType<typeof connectCard>;
