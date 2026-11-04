@@ -173,23 +173,24 @@ export interface IntegrationToolSchemas {
 }
 
 /**
- * Who is asking for integration authority: an agent Thread acting for its
- * owner in one Workspace. The Thread matters because Main inheritance belongs
- * to a lineage, not to the Workspace it runs in (see `mainAccess`).
+ * Integration authority always names a Thread or approved connection. Main
+ * inheritance belongs to that identity; a Workspace alone grants none.
  */
-export interface IntegrationRequester {
+export type IntegrationRequester = {
   readonly ownerUserId: UserId;
-  readonly threadId: ThreadId;
   readonly workspaceId: WorkspaceId;
-}
+} & (
+  | { readonly threadId: ThreadId; readonly connectionId?: never }
+  | { readonly connectionId: string; readonly threadId?: undefined }
+);
 
 /** Scope readiness to the account and access a resolved Request actually granted. */
-export interface IntegrationDiscoveryRequester extends IntegrationRequester {
+export type IntegrationDiscoveryRequester = IntegrationRequester & {
   readonly target?: {
     readonly access: IntegrationAccess;
     readonly connectionId: IntegrationConnectionId | null;
   };
-}
+};
 
 /**
  * How an asking Thread stands to its owner's Main: `inherited` reaches every
@@ -408,6 +409,33 @@ abstract class IntegrationPlatformStoreBase {
       .orderBy("alias", "asc")
       .execute();
     return rows.map(integrationGrantFromRow);
+  }
+
+  async connectionDiscoveryScope(userId: UserId, connectionId: string) {
+    const connection = await this.database
+      .selectFrom("agentConnections")
+      .select(["workspaceId"])
+      .where("id", "=", connectionId)
+      .where("userId", "=", userId)
+      .where("revokedAt", "is", null)
+      .where("tokenHash", "is not", null)
+      .where("expiresAt", ">", new Date())
+      .executeTakeFirst();
+    if (!connection)
+      throw new OpensteerError({ code: "forbidden", message: "Connection is unavailable" });
+    const workspaceId =
+      connection.workspaceId ??
+      (
+        await this.database
+          .selectFrom("workspaces")
+          .select("id")
+          .where("kind", "=", "main")
+          .where("createdBy", "=", userId)
+          .executeTakeFirst()
+      )?.id;
+    if (!workspaceId)
+      throw new OpensteerError({ code: "not_found", message: "Workspace is unavailable" });
+    return { workspaceId, connectionId, requestedBy: userId };
   }
 
   async mainAccess(input: IntegrationRequester): Promise<MainAccess | null> {
@@ -1664,11 +1692,13 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
             activeGrants.some(({ connectionId }) => connectionId === id),
           )
         : authority.connections;
-    const specialistThread = await this.database
-      .selectFrom("threads")
-      .select("specialistId")
-      .where("id", "=", input.threadId)
-      .executeTakeFirst();
+    const specialistThread = input.threadId
+      ? await this.database
+          .selectFrom("threads")
+          .select("specialistId")
+          .where("id", "=", input.threadId)
+          .executeTakeFirst()
+      : undefined;
     const ceilings = new Map<string, IntegrationAccess | null>();
     if (specialistThread?.specialistId) {
       for (const connection of connections) {
@@ -3187,6 +3217,7 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     input: IntegrationRequester,
     tools: readonly CallableIntegrationTool[],
   ): Promise<readonly CallableIntegrationTool[]> {
+    if (!input.threadId) return tools;
     const thread = await this.database
       .selectFrom("threads")
       .select("specialistId")

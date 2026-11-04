@@ -1,7 +1,7 @@
 import { createId } from "@opensteer/core";
 import Fastify from "fastify";
 import { generateKeyPairSync } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentConnectionStore } from "@opensteer/database";
 import {
   ConnectionOAuth,
@@ -11,6 +11,61 @@ import {
 import { registerConnectionRoutes } from "./connection-routes.js";
 
 describe("public MCP discovery boundaries", () => {
+  it("passes the resource-bound caller to the MCP request", async () => {
+    const app = Fastify();
+    const keys = generateKeyPairSync("ed25519");
+    const oauth = new ConnectionOAuth({
+      deploymentId: createId("deployment"),
+      store: {} as AgentConnectionStore,
+      signingKey: keys.privateKey,
+      verificationKey: keys.publicKey,
+    });
+    const connection = {
+      connectionId: "mcn_test",
+      userId: createId("user"),
+      accessMode: "approval-required" as const,
+      reach: { kind: "user" as const },
+    };
+    const authenticate = vi
+      .spyOn(oauth.authenticator, "authenticate")
+      .mockResolvedValue(connection);
+    registerConnectionRoutes(app, {
+      oauth,
+      canonicalOrigin: "https://server.example",
+      personal: false,
+    });
+    app.post(
+      "/internal/v1/mcp",
+      async (request) =>
+        (request.raw as typeof request.raw & { auth: { extra: { caller: unknown } } }).auth.extra
+          .caller,
+    );
+    try {
+      const token = `ost_mcp_${"a".repeat(43)}`;
+      const response = await app.inject({
+        method: "POST",
+        url: "/internal/v1/mcp",
+        headers: {
+          host: "server.example",
+          "x-forwarded-proto": "https",
+          authorization: `Bearer ${token}`,
+        },
+        payload: {},
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        ...connection,
+        kind: "connection",
+        key: "connection:mcn_test",
+      });
+      expect(authenticate).toHaveBeenCalledExactlyOnceWith(
+        token,
+        "https://server.example/internal/v1/mcp",
+      );
+    } finally {
+      await app.close();
+    }
+  });
   it("uses the server public origin without replacing native OAuth metadata", async () => {
     const app = Fastify();
     const keys = generateKeyPairSync("ed25519");

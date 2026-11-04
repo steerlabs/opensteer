@@ -25,7 +25,7 @@ export type EnvironmentDiscoveryStore = Pick<
 export async function environmentDiscovery(options: {
   readonly store: EnvironmentDiscoveryStore;
   readonly userId: UserId;
-  readonly parent: Thread;
+  readonly parent?: Thread;
   readonly input: EnvironmentListInput;
   readonly connected: (id: EnvironmentId) => boolean;
   readonly canRun: (id: EnvironmentId, driverKind: HarnessId) => boolean;
@@ -68,15 +68,19 @@ export async function environmentDiscovery(options: {
   }
   const environments = environmentRows.slice(0, 64);
   return EnvironmentDiscoverySchema.parse({
-    delegationDefault: {
-      environmentId: parent.environmentId,
-      harnessInstanceId: parent.harnessInstanceId,
-      model: {
-        modelId: parent.modelSelection.modelId,
-        providerId: parent.modelSelection.providerId,
-        options: parent.modelSelection.options,
-      },
-    },
+    ...(parent
+      ? {
+          delegationDefault: {
+            environmentId: parent.environmentId,
+            harnessInstanceId: parent.harnessInstanceId,
+            model: {
+              modelId: parent.modelSelection.modelId,
+              providerId: parent.modelSelection.providerId,
+              options: parent.modelSelection.options,
+            },
+          },
+        }
+      : {}),
     environments: environments.map(({ id, kind, name }) => ({
       id,
       kind,

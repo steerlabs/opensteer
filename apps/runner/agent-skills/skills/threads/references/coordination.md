@@ -87,13 +87,13 @@ parts. You may also forward places your Run is authorized to use. The Host check
 and the child Workspace's access; forwarding grants no approval or session. Release a held
 phone before handing it to another task. Resolve missing access in a Thread able to request it.
 
-Use `thread_configure` with action `read` to inspect an existing Thread's selection, or `set`
-with `harnessInstanceId` and/or `modelSelection` to change it. Discovery supplies exact IDs and
+Use `thread_read` to inspect an existing Thread's execution selection. Use `thread_configure`
+with action `set` and `harnessInstanceId` and/or `modelSelection` to change it. Discovery supplies exact IDs and
 option types. A known native-session switch may require `continuation`; never invent its ID.
 This tool cannot change access mode. `settings_read`/`settings_write` manage defaults and
 remembered choices; they do not rewrite existing Threads.
 
-Use `thread_queue` list before changing unknown queued inputs. Its items show message IDs and
+Read `thread_read.queue` before changing unknown queued inputs with `thread_queue`. Its items show message IDs and
 canCancel/canMove/canSteer. move needs beforeMessageId (null for end); steer needs the active
 expectedRunId. It preserves the original requester and message. resume releases the queue,
 not extra authority. `thread_write` interrupt is a resumable Stop; `assignment_cancel` is

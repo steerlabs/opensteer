@@ -111,6 +111,24 @@ describe("bounded Thread waits", () => {
     f.change({ messages: [{ id: createId("message") } as never] });
     expect(await pending).toMatchObject({ status: "running", messages: [expect.anything()] });
   });
+  it("keeps a real 30-day connection alive for the bounded wait", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.change({ authorityExpiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 });
+    const pending = f.wait();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await pending).toMatchObject({ status: "timed_out" });
+    expect(f.read).toHaveBeenCalledOnce();
+  });
+  it("returns when the Thread needs the person", async () => {
+    const f = fixture();
+    const pending = f.wait();
+    await vi.waitFor(() => expect(f.read).toHaveBeenCalledOnce());
+    const pendingRequest = { id: createId("request"), kind: "approval" };
+    f.change({ pendingRequest });
+    expect(await pending).toMatchObject({ status: "running", pendingRequest });
+    expect(f.listeners.size).toBe(0);
+  });
   it("expires caller authority at its own deadline", async () => {
     vi.useFakeTimers();
     const f = fixture();

@@ -17,10 +17,14 @@ export async function measureMcpContext(kind: AgentCallerKind) {
     publicUrl: new URL("http://localhost"),
     handlers: unavailable as never,
     callers: unavailable as never,
-    receipts: unavailable as never,
     store: unavailable as never,
   });
-  const server = service.createServer({ kind, key: "context-budget" } as AgentCaller);
+  const server = service.createServer({
+    kind,
+    key: "context-budget",
+    accessMode: "full-access",
+    reach: { kind: "user" },
+  } as AgentCaller);
   const client = new Client({ name: "context-budget", version: "1" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   try {

@@ -53,10 +53,14 @@ export class AdministrationToolHandlers {
         message: "Active Workspace membership is required",
       });
   }
-  #write(call: { caller: AgentCaller; operationKey: string }, value: Record<string, unknown>) {
+  #write(
+    call: { caller: AgentCaller; operationKey: string },
+    tool: AdministrationToolName,
+    value: Record<string, unknown>,
+  ) {
     return command({
       ...value,
-      idempotencyKey: operationId(call.caller, call.operationKey, "administration"),
+      idempotencyKey: operationId(call.caller, call.operationKey, tool),
     });
   }
   projectCommand(c: ToolCall<"project_write">) {
@@ -64,21 +68,29 @@ export class AdministrationToolHandlers {
     const common = { workspaceId: i.workspaceId };
     switch (i.action) {
       case "set_icon":
-        return this.#write(c, { ...common, type: "workspace.icon.set", icon: i.icon });
+        return this.#write(c, "project_write", {
+          ...common,
+          type: "workspace.icon.set",
+          icon: i.icon,
+        });
       case "set_color":
-        return this.#write(c, { ...common, type: "workspace.color.set", color: i.color });
+        return this.#write(c, "project_write", {
+          ...common,
+          type: "workspace.color.set",
+          color: i.color,
+        });
       case "set_notifications":
-        return this.#write(c, {
+        return this.#write(c, "project_write", {
           ...common,
           type: "workspace.notifications.update",
           muted: i.muted,
         });
       case "delete":
-        return this.#write(c, { ...common, type: "workspace.delete" });
+        return this.#write(c, "project_write", { ...common, type: "workspace.delete" });
       case "recover":
-        return this.#write(c, { ...common, type: "workspace.deletion.recover" });
+        return this.#write(c, "project_write", { ...common, type: "workspace.deletion.recover" });
       case "retry_storage":
-        return this.#write(c, { ...common, type: "workspace.storage.retry" });
+        return this.#write(c, "project_write", { ...common, type: "workspace.storage.retry" });
     }
   }
   settingsCommand(c: ToolCall<"settings_write">) {
@@ -86,37 +98,55 @@ export class AdministrationToolHandlers {
     const common = { environmentId: i.environmentId, harnessInstanceId: i.harnessInstanceId };
     switch (i.action) {
       case "set_default":
-        return this.#write(c, { ...common, type: "harness.default.set" });
+        return this.#write(c, "settings_write", { ...common, type: "harness.default.set" });
       case "configure_model":
-        return this.#write(c, {
+        return this.#write(c, "settings_write", {
           ...common,
           type: "harness.model.configure",
           nativeModelId: i.nativeModelId,
           settings: i.settings,
         });
       case "set_enabled":
-        return this.#write(c, { ...common, type: "harness.enabled.set", enabled: i.enabled });
+        return this.#write(c, "settings_write", {
+          ...common,
+          type: "harness.enabled.set",
+          enabled: i.enabled,
+        });
       case "rename":
-        return this.#write(c, { ...common, type: "harness.rename", name: i.name });
+        return this.#write(c, "settings_write", {
+          ...common,
+          type: "harness.rename",
+          name: i.name,
+        });
       case "remember_execution":
-        return this.#write(c, {
+        return this.#write(c, "settings_write", {
           type: "execution.preferences.remember",
           selection: i.selection,
           accessMode: i.accessMode,
         });
       case "set_time_zone":
-        return this.#write(c, { type: "viewer.timeZone.update", timeZone: i.timeZone });
+        return this.#write(c, "settings_write", {
+          type: "viewer.timeZone.update",
+          timeZone: i.timeZone,
+        });
     }
   }
   computerCommand(c: ToolCall<"computer_write">) {
     const i = c.input;
     switch (i.action) {
       case "rename":
-        return this.#write(c, { type: "machine.rename", machineId: i.machineId, name: i.name });
+        return this.#write(c, "computer_write", {
+          type: "machine.rename",
+          machineId: i.machineId,
+          name: i.name,
+        });
       case "revoke":
-        return this.#write(c, { type: "machine.revoke", machineId: i.machineId });
+        return this.#write(c, "computer_write", { type: "machine.revoke", machineId: i.machineId });
       case "stop_session":
-        return this.#write(c, { type: "machine.access.session.stop", sessionId: i.sessionId });
+        return this.#write(c, "computer_write", {
+          type: "machine.access.session.stop",
+          sessionId: i.sessionId,
+        });
     }
   }
   async integrationCommand(c: ToolCall<"integration_manage">) {
@@ -131,15 +161,18 @@ export class AdministrationToolHandlers {
               ownerUserId: c.caller.userId,
             })
           : null;
-        return this.#write(c, {
+        return this.#write(c, "integration_manage", {
           type: kind === "mcp-oauth" ? "integration.mcp.disconnect" : "integration.disconnect",
           connectionId: i.connectionId,
         });
       }
       case "uninstall":
-        return this.#write(c, { type: "integration.uninstall", installationId: i.installationId });
+        return this.#write(c, "integration_manage", {
+          type: "integration.uninstall",
+          installationId: i.installationId,
+        });
       case "revoke_grant":
-        return this.#write(c, {
+        return this.#write(c, "integration_manage", {
           type: "integration.grant.revoke",
           workspaceId: i.workspaceId,
           grantId: i.grantId,
@@ -152,10 +185,13 @@ export class AdministrationToolHandlers {
       case "list":
         return null;
       case "revoke_binding":
-        return this.#write(c, { type: "channel.binding.revoke", bindingId: i.bindingId });
+        return this.#write(c, "channel_manage", {
+          type: "channel.binding.revoke",
+          bindingId: i.bindingId,
+        });
       case "pause":
       case "resume":
-        return this.#write(c, {
+        return this.#write(c, "channel_manage", {
           type: "channel.connection.status.set",
           connectionId: i.connectionId,
           status: i.action === "pause" ? "paused" : "connected",
@@ -168,23 +204,23 @@ export class AdministrationToolHandlers {
       case "list":
         return null;
       case "update":
-        return this.#write(c, {
+        return this.#write(c, "plugin_manage", {
           type: "plugin.update",
           pluginId: i.pluginId,
           input: { directory: i.directory, ...(i.runnerId ? { runnerId: i.runnerId } : {}) },
         });
       case "activate":
       case "deactivate":
-        return this.#write(c, {
+        return this.#write(c, "plugin_manage", {
           type: "plugin.activation.set",
           workspaceId: i.workspaceId,
           pluginId: i.pluginId,
           active: i.action === "activate",
         });
       case "remove":
-        return this.#write(c, { type: "plugin.remove", pluginId: i.pluginId });
+        return this.#write(c, "plugin_manage", { type: "plugin.remove", pluginId: i.pluginId });
       case "remove_specialist":
-        return this.#write(c, {
+        return this.#write(c, "plugin_manage", {
           type: "specialist.remove",
           workspaceId: i.workspaceId,
           specialistId: i.specialistId,
@@ -197,29 +233,38 @@ export class AdministrationToolHandlers {
       case "list":
         return null;
       case "rename":
-        return this.#write(c, {
+        return this.#write(c, "browser_profile_write", {
           type: "browser.profile.rename",
           profileId: i.profileId,
           name: i.name,
         });
       case "delete":
-        return this.#write(c, { type: "browser.profile.delete", profileId: i.profileId });
+        return this.#write(c, "browser_profile_write", {
+          type: "browser.profile.delete",
+          profileId: i.profileId,
+        });
       case "clear_history":
-        return this.#write(c, { type: "browser.history.clear", profileId: i.profileId });
+        return this.#write(c, "browser_profile_write", {
+          type: "browser.history.clear",
+          profileId: i.profileId,
+        });
       case "remove_history":
-        return this.#write(c, {
+        return this.#write(c, "browser_profile_write", {
           type: "browser.history.remove",
           profileId: i.profileId,
           url: i.url,
         });
       case "remove_site":
-        return this.#write(c, {
+        return this.#write(c, "browser_profile_write", {
           type: "browser.site.remove",
           workspaceId: i.workspaceId,
           site: i.site,
         });
       case "revoke_grant":
-        return this.#write(c, { type: "browser.profileGrant.revoke", grantId: i.grantId });
+        return this.#write(c, "browser_profile_write", {
+          type: "browser.profileGrant.revoke",
+          grantId: i.grantId,
+        });
     }
   }
   async execute(caller: AgentCaller, command: AdministrationCommand) {
@@ -234,11 +279,11 @@ export class AdministrationToolHandlers {
       store.getExecutionPreferences(caller.userId),
       store.notificationState.timeZoneFor(caller.userId),
     ]);
-    return specs.settings_read.output.parse({
+    return {
       harnesses: instances.map(harnessView),
       preferences,
       timeZone,
-    });
+    };
   }
   async computer_list({ caller, input }: ToolCall<"computer_list">) {
     assertUserReach(caller);
@@ -408,31 +453,20 @@ export function administrationToolHandlers(
 ): AdministrationHandlers {
   const mutation = <Name extends AdministrationToolName>(
     parse: (call: ToolCall<Name>) => AdministrationCommand | Promise<AdministrationCommand>,
-    output: {
-      parse: (
-        value: unknown,
-      ) => ReturnType<AdministrationHandlers[Name]> extends Promise<infer T> ? T : never;
-    },
   ) =>
-    Object.assign(
-      async (call: ToolCall<Name>) =>
-        output.parse(await admin.execute(call.caller, await parse(call))),
-      {
-        authorize: async (call: ToolCall<Name>) =>
-          admin.service.authorize(call.caller, await parse(call)),
-      },
-    );
+    Object.assign(async (call: ToolCall<Name>) => admin.execute(call.caller, await parse(call)), {
+      authorize: async (call: ToolCall<Name>) =>
+        admin.service.authorize(call.caller, await parse(call)),
+    });
   return {
-    project_write: mutation((c) => admin.projectCommand(c), specs.project_write.output),
-    settings_write: mutation((c) => admin.settingsCommand(c), specs.settings_write.output),
-    computer_write: mutation((c) => admin.computerCommand(c), specs.computer_write.output),
+    project_write: mutation((c) => admin.projectCommand(c)),
+    settings_write: mutation((c) => admin.settingsCommand(c)),
+    computer_write: mutation((c) => admin.computerCommand(c)),
     browser_profile_write: Object.assign(
       async (c: ToolCall<"browser_profile_write">) =>
-        specs.browser_profile_write.output.parse(
-          c.input.action === "list"
-            ? await admin.browser_list(c)
-            : await admin.execute(c.caller, admin.browserCommand(c)!),
-        ),
+        c.input.action === "list"
+          ? await admin.browser_list(c)
+          : await admin.execute(c.caller, admin.browserCommand(c)!),
       {
         authorize: async (c: ToolCall<"browser_profile_write">) => {
           const command = admin.browserCommand(c);
@@ -442,14 +476,12 @@ export function administrationToolHandlers(
       },
     ),
     settings_read: (c) => admin.settings_read(c),
-    computer_list: async (c) => specs.computer_list.output.parse(await admin.computer_list(c)),
+    computer_list: async (c) => await admin.computer_list(c),
     integration_manage: Object.assign(
       async (c: ToolCall<"integration_manage">) =>
-        specs.integration_manage.output.parse(
-          c.input.action === "list"
-            ? await admin.integration_list(c)
-            : await admin.execute(c.caller, (await admin.integrationCommand(c))!),
-        ),
+        c.input.action === "list"
+          ? await admin.integration_list(c)
+          : await admin.execute(c.caller, (await admin.integrationCommand(c))!),
       {
         authorize: async (c: ToolCall<"integration_manage">) => {
           const command = await admin.integrationCommand(c);
@@ -460,11 +492,9 @@ export function administrationToolHandlers(
     ),
     channel_manage: Object.assign(
       async (c: ToolCall<"channel_manage">) =>
-        specs.channel_manage.output.parse(
-          c.input.action === "list"
-            ? await admin.channel_list(c)
-            : await admin.execute(c.caller, admin.channelCommand(c)!),
-        ),
+        c.input.action === "list"
+          ? await admin.channel_list(c)
+          : await admin.execute(c.caller, admin.channelCommand(c)!),
       {
         authorize: async (c: ToolCall<"channel_manage">) => {
           const command = admin.channelCommand(c);
@@ -475,11 +505,9 @@ export function administrationToolHandlers(
     ),
     plugin_manage: Object.assign(
       async (c: ToolCall<"plugin_manage">) =>
-        specs.plugin_manage.output.parse(
-          c.input.action === "list"
-            ? await admin.plugin_list(c)
-            : await admin.execute(c.caller, admin.pluginCommand(c)!),
-        ),
+        c.input.action === "list"
+          ? await admin.plugin_list(c)
+          : await admin.execute(c.caller, admin.pluginCommand(c)!),
       {
         authorize: async (c: ToolCall<"plugin_manage">) => {
           const command = admin.pluginCommand(c);

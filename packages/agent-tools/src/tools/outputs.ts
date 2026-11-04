@@ -109,7 +109,7 @@ const DelegationDefaultSchema = z.object({
   }),
 });
 export const EnvironmentDiscoverySchema = z.object({
-  delegationDefault: DelegationDefaultSchema,
+  delegationDefault: DelegationDefaultSchema.optional(),
   environments: z.array(EnvironmentSummarySchema).max(64),
   environmentsNextCursor: EnvironmentIdSchema.optional(),
   harnesses: z
@@ -143,18 +143,6 @@ export const ThreadSummarySchema = z.object({
   workspaceName: z.string(),
 });
 export const MessageOutputSchema = z.object(MessageSchema.shape);
-export const ThreadReadOutputSchema = z
-  .object({
-    assignments: z.array(AssignmentSummarySchema).max(50),
-    assignmentWindow: WindowSchema,
-    messages: z.array(MessageOutputSchema).max(100),
-    thread: ThreadOutputSchema,
-    window: WindowSchema,
-  })
-  .refine(
-    (result) => new TextEncoder().encode(JSON.stringify(result)).byteLength <= 432 * 1024,
-    "Thread history exceeds the agent output byte limit",
-  );
 export const ThreadListOutputSchema = z.object({
   threads: z.array(ThreadSummarySchema).max(50),
   window: WindowSchema,
@@ -380,6 +368,7 @@ export { AgentMediaContentSchema } from "./integration-outputs.js";
 
 export const ThreadWaitOutputSchema = z.object({
   status: z.enum(["running", "settled", "offline", "timed_out"]),
+  pendingRequest: z.object({ id: z.string(), kind: z.string() }).optional(),
   run: z.object({ id: RunSchema.shape.id, status: RunSchema.shape.status }).optional(),
   messages: z.array(MessageOutputSchema).max(100),
 });
@@ -413,3 +402,18 @@ export const ThreadQueueOutputSchema = z.object({
     .max(100),
   input: z.object(ThreadInputSchema.shape).optional(),
 });
+
+export const ThreadReadOutputSchema = z
+  .object({
+    assignments: z.array(AssignmentSummarySchema).max(50),
+    assignmentWindow: WindowSchema,
+    messages: z.array(MessageOutputSchema).max(100),
+    thread: ThreadOutputSchema,
+    execution: ThreadConfigureOutputSchema,
+    queue: ThreadQueueOutputSchema,
+    window: WindowSchema,
+  })
+  .refine(
+    (result) => new TextEncoder().encode(JSON.stringify(result)).byteLength <= 432 * 1024,
+    "Thread history exceeds the agent output byte limit",
+  );

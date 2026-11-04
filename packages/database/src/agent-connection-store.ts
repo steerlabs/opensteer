@@ -5,17 +5,7 @@ import type { Kysely, Selectable } from "kysely";
 import type { AgentConnectionTable, DatabaseSchema } from "./schema.js";
 import { withDatabaseTransaction } from "./connection.js";
 
-const revocationListeners = new WeakMap<Kysely<DatabaseSchema>, Set<(id: string) => void>>();
 export class AgentConnectionStore {
-  onRevoked(listener: (id: string) => void): () => void {
-    const listeners = revocationListeners.get(this.database) ?? new Set();
-    revocationListeners.set(this.database, listeners);
-    listeners.add(listener);
-    return () => {
-      listeners.delete(listener);
-    };
-  }
-
   readonly database: Kysely<DatabaseSchema>;
   readonly now: () => Date;
   constructor(database: Kysely<DatabaseSchema>, now: () => Date = () => new Date()) {
@@ -164,7 +154,7 @@ export class AgentConnectionStore {
 
   async revoke(userId: UserId, id: string): Promise<void> {
     // Idempotent and owner-filtered; a foreign ID discloses nothing.
-    const revoked = await this.database
+    await this.database
       .updateTable("agentConnections")
       .set({ revokedAt: this.now(), tokenHash: null })
       .where("id", "=", id)
@@ -172,8 +162,6 @@ export class AgentConnectionStore {
       .where("revokedAt", "is", null)
       .returning("id")
       .executeTakeFirst();
-    if (revoked)
-      for (const listener of revocationListeners.get(this.database) ?? []) listener(revoked.id);
   }
 }
 function unauthorized() {

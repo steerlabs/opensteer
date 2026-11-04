@@ -79,6 +79,7 @@ const specialist = z.object({
 
 export const project_write = defineAgentTool({
   name: "project_write",
+  minimumReach: "workspace",
   title: "Manage a Project",
   description:
     "Change Project marks/notifications, delete/recover or retry storage. Full-access within reach; Main cannot be deleted. Returns ok and changed Workspace/muted state. Invitations and grants need the person.",
@@ -109,6 +110,7 @@ export const project_write = defineAgentTool({
 });
 export const settings_read = defineAgentTool({
   name: "settings_read",
+  minimumReach: "user",
   title: "Read settings",
   description:
     "Read non-secret engine accounts, remembered execution choices and time zone. Requires user-wide reach. Use environment_list for live models.",
@@ -123,6 +125,7 @@ export const settings_read = defineAgentTool({
 });
 export const settings_write = defineAgentTool({
   name: "settings_write",
+  minimumReach: "user",
   title: "Change settings",
   description:
     "Set engine defaults/limits/enabled state/name, execution preferences or time zone. Full-access and user-wide reach. Returns ok/changed settings. remember_execution cannot exceed your ceiling or change a Thread’s mode. Authentication/new accounts/credentials need the person.",
@@ -175,6 +178,7 @@ export const settings_write = defineAgentTool({
 });
 export const computer_list = defineAgentTool({
   name: "computer_list",
+  minimumReach: "user",
   title: "List computers",
   description:
     "List enrolled computers, online/revoked state and active access-session IDs. User-wide reach required. Returns machines/nextCursor; pass cursor as after. Grants no shell/app access.",
@@ -196,6 +200,7 @@ export const computer_list = defineAgentTool({
 });
 export const computer_write = defineAgentTool({
   name: "computer_write",
+  minimumReach: "user",
   title: "Manage a computer",
   description:
     "Rename/revoke a computer or stop an access session. Full-access and user-wide reach. rename: machineId/name; revoke: machineId; stop_session: sessionId. Returns ok/ended. Enrollment/pairing/grants need the person.",
@@ -213,6 +218,7 @@ export const computer_write = defineAgentTool({
 });
 export const integration_manage = defineAgentTool({
   name: "integration_manage",
+  minimumReach: "workspace",
   title: "Manage integrations",
   description:
     "List connections/installations/grants; disconnect, uninstall or revoke_grant directly. Full-access within reach. Returns ok and non-secret inventory for list. New accounts/credentials/consent/grants need integration_request/the person.",
@@ -250,6 +256,7 @@ export const integration_manage = defineAgentTool({
 });
 export const channel_manage = defineAgentTool({
   name: "channel_manage",
+  minimumReach: "workspace",
   title: "Manage channels",
   description:
     "List messaging connections/bindings, revoke_binding, or pause/resume an existing connection. Full-access within reach. Returns ok/inventory. New channels, identity links, credentials and binding grants need the person.",
@@ -281,6 +288,7 @@ export const channel_manage = defineAgentTool({
 });
 export const plugin_manage = defineAgentTool({
   name: "plugin_manage",
+  minimumReach: "workspace",
   title: "Manage plugins",
   description:
     "List plugins/specialists; update, activate/deactivate, remove or remove_specialist. Full-access within reach. Returns ok/inventory. Activation grants no resource access; bindings and local MCP launch approval need the person.",
@@ -313,6 +321,7 @@ export const plugin_manage = defineAgentTool({
 });
 export const browser_profile_write = defineAgentTool({
   name: "browser_profile_write",
+  minimumReach: "workspace",
   title: "Manage browser profiles",
   description:
     "List profiles/grants/sites; rename/delete, clear/remove history, remove_site or revoke_grant directly. Full-access within reach. Returns ok/inventory/deletion state. New grants need browser_access_request/the person; pairing/sign-in need the person.",

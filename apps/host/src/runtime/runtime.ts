@@ -109,7 +109,6 @@ import { AgentCallerResolver } from "../mcp/agent-caller.js";
 import { ProductToolHandlers } from "../mcp/handlers/product.js";
 import { TriggerToolHandlers } from "../mcp/handlers/triggers.js";
 import { agentToolHandlers } from "../mcp/handlers/index.js";
-import { AgentOperationReceipts } from "@opensteer/database";
 import { RunnerAgentWorkspaceMountService } from "../agents/agent-workspace-mount-service.js";
 import { ContinuationService } from "../agents/continuation-service.js";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
@@ -2193,6 +2192,7 @@ export async function createHostRuntime(
     );
     const agentTools = new OpensteerMcpService({
       publicUrl: config.runtimeOrigin,
+      realtime,
       callers: new AgentCallerResolver({
         store,
         runs: runToolTokens,
@@ -2200,7 +2200,6 @@ export async function createHostRuntime(
         watches: watchControlTokens,
         connections: connections.authenticator,
       }),
-      receipts: new AgentOperationReceipts(database),
       store,
       handlers: agentToolHandlers({
         administration,

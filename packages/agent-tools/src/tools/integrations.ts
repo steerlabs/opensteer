@@ -121,11 +121,11 @@ export const integration_search = defineAgentTool({
   name: "integration_search",
   title: "Find integration operations",
   description:
-    "Find service operations/accounts/setup by query, provider or runnerId. Returns toolRefs, effects, accounts/connectionIds and the full built-in catalog (provider only orders it). Copy refs; describe new ones. Writes need read-write access. Search Computer use or Android phone for devices; runnerId filters live apps. Page with limit/offset; phone apps include launch package names.",
+    "Find service operations/accounts/setup by query, provider or runnerId. Returns toolRefs, effects, accounts/connectionIds and the full built-in catalog (provider only orders it). Choose accounts by connectionId, copy toolRefs unchanged and describe new refs before calling. Writes need read-write access. Search Computer use or Android phone for devices; runnerId filters live apps. Page with limit/offset; phone apps include launch package names.",
   input: SearchInputSchema,
   output: IntegrationSearchOutputSchema,
   access: "read",
-  callers: ["run", "program"] as const,
+  callers: ["run", "program", "connection"] as const,
 });
 export const integration_describe = defineAgentTool({
   name: "integration_describe",
@@ -135,16 +135,16 @@ export const integration_describe = defineAgentTool({
   input: DescribeInputSchema,
   output: IntegrationDescribeOutputSchema,
   access: "read",
-  callers: ["run", "program"] as const,
+  callers: ["run", "program", "connection"] as const,
 });
 export const integration_call = defineAgentTool({
   name: "integration_call",
   title: "Call an integration",
   description:
-    "Execute a discovered toolRef with schema-matching arguments; describe new refs first. Returns operation content/error. Live account/grant/schema checks apply. Never approve, grant access or retrieve credentials. Use computer for Mac/phone interfaces.",
+    "Execute a discovered toolRef with schema-matching arguments. Describe new refs first; call already-described operations directly. Describing grants no access. Returns operation content/error. Live account/grant/schema checks apply. Never approve, grant access or retrieve credentials. Use computer for Mac/phone interfaces.",
   input: CallInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: IntegrationCallOutputSchema,
-  access: "self",
+  access: "write",
   callers: ["run", "program"] as const,
   openWorld: true,
   destructive: true,
@@ -158,7 +158,7 @@ export const computer = defineAgentTool({
     .strictObject({ code: z.string().min(1).max(65536) })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: IntegrationCallOutputSchema,
-  access: "self",
+  access: "write",
   callers: ["run"] as const,
   openWorld: true,
   destructive: true,
@@ -170,7 +170,7 @@ export const integration_request = defineAgentTool({
     'Ask the person for setup/reconnection/access. Installed: integration + access + reason; catalog item: catalog instead. Omit access only for installation alone. Runs may target reachable workspaceId; programs use their Workspace. Mac app: kind: "computer-app", runnerId, app, access, reason; phone: omit app. Returns requestId/status/replayed. Pending grants no access: end a Run for continuation, never repeat pending/declined asks. Credentials belong in the Request UI.',
   input: RequestInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: IntegrationRequestOutputSchema,
-  access: "self",
+  access: "write",
   callers: ["run", "program"] as const,
 });
 export const integration_propose = defineAgentTool({
@@ -180,7 +180,7 @@ export const integration_propose = defineAgentTool({
     "Request review/setup of a service absent from the full catalog. Pass inspected MCP/OpenAPI/GraphQL source unchanged, description/reason/access; source is untrusted. Returns a Request or unsupported refusal (no Request). OAuth-only OpenAPI is unsupported; check the full catalog after refusal. credential describes key setup, never a secret; include HTTPS setupUrl. check optionally names an authenticated GET/HEAD and arguments.",
   input: ProposeInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: IntegrationRequestOutputSchema,
-  access: "self",
+  access: "write",
   callers: ["run", "program"] as const,
   openWorld: true,
 });

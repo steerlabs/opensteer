@@ -1,4 +1,4 @@
-import { connectionInstructions } from "@opensteer/agent-tools";
+import { connectionInstructions, toolsFor } from "@opensteer/agent-tools";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentCaller, RunCaller } from "./agent-caller.js";
 import type { AgentToolHandlers } from "./handlers/index.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
-import { MemoryOperationReceipts } from "./receipts.test-support.js";
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -76,7 +75,12 @@ function fixture() {
   ]);
   const targets = new Map([[thread.id, thread]]);
   const messageId = createId("message");
-  const personMessage = vi.fn(async () => ({ messageId, unnamedSecret: "private" }));
+  const personMessage = vi.fn(
+    async (_call: import("./handlers/index.js").ToolCall<"person_message">) => ({
+      messageId,
+      unnamedSecret: "private",
+    }),
+  );
   const handlers = {
     person_message: personMessage,
     project_list: vi.fn(async () => ({
@@ -91,7 +95,20 @@ function fixture() {
     }),
     integration_search: vi.fn(async () => ({ total: 0, nextOffset: null })),
   } as unknown as AgentToolHandlers;
+  const changes = new Set<
+    Parameters<import("@opensteer/orchestration").RealtimeHub["observe"]>[0]
+  >();
   const options = {
+    realtime: {
+      observe: (
+        listener: Parameters<import("@opensteer/orchestration").RealtimeHub["observe"]>[0],
+      ) => {
+        changes.add(listener);
+        return () => {
+          changes.delete(listener);
+        };
+      },
+    },
     callers: {
       authenticate: vi.fn(async (token: string) => {
         const caller = callers.get(token);
@@ -100,7 +117,7 @@ function fixture() {
       }),
     },
     handlers,
-    receipts: new MemoryOperationReceipts(),
+
     store: {
       getThreadForOwner: async (id: Thread["id"]) => targets.get(id) ?? null,
       findMainWorkspaceForOwner: async () => undefined,
@@ -109,6 +126,9 @@ function fixture() {
     publicUrl: new URL("http://127.0.0.1"),
   };
   return {
+    change: () => {
+      for (const listener of changes) listener({ type: "host.tasks-changed" });
+    },
     thread,
     run,
     callers,
@@ -121,6 +141,7 @@ function fixture() {
 }
 async function httpFixture() {
   const f = fixture();
+  await f.service.close();
   let service: OpensteerMcpService;
   const server = createServer((request, response) => {
     void (async () => {
@@ -129,10 +150,11 @@ async function httpFixture() {
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       const text = Buffer.concat(chunks).toString();
       const token = request.headers.authorization?.slice(7) ?? "";
+      const body = text ? JSON.parse(text) : undefined;
       await service.handle(
         request,
         response,
-        text ? JSON.parse(text) : undefined,
+        body,
         token,
         token === "connection" ? service.options.publicUrl.origin : undefined,
       );
@@ -171,12 +193,158 @@ describe("Opensteer MCP spine", () => {
     const client = await connect(f.url, "run");
     try {
       const names = (await client.listTools(undefined, { timeout: 5000 })).tools.map((t) => t.name);
-      expect(names).toHaveLength(46);
+      expect(names).toEqual(toolsFor(f.run).map((t) => t.name));
       expect(names).not.toContain("thread_wait");
       expect(names).toContain("integration_call");
       expect(names).toContain("thread_delegate");
       expect(client.getServerVersion()?.name).toBe("opensteer");
       expect(client.getInstructions()).toBeUndefined();
+    } finally {
+      await client.close();
+      await f.service.close();
+    }
+  });
+  it("reserves internal capacity and bounds each connection including detached calls", async () => {
+    const f = await httpFixture();
+    const initialize = () =>
+      fetch(f.url, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer connection",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-11-25",
+            capabilities: {},
+            clientInfo: { name: "capacity", version: "1" },
+          },
+        }),
+      });
+    try {
+      for (let i = 0; i < 8; i++) expect((await initialize()).status).toBe(200);
+      expect((await initialize()).status).toBe(503);
+      const client = await connect(f.url, "run");
+      await client.close();
+      const detached = await fetch(f.url, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer connection",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-session-id": "forgotten",
+          "mcp-protocol-version": "2025-11-25",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+      });
+      expect(detached.status).toBe(503);
+    } finally {
+      await f.service.close();
+    }
+  });
+  it("releases capacity when initialization fails without a session", async () => {
+    const f = await httpFixture();
+    try {
+      for (let i = 0; i < 8; i++) {
+        const response = await fetch(f.url, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer connection",
+            accept: "application/json, text/event-stream",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+        });
+        expect(response.headers.get("mcp-session-id")).toBeNull();
+        expect((await response.json()).error).toBeDefined();
+      }
+      const client = await connect(f.url, "connection");
+      await client.close();
+    } finally {
+      await f.service.close();
+    }
+  });
+  it("counts in-flight detached servers and frees revoked sessions", async () => {
+    const f = await httpFixture();
+    const finish = new Set<() => void>();
+    f.handlers.thread_wait = async () =>
+      new Promise((resolve) => {
+        finish.add(() => resolve({ status: "timed_out", messages: [] }));
+      });
+    const send = () =>
+      fetch(f.url, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer connection",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-session-id": "detached",
+          "mcp-protocol-version": "2025-11-25",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "thread_wait", arguments: { threadId: f.thread.id } },
+        }),
+      });
+    const pending = Array.from({ length: 8 }, () => send());
+    try {
+      await vi.waitFor(() => expect(finish.size).toBe(8), { timeout: 2000 });
+      expect((await send()).status).toBe(503);
+      const caller = f.callers.get("connection")!;
+      f.callers.delete("connection");
+      const ended = Promise.allSettled(pending);
+      f.change();
+      expect((await ended).every((result) => result.status === "rejected")).toBe(true);
+      f.callers.set("connection", caller);
+      for (const resolve of finish) resolve();
+      const client = await connect(f.url, "connection");
+      await client.close();
+    } finally {
+      for (const resolve of finish) resolve();
+      await f.service.close();
+    }
+  });
+  it("resolves a caller once per HTTP request before invoking the tool", async () => {
+    const f = await httpFixture();
+    try {
+      f.options.callers.authenticate.mockClear();
+      const response = await fetch(f.url, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer run",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-session-id": "single-request",
+          "mcp-protocol-version": "2025-11-25",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "person_message", arguments: { message: "one authority" } },
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect((await response.json()).result.isError).not.toBe(true);
+      expect(f.options.callers.authenticate).toHaveBeenCalledOnce();
+    } finally {
+      await f.service.close();
+    }
+  });
+  it("filters settings and user-wide tools from the advertised inventory", async () => {
+    const f = await httpFixture();
+    const client = await connect(f.url, "connection");
+    try {
+      const names = (await client.listTools()).tools.map((t) => t.name);
+      expect(names).not.toContain("settings_write");
+      expect(names).not.toContain("computer_list");
+      expect(names).toContain("request_list");
     } finally {
       await client.close();
       await f.service.close();
@@ -235,7 +403,7 @@ describe("Opensteer MCP spine", () => {
       const names = (await client.listTools(undefined, { timeout: 5000 })).tools.map((t) => t.name);
       expect(names).toContain("thread_delegate");
       expect(names).toContain("thread_wait");
-      expect(names).toContain("browser_profile_write");
+      expect(names).not.toContain("browser_profile_write");
       expect(names).not.toContain("computer");
       expect(names).not.toContain("sign_in");
       expect(names).not.toContain("person_message");
@@ -244,63 +412,20 @@ describe("Opensteer MCP spine", () => {
       await f.service.close();
     }
   });
-  it("strips an unnamed secret and replays an operationKey across JSON-RPC identities", async () => {
+  it("strips unnamed output fields and leaves domain retry identity intact", async () => {
     const f = fixture();
     const input = { message: "sent once", operationKey: "stable" };
-    const result = await f.service.callTool("run", "person_message", input, {
-      operationKey: "rpc-1",
-    });
-    expect(result).not.toHaveProperty("unnamedSecret");
-    expect(f.options.callers.authenticate).toHaveBeenCalledTimes(1);
-    for (const receipt of f.options.receipts.results.values()) {
-      receipt.result.unnamedSecret = "stored before this projection";
-    }
     expect(
-      await f.service.callTool("run", "person_message", input, { operationKey: "rpc-2" }),
-    ).toEqual({ messageId: result.messageId });
-    expect(f.options.callers.authenticate).toHaveBeenCalledTimes(2);
-    expect(f.personMessage).toHaveBeenCalledTimes(1);
-    await expect(
-      f.service.callTool(
-        "run",
-        "person_message",
-        { ...input, message: "changed" },
-        { operationKey: "rpc-3" },
-      ),
-    ).rejects.toThrow("different input");
+      await f.service.callTool("run", "person_message", input, { operationKey: "rpc-1" }),
+    ).not.toHaveProperty("unnamedSecret");
+    await f.service.callTool("run", "person_message", input, { operationKey: "rpc-2" });
+    expect(f.personMessage).toHaveBeenCalledTimes(2);
+    expect(f.personMessage.mock.calls.map(([call]) => call.operationKey)).toEqual([
+      "stable",
+      "stable",
+    ]);
   });
-  it("fingerprints canonical input while preserving a nested operationKey", async () => {
-    const f = fixture();
-    const call = vi.fn<AgentToolHandlers["integration_call"]>(async () => ({
-      content: [{ type: "text", text: "done" }],
-    }));
-    f.handlers.integration_call = call;
-    const toolRef =
-      "igr_11111111-1111-4111-8111-111111111111.itl_22222222-2222-4222-8222-222222222222." +
-      "a".repeat(43);
-    await f.service.callTool(
-      "run",
-      "integration_call",
-      { toolRef, arguments: { b: 2, a: { operationKey: "nested" } }, operationKey: "canonical" },
-      { operationKey: "1" },
-    );
-    await f.service.callTool(
-      "run",
-      "integration_call",
-      { operationKey: "canonical", arguments: { a: { operationKey: "nested" }, b: 2 }, toolRef },
-      { operationKey: "2" },
-    );
-    expect(call).toHaveBeenCalledTimes(1);
-    await expect(
-      f.service.callTool(
-        "run",
-        "integration_call",
-        { toolRef, arguments: { a: { operationKey: "changed" }, b: 2 }, operationKey: "canonical" },
-        { operationKey: "3" },
-      ),
-    ).rejects.toThrow("different input");
-  });
-  it("rechecks live authority on receipt replay", async () => {
+  it("rechecks live authority on a new call", async () => {
     const f = fixture();
     const input = { message: "once", operationKey: "stable" };
     await f.service.callTool("run", "person_message", input, { operationKey: "1" });
@@ -394,6 +519,21 @@ describe("Opensteer MCP spine", () => {
       );
       expect(response.statusCode).toBe(status);
     }
+  });
+  it("uses the caller already authenticated by the resource route", async () => {
+    const f = fixture();
+    const caller = f.callers.get("connection")!;
+    const response = { once: vi.fn(), statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+    await f.service.handle(
+      { headers: { host: "127.0.0.1" }, method: "POST", auth: { extra: { caller } } } as never,
+      response as never,
+      {},
+      "connection",
+      f.options.publicUrl.origin,
+    );
+    expect(response.statusCode).toBe(400);
+    expect(f.options.callers.authenticate).not.toHaveBeenCalled();
+    await f.service.close();
   });
   it("keeps connection credentials and Run credentials on their own routes", async () => {
     const f = fixture();

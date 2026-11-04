@@ -1,4 +1,5 @@
 import {
+  threadAccessModeAtMost,
   CHAT_THREAD_TITLE,
   DEFAULT_THREAD_ACCESS_MODE,
   isPlaceContentPart,
@@ -16,7 +17,6 @@ import type {
   OpensteerStore,
   EnqueueThreadInputRequest,
   ThreadMutationAdmission,
-  RunnerControlInput,
 } from "@opensteer/database";
 import type { CommandService, RunnerRegistry } from "@opensteer/orchestration";
 import type { HarnessInstanceCatalog, HarnessModelDescriptor } from "@opensteer/protocol";
@@ -28,7 +28,7 @@ import {
 import type { HostApiCommand } from "@opensteer/protocol";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import { threadCallerAuthority, messageSource } from "../mcp/operations.js";
-import { thread as assertThreadAccess } from "../mcp/tool-access.js";
+import { write as assertThreadAccess } from "../mcp/tool-access.js";
 import type { PlaceContextService } from "../computer-use/place-context-service.js";
 import type { BrowserService } from "../browser/browser-service.js";
 
@@ -66,10 +66,14 @@ export class ThreadService {
       readonly icon?: import("@opensteer/core").WorkspaceIconName;
     } = {},
   ) {
-    if (actor.kind !== "person" && command.accessMode && command.accessMode !== actor.accessMode)
+    if (
+      actor.kind !== "person" &&
+      command.accessMode &&
+      !threadAccessModeAtMost(command.accessMode, actor.accessMode)
+    )
       throw new OpensteerError({
         code: "forbidden",
-        message: "New work must use the caller’s approved access mode",
+        message: "New work must not exceed the caller’s approved access mode",
       });
     const parent = command.parentThreadId
       ? await this.options.store.getThreadForOwner(command.parentThreadId, actor.userId)
@@ -310,17 +314,41 @@ export class ThreadService {
     });
     return {};
   }
-  async interrupt(
-    actor: ThreadActor,
-    command: Command<"run.interrupt">,
-    commitReceipt?: Extract<RunnerControlInput, { type: "run.interrupt" }>["commitReceipt"],
+  async write(
+    actor: AgentCaller,
+    command: { threadId: ThreadId; idempotencyKey: string } & (
+      | { action: "rename"; title: string }
+      | { action: "set_icon"; icon: import("@opensteer/core").WorkspaceIconName }
+      | { action: "done" | "reopen" }
+    ),
   ) {
+    await this.assertTarget(actor, command.threadId);
+    const input = {
+      ...command,
+      requestedBy: actor.userId,
+      authority: threadCallerAuthority(actor),
+    };
+    switch (command.action) {
+      case "rename":
+        return {
+          ...(await this.options.commands.renameThread({ ...input, title: command.title })),
+          doneWhenRunEnds: false,
+        };
+      case "set_icon":
+        return {
+          ...(await this.options.commands.setThreadIcon({ ...input, icon: command.icon })),
+          doneWhenRunEnds: false,
+        };
+      default:
+        return this.options.commands.setThreadDone({ ...input, done: command.action === "done" });
+    }
+  }
+  async interrupt(actor: ThreadActor, command: Command<"run.interrupt">) {
     if (actor.kind !== "person") await this.assertTarget(actor, command.threadId);
     const result = await this.options.commands.sendControl({
       ...command,
       requestedBy: actor.userId,
       ...(actor.kind === "person" ? {} : { authority: threadCallerAuthority(actor) }),
-      ...(commitReceipt ? { commitReceipt } : {}),
     });
     return { wasDuplicate: result.wasDuplicate };
   }

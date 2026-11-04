@@ -20,7 +20,8 @@ import type { DatabaseSchema } from "./schema.js";
 export interface ResourceAccessInput {
   readonly ownerUserId: UserId;
   readonly workspaceId: WorkspaceId;
-  readonly threadId?: ThreadId;
+  readonly connectionId?: string;
+  readonly threadId?: ThreadId | undefined;
   readonly agentBindingId?: string;
   /** Explicit consent must already be filtered to its owner and active membership. */
   readonly explicitAccess?: ResourceAccessLevel | null;
@@ -91,12 +92,32 @@ export async function resolveResourceAccess(
         .where("asking.id", "=", threadId)
         .executeTakeFirst()
     : undefined;
-  // No agent identity means an owner client, rather than an agent Run.
+  const connection = input.connectionId
+    ? await database
+        .selectFrom("agentConnections")
+        .select("workspaceId")
+        .where("id", "=", input.connectionId)
+        .where("userId", "=", input.ownerUserId)
+        .where("revokedAt", "is", null)
+        .where("tokenHash", "is not", null)
+        .where("expiresAt", ">", new Date())
+        .executeTakeFirst()
+    : undefined;
+  if (
+    input.connectionId &&
+    (!connection || (connection.workspaceId && connection.workspaceId !== input.workspaceId))
+  )
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Connection cannot access this Workspace",
+    });
   const inheritsMain =
     main &&
-    (root
-      ? root.workspaceId === input.workspaceId && root.inheritsMain
-      : !input.threadId && !input.agentBindingId);
+    (input.connectionId
+      ? connection?.workspaceId === null
+      : root
+        ? root.workspaceId === input.workspaceId && root.inheritsMain
+        : !input.threadId && !input.agentBindingId);
   let specialistAccess = input.specialistAccess;
   const specialistId = root?.specialistId ?? input.specialistId;
   if (specialistId) {

@@ -20,7 +20,6 @@ import {
 import type { AgentToolHandlers } from "./handlers/index.js";
 import type { AgentCaller } from "./agent-caller.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
-import { MemoryOperationReceipts } from "./receipts.test-support.js";
 
 function mcp(dependencies: AdministrationDependencies, userId: UserId) {
   let caller: AgentCaller = {
@@ -40,7 +39,6 @@ function mcp(dependencies: AdministrationDependencies, userId: UserId) {
   const service = new OpensteerMcpService({
     callers: { authenticate: async () => caller },
     handlers: handlers as AgentToolHandlers,
-    receipts: new MemoryOperationReceipts(),
     store: dependencies.store,
     publicUrl: new URL("http://127.0.0.1"),
   });
@@ -98,11 +96,24 @@ describeStore("MCP administration", (it) => {
       await expect(
         agent.call("project_write", { action: "delete", workspaceId: run.workspace.id }),
       ).rejects.toThrow("Main cannot be deleted");
-      await agent.call("project_write", {
+      const markInput = {
         action: "set_icon",
         workspaceId: project.id,
         icon: "folder",
-      });
+        operationKey: "mark-once",
+      };
+      const marked = await agent.call("project_write", markInput);
+      expect(await agent.call("project_write", markInput)).toEqual(marked);
+      await expect(
+        agent.call("project_write", { ...markInput, icon: "code" }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      expect(
+        await f.database
+          .selectFrom("commands")
+          .select("id")
+          .where("type", "=", "workspace.icon.set")
+          .execute(),
+      ).toHaveLength(1);
       expect(await f.store.getWorkspaceForOwner(project.id, run.userId)).toMatchObject({
         icon: "folder",
       });
@@ -125,7 +136,7 @@ describeStore("MCP administration", (it) => {
           expect(
             rt.messages.filter((message) => message.type === "host.machines.changed"),
             "another device never received the administration change",
-          ).toHaveLength(3),
+          ).toHaveLength(4),
         { timeout: 2000 },
       );
       agent.scope(project.id);

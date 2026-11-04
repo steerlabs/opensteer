@@ -16,7 +16,7 @@ export const request_list = defineAgentTool({
   }),
   output: RequestListOutputSchema,
   access: "read",
-  callers: ["run", "program"] as const,
+  callers: ["run", "program", "connection"] as const,
 });
 
 export const request_withdraw = defineAgentTool({
@@ -28,7 +28,7 @@ export const request_withdraw = defineAgentTool({
     .strictObject({ requestId: RequestIdSchema })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: RequestWithdrawOutputSchema,
-  access: "self",
+  access: "write",
   callers: ["run"] as const,
   destructive: true,
 });

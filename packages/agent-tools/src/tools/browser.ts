@@ -56,7 +56,7 @@ export const sign_in = defineAgentTool({
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: SignInOutputSchema,
-  access: "self",
+  access: "write",
   callers: ["run"] as const,
 });
 
@@ -75,7 +75,7 @@ export const browser_access_request = defineAgentTool({
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: RequestCreationOutputSchema,
-  access: "self",
+  access: "write",
   callers: ["run"] as const,
 });
 
@@ -87,7 +87,7 @@ export const browser_tab_read = defineAgentTool({
   input: BrowserTabReadInputSchema,
   output: BrowserTabReadOutputSchema,
   access: "read",
-  callers: ["run", "program"] as const,
+  callers: ["run"] as const,
 });
 
 export const browser_tab_write = defineAgentTool({
@@ -97,8 +97,8 @@ export const browser_tab_write = defineAgentTool({
     "Organize saved tabs/groups; tabId is Browser Harness surfaceId. move: omit toGroupId for root, before for end. restore: up to eight tabIds, attaching their sessions here. Returns changed groups or closed/failed/restored tab/session IDs. Groups grant no access.",
   input: BrowserTabWriteInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: BrowserTabWriteOutputSchema,
-  access: "self",
-  callers: ["run", "program"] as const,
+  access: "write",
+  callers: ["run"] as const,
 });
 
 export const browser_session_list = defineAgentTool({
@@ -109,7 +109,7 @@ export const browser_session_list = defineAgentTool({
   input: z.strictObject({}),
   output: BrowserSessionListOutputSchema,
   access: "read",
-  callers: ["run", "program"] as const,
+  callers: ["run"] as const,
 });
 
 export const browser_session_open = defineAgentTool({
@@ -139,8 +139,8 @@ export const browser_session_open = defineAgentTool({
     )
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: BrowserSessionOpenOutputSchema,
-  access: "self",
-  callers: ["run", "program"] as const,
+  access: "write",
+  callers: ["run"] as const,
 });
 
 export const browser_profile_create = defineAgentTool({
@@ -154,7 +154,7 @@ export const browser_profile_create = defineAgentTool({
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: BrowserProfileCreateOutputSchema,
-  access: "self",
+  access: "write",
   callers: ["run", "program"] as const,
 });
 
@@ -167,7 +167,7 @@ export const browser_session_close = defineAgentTool({
     .strictObject({ sessionId: BrowserSessionIdInputSchema })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: BrowserSessionCloseOutputSchema,
-  access: "self",
-  callers: ["run", "program"] as const,
+  access: "write",
+  callers: ["run"] as const,
   destructive: true,
 });

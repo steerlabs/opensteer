@@ -3,6 +3,7 @@ import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import { expect, vi } from "vitest";
 import { createId, SpecialistManifestSchema } from "@opensteer/core";
+import { AgentConnectionStore } from "./agent-connection-store.js";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { assertLineageCompatibleReuse, resolveResourceAccess } from "./resource-access.js";
 import { describeStore } from "./store.integration.test-support.js";
@@ -83,6 +84,87 @@ describeStore("specialist registration", (test) => {
     });
     const ready = (await platform.specialists.list(workspace.id, run.userId))[0]!;
     expect(ready.status).toBe("ready");
+    const connections = new AgentConnectionStore(fixture.database);
+    const connection = await connections.create({
+      userId: run.userId,
+      label: "Specialist agent",
+      clientName: "test",
+      accessMode: "full-access",
+      reach: { kind: "workspace", workspaceId: workspace.id },
+      resource: "http://localhost/internal/v1/mcp",
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    await connections.activate(connection.id, "a".repeat(64));
+    const scopedMain = await connections.create({
+      userId: run.userId,
+      label: "Main scoped",
+      clientName: "test",
+      accessMode: "full-access",
+      reach: { kind: "workspace", workspaceId: run.workspace.id },
+      resource: "http://localhost/internal/v1/mcp",
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    await connections.activate(scopedMain.id, "b".repeat(64));
+    expect(
+      await resolveResourceAccess(fixture.database, {
+        ownerUserId: run.userId,
+        workspaceId: run.workspace.id,
+        connectionId: scopedMain.id,
+      }),
+    ).toMatchObject({ inheritsMain: false, mainAccess: "withheld", access: null });
+    await connections.revoke(run.userId, scopedMain.id);
+    await expect(
+      resolveResourceAccess(fixture.database, {
+        ownerUserId: run.userId,
+        workspaceId: run.workspace.id,
+        connectionId: scopedMain.id,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const independent = await fixture.store.createThread({
+      authority: {
+        kind: "connection",
+        connectionId: connection.id,
+        userId: run.userId,
+        accessMode: "full-access",
+        reach: { kind: "workspace", workspaceId: workspace.id },
+      },
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      harnessInstanceId: run.harnessInstance.id,
+      modelSelection: run.thread.modelSelection,
+      workspaceId: workspace.id,
+      idempotencyKey: "independent-specialist",
+      title: "Independent specialist",
+      specialistId: ready.id,
+    });
+    expect(independent.thread).toMatchObject({
+      parentThreadId: null,
+      lineageRootThreadId: independent.thread.id,
+      inheritsMain: false,
+      specialistId: ready.id,
+    });
+    const rootChild = await fixture.store.createThread({
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      harnessInstanceId: run.harnessInstance.id,
+      modelSelection: run.thread.modelSelection,
+      workspaceId: workspace.id,
+      parentThreadId: independent.thread.id,
+      idempotencyKey: "independent-specialist-child",
+      title: "Child",
+    });
+    expect(rootChild.thread).toMatchObject({
+      specialistId: ready.id,
+      inheritsMain: false,
+      lineageRootThreadId: independent.thread.id,
+    });
+    await expect(
+      fixture.database
+        .updateTable("threads")
+        .set({ specialistId: null })
+        .where("id", "=", rootChild.thread.id)
+        .execute(),
+    ).rejects.toThrow(/specialist.*immutable/u);
     const delegate = (threadId?: import("@opensteer/core").ThreadId) =>
       fixture.store.delegateThread({
         accessMode: run.thread.accessMode,

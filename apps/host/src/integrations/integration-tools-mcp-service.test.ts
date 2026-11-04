@@ -150,7 +150,7 @@ const triggerScope = {
   workspaceId: scope.workspaceId,
 } satisfies IntegrationToolsTriggerScope;
 
-describe("IntegrationToolsMcpService access classes", () => {
+describe("Opensteer MCP integration access classes", () => {
   beforeEach(() => {
     mcp.callHandler = undefined;
     mcp.instructions = "";
@@ -167,7 +167,13 @@ describe("IntegrationToolsMcpService access classes", () => {
   it("serves a session the Host no longer holds, only for a valid token", async () => {
     const { service } = await createHarness({ inventory: [] });
     const forgotten = (token: string) => {
-      const response = { end: vi.fn(), headersSent: false, setHeader: vi.fn(), statusCode: 200 };
+      const response = {
+        once: vi.fn(),
+        end: vi.fn(),
+        headersSent: false,
+        setHeader: vi.fn(),
+        statusCode: 200,
+      };
       return {
         response,
         handled: service.handle(
@@ -218,23 +224,23 @@ describe("IntegrationToolsMcpService access classes", () => {
 
     const search = listed.tools.find(({ name }) => name === "integration_search");
     expect(search?.description).toContain(
-      "choose accounts by connectionId, copy toolRefs unchanged and describe new refs before calling.",
+      "Choose accounts by connectionId, copy toolRefs unchanged and describe new refs before calling.",
     );
-    expect(search?.description).toContain("Writes require read-write access");
-    expect(search?.description).toContain("with a nonempty query, or provider/runnerId");
+    expect(search?.description).toContain("Writes need read-write access");
+    expect(search?.description).toContain("by query, provider or runnerId");
     const call = listed.tools.find(({ name }) => name === "integration_call");
-    expect(call?.description).toContain("grant, account access and schema generation at execution");
+    expect(call?.description).toContain("Live account/grant/schema checks apply");
     expect(call?.description).toContain(
       "Describe new refs first; call already-described operations directly.",
     );
     const request = listed.tools.find(({ name }) => name === "integration_request");
     expect(request?.description).toContain(
-      "integration, access and reason; for a catalog definition use catalog instead.",
+      "integration + access + reason; catalog item: catalog instead.",
     );
-    expect(call?.description).toContain("describing is guidance, not an access grant");
+    expect(call?.description).toContain("Describing grants no access");
     const describe = listed.tools.find(({ name }) => name === "integration_describe");
-    expect(describe?.description).toContain("before calling a new toolRef");
-    expect(request?.description).toContain("Do not repeat pending or declined requests");
+    expect(describe?.description).toContain("input/output schemas before calling");
+    expect(request?.description).toContain("never repeat pending/declined asks");
     expect(request?.description).not.toContain("requestSelection");
     // One object for every request shape: Claude Code drops tools whose input
     // root is a union. The Host still enforces each shape when called.
@@ -1513,7 +1519,7 @@ async function createHarness(input: {
       headers: { host: "opensteer.example.test", origin: "https://opensteer.example.test" },
       method: "POST",
     } as never,
-    { end: vi.fn(), headersSent: false, setHeader: vi.fn() } as never,
+    { once: vi.fn(), end: vi.fn(), headersSent: false, setHeader: vi.fn() } as never,
     {
       id: 1,
       jsonrpc: "2.0",

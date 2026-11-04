@@ -7,6 +7,7 @@ import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { SpecialistStore } from "@opensteer/database";
 import {
   createId,
+  threadReachScope,
   HarnessIdSchema,
   ModelSelectionSchema,
   OpensteerError,
@@ -1347,7 +1348,7 @@ describe("Product tool handlers", () => {
     await service.handle("first-token", request);
     await service.handle("replacement-token", request);
 
-    expect(admitRunToolCall).toHaveBeenCalledTimes(1);
+    expect(admitRunToolCall).toHaveBeenCalledTimes(2);
     expect(admitRunToolCall).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "thread.message",
@@ -1357,11 +1358,12 @@ describe("Product tool handlers", () => {
         sourceThreadId: claims.threadId,
       }),
     );
-    expect(enqueueThreadInput).toHaveBeenCalledTimes(1);
+    expect(enqueueThreadInput).toHaveBeenCalledTimes(2);
     const firstKey = enqueueThreadInput.mock.calls[0]?.[0].idempotencyKey;
     expect(firstKey).toBe(
       `run:${claims.runId}:${mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "thread_message")}:message`,
     );
+    expect(enqueueThreadInput.mock.calls[1]?.[0].idempotencyKey).toBe(firstKey);
     expect(firstKey).not.toContain(claims.jti);
   });
 
@@ -1466,6 +1468,7 @@ describe("Product tool handlers", () => {
         idempotencyKey: `run:${claims.runId}:${mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "trigger_write")}:trigger.create`,
       }),
       current.id,
+      expect.objectContaining({ operationKey: expect.any(String) }),
     );
   });
 
@@ -1490,7 +1493,9 @@ describe("Product tool handlers", () => {
         type: "trigger.control",
       }),
     ).resolves.toMatchObject({ type: "trigger.control.result" });
-    expect(manage).toHaveBeenCalledWith(ownerId, { limit: 10, operation: "list" }, current.id);
+    expect(manage).toHaveBeenCalledWith(ownerId, { limit: 10, operation: "list" }, current.id, {
+      reach: threadReachScope(current),
+    });
   });
 });
 
@@ -1673,6 +1678,7 @@ function makeService(options: {
     },
   );
   const store = {
+    getThreadInputQueue: async () => ({ paused: false, items: [] }),
     listThreadAssignmentsForOwner: async () => ({
       assignments: [],
       window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },

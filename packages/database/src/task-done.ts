@@ -1,3 +1,8 @@
+import {
+  lockThreadCaller,
+  assertThreadCaller,
+  type ThreadCallerAuthority,
+} from "./thread-caller.js";
 import { isDeepStrictEqual } from "node:util";
 import {
   createId,
@@ -45,6 +50,7 @@ import { projectThreadState } from "./thread-status.js";
 import { admitRunToolCallInTransaction, type RunToolAdmissionInput } from "./run-tool-admission.js";
 
 export interface ThreadWriteActor {
+  readonly authority?: ThreadCallerAuthority;
   readonly requestedBy: UserId;
   readonly actorRunId?: RunId;
 }
@@ -226,6 +232,11 @@ export async function setThreadDone(
       )
         throw idempotencyConflict(input.idempotencyKey);
       const scope = await discoverDoneScope(transaction, input);
+      await lockThreadCaller(
+        transaction,
+        input.authority,
+        scope.runs.map((run) => run.id),
+      );
       const runs = scope.runs.length
         ? await transaction
             .selectFrom("runs")
@@ -567,8 +578,12 @@ export async function appendDoneState(
 
 export async function admitThreadWrite(
   transaction: Transaction<DatabaseSchema>,
-  input: ThreadWriteActor & { readonly admission?: RunToolAdmissionInput },
+  input: ThreadWriteActor & {
+    readonly threadId: ThreadId;
+    readonly admission?: RunToolAdmissionInput;
+  },
 ): Promise<void> {
+  await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
   if (!input.admission) return;
   if (
     input.admission.runId !== input.actorRunId ||

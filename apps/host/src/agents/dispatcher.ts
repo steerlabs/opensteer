@@ -550,6 +550,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           token: toolsToken,
           url: this.#agentToolsUrl,
           role: context.thread.role,
+          accessMode: context.thread.accessMode,
           reach: threadReachScope(context.thread).kind,
         }),
         browserCdp: { url: this.#agentBrowserCdpUrl },

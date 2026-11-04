@@ -17,9 +17,10 @@ may also use `thread_wait`. A wait timing out or disconnecting never stops the w
 
 - `thread_message`: report saves passive context; queue asks for a next turn; steer changes a
   compatible active Run. Accepted is not read; cancelled will not execute.
-- `thread_configure`: read/set an existing Thread's engine/model/options. Discover exact choices
+- `thread_read`: inspect execution selectors and queued inputs with their allowed actions.
+- `thread_configure`: set an existing Thread's engine/model/options. Discover exact choices
   with `environment_list` when available. Access mode stays; never substitute after refusal.
-- `thread_queue`: list waiting inputs and allowed actions; cancel/move by messageId, steer with
+- `thread_queue`: cancel/move waiting inputs by messageId, steer with
   expectedRunId, or resume. Preserve a person's pause unless told to resume.
 - `thread_write` interrupt: stop the current Run and pause a work queue, keeping pending inputs.
 - `assignment_cancel`: Run-only permanent cancellation of an Assignment and its descendants,

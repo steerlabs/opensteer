@@ -242,6 +242,7 @@ export class TriggerService {
     ownerId: UserId,
     value: TriggerControlInput,
     actorThreadId: ThreadId | null,
+    context?: { readonly reach?: ThreadReachScope; readonly operationKey?: string },
   ): Promise<unknown> {
     const input = TriggerControlInputSchema.parse(value);
     switch (input.operation) {
@@ -260,14 +261,18 @@ export class TriggerService {
       }
       case "list":
         return {
-          triggers: await this.list(ownerId, input, await this.#readScope(ownerId, actorThreadId)),
+          triggers: await this.list(
+            ownerId,
+            input,
+            context?.reach ?? (await this.#readScope(ownerId, actorThreadId)),
+          ),
         };
       case "get":
         return this.get(
           ownerId,
           input.triggerId,
           input.occurrenceLimit,
-          await this.#readScope(ownerId, actorThreadId),
+          context?.reach ?? (await this.#readScope(ownerId, actorThreadId)),
         );
       case "update":
         return this.update(
@@ -291,7 +296,13 @@ export class TriggerService {
         );
       case "run":
         return {
-          occurrence: await this.run(ownerId, input.triggerId, input.payload, actorThreadId),
+          occurrence: await this.run(
+            ownerId,
+            input.triggerId,
+            input.payload,
+            actorThreadId,
+            context?.operationKey,
+          ),
         };
       case "cancel":
         return this.cancel(

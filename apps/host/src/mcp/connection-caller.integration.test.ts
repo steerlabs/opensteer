@@ -1,3 +1,12 @@
+import { IntegrationToolHandlers } from "./handlers/integrations.js";
+import {
+  IntegrationPlatformStore,
+  type IntegrationRequester,
+  type IntegrationDiscoveryRequester,
+} from "@opensteer/database";
+import { AppStore, TriggerStore } from "@opensteer/database";
+import { TriggerService } from "../triggers/trigger-service.js";
+import { TriggerToolHandlers } from "./handlers/triggers.js";
 import { ThreadService } from "../threads/thread-service.js";
 import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -5,11 +14,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { agentTools } from "@opensteer/agent-tools";
 import { createId, ThreadIdSchema, type ThreadAccessMode } from "@opensteer/core";
-import {
-  AgentConnectionStore,
-  AgentOperationReceipts,
-  type OpensteerStore,
-} from "@opensteer/database";
+import { AgentConnectionStore, type OpensteerStore } from "@opensteer/database";
 import {
   describeStore,
   testModelSelection,
@@ -53,6 +58,7 @@ async function serveMcp(
   options: {
     readonly connected?: () => boolean;
     readonly runScope?: import("../agents/run-tool-tokens.js").RunToolScope;
+    readonly notify?: { current?: () => void };
     readonly subscribed?: () => void;
     readonly unsubscribed?: () => void;
     readonly publish?: { current?: (event: import("@opensteer/core").AgentEvent) => void };
@@ -68,6 +74,8 @@ async function serveMcp(
   );
   const realtime = new RealtimeHub({ store });
   if (options.publish) options.publish.current = (event) => realtime.publish(event);
+  if (options.notify)
+    options.notify.current = () => realtime.broadcast({ type: "host.tasks-changed" });
   const observations = {
     observe: (wake: Parameters<RealtimeHub["observe"]>[0]) => {
       options.subscribed?.();
@@ -107,6 +115,8 @@ async function serveMcp(
     realtime: observations,
     commands,
     isEnvironmentConnected: options.connected ?? (() => true),
+    canRunHarness: () => true,
+    environmentWorkspaceBackings: () => ["local-directory"],
   } as unknown as ConstructorParameters<typeof ProductToolHandlers>[0]);
   let service!: OpensteerMcpService;
   const server = createServer((request, response) => {
@@ -140,7 +150,22 @@ async function serveMcp(
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("MCP test did not listen");
   const url = new URL(`http://127.0.0.1:${address.port}${mcpResourcePath}`);
+  const integrationStore = new IntegrationPlatformStore(store.database);
+  const integrations = new IntegrationToolHandlers({
+    definitions: [],
+    getWorkspaceForOwner: store.getWorkspaceForOwner.bind(store),
+    onWorkspaceEvent: (event) => realtime.publish(event),
+    platform: {
+      store: integrationStore,
+      listDiscoveryInventory: (input: IntegrationDiscoveryRequester) =>
+        integrationStore.listDiscoveryInventory({ ...input, providerAuthorizations: {} }),
+      listCallableTools: (input: IntegrationRequester) =>
+        integrationStore.listCallableTools({ ...input, providerAuthorizations: {} }),
+      computerAppApprovals: { computerUseInventory: async () => ({ machines: [], phones: [] }) },
+    } as unknown as ConstructorParameters<typeof IntegrationToolHandlers>[0]["platform"],
+  });
   service = new OpensteerMcpService({
+    realtime,
     callers: new AgentCallerResolver({
       store,
       runs: {
@@ -161,14 +186,28 @@ async function serveMcp(
         },
       ) as never,
       product,
-      integrations: unavailable as never,
-      triggers: unavailable as never,
-      apps: unavailable as never,
+      integrations,
+      triggers: new TriggerToolHandlers(
+        new TriggerService({
+          store: new TriggerStore(store.database),
+          threads: store,
+        } as unknown as ConstructorParameters<typeof TriggerService>[0]),
+      ),
+      apps: {
+        listForCaller: async (scope: {
+          requestedBy: import("@opensteer/core").UserId;
+          reach: import("@opensteer/core").ThreadReachScope;
+        }) => ({
+          apps: await new AppStore(store.database).listReachable({
+            userId: scope.requestedBy,
+            reach: scope.reach,
+          }),
+        }),
+      } as never,
       pluginInstall: async () => {
         throw new Error("Unexpected install");
       },
     }),
-    receipts: new AgentOperationReceipts(store.database),
     store,
     publicUrl: options.runScope ? url : new URL("http://runtime.invalid"),
   });
@@ -190,7 +229,7 @@ async function connection(
     label: "Test agent",
     clientName: "Test agent",
     resource: url.href,
-    expiresAt: new Date(Date.now() + 60 * 60 * 1_000),
+    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000),
   });
   const token = `${connectionCredentialPrefix}${randomBytes(32).toString("base64url")}`;
   expect(await connections.activate(record.id, credentialHash(token))).toBe(true);
@@ -319,7 +358,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       errorText(
         await cautious.client.callTool({ name: "project_create", arguments: { name: "Sneaky" } }),
       ),
-    ).toBe("Changing settings requires full-access");
+    ).toContain("not found");
     expect((await storeFixture.store.getThreadForOwner(fullAccess.id, f.userId))?.title).toBe(
       "Full access",
     );
@@ -375,6 +414,9 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         .where("childThreadId", "=", threadId)
         .execute(),
     ).toEqual([]);
+    expect(
+      (await storeFixture.database.introspection.getTables()).map((t) => t.name),
+    ).not.toContain("agent_tool_operations");
     const replay = await agent.client.callTool({
       name: "thread_delegate",
       arguments: {
@@ -388,18 +430,54 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       },
     });
     expect(replay.structuredContent).toEqual(result.structuredContent);
+    const conflicting = await agent.client.callTool({
+      name: "thread_delegate",
+      arguments: {
+        workspaceId: f.workspace.id,
+        environmentId: f.environmentId,
+        harnessInstanceId: f.harnessInstance.id,
+        model: { ...testModelSelection, options: {} },
+        title: "External work",
+        task: "Different",
+        operationKey: "external-create",
+      },
+    });
+    expect(errorText(conflicting)).toMatch(/idempotency|different input/i);
     const message = await agent.client.callTool({
       name: "thread_message",
       arguments: {
         threadId,
         delivery: "report",
         message: "A connection report",
+        operationKey: "report-retry",
       },
     });
     expect(message.isError).not.toBe(true);
     expect(message.structuredContent).toMatchObject({
       message: { author: { kind: "connection", connectionId: agent.id } },
     });
+    const messageReplay = await agent.client.callTool({
+      name: "thread_message",
+      arguments: {
+        threadId,
+        delivery: "report",
+        message: "A connection report",
+        operationKey: "report-retry",
+      },
+    });
+    expect(messageReplay.structuredContent).toEqual(message.structuredContent);
+    const messageConflict = await agent.client.callTool({
+      name: "thread_message",
+      arguments: { threadId, delivery: "report", message: "Changed", operationKey: "report-retry" },
+    });
+    expect(errorText(messageConflict)).toMatch(/idempotency|different input/i);
+    expect(
+      await storeFixture.database
+        .selectFrom("messages")
+        .select("id")
+        .where("threadId", "=", threadId)
+        .execute(),
+    ).toHaveLength(2);
     const stopped = await agent.client.callTool({
       name: "thread_write",
       arguments: { action: "interrupt", threadId, operationKey: "stop-independent" },
@@ -443,6 +521,115 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     ).toContain("outside the caller's reach");
   });
 
+  it("refuses Workspace connection activation of Main queues inside the transaction", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("queue-consent");
+    const url = await serveMcp(storeFixture.store);
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      reach: { kind: "workspace", workspaceId: f.workspace.id },
+    });
+    const authority = {
+      kind: "connection" as const,
+      connectionId: agent.id,
+      userId: f.userId,
+      accessMode: "full-access" as const,
+      reach: { kind: "workspace" as const, workspaceId: f.workspace.id },
+    };
+    const queued = await storeFixture.store.enqueueThreadInput({
+      threadId: f.thread.id,
+      requestedBy: f.userId,
+      idempotencyKey: "human-queued",
+      source: { kind: "human" },
+      policy: "queue",
+      content: [{ type: "text", text: "Human work" }],
+    });
+    await expect(
+      storeFixture.store.steerThreadInput({
+        authority,
+        threadId: f.thread.id,
+        requestedBy: f.userId,
+        idempotencyKey: "scoped-steer",
+        messageId: queued.message.id,
+        expectedRunId: f.run.id,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      storeFixture.store.resumeThreadInputQueue({
+        authority,
+        threadId: f.thread.id,
+        requestedBy: f.userId,
+        idempotencyKey: "scoped-resume",
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(
+      (
+        await storeFixture.store.getThreadInputQueue({
+          threadId: f.thread.id,
+          requestedBy: f.userId,
+        })
+      ).items,
+    ).toHaveLength(1);
+  });
+
+  it("lets a connection inspect and update a Thread through shared domain commands", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("connection-read-write");
+    const url = await serveMcp(storeFixture.store);
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      reach: { kind: "user" },
+    });
+    for (const name of [
+      "environment_list",
+      "request_list",
+      "trigger_read",
+      "app_list",
+      "integration_search",
+    ]) {
+      const result = await agent.client.callTool({
+        name,
+        arguments:
+          name === "trigger_read"
+            ? { action: "list" }
+            : name === "integration_search"
+              ? { query: "anything" }
+              : {},
+      });
+      expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+    }
+    const described = await agent.client.callTool({
+      name: "integration_describe",
+      arguments: {
+        toolRef:
+          "igr_11111111-1111-4111-8111-111111111111.itl_22222222-2222-4222-8222-222222222222." +
+          "a".repeat(43),
+      },
+    });
+    expect(errorText(described)).toBe("Integration operation is no longer available; search again");
+    for (const arguments_ of [
+      { action: "rename", title: "Renamed" },
+      { action: "set_icon", icon: "folder" },
+      { action: "done" },
+      { action: "reopen" },
+    ]) {
+      const result = await agent.client.callTool({
+        name: "thread_write",
+        arguments: { threadId: f.thread.id, ...arguments_ },
+      });
+      expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+    }
+    expect(await storeFixture.store.getThreadForOwner(f.thread.id, f.userId)).toMatchObject({
+      title: "Renamed",
+      icon: "folder",
+      doneAt: null,
+    });
+  });
+
   it("uses the client's model error and enforces the connection ceiling for configure and interrupt", async ({
     storeFixture,
   }) => {
@@ -462,14 +649,16 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       "The selected model is not available in this AI engine on this Runner",
     );
     const read = await agent.client.callTool({
-      name: "thread_configure",
-      arguments: { action: "read", threadId: f.thread.id },
+      name: "thread_read",
+      arguments: { threadId: f.thread.id },
     });
-    expect(read.structuredContent).toEqual({
-      threadId: f.thread.id,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harnessInstance.id,
-      modelSelection: testModelSelection,
+    expect(read.structuredContent).toMatchObject({
+      execution: {
+        threadId: f.thread.id,
+        environmentId: f.environmentId,
+        harnessInstanceId: f.harnessInstance.id,
+        modelSelection: testModelSelection,
+      },
     });
     const changed = await agent.client.callTool({
       name: "thread_configure",
@@ -503,7 +692,8 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
             name,
             arguments: {
               threadId: f.thread.id,
-              action: name === "thread_write" ? "interrupt" : "read",
+              action: name === "thread_write" ? "interrupt" : "set",
+              ...(name === "thread_configure" ? { modelSelection: testModelSelection } : {}),
             },
           }),
         ),
@@ -546,11 +736,16 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     ).toBe("Only your own queued messages can be cancelled");
     const queue = async (action: string, args = {}) => {
       const result = await agent.client.callTool({
-        name: "thread_queue",
-        arguments: { threadId: f.thread.id, action, ...args },
+        name: action === "list" ? "thread_read" : "thread_queue",
+        arguments:
+          action === "list"
+            ? { threadId: f.thread.id }
+            : { threadId: f.thread.id, action, ...args },
       });
       expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
-      return result.structuredContent;
+      return action === "list"
+        ? (result.structuredContent as { queue: unknown })?.queue
+        : result.structuredContent;
     };
     expect(await queue("move", { messageId: second, beforeMessageId: first })).toMatchObject({
       items: [
@@ -682,6 +877,68 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(unsubscribed).toHaveBeenCalledTimes(4);
   });
 
+  it("returns a pending Request without granting approval authority", async ({ storeFixture }) => {
+    const f = await storeFixture.startRunFixture("connection-wait-request");
+    const project = await storeFixture.createProjectWorkspace(f.userId, "wait-request-target");
+    const subscribed = vi.fn();
+    const publish: { current?: (event: import("@opensteer/core").AgentEvent) => void } = {};
+    const url = await serveMcp(storeFixture.store, { subscribed, publish });
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "approval-required",
+      reach: { kind: "user" },
+    });
+    const waiting = agent.client.callTool({
+      name: "thread_wait",
+      arguments: { threadId: f.thread.id },
+    });
+    const observed = waiting.then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          subscribed,
+          "Thread wait never subscribed for the pending Request",
+        ).toHaveBeenCalledOnce(),
+      { timeout: 1000 },
+    );
+    const created = await storeFixture.store.requests.create({
+      callId: "pending-wait",
+      kind: "browser.access",
+      mode: "durable",
+      originatingRunId: f.run.id,
+      originatingThreadId: f.thread.id,
+      originatingWorkspaceId: f.workspace.id,
+      targetWorkspaceId: project.id,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: {
+        kind: "browser.access",
+        reason: "Choose a browser",
+        suggestion: { kind: "user_choice" },
+      },
+      presentation: {
+        kind: "external",
+        title: "Browser access",
+        subject: { kind: "workspace", id: project.id },
+      },
+    });
+    for (const event of created.events) publish.current?.(event);
+    const result = await withTimeout(observed, 5000, {
+      timeoutError: () => new Error("Pending Request never ended its Thread wait"),
+    });
+    if ("error" in result) throw result.error;
+    expect(result.value.structuredContent).toMatchObject({
+      pendingRequest: { id: created.request.id, kind: "browser.access" },
+    });
+    expect((await agent.client.listTools()).tools.map((t) => t.name)).not.toContain(
+      "request_resolve",
+    );
+    expect((await storeFixture.store.requests.get(created.request.id))?.status).toBe("pending");
+  });
+
   it("returns only newly published messages after the requested message", async ({
     storeFixture,
   }) => {
@@ -720,7 +977,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(JSON.stringify(result.structuredContent)).not.toContain(afterMessageId);
   });
 
-  it("commits a self-interrupt receipt before announcing grant revocation and returns it over MCP", async ({
+  it("commits a self-interrupt command before announcing grant revocation and returns it over MCP", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("self-interrupt");
@@ -754,11 +1011,12 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const revoked = new Promise<unknown>((resolve, reject) => {
       detach = storeFixture.store.onRunGrantsRevoked(() => {
         void storeFixture.database
-          .selectFrom("agentToolOperations")
-          .select("result")
-          .where("key", "=", `run:${f.run.id}:self-stop:thread_write`)
+          .selectFrom("commands")
+          .select("payload")
+          .where("threadId", "=", f.thread.id)
+          .where("type", "=", "run.interrupt")
           .executeTakeFirstOrThrow()
-          .then((row) => resolve(row.result), reject);
+          .then((row) => resolve(row.payload), reject);
       });
     });
     try {
@@ -772,7 +1030,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         await withTimeout(revoked, 2000, {
           timeoutError: () => new Error("Self interrupt never revoked its grant"),
         }),
-      ).toEqual(result.structuredContent);
+      ).toMatchObject({ runId: f.run.id, threadId: f.thread.id });
     } finally {
       detach();
     }
@@ -784,7 +1042,8 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const f = await storeFixture.startRunFixture("connection-revoke-wait");
     const subscribed = vi.fn();
     const unsubscribed = vi.fn();
-    const url = await serveMcp(storeFixture.store, { subscribed, unsubscribed });
+    const notify: { current?: () => void } = {};
+    const url = await serveMcp(storeFixture.store, { subscribed, unsubscribed, notify });
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
@@ -797,9 +1056,11 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     await vi.waitFor(() => expect(subscribed).toHaveBeenCalledOnce(), { timeout: 2000 });
     await new AgentConnectionStore(storeFixture.database).revoke(createId("user"), agent.id);
     expect(unsubscribed).not.toHaveBeenCalled();
+    const ended = expect(waiting).rejects.toThrow();
     await agent.revoke();
-    expect(errorText(await waiting)).toContain("invalid or expired");
-    expect(unsubscribed).toHaveBeenCalledOnce();
+    notify.current?.();
+    await ended;
+    await vi.waitFor(() => expect(unsubscribed).toHaveBeenCalledOnce(), { timeout: 2000 });
     expect(
       (
         await storeFixture.database

@@ -26,6 +26,6 @@ export const machine_full_disk_access_request = defineAgentTool({
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: RequestCreationOutputSchema,
-  access: "self",
+  access: "write",
   callers: ["run"] as const,
 });

@@ -7,9 +7,10 @@ import { createTestWorkspace } from "@opensteer/database/test-support/workspace"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { agentTools } from "@opensteer/agent-tools";
+import { toolsFor } from "@opensteer/agent-tools";
 import {
   createId,
+  threadReachScope,
   HarnessIdSchema,
   ModelSelectionSchema,
   OpensteerError,
@@ -56,7 +57,6 @@ import { z } from "zod";
 import { type RunToolScope, type RunToolTokenService } from "../agents/run-tool-tokens.js";
 import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import { AgentCallerResolver } from "../mcp/agent-caller.js";
-import { AgentOperationReceipts } from "@opensteer/database";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
 import { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
 import {
@@ -1553,40 +1553,26 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const childClient = await connectMcp(endpoint, childProgram);
     const chatClient = await connectMcp(endpoint, chatProgram);
     const watchClient = await connectMcp(endpoint, watchToken);
-    for (const [label, actor, client, expectedNames] of [
-      [
-        "delegated Trigger",
-        f.fullChild.id,
-        childClient,
-        agentTools
-          .filter((tool) => tool.callers.some((kind) => kind === "program"))
-          .map(({ name }) => name),
-      ],
-      [
-        "Chat Trigger",
-        f.chat.id,
-        chatClient,
-        agentTools
-          .filter((tool) => tool.callers.some((kind) => kind === "program"))
-          .map(({ name }) => name),
-      ],
-      [
-        "delegated Watch",
-        f.crossChild.id,
-        watchClient,
-        agentTools
-          .filter((tool) => tool.callers.some((kind) => kind === "program"))
-          .map((tool) => tool.name),
-      ],
+    for (const [label, actor, client] of [
+      ["delegated Trigger", f.fullChild, childClient],
+      ["Chat Trigger", f.chat, chatClient],
+      ["delegated Watch", f.crossChild, watchClient],
     ] as const) {
+      const reach = threadReachScope(actor);
+      const expectedNames = toolsFor({ kind: "program", accessMode: actor.accessMode, reach }).map(
+        (t) => t.name,
+      );
       await check(
         `F16c ${label} tools`,
-        actor,
+        actor.id,
         "MCP tools/list",
         [...expectedNames].sort(),
         async () => {
           const names = (await client.listTools()).tools.map(({ name }) => name).sort();
           expect(names).toEqual([...expectedNames].sort());
+          if (reach.kind !== "user" || actor.accessMode !== "full-access")
+            expect(names).not.toContain("project_create");
+          else expect(names).toContain("project_create");
           return names;
         },
       );
@@ -2698,7 +2684,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       publicUrl: url,
       store: store,
       handlers: agents.service.options.handlers,
-      receipts: new AgentOperationReceipts(store.database),
+
       callers: new AgentCallerResolver({
         store: store,
         runs: tokens,

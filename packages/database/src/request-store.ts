@@ -1542,6 +1542,48 @@ export class RequestStore {
     );
   }
 
+  async connectionPage(input: {
+    userId: UserId;
+    workspaceId?: WorkspaceId;
+    before?: string;
+    limit: number;
+  }) {
+    const limit = clampLimit(input.limit);
+    const scope = `connection:${input.userId}:${input.workspaceId ?? "user"}`;
+    const anchor = input.before ? decodeRequestCursor(input.before, scope) : null;
+    let query = this.#database
+      .selectFrom("requests")
+      .selectAll("requests")
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom("workspaceMemberships")
+            .select("id")
+            .whereRef("workspaceMemberships.workspaceId", "=", "requests.originatingWorkspaceId")
+            .where("workspaceMemberships.userId", "=", input.userId)
+            .where("workspaceMemberships.state", "=", "active"),
+        ),
+      );
+    if (input.workspaceId) query = query.where("originatingWorkspaceId", "=", input.workspaceId);
+    const count = await query
+      .clearSelect()
+      .select(({ fn }) => fn.countAll<string>().as("count"))
+      .executeTakeFirstOrThrow();
+    if (anchor)
+      query = query.where((eb) =>
+        eb.or([
+          eb("createdAt", "<", anchor.createdAt),
+          eb.and([eb("createdAt", "=", anchor.createdAt), eb("id", "<", anchor.id)]),
+        ]),
+      );
+    const rows = await query
+      .orderBy("createdAt", "desc")
+      .orderBy("id", "desc")
+      .limit(limit + 1)
+      .execute();
+    return requestPage(rows, Number(count.count), limit, scope);
+  }
+
   async visiblePage(input: {
     readonly before?: string;
     readonly limit: number;

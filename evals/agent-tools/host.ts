@@ -167,13 +167,6 @@ export async function startFakeHost(testCase: EvalCase) {
     store: {
       getThreadForOwner: async (id) => ({ ...thread, id }),
       findMainWorkspaceForOwner: async () => undefined,
-      getAssignmentForOwner: async () => unavailable(),
-    },
-    receipts: {
-      execute: async (input) => {
-        await input.check();
-        return input.invoke();
-      },
     },
   });
   const sessions: { server: Server; transport: StreamableHTTPServerTransport }[] = [];
