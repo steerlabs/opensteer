@@ -131,7 +131,11 @@ export class PluginSettingsStore {
     };
   }
 
-  private async snapshot(owner: UserId, availableRunnerIds?: ReadonlySet<string>) {
+  private async snapshot(
+    owner: UserId,
+    availableRunnerIds?: ReadonlySet<string>,
+    opening?: PluginTarget,
+  ) {
     const memberWorkspaces = this.database
       .selectFrom("workspaceMemberships")
       .select("workspaceId")
@@ -265,7 +269,10 @@ export class PluginSettingsStore {
       const setting = settings.find((s) => s.targetKey === pluginTargetKey(target));
       return {
         enabled: setting?.enabled ?? true,
-        mainIncluded: setting?.mainIncluded ?? true,
+        mainIncluded:
+          (setting?.mainIncluded ?? true) &&
+          (target.kind !== "plugin" ||
+            places.some((p) => p.kind === "main" && selected.includes(p.id))),
         projectCount: places.filter((p) => p.kind === "project" && selected.includes(p.id)).length,
         personalEverywhere:
           setting?.personalEverywhereAccounts !== null &&
@@ -290,10 +297,20 @@ export class PluginSettingsStore {
           (s.target.kind === "service" || s.target.kind === "device-app") &&
           s.target.definitionId === definitionId,
       );
-      if (!accounts.length && !ownGrants.length && !saved) continue;
+      // The explicit Add command may admit catalog setup before any account exists.
+      // Ordinary reads still require the viewer’s own account, grant, or saved choice.
+      const adding =
+        installation.sourceKind === "built-in" &&
+        (opening?.kind === "service" || opening?.kind === "device-app") &&
+        opening.definitionId === definitionId;
+      if (!accounts.length && !ownGrants.length && !saved && !adding) continue;
       const device =
         accounts.some((c) => c.connectionKind === "computer") ||
-        saved?.target.kind === "device-app";
+        saved?.target.kind === "device-app" ||
+        (typeof definition === "object" &&
+          definition !== null &&
+          "computerApp" in definition &&
+          !!definition.computerApp);
       const target: PluginTarget = { kind: device ? "device-app" : "service", definitionId };
       rows.push({
         target,
@@ -307,7 +324,13 @@ export class PluginSettingsStore {
         ),
         accountCount: accounts.length,
         issues: [
-          ...(accounts.some((c) => c.status === "needs-attention") ||
+          ...((!accounts.length &&
+            typeof definition === "object" &&
+            definition !== null &&
+            "authMethods" in definition &&
+            Array.isArray(definition.authMethods) &&
+            definition.authMethods.length > 0) ||
+          accounts.some((c) => c.status === "needs-attention") ||
           saved?.personalEverywhereAccounts?.some(
             (a) => !accounts.some((c) => c.id === a.connectionId),
           )
@@ -464,7 +487,12 @@ export class PluginSettingsStore {
       await lockPluginOwnerConsent(tx, owner);
       await tx.selectFrom("users").select("id").where("id", "=", owner).executeTakeFirstOrThrow();
       const store = new PluginSettingsStore(tx);
-      const detail = await store.detail(owner, command.target);
+      const detail = await store.detail(
+        owner,
+        command.target,
+        undefined,
+        command.type === "settings.plugin.enabled.set" && command.enabled,
+      );
       if (!detail.row.permissions.canEnable)
         throw new OpensteerError({
           code: "forbidden",
@@ -754,8 +782,13 @@ export class PluginSettingsStore {
     });
   }
 
-  async detail(owner: UserId, target: PluginTarget, availableRunnerIds?: ReadonlySet<string>) {
-    const snapshot = await this.snapshot(owner, availableRunnerIds);
+  async detail(
+    owner: UserId,
+    target: PluginTarget,
+    availableRunnerIds?: ReadonlySet<string>,
+    adding = false,
+  ) {
+    const snapshot = await this.snapshot(owner, availableRunnerIds, adding ? target : undefined);
     const {
       rows,
       places,

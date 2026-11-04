@@ -361,6 +361,7 @@ export class MockSettingsFixtures {
       }));
       detail.personalEverywhere = null;
       detail.row.accountCount = 0;
+      detail.row.issues = item.definition.authMethods.length ? ["needs-sign-in"] : [];
       detail.accounts = [];
       detail.installationIds = [item.installationId];
       detail.permissions = [];

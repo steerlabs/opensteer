@@ -31,7 +31,7 @@ export function useSettingsLease(host: HostClient | null) {
     return userId.current !== null && snapshot.user?.id === userId.current;
   }, [host, mobile]);
 }
-export function useSettingsRead<T>(host: HostClient, read: () => Promise<T>) {
+export function useSettingsRead<T>(host: HostClient, read: () => Promise<T>, key = "") {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const isCurrent = useSettingsLease(host);
@@ -55,6 +55,7 @@ export function useSettingsRead<T>(host: HostClient, read: () => Promise<T>) {
         if (isCurrent()) setError("Couldn’t refresh settings. Try again.");
       },
     );
+    setData(null);
     readerRef.current = reader;
     void reload();
     let connected = canRespondToRequests(host.getSnapshot());
@@ -71,6 +72,6 @@ export function useSettingsRead<T>(host: HostClient, read: () => Promise<T>) {
       unsubscribe();
       unsubscribePlugins();
     };
-  }, [host, reload, isCurrent]);
+  }, [host, reload, isCurrent, key]);
   return { data, error, reload };
 }

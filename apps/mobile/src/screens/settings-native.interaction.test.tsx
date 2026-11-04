@@ -491,7 +491,7 @@ it.each(["ios", "android"])(
     await press("Add and continue to sign-in");
     expect(dispatch.mock.calls.map(([command]) => command.type)).toEqual([
       "integration.catalog.install",
-      "settings.plugin.placement.set",
+      "settings.plugin.enabled.set",
     ]);
     const overview = await host.rpc["plugins.overview.get"]({});
     if (!overview.ok) throw new Error("Missing overview");
@@ -637,3 +637,61 @@ it.each(["ios", "android"])(
     expect(rows().some((row) => row.kind === "input" && row.secure)).toBe(false);
   },
 );
+
+it("refreshes an open plugin detail after a plugin invalidation", async () => {
+  await open("plugins");
+  const target = { kind: "service", definitionId: "google-gmail" } as const;
+  await act(async () =>
+    root!.render(
+      <SettingsPluginsScreen route={{ params: { deploymentId: "deployment", target } }} />,
+    ),
+  );
+  const original = host.dispatch.bind(host);
+  await act(async () => {
+    await original({
+      type: "settings.plugin.enabled.set",
+      target,
+      enabled: false,
+      expectedRevision: 0,
+      idempotencyKey: "other-session",
+    });
+  });
+  expect(rows().find((row) => row.kind === "toggle" && row.label === "Gmail")).toMatchObject({
+    value: false,
+  });
+});
+
+it("opens installed mobile directory services and keeps placement as a sign-in draft", async () => {
+  await open("plugins");
+  await press("Add plugins");
+  await press("Gmail · Added");
+  const dispatch = vi.spyOn(host, "dispatch");
+  await press("Add and continue to sign-in");
+  expect(dispatch.mock.calls.map(([command]) => command.type)).toEqual([
+    "settings.plugin.enabled.set",
+  ]);
+  expect(state.connected).toBeTypeOf("function");
+});
+
+it("uses the selected provider account access when mobile enables Everywhere", async () => {
+  await open("plugins");
+  const target = { kind: "service", definitionId: "google-gmail" } as const;
+  await act(async () =>
+    root!.render(
+      <SettingsPluginsScreen route={{ params: { deploymentId: "deployment", target } }} />,
+    ),
+  );
+  const access = rows().find((row) => row.kind === "chips" && row.label.startsWith("Access for "));
+  if (access?.kind !== "chips") throw new Error("Missing account access choice");
+  await act(async () => access.onChange("read-write"));
+  const dispatch = vi.spyOn(host, "dispatch");
+  const everywhere = row("Everywhere, including new Projects");
+  if (everywhere.kind !== "toggle") throw new Error("Missing Everywhere");
+  await act(async () => everywhere.onChange(true));
+  const command = dispatch.mock.calls[0]![0];
+  if (command.type !== "settings.plugin.placement.set") throw new Error("Missing placement");
+  expect(command.personalEverywhere?.accounts).toHaveLength(1);
+  expect(command.personalEverywhere?.accounts[0]?.access).toBe("read-write");
+  for (const project of command.projects)
+    expect(project.accounts).toEqual(command.personalEverywhere?.accounts);
+});

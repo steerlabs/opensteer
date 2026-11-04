@@ -7,7 +7,10 @@ import {
 import { PluginAccounts } from "./settings-plugin-accounts.js";
 import {
   completePluginConsent,
+  addPluginService,
   type PluginAddConsent,
+  settingsMutationRejected,
+  pluginPlacementAccounts,
   pluginGroups,
   pluginState,
   pluginTargetKey,
@@ -69,24 +72,27 @@ function Plugins({
   const [serverEntries, setServerEntries] = useState<
     SettingsRpcData<"integration.platform.get">["installations"]
   >([]);
-  const [detail, setDetail] = useState<PluginDetailView | null>(null);
+  const [placementAccounts, setPlacementAccounts] = useState<
+    PluginDetailView["places"][number]["accounts"]
+  >([]);
+  const [detailTarget, setDetailTarget] = useState(target);
   useEffect(() => {
-    if (!target) return;
-    const parsed = PluginTargetSchema.safeParse(target);
-    if (!parsed.success) return;
-    let active = true;
-    void host.rpc["plugins.detail.get"]({ target: parsed.data })
-      .then(unwrapRpcResult)
-      .then((value) => {
-        if (active && isCurrent()) setDetail(value);
-      })
-      .catch(() => {
-        if (active && isCurrent()) setError("Couldn’t load plugin.");
-      });
-    return () => {
-      active = false;
-    };
-  }, [host, target, isCurrent]);
+    setDetailTarget(target);
+    setPlacementAccounts([]);
+  }, [target]);
+  const detailRead = useSettingsRead(
+    host,
+    async () => {
+      if (!detailTarget) return null;
+      return unwrapRpcResult(
+        await host.rpc["plugins.detail.get"]({
+          target: PluginTargetSchema.parse(detailTarget),
+        }),
+      );
+    },
+    JSON.stringify(detailTarget),
+  );
+  const detail = detailRead.data;
   useEffect(() => {
     if (!detail) {
       setServerEntries([]);
@@ -152,14 +158,19 @@ function Plugins({
         if (isCurrent()) setError("The change could not be confirmed. Refresh before retrying.");
       })
       .then(async () => {
-        await overview.reload();
+        await Promise.all([overview.reload(), detailRead.reload()]);
         busy.current = false;
         setPending(null);
       });
   };
   const command = (key: string, value: HostApiCommandInput) =>
     run(key, async () => {
-      const intent = JSON.stringify({ ...value, idempotencyKey: "" });
+      const intent = JSON.stringify(
+        value.type === "settings.plugin.enabled.set" ||
+          value.type === "settings.plugin.placement.set"
+          ? { type: value.type, target: value.target }
+          : { ...value, idempotencyKey: "" },
+      );
       const prior = attempts.current.get(intent);
       if (prior) {
         await host.rpc["plugins.overview.get"]({}).then(unwrapRpcResult);
@@ -167,14 +178,14 @@ function Plugins({
       }
       const submitted = prior ?? value;
       attempts.current.set(intent, submitted);
-      await host.dispatch(submitted);
-      attempts.current.delete(intent);
-      if (detail) {
-        const result = unwrapRpcResult(
-          await host.rpc["plugins.detail.get"]({ target: detail.row.target }),
-        );
-        if (isCurrent()) setDetail(result);
+      try {
+        await host.dispatch(submitted);
+      } catch (reason) {
+        if (settingsMutationRejected(reason)) attempts.current.delete(intent);
+        throw reason;
       }
+      attempts.current.delete(intent);
+      await detailRead.reload();
     });
   useEffect(() => {
     if (overview.data?.rows.length !== 0) return;
@@ -243,17 +254,17 @@ function Plugins({
                     idempotencyKey: mutationIdempotencyKey("plugin-remove"),
                   });
                 }
-              if (isCurrent()) setDetail(null);
+              if (isCurrent()) setDetailTarget(undefined);
             }),
         },
       ],
     );
   const sections: NativeSettingsSection[] = [];
-  if (error || overview.error)
+  if (error || overview.error || detailRead.error)
     sections.push({
       key: "error",
       title: "Needs you",
-      rows: [text("error", error ?? overview.error ?? "")],
+      rows: [text("error", error ?? detailRead.error ?? overview.error ?? "")],
     });
   if (detail) {
     const row = detail.row;
@@ -343,6 +354,31 @@ function Plugins({
       key: "places",
       title: "Where it’s on",
       rows: [
+        ...detail.accounts.map((account): NativeSettingsRow => ({
+          key: `access:${account.connectionId}`,
+          kind: "chips",
+          label: `Access for ${account.displayName}`,
+          value:
+            placementAccounts.find((a) => a.connectionId === account.connectionId)?.access ?? "",
+          choices: [
+            { value: "", label: "Choose access" },
+            { value: "read", label: "Read" },
+            { value: "read-write", label: "Read and update" },
+          ],
+          onChange: (access) =>
+            setPlacementAccounts((previous) => [
+              ...previous.filter((a) => a.connectionId !== account.connectionId),
+              ...(access === "read" || access === "read-write"
+                ? [
+                    {
+                      connectionId: account.connectionId,
+                      access: access === "read" ? ("read" as const) : ("read-write" as const),
+                    },
+                  ]
+                : []),
+            ]),
+        })),
+
         ...(host.getSnapshot().deploymentShape?.kind === "personal"
           ? [
               {
@@ -350,7 +386,12 @@ function Plugins({
                 kind: "toggle" as const,
                 label: "Everywhere, including new Projects",
                 value: row.placement.personalEverywhere,
-                disabled: pending !== null || !row.permissions.canPlace,
+                disabled:
+                  pending !== null ||
+                  !row.permissions.canPlace ||
+                  ((row.target.kind === "service" || row.target.kind === "device-app") &&
+                    !placementAccounts.length &&
+                    !row.placement.personalEverywhere),
                 onChange: (enabled: boolean) =>
                   command("everywhere", {
                     type: "settings.plugin.placement.set",
@@ -361,14 +402,18 @@ function Plugins({
                       .filter((place) => place.kind === "project" && (enabled || place.selected))
                       .map((place) => ({
                         workspaceId: place.workspaceId,
-                        accounts: place.accounts,
+                        accounts: pluginPlacementAccounts(
+                          enabled ? [] : place.accounts,
+                          placementAccounts,
+                          row.target.kind === "service" || row.target.kind === "device-app",
+                        ),
                       })),
                     personalEverywhere: enabled
                       ? {
-                          accounts: detail.accounts.flatMap((account) =>
-                            account.access
-                              ? [{ connectionId: account.connectionId, access: account.access }]
-                              : [],
+                          accounts: pluginPlacementAccounts(
+                            [],
+                            placementAccounts,
+                            row.target.kind === "service" || row.target.kind === "device-app",
                           ),
                         }
                       : null,
@@ -384,7 +429,14 @@ function Plugins({
               kind: "toggle",
               label: place.name,
               value: place.selected,
-              disabled: pending !== null || !place.canSelect || !row.permissions.canPlace,
+              disabled:
+                pending !== null ||
+                !place.canSelect ||
+                !row.permissions.canPlace ||
+                ((row.target.kind === "service" || row.target.kind === "device-app") &&
+                  place.kind === "project" &&
+                  !place.selected &&
+                  !placementAccounts.length),
               onChange: (selected) =>
                 command(`${row.target.kind}:${pluginTargetKey(row.target)}`, {
                   type: "settings.plugin.placement.set",
@@ -397,7 +449,14 @@ function Plugins({
                         p.kind === "project" &&
                         (p.workspaceId === place.workspaceId ? selected : p.selected),
                     )
-                    .map((p) => ({ workspaceId: p.workspaceId, accounts: p.accounts })),
+                    .map((p) => ({
+                      workspaceId: p.workspaceId,
+                      accounts: pluginPlacementAccounts(
+                        p.accounts,
+                        placementAccounts,
+                        row.target.kind === "service" || row.target.kind === "device-app",
+                      ),
+                    })),
                   personalEverywhere: null,
                   idempotencyKey: mutationIdempotencyKey("settings-plugin-placement"),
                 }),
@@ -433,9 +492,7 @@ function Plugins({
           )
           .map((item) =>
             button(item.definitionId, `${item.title}${item.added ? " · Added" : " · Add"}`, () => {
-              if (!item.added) {
-                openAdd(item);
-              }
+              openAdd(item);
             }),
           ),
       ],
@@ -743,7 +800,7 @@ function Plugins({
               setAdd(null);
               setAddEntry(null);
               setDirectory(null);
-              setDetail(null);
+              setDetailTarget(undefined);
               void overview.reload();
             };
             const review: NativeSettingsSection[] = [
@@ -819,48 +876,24 @@ function Plugins({
                       : [
                           button("add", "Add and continue to sign-in", () =>
                             run("catalog", async () => {
-                              await host.dispatch({
-                                type: "integration.catalog.install",
-                                input: { definitionId: add.definitionId, digest: addEntry.digest },
-                                idempotencyKey: mutationIdempotencyKey("plugin-catalog-install"),
-                              });
-                              if (!isCurrent()) return;
-                              const installed = unwrapRpcResult(
-                                await host.rpc["plugins.detail.get"]({
-                                  target: {
-                                    kind: addEntry.definition.computerApp
-                                      ? "device-app"
-                                      : "service",
+                              if (!add.added)
+                                await host.dispatch({
+                                  type: "integration.catalog.install",
+                                  input: {
                                     definitionId: add.definitionId,
+                                    digest: addEntry.digest,
                                   },
-                                }),
-                              );
+                                  idempotencyKey: mutationIdempotencyKey("plugin-catalog-install"),
+                                });
                               if (!isCurrent()) return;
-                              await host.dispatch({
-                                type: "settings.plugin.placement.set",
-                                target: installed.row.target,
-                                expectedRevision: installed.row.placement.revision,
-                                mainIncluded:
-                                  addEverywhere ||
-                                  installed.places.some(
-                                    (p) => p.kind === "main" && addPlaces.includes(p.workspaceId),
-                                  ),
-                                projects: installed.places
-                                  .filter(
-                                    (p) =>
-                                      p.kind === "project" &&
-                                      (addEverywhere || addPlaces.includes(p.workspaceId)),
-                                  )
-                                  .map((p) => ({
-                                    workspaceId: p.workspaceId,
-                                    accounts: p.accounts,
-                                  })),
-                                personalEverywhere: addEverywhere ? { accounts: [] } : null,
-                                idempotencyKey: mutationIdempotencyKey("plugin-add-placement"),
-                              });
+                              const target: PluginTarget = {
+                                kind: addEntry.definition.computerApp ? "device-app" : "service",
+                                definitionId: add.definitionId,
+                              };
+                              await addPluginService(host, target);
                               if (isCurrent()) {
                                 addConsent.current = {
-                                  target: installed.row.target,
+                                  target,
                                   everywhere: addEverywhere,
                                   places: addPlaces,
                                   access: "read",

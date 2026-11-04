@@ -1,3 +1,4 @@
+import { HostClientRequestError } from "../host/client.js";
 export * from "./plugin-add-consent.js";
 import {
   PluginTargetSchema,
@@ -85,6 +86,12 @@ export function pluginState(row: PluginRow): {
   label: string;
 } {
   if (!row.placement.enabled) return { group: "Turned off", label: "Turned off" };
+  if (
+    (row.target.kind === "service" || row.target.kind === "device-app") &&
+    row.accountCount === 0 &&
+    row.issues.includes("needs-sign-in")
+  )
+    return { group: "Needs you", label: "Connect" };
   for (const issue of row.issues)
     if (issue in repairLabels)
       return { group: "Needs you", label: repairLabels[issue as keyof typeof repairLabels] };
@@ -191,4 +198,43 @@ export function settingsSessionRows<
   return [...sessions]
     .sort((a, b) => Number(b.current) - Number(a.current))
     .map((session) => ({ ...session, label: session.deviceLabel, thisDevice: session.current }));
+}
+
+/** Only a definite Host refusal releases the original idempotent attempt. */
+export function settingsMutationRejected(reason: unknown): boolean {
+  return (
+    reason instanceof HostClientRequestError &&
+    ["conflict", "bad_request", "forbidden", "not_found", "unauthorized"].includes(reason.code)
+  );
+}
+
+export function pluginPlacementAccounts<
+  T extends { connectionId: string; access: "read" | "read-write" },
+>(existing: readonly T[], reviewed: readonly T[], requiresAccount: boolean): T[] {
+  if (existing.length) return [...existing];
+  if (requiresAccount && !reviewed.length)
+    throw new Error("Choose an account and its access first.");
+  return [...reviewed];
+}
+
+/** Record an explicit directory choice without granting account access. */
+export async function addPluginService(
+  client: import("../host/client.js").HostClient,
+  target: PluginTarget,
+) {
+  const { unwrapRpcResult, mutationIdempotencyKey } = await import("../host/index.js");
+  let revision = 0;
+  try {
+    revision = unwrapRpcResult(await client.rpc["plugins.detail.get"]({ target })).row.placement
+      .revision;
+  } catch (reason) {
+    if (!(reason instanceof HostClientRequestError) || reason.code !== "forbidden") throw reason;
+  }
+  await client.dispatch({
+    type: "settings.plugin.enabled.set",
+    target,
+    enabled: true,
+    expectedRevision: revision,
+    idempotencyKey: mutationIdempotencyKey("plugin-add"),
+  });
 }

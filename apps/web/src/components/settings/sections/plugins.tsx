@@ -16,6 +16,9 @@ import { useDeferredValue, useRef, useState, useLayoutEffect, useEffect } from "
 import { Link, useLocation, useNavigate } from "react-router";
 import type { PluginRow, PluginDetailView } from "@opensteer/protocol";
 import {
+  settingsMutationRejected,
+  addPluginService,
+  pluginPlacementAccounts,
   pluginGroups,
   pluginState,
   pluginPath,
@@ -248,6 +251,7 @@ function EnableSwitch({ row, reload }: { row: PluginRow; reload: () => void }) {
                 reload();
               })
               .catch(async (reason: unknown) => {
+                if (settingsMutationRejected(reason)) attempt.current = null;
                 // A lost response may have committed. Reconcile before offering the same operation again.
                 try {
                   unwrapRpcResult(
@@ -313,7 +317,7 @@ function OverviewRow({
       {state.group === "Needs you" ? (
         <>
           <Link className="btn btn--small" to={pluginPath(row.target)}>
-            Fix
+            {state.label === "Connect" ? "Connect" : "Fix"}
           </Link>
           <details>
             <summary aria-label={`More actions for ${row.title}`}>•••</summary>
@@ -448,6 +452,9 @@ function Placement({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const attempt = useRef<Parameters<typeof hostClient.dispatch>[0] | null>(null);
+  const [accounts, setAccounts] = useState<PluginDetailView["places"][number]["accounts"]>([]);
+  const requiresAccount =
+    detail.row.target.kind === "service" || detail.row.target.kind === "device-app";
   function change(mainIncluded: boolean, selected: string[], everywhere: boolean) {
     if (pending) return;
     const command = attempt.current ?? {
@@ -458,14 +465,17 @@ function Placement({
       mainIncluded,
       projects: detail.places
         .filter((place) => place.kind !== "main" && selected.includes(place.workspaceId))
-        .map((place) => ({ workspaceId: place.workspaceId, accounts: place.accounts })),
+        .map((place) => ({
+          workspaceId: place.workspaceId,
+          accounts: pluginPlacementAccounts(
+            everywhere ? [] : place.accounts,
+            accounts,
+            requiresAccount,
+          ),
+        })),
       personalEverywhere: everywhere
         ? {
-            accounts: detail.accounts.flatMap((account) =>
-              account.access
-                ? [{ connectionId: account.connectionId, access: account.access }]
-                : [],
-            ),
+            accounts: pluginPlacementAccounts([], accounts, requiresAccount),
           }
         : null,
     };
@@ -479,6 +489,7 @@ function Placement({
         reload();
       })
       .catch(async (reason: unknown) => {
+        if (settingsMutationRejected(reason)) attempt.current = null;
         try {
           unwrapRpcResult(
             await hostClient.rpc["plugins.detail.get"]({ target: detail.row.target }),
@@ -498,6 +509,39 @@ function Placement({
     <section className="settings-group" id="plugin-placement">
       <h2 className="settings-group__title">Where it’s on</h2>
       <div className="card">
+        {requiresAccount
+          ? detail.accounts.map((account) => (
+              <label className="card__row" key={account.connectionId}>
+                <span>{account.displayName}</span>
+                <select
+                  aria-label={`Access for ${account.displayName}`}
+                  value={
+                    accounts.find((a) => a.connectionId === account.connectionId)?.access ?? ""
+                  }
+                  disabled={pending}
+                  onChange={(event) => {
+                    const access = event.currentTarget.value;
+                    setAccounts((previous) => [
+                      ...previous.filter((a) => a.connectionId !== account.connectionId),
+                      ...(access === "read" || access === "read-write"
+                        ? [
+                            {
+                              connectionId: account.connectionId,
+                              access:
+                                access === "read" ? ("read" as const) : ("read-write" as const),
+                            },
+                          ]
+                        : []),
+                    ]);
+                  }}
+                >
+                  <option value="">Choose access</option>
+                  <option value="read">Read</option>
+                  <option value="read-write">Read and update</option>
+                </select>
+              </label>
+            ))
+          : null}
         {personal &&
         detail.row.target.kind !== "skill" &&
         detail.row.source.kind !== "workspace" ? (
@@ -508,7 +552,11 @@ function Placement({
               type="checkbox"
               role="switch"
               checked={detail.row.placement.personalEverywhere}
-              disabled={pending || !detail.row.permissions.canPlace}
+              disabled={
+                pending ||
+                !detail.row.permissions.canPlace ||
+                (requiresAccount && !accounts.length && !detail.row.placement.personalEverywhere)
+              }
               onChange={(event) =>
                 change(
                   true,
@@ -532,7 +580,15 @@ function Placement({
                   checked={
                     place.kind === "main" ? detail.row.placement.mainIncluded : place.selected
                   }
-                  disabled={pending || !place.canSelect || !detail.row.permissions.canPlace}
+                  disabled={
+                    pending ||
+                    !place.canSelect ||
+                    (requiresAccount &&
+                      place.kind === "project" &&
+                      !place.selected &&
+                      !accounts.length) ||
+                    !detail.row.permissions.canPlace
+                  }
                   onChange={(event) =>
                     change(
                       place.kind === "main"
@@ -769,11 +825,25 @@ export function PluginAddSheet({
                 </label>
               ))
             : null}
+          <SettingsError message={placementError} />
           <button
             className="btn btn--primary"
             type="button"
-            disabled={!definition || (!everywhere && places.length === 0)}
-            onClick={() => setReady(true)}
+            disabled={placing || !definition || (!everywhere && places.length === 0)}
+            onClick={() => {
+              setPlacing(true);
+              setPlacementError(null);
+              void (async () => {
+                if (integration?.entry)
+                  await addPluginService(hostClient, {
+                    kind: definition?.computerApp ? "device-app" : "service",
+                    definitionId,
+                  });
+                setReady(true);
+              })()
+                .catch((reason: unknown) => setPlacementError(actionErrorMessage(reason)))
+                .finally(() => setPlacing(false));
+            }}
           >
             {definition?.computerApp ? "Add" : `Add and sign in to ${definition?.name ?? "plugin"}`}
           </button>
@@ -881,13 +951,8 @@ function PluginDirectory({ view }: { view: SettingsView }) {
                 <strong>{item.title}</strong>
                 <span className="card__row-detail">{item.description}</span>
               </span>
-              <button
-                className="btn"
-                type="button"
-                disabled={item.added}
-                onClick={() => setAdding(item.definitionId)}
-              >
-                {item.added ? "Added" : "Add"}
+              <button className="btn" type="button" onClick={() => setAdding(item.definitionId)}>
+                {item.added ? "Connect" : "Add"}
               </button>
             </div>
           ))}

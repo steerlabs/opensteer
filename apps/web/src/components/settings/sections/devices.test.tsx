@@ -71,6 +71,13 @@ vi.mock("../../app-shell.js", () => ({ useShell: () => shell.value }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 it("opens inline device enrollment without leaving the device list", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
+  const rpc = client.rpc;
+  const read = vi.fn(rpc["devices.overview.get"]);
+  Object.defineProperty(client, "rpc", {
+    value: new Proxy(rpc, {
+      get: (target, key) => (key === "devices.overview.get" ? read : Reflect.get(target, key)),
+    }),
+  });
   shell.value = {
     hostClient: client,
     snapshot: client.getSnapshot(),
@@ -87,6 +94,15 @@ it("opens inline device enrollment without leaving the device list", async () =>
     await act(async () =>
       root.render(createElement(MemoryRouter, null, createElement(AgentDevicesSection))),
     );
+    read.mockClear();
+    shell.value = {
+      ...(shell.value as object),
+      snapshot: { ...client.getSnapshot(), machineRevision: 99 },
+    };
+    await act(async () =>
+      root.render(createElement(MemoryRouter, null, createElement(AgentDevicesSection))),
+    );
+    expect(read).toHaveBeenCalledTimes(1);
     const add = [...node.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent === "Add device",
     )!;

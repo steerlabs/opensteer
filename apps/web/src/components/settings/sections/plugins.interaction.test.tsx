@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import { unwrapRpcResult } from "@opensteer/client/host";
+import { HostClientRequestError, unwrapRpcResult } from "@opensteer/client/host";
 import { pluginPath } from "@opensteer/client/settings";
 import {
   completePluginConsent,
@@ -242,7 +242,10 @@ describe("Plugins settings", () => {
         personalEverywhere: null,
       }),
     );
-    const command = dispatch.mock.calls[0]![0];
+    expect(dispatch.mock.calls[0]![0].type).toBe("settings.plugin.enabled.set");
+    const command = dispatch.mock.calls.find(
+      ([command]) => command.type === "settings.plugin.placement.set",
+    )![0];
     if (command.type !== "settings.plugin.placement.set")
       throw new Error("Placement command missing");
     expect(JSON.stringify(command)).not.toContain(accounts[1]!.connectionId);
@@ -438,4 +441,59 @@ it("changes only entered server secrets from unified plugin detail", async () =>
   );
   expect(document.querySelector('[role="dialog"]')).toBeNull();
   expect(document.body.textContent).not.toContain("new-secret");
+});
+
+it("lets an installed directory entry open account setup", async () => {
+  const node = await mount("/settings/plugins/add");
+  await act(async () => {
+    await vi.waitFor(() => expect(node.textContent).toContain("Gmail"));
+  });
+  const entry = [...node.querySelectorAll(".card__row")].find((row) =>
+    row.textContent?.includes("Gmail"),
+  )!;
+  const button = entry.querySelector<HTMLButtonElement>("button")!;
+  expect(button.disabled).toBe(false);
+  await act(async () => button.click());
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("What it’ll access");
+});
+
+it("releases a rejected switch attempt before the next click", async () => {
+  const node = await mount();
+  const dispatch = vi
+    .spyOn(client, "dispatch")
+    .mockRejectedValueOnce(
+      new HostClientRequestError({ code: "conflict", status: 409, message: "Changed elsewhere" }),
+    );
+  await act(async () =>
+    node.querySelector<HTMLInputElement>('[aria-label="Enable Gmail"]')!.click(),
+  );
+  await act(async () =>
+    node.querySelector<HTMLInputElement>('[aria-label="Enable Gmail"]')!.click(),
+  );
+  expect(dispatch).toHaveBeenCalledTimes(2);
+  const first = dispatch.mock.calls[0]![0];
+  const second = dispatch.mock.calls[1]![0];
+  if (first.type !== "settings.plugin.enabled.set" || second.type !== first.type)
+    throw new Error("Missing switch");
+  expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
+});
+
+it("uses the explicitly selected provider account and access for Everywhere", async () => {
+  const node = await mount(pluginPath({ kind: "service", definitionId: "google-gmail" }));
+  const select = node.querySelector<HTMLSelectElement>('select[aria-label^="Access for "]')!;
+  expect(select).not.toBeNull();
+  await act(async () => {
+    select.value = "read-write";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  const dispatch = vi.spyOn(client, "dispatch");
+  const everywhere = [...node.querySelectorAll<HTMLInputElement>("#plugin-placement input")][0]!;
+  await act(async () => everywhere.click());
+  const command = dispatch.mock.calls[0]![0];
+  expect(command.type).toBe("settings.plugin.placement.set");
+  if (command.type !== "settings.plugin.placement.set") throw new Error("Missing placement");
+  expect(command.personalEverywhere?.accounts).toHaveLength(1);
+  expect(command.personalEverywhere?.accounts[0]?.access).toBe("read-write");
+  for (const project of command.projects)
+    expect(project.accounts).toEqual(command.personalEverywhere?.accounts);
 });
