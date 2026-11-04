@@ -58,7 +58,12 @@ try {
     results.push(name);
   };
   try {
-    await page.getByRole("button", { name: /^Start on / }).click();
+    await page.getByRole("button", { name: /^Set up / }).click();
+    await page
+      .locator(".setup__actions button:not(:disabled)")
+      .filter({ hasText: /^(Start|Done|Set up later)$/ })
+      .first()
+      .click({ timeout: 90_000 });
     await page.getByRole("textbox", { name: "Message" }).waitFor({ timeout: 90_000 });
     await page.getByRole("button", { name: /Places and menu|:.*Menu$/ }).click();
     await page.getByRole("menuitem", { name: "Projects", exact: true }).click();
