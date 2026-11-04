@@ -126,7 +126,8 @@ class BrowserPopupModule:Module() {
     val openingFocus=WeakReference(activity.currentFocus)
     val keyReleases=PopupKeyReleases()
     created.setOnKeyListener{_,code,event->
-      if(event.action==KeyEvent.ACTION_DOWN){keyReleases.began(code);false}
+      if(code==KeyEvent.KEYCODE_ESCAPE){if(event.action==KeyEvent.ACTION_UP)emit(id,revision,null);true}
+      else if(event.action==KeyEvent.ACTION_DOWN){keyReleases.began(code);false}
       else if(event.action==KeyEvent.ACTION_UP&&keyReleases.ended(code)){openingFocus.get()?.dispatchKeyEvent(event);true}
       else false
     }

@@ -3,7 +3,7 @@ set -euo pipefail
 [[ "$(/usr/sbin/sysctl -n hw.model)" == *VirtualMac* ]] || { echo 'Popup journey requires a disposable VM' >&2; exit 2; }
 popup_dist="$(mktemp -d "${TMPDIR:-/tmp}/opensteer-popup-electron.XXXXXX")"
 trap 'rm -rf "$popup_dist"' EXIT
-/usr/bin/ditto '/Volumes/My Shared Files/inputs/Electron.app' "$popup_dist/Electron.app"
+/usr/bin/tar -xf '/Volumes/My Shared Files/inputs/Electron.tar' -C "$popup_dist"
 export ELECTRON_OVERRIDE_DIST_PATH="$popup_dist"
 export VITE_BROWSER_PRESENTATION=h264
 pnpm --workspace-root exec playwright-core install chromium

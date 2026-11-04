@@ -141,13 +141,15 @@ Keep labels, values, IDs, typed text and schema errors out of diagnostics and
 artifacts; retain only enum/count evidence. See [the disclosure and input
 boundary](../../../docs/browser-sessions.md#remote-editing).
 
-For the integrated qualified Electron snapshot, stage the directory containing
-`Electron.app` and `SOURCE.txt` as read-only VM inputs. Select H.264 before payload
+For the integrated qualified Electron snapshot, archive `Electron.app` as
+`Electron.tar` outside the checkout and stage that archive beside `SOURCE.txt`
+as read-only VM inputs. Framework symlinks must be unpacked inside the guest;
+the shared filesystem cannot reliably copy them directly. Select H.264 before payload
 build and use the guest wrapper so the npm Electron launcher resolves the guest
 copy before import:
 
 ```sh
-VITE_BROWSER_PRESENTATION=h264 pnpm test:vm -- --inputs /absolute/qualified-snapshot --revision <commit> bash scripts/browser-popup-vm.sh
+VITE_BROWSER_PRESENTATION=h264 pnpm test:vm -- --inputs /absolute/popup-inputs --revision <commit> bash scripts/browser-popup-vm.sh
 ```
 
 The selected `popups` journey uses the real Personal Host, the app's temporary

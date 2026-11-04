@@ -62,6 +62,7 @@ public final class BrowserPopupModule: Module {
 }
 
 private final class PopupController: UIViewController, UITableViewDataSource, UITableViewDelegate, UIAdaptivePresentationControllerDelegate, UIColorPickerViewControllerDelegate, UIPickerViewDataSource, UIPickerViewDelegate {
+  override var keyCommands: [UIKeyCommand]? { [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(cancel))] }
   weak var openingResponder: UIResponder?
   private var keyReleases = PopupKeyReleases()
   override func pressesBegan(_ presses:Set<UIPress>,with event:UIPressesEvent?) { for press in presses { if let key=press.key {keyReleases.began(Int(key.keyCode.rawValue))} };super.pressesBegan(presses,with:event) }
@@ -157,7 +158,7 @@ private final class PopupController: UIViewController, UITableViewDataSource, UI
     cell.textLabel?.font = .preferredFont(forTextStyle: i.kind == "group" ? .headline : .body); cell.textLabel?.adjustsFontForContentSizeCategory=true; cell.textLabel?.numberOfLines=0
     cell.isUserInteractionEnabled=i.enabled && (i.kind == "option" || i.kind == "suggestion"); cell.textLabel?.textColor=i.enabled ? .label : .secondaryLabel
     cell.accessoryType=selected.contains(i.id) || i.selected && !i.enabled ? .checkmark : .none
-    if selected.contains(i.id) || i.selected {cell.accessibilityTraits.insert(.selected)}
+    if selected.contains(i.id) || i.selected && !i.enabled {cell.accessibilityTraits.insert(.selected)}
     cell.semanticContentAttribute=i.rtl ? .forceRightToLeft : .forceLeftToRight; return cell
   }
   func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
