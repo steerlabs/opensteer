@@ -155,8 +155,10 @@ VITE_BROWSER_PRESENTATION=h264 pnpm test:vm -- --inputs /absolute/popup-inputs -
 The selected `popups` journey uses the real Personal Host, the app's temporary
 profile/database roots and a separate Chromium viewer process. The wrapper installs
 the repository-pinned Playwright browser in the disposable guest; an explicit
-`OPENSTEER_POPUP_VIEWER_EXECUTABLE` may name another qualified viewer. Source hashes and the private
-owner are preflight requirements. Unit, native module or sheet-only evidence does
+`OPENSTEER_POPUP_VIEWER_EXECUTABLE` may name another qualified viewer. The exact
+private owner contract (`process.versions.opensteer === "1"`) and the private owner
+are preflight requirements; source hashes in `SOURCE.txt` record provenance, not
+admission. Unit, native module or sheet-only evidence does
 not qualify real H.264 input. Run the fixture on an owned physical iPhone and a
 reserved Android device separately; the iOS Simulator cannot qualify Metal
 presentation identity. Keep server-Deployment/Connect and weak-cell acceptance
