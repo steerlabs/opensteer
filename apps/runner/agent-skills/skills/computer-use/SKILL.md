@@ -1,6 +1,6 @@
 ---
 name: computer-use
-description: Observe and operate Mac apps/Agent Phones within a Run through computer.
+description: Operate Mac apps and Agent Phones through the computer tool when the task needs their interfaces.
 ---
 
 # Opensteer Computer Use

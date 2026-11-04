@@ -992,6 +992,13 @@ describe("wire protocol", () => {
       threadId,
     };
     const readWindow = { ...window, byteCount: 300 * 1_024, itemCount: 1, threadId };
+    const execution = {
+      environmentId: createId("environment"),
+      harnessInstanceId: createId("harnessInstance"),
+      modelSelection: { modelId: "gpt-5.6-sol", options: {}, providerId: "openai" },
+      threadId,
+    };
+    const queue = { items: [], paused: false };
     expect(
       thread_read.output.safeParse({
         assignments: [],
@@ -1002,7 +1009,9 @@ describe("wire protocol", () => {
           nextBefore: null,
           totalItems: 0,
         },
+        execution,
         messages: [largeMessage],
+        queue,
         requestId,
         thread,
         type: "thread.read.result",
@@ -1011,7 +1020,17 @@ describe("wire protocol", () => {
     ).toBe(true);
     expect(
       thread_read.output.safeParse({
+        assignments: [],
+        assignmentWindow: {
+          byteCount: 2,
+          hasMore: false,
+          itemCount: 0,
+          nextBefore: null,
+          totalItems: 0,
+        },
+        execution,
         messages: [largeMessage, { ...largeMessage, id: createId("message") }],
+        queue,
         requestId,
         thread,
         type: "thread.read.result",

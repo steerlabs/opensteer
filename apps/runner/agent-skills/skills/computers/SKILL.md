@@ -1,6 +1,6 @@
 ---
 name: computers
-description: Use granted SSH access; list, rename, revoke computers or stop access sessions.
+description: Use Opensteer SSH access for another computer’s files, commands or forwarded ports. List, rename or revoke computers and stop access sessions.
 ---
 
 # Opensteer Computers
