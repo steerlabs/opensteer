@@ -42,7 +42,7 @@ import {
   RunnerConnectionFenceLedger,
 } from "@opensteer/runner-client";
 
-const cloudDeploymentShape = {
+const serverDeploymentShape = {
   defaultWorkspaceBacking: "local-directory",
   kind: "server" as const,
 } as const;
@@ -661,7 +661,7 @@ describe("runnerWebSocketUrl", () => {
       agentSkills: testAgentSkills,
       plugins: noPlugins,
       bootId,
-      deploymentShape: cloudDeploymentShape,
+      deploymentShape: serverDeploymentShape,
       environmentId,
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
@@ -698,7 +698,7 @@ describe("runnerWebSocketUrl", () => {
       browserBridge: undefined,
       controlCaPath: undefined,
       dataDirectory: "/tmp/opensteer-runner-connection-test",
-      deploymentShape: cloudDeploymentShape,
+      deploymentShape: serverDeploymentShape,
       enrollmentToken: "x".repeat(32),
       environmentId,
       hostUrl: new URL(`http://127.0.0.1:${address.port}`),
@@ -1672,7 +1672,7 @@ describe("runnerWebSocketUrl", () => {
       agentSkills: testAgentSkills,
       plugins: noPlugins,
       bootId,
-      deploymentShape: cloudDeploymentShape,
+      deploymentShape: serverDeploymentShape,
       environmentId,
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
@@ -1709,7 +1709,7 @@ describe("runnerWebSocketUrl", () => {
         browserBridge: undefined,
         controlCaPath: undefined,
         dataDirectory: "/tmp/opensteer-runner-reenroll-test",
-        deploymentShape: cloudDeploymentShape,
+        deploymentShape: serverDeploymentShape,
         enrollmentToken: "y".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),

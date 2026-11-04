@@ -1,11 +1,3 @@
-import { CloudDeploymentLifecycle } from "../cloud/lifecycle.js";
-import { CloudMaterialCipher } from "../cloud/material.js";
-import {
-  GkeKubernetesManagedDeploymentClient,
-  GoogleMetadataAccessTokenProvider,
-  KubernetesManagedDeploymentProvider,
-  readKubernetesManagedDeploymentTemplate,
-} from "../cloud/kubernetes-managed-deployment-provider.js";
 import { ControlPlaneAuthenticator, createControlPlaneAuth } from "../auth/auth.js";
 import { BetterAuthAccountAdoptionCompletionGrantIssuer } from "../adoption/adoption-grant-issuer.js";
 import { AdoptionOperationCipher } from "../adoption/adoption-operation-crypto.js";
@@ -54,33 +46,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
       ),
       adoptionOperationCipher: new AdoptionOperationCipher(config.adoptionOperationKey),
       adoptionProofVerifier: new HttpHostAccountAdoptionProofVerifier(),
-      managedDeploymentDomain: config.managedDeploymentDomain,
-    });
-    const cloudConfig = config.cloud;
-    const cloudProvider = cloudConfig
-      ? await (async () => {
-          const template = await readKubernetesManagedDeploymentTemplate(cloudConfig.templatePath);
-          const accessTokenProvider = new GoogleMetadataAccessTokenProvider();
-          const clientForTemplate = (operationTemplate: typeof template) =>
-            new GkeKubernetesManagedDeploymentClient({
-              accessTokenProvider,
-              ca: operationTemplate.kubernetesCa,
-              server: operationTemplate.kubernetesApiServer,
-            });
-          return new KubernetesManagedDeploymentProvider({ clientForTemplate, template });
-        })()
-      : undefined;
-    const cloudDeployments = new CloudDeploymentLifecycle(database, store, {
-      issuer: config.publicOrigin.origin,
-      domain: config.managedDeploymentDomain,
-      ...(cloudConfig && cloudProvider
-        ? {
-            cipher: new CloudMaterialCipher(cloudConfig.operationKey),
-            provider: cloudProvider,
-          }
-        : {}),
-      onError: (operationId, error) =>
-        server.log.error({ operationId, err: error }, "Cloud deployment reconciliation failed"),
+      portalOrigin: config.portalOrigin,
     });
     const personalRemoteAccount = new PersonalRemoteAccountService({
       auth,
@@ -117,7 +83,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     await store.ensureOfficialNativeClients({ clients: config.nativeOAuthClients });
     await store.ensureOfficialPortalClient({
       clientId: portalOAuthClientId,
-      redirectUri: portalCallbackUri(config.publicOrigin, config.managedDeploymentDomain),
+      redirectUri: portalCallbackUri(config.portalOrigin),
       scopes: portalOAuthScopes,
     });
     const server = await createControlPlaneServer(
@@ -125,10 +91,11 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         auth,
         authenticator: new ControlPlaneAuthenticator(auth, database, config.publicOrigin),
         connectLifecycle,
-        ...(cloudDeployments ? { cloudDeployments } : {}),
         ...(hostedOAuthBroker ? { hostedOAuthBroker } : {}),
+        ...(config.iosAppUrl ? { iosAppUrl: config.iosAppUrl } : {}),
+        ...(config.androidAppUrl ? { androidAppUrl: config.androidAppUrl } : {}),
         ...(config.desktopDownloadUrl ? { desktopDownloadUrl: config.desktopDownloadUrl } : {}),
-        managedDeploymentDomain: config.managedDeploymentDomain,
+        portalOrigin: config.portalOrigin,
         notifications,
         notificationPlatforms: [
           ...(apns ? ["ios" as const] : []),
@@ -184,29 +151,11 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     }, operationResultCleanupIntervalMilliseconds);
     cleanup.unref();
 
-    let cloudWork: Promise<void> | undefined;
-    const reconcileCloud = () => {
-      if (!cloudDeployments.available || cloudWork) return;
-      cloudWork = cloudDeployments
-        .reconcile()
-        .catch((error) => {
-          server.log.error({ err: error }, "Cloud reconciliation failed");
-        })
-        .finally(() => {
-          cloudWork = undefined;
-        });
-    };
-    const cloudTimer = cloudDeployments.available ? setInterval(reconcileCloud, 5_000) : undefined;
-    cloudTimer?.unref();
-    reconcileCloud();
-
     let closePromise: Promise<void> | undefined;
     return {
       close: () => {
         closePromise ??= (async () => {
           clearInterval(cleanup);
-          if (cloudTimer) clearInterval(cloudTimer);
-          await cloudWork;
           await notificationDelivery?.close();
           apns?.close();
           await server.close();

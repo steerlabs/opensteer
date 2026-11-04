@@ -13,7 +13,7 @@ describe("signed Mac helper builds", () => {
     };
     for (const helper of signedMacHelpers)
       expect(pkg.scripts[helper.command]).toContain(helper.script);
-    for (const file of ["scripts/release-beta-mac.ts", "scripts/build-desktop-macos.ts"]) {
+    for (const file of ["scripts/release-mac.ts", "scripts/build-desktop-macos.ts"]) {
       const source = await readFile(file, "utf8");
       expect(source).toContain("signedMacHelpers");
       expect(source).toMatch(/for \(const helper of signedMacHelpers\)/);

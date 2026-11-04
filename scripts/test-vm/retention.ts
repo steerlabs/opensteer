@@ -52,7 +52,7 @@ export interface VmRetention {
   readonly dryRun?: boolean;
   readonly storage?: {
     readonly mainSha: string | undefined;
-    /** undefined means unreadable; null means Beta is not installed. */
+    /** undefined means unreadable; null means Opensteer is not installed. */
     readonly installedVersion: string | null | undefined;
     readonly keepPayloads: number;
   };
@@ -386,10 +386,10 @@ async function reclaimUnlocked(options: VmRetention): Promise<number> {
   } else options.log("kept candidate caches: main identity unknown");
 
   // Release folders come from the retired local release pipeline; releases now build on
-  // GitHub Actions and the installed Beta updates itself. Only the installed version's
+  // GitHub Actions and the installed Opensteer updates itself. Only the installed version's
   // folder stays, and records that pipeline wrote no longer keep anything.
   if (policy?.installedVersion === undefined)
-    options.log("kept release artifacts: installed Beta version unknown");
+    options.log("kept release artifacts: installed Opensteer version unknown");
   else {
     for (const release of releases) {
       if (release.version === policy.installedVersion) continue;

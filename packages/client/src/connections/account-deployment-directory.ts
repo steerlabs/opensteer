@@ -477,10 +477,10 @@ export class AccountDeploymentDirectoryService {
       if (controller.signal.aborted) {
         throw controller.signal.reason instanceof Error
           ? controller.signal.reason
-          : new Error("Opensteer Cloud request was cancelled.", { cause: error });
+          : new Error("The Opensteer Account request was cancelled.", { cause: error });
       }
       if (error instanceof SyntaxError) {
-        throw new Error("Opensteer Cloud returned an invalid response.");
+        throw new Error("The Opensteer Account returned an invalid response.");
       }
       throw error;
     } finally {

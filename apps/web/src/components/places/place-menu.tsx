@@ -16,11 +16,11 @@ export function PlaceMenuPlaces({
   readonly onClose: () => void;
   readonly places: DesktopPlaces;
 }) {
-  const { bridge, cloudDeploymentIds, onAddPlace, snapshot } = places;
+  const { bridge, onAddPlace, snapshot } = places;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   usePlaceChecks(bridge, true);
-  const rows = placeRows(snapshot, { cloudDeploymentIds, thisComputer: thisComputerLabel() });
+  const rows = placeRows(snapshot, { thisComputer: thisComputerLabel() });
   const run = (operation: () => Promise<void>, then?: () => void) => {
     setPending(true);
     setError(null);

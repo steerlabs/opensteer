@@ -6,7 +6,7 @@ describe("Chrome user agent for every release", () => {
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7339.0 Safari/537.36";
   for (const name of [
     "Opensteer",
-    "Opensteer Beta",
+    "Opensteer",
     "Opensteer Development",
     "Opensteer Future Release",
   ]) {

@@ -370,11 +370,11 @@ function sessionExchangeResponse(delivery: PersonalRemoteSessionDelivery) {
   };
 }
 
-function cloudConnection(): DeploymentConnection {
+function serverConnection(): DeploymentConnection {
   return DeploymentConnectionSchema.parse({
     authority: signDiscovery({
-      canonicalOrigin: "https://cloud.opensteer.test",
-      deploymentId: cloudDeploymentId,
+      canonicalOrigin: "https://server.opensteer.test",
+      deploymentId: serverDeploymentId,
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
@@ -384,7 +384,7 @@ function cloudConnection(): DeploymentConnection {
     endpoints: [
       {
         kind: "canonical",
-        origin: "https://cloud.opensteer.test",
+        origin: "https://server.opensteer.test",
         verifiedAt: "2026-08-17T09:00:00.000Z",
       },
     ],
@@ -398,7 +398,7 @@ function cloudConnection(): DeploymentConnection {
 }
 
 function selfHostedConnection(): DeploymentConnection {
-  return cloudConnection();
+  return serverConnection();
 }
 
 /** Every attachment here is remote, so no local runtime can be its owner. */
@@ -467,7 +467,7 @@ function remoteAuthority(): RemoteAuthorityFixture {
   };
 }
 
-const cloudDeploymentId = createId("deployment");
+const serverDeploymentId = createId("deployment");
 const remoteAuthorityFixture = remoteAuthority();
 
 function deferred<T>() {

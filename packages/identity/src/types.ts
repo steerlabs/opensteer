@@ -113,18 +113,6 @@ export interface IdentityServiceOptions {
     readonly email: string;
   };
   /**
-   * A managed Deployment is registered by an already-authenticated Opensteer
-   * Account user before its Host starts. Persist that exact upstream account
-   * as the local administrator once, then let normal OIDC sign-in create only
-   * Host-local sessions. The Host never accepts an Account bearer token.
-   */
-  readonly managedOwner?: {
-    readonly accountId: string;
-    readonly displayName: string;
-    readonly email: string;
-    readonly providerId: string;
-  };
-  /**
    * Enables the Host's OAuth/OIDC authorization-server surface for native
    * Opensteer clients. Browser sessions and native bearer sessions remain
    * Host-local and are never exchanged for a control-plane bearer token.

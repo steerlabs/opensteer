@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import type { DesktopUpdateState, DesktopUpdatesBridge } from "@opensteer/protocol/desktop";
 import { DesktopUpdateButton, DesktopUpdateFeedback } from "./desktop-update-button.js";
+import { DesktopUpdatesRow } from "./settings/sections/desktop-updates.js";
 import { ToastProvider } from "./toast.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -12,6 +13,8 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 it("offers the download, its progress and the restart, and confirms a download finished while hidden", async () => {
   const state = (change: Partial<DesktopUpdateState>): DesktopUpdateState => ({
     status: "idle",
+    channel: "stable",
+    latestVersion: null,
     currentVersion: "0.1.396",
     availableVersion: "0.1.397",
     downloadPercent: null,
@@ -25,6 +28,7 @@ it("offers the download, its progress and the restart, and confirms a download f
       push = listener;
       return () => undefined;
     },
+    setChannel: vi.fn(async () => state({})),
     download: vi.fn(async () => undefined),
     restart: vi.fn(async () => undefined),
   } satisfies DesktopUpdatesBridge;
@@ -38,6 +42,7 @@ it("offers the download, its progress and the restart, and confirms a download f
       root.render(
         <ToastProvider>
           <DesktopUpdateFeedback />
+          <DesktopUpdatesRow />
           {sidebar ? <DesktopUpdateButton /> : null}
         </ToastProvider>,
       ),
@@ -77,6 +82,30 @@ it("offers the download, its progress and the restart, and confirms a download f
 
   // A failed check is the menu's to report; the sidebar shows nothing for it.
   show({ status: "error", failed: "check", availableVersion: null });
+  expect(container.querySelector("button.sidebar__update")).toBeNull();
+  show({ status: "ahead", latestVersion: "0.1.390", availableVersion: null });
+  expect(container.textContent).toContain("Updates resume after Stable passes it");
+  expect(button().getAttribute("aria-label")).toContain("latest is 0.1.390");
+  const selector = () =>
+    container.querySelector<HTMLSelectElement>('select[aria-label="Update channel"]')!;
+  await act(async () => {
+    selector().value = "beta";
+    selector().dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(bridge.setChannel).toHaveBeenCalledWith("beta");
+  show({ status: "error", failed: "check", availableVersion: null });
+  expect(container.textContent).toContain("Couldn't check for updates");
+  show({ status: "downloading" });
+  expect(selector().disabled).toBe(true);
+  show({ status: "downloaded" });
+  expect(selector().disabled).toBe(true);
+  show({ status: "unavailable", channel: "beta" });
+  expect(selector().disabled).toBe(false);
+  expect(selector().value).toBe("beta");
+  expect(container.textContent).toContain("Automatic updates unavailable");
+  Object.assign(window, { opensteerDesktop: undefined });
+  await render(true);
+  expect(container.querySelector("select")).toBeNull();
   expect(container.querySelector("button.sidebar__update")).toBeNull();
   act(() => root.unmount());
 });

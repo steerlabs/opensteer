@@ -1,4 +1,4 @@
-import { quietRunPredicate, recordPersonWaited } from "./run-visibility.js";
+import { recordPersonWaited } from "./run-visibility.js";
 import { appendDoneState } from "./task-done.js";
 import { pauseTriggerInTransaction } from "./trigger-store.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
@@ -307,7 +307,6 @@ export async function finalizeRunTransaction(
       completedAt: input.completedAt,
       failure: input.status === "failed" ? jsonValue(input.failure!) : null,
       status: input.status,
-      quiet: quietRunPredicate,
     })
     .where("id", "=", run.id)
     .executeTakeFirstOrThrow();

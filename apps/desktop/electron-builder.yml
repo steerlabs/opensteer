@@ -20,6 +20,7 @@ deb:
   packageName: opensteer
 
 mac:
+  artifactName: Opensteer-mac-${arch}.${ext}
   protocols:
     - name: Web links
       role: Viewer

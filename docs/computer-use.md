@@ -44,12 +44,12 @@ An independent owner view is neither a session nor a task grant.
 `Opensteer Computer Use.app` alone holds Accessibility, Screen Recording and the
 Apple-data grants. Launch its GUI runtime through LaunchServices, never as a child
 of Desktop: responsible-process attribution would otherwise give the desktop and its
-agent descendants the grants. Stable and Beta share the canonical helper and TCC grant.
+agent descendants the grants. The desktop uses the canonical helper and TCC grant.
 The desktop release must not claim Apple events.
 
 IPC stays in a private per-user directory. Both peers verify the connected socket's kernel audit token against a designated
 Developer ID requirement. A team ID alone, PID, ancestry, path or file token is not
-identity. The helper trusts only the named Stable/Beta desktop identities under its
+identity. The helper trusts only the named desktop identity under its
 own signing team. Desktop verifies the bundled helper before launch and verifies the
 server using the verifier sealed inside Desktop, never the writable installed copy.
 The verifier exits before creating an application or using privacy grants. Ad-hoc
@@ -61,8 +61,7 @@ trust is development-only and must not ship. See
 Verify bundle integrity and product identity before comparing versions; an invalid
 installed bundle has no version authority. Compare protocol before app version:
 between-release builds can share a version while requiring a newer protocol. Keep
-equal protocol/version release builds despite different hashes because Stable and
-Beta sign separately; development may replace changed bytes. Stop a verified live
+equal protocol/version release builds despite different hashes because release builds sign separately; development may replace changed bytes. Stop a verified live
 helper before replacing executable bytes or macOS cannot verify it. Match its kernel
 device/inode, not path case: LaunchServices can change path spelling on a
 case-insensitive volume. Keep a valid helper if it cannot quit and retry later.
@@ -73,8 +72,8 @@ Replacement ends sessions; an action whose answer is lost stays `outcome-unknown
 The canonical path and staging rules live in `helper-paths.ts` and `helper-install.ts`.
 Release builds require Developer ID signing and both Mac architectures.
 
-The helper's declared protocol range is strict. Stable/Beta sharing one helper means
-an update can require the other client to update too. Capability gates are separate
+The helper's declared protocol range is strict. A newer installed helper can require
+an older desktop client to update. Capability gates are separate
 from the integrations protocol; do not infer window input or video support from a
 successful connection. See `packages/protocol/src/computer-use.ts`,
 `computer-use.ts`, `computer-view.ts` and [Host compatibility](host-boundaries.md#compatibility).
@@ -226,7 +225,7 @@ constraints live in `packages/apple-data/Sources/` and its tests.
 
 #### Setting an app up on this Mac
 
-macOS grants belong to **Opensteer Computer Use**, not Opensteer or Opensteer Beta.
+macOS grants belong to **Opensteer Computer Use**, not Opensteer.
 The native setup guide is person-driven and serializes app setup. A task discovering
 missing grants may offer setup, never request the grant itself. `unknown` is not setup
 success, and a macOS question outlasting an RPC deadline stays pending. Full Disk Access
@@ -239,7 +238,7 @@ use that to refresh cached denial. See
 ### iMessage channel
 
 [Messaging](messaging.md#7a-transports-that-run-on-one-computer) owns channel authority.
-The helper claims an Apple account so Stable/Beta on separate Deployments cannot both
+The helper claims an Apple account so clients on separate Deployments cannot both
 consume its messages. Sends check the current account again and require that claim;
 never reply from a replacement account. Read only one-to-one iMessages received by the
 bot's current account, not historical accounts in `chat.db`, SMS, groups or reactions.

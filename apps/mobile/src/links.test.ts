@@ -1,3 +1,4 @@
+import { routeComputerLink } from "./links.js";
 import {
   buildMobileThreadDeepLink,
   DeploymentIdSchema,
@@ -58,5 +59,22 @@ describe("resolveThreadLink", () => {
     ["nonsense", "not a url at all"],
   ])("ignores %s", (_label, url) => {
     expect(resolveThreadLink(url, [deploymentId])).toEqual({ kind: "ignore" });
+  });
+});
+
+describe("computer URL boundary", () => {
+  it("routes an unknown computer before consulting the Thread catalog", () => {
+    const selected: string[] = [];
+    const id = "dep_0192f4a1-1111-4000-8000-000000000001";
+    expect(
+      routeComputerLink(`com.opensteer.mobile:/open?d=${id}`, (value) => selected.push(value)),
+    ).toBe(true);
+    expect(selected).toEqual([id]);
+    expect(
+      routeComputerLink("com.opensteer.mobile:/oauth/account?code=x", (value) =>
+        selected.push(value),
+      ),
+    ).toBe(false);
+    expect(selected).toEqual([id]);
   });
 });

@@ -33,27 +33,3 @@ export function localExecutionStatus(
     schemaVersion: 4,
   });
 }
-
-export function unavailableLocalExecutionStatus(
-  deploymentId: DesktopLocalExecutionStatus["deploymentId"],
-  computerName: string,
-  platform: NodeJS.Platform = process.platform,
-): DesktopLocalExecutionStatus {
-  const detail = "This Opensteer release does not include local agent support.";
-  return DesktopLocalExecutionStatusSchema.parse({
-    available: false,
-    computerName,
-    deploymentId,
-    mayRunAgents: false,
-    platform: localExecutionPlatform(platform),
-    runner: {
-      detail,
-      enrolled: false,
-      environmentId: null,
-      runnerId: null,
-      state: "disabled",
-    },
-    runAgents: false,
-    schemaVersion: 4,
-  });
-}

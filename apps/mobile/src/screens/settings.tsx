@@ -159,7 +159,6 @@ export function SettingsScreen(): ReactNode {
     const enrollment = iphoneApps.snapshot.enrollment;
     return computersSettingsRows({
       apps: apps.data,
-      cloud: snapshot.identityConfig?.deployment.cloud ?? false,
       deploymentKind: snapshot.deploymentShape?.kind ?? null,
       deploymentName,
       here:

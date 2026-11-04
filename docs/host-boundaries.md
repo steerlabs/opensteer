@@ -4,12 +4,12 @@ Read this when changing Deployment configuration, client authentication or the
 Host API. Integration-provider OAuth has its own
 [contract](integration-oauth.md); client routing lives in [Connections](connections.md).
 
-The public stable Mac app omits `OPENSTEER_PERSONAL_ACCOUNT_ISSUER` from its Personal
-Host. No Account authority or hosted OAuth broker is constructed. Local ownership,
-private HTTPS access and pairing remain available; Host-native OAuth for added
-servers retains the desktop release identity. Stored Personal Account links cannot
-create Account clients without a matching configured issuer, and phone push uses
-that same issuer fence. Beta keeps its Account authority.
+Both desktop update channels configure the same Account issuer,
+`https://accounts.opensteer.com`, and portal, `https://app.opensteer.com`.
+Account authentication and forms trust only the Account origin. Portal routing,
+OAuth callback registration and portal forms use the separately configured
+portal origin. Their authentication cookies are host-only; no shared hint
+cookie crosses subdomains. Development must explicitly configure local origins.
 
 ## Deployment configuration
 
@@ -171,8 +171,7 @@ capabilities and never use them to gate mandatory behavior.
 
 - Added response fields are tolerated, including opaque values parsed later and
   other sockets. The [tolerance guard](../tests/host-response-tolerance.test.ts)
-  does not cover every such path. Missing optional facts mean unknown; only a
-  known non-human author enables quiet turns.
+  does not cover every such path. Missing optional facts mean unknown; every settled turn remains visible.
 - Readers skip/fall back on unknown union members and enum values rather than
   refusing a whole list/frame. Presentation tolerance also covers stored consent
   manifests; executable definitions and authenticated inputs remain strict.
@@ -221,7 +220,7 @@ left the shell host key and several harness constraints unsigned. Mixed or missi
 proof formats receive an actionable update refusal; there is no v1 verifier or
 admission fallback. This cutover does **not** change `hostApiVersion`, since web,
 desktop and Expo client semantics are unchanged. Main/managed Runners, standalone
-browser/messaging services, cloud Hosts and Runners, and Personal's bundled
+browser/messaging services, self-hosted Hosts and Runners, and Personal's bundled
 Host/Runner must install the matching v2 baseline together. A desktop lent to a
 remote Host has its own Host/Runner update boundary. On that baseline, optional
 new advertisements authenticate to older v2 Hosts and their unknown facts are

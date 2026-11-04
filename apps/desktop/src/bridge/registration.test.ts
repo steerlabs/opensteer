@@ -42,12 +42,23 @@ describe("desktop bridge", () => {
       updates: {
         state: () => ({
           status: "idle",
+          channel: "stable",
+          latestVersion: null,
           currentVersion: "0.1.396",
           availableVersion: null,
           downloadPercent: null,
           failed: null,
         }),
         subscribe: () => () => undefined,
+        setChannel: async (channel) => ({
+          status: "unavailable",
+          channel,
+          latestVersion: null,
+          currentVersion: "0.1.396",
+          availableVersion: null,
+          downloadPercent: null,
+          failed: null,
+        }),
         download: async () => undefined,
         restart: () => undefined,
       },
@@ -91,6 +102,15 @@ describe("desktop bridge", () => {
     });
     const event = ipcEvent("app://opensteer/workspaces");
     const envelope = { bridgeToken: "b".repeat(43) };
+
+    const setChannel = handlers.get(desktopBridgeChannels.setUpdateChannel)!;
+    await expect(setChannel(event, { ...envelope, input: "beta" })).resolves.toMatchObject({
+      channel: "beta",
+    });
+    await expect(setChannel(event, { ...envelope, input: "insider" })).rejects.toThrow();
+    await expect(
+      setChannel(ipcEvent("https://example.com"), { ...envelope, input: "stable" }),
+    ).rejects.toThrow();
 
     const requestPermission = handlers.get(desktopBridgeChannels.requestComputerUsePermissions);
     await expect(

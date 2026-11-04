@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import { harnessCatalog, shipsHarnessRuntimeBytes } from "../packages/core/src/harness-catalog.js";
 import { acquireReleaseLock, runBounded } from "./command-runner.js";
 import { agentPhoneReleaseSignerSha256 } from "./release-agent-phone.cjs";
-import { main as installLocalMain } from "./install-beta-mac-local.js";
+import { main as installLocalMain } from "./install-mac-local.js";
 import {
   installMac,
   installLocalMac,
@@ -34,12 +34,12 @@ import {
   stageMac,
   verifyMac,
   type MacContext,
-} from "./release-beta-mac.js";
+} from "./release-mac.js";
 
 // Provider processes simulate Apple's/SSH's external protocol, while the real
 // adapter reads/writes receipts and resumes in separate CLI invocations.
 //
-// A target's simulated Opensteer Beta keeps running for `exitAfter` process
+// A target's simulated Opensteer keeps running for `exitAfter` process
 // observations after a quit request, or until the phase is cancelled when that
 // is null, and can start again just before the bundle rename. A process from
 // the bundle an earlier installation retained is always running and is never
@@ -111,12 +111,12 @@ const runtime = (directory) => {
 if (path.basename(executable) === 'postgres' && executable.startsWith(path.dirname(stateFile)+'/') && JSON.stringify(args) === '["--version"]') {
   runReal(); process.exit(0);
 }
-if (realLocal && executable === 'python3' && args[2] === 'release-beta-cleanup') {
+if (realLocal && executable === 'python3' && args[2] === 'release-mac-cleanup') {
   if (!args[3].startsWith(path.dirname(stateFile)+'/') || !/^[a-f0-9]{40}$/.test(args[4])) throw Error('Cleanup escaped temporary directory');
   if (state.failPrune) { state.failPrune=false; save(); throw Error('Interrupted backup cleanup'); }
   runReal(); process.exit(0);
 }
-if (executable === 'python3' && args[2] === 'release-beta-cleanup') { process.stdout.write(JSON.stringify({removed:[],unowned:[],warnings:[]})); process.exit(0); }
+if (executable === 'python3' && args[2] === 'release-mac-cleanup') { process.stdout.write(JSON.stringify({removed:[],unowned:[],warnings:[]})); process.exit(0); }
 if (realLocal && executable === 'python3' && args[0]?.endsWith('/mac-app-tree.py')) { runReal(); process.exit(0); }
 if (realLocal && executable === '/bin/cp' && args[0] === '-cRpP') {
   if (state.mode === 'local-cli-clone-fallback') {process.stderr.write('clonefile: Operation not supported'); process.exit(1);}
@@ -135,18 +135,18 @@ if (realLocal && executable === '/bin/cp' && args[0] === '-cRpP') {
 if (realLocal && ['/bin/test','/bin/mkdir','/bin/cp','/usr/bin/ditto','/usr/bin/shasum','/usr/libexec/PlistBuddy'].includes(executable)) {
   runReal(); process.exit(0);
 }
-if (realLocal && executable === '/bin/sh' && ['release-beta-prepare','release-beta-install','release-beta-rollback-identity','release-beta-restore'].includes(args[2])) {
+if (realLocal && executable === '/bin/sh' && ['release-mac-prepare','release-mac-install','release-mac-rollback-identity','release-mac-restore'].includes(args[2])) {
   if (!args.slice(3).every(value => value.startsWith(path.dirname(stateFile)+'/'))) throw Error('Shell fixture escaped temporary directory');
   let shellArgs = args;
-  if (args[2] === 'release-beta-install' && ['local-cli-interrupted-rename','local-retention-interrupted-rename'].includes(state.mode) && !state.interrupted) {
+  if (args[2] === 'release-mac-install' && ['local-cli-interrupted-rename','local-retention-interrupted-rename'].includes(state.mode) && !state.interrupted) {
     state.interrupted = true; save();
     const boundary = '; /bin/mv "$next" "$app"';
     if (!args[1].endsWith(boundary)) throw Error('Rename interruption boundary changed');
     shellArgs = [...args]; shellArgs[1] = args[1].slice(0,-boundary.length) + '; kill -TERM $$' + boundary;
   }
   runReal(shellArgs);
-  if (args[2] === 'release-beta-prepare' && state.mode === 'local-cli-bad-digest') write(path.join(args[4],'Contents/Resources/personal-runtime/release.json'),'tampered copied manifest');
-  if (args[2] === 'release-beta-install') { state.localInstalled = true; state.renames.push({at,target,call:state.calls.length-1,renamed:true}); save(); }
+  if (args[2] === 'release-mac-prepare' && state.mode === 'local-cli-bad-digest') write(path.join(args[4],'Contents/Resources/personal-runtime/release.json'),'tampered copied manifest');
+  if (args[2] === 'release-mac-install') { state.localInstalled = true; state.renames.push({at,target,call:state.calls.length-1,renamed:true}); save(); }
   process.exit(0);
 }
 if (realLocal && executable === 'pnpm') {
@@ -161,10 +161,10 @@ if (realLocal && executable === 'pnpm') {
     if (JSON.stringify(args.slice(2)) === JSON.stringify(['exec','tsx','scripts/build-personal-runtime.ts'])) {runtime(env.OPENSTEER_PERSONAL_RUNTIME_OUTPUT); process.exit(0);}
     if (args[2] === 'exec' && args[3] === 'tsx' && ['scripts/build-computer-use-helper.ts','scripts/build-passwords-broker.ts'].includes(args[4]) && args[5] === '--sign' && args[6] === state.signingIdentity && args.length === 7) process.exit(0);
     if (args.length === 3 && args[2] === 'package:mac') {
-      const bundle = path.join(options.cwd,'apps/desktop/release/beta/mac-arm64/Opensteer Beta.app');
+      const bundle = path.join(options.cwd,'apps/desktop/release/mac-arm64/Opensteer.app');
       fs.rmSync(bundle,{recursive:true,force:true});
       const resources = path.join(bundle,'Contents/Resources');
-      write(path.join(bundle,'Contents/Info.plist'),'<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>'+Object.entries({CFBundleIdentifier:'com.steerlabs.opensteer.beta',CFBundleShortVersionString:'1.2.3',CFBundleVersion:'1.2.3',OpensteerSourceRevision:state.revision}).map(([key,value]) => '<key>'+key+'</key><string>'+value+'</string>').join('')+'</dict></plist>',0o640);
+      write(path.join(bundle,'Contents/Info.plist'),'<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>'+Object.entries({CFBundleIdentifier:'com.opensteer.opensteer',CFBundleShortVersionString:'1.2.3',CFBundleVersion:'1.2.3',OpensteerSourceRevision:state.revision}).map(([key,value]) => '<key>'+key+'</key><string>'+value+'</string>').join('')+'</dict></plist>',0o640);
       fs.cpSync(env.OPENSTEER_PERSONAL_RUNTIME_SOURCE,path.join(resources,'personal-runtime'),{recursive:true});
       fs.cpSync(path.join(options.cwd,'apps/desktop/generated-resources/agent-phone'),path.join(resources,'agent-phone'),{recursive:true});
       for (const [input,output] of [[env.OPENSTEER_PROCESS_SUPERVISOR_BINARY_SOURCE,'process-supervisor/opensteer-process-supervisor'],[env.OPENSTEER_CLOUDFLARED_BINARY_SOURCE,'cloudflared/cloudflared']]) write(path.join(resources,output),fs.readFileSync(input));
@@ -187,7 +187,7 @@ if (app && processList) {
   if (app.running && app.quitRequests > 0) app.observedAfterQuit += 1;
   state.observations.push({ at, target, running: app.running, call: state.calls.length - 1 });
   save();
-  process.stdout.write((app.running ? '4242 '+(state.applicationPath ?? '/Applications/Opensteer Beta.app')+'/Contents/MacOS/Opensteer Beta\\n' : '') + '/Applications/Opensteer Beta.app.' + '0'.repeat(40) + '.previous/Contents/MacOS/Opensteer Beta\\n');
+  process.stdout.write((app.running ? '4242 '+(state.applicationPath ?? '/Applications/Opensteer.app')+'/Contents/MacOS/Opensteer\\n' : '') + '/Applications/Opensteer.app.' + '0'.repeat(40) + '.previous/Contents/MacOS/Opensteer\\n');
 } else if (processList) {
   // Targets without an app simulation have no running process to quit.
 } else if (app && executable === '/usr/bin/osascript' || app && remote && command.startsWith("'/usr/bin/osascript'")) {
@@ -211,8 +211,8 @@ else if (executable === '/bin/test' && ['-f','-e','-w'].includes(args[0]) && arg
 else if (executable === '/usr/bin/lipo' && args.length === 2 && args[0] === '-archs') process.stdout.write('arm64');
 else if (executable === '/usr/bin/open' && state.mode.startsWith('local-')) { if (['local-launch-denied','local-retention-launch-denied'].includes(state.mode)) { process.stderr.write('Launch Services: macOS policy denied this application'); process.exit(48); } app.running = true; app.quitRequests = 0; save(); }
 else if (executable === '/bin/ps' && state.mode.startsWith('local-') && state.localInstalled) {
-  const base = state.applicationPath ?? '/Applications/Opensteer Beta.app';
-  process.stdout.write([base+'/Contents/MacOS/Opensteer Beta',base+'/Contents/Resources/process-supervisor/opensteer-process-supervisor',...['host','runner'].map(service => base+'/Contents/Resources/personal-runtime/node/bin/node --disable-sigusr1 '+base+'/Contents/Resources/personal-runtime/services/'+service+'.mjs')].join('\\n'));
+  const base = state.applicationPath ?? '/Applications/Opensteer.app';
+  process.stdout.write([base+'/Contents/MacOS/Opensteer',base+'/Contents/Resources/process-supervisor/opensteer-process-supervisor',...['host','runner'].map(service => base+'/Contents/Resources/personal-runtime/node/bin/node --disable-sigusr1 '+base+'/Contents/Resources/personal-runtime/services/'+service+'.mjs')].join('\\n'));
 }
 else if (executable === '/usr/bin/curl' && state.mode.startsWith('local-')) process.stdout.write(state.mode === 'local-retention-health-denied' ? '{"ok":false}' : '{"ok":true}');
 else if (executable === '/usr/bin/xcrun' && args[0] === 'notarytool') {
@@ -226,19 +226,19 @@ else if (executable === '/usr/bin/xcrun' && args[0] === 'notarytool') {
   }
   process.stdout.write(JSON.stringify({id:state.requestId,status:state.mode==='rejected'?'Invalid':'In Progress'}));
 } else if (invokes('/bin/ps') && state.mode.startsWith('uninitialized-remote')) {
-  process.stdout.write('/Applications/Opensteer Beta.app/Contents/MacOS/Opensteer Beta' + (remote ? '' : '\\n/Applications/Opensteer Beta.app/Contents/Resources/process-supervisor/opensteer-process-supervisor'));
+  process.stdout.write('/Applications/Opensteer.app/Contents/MacOS/Opensteer' + (remote ? '' : '\\n/Applications/Opensteer.app/Contents/Resources/process-supervisor/opensteer-process-supervisor'));
 } else if (invokes('/usr/bin/codesign') && remote && state.mode === 'uninitialized-remote-bad-signature') {
   process.exit(44);
 } else if (invokes('/usr/bin/curl') && state.mode.startsWith('uninitialized-remote')) {
   process.stdout.write('{"ok":true}');
 } else if (invokes('/usr/libexec/PlistBuddy') && (remote || args.length === 3 && args[0] === '-c' && /^Print :(CFBundleIdentifier|CFBundleShortVersionString|CFBundleVersion|OpensteerSourceRevision)$/.test(args[1]))) {
   const installed = remote ? state.remoteInstalled : state.localInstalled;
-  process.stdout.write(command.includes('.next/') && ['corrupt-next', 'local-corrupt-next'].includes(state.mode) ? 'corrupt' : command.includes('/Applications/') && !command.includes('.next/') && !installed ? 'old' : command.includes('CFBundleIdentifier') ? 'com.steerlabs.opensteer.beta' : command.includes('OpensteerSourceRevision') ? state.revision : '1.2.3');
+  process.stdout.write(command.includes('.next/') && ['corrupt-next', 'local-corrupt-next'].includes(state.mode) ? 'corrupt' : command.includes('/Applications/') && !command.includes('.next/') && !installed ? 'old' : command.includes('CFBundleIdentifier') ? 'com.opensteer.opensteer' : command.includes('OpensteerSourceRevision') ? state.revision : '1.2.3');
 } else if (invokes('/usr/bin/shasum') && (remote || args.length === 3 && args[0] === '-a' && args[1] === '256')) process.stdout.write((state.mode === 'local-bad-digest' && command.includes('personal-runtime') ? '0'.repeat(64) : state.helperDigest ?? 'a'.repeat(64))+'  helper');
-else if (invokes('/bin/sh') && command.includes('release-beta-rollback-identity')) process.stdout.write('present\\n1.2.2\\n'+'0'.repeat(40));
-else if (invokes('/bin/sh') && command.includes('release-beta-prepare')) {if (state.mode === 'local-cancelled-copy') { process.stderr.write('copy interrupted'); process.exit(47); }}
+else if (invokes('/bin/sh') && command.includes('release-mac-rollback-identity')) process.stdout.write('present\\n1.2.2\\n'+'0'.repeat(40));
+else if (invokes('/bin/sh') && command.includes('release-mac-prepare')) {if (state.mode === 'local-cancelled-copy') { process.stderr.write('copy interrupted'); process.exit(47); }}
 else if (executable === '/usr/bin/log') process.stdout.write('syspolicyd: Opensteer launch was denied by macOS policy');
-else if (invokes('/bin/sh') && command.includes('release-beta-install')) {
+else if (invokes('/bin/sh') && command.includes('release-mac-install')) {
   if (app?.reappearBeforeRename) {
     app.reappearBeforeRename = false;
     app.running = true;
@@ -246,7 +246,7 @@ else if (invokes('/bin/sh') && command.includes('release-beta-install')) {
     app.observedAfterQuit = 0;
     state.renames.push({ at, target, call: state.calls.length - 1, renamed: false });
     save();
-    process.stderr.write('Quit Opensteer Beta before installation\\n');
+    process.stderr.write('Quit Opensteer before installation\\n');
     process.exit(1);
   }
   if (remote && state.mode === 'second-fail') process.exit(43);
@@ -294,7 +294,7 @@ function runningApp(exitAfter: number | null): AppSimulation {
 }
 
 function waitingMessage(target: string) {
-  return `Waiting for Opensteer Beta to finish quitting on ${target}. The original installation is retained; waiting is bounded to two minutes.`;
+  return `Waiting for Opensteer to finish quitting on ${target}. The original installation is retained; waiting is bounded to two minutes.`;
 }
 
 /** No force-kill, and every AppleScript call is the plain quit request. */
@@ -570,14 +570,14 @@ if (mode === "phase" && directory) {
       {
         id: "local",
         stagingDirectory: "/fixture/stage",
-        applicationPath: "/Applications/Opensteer Beta.app",
+        applicationPath: "/Applications/Opensteer.app",
         runtimeStatusUrl: "http://127.0.0.1:1/healthz",
       },
       {
         id: "remote",
         sshHost: "fixture",
         stagingDirectory: "/fixture/stage",
-        applicationPath: "/Applications/Opensteer Beta.app",
+        applicationPath: "/Applications/Opensteer.app",
         runtimeStatusUrl: "http://127.0.0.1:1/healthz",
       },
     ],
@@ -702,7 +702,7 @@ process.exit(${scenario.exitCode ?? 0});
       targets: [
         {
           ...config.targets[0],
-          applicationPath: path.join(directory_, "Opensteer Beta.app"),
+          applicationPath: path.join(directory_, "Opensteer.app"),
           stagingDirectory: path.join(directory_, "stage"),
         },
       ],
@@ -932,7 +932,7 @@ process.exit(${scenario.exitCode ?? 0});
                 : scenario === "local-corrupt-next"
                   ? /bundle.*differs/u
                   : scenario === "local-relaunch"
-                    ? /Quit Opensteer Beta/u
+                    ? /Quit Opensteer/u
                     : scenario === "local-launch-denied"
                       ? /macOS policy.*diagnostics/isu
                       : /unavailable|failed/u;
@@ -1034,7 +1034,7 @@ process.exit(${scenario.exitCode ?? 0});
         {
           ...config.targets[0],
           stagingDirectory: path.join(directory_, "stage"),
-          applicationPath: path.join(directory_, "Opensteer Beta.app"),
+          applicationPath: path.join(directory_, "Opensteer.app"),
         },
       ],
     });
@@ -1086,7 +1086,7 @@ else throw Error('Unknown fixture Android command: '+JSON.stringify(args));
     const backup = original + "." + "1".repeat(40) + ".previous";
     await mkdir(original);
     await writeFile(path.join(original, "original-marker"), "original application");
-    const originalExecutable = path.join(original, "Contents/MacOS/Opensteer Beta");
+    const originalExecutable = path.join(original, "Contents/MacOS/Opensteer");
     if (scenario === "local-cli-interrupted-copy") {
       await mkdir(path.dirname(originalExecutable), { recursive: true });
       await writeFile(originalExecutable, '#!/bin/sh\nprintf "original application\\n"\n', {
@@ -1195,7 +1195,7 @@ else throw Error('Unknown fixture Android command: '+JSON.stringify(args));
           assert.deepEqual(failedRetry.renames, []);
           assert.deepEqual(failedRetry.quits, []);
           assert.equal(
-            failedRetry.calls.some((call) => call.args.includes("release-beta-cleanup")),
+            failedRetry.calls.some((call) => call.args.includes("release-mac-cleanup")),
             false,
           );
           assert.deepEqual((await readReceipt()).installed, []);
@@ -1306,7 +1306,7 @@ else throw Error('Unknown fixture Android command: '+JSON.stringify(args));
               ? path.join(
                   local.targets[0].stagingDirectory,
                   "1".repeat(40),
-                  "Opensteer Beta.app/Contents/Resources/personal-runtime/release.json",
+                  "Opensteer.app/Contents/Resources/personal-runtime/release.json",
                 )
               : undefined;
         if (tampered) {
@@ -1434,7 +1434,7 @@ else throw Error('Unknown fixture Android command: '+JSON.stringify(args));
         0,
       );
       assert.equal(typeof (await readReceipt()).appTreeSha256, "string");
-      await assert.rejects(access(path.join(stateDirectory, "Opensteer Beta.zip")));
+      await assert.rejects(access(path.join(stateDirectory, "Opensteer.zip")));
       if (scenario === "local-cli-clone-fallback")
         assert.ok(
           state.calls.some(
@@ -1500,7 +1500,7 @@ else throw Error('Unknown fixture Android command: '+JSON.stringify(args));
   );
   const backups = async () =>
     (await readdir(retention))
-      .filter((name) => /^Opensteer Beta\.app\.[a-f0-9]{40}\.previous$/u.test(name))
+      .filter((name) => /^Opensteer\.app\.[a-f0-9]{40}\.previous$/u.test(name))
       .sort();
   const legacy = `${application}.${"a".repeat(40)}.previous`;
   const unrelated = `${application}.other.previous`;
@@ -1529,11 +1529,7 @@ else throw Error('Unknown fixture Android command: '+JSON.stringify(args));
     return runPhase(retention);
   };
   const seedRetention = async (revision: string) => {
-    const stage = path.join(
-      retentionConfig.targets[0].stagingDirectory,
-      revision,
-      "Opensteer Beta.app",
-    );
+    const stage = path.join(retentionConfig.targets[0].stagingDirectory, revision, "Opensteer.app");
     await cp(application, stage, { recursive: true, verbatimSymlinks: true });
     await child("/usr/libexec/PlistBuddy", [
       "-c",
@@ -1754,7 +1750,6 @@ else throw Error('Unknown packaging git fixture command: '+query);
     PATH: packageFixture + path.delimiter + process.env.PATH,
     npm_execpath: packageStub,
     OPENSTEER_DESKTOP_TARGET_ARCH: "arm64",
-    OPENSTEER_DESKTOP_RELEASE_CHANNEL: "beta",
     OPENSTEER_APPLE_TEAM_ID: "ABCDE12345",
     OPENSTEER_SOURCE_REVISION: "1".repeat(40),
     OPENSTEER_RELEASE_VERSION: JSON.parse(
@@ -1839,7 +1834,7 @@ else throw Error('Unknown packaging git fixture command: '+query);
       }),
     );
     const archive = "simulated submitted archive";
-    await writeFile(path.join(directory_, "Opensteer Beta.submit.zip"), archive);
+    await writeFile(path.join(directory_, "Opensteer.submit.zip"), archive);
     await writeFile(
       path.join(directory_, "mac.json"),
       JSON.stringify({
@@ -1869,7 +1864,7 @@ else throw Error('Unknown packaging git fixture command: '+query);
         const failed = JSON.parse(await readFile(providerFile, "utf8"));
         assert.equal(
           failed.calls.some((call: { args: string[] }) =>
-            call.args.join(" ").includes("release-beta-install"),
+            call.args.join(" ").includes("release-mac-install"),
           ),
           false,
         );
@@ -1893,7 +1888,7 @@ else throw Error('Unknown packaging git fixture command: '+query);
             (observation) => observation.target === target && observation.call > asked.call,
           );
           const exited = afterQuit.find((observation) => !observation.running);
-          assert.ok(exited, `Opensteer Beta never finished quitting on ${target}`);
+          assert.ok(exited, `Opensteer never finished quitting on ${target}`);
           // Longer than the old window of ten observations nine seconds apart.
           assert.ok(afterQuit.filter((observation) => observation.running).length >= 10);
           assert.ok(exited.at - asked.at >= 9_000);
@@ -1967,7 +1962,7 @@ else throw Error('Unknown packaging git fixture command: '+query);
         continue;
       }
       if (scenario === "reappears-before-rename") {
-        await assert.rejects(runPhase(directory_), /Quit Opensteer Beta before installation/u);
+        await assert.rejects(runPhase(directory_), /Quit Opensteer before installation/u);
         const refused = await readState(providerFile);
         assert.deepEqual(
           refused.renames.map((rename) => [rename.target, rename.renamed]),
@@ -2024,7 +2019,7 @@ else throw Error('Unknown packaging git fixture command: '+query);
       assert.equal(
         resumed.calls.filter(
           (call: { executable: string; args: string[] }) =>
-            call.executable === "/bin/sh" && call.args.includes("release-beta-install"),
+            call.executable === "/bin/sh" && call.args.includes("release-mac-install"),
         ).length,
         1,
       );

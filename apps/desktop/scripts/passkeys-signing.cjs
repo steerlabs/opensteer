@@ -35,20 +35,18 @@ function signedEntitlements(filename) {
   const bytes = execute("/usr/bin/codesign", ["-d", "--entitlements", ":-", filename]);
   return bytes ? plist(bytes) : {};
 }
-function passkeyInputPaths(env, channel) {
-  if (channel !== "stable" && channel !== "beta")
-    throw new Error("Unknown passkey signing channel");
-  const prefix = `OPENSTEER_PASSKEYS_${channel.toUpperCase()}`;
+function passkeyInputPaths(env) {
+  const prefix = "OPENSTEER_PASSKEYS";
   const profile = env[`${prefix}_PROFILE`];
   const entitlements = env[`${prefix}_ENTITLEMENTS`];
   if (!profile && !entitlements) return undefined;
   if (env.OPENSTEER_DESKTOP_RELEASE !== "1" || !profile || !entitlements)
-    throw new Error("Passkeys require a release profile and entitlement input for this channel");
+    throw new Error("Passkeys require a release profile and entitlement input for this app");
   return { profile, entitlements };
 }
 function releasePasskeyInputs(env) {
   if (env.OPENSTEER_DESKTOP_RELEASE !== "1") return undefined;
-  return passkeyInputPaths(env, env.OPENSTEER_DESKTOP_RELEASE_CHANNEL);
+  return passkeyInputPaths(env);
 }
 function validatePasskeyEntitlementInput(value) {
   if (
@@ -156,14 +154,14 @@ function readProfile(filename) {
     ProvisionsAllDevices: field("ProvisionsAllDevices", "raw") === "true",
   };
 }
-function checkedInputs(env, identity) {
-  const inputs = passkeyInputPaths(env, identity.channel);
+function checkedInputs(env) {
+  const inputs = passkeyInputPaths(env);
   if (!inputs) return undefined;
   validatePasskeyEntitlementInput(plist(regular(inputs.entitlements)));
   return inputs;
 }
 function preparePasskeySigning(desktop, env, identity) {
-  const inputs = checkedInputs(env, identity);
+  const inputs = checkedInputs(env);
   if (!inputs) return [];
   const mode = readSigningMode(env);
   if (mode.mode !== "signed" || mode.signing.teamId !== identity.teamId)
@@ -174,7 +172,7 @@ function preparePasskeySigning(desktop, env, identity) {
     Date.now(),
     selectedSigningCertificate(mode.signing),
   );
-  const directory = join(desktop, "build/generated/passkeys", identity.channel);
+  const directory = join(desktop, "build/generated/passkeys");
   mkdirSync(directory, { recursive: true });
   const entitlements = join(directory, "entitlements.plist");
   const profile = join(directory, "embedded.provisionprofile");
@@ -227,7 +225,7 @@ function verifyPasskeyAddon(appPath, signed = false, teamId, required = true, fo
     throw new Error("Passkey capability must belong only to the main app");
 }
 function verifyPasskeySignature(appPath, identity, env = process.env) {
-  const inputs = checkedInputs(env, identity);
+  const inputs = checkedInputs(env);
   const actual = signedEntitlements(appPath);
   const embedded = join(appPath, "Contents/embedded.provisionprofile");
   if (!inputs) {

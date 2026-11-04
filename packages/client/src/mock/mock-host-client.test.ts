@@ -1126,13 +1126,11 @@ describe("shared task Done", () => {
   });
 });
 
-it("accepts a conversation-view history read without a durable mock event log", async () => {
+it("accepts a whole-turn history read without a durable mock event log", async () => {
   const client = createClient();
   try {
     const threadId = client.getSnapshot().homeThreadId!;
-    const result = unwrap(
-      await client.rpc["thread.events.list"]({ threadId, turns: 10, view: "conversation" }),
-    );
+    const result = unwrap(await client.rpc["thread.events.list"]({ threadId, turns: 10 }));
     expect(result.threadId).toBe(threadId);
     expect(result.events).toEqual([]);
     expect(result.window.hasMore).toBe(false);

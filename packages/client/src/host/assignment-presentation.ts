@@ -389,3 +389,14 @@ export function withoutOwnAssignment<Entry extends TranscriptEntry>(
     entry.kind === "assignment" && entry.assignment.workerThread.id === threadId;
   return entries.some(own) ? entries.filter((entry) => !own(entry)) : entries;
 }
+
+/** Empty results finish silently; summaries carry no return message receipt. */
+export function assignmentReturnText(
+  assignment: AssignmentSummary,
+  requester: string,
+): string | null {
+  if (assignment.returnStatus !== "delivered") return null;
+  if (assignment.status === "cancelled") return `${requester} was told`;
+  if (assignment.status === "completed" && assignment.resultPreview === "") return null;
+  return `Returned to ${requester}`;
+}

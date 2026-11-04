@@ -4,19 +4,16 @@ import { createId } from "@opensteer/core";
 import {
   DeploymentAccessSnapshotSchema,
   DesktopDeploymentSummarySchema,
+  DesktopPersonalDeploymentStatusSchema,
   type DeploymentAccessSnapshot,
+  type DesktopPersonalDeploymentStatus,
   type DeploymentAccessDeployment,
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
-import {
-  DesktopApp,
-  cloudDeletionDisappeared,
-  cloudResultBelongsToAccount,
-  desktopAccessPresentationFromSnapshot,
-} from "./desktop-app.js";
+import { DesktopApp, desktopAccessPresentationFromSnapshot } from "./desktop-app.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -63,38 +60,120 @@ it("lets a connecting place go back and shows cancellation failures", async () =
   container.remove();
 });
 
-it("fences Cloud responses to the Account session that requested them", () => {
-  expect(cloudResultBelongsToAccount("first@example.test", "first@example.test")).toBe(true);
-  expect(cloudResultBelongsToAccount("first@example.test", "second@example.test")).toBe(false);
-  expect(cloudResultBelongsToAccount("first@example.test", null)).toBe(false);
+it("carries setup from creating this computer straight into the app it opens", async () => {
+  let access = snapshot({
+    account: { available: false, status: "signed-out" },
+    personalSetup: personalStatus({
+      canStart: true,
+      deploymentId: null,
+      state: "stopped",
+      step: null,
+    }),
+  });
+  const listeners = new Set<(next: DeploymentAccessSnapshot) => void>();
+  const emit = (next: DeploymentAccessSnapshot) => {
+    access = next;
+    for (const listener of listeners) listener(next);
+  };
+  const createPersonalDeployment = vi.fn(async () => undefined);
+  const bridge = {
+    createPersonalDeployment,
+    getDeploymentAccessSnapshot: async () => access,
+    onHostWebSocketEvent: () => () => undefined,
+    onDeploymentAccessSnapshotChanged: (listener: (next: DeploymentAccessSnapshot) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    onNotificationActivated: () => () => undefined,
+  } as unknown as OpensteerDesktopBridge;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => root.render(<DesktopApp bridge={bridge} />));
+  await vi.waitFor(() => expect(container.textContent).toContain("Welcome to Opensteer"));
+
+  const setUp = [...container.querySelectorAll("button")].find((candidate) =>
+    candidate.textContent?.startsWith("Set up this"),
+  );
+  await act(async () => setUp?.click());
+  expect(createPersonalDeployment).toHaveBeenCalledOnce();
+
+  await act(async () =>
+    emit(
+      snapshot({
+        account: { available: false, status: "signed-out" },
+        personalSetup: personalStatus({ step: "starting-host" }),
+        revision: 2,
+      }),
+    ),
+  );
+  await vi.waitFor(() => expect(container.textContent).toContain("Set up Opensteer"));
+  expect(container.textContent).toContain("Starting Opensteer");
+  expect(container.textContent).toContain("AI");
+  expect(container.textContent).toContain("Phone");
+
+  // Ready, and the app is still attaching: the same setup screen stays up
+  // rather than a separate loading screen.
+  const personal = DesktopDeploymentSummarySchema.parse({
+    ...deployment,
+    activeOrigin: "http://127.0.0.1:45000",
+    canonicalOrigin: "http://127.0.0.1:45000",
+    kind: "personal",
+    name: "Studio Mac",
+    onThisComputer: true,
+    routes: [{ kind: "canonical", origin: "http://127.0.0.1:45000", selected: true }],
+  });
+  await act(async () =>
+    emit(
+      snapshot({
+        account: { available: false, status: "signed-out" },
+        deployments: [{ ...accessDeployment("connecting"), ...personal }],
+        personalSetup: personalStatus({ deploymentId: personal.id, state: "ready", step: "ready" }),
+        revision: 3,
+        selectedDeploymentId: personal.id,
+      }),
+    ),
+  );
+  await vi.waitFor(() => expect(container.textContent).toContain("Studio Mac"));
+  expect(container.textContent).toContain("Set up Opensteer");
+  expect(container.textContent).not.toContain("Opening Opensteer…");
+
+  await act(async () => root.unmount());
+  container.remove();
 });
 
-it("detects a completed deletion when the API removes its tombstone from the list", () => {
-  const deleting = {
-    canonicalOrigin: "https://cloud.example.test",
-    deploymentId: createId("deployment"),
-    desiredState: "deleted" as const,
-    error: null,
-    name: "Cloud",
-    operationId: crypto.randomUUID(),
-    progress: null,
-    status: "deleting" as const,
-    updatedAt: "2026-09-05T00:00:00.000Z",
-  };
-  expect(cloudDeletionDisappeared([deleting], [])).toBe(true);
-  expect(cloudDeletionDisappeared([deleting], [deleting])).toBe(false);
-});
+function personalStatus(
+  overrides: Partial<DesktopPersonalDeploymentStatus> = {},
+): DesktopPersonalDeploymentStatus {
+  return DesktopPersonalDeploymentStatusSchema.parse({
+    canStart: false,
+    components: {
+      browser: { state: "stopped", version: null },
+      host: { state: "starting", version: null },
+      messaging: { state: "stopped", version: null },
+      postgresql: { state: "ready", version: "18" },
+      runner: { state: "stopped", version: null },
+    },
+    deploymentId: null,
+    environmentId: null,
+    issue: null,
+    schemaVersion: 1,
+    state: "starting",
+    step: "checking-computer",
+    ...overrides,
+  });
+}
 
 const deployment = DesktopDeploymentSummarySchema.parse({
-  activeOrigin: "https://cloud.example.test",
-  canonicalOrigin: "https://cloud.example.test",
+  activeOrigin: "https://server.example.test",
+  canonicalOrigin: "https://server.example.test",
   id: createId("deployment"),
   kind: "self-hosted",
   lastUsedAt: "2026-08-20T10:00:00.000Z",
-  name: "Cloud",
+  name: "Server",
   onThisComputer: false,
   access: "native",
-  routes: [{ kind: "canonical", origin: "https://cloud.example.test", selected: true }],
+  routes: [{ kind: "canonical", origin: "https://server.example.test", selected: true }],
 });
 
 function snapshot(overrides: Partial<DeploymentAccessSnapshot> = {}): DeploymentAccessSnapshot {

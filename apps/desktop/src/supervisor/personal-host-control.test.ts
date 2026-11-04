@@ -596,7 +596,7 @@ function hostBootstrap(
       updatedAt: "2026-08-12T12:00:00.000Z",
     },
     identityConfig: {
-      deployment: { cloud: false, kind: "personal" as const, name: "This computer" },
+      deployment: { kind: "personal" as const, name: "This computer" },
       emailDeliveryAvailable: false,
       exposure: "loopback",
       localPasswordEnabled: false,

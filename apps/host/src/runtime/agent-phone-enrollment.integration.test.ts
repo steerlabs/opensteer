@@ -503,28 +503,6 @@ integration.sequential("An Android phone joining a Deployment", () => {
     });
   }, 120_000);
 
-  it("keeps the configured initial Main grant explicit and replayable", async () => {
-    host = await startMachineAccessHost(isolated!.url);
-    const issuer = new RunnerAuthenticator({
-      issuancePrivateKey: generateKeyPairSync("ed25519").privateKey,
-      store: host.store,
-    });
-    const request = {
-      allowedModules: ["agents"] as const,
-      idempotencyKey: "configured-main",
-      lifetimeSeconds: 600,
-      token: "configured-main-token-0123456789012345",
-    };
-    await issuer.ensureConfiguredInitialMainEnrollment(request);
-    await issuer.ensureConfiguredInitialMainEnrollment(request);
-    const rows = await host.store.database
-      .selectFrom("runnerEnrollments")
-      .select("allowedModules")
-      .where("idempotencyKey", "=", request.idempotencyKey)
-      .execute();
-    expect(rows).toEqual([{ allowedModules: ["agents", "integrations", "messaging", "shell"] }]);
-  }, 120_000);
-
   it("mints exactly the integrations grant with the Host's own address, and admits nothing but the screen", async () => {
     host = await startMachineAccessHost(isolated!.url, { deploymentName: "Acme Research" });
     const minted = await mintPhone(host, "pixel-1");

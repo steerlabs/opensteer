@@ -42,7 +42,7 @@ export function PlaceSignInCard({
       <p className="place-card__body">
         {again
           ? "You were signed out on this computer. Sign in again to see your other computers and servers. They keep running."
-          : "Open your other computers, servers and Opensteer Cloud from here."}
+          : "Open your other computers and servers from here."}
       </p>
       <button
         className="btn btn--small btn--primary"

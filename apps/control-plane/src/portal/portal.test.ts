@@ -1,9 +1,10 @@
+import { runInNewContext } from "node:vm";
+import { DeploymentIdSchema } from "@opensteer/core";
 import {
   AccountDeploymentDirectoryEntrySchema,
   AccountDeploymentSchema,
   type AccountDeployment,
   type AccountDeploymentDirectoryEntry,
-  type CloudDeploymentOperation,
 } from "@opensteer/control-plane-protocol";
 import { createId } from "@opensteer/core";
 import { hostKeyFingerprint } from "@opensteer/deployment-authority";
@@ -11,44 +12,118 @@ import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import {
   createPortalRouter,
-  cloudDeletePath,
-  cloudOperationPath,
+  portalCallbackUri,
   deploymentCard,
-  portalHintCookieDomain,
-  portalOrigin,
   portalPersonalConnectPath,
   portalRemoveDeploymentPath,
 } from "./portal.js";
 
+describe("public portal routes", () => {
+  it("guards routes, renders safe links, and validates fragments against DeploymentId", async () => {
+    const router = createPortalRouter({
+      portalOrigin: new URL("https://portal.test"),
+      publicOrigin: new URL("https://accounts.test"),
+      auth: {} as never,
+      store: {} as never,
+      portalSessions: { read: vi.fn() } as never,
+      desktopDownloadUrl: "https://download.test/app",
+      iosAppUrl: "https://store.test/?a=1&b=2",
+      androidAppUrl: 'https://android.test/?q="hello"',
+    });
+    const app = Fastify();
+    router.register(app);
+    app.get("/", (request, reply) => router.home(request, reply));
+    for (const url of ["/open", "/mac"]) {
+      expect((await app.inject({ url, headers: { host: "other.test" } })).statusCode).toBe(404);
+    }
+    const headers = { host: "portal.test" };
+    const page = await app.inject({ url: "/open?d=server-content", headers });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers["set-cookie"]).toBeUndefined();
+    expect(page.body).not.toContain("server-content");
+    expect(page.body).toContain("https://store.test/?a=1&amp;b=2");
+    expect(page.body).toContain("&quot;hello&quot;");
+    const script = page.body.match(/<script nonce="([^"]+)">([\s\S]*?)<\/script>/u);
+    expect(script).not.toBeNull();
+    expect(page.headers["content-security-policy"]).toContain(`script-src 'nonce-${script![1]}'`);
+    expect(page.headers["content-security-policy"]).not.toContain("script-src 'unsafe-inline'");
+    for (const fragment of [
+      `#d=${createId("deployment")}`,
+      "",
+      "#d=dep_invalid",
+      `#d=${createId("deployment")}&x=1`,
+      "#d=DEP_00000000-0000-4000-8000-000000000001",
+      "#d=dep_00000000-0000-0000-8000-000000000001",
+    ]) {
+      const button = { href: "", hidden: true };
+      const incomplete = { hidden: true };
+      const location = { hash: fragment, href: "" };
+      runInNewContext(script![2]!, {
+        location,
+        document: { getElementById: (id: string) => (id === "open-app" ? button : incomplete) },
+      });
+      const valid =
+        fragment.startsWith("#d=") && DeploymentIdSchema.safeParse(fragment.slice(3)).success;
+      expect(button.hidden).toBe(!valid);
+      expect(incomplete.hidden).toBe(valid);
+      expect(location.href).toBe(valid ? `com.opensteer.mobile:/open?d=${fragment.slice(3)}` : "");
+    }
+    expect((await app.inject({ url: "/mac", headers })).headers.location).toBe(
+      "https://download.test/app",
+    );
+    const home = await app.inject({ url: "/", headers });
+    expect(home.body).toContain("Get the desktop app");
+    expect(home.headers["content-security-policy"]).not.toContain("script-src");
+    await app.close();
+
+    const bare = Fastify();
+    createPortalRouter({
+      portalOrigin: new URL("https://portal.test"),
+      publicOrigin: new URL("https://accounts.test"),
+      auth: {} as never,
+      store: {} as never,
+      portalSessions: {} as never,
+    }).register(bare);
+    const noStores = await bare.inject({ url: "/open", headers });
+    expect(noStores.body).not.toContain("Get it for iPhone");
+    expect(noStores.body).not.toContain("Get it for Android");
+    expect((await bare.inject({ url: "/mac", headers })).headers.location).toBe("/");
+    await bare.close();
+  });
+});
+
 describe("portal vhost identity", () => {
-  it("derives the portal origin from the managed Deployment apex", () => {
-    expect(
-      portalOrigin(new URL("https://accounts.beta.opensteer.com"), "beta.opensteer.com").origin,
-    ).toBe("https://beta.opensteer.com");
-    expect(
-      portalOrigin(new URL("https://accounts.beta.opensteer.com"), "Beta.Opensteer.com.").origin,
-    ).toBe("https://beta.opensteer.com");
-    // Loopback development keeps the scheme and the port it is reachable on.
-    expect(portalOrigin(new URL("http://localhost:4142"), "localhost").origin).toBe(
-      "http://localhost:4142",
+  it("uses the explicit portal callback origin", () => {
+    expect(portalCallbackUri(new URL("https://app.opensteer.com"))).toBe(
+      "https://app.opensteer.com/auth/callback",
     );
   });
-
-  it("offers the presence hint only where the Account host may set it", () => {
-    expect(
-      portalHintCookieDomain(new URL("https://accounts.beta.opensteer.com"), "beta.opensteer.com"),
-    ).toBe("beta.opensteer.com");
-    expect(
-      portalHintCookieDomain(new URL("https://beta.opensteer.com"), "beta.opensteer.com"),
-    ).toBe("beta.opensteer.com");
-    // A browser rejects a Domain the Account host does not belong to, so the
-    // portal goes without a hint rather than emitting a cookie nobody keeps.
-    expect(
-      portalHintCookieDomain(new URL("https://accounts.example.test"), "beta.opensteer.com"),
-    ).toBeUndefined();
-    expect(
-      portalHintCookieDomain(new URL("https://evil-beta.opensteer.com"), "beta.opensteer.com"),
-    ).toBeUndefined();
+  it("accepts only the configured portal host and guards portal routes", async () => {
+    const router = createPortalRouter({
+      portalOrigin: new URL("https://app.opensteer.com"),
+      publicOrigin: new URL("https://accounts.opensteer.com"),
+      portalSessions: { read: vi.fn() } as never,
+      store: {} as never,
+      auth: {} as never,
+    });
+    const app = Fastify();
+    router.register(app);
+    for (const host of [
+      "accounts.opensteer.com",
+      "app.opensteer.com.evil.test",
+      "evilapp.opensteer.com",
+      "other.opensteer.com",
+    ]) {
+      const response = await app.inject({ url: "/auth/sign-in", headers: { host } });
+      expect(response.statusCode).toBe(404);
+      expect(response.body).toContain("Route was not found");
+    }
+    const response = await app.inject({
+      url: "/auth/sign-in",
+      headers: { host: "app.opensteer.com" },
+    });
+    expect(response.statusCode).toBe(302);
+    await app.close();
   });
 });
 
@@ -59,19 +134,17 @@ describe("portal Deployment cards", () => {
       'href="https://server.opensteer.test"',
     );
     // The owner made this row and unmakes it where it runs; a hide is a member's move.
-    expect(deploymentCard(directoryDeployment(deployment), true)).not.toContain(
-      "Remove from Account list",
-    );
+    expect(deploymentCard(directoryDeployment(deployment), true)).not.toContain("from your list");
     const shared = directoryDeployment({ ...deployment, access: "member" });
     expect(deploymentCard(shared, true)).toContain(
       `action="${portalRemoveDeploymentPath(deployment.id)}"`,
     );
-    expect(deploymentCard(shared, true)).toContain("Remove from Account list");
+    expect(deploymentCard(shared, true)).toContain("from your list");
     for (const present of [true, false]) {
       const card = deploymentCard(directoryDeployment(deployment), present);
-      expect(card).not.toContain('class="chip');
-      expect(card).not.toContain('class="deployment-note');
-      expect(card).toContain('class="deployment-go');
+      expect(card).not.toContain('class="dot');
+      expect(card).not.toContain('class="place__note');
+      expect(card).toContain('class="place__go');
     }
     expect(deploymentCard(directoryDeployment(deployment), false)).toContain(
       'href="https://server.opensteer.test"',
@@ -84,7 +157,7 @@ describe("portal Deployment cards", () => {
     expect(card).toContain("Offline");
     expect(card).toContain("You no longer have access to this deployment.");
     expect(card).not.toContain('href="https://server.opensteer.test"');
-    expect(card).not.toContain('class="deployment-go');
+    expect(card).not.toContain('class="place__go');
   });
 
   it("mints the browser grant only after the portal card is posted", async () => {
@@ -98,7 +171,7 @@ describe("portal Deployment cards", () => {
     if (!accountId) throw new Error("Personal fixture is not linked");
     const router = createPortalRouter({
       auth: {} as never,
-      managedDeploymentDomain: "portal.test",
+      portalOrigin: new URL("https://portal.test"),
       personalRemoteAccount: { issueSessionGrant } as never,
       portalSessions: {
         read: async () => ({
@@ -187,7 +260,7 @@ describe("portal Deployment cards", () => {
       "Update Opensteer to use this deployment’s published connection details.",
     );
     expect(card).not.toContain("href=");
-    expect(card).not.toContain("deployment-go");
+    expect(card).not.toContain("place__go");
   });
 
   it("does not trust routed liveness carried by an invalid route envelope", () => {
@@ -202,267 +275,6 @@ describe("portal Deployment cards", () => {
     expect(card).not.toContain(portalPersonalConnectPath(deployment.id));
   });
 });
-
-describe("portal Cloud deployment lifecycle", () => {
-  it("keeps create idempotency in the rendered form and protects every mutation", async () => {
-    const deploymentId = createId("deployment");
-    const publishedDeployment = directoryDeployment(selfHostedDeployment(deploymentId));
-    const accountId = `acct_${crypto.randomUUID()}`;
-    let operation: CloudDeploymentOperation = {
-      canonicalOrigin: "https://cloud.portal.test",
-      deploymentId,
-      desiredState: "present" as const,
-      error: null,
-      name: "Cloud One",
-      operationId: crypto.randomUUID(),
-      progress: "Starting Browser, Messaging",
-      status: "creating" as const,
-      updatedAt: "2026-08-21T12:00:00.000Z",
-    };
-    const create = vi.fn(async (_accountId, input) => {
-      operation = { ...operation, name: input.name, operationId: input.operationId };
-      return operation;
-    });
-    const retry = vi.fn(async () => operation);
-    const remove = vi.fn(async () => ({
-      ...operation,
-      desiredState: "deleted",
-      status: "deleting",
-    }));
-    const router = createPortalRouter({
-      auth: {} as never,
-      cloudDeployments: {
-        available: true,
-        create,
-        delete: remove,
-        list: vi.fn(async () => [operation]),
-        get: vi.fn(async () => operation),
-        retry,
-      } as never,
-      managedDeploymentDomain: "portal.test",
-      portalSessions: {
-        read: async () => ({
-          accountId,
-          accountSessionId: "session-1",
-          displayName: "Portal Owner",
-          email: "owner@example.test",
-          expiresAt: new Date("2099-08-21T12:00:00.000Z"),
-        }),
-      } as never,
-      publicOrigin: new URL("https://accounts.portal.test"),
-      store: {
-        isDeploymentPresentForAccount: vi.fn(async () => true),
-        listDeployments: async () => [publishedDeployment],
-      } as never,
-    });
-    const app = Fastify();
-    app.addContentTypeParser(
-      "application/x-www-form-urlencoded",
-      { parseAs: "buffer" },
-      (_request, body, done) => done(null, body),
-    );
-    app.setErrorHandler((error, _request, reply) => {
-      const status = error instanceof Error && "status" in error ? error.status : null;
-      return reply.code(typeof status === "number" ? status : 500).send();
-    });
-    router.register(app);
-    app.get("/", (request, reply) => router.home(request, reply));
-    const headers = { cookie: "__Host-opensteer.portal=fixture", host: "portal.test" };
-
-    const home = await app.inject({ headers, method: "GET", url: "/" });
-    expect(home.body).toContain("Create cloud deployment");
-    expect(home.body).toContain("Cloud operations");
-    expect(home.body).toContain("Creating");
-    expect(home.body).not.toContain("Primary Server");
-    expect(home.body).not.toContain(`/deployments/${deploymentId}/open`);
-
-    for (const status of ["deleting", "failed"] as const) {
-      operation = { ...operation, status };
-      const pending = await app.inject({ headers, method: "GET", url: "/" });
-      expect(pending.body).toContain(status === "deleting" ? "Deleting" : "Needs attention");
-      expect(pending.body).not.toContain("Primary Server");
-      expect(pending.body).not.toContain(`/deployments/${deploymentId}/open`);
-    }
-
-    operation = { ...operation, status: "ready" };
-    const ready = await app.inject({ headers, method: "GET", url: "/" });
-    expect(ready.body).not.toContain("Cloud operations");
-    expect(ready.body).toContain("Primary Server");
-    expect(ready.body).toContain(`/deployments/${deploymentId}/open`);
-    expect(ready.body).not.toContain("Needs attention");
-    expect(ready.body).not.toContain("Open this deployment to check");
-    expect(ready.body).not.toContain(">Ready<");
-    operation = { ...operation, status: "creating" };
-
-    const form = await app.inject({ headers, method: "GET", url: "/cloud/new" });
-    expect(form.statusCode).toBe(200);
-    const operationId = /name="operationId" value="([^"]+)"/u.exec(form.body)?.[1];
-    expect(operationId).toMatch(/^[0-9a-f-]{36}$/u);
-
-    const refused = await app.inject({
-      headers: { ...headers, "content-type": "application/x-www-form-urlencoded" },
-      method: "POST",
-      payload: new URLSearchParams({ name: "Cloud One", operationId: operationId! }).toString(),
-      url: "/cloud",
-    });
-    expect(refused.statusCode).toBe(403);
-    expect(create).not.toHaveBeenCalled();
-
-    const created = await app.inject({
-      headers: {
-        ...headers,
-        "content-type": "application/x-www-form-urlencoded",
-        origin: "https://portal.test",
-      },
-      method: "POST",
-      payload: new URLSearchParams({ name: "Cloud One", operationId: operationId! }).toString(),
-      url: "/cloud",
-    });
-    expect(created.statusCode).toBe(303);
-    expect(created.headers.location).toBe(cloudOperationPath(operationId!));
-    expect(create).toHaveBeenCalledWith(accountId, { name: "Cloud One", operationId });
-
-    const detail = await app.inject({
-      headers,
-      method: "GET",
-      url: cloudOperationPath(operationId!),
-    });
-    expect(detail.body).not.toContain('http-equiv="refresh"');
-    expect(detail.body).not.toContain('name="operationId"');
-
-    operation = { ...operation, status: "failed", error: "Provisioning was refused." };
-    const retried = await app.inject({
-      headers: { ...headers, origin: "https://portal.test" },
-      method: "POST",
-      url: `${cloudOperationPath(operationId!)}/retry`,
-    });
-    expect(retried.statusCode).toBe(303);
-    expect(retry).toHaveBeenCalledWith(accountId, operationId);
-
-    const confirmation = await app.inject({
-      headers,
-      method: "GET",
-      url: cloudDeletePath(operationId!),
-    });
-    expect(confirmation.body).toContain("Enter <strong>Cloud One</strong>");
-    expect(confirmation.body).toContain('name="name"');
-
-    const deleted = await app.inject({
-      headers: {
-        ...headers,
-        "content-type": "application/x-www-form-urlencoded",
-        origin: "https://portal.test",
-      },
-      method: "POST",
-      payload: new URLSearchParams({ name: "Cloud One" }).toString(),
-      url: cloudDeletePath(operationId!),
-    });
-    expect(deleted.statusCode).toBe(303);
-    expect(remove).toHaveBeenCalledWith(accountId, operationId, "Cloud One");
-    await app.close();
-  });
-});
-
-describe("portal live pages", () => {
-  it("updates a pending operation in place instead of reloading the document", async () => {
-    let operation = cloudOperation({ status: "creating" });
-    const app = cloudPortalApp(() => operation);
-    const detail = await app.inject({
-      headers: portalHeaders,
-      method: "GET",
-      url: cloudOperationPath(operation.operationId),
-    });
-
-    // The flashing full-document refresh is gone for good.
-    expect(detail.body).not.toContain('http-equiv="refresh"');
-    // One region, marked live by the server, is the script's only source of truth.
-    expect(detail.body).toContain('<main id="live-region" data-live>');
-    const nonce = /<script nonce="([^"]+)">/u.exec(detail.body)?.[1];
-    expect(nonce).toMatch(/^[\w-]{20,}$/u);
-    expect(detail.body.match(/<script/gu)).toHaveLength(1);
-    // It re-reads this very URL and swaps the region: one rendering path.
-    expect(detail.body).toContain("fetch(location.href");
-    expect(detail.body).toContain('credentials:"same-origin"');
-    expect(detail.body).toContain("DOMParser");
-    expect(detail.body).toContain("location.reload()");
-
-    // The policy admits exactly that script and its same-origin read, and keeps
-    // scripts off `unsafe-inline`.
-    const policy = detail.headers["content-security-policy"];
-    expect(policy).toContain(`script-src 'nonce-${nonce}'`);
-    expect(policy).toContain("connect-src 'self'");
-    expect(policy).not.toContain("script-src 'unsafe-inline'");
-    expect(policy).toContain("frame-ancestors 'none'");
-
-    // Deleting is pending too, and each response mints its own nonce.
-    operation = cloudOperation({ status: "deleting", operationId: operation.operationId });
-    const deleting = await app.inject({
-      headers: portalHeaders,
-      method: "GET",
-      url: cloudOperationPath(operation.operationId),
-    });
-    expect(deleting.body).toContain("data-live");
-    expect(/<script nonce="([^"]+)">/u.exec(deleting.body)?.[1]).not.toBe(nonce);
-    await app.close();
-  });
-});
-
-const portalHeaders = { cookie: "__Host-opensteer.portal=fixture", host: "portal.test" };
-
-function cloudOperation(
-  overrides: Partial<CloudDeploymentOperation> = {},
-): CloudDeploymentOperation {
-  return {
-    canonicalOrigin: "https://cloud.portal.test",
-    deploymentId: createId("deployment"),
-    desiredState: "present",
-    error: null,
-    name: "Cloud One",
-    operationId: crypto.randomUUID(),
-    progress: "Starting Browser, Messaging",
-    status: "creating",
-    updatedAt: "2026-08-21T12:00:00.000Z",
-    ...overrides,
-  };
-}
-
-/** A portal whose only deployment is the one cloud operation under test. */
-function cloudPortalApp(current: () => CloudDeploymentOperation) {
-  const router = createPortalRouter({
-    auth: {} as never,
-    cloudDeployments: {
-      available: true,
-      create: vi.fn(),
-      delete: vi.fn(),
-      get: vi.fn(async () => current()),
-      list: vi.fn(async () => [current()]),
-      retry: vi.fn(),
-    } as never,
-    managedDeploymentDomain: "portal.test",
-    portalSessions: {
-      read: async () => ({
-        accountId: `acct_${crypto.randomUUID()}`,
-        accountSessionId: "session-1",
-        displayName: "Portal Owner",
-        email: "owner@example.test",
-        expiresAt: new Date("2099-08-21T12:00:00.000Z"),
-      }),
-    } as never,
-    publicOrigin: new URL("https://accounts.portal.test"),
-    store: {
-      isDeploymentPresentForAccount: vi.fn(async () => true),
-      listDeployments: async () => [],
-    } as never,
-  });
-  const app = Fastify();
-  app.setErrorHandler((error, _request, reply) => {
-    const status = error instanceof Error && "status" in error ? error.status : null;
-    return reply.code(typeof status === "number" ? status : 500).send();
-  });
-  router.register(app);
-  app.get("/", (request, reply) => router.home(request, reply));
-  return app;
-}
 
 function selfHostedDeployment(
   deploymentId: ReturnType<typeof createId> = createId("deployment"),

@@ -8,7 +8,7 @@ import type {
 
 /**
  * The one status vocabulary every Directory renders — the Desktop deployment
- * list, the settings surfaces, and the Cloud portal alike. A Deployment's
+ * list, the settings surfaces, and the Account portal alike. A Deployment's
  * status is *derived* by whichever authority owns it (the Desktop access
  * machine, the local Personal stack, the control plane), but what that status
  * *says* to a person is defined exactly once, here, so the same place never
@@ -210,7 +210,7 @@ interface PersonalConnectReachability {
 
 /**
  * THE single derivation of "this Personal Deployment is reachable through
- * Connect right now". Both the Cloud portal and the Desktop directory answer
+ * Connect right now". Both the Account portal and the Desktop directory answer
  * with this function, so the same computer is never ready in one Directory and
  * offline in the other.
  */

@@ -4697,10 +4697,13 @@ export function migrationProvider() {
         "0143_specialist_threads": specialistThreadsMigration,
         "0144_project_chats": projectChatsMigration,
         "0145_specialist_lifecycle": specialistLifecycleMigration,
-        "0146_consent_scope": consentScopeMigration,
-        "0147_agent_connections": agentConnectionsMigration,
-        "0148_connection_message_authors": connectionMessageAuthorsMigration,
-        "0149_specialist_auto_bind": specialistAutoBindMigration,
+        "0146_every_turn_shows": everyTurnShowsMigration,
+        "0147_quiet_assignment_results": quietAssignmentResultsMigration,
+        "0148_local_mcp_server_secrets": localMcpServerSecretsMigration,
+        "0149_consent_scope": consentScopeMigration,
+        "0150_agent_connections": agentConnectionsMigration,
+        "0151_connection_message_authors": connectionMessageAuthorsMigration,
+        "0152_specialist_auto_bind": specialistAutoBindMigration,
       };
     },
   };
@@ -6608,7 +6611,7 @@ export const runVisibilityMigration: Migration = {
             'run.completed', 'run.failed', 'run.interrupted')
           and event.data @> '{"personWaiting":true}'::jsonb and event.run_id is not null
       ) update runs set person_waited = true from waited where waited.id = runs.id;
-      -- This historical backfill precedes app_versions; finalization uses the current predicate.
+      -- This historical backfill precedes app_versions.
       update runs set quiet = (
         exists (select 1 from messages seed where seed.id = runs.seed_input_id
           and seed.author->>'kind' <> 'human')
@@ -7060,6 +7063,55 @@ export const specialistLifecycleMigration: Migration = {
       ALTER TABLE specialists ADD FOREIGN KEY(plugin_id, plugin_version_id) REFERENCES plugin_versions(plugin_id,id) ON DELETE RESTRICT`.execute(
       database,
     );
+  },
+};
+
+export const everyTurnShowsMigration: Migration = {
+  async up(database) {
+    await sql`alter table runs drop column quiet`.execute(database);
+  },
+};
+
+export const quietAssignmentResultsMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.delegations
+        drop constraint assignments_result_check,
+        add constraint assignments_result_check check (
+          (status = 'open' and result_text is null and result_run_id is null)
+          or (status = 'cancelled' and result_run_id is null)
+          or (status = 'completed' and result_text is not null and result_run_id is not null)
+          or (status = 'failed' and octet_length(result_text) >= 1 and result_run_id is not null)),
+        drop constraint delegations_result_check,
+        add constraint delegations_result_check check (
+          (result_status = 'pending' and completed_at is null and result_message_id is null and result_reason is null)
+          or (result_status = 'delivered' and completed_at is not null
+            and (result_message_id is not null or result_text is not distinct from '') and result_reason is null)
+          or (result_status = 'undeliverable' and completed_at is not null
+            and result_message_id is null and result_reason is not null));
+    `.execute(database);
+  },
+};
+
+/**
+ * What the owner of the computer that runs an MCP server entered for the
+ * secrets its launch declares, sealed as one envelope. A table of its own, so
+ * no listing of servers carries it, and it goes with its server. It is for
+ * the computer it was entered for: one the server moves to is asked again.
+ */
+export const localMcpServerSecretsMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table public.integration_server_secrets (
+        server_id text primary key
+          references public.integration_servers(id) on delete cascade,
+        runner_id text not null references public.runners(id) on delete cascade,
+        encrypted_payload bytea not null check (
+          octet_length(encrypted_payload) between 1 and 1048576
+        ),
+        updated_at timestamptz not null default now()
+      );
+    `.execute(database);
   },
 };
 

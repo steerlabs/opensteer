@@ -25,7 +25,7 @@ integration("consent scope upgrade", () => {
     await maintenance.query(`create database ${name}`);
     database = createDatabase({ connectionString: urlFor(name), maxConnections: 1 });
     const before = await new Migrator({ db: database, provider: migrationProvider() }).migrateTo(
-      "0145_specialist_lifecycle",
+      "0148_local_mcp_server_secrets",
     );
     if (before.error) throw before.error;
     // Released rows retain their real shape and constraints, without requiring live engines.

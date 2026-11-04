@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Icon, type IconName } from "./icon.js";
 import { OptionRow } from "./option-row.js";
 
-export type DeploymentChoice = "cloud" | "computer" | "local" | "server";
+export type DeploymentChoice = "computer" | "local" | "server";
 
 interface DeploymentChoiceDefinition {
   readonly detail: string;
@@ -11,11 +11,6 @@ interface DeploymentChoiceDefinition {
 }
 
 const choices: Readonly<Record<DeploymentChoice, DeploymentChoiceDefinition>> = {
-  cloud: {
-    detail: "Always on, so agents keep working while your computer sleeps. We run it for you.",
-    icon: "cloud",
-    title: "Opensteer Cloud",
-  },
   computer: {
     detail: "Turn on Remote access there, or pair it with a code.",
     icon: "laptop",
@@ -41,7 +36,7 @@ interface DeploymentChoicesProps {
   readonly renderExpanded?: (choice: DeploymentChoice) => ReactNode;
 }
 
-/** The ways to add a place: this computer, another computer, a server, or Opensteer Cloud. */
+/** The ways to add a place: this computer, another computer, a server. */
 export function DeploymentChoices({
   busy = false,
   expanded = null,
@@ -80,17 +75,14 @@ export function DeploymentChoices({
 }
 
 export function deploymentChoiceOrder({
-  canCreateCloud,
   canCreateLocal,
   canConnect,
 }: {
-  readonly canCreateCloud: boolean;
   readonly canCreateLocal: boolean;
   readonly canConnect: boolean;
 }): readonly DeploymentChoice[] {
   const ordered: DeploymentChoice[] = [];
   if (canCreateLocal) ordered.push("local");
   if (canConnect) ordered.push("computer", "server");
-  if (canCreateCloud) ordered.push("cloud");
   return ordered;
 }

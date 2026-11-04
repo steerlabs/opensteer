@@ -13,6 +13,7 @@ import { isLoopbackHostname } from "@opensteer/core";
 import type { LocalMcpLaunch } from "@opensteer/integration-core";
 import {
   computerAppFrameFits,
+  computerMcpLastOutputLabel,
   computerMcpMaxSessions,
   type HostIntegrationsMcpClose,
   type HostIntegrationsMcpMessage,
@@ -449,7 +450,7 @@ function stoppedSentence(session: Session): string {
   const stderr = (session.transport.stderrTail ?? "").trim();
   return [
     reason ? `The MCP server stopped: ${reason}` : "The MCP server stopped.",
-    stderr ? `Its last output: ${stderr.slice(-1_000)}` : null,
+    stderr ? `${computerMcpLastOutputLabel}${stderr.slice(-1_000)}` : null,
   ]
     .filter((line) => line !== null)
     .join(" ");

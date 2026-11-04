@@ -710,9 +710,10 @@ it("quiet Chat keeps automatic replies and lets silent human work open Activity"
     workspaceName: "Main",
   };
   render([{ ...run, startedBy: author, status: "running" }]);
-  expect(container.textContent).toBe("");
+  expect(container.textContent).not.toBe("");
   render([{ ...run, startedBy: author, status: "completed" }]);
-  expect(container.textContent).toBe("");
+  expect(container.textContent).toContain("Worked");
+  expect(container.textContent).toContain("Research");
   render(
     [{ ...run, startedBy: author, replyMessageId: note.id, status: "completed" }, note],
     [

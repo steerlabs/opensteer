@@ -1277,8 +1277,8 @@ describe("toolPresentation", () => {
 
 describe("displayCommand", () => {
   it("unwraps the login shell an engine runs every command in", () => {
-    expect(displayCommand(`/bin/zsh -lc "cat '/Applications/Opensteer Beta.app/SKILL.md'"`)).toBe(
-      "cat '/Applications/Opensteer Beta.app/SKILL.md'",
+    expect(displayCommand(`/bin/zsh -lc "cat '/Applications/Opensteer.app/SKILL.md'"`)).toBe(
+      "cat '/Applications/Opensteer.app/SKILL.md'",
     );
     expect(displayCommand(`bash -lc 'rg "foo bar" src'`)).toBe(`rg "foo bar" src`);
     expect(displayCommand(`/bin/bash -c 'echo '\\''hi'\\'''`)).toBe("echo 'hi'");
@@ -1937,7 +1937,7 @@ describe("quiet Chat", () => {
   it("does not count hidden automatic inputs as incoming Chat messages", () => {
     const hidden = input({ author: startedBy, sequence: "10" });
     const entries = [hidden, run({ startedBy })];
-    expect(rows(entries)).toEqual([]);
+    expect(rows(entries)).toHaveLength(1);
     expect(incomingTranscriptMessages(entries, "viewer", true)).toEqual([]);
     expect(incomingTranscriptMessages(entries, "viewer", false)).toEqual([hidden]);
     const reply = message({ id: "reply", sequence: "11" });
@@ -1975,12 +1975,13 @@ describe("quiet Chat", () => {
       expect(drawnTranscriptRowKeys(after, context)).toEqual(keys);
     }
   });
-  it("hides a returning task's silent turn, including typing and failures", () => {
+  it("shows a returning task's silent turn, including typing and failures", () => {
     for (const status of ["running", "completed", "failed", "interrupted"] as const) {
       const entry = run({ startedBy, status });
-      expect(rows([entry])).toEqual([]);
+      expect(rows([entry])).toHaveLength(1);
       const group = groupTranscriptEntries([entry])[0];
-      if (group?.kind === "turn") expect(conversationTurn(group.turn).composing).toBe(false);
+      if (group?.kind === "turn")
+        expect(conversationTurn(group.turn).composing).toBe(status === "running");
     }
   });
   it("keeps the reply, live computer use, human steers and unknown older Hosts", () => {
@@ -2004,7 +2005,7 @@ describe("quiet Chat", () => {
   });
 });
 
-it("shows only decisions and failed assignments from automatic work, including standalone assignments", () => {
+it("shows every turn task and only standalone assignments needing the reader", () => {
   const automatic = run({ startedBy: { kind: "platform", cause: "assignment-result" } });
   const task: import("./client.js").AssignmentEntry = {
     kind: "assignment",
@@ -2069,7 +2070,7 @@ it("shows only decisions and failed assignments from automatic work, including s
             : [],
       });
       expect(rows.length, `${origin} ${state}`).toBe(
-        state === "waiting" || state === "failed" ? 1 : 0,
+        origin === "run" || state === "waiting" || state === "failed" ? 1 : 0,
       );
     }
   }
@@ -2129,6 +2130,39 @@ it("a human restart or steer keeps automatic work's outcomes, and reports remain
     conversationRows(groupTranscriptEntries([report]), { live: true, atComputer: () => false })[0]
       ?.group,
   ).toMatchObject({ kind: "message", entry: report });
+});
+
+it("keeps an automatic message that joined a person's Run, and lets an automatic turn stand for its own", () => {
+  const options = { live: false, atComputer: () => false };
+  const joined = input({
+    id: "joined",
+    runId: "run-a",
+    author: {
+      displayName: "Research",
+      kind: "agent",
+      runId: createId("run"),
+      threadId: createId("thread"),
+      workspaceId: createId("workspace"),
+      workspaceName: "Main",
+    },
+  });
+  const personRun = run({ id: "run-a", status: "running" });
+  expect(
+    conversationRows(groupTranscriptEntries([personRun, input(), joined]), options).some(
+      (row) => row.group.kind === "message" && row.group.entry.id === joined.id,
+    ),
+  ).toBe(true);
+  const seed = input({
+    id: "seed",
+    runId: "run-a",
+    author: { kind: "platform", cause: "assignment-result" },
+  });
+  const automatic = run({
+    id: "run-a",
+    startedBy: { kind: "platform", cause: "assignment-result" },
+  });
+  const rows = conversationRows(groupTranscriptEntries([seed, automatic]), options);
+  expect(rows.map((row) => row.group.kind)).toEqual(["turn"]);
 });
 
 it("automatic background work has no Chat indicator, while a new human input still does", () => {

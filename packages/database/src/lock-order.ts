@@ -144,6 +144,8 @@ export const databaseLockOrder = [
   "channel_link_codes",
   // Computer approvals and integration Grants precede Request settlement.
   "computer_app_setup_requests",
+  // A server's secrets change under its locked server, inside or after its approval.
+  "integration_server_secrets",
   "advisory:integration-grant",
   "computer_use_policies",
   "integration_grants",

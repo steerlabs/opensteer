@@ -17,7 +17,6 @@ final class SelfIdentityPolicyTests: XCTestCase {
       XCTAssertFalse(requirement.contains("ZZZZZ12345"))
     }
     XCTAssertTrue(incoming.contains("com.opensteer.opensteer"))
-    XCTAssertTrue(incoming.contains("com.steerlabs.opensteer.beta"))
     XCTAssertTrue(reverse.contains("identifier \"com.opensteer.passwords\""))
   }
 

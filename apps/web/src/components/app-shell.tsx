@@ -89,6 +89,7 @@ import { useNewTab } from "./workspace/start-page.js";
 import {
   canonicalPlaceSearch,
   isSettingsPath,
+  isSetupPath,
   placeSelection,
   rememberPlace,
   rememberedPlace,
@@ -303,6 +304,9 @@ export function AppShell({
   const toast = useToast();
   const location = useLocation();
   const settingsMode = isSettingsPath(location.pathname);
+  // Setup, like Settings, covers the workspace: no sidebar, no place beside it.
+  const setupMode = isSetupPath(location.pathname);
+  const fullWindow = settingsMode || setupMode;
   const nav = useWorkspaceNavigation(
     { deploymentId: snapshot.deploymentId, userId: snapshot.user?.id ?? null },
     snapshot.homeThreadId,
@@ -1002,18 +1006,20 @@ export function AppShell({
   );
 
   const drawerReady = useNativeBrowserOverlay(
-    !settingsMode && mobileNavigation && mobileNavigationOpen,
+    !fullWindow && mobileNavigation && mobileNavigationOpen,
     navigationDrawerElement,
   );
   const overlayOpen =
     harnessAuthentication !== null ||
     sharingWorkspace !== null ||
-    (!settingsMode && mobileNavigation && mobileNavigationOpen);
-  const shellClassName = settingsMode
-    ? "app-shell app-shell--settings"
-    : sidebarCollapsed
-      ? "app-shell app-shell--sidebar-collapsed"
-      : "app-shell";
+    (!fullWindow && mobileNavigation && mobileNavigationOpen);
+  const shellClassName = setupMode
+    ? "app-shell app-shell--settings app-shell--setup"
+    : fullWindow
+      ? "app-shell app-shell--settings"
+      : sidebarCollapsed
+        ? "app-shell app-shell--sidebar-collapsed"
+        : "app-shell";
   const chromeEnvironment = useChromeConnectEnvironment({
     desktopBridge: localBridge,
     hostHere: localBridge
@@ -1078,7 +1084,7 @@ export function AppShell({
               className={shellClassName}
               style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
             >
-              {!settingsMode && mobileNavigation && mobileNavigationOpen && drawerReady ? (
+              {!fullWindow && mobileNavigation && mobileNavigationOpen && drawerReady ? (
                 <button
                   type="button"
                   className="sidebar-scrim"
@@ -1086,7 +1092,7 @@ export function AppShell({
                   onClick={closeMobileNavigation}
                 />
               ) : null}
-              {!settingsMode ? (
+              {!fullWindow ? (
                 <ShellSidebar
                   collapsed={!mobileNavigation && sidebarCollapsed}
                   deploymentAccess={deploymentAccess}
@@ -1109,7 +1115,7 @@ export function AppShell({
                   onToggleCollapsed={toggleSidebar}
                 />
               ) : null}
-              {!settingsMode && !mobileNavigation && !sidebarCollapsed ? (
+              {!fullWindow && !mobileNavigation && !sidebarCollapsed ? (
                 <PaneResizeHandle
                   ariaControls="app-sidebar"
                   ariaLabel="Resize navigation sidebar"
@@ -1145,9 +1151,9 @@ export function AppShell({
                 <VoiceIsland />
                 <SidebarChromeProvider
                   onRestore={toggleSidebar}
-                  restoreVisible={!settingsMode && !mobileNavigation && sidebarCollapsed}
+                  restoreVisible={!fullWindow && !mobileNavigation && sidebarCollapsed}
                 >
-                  {settingsMode ? (
+                  {fullWindow ? (
                     routes
                   ) : (
                     <WorkspaceLayout
@@ -1200,7 +1206,7 @@ export function AppShell({
                 />
               ) : null}
             </div>
-            {settingsMode ? null : (
+            {fullWindow ? null : (
               <WorkspaceKeys
                 desktop={desktopWindowChrome}
                 hostClient={hostClient}

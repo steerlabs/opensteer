@@ -373,7 +373,7 @@ export function passwordsSettingsModel(input: {
 
 /** The system's own picture of each kind of place. */
 export type ComputerSymbol =
-  "cloud" | "desktopcomputer" | "laptopcomputer" | "macmini" | "server.rack" | "smartphone";
+  "desktopcomputer" | "laptopcomputer" | "macmini" | "server.rack" | "smartphone";
 
 /** One row of Settings → Computers: where the Opensteer runs, or one computer. */
 export interface ComputerSettingsRow {
@@ -434,7 +434,6 @@ const computerSymbols: Readonly<Record<ComputerGlyph, ComputerSymbol>> = {
  */
 export function computersSettingsRows(input: {
   readonly apps: ComputerAppsData | null;
-  readonly cloud: boolean;
   readonly deploymentKind: DeploymentKind | null;
   readonly deploymentName: string;
   readonly here?: ThisIphoneSettings | null;
@@ -468,20 +467,13 @@ export function computersSettingsRows(input: {
         home.kind === "mac" && home.machine
           ? { kind: "computer", machineId: home.machine.id }
           : null,
-      name:
-        home.kind === "cloud"
-          ? "Opensteer Cloud"
-          : home.kind === "server"
-            ? home.address
-            : home.name,
+      name: home.kind === "server" ? home.address : home.name,
       symbol:
-        home.kind === "cloud"
-          ? "cloud"
-          : home.kind === "server"
-            ? "server.rack"
-            : home.machine
-              ? computerSymbols[computerGlyph(home.machine)]
-              : "desktopcomputer",
+        home.kind === "server"
+          ? "server.rack"
+          : home.machine
+            ? computerSymbols[computerGlyph(home.machine)]
+            : "desktopcomputer",
     },
   ];
   if (here !== null) rows.push(thisIphoneRow(here, heldHere, input));

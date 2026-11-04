@@ -22,10 +22,6 @@ import {
 import { HostDiscoveryEnvelopeSchema } from "../packages/deployment-authority/src/authority.js";
 import { PersonalHostAccessRouteEnvelopeSchema } from "../packages/deployment-authority/src/personal-access-route.js";
 import {
-  CloudDeploymentOperationSchema,
-  ListCloudDeploymentsResponseSchema,
-} from "../packages/control-plane-protocol/src/cloud.js";
-import {
   ConnectCredentialResponseSchema,
   RevokeConnectResponseSchema,
 } from "../packages/control-plane-protocol/src/connect.js";
@@ -65,7 +61,7 @@ interface SchemaAudit {
  * Every contract a client parses as a response, not only the rpc graph. A
  * store-distributed app, a self-hosted Host and the Account all update on
  * their own schedules, so an additive field must never stop any of them: the
- * session exchange, the Account directory, Connect, Cloud and the notification
+ * session exchange, the Account directory, Connect and the notification
  * device registrations are as independently deployed as `hostApi` is.
  */
 const responseRoots: SchemaLocation[] = [
@@ -87,7 +83,6 @@ const responseRoots: SchemaLocation[] = [
   ]),
   ...namedRoots({
     CancelPersonalHostAccountLinkOperationResponseSchema,
-    CloudDeploymentOperationSchema,
     CompletePersonalHostAccountLinkResponseSchema,
     ConnectCredentialResponseSchema,
     ControlPlaneErrorResponseSchema,
@@ -95,7 +90,6 @@ const responseRoots: SchemaLocation[] = [
     IssueAccountHostSessionGrantResponseSchema,
     IssuePersonalHostAccountLinkChallengeResponseSchema,
     ListAccountDeploymentsResponseSchema,
-    ListCloudDeploymentsResponseSchema,
     ListNotificationDevicesResponseSchema,
     RegisterNotificationDeviceResponseSchema,
     RemoveAccountDeploymentResponseSchema,

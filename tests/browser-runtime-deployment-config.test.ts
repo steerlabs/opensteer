@@ -5,33 +5,11 @@ import {
   browserRuntimeEnvironmentKeys,
   readBrowserRuntimeConfig,
 } from "../apps/browser-runtime/src/config.js";
-import { managedBrowserRuntimeEnvironment } from "../apps/control-plane/src/cloud/kubernetes-managed-deployment-resources.js";
 
 const enrollmentToken = "runner-enrollment-token-with-enough-entropy";
 const bridgeToken = "browser-bridge-token-with-enough-entropy";
 
 describe("deployed Browser Runtime configuration", () => {
-  it("parses the exact managed workload environment through the runtime boundary", () => {
-    const emitted = managedBrowserRuntimeEnvironment("https://managed.opensteer.test");
-    const environment = Object.fromEntries(
-      emitted.map((entry) => [
-        entry.name,
-        entry.value ??
-          (entry.name === browserRuntimeEnvironmentKeys.bridgeToken
-            ? bridgeToken
-            : enrollmentToken),
-      ]),
-    );
-
-    expectRelayKeys(new Set(emitted.map(({ name }) => name)));
-    expect(readBrowserRuntimeConfig(environment).relay).toMatchObject({
-      bridgeToken,
-      enrollmentToken,
-      hostUrl: new URL("https://managed.opensteer.test"),
-      mode: "production",
-    });
-  });
-
   it("parses the exact self-host Compose environment through the runtime boundary", async () => {
     const source = await readFile(resolve("deploy/self-host/compose.yaml"), "utf8");
     const emitted = composeServiceEnvironment(source, "browser-runtime");

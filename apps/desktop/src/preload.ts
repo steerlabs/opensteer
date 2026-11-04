@@ -23,6 +23,7 @@ import type { ViewerClipboardBridge } from "@opensteer/client/editing";
 import {
   DesktopDownloadsSnapshotSchema,
   DesktopUpdateStateSchema,
+  DesktopUpdateChannelSchema,
   DesktopDownloadActionResultSchema,
   DesktopDownloadTargetSchema,
   type DesktopDownloadsBridge,
@@ -91,14 +92,7 @@ import type {
   DesktopSelectDeploymentInput,
   DesktopStartLocalRunnerInput,
   OpensteerDesktopBridge,
-  DesktopCloudDeploymentOperationInput,
-  DesktopDeleteCloudDeploymentInput,
 } from "@opensteer/protocol/desktop";
-import type {
-  CloudDeploymentOperation,
-  CreateCloudDeploymentRequest,
-  ListCloudDeploymentsResponse,
-} from "@opensteer/control-plane-protocol";
 import {
   DisplayClientDiagnosticSchema,
   DesktopWorkspaceTabCommandSchema,
@@ -117,8 +111,6 @@ import {
   DesktopComputerUsePermissionsResultSchema,
   DesktopOpenComputerUsePermissionsPanelResultSchema,
   DesktopOpenComputerUseSettingsInputSchema,
-  DesktopCloudDeploymentOperationInputSchema,
-  DesktopDeleteCloudDeploymentInputSchema,
   DesktopConnectPrivateDeploymentInputSchema,
   DesktopFullDiskAccessStatusSchema,
   DesktopHostHttpRequestSchema,
@@ -150,11 +142,6 @@ import {
   DesktopSelectDeploymentInputSchema,
   DesktopStartLocalRunnerInputSchema,
 } from "@opensteer/protocol/desktop";
-import {
-  CloudDeploymentOperationSchema,
-  CreateCloudDeploymentRequestSchema,
-  ListCloudDeploymentsResponseSchema,
-} from "@opensteer/control-plane-protocol";
 import {
   DictationAvailabilitySchema,
   DictationEventSchema,
@@ -404,6 +391,13 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       DesktopChooseUsbDeviceInputSchema.parse(input),
     ),
   updates: {
+    setChannel: async (channel) =>
+      DesktopUpdateStateSchema.parse(
+        await invoke(
+          desktopBridgeChannels.setUpdateChannel,
+          DesktopUpdateChannelSchema.parse(channel),
+        ),
+      ),
     get: async () => DesktopUpdateStateSchema.parse(await invoke(desktopBridgeChannels.getUpdate)),
     onChanged: (listener) => {
       const receive = (_event: Electron.IpcRendererEvent, value: unknown) =>
@@ -583,20 +577,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       DesktopConnectPrivateDeploymentInputSchema.parse(input),
     ),
   createPersonalDeployment: () => invoke<void>(desktopBridgeChannels.createPersonalDeployment),
-  createCloudDeployment: async (input: CreateCloudDeploymentRequest) =>
-    CloudDeploymentOperationSchema.parse(
-      await invoke<CloudDeploymentOperation>(
-        desktopBridgeChannels.createCloudDeployment,
-        CreateCloudDeploymentRequestSchema.parse(input),
-      ),
-    ),
-  deleteCloudDeployment: async (input: DesktopDeleteCloudDeploymentInput) =>
-    CloudDeploymentOperationSchema.parse(
-      await invoke<CloudDeploymentOperation>(
-        desktopBridgeChannels.deleteCloudDeployment,
-        DesktopDeleteCloudDeploymentInputSchema.parse(input),
-      ),
-    ),
   getDeploymentAccessSnapshot: async () =>
     DeploymentAccessSnapshotSchema.parse(
       await invoke<DeploymentAccessSnapshot>(desktopBridgeChannels.getDeploymentAccessSnapshot),
@@ -605,10 +585,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     invoke<DesktopLocalExecutionStatus>(
       desktopBridgeChannels.getLocalExecutionStatus,
       DesktopLocalExecutionInputSchema.parse(input),
-    ),
-  listCloudDeployments: async () =>
-    ListCloudDeploymentsResponseSchema.parse(
-      await invoke<ListCloudDeploymentsResponse>(desktopBridgeChannels.listCloudDeployments),
     ),
   hostRequest: async (input: DesktopHostHttpRequest) =>
     DesktopHostHttpResultSchema.parse(
@@ -733,13 +709,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
   requestFullDiskAccess: async () =>
     DesktopRequestFullDiskAccessResultSchema.parse(
       await invoke<DesktopRequestFullDiskAccessResult>(desktopBridgeChannels.requestFullDiskAccess),
-    ),
-  retryCloudDeployment: async (input: DesktopCloudDeploymentOperationInput) =>
-    CloudDeploymentOperationSchema.parse(
-      await invoke<CloudDeploymentOperation>(
-        desktopBridgeChannels.retryCloudDeployment,
-        DesktopCloudDeploymentOperationInputSchema.parse(input),
-      ),
     ),
   select: (input: DesktopSelectDeploymentInput) =>
     invoke<void>(desktopBridgeChannels.select, DesktopSelectDeploymentInputSchema.parse(input)),

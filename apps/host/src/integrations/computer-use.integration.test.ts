@@ -16,7 +16,8 @@ import { computerAppIntegrations } from "@opensteer/integration-catalog";
 import type { PendingAgentEvent, RunnerDescriptor } from "@opensteer/protocol";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
+import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -128,6 +129,9 @@ integration.sequential("Host computer-use approval transactions", () => {
       adapters: [],
       authorizationSource: { providerAuthorizations: async () => ({}) },
       listConnections: (owner) => connections.listConnections(owner),
+      secretVault: new AesGcmSecretVault(
+        new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
+      ),
       computerApps: {
         compatibilityReason: () => null,
         reportsApp: () => "reported",

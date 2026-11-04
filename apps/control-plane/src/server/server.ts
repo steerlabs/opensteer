@@ -16,29 +16,23 @@ import {
   type ControlPlaneAuth,
   type ControlPlaneAuthenticator,
 } from "../auth/auth.js";
-import {
-  currentSetCookies,
-  escapeHtml,
-  parseForm,
-  requireExactOrigin,
-} from "../portal/browser-http.js";
+import { escapeHtml, type BrowserPageFonts } from "@opensteer/shared/browserPage";
+import { parseForm, requireExactOrigin } from "../portal/browser-http.js";
 import { ControlPlaneError } from "./errors.js";
+import { loadPageFonts } from "../portal/page-fonts.js";
 import {
-  brandMark,
-  browserPageContentSecurityPolicy,
-  renderBrowserPage,
-} from "../portal/page-shell.js";
+  accountFrontDoorBody,
+  authorizationRestartBody,
+  consentBody,
+  errorPageBody,
+  sendBrowserPage,
+  signInBody,
+} from "../portal/pages.js";
 import { registerControlPlaneRoutes, toWebHeaders } from "../portal/routes.js";
 import { registerNotificationRoutes } from "../notifications/notification-routes.js";
 import type { ControlPlaneNotificationStore } from "../notifications/notification-store.js";
 import type { ConnectLifecycleService } from "../account/connect-lifecycle.js";
-import {
-  clearPortalHintCookie,
-  createPortalRouter,
-  portalHintCookie,
-  portalHintCookieDomain,
-  type PortalRouter,
-} from "../portal/portal.js";
+import { createPortalRouter, type PortalRouter } from "../portal/portal.js";
 import type { PortalSessionStore } from "../portal/portal-sessions.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import type { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
@@ -46,8 +40,6 @@ import {
   hostedOAuthLaunchReturnTo,
   registerHostedOAuthBrokerRoutes,
 } from "../auth/hosted-oauth-broker-routes.js";
-import { registerCloudDeploymentRoutes } from "../cloud/routes.js";
-import type { CloudDeploymentLifecycle } from "../cloud/lifecycle.js";
 import type { HostedOAuthBrokerService } from "../auth/hosted-oauth-broker-service.js";
 
 const maxHttpBodyBytes = 1 * 1_024 * 1_024;
@@ -71,10 +63,11 @@ export async function createControlPlaneServer(
     readonly auth: ControlPlaneAuth;
     readonly authenticator: ControlPlaneAuthenticator;
     readonly connectLifecycle: ConnectLifecycleService;
-    readonly cloudDeployments?: CloudDeploymentLifecycle;
     readonly hostedOAuthBroker?: HostedOAuthBrokerService;
     readonly desktopDownloadUrl?: string;
-    readonly managedDeploymentDomain: string;
+    readonly iosAppUrl?: string;
+    readonly androidAppUrl?: string;
+    readonly portalOrigin: URL;
     readonly notifications?: ControlPlaneNotificationStore;
     readonly notificationPlatforms?: readonly NotificationDevicePlatform[];
     readonly publicOrigin: URL;
@@ -98,9 +91,50 @@ export async function createControlPlaneServer(
     (_request, body, done) => done(null, body),
   );
 
+  const pageFonts = loadPageFonts();
+  const fonts = pageFonts.hrefs;
+
+  const sendErrorPage = (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    failure: { readonly message: string; readonly status: number },
+  ) => {
+    const page = errorPageBody({
+      // Every failure has a way on: the portal when this process runs one,
+      // otherwise the Account's own front door.
+      back: portal
+        ? {
+            href: portal.ownsRequest(request) ? "/" : `${portal.origin.origin}/`,
+            label: "Go to your Opensteers",
+          }
+        : { href: "/", label: "Go to Opensteer Account" },
+      ...failure,
+    });
+    void reply
+      .status(failure.status)
+      .send(sendBrowserPage(reply, { body: page.body, fonts, layout: "plain", title: page.title }));
+  };
+
+  app.setNotFoundHandler((request, reply) => {
+    if (isPageNavigation(request)) {
+      sendErrorPage(request, reply, { message: "Route was not found", status: 404 });
+      return;
+    }
+    // Fastify's own answer, unchanged for API callers.
+    void reply.status(404).send({
+      error: "Not Found",
+      message: `Route ${request.method}:${request.url} not found`,
+      statusCode: 404,
+    });
+  });
+
   app.setErrorHandler((error, request, reply) => {
     const normalized = normalizeHttpError(error);
     if (normalized.status >= 500) request.log.error({ err: error }, "request failed");
+    if (isPageNavigation(request)) {
+      sendErrorPage(request, reply, normalized);
+      return;
+    }
     void reply.status(normalized.status).send({
       error: {
         code: normalized.code,
@@ -114,20 +148,20 @@ export async function createControlPlaneServer(
   });
 
   // This process serves two hostnames. The Account host is the authorization
-  // server and nothing else; the managed-Deployment apex is the web portal.
+  // server and nothing else; the explicit portal origin is the web portal.
   // Which one answered a request is decided by its Host header, before any
   // request is rewritten onto the Account public origin. The machine API under
   // /v1 and /healthz belongs to neither browser vhost and stays host-agnostic.
   const portal = dependencies.portalSessions
     ? createPortalRouter({
         auth: dependencies.auth,
-        ...(dependencies.cloudDeployments
-          ? { cloudDeployments: dependencies.cloudDeployments }
-          : {}),
+        ...(dependencies.iosAppUrl ? { iosAppUrl: dependencies.iosAppUrl } : {}),
+        ...(dependencies.androidAppUrl ? { androidAppUrl: dependencies.androidAppUrl } : {}),
         ...(dependencies.desktopDownloadUrl
           ? { desktopDownloadUrl: dependencies.desktopDownloadUrl }
           : {}),
-        managedDeploymentDomain: dependencies.managedDeploymentDomain,
+        fonts,
+        portalOrigin: dependencies.portalOrigin,
         portalSessions: dependencies.portalSessions,
         ...(dependencies.personalRemoteAccount
           ? { personalRemoteAccount: dependencies.personalRemoteAccount }
@@ -136,23 +170,21 @@ export async function createControlPlaneServer(
         store: dependencies.store,
       })
     : undefined;
-  // Better Auth owns the wire name of its session cookie, prefixes included,
-  // so the hint follows whatever it actually writes rather than a guess.
-  const accountSessionCookie = (await dependencies.auth.$context).authCookies.sessionToken.name;
-  registerTransportSecurity(app, dependencies, portal, accountSessionCookie);
+  registerTransportSecurity(app);
 
   app.get("/healthz", async () => ({ ok: true }));
+  pageFonts.register(app);
   registerControlPlaneRoutes(app, dependencies);
-  registerCloudDeploymentRoutes(app, dependencies);
   registerNotificationRoutes(app, dependencies);
   if (dependencies.hostedOAuthBroker) {
     registerHostedOAuthBrokerRoutes(app, {
       authenticator: dependencies.authenticator,
       broker: dependencies.hostedOAuthBroker,
+      fonts,
       store: dependencies.store,
     });
   }
-  registerAccountPages(app, dependencies, portal);
+  registerAccountPages(app, { ...dependencies, fonts }, portal);
   portal?.register(app);
 
   const requireAccountHost = accountHostGuard(portal);
@@ -206,24 +238,28 @@ function registerAccountPages(
   app: FastifyInstance,
   dependencies: {
     readonly auth: ControlPlaneAuth;
+    readonly fonts: BrowserPageFonts;
     readonly publicOrigin: URL;
     readonly store: ControlPlaneStore;
   },
   portal: PortalRouter | undefined,
 ): void {
-  const { auth, publicOrigin } = dependencies;
+  const { auth, fonts, publicOrigin, store } = dependencies;
+  const sendAccountPage = (reply: FastifyReply, title: string, body: string) =>
+    sendBrowserPage(reply, { body, fonts, layout: "card", title });
+  const sendAuthorizationRestartPage = (reply: FastifyReply) =>
+    sendBrowserPage(reply.code(400), {
+      body: authorizationRestartBody(),
+      fonts,
+      layout: "plain",
+      title: "Start authorization again",
+    });
   const requireAccountHost = accountHostGuard(portal);
   app.get("/", async (request, reply) => {
     void reply.header("cache-control", "no-store");
     if (portal?.ownsRequest(request)) return portal.home(request, reply);
     if (portal) return reply.redirect(`${portal.origin.origin}/`, 302);
-    return sendAccountPage(
-      reply,
-      "Opensteer Account",
-      `<p class="lead">Your Opensteer Account is where sign-in and Deployment discovery happen.</p>
-      <a class="btn btn--primary btn--wide" href="/sign-in">Sign in</a>
-      <p class="fine">Every Deployment keeps its own data.</p>`,
-    );
+    return sendAccountPage(reply, "Opensteer Account", accountFrontDoorBody());
   });
 
   app.get("/sign-in", async (request, reply) => {
@@ -242,20 +278,13 @@ function registerAccountPages(
     ).has("login");
     return sendAccountPage(
       reply,
-      reauthorization ? "Verify your Opensteer Account" : "Sign in to Opensteer",
-      `<p class="lead">${
-        reauthorization
-          ? "Confirm it’s you before this app continues."
-          : "Continue with the Google account you use for Opensteer."
-      }</p>
-      <form method="post" action="/sign-in/google">
-        ${
-          returnTo
-            ? `<input type="hidden" name="return_to" value="${escapeHtml(returnTo.toString())}">`
-            : `<input type="hidden" name="oauth_query" value="${escapeHtml(oauthQuery)}">`
-        }
-        <button class="btn btn--primary btn--wide" type="submit">${reauthorization ? "Continue with Google to verify" : "Continue with Google"}</button>
-      </form>`,
+      reauthorization ? "Confirm it’s you · Opensteer" : "Sign in · Opensteer",
+      signInBody({
+        hiddenFields: returnTo
+          ? `<input type="hidden" name="return_to" value="${escapeHtml(returnTo.toString())}">`
+          : `<input type="hidden" name="oauth_query" value="${escapeHtml(oauthQuery)}">`,
+        reauthorization,
+      }),
     );
   });
 
@@ -294,23 +323,21 @@ function registerAccountPages(
     const oauthQuery = rawQuery(request.url);
     const presentation = accountConsentPresentation(oauthQuery);
     if (!presentation) return sendAuthorizationRestartPage(reply);
+    const [session, client] = await Promise.all([
+      auth.api.getSession({ headers: toWebHeaders(request.headers) }).catch(() => null),
+      store.oauthClientPresentation(presentation.clientId),
+    ]);
     return sendAccountPage(
       reply,
-      "Authorize Opensteer",
-      `<p class="lead">An Opensteer app is asking to use your Account.</p>
-      <section class="stack" aria-labelledby="requested-access">
-        <p class="eyebrow" id="requested-access">Requested access</p>
-        <ul class="permissions">${presentation.permissions
-          .map((permission) => `<li>${escapeHtml(permission)}</li>`)
-          .join("")}</ul>
-      </section>
-      <form method="post" action="/consent">
-        <input type="hidden" name="oauth_query" value="${escapeHtml(oauthQuery)}">
-        <div class="actions">
-          <button class="btn btn--primary" type="submit" name="decision" value="accept">Allow</button>
-          <button class="btn" type="submit" name="decision" value="deny">Deny</button>
-        </div>
-      </form>`,
+      "Allow access · Opensteer",
+      consentBody({
+        account: session
+          ? { displayName: session.user.name.trim() || null, email: session.user.email }
+          : null,
+        client,
+        grants: presentation.grants,
+        oauthQuery,
+      }),
     );
   });
 
@@ -407,51 +434,11 @@ function copySetCookies(reply: FastifyReply, response: Response): void {
   if (cookies.length > 0) void reply.header("set-cookie", cookies);
 }
 
-/**
- * Adds HSTS to every response, and keeps the portal's presence hint in step
- * with the Account session cookie. Whichever route issues or clears that
- * cookie — the authorization server itself, or the sign-out form in front of
- * it — the hint follows in the same response, so signing out of the Account
- * host is enough to make the portal render its signed-out page immediately.
- */
-function registerTransportSecurity(
-  app: FastifyInstance,
-  dependencies: { readonly managedDeploymentDomain: string; readonly publicOrigin: URL },
-  portal: PortalRouter | undefined,
-  sessionCookieName: string,
-): void {
-  const secure = dependencies.publicOrigin.protocol === "https:";
-  const hintDomain = portalHintCookieDomain(
-    dependencies.publicOrigin,
-    dependencies.managedDeploymentDomain,
-  );
-  app.addHook("onSend", async (request, reply, payload) => {
+function registerTransportSecurity(app: FastifyInstance): void {
+  app.addHook("onSend", async (_request, reply, payload) => {
     void reply.header("strict-transport-security", strictTransportSecurity);
-    if (!hintDomain || portal?.ownsRequest(request)) return payload;
-    const cookies = currentSetCookies(reply);
-    const change = accountSessionCookieChange(cookies, sessionCookieName);
-    if (change === "unchanged") return payload;
-    void reply.header("set-cookie", [
-      ...cookies,
-      change === "issued"
-        ? portalHintCookie(hintDomain, secure)
-        : clearPortalHintCookie(hintDomain, secure),
-    ]);
     return payload;
   });
-}
-
-function accountSessionCookieChange(
-  cookies: readonly string[],
-  name: string,
-): "cleared" | "issued" | "unchanged" {
-  for (const cookie of cookies) {
-    const separator = cookie.indexOf("=");
-    if (separator === -1 || cookie.slice(0, separator).trim() !== name) continue;
-    const value = cookie.slice(separator + 1).split(";", 1)[0] ?? "";
-    return value === "" || /;\s*max-age=0\b/iu.test(cookie) ? "cleared" : "issued";
-  }
-  return "unchanged";
 }
 
 function assertAuthorizeRequestSecurity(request: FastifyRequest, publicOrigin: URL): void {
@@ -471,6 +458,16 @@ function assertAuthorizeRequestSecurity(request: FastifyRequest, publicOrigin: U
   ) {
     throw new ControlPlaneError("bad_request", "S256 PKCE is required");
   }
+}
+
+/**
+ * A person's browser opening a page, as opposed to a script or an API client
+ * asking for data: it gets a page back when something fails.
+ */
+function isPageNavigation(request: FastifyRequest): boolean {
+  const mode = request.headers["sec-fetch-mode"];
+  if (mode !== undefined) return mode === "navigate";
+  return (request.headers.accept ?? "").startsWith("text/html");
 }
 
 function normalizeHttpError(error: unknown): {
@@ -493,36 +490,6 @@ function normalizeHttpError(error: unknown): {
     };
   }
   return { code: "internal", message: "Internal server error", status: 500 };
-}
-
-function sendAccountPage(reply: FastifyReply, title: string, content: string): string {
-  void reply
-    .header("cache-control", "no-store")
-    .header("content-security-policy", browserPageContentSecurityPolicy)
-    .type("text/html; charset=utf-8");
-  return accountPage(title, content);
-}
-
-function sendAuthorizationRestartPage(reply: FastifyReply): string {
-  return sendAccountPage(
-    reply.code(400),
-    "Start authorization again",
-    `<p class="lead">This authorization request is missing, expired, or meant for a different browser.</p>
-    <p class="fine">Return to the Opensteer app you started from and sign in again.</p>`,
-  );
-}
-
-/**
- * Every Account page is one moment in an authorization flow, so they all wear
- * the same centered card: brand orb, the moment's title, and the one or two
- * controls that moment offers.
- */
-function accountPage(title: string, content: string): string {
-  return renderBrowserPage({
-    body: `${brandMark({ large: true })}<main><h1>${escapeHtml(title)}</h1>${content}</main>`,
-    layout: "centered",
-    title,
-  });
 }
 
 function rawQuery(url: string): string {

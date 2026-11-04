@@ -1,11 +1,6 @@
 import { readBoundedText } from "@opensteer/shared/boundedJson";
 import { DeploymentIdSchema, bareServiceOrigin, type DeploymentId } from "@opensteer/core";
 import {
-  CloudDeploymentOperationIdSchema,
-  CloudDeploymentOperationSchema,
-  CreateCloudDeploymentRequestSchema,
-  DeleteCloudDeploymentRequestSchema,
-  ListCloudDeploymentsResponseSchema,
   ConnectCredentialResponseSchema,
   ControlPlaneErrorResponseSchema,
   ProvisionConnectRequestSchema,
@@ -17,9 +12,6 @@ import {
   type RevokeConnectRequest,
   type RevokeConnectResponse,
   type RotateConnectCredentialRequest,
-  type CloudDeploymentOperation,
-  type CreateCloudDeploymentRequest,
-  type ListCloudDeploymentsResponse,
 } from "@opensteer/control-plane-protocol";
 import { z } from "zod";
 import { clientTimeoutError, unrefTimer } from "./operation-error.js";
@@ -38,10 +30,6 @@ export class AccountReauthorizationRequiredError extends Error {
 
 export interface AccountConnectAuthorization {
   accountAuthorizationHeader(): Promise<string | null>;
-  accountAuthorizationLease?(): Promise<{
-    readonly authorization: string;
-    readonly signal: AbortSignal;
-  } | null>;
 }
 
 export interface PersonalHostConnectControlPlane {
@@ -114,52 +102,6 @@ export class AccountConnectClient implements PersonalHostConnectControlPlane {
     );
   }
 
-  listCloudDeployments(): Promise<ListCloudDeploymentsResponse> {
-    return this.#accountRequest(
-      "/v1/account/cloud-deployments",
-      "GET",
-      undefined,
-      ListCloudDeploymentsResponseSchema,
-      "Cloud",
-      true,
-    );
-  }
-
-  createCloudDeployment(input: CreateCloudDeploymentRequest): Promise<CloudDeploymentOperation> {
-    return this.#accountRequest(
-      "/v1/account/cloud-deployments",
-      "POST",
-      CreateCloudDeploymentRequestSchema.parse(input),
-      CloudDeploymentOperationSchema,
-      "Cloud",
-      true,
-    );
-  }
-
-  retryCloudDeployment(operationId: string): Promise<CloudDeploymentOperation> {
-    const id = CloudDeploymentOperationIdSchema.parse(operationId);
-    return this.#accountRequest(
-      `/v1/account/cloud-deployments/${encodeURIComponent(id)}/retry`,
-      "POST",
-      {},
-      CloudDeploymentOperationSchema,
-      "Cloud",
-      true,
-    );
-  }
-
-  deleteCloudDeployment(operationId: string, name: string): Promise<CloudDeploymentOperation> {
-    const id = CloudDeploymentOperationIdSchema.parse(operationId);
-    return this.#accountRequest(
-      `/v1/account/cloud-deployments/${encodeURIComponent(id)}`,
-      "DELETE",
-      DeleteCloudDeploymentRequestSchema.parse({ name }),
-      CloudDeploymentOperationSchema,
-      "Cloud",
-      true,
-    );
-  }
-
   async #request<T>(
     deploymentId: DeploymentId,
     suffix: string,
@@ -168,30 +110,14 @@ export class AccountConnectClient implements PersonalHostConnectControlPlane {
     schema: z.ZodType<T>,
   ): Promise<T> {
     const id = DeploymentIdSchema.parse(deploymentId);
-    return this.#accountRequest(endpointPath(id, suffix), method, body, schema, "Connect");
-  }
-
-  async #accountRequest<T>(
-    endpointPathname: string,
-    method: "DELETE" | "GET" | "POST" | "PUT",
-    body: unknown,
-    schema: z.ZodType<T>,
-    label: "Cloud" | "Connect",
-    requireSessionLease = false,
-  ): Promise<T> {
-    const lease = requireSessionLease
-      ? await this.#authorization.accountAuthorizationLease?.()
-      : undefined;
-    const authorization =
-      lease?.authorization ??
-      (requireSessionLease ? null : await this.#authorization.accountAuthorizationHeader());
+    const authorization = await this.#authorization.accountAuthorizationHeader();
     if (!authorization || !/^Bearer [^\p{Control}\s]+$/u.test(authorization)) {
-      throw new Error(`Sign in to your Opensteer Account to manage ${label}.`);
+      throw new Error("Sign in to your Opensteer Account to manage Connect.");
     }
-    const endpoint = new URL(endpointPathname, this.#accountOrigin).toString();
+    const endpoint = new URL(endpointPath(id, suffix), this.#accountOrigin).toString();
     const controller = new AbortController();
     const timeout = setTimeout(
-      () => controller.abort(clientTimeoutError(`Opensteer ${label} request timed out.`)),
+      () => controller.abort(clientTimeoutError("Opensteer Connect request timed out.")),
       this.#timeoutMs,
     );
     unrefTimer(timeout);
@@ -208,10 +134,10 @@ export class AccountConnectClient implements PersonalHostConnectControlPlane {
         method,
         redirect: "error",
         referrerPolicy: "no-referrer",
-        signal: lease ? AbortSignal.any([controller.signal, lease.signal]) : controller.signal,
+        signal: controller.signal,
       });
       if (response.redirected || (response.url !== "" && response.url !== endpoint)) {
-        throw new Error(`Opensteer ${label} requests must not redirect.`);
+        throw new Error("Opensteer Connect requests must not redirect.");
       }
       const contentLength = response.headers.get("content-length");
       if (contentLength !== null) {
@@ -234,7 +160,7 @@ export class AccountConnectClient implements PersonalHostConnectControlPlane {
         } else {
           await response.body?.cancel();
         }
-        throw new Error(`The Opensteer Account rejected the ${label} request.`);
+        throw new Error("The Opensteer Account rejected the Connect request.");
       }
       if (contentType !== "application/json") {
         throw new Error("The Opensteer Account returned an invalid Connect response.");
@@ -243,7 +169,7 @@ export class AccountConnectClient implements PersonalHostConnectControlPlane {
       try {
         decoded = JSON.parse(
           await readBoundedText(response, {
-            abortError: () => new Error(`Opensteer ${label} request ended.`),
+            abortError: () => new Error("Opensteer Connect request ended."),
             maximumBytes: maximumResponseBytes,
             signal: controller.signal,
             sizeError: () => new Error("The Opensteer Account Connect response is too large."),
@@ -260,7 +186,7 @@ export class AccountConnectClient implements PersonalHostConnectControlPlane {
       if (controller.signal.aborted) {
         throw controller.signal.reason instanceof Error
           ? controller.signal.reason
-          : new Error(`Opensteer ${label} request was cancelled.`, { cause: error });
+          : new Error("Opensteer Connect request was cancelled.", { cause: error });
       }
       throw error;
     } finally {

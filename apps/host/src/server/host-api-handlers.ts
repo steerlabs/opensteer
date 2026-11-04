@@ -59,6 +59,7 @@ export function createHostApiHandlers(
     | "integration.computer.setup.review"
     | "integration.computer.setup.list"
     | "integration.computer.policy.get"
+    | "integration.server.secrets.list"
   >,
   integrationPlatform: IntegrationPlatformRpcOptions,
   channelHandlers: Pick<HostApiHandlers, "channel.connection.check" | "channels.get">,
@@ -268,6 +269,7 @@ function isIntegrationPlatformCommand(
     case "integration.mcp.authorization.begin":
     case "integration.mcp.disconnect":
     case "integration.remoteMcp.install":
+    case "integration.server.secrets.set":
     case "integration.uninstall":
       return true;
     default:

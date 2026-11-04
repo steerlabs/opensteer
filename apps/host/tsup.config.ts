@@ -1,12 +1,13 @@
 import { defineConfig } from "tsup";
 import { nodeApp } from "../../scripts/tsup-node-app.js";
+import { hostProcessEntries } from "./src/process-entries.js";
 
 export default defineConfig(
   nodeApp({
     entry: {
-      main: "src/main.ts",
+      main: hostProcessEntries.main,
+      ...hostProcessEntries.workers,
       "stage-managed-secrets-main": "src/stage-managed-secrets-main.ts",
-      "computer-repl-worker": "src/computer-use/computer-repl/computer-repl-worker.ts",
     },
     external: [
       // Native image decoder selects platform binaries at runtime.

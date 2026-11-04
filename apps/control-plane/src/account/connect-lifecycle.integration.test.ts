@@ -32,7 +32,7 @@ import { ControlPlaneStore } from "../database/store.js";
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const publicOrigin = new URL("https://accounts.connect.test.invalid");
-const managedDeploymentDomain = "connect.test.opensteer.invalid";
+const testDomain = "connect.test.opensteer.invalid";
 
 integration("Opensteer Connect lifecycle PostgreSQL boundary", () => {
   const database = createControlPlaneDatabase({
@@ -41,11 +41,11 @@ integration("Opensteer Connect lifecycle PostgreSQL boundary", () => {
   });
   const provider = new FakeConnectProvider();
   const lifecycle = new ConnectLifecycleService(database, provider, {
-    managedConnectDomain: managedDeploymentDomain,
+    managedConnectDomain: testDomain,
     operationLeaseMilliseconds: 1_000,
   });
   const store = new ControlPlaneStore(database, publicOrigin, {
-    managedDeploymentDomain,
+    portalOrigin: new URL(`https://${testDomain}`),
   });
   const ownerAccountId = accountId();
   const otherAccountId = accountId();
@@ -225,7 +225,7 @@ integration("Opensteer Connect lifecycle PostgreSQL boundary", () => {
 
   it("rejects a signed route origin until the managed resource is provisioned", async () => {
     const fixture = await deploymentFixture(database, ownerAccountId);
-    const routeOrigin = `https://connect-${fixture.deploymentId.slice("dep_".length)}.${managedDeploymentDomain}`;
+    const routeOrigin = `https://connect-${fixture.deploymentId.slice("dep_".length)}.${testDomain}`;
     await expect(
       lifecycle.requireCurrentRoute(fixture.deploymentId, routeOrigin),
     ).rejects.toMatchObject({
@@ -854,7 +854,7 @@ async function deploymentFixture(
 }> {
   const hostInstanceId = createId("hostInstance");
   const deploymentId = createId("deployment");
-  const canonicalOrigin = `https://d-${deploymentId.slice("dep_".length)}.${managedDeploymentDomain}`;
+  const canonicalOrigin = `https://d-${deploymentId.slice("dep_".length)}.${testDomain}`;
   const hostCredential = createHostCredential();
   const oidcClientId = `osh_${deploymentId.slice("dep_".length)}`;
   const now = new Date();

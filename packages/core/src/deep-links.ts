@@ -94,3 +94,20 @@ export function parseMobileThreadDeepLink(value: string): MobileThreadDeepLink |
   if (!requestId.success) return null;
   return { deploymentId: deploymentId.data, requestId: requestId.data, threadId: threadId.data };
 }
+
+/** A first-run destination supplies no route or authority. */
+export function parseMobileOpenDeepLink(
+  value: string,
+): { readonly deploymentId: DeploymentId } | null {
+  if (!value.startsWith(`${mobileDeepLinkScheme}:/open?`) || value.includes("#")) return null;
+  try {
+    const url = new URL(value);
+    if (url.host || url.username || url.password || url.pathname !== "/open") return null;
+    const keys = [...url.searchParams.keys()];
+    if (keys.length !== 1 || keys[0] !== "d") return null;
+    const id = DeploymentIdSchema.safeParse(url.searchParams.get("d"));
+    return id.success ? { deploymentId: id.data } : null;
+  } catch {
+    return null;
+  }
+}

@@ -4,6 +4,7 @@ import {
   heldThread,
   taskCanBeDone,
   assignmentPresentation,
+  assignmentReturnText,
   assignmentRequester,
   blockingDetail,
   formatDuration,
@@ -399,12 +400,7 @@ export function taskOutcomes(
       assignment.finishedAt === null
         ? null
         : formatDuration(Date.parse(assignment.finishedAt) - Date.parse(assignment.createdAt));
-    const returned =
-      assignment.returnStatus !== "delivered"
-        ? null
-        : assignment.status === "cancelled"
-          ? `${requester} was told`
-          : `Returned to ${requester}`;
+    const returned = assignmentReturnText(assignment, requester);
     outcomes.set(assignment.currentRunId, {
       assignmentId: assignment.id,
       detail: presentation.detail?.text ?? null,

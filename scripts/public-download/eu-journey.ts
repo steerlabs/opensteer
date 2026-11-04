@@ -5,6 +5,7 @@ import {
   cpSync,
   existsSync,
   mkdtempSync,
+  mkdirSync,
   symlinkSync,
   readFileSync,
   rmSync,
@@ -50,7 +51,7 @@ export async function githubJourney(c: {
   installed: (sha256: string) => void;
 }) {
   const { channel, input, root, out, app, product } = c;
-  const asset = channel === "stable" ? "Opensteer-mac-arm64.zip" : "Opensteer-Beta-mac-arm64.zip";
+  const asset = "Opensteer-mac-arm64.zip";
   const yml = channel === "stable" ? "latest-mac.yml" : "insider-mac.yml";
   const tag = (v: string, ch = channel) => (ch === "stable" ? `desktop-v${v}` : `v${v}-insider`);
   const other = channel === "stable" ? "beta" : "stable";
@@ -84,6 +85,8 @@ export async function githubJourney(c: {
   c.run("ditto", ["-x", "-k", zip, "/Applications"]);
   c.installed(createHash("sha256").update(readFileSync(zip)).digest("hex"));
   assert(!c.run("xattr", ["-r", app]).output.includes("com.apple.quarantine"));
+  mkdirSync(c.data, { recursive: true });
+  writeFileSync(path.join(c.data, "update-channel.json"), JSON.stringify({ channel }));
   c.run("open", ["-n", app]);
   await c.verify(input.n.version);
   const marker = path.join(c.data, "public-download-marker");

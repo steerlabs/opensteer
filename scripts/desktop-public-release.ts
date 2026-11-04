@@ -19,6 +19,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { buildBlockMap } from "app-builder-lib/out/targets/blockmap/blockmap.js";
 import { runBounded } from "./command-runner.js";
 
+export const signedAppFeedURL = "https://github.com/steerlabs/opensteer";
 export const publicFeedURL = "https://github.com/steerlabs/opensteer#latest";
 const publicDownloadBase = "https://github.com/steerlabs/opensteer/releases/download";
 const channelSchema = z.enum(["stable", "beta"]);
@@ -26,15 +27,14 @@ type Channel = z.infer<typeof channelSchema>;
 function channelConfig(channel: Channel) {
   const beta = channel === "beta";
   return {
-    app: beta ? "Opensteer Beta.app" : "Opensteer.app",
-    bundleId: beta ? "com.steerlabs.opensteer.beta" : "com.opensteer.opensteer",
-    zip: beta ? "Opensteer-Beta-mac-arm64.zip" : "Opensteer-mac-arm64.zip",
+    app: "Opensteer.app",
+    bundleId: "com.opensteer.opensteer",
+    zip: "Opensteer-mac-arm64.zip",
     metadata: beta ? "insider-mac.yml" : "latest-mac.yml",
     feed: beta ? "https://github.com/steerlabs/opensteer#insider" : publicFeedURL,
-    cache: beta ? "opensteer-beta-updater" : "opensteer-updater",
+    cache: "opensteer-updater",
     tag: (version: string) => (beta ? `v${version}-insider` : `desktop-v${version}`),
-    title: (version: string) =>
-      beta ? `Opensteer Beta ${version}` : `Opensteer ${version} (Alpha)`,
+    title: (version: string) => (beta ? `Opensteer ${version}` : `Opensteer ${version} (Alpha)`),
   };
 }
 const versionSchema = z.string().regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u);
@@ -133,6 +133,8 @@ export function downloadBase(value: string): string {
 export async function prepare(
   input: {
     launchCheckPassed?: boolean;
+    releaseDate?: string;
+    blockmap?: string;
     channel: Channel;
     appZip: string;
     version: string;
@@ -192,9 +194,12 @@ export async function prepare(
       throw new Error("Bundle versions disagree");
     if ((await plist("OpensteerSourceRevision")) !== sourceSha)
       throw new Error("Source revision disagrees");
-    const feedURL = await plist("OpensteerUpdateFeed");
+    const embeddedFeed = await plist("OpensteerUpdateFeed");
+    if (embeddedFeed !== signedAppFeedURL && !input.allowPrivateFeed)
+      throw new Error("Signed app feed must be channel-neutral");
+    const feedURL = config.feed;
     z.string().url().parse(feedURL);
-    let privateFeed = feedURL !== config.feed || base !== publicDownloadBase;
+    let privateFeed = embeddedFeed !== signedAppFeedURL || base !== publicDownloadBase;
     if (privateFeed && !input.allowPrivateFeed)
       throw new Error("Private feed/download base requires --allow-private-feed");
     const updater = z
@@ -252,6 +257,7 @@ export async function prepare(
       "gzip",
       path.join(out, `${config.zip}.blockmap`),
     );
+    if (input.blockmap) await copyFile(input.blockmap, path.join(out, `${config.zip}.blockmap`));
     // GitHubProvider prepends its release-download path, including on private hosts.
     const url = config.zip;
     await writeFile(
@@ -261,7 +267,7 @@ export async function prepare(
         files: [{ url, sha512, size }],
         path: url,
         sha512,
-        releaseDate: new Date().toISOString(),
+        releaseDate: input.releaseDate ?? new Date().toISOString(),
         releaseName: config.title(version),
       }),
     );
@@ -303,6 +309,16 @@ export async function verifyAssets(dir: string, manifest: Manifest) {
     if ((await sha256File(path.join(dir, name))) !== manifest.assets[name])
       throw new Error(`Asset differs: ${name}`);
   }
+  const expectedSums = Object.entries(manifest.assets)
+    .filter(([name]) => name !== "SHA256SUMS")
+    .map(([name, hash]) => `${hash}  ${name}`)
+    .sort()
+    .join("\n");
+  if (
+    (await readFile(path.join(dir, "SHA256SUMS"), "utf8")).trim().split("\n").sort().join("\n") !==
+    expectedSums
+  )
+    throw new Error("SHA256SUMS disagrees with release.json");
 }
 export function releaseManifest(
   release: z.infer<typeof releaseSchema>,
@@ -417,6 +433,84 @@ export async function draft(
   }
 }
 
+export function requireNewerStable(version: string, releases: z.infer<typeof releaseSchema>[]) {
+  const next = versionSchema.parse(version).split(".").map(BigInt);
+  for (const release of releases) {
+    if (release.draft || release.prerelease || !release.tag_name.startsWith("desktop-v")) continue;
+    const previous = versionSchema
+      .parse(release.tag_name.slice("desktop-v".length))
+      .split(".")
+      .map(BigInt);
+    const difference =
+      next.map((value, i) => value - previous[i]!).find((value) => value !== 0n) ?? 0n;
+    if (difference <= 0n)
+      throw new Error("Stable version must be newer than every published Stable");
+  }
+}
+async function stableHeadGuard(repo: string, version: string, run: Run) {
+  const releases = z
+    .array(z.array(releaseSchema))
+    .parse(
+      JSON.parse(
+        await run("gh", ["api", "--paginate", "--slurp", `repos/${repo}/releases?per_page=100`]),
+      ),
+    )
+    .flat();
+  requireNewerStable(version, releases);
+}
+
+export async function promote(
+  input: { repo: string; tag: string; sourceSha: string; version: string; out: string },
+  run: Run = runBounded,
+) {
+  const repo = repoSchema.parse(input.repo);
+  const tag = tagSchema.parse(input.tag);
+  const release = await findRelease(repo, tag, run);
+  if (!release || release.draft || !release.prerelease)
+    throw new Error("Promotion requires a published insider");
+  const temp = await mkdtemp(path.join(tmpdir(), "opensteer-promote-"));
+  try {
+    await run("gh", ["release", "download", tag, "--repo", repo, "--dir", temp], {
+      timeoutMs: 610_000,
+    });
+    const manifest = manifestSchema.parse(
+      JSON.parse(await readFile(path.join(temp, "release.json"), "utf8")),
+    );
+    releaseManifest(release, manifest);
+    publicGuard(repo, manifest);
+    if (
+      manifest.channel !== "beta" ||
+      manifest.launchCheck !== "passed" ||
+      manifest.sourceSha !== input.sourceSha ||
+      manifest.version !== input.version
+    )
+      throw new Error("Insider source/version/launch-check evidence disagree");
+    await verifyAssets(temp, manifest);
+    await stableHeadGuard(repo, manifest.version, run);
+    const metadata = z
+      .object({ releaseDate: z.string() })
+      .parse(parseYaml(await readFile(path.join(temp, "insider-mac.yml"), "utf8")));
+    const stable = await prepare(
+      {
+        channel: "stable",
+        appZip: path.join(temp, "Opensteer-mac-arm64.zip"),
+        blockmap: path.join(temp, "Opensteer-mac-arm64.zip.blockmap"),
+        releaseDate: metadata.releaseDate,
+        version: manifest.version,
+        sourceSha: manifest.sourceSha,
+        out: input.out,
+        launchCheckPassed: true,
+      },
+      run,
+    );
+    if (stable.assets["Opensteer-mac-arm64.zip"] !== manifest.assets["Opensteer-mac-arm64.zip"])
+      throw new Error("Promoted ZIP differs from verified insider");
+    return stable;
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+}
+
 export async function publish(
   repoInput: string,
   tagInput: string,
@@ -456,6 +550,11 @@ export async function publish(
   // until the draft's stored bytes match its manifest. A rerun after publication
   // only repeats the anonymous check below.
   if (release.draft) {
+    if (manifest.channel === "stable") {
+      if (!certifiedZipSha256)
+        throw new Error("Stable publication requires the verified insider ZIP hash");
+      await stableHeadGuard(repo, manifest.version, run);
+    }
     await run("gh", [
       "api",
       "--method",
@@ -534,7 +633,22 @@ export async function main(args = process.argv.slice(2)) {
       allowPrivateFeed: values["allow-private-feed"] ?? false,
       ...(values["notes-file"] ? { notesFile: values["notes-file"] } : {}),
     });
-  else if (subcommand === "draft")
+  else if (subcommand === "promote") {
+    const manifest = await promote({
+      repo: required("repo"),
+      tag: required("tag"),
+      sourceSha: required("source-sha"),
+      version: required("version"),
+      out: required("out"),
+    });
+    if (process.env.GITHUB_OUTPUT) {
+      const { appendFile } = await import("node:fs/promises");
+      await appendFile(
+        process.env.GITHUB_OUTPUT,
+        `zipSha256=${manifest.assets["Opensteer-mac-arm64.zip"]}\n`,
+      );
+    }
+  } else if (subcommand === "draft")
     await draft(required("dir"), required("repo"), runBounded, values.channel);
   else if (subcommand === "publish")
     await publish(required("repo"), required("tag"), runBounded, {

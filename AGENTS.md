@@ -13,8 +13,7 @@ It's an early alpha.
 1. **It runs on the person's computer.** Their files, accounts, credentials and
    agent sessions stay there. Hosted pieces (the Account service and Connect in
    `apps/control-plane`) only help devices find and reach that computer; they
-   never hold the person's work. We don't plan a cloud-hosted product, even
-   though some code still suggests one: don't build on those paths.
+   never hold the person's work. There is no cloud-hosted product.
 2. **Fast on a phone, even on a weak connection.** People attach over cellular
    data. Watch bytes on the wire, round trips before the first screen, and
    redraws while text streams. `pnpm bench:mobile-network` measures attach on
@@ -62,14 +61,14 @@ of you, say so plainly and get sign-off before breaking it.
 - **Engine**: an agent CLI a Runner drives, through `packages/harness*`.
 - **Agent Phone**: an Android phone that the `apps/agent-phone` app turns into
   a computer agents can use.
-- **Beta** and **stable**: the desktop release channels. The stable app has no
-  Account issuer, so Account sign-in and Connect exist only on Beta.
+- **Stable** and **Beta**: update channels of the one desktop app, chosen in
+  its Settings. Beta gets every main build; Stable gets Beta builds Tim promotes.
 
 ## Ways to hurt yourself
 
-1. **Touching the live install.** `~/Library/Application Support/Opensteer Beta`
-   and `~/Library/Application Support/Opensteer` hold Tim's real installed apps,
-   with their databases and credentials. Never point dev, tests or scripts at
+1. **Touching the live install.** `~/Library/Application Support/Opensteer`,
+   `~/Opensteer` and any older `Opensteer Beta` folders hold Tim's real installed
+   app, with its databases and credentials. Never point dev, tests or scripts at
    them, and never migrate, repair or delete anything there.
 2. **Killing by pattern.** Many agents and dev stacks share this Mac. Never
    `pkill -f`, `killall` or kill a PID found by matching a name or path. Stop
@@ -98,8 +97,8 @@ which entries applied:
 - **Agents.** If a person can do it, decide whether agents should reach it
   through the [tool catalog](packages/agent-tools/src/tools/index.ts).
   Model-facing text has behavioral evals in `evals/agent-tools`.
-- **Deployments and channels.** Personal and server Deployments; stable without
-  an Account, and Beta with one.
+- **Deployments and channels.** Personal and server Deployments; the Stable and
+  Beta update channels.
 - **Connections.** Same computer, private network, Connect, and a weak cellular
   link. Several devices on one Deployment at once.
 - **Reverse states.** If you added a way in, add the way out and a way to see
@@ -255,7 +254,6 @@ decisions and constraints the code can't show.
 | Integration OAuth and access requests                                  | [Integration OAuth](docs/integration-oauth.md)                                                                |
 | Messaging providers and channel authority                              | [Messaging](docs/messaging.md)                                                                                |
 | Mobile lifecycle, UI or push notifications                             | [Mobile](docs/mobile.md)                                                                                      |
-| Managed infrastructure                                                 | [Cloud operations](apps/control-plane/src/cloud/README.md)                                                    |
 | Published Opensteer Apps and their viewing frames                      | [Apps](docs/apps.md)                                                                                          |
 | Browser sessions, page uploads or profile storage                      | [Browser sessions](docs/browser-sessions.md)                                                                  |
 | Native browser profile identity and deletion                           | [Storage contract](packages/protocol/src/browser-profile-storage.ts)                                          |

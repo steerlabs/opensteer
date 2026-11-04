@@ -19,7 +19,7 @@ import {
   prepareLocalMac,
   verifyLocalMac,
   type MacContext,
-} from "./release-beta-mac.js";
+} from "./release-mac.js";
 import {
   acquireReleaseLock,
   runBounded,
@@ -71,7 +71,7 @@ export async function main(
   });
   if (values.help) {
     process.stdout.write(
-      "pnpm desktop:install-local --source-sha FULL_COMMIT_SHA [--config /absolute/local.json]\nBuilds, signs, installs and launches this Mac's Beta app. Successful verification removes installer-owned old/prepared app copies. See docs/releases.md.\n",
+      "pnpm desktop:install-local --source-sha FULL_COMMIT_SHA [--config /absolute/local.json]\nBuilds, signs, installs and launches this Mac's Opensteer app. Successful verification removes installer-owned old/prepared app copies. See docs/releases.md.\n",
     );
     return;
   }
@@ -80,7 +80,7 @@ export async function main(
     JSON.parse(
       await readFile(
         path.resolve(
-          values.config ?? path.join(homedir(), ".config/opensteer/install-beta-mac-local.json"),
+          values.config ?? path.join(homedir(), ".config/opensteer/install-mac-local.json"),
         ),
         "utf8",
       ),

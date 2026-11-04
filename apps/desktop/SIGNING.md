@@ -75,7 +75,7 @@ inputs; notarization needs one complete credential strategy accepted by
 [package-macos.ts](scripts/package-macos.ts).
 
 Forks should use their own bundle IDs. Change the Electron builder `appId`, the
-channel identities in `macos-release-identity.cjs`, helper bundle IDs and their
+application identity in `macos-release-identity.cjs`, helper bundle IDs and their
 peer requirements together, including Passwords' import worker ID and keychain
 group. Identity input changes the team, not those product identifiers. Keep OAuth
 callbacks consistent with the fork's bundle IDs.

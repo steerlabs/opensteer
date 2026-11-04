@@ -25,9 +25,6 @@ const environment = {
   OPENSTEER_DESKTOP_RELEASE: "0",
   OPENSTEER_DESKTOP_TARGET_OS: "darwin",
   OPENSTEER_DESKTOP_TARGET_ARCH: process.arch === "x64" ? "amd64" : "arm64",
-  // Resource staging selects the source policy internally; contributors supply
-  // runtime inputs, not a distribution channel or release identity.
-  OPENSTEER_DESKTOP_RELEASE_CHANNEL: "stable",
   OPENSTEER_PERSONAL_RUNTIME_OUTPUT:
     process.env.OPENSTEER_PERSONAL_RUNTIME_OUTPUT ?? path.join(scratch, "runtime"),
   OPENSTEER_PERSONAL_RUNTIME_SOURCE:

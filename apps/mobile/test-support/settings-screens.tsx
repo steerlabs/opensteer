@@ -38,6 +38,8 @@ export const reactNative = {
       native.alert = { buttons, title };
     },
   },
+  Modal: (props: Children & { readonly visible?: boolean }) =>
+    props.visible ? <div role="dialog">{props.children}</div> : null,
   Platform: { OS: "ios", select: (choices: { ios?: unknown }) => choices.ios },
   Pressable: (
     props: Children & {

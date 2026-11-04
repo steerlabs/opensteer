@@ -91,11 +91,9 @@ integration("Notifications", () => {
       account: {
         controlApiOrigin: new URL("https://accounts.notifications.invalid"),
         hostCredential: `osc_${"a".repeat(43)}`,
-        initialRunnerEnrollmentToken: undefined,
         issuer: new URL("https://accounts.notifications.invalid"),
         oidcClientId: "notifications",
         oidcClientSecret: `ocs_${"b".repeat(43)}`,
-        owner: undefined,
         provisioningMode: "adoption",
         reachability: "canonical",
       },

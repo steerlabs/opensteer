@@ -121,7 +121,7 @@ export interface VerticalStackOptions {
   readonly browserHarnessExecutable?: string;
   /**
    * The one-use token a separately running browser service enrolls with, as a
-   * self-hosted or managed Deployment configures it.
+   * self-hosted Deployment configures it.
    */
   readonly browserServiceEnrollmentToken?: string;
   readonly cleanupTimeoutMs?: number;

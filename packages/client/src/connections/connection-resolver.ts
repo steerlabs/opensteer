@@ -147,6 +147,13 @@ export function connectionOrigins(connection: AttachmentConnection): readonly Co
   return [...origins];
 }
 
+export class HostRouteUnavailableError extends Error {
+  constructor() {
+    super("That computer has no live remote access route right now.");
+    this.name = "HostRouteUnavailableError";
+  }
+}
+
 /**
  * Attachment. Throws where `describeConnectionAccess` returns a null access:
  * an attachment to a Deployment with no live route is a fault, not a state.
@@ -158,7 +165,7 @@ export function resolveConnection(
 ): ResolvedConnection {
   const facts = describeConnectionAccess(connection, localRuntime);
   if (facts.access === null || facts.key === null) {
-    throw new Error("That computer has no live remote access route right now.");
+    throw new HostRouteUnavailableError();
   }
   return {
     access: facts.access,

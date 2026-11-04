@@ -63,53 +63,6 @@ describe("AccountConnectClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("aborts an Account request when the exact authorization session ends", async () => {
-    const session = new AbortController();
-    const fetch = vi.fn(
-      async (_input: RequestInfo | URL, init?: RequestInit) =>
-        new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
-            once: true,
-          });
-        }),
-    );
-    const client = new AccountConnectClient({
-      accountOrigin: "https://accounts.opensteer.test",
-      authorization: {
-        accountAuthorizationHeader: async () => "Bearer replacement-account",
-        accountAuthorizationLease: async () => ({
-          authorization: "Bearer original-account",
-          signal: session.signal,
-        }),
-      },
-      fetch,
-    });
-
-    const request = client.createCloudDeployment({
-      name: "Studio",
-      operationId: crypto.randomUUID(),
-    });
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
-    session.abort(new Error("Account session ended"));
-
-    await expect(request).rejects.toThrow("Account session ended");
-    expect(fetch.mock.calls[0]?.[1]?.headers).toMatchObject({
-      authorization: "Bearer original-account",
-    });
-  });
-
-  it("never falls back to a dynamic Account header for Cloud", async () => {
-    const fetch = vi.fn();
-    const client = new AccountConnectClient({
-      accountOrigin: "https://accounts.opensteer.test",
-      authorization: { accountAuthorizationHeader: async () => "Bearer replacement-account" },
-      fetch,
-    });
-
-    await expect(client.listCloudDeployments()).rejects.toThrow(/Sign in/u);
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
   it("surfaces a typed step-up requirement without retrying the mutation", async () => {
     const fetch = vi.fn(
       async () =>

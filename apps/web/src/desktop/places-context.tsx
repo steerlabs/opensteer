@@ -9,8 +9,6 @@ import type { DeploymentAccessSnapshot, OpensteerDesktopBridge } from "@openstee
  */
 export interface DesktopPlaces {
   readonly bridge: OpensteerDesktopBridge;
-  /** Deployments the signed-in Account created in Opensteer Cloud. */
-  readonly cloudDeploymentIds: ReadonlySet<string>;
   /** Opens the screen that adds a computer or server. */
   readonly onAddPlace: () => void;
   readonly snapshot: DeploymentAccessSnapshot;

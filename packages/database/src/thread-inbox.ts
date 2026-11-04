@@ -3523,6 +3523,27 @@ async function deliverAssignmentReturnTransaction(
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
   if (assignment.status === "open" || assignment.resultStatus !== "pending") return [];
+  // An empty result has nothing to return and wakes nobody. A parent task still
+  // receives it below: it needs the completion to continue and settle.
+  if (
+    assignment.status === "completed" &&
+    assignment.resultText === "" &&
+    assignment.parentAssignmentId === null
+  ) {
+    const settled = await transaction
+      .updateTable("delegations")
+      .set((expression) => ({
+        completedAt: new Date(),
+        resultStatus: "delivered",
+        revision: expression("revision", "+", 1),
+        updatedAt: new Date(),
+      }))
+      .where("id", "=", assignmentId)
+      .where("resultStatus", "=", "pending")
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    return assignmentEventsInTransaction(transaction, settled, "assignment.updated");
+  }
   const [worker, parent, requester, parentOpenAssignment] = await Promise.all([
     transaction
       .selectFrom("threads")

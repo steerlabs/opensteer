@@ -2095,6 +2095,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess({ appApproval: client.computerUseAppApproval(input.runnerId) }),
     "integration.computer.setup.review": async ({ setupRequestId }) =>
       rpcSuccess(client.reviewComputerAppSetup(setupRequestId)),
+    // This mock runs no MCP server on a computer, so none takes secrets.
+    "integration.server.secrets.list": async () => rpcSuccess({ servers: [] }),
     "integration.computer.setup.list": async () =>
       rpcSuccess(
         hostApi["integration.computer.setup.list"].success.parse({
@@ -2218,8 +2220,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       }
     },
     // The preview projects transcripts directly; it keeps no durable event log
-    // to page back through. The RPC schema accepts turns and conversation view,
-    // which need no additional projection here.
+    // to page back through. Turn paging needs no additional projection here.
     "thread.events.list": async ({ threadId }) => {
       const thread = client.getSnapshot().threads.find((item) => item.id === threadId);
       if (!thread) throw new Error("Thread not found.");
@@ -2873,6 +2874,8 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "integration.computer.setup.respond":
       await client.respondComputerAppSetup(command.setupRequestId, command.decision);
       return rpcSuccess({ type: command.type });
+    case "integration.server.secrets.set":
+      throw new Error("This mock has no local MCP executor.");
     case "integration.computer.policy.set":
       await client.setComputerUsePolicy(command.input.runnerId);
       return rpcSuccess({ appApproval: "ask", type: command.type });
@@ -10278,7 +10281,7 @@ class MockHostState {
     const reply = mockRunReply(this.snapshot.transcripts[threadId] ?? [], runId);
     this.finishAssignment(assignment, {
       resultRunId: runId,
-      resultText: reply?.body ?? "The task ended without a written reply.",
+      resultText: reply ? reply.body.trim() || "The task ended without a written reply." : "",
       status: "completed",
     });
   }
@@ -10297,6 +10300,14 @@ class MockHostState {
       revision: assignment.revision + 1,
       updatedAt: now,
     });
+    if (
+      finished.status === "completed" &&
+      finished.resultText === "" &&
+      finished.parentAssignmentId === null
+    ) {
+      this.publishAssignment({ ...finished, returnStatus: "delivered", returnMessageId: null });
+      return;
+    }
     this.publishAssignment(finished);
     this.deliverReturn(finished);
   }
@@ -12694,7 +12705,7 @@ function createInitialSnapshot(): HostSnapshot {
     // its only identity is the implicit machine owner, so nothing about this
     // fixture names a person.
     identityConfig: {
-      deployment: { cloud: false, kind: "personal", name: "Mac mini" },
+      deployment: { kind: "personal", name: "Mac mini" },
       emailDeliveryAvailable: false,
       exposure: "loopback",
       localPasswordEnabled: false,

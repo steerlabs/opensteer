@@ -73,7 +73,7 @@ export const thread_delegate = defineAgentTool({
   targetFields: ["threadId"],
   title: "Start or continue a task",
   description:
-    "Start independent work in workspaceId (or specialist), or continue a finished threadId. Reuse keeps engine/model; change those with thread_configure. Returns thread/input/message, nullable run/assignmentId. Runs/programs receive the result automatically; connections use thread_wait/thread_read. Work fits your reach/access ceiling. Active changes use thread_message; Stop uses thread_write interrupt.",
+    "Start independent work in workspaceId (or specialist), or continue a finished threadId. Reuse keeps engine/model; change those with thread_configure. Returns thread/input/message, nullable run/assignmentId. Runs/programs receive the result automatically, or none if it ends with no reply: ask conditional checks to end that way when nothing merits passing on. Connections use thread_wait/thread_read. Work fits your reach/access ceiling. Active changes use thread_message; Stop uses thread_write interrupt.",
   input: z
     .strictObject({
       environmentId: EnvironmentIdSchema.optional().describe("New task computer; omit to inherit."),

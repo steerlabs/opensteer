@@ -11,7 +11,7 @@ extension BrokerBuild {
 
   static func forOwnTeam(_ teamId: String?) -> BrokerBuild? {
     guard let teamId,
-      let desktop = MacCodeIdentity.requirement(teamId: teamId, identifiers: ["com.opensteer.opensteer", "com.steerlabs.opensteer.beta"]),
+      let desktop = MacCodeIdentity.requirement(teamId: teamId, identifiers: ["com.opensteer.opensteer"]),
       let broker = MacCodeIdentity.requirement(teamId: teamId, identifiers: ["com.opensteer.passwords"])
     else { return nil }
     return BrokerBuild(development: false, desktopRule: .codeRequirement(desktop), brokerRule: .codeRequirement(broker), keychainAccessGroup: "\(teamId).com.opensteer.passwords")
