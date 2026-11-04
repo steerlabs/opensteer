@@ -9,7 +9,7 @@ import {
   BrowserVideoStateSchema,
 } from "@opensteer/protocol";
 import { session, app } from "electron";
-import { chromium, type Page, type Locator } from "playwright-core";
+import { chromium, type Page } from "playwright-core";
 import type { NativeBrowserE2EKit } from "./electron-native-browser-kit.js";
 import type { OpensteerInputOwner } from "../src/browser/electron-browser-presentation.js";
 
@@ -29,8 +29,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   const context = kit.context;
   const events: string[] = [];
   const record = (index: number, event: string) => {
-    if (events.length < 512) events.push(`${index}:${event}`);
-    kit.artifacts.event("popup.event", { index, event });
+    if (events.length < 128) events.push(`${index}:${event}`);
   };
   const opened = await context.api["commands.dispatch"]({
     type: "browser.tab.open",
@@ -160,54 +159,9 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         const page = await viewer.newPage();
         page.setDefaultTimeout(4000);
         await page.addInitScript(() => {
-          const diagnostic = {
-            started: performance.now(),
-            raf: 0,
-            timers: 0,
-            maxRafGap: 0,
-            readbacks: [] as number[],
-            longTasks: [] as number[],
-            samples: [] as unknown[],
-          };
-          Object.assign(window, { popupPresented: 0, startupDiagnostic: diagnostic });
-          let last = performance.now();
-          let lastSample = 0;
-          const tick = (now: number) => {
-            diagnostic.raf++;
-            diagnostic.maxRafGap = Math.max(diagnostic.maxRafGap, now - last);
-            last = now;
-            if (now - lastSample > 100 && diagnostic.samples.length < 120) {
-              lastSample = now;
-              diagnostic.samples.push({
-                now,
-                visibility: document.visibilityState,
-                focus: document.hasFocus(),
-                bounds: [
-                  ...document.querySelectorAll(
-                    '.side-tab[data-group="web"] .side-tab__main,button[aria-label="Hide the conversation"]',
-                  ),
-                ].map((e) => {
-                  const r = e.getBoundingClientRect();
-                  return [r.x, r.y, r.width, r.height];
-                }),
-              });
-            }
-            if (now - diagnostic.started < 12000) requestAnimationFrame(tick);
-          };
-          requestAnimationFrame(tick);
-          const timer = setInterval(() => {
-            diagnostic.timers++;
-            if (performance.now() - diagnostic.started >= 12000) clearInterval(timer);
-          }, 100);
-          const observer = new PerformanceObserver((list) => {
-            for (const entry of list.getEntries())
-              if (diagnostic.longTasks.length < 128) diagnostic.longTasks.push(entry.duration);
-          });
-          observer.observe({ type: "longtask", buffered: true });
-          setTimeout(() => observer.disconnect(), 12000);
+          Object.assign(window, { popupPresented: 0 });
           document.addEventListener("browser-picture-presented", (event) => {
             const canvas = event.target;
-            const started = performance.now();
             if (
               canvas instanceof HTMLCanvasElement &&
               canvas.getContext("2d")?.getImageData(0, 0, 1, 1).data[3]
@@ -215,35 +169,8 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
               Object.assign(window, {
                 popupPresented: Number(Reflect.get(window, "popupPresented")) + 1,
               });
-            if (diagnostic.readbacks.length < 256)
-              diagnostic.readbacks.push(performance.now() - started);
           });
         });
-        const cdp = await viewer.newCDPSession(page);
-        await cdp.send("Profiler.enable");
-        await cdp.send("Profiler.start");
-        let profileStopped = false;
-        const stopProfile = async () => {
-          if (profileStopped) return;
-          profileStopped = true;
-          const profile = await cdp.send("Profiler.stop");
-          kit.artifacts.json(`cases/popups/startup-${index}.cpuprofile`, profile.profile);
-        };
-        const profileDeadline = setTimeout(() => void stopProfile(), 12000);
-        const diagnosticClick = async (target: Locator, phase: string) => {
-          kit.artifacts.event("popup.control-start", { index, phase });
-          try {
-            await target.click();
-          } finally {
-            const data = await cdp.send("Runtime.evaluate", {
-              expression: "JSON.stringify(window.startupDiagnostic)",
-              returnByValue: true,
-              timeout: 1000,
-            });
-            kit.artifacts.json(`cases/popups/startup-${index}-${phase}.json`, data);
-            kit.artifacts.event("popup.control-end", { index, phase });
-          }
-        };
         page.on("websocket", (socket) => {
           socket.on("framereceived", ({ payload }) => {
             if (typeof payload !== "string") return;
@@ -333,22 +260,12 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         });
         await page.goto(context.hostOrigin);
         const sidebar = page.getByRole("button", { name: "Open sidebar", exact: true });
-        try {
-          if (await sidebar.isVisible()) await diagnosticClick(sidebar, "sidebar");
-          await diagnosticClick(
-            page
-              .locator('.side-tab[data-group="web"] .side-tab__main')
-              .filter({ hasText: "Browser popup fixture" }),
-            "tab",
-          );
-          await diagnosticClick(
-            page.getByRole("button", { name: "Hide the conversation", exact: true }),
-            "conversation",
-          );
-        } finally {
-          clearTimeout(profileDeadline);
-          await stopProfile();
-        }
+        if (await sidebar.isVisible()) await sidebar.click();
+        await page
+          .locator('.side-tab[data-group="web"] .side-tab__main')
+          .filter({ hasText: "Browser popup fixture" })
+          .click();
+        await page.getByRole("button", { name: "Hide the conversation", exact: true }).click();
         await page.locator('canvas[aria-label="Live browser page"]').waitFor({ state: "visible" });
         await page.waitForFunction(
           () => Number(Reflect.get(window, "popupPresented")) > 0,
