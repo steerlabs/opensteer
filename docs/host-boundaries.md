@@ -107,7 +107,7 @@ sessions do not retain connection authority. Workspace consent loses authority w
 Revocation ends future calls, including calls in an already open MCP session and
 waits that wake after revocation. It does not cancel tasks already admitted or
 undo their effects. Revoking a login does not revoke independently approved
-connections: remove those in Settings → Devices → Connected agents (Connected agents on mobile). Connections
+connections: remove those in Settings → Account → Connected agents on every client. Connections
 expire after 30 days and require new consent; no refresh grant can extend them.
 
 ## API boundaries
