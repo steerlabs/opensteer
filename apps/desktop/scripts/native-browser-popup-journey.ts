@@ -27,6 +27,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   });
   assert(opened.ok && opened.data.type === "browser.tab.open");
   const surfaceId = opened.data.tabId;
+  await kit.selectNativePage(context.sessionId, surfaceId);
   const producer = [...kit.pages.values()].find((p) => p.surfaceId === surfaceId);
   assert(producer, "Popup fixture has a production runtime page");
   const contents = (
@@ -45,6 +46,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   const counts: [number, number, number] = [0, 0, 0];
   const commands: Record<string, number> = {};
   const editingContexts: [number, number] = [0, 0];
+  const admissions: [number, number] = [0, 0];
   try {
     // These are the journey's temporary owner cookies, held in live memory only.
     const cookies = await session
@@ -65,6 +67,19 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         );
         const page = await viewer.newPage();
         page.setDefaultTimeout(4000);
+        await page.addInitScript(() => {
+          Object.assign(window, { popupPresented: 0 });
+          document.addEventListener("browser-picture-presented", (event) => {
+            const canvas = event.target;
+            if (
+              canvas instanceof HTMLCanvasElement &&
+              canvas.getContext("2d")?.getImageData(0, 0, 1, 1).data[3]
+            )
+              Object.assign(window, {
+                popupPresented: Number(Reflect.get(window, "popupPresented")) + 1,
+              });
+          });
+        });
         page.on("websocket", (socket) => {
           socket.on("framereceived", ({ payload }) => {
             if (typeof payload !== "string") return;
@@ -72,6 +87,8 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
               const m: unknown = JSON.parse(payload);
               if (m && typeof m === "object" && "type" in m && m.type === "browser.editing")
                 editingContexts[index] = (editingContexts[index] ?? 0) + 1;
+              if (m && typeof m === "object" && "type" in m && m.type === "browser.video.attached")
+                admissions[index] = (admissions[index] ?? 0) + 1;
               if (
                 m &&
                 typeof m === "object" &&
@@ -104,10 +121,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
           .click();
         await page.locator("canvas").first().waitFor({ state: "visible" });
         await page.waitForFunction(
-          () => {
-            const canvas = document.querySelector("canvas");
-            return !!canvas?.getContext("2d")?.getImageData(0, 0, 1, 1).data[3];
-          },
+          () => Number(Reflect.get(window, "popupPresented")) > 0,
           undefined,
           { timeout: 4000 },
         );
@@ -264,7 +278,13 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       await quiet();
     }
     // All page keys enter through the production proxy/private edit path.
+    const beforeDatalist = editingContexts[0];
     await tap(a, "datalist");
+    await kit.until(
+      async () => editingContexts[0] > beforeDatalist,
+      "datalist field context delivered to the viewer",
+      3000,
+    );
     await a.keyboard.type("Al");
     await a.getByRole("option", { name: /Alpha/ }).waitFor();
     await quiet();
@@ -304,15 +324,18 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     await tap(a, "single");
     await a.getByRole("dialog").waitFor();
     const old = counts[0];
+    const beforeHandoff = admissions[1];
+    const beforePicture = await b.evaluate(() => Number(Reflect.get(window, "popupPresented")));
     await b.getByRole("button", { name: "Take control", exact: true }).click();
     await a.getByRole("dialog").waitFor({ state: "hidden" });
     assert.equal(counts[1], 0, "Handoff transferred the previous picker");
     assert(counts[0] >= old);
     await kit.snapshot("popups", "handoff");
-    await kit.until(
-      async () => b.locator("canvas").first().isVisible(),
-      "replacement viewer picture",
-      4000,
+    await kit.until(async () => admissions[1] > beforeHandoff, "replacement media admission", 4000);
+    await b.waitForFunction(
+      (before) => Number(Reflect.get(window, "popupPresented")) > before,
+      beforePicture,
+      { timeout: 4000 },
     );
     await tap(b, "single");
     await b.getByRole("dialog").waitFor();
@@ -345,6 +368,8 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       await kit.key(53);
     }
     await kit.pageMouse("#datalist", true);
+    await kit.key(0, 1 << 20);
+    await kit.key(51);
     await kit.key(0);
     await kit.key(37);
     await kit.snapshot("popups", "local-datalist");
@@ -353,7 +378,19 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       Number((window as Window & { popupWatch?: { popups: number } }).popupWatch?.popups ?? 0),
     );
     assert.equal(counts[2], 0, "Watch received a chooser during local takeover");
+    const beforeDisconnect = admissions[0];
+    const beforeRecovery = await a.evaluate(() => Number(Reflect.get(window, "popupPresented")));
     await viewers[1]!.viewer.close();
+    await kit.until(
+      async () => admissions[0] > beforeDisconnect,
+      "remaining viewer's replacement admission",
+      4000,
+    );
+    await a.waitForFunction(
+      (before) => Number(Reflect.get(window, "popupPresented")) > before,
+      beforeRecovery,
+      { timeout: 4000 },
+    );
     await tap(a, "single");
     await a.getByRole("dialog").waitFor();
     const catalog = await context.api["browser.tabs.get"]({ sessionId: context.sessionId });

@@ -101,10 +101,6 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
   }
   if (kit.artifacts.selected.has("popups")) {
     await step("popups", () => browserPopupJourney(kit));
-    kit.artifacts.json("summary.json", {
-      status: steps.every((s) => s.status === "PASS") ? "PASS" : "FAIL",
-      steps,
-    });
     assert(
       steps.every((s) => s.status === "PASS"),
       "Popup journey failed; see summary.json",
