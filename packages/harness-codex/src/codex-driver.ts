@@ -1,5 +1,5 @@
 import { resolveLightModel } from "@opensteer/harness";
-import { startCodexVoiceCall, type CodexVoiceInput, type CodexVoiceCall } from "./voice.js";
+import { startRealtime } from "./voice.js";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -47,7 +47,7 @@ import {
   type ToolIdentity,
   type UserId,
 } from "@opensteer/core";
-import { maxHarnessModelsPerCatalog } from "@opensteer/protocol";
+import { maxHarnessModelsPerCatalog, VoiceSdpSchema } from "@opensteer/protocol";
 import {
   Deferred,
   withTitleDirectory,
@@ -248,6 +248,7 @@ export interface CodexLaunch {
 
 /** Every Codex adapter runs with the same provider capabilities. */
 const codexHarnessCapabilities: HarnessCapabilities = Object.freeze({
+  voiceCalls: true,
   approvals: true,
   attachments: true,
   messageAttachments: {
@@ -840,60 +841,6 @@ class CodexHarnessAdapter implements HarnessAdapter {
     this.#source = source;
   }
 
-  async startVoiceCall(input: CodexVoiceInput): Promise<CodexVoiceCall> {
-    this.#sessions.assertOpen();
-    return startCodexVoiceCall({
-      input,
-      prepare: async (directory) => {
-        // The account's own state home: a fresh one blocks app-server startup
-        // until it has backfilled every session in the Codex home.
-        const environment = await codexProcessEnvironment(
-          input.environment,
-          input.providerState,
-          this.#source,
-        );
-        // Codex dispatches dynamic tools through code mode, even with shell tools disabled.
-        const features = Object.fromEntries(
-          Object.entries(await codexFeatureBoundary(this.#launch)).map(([name, approved]) => [
-            name,
-            approved && (name === "unified_exec" || (input.agent && name === "code_mode_host")),
-          ]),
-        );
-        return {
-          process: {
-            config: this.#config,
-            launch: this.#launch,
-            environment,
-            appServerArgs: [
-              ...codexProcessBoundaryArgs(
-                features,
-                input.runtimeBoundary,
-                input.providerState,
-                environment,
-                [],
-              ),
-              "-c",
-              `log_dir=${JSON.stringify(directory)}`,
-              "-c",
-              "project_doc_max_bytes=0",
-              "-c",
-              'developer_instructions=""',
-            ],
-          },
-          threadConfig: async (client) => {
-            await assertCodexFeatureBoundary(client, features, this.#config.startupTimeoutMs);
-            return codexPrivateThreadConfig(
-              client,
-              directory,
-              features,
-              this.#config.startupTimeoutMs,
-            );
-          },
-        };
-      },
-    });
-  }
-
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     assertFreshProviderSessionContext(context);
@@ -907,6 +854,11 @@ class CodexHarnessAdapter implements HarnessAdapter {
     context: HarnessSessionContext,
   ): Promise<HarnessSession> {
     this.#sessions.assertOpen();
+    if (context.voiceCall)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "A voice call cannot resume a session.",
+      });
     const reference = validateProviderReference(providerSessionReference);
     return this.#sessions.open(reference, () => this.#open(context, { reference, type: "resume" }));
   }
@@ -1192,11 +1144,13 @@ class CodexHarnessSession implements HarnessSession {
         : [...input],
       threadId: this.#requireCodexThreadId(),
     });
-    const input = await inputsToCodexInput(run.inputs, run, run.attachments, {
-      config: this.#config,
-      method: "turn/start",
-      params: turnStart,
-    });
+    const input = this.#context.voiceCall
+      ? []
+      : await inputsToCodexInput(run.inputs, run, run.attachments, {
+          config: this.#config,
+          method: "turn/start",
+          params: turnStart,
+        });
     const active: ActiveTurn = {
       answered: false,
       childTurns: new Map(),
@@ -1219,13 +1173,18 @@ class CodexHarnessSession implements HarnessSession {
     const abort = () => {
       active.interruptRequested = true;
       active.toolLifetime.abort(run.signal.reason ?? new Error("Codex turn interrupted"));
-      void this.#interruptActive(active);
+      if (this.#context.voiceCall) this.#context.voiceCall.end();
+      else void this.#interruptActive(active);
     };
     if (!run.signal.aborted) run.signal.addEventListener("abort", abort, { once: true });
 
     try {
       if (run.signal.aborted) {
         this.#publishTerminal(active, "interrupted");
+        return;
+      }
+      if (this.#context.voiceCall) {
+        await this.#executeVoice(active, run.signal);
         return;
       }
       const result = requireObject(
@@ -1248,11 +1207,53 @@ class CodexHarnessSession implements HarnessSession {
     }
   }
 
+  #voiceFinal = "";
+  readonly #voiceSdp = new Deferred<void>();
+
+  async #executeVoice(active: ActiveTurn, signal: AbortSignal): Promise<void> {
+    const call = this.#context.voiceCall!;
+    const client = this.#requireClient();
+    const threadId = this.#requireCodexThreadId();
+    const abort = () => call.end();
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      call.connect({
+        speak: async (text) => {
+          await client.request("thread/realtime/appendSpeech", { threadId, text });
+        },
+        note: async (text) => {
+          await client.request("thread/inject_items", {
+            threadId,
+            items: [{ type: "message", role: "user", content: [{ type: "input_text", text }] }],
+          });
+        },
+      });
+      this.#ensureRunStarted(active);
+      await startRealtime(client, threadId, call, this.#config.startupTimeoutMs);
+      await withTimeout(this.#voiceSdp.promise, this.#config.startupTimeoutMs, {
+        signal: call.signal,
+        timeoutError: () => new Error("Voice answer did not arrive"),
+      });
+      await new Promise<void>((resolve) => {
+        if (call.signal.aborted) resolve();
+        else call.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    } finally {
+      signal.removeEventListener("abort", abort);
+      call.end();
+      await this.stop();
+    }
+  }
+
   async interrupt(): Promise<void> {
     const active = this.#activeTurn;
     if (!active || active.terminal) return;
     active.interruptRequested = true;
     active.toolLifetime.abort(new Error("Codex turn interrupted"));
+    if (this.#context.voiceCall) {
+      this.#context.voiceCall.end();
+      return;
+    }
     await this.#interruptActive(active);
   }
 
@@ -1343,11 +1344,19 @@ class CodexHarnessSession implements HarnessSession {
 
   /** Ends the Run once its agent is between turns and none of its children runs. */
   #settleIfDone(active: ActiveTurn): void {
-    if (active.terminal || active.root !== "idle" || active.childTurns.size > 0) return;
+    if (
+      this.#context.voiceCall ||
+      active.terminal ||
+      active.root !== "idle" ||
+      active.childTurns.size > 0
+    )
+      return;
     this.#publishTerminal(active, active.interruptRequested ? "interrupted" : "completed");
   }
 
   rebind(context: HarnessSessionContext): void {
+    if (this.#context.voiceCall || context.voiceCall)
+      throw new Error("A voice call cannot reuse a session.");
     if (this.#activeTurn) throw new Error("A Codex session cannot be rebound during a Run");
     this.#context = context;
   }
@@ -1480,7 +1489,40 @@ class CodexHarnessSession implements HarnessSession {
     const method = resume ? "thread/resume" : "thread/start";
     const params = {
       ...threadStartupOptions(this.#context),
-      config: runtimeConfig,
+      ...(this.#context.voiceCall
+        ? {
+            developerInstructions: [
+              threadStartupOptions(this.#context).developerInstructions,
+              await renderHarnessSkillCatalog(this.#context.skills),
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
+          }
+        : {}),
+      config: this.#context.voiceCall
+        ? {
+            ...runtimeConfig,
+            // Realtime starts turns itself, so turn/start overrides never run.
+            model_reasoning_effort: "low",
+            service_tier: this.#context.modelSelection.options[codexSpeedOptionId] ?? null,
+            ...(this.#context.runtimeBoundary.kind === "native-user"
+              ? {
+                  sandbox_mode:
+                    this.#context.accessMode === "full-access"
+                      ? "danger-full-access"
+                      : this.#context.accessMode === "approval-required"
+                        ? "read-only"
+                        : "workspace-write",
+                  sandbox_workspace_write: {
+                    writable_roots: [...this.#context.writableRoots],
+                    network_access: false,
+                    exclude_tmpdir_env_var: false,
+                    exclude_slash_tmp: false,
+                  },
+                }
+              : {}),
+          }
+        : runtimeConfig,
       // The provider owns its compacted context; attachment must not serialize
       // the historical transcript back into the Runner's bounded transport.
       ...(resume && prior ? { excludeTurns: true, threadId: prior } : { serviceName: "opensteer" }),
@@ -1554,6 +1596,7 @@ class CodexHarnessSession implements HarnessSession {
   async #stop(notifyOwner: boolean): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#context.voiceCall?.end();
     this.#context.signal.removeEventListener("abort", this.#abortListener);
     await this.#trackCancellation(this.#drainPendingRequests("run-ended"));
     await Promise.allSettled(this.#pendingCancellationResponses);
@@ -1561,13 +1604,26 @@ class CodexHarnessSession implements HarnessSession {
     if (active && !active.terminal) {
       active.interruptRequested = true;
       active.toolLifetime.abort(new Error("Codex session stopped"));
-      await this.#interruptActive(active).catch(() => undefined);
+      if (this.#context.voiceCall) {
+        this.#context.voiceCall.end();
+        const threadId = this.#requireCodexThreadId();
+        await this.#client
+          ?.request("thread/realtime/stop", { threadId }, 1_000)
+          .catch(() => undefined);
+        if (active.providerTurnId)
+          await this.#client
+            ?.request("turn/interrupt", { threadId, turnId: active.providerTurnId }, 1_000)
+            .catch(() => undefined);
+        this.#publishTerminal(active, "interrupted");
+      } else await this.#interruptActive(active).catch(() => undefined);
     }
     this.#respondingProviderRequests.clear();
     this.#processLifetime.abort(new Error("Codex session stopped"));
     try {
       await this.#client?.close();
     } finally {
+      if (this.#context.voiceCall)
+        await rm(this.#context.threadStateDirectory, { recursive: true, force: true });
       this.#closeEventStream();
       if (notifyOwner && this.#providerSessionReference) this.#onClose(this);
     }
@@ -1606,12 +1662,31 @@ class CodexHarnessSession implements HarnessSession {
       return;
     }
 
+    if (this.#context.voiceCall && message.method.startsWith("thread/realtime/")) {
+      if (message.method === "thread/realtime/sdp") {
+        const sdp = VoiceSdpSchema.safeParse(params.sdp);
+        if (sdp.success) {
+          this.#context.voiceCall.answer(sdp.data);
+          this.#voiceSdp.resolve();
+        } else this.#context.voiceCall.end();
+      }
+      if (message.method === "thread/realtime/error" || message.method === "thread/realtime/closed")
+        this.#context.voiceCall.end();
+      return;
+    }
     switch (message.method) {
       case "turn/started": {
         const active = this.#activeTurn;
         if (!active) return;
         const turn = requireObject(params.turn, "turn/started params.turn");
         const turnId = requireString(turn.id, "turn/started params.turn.id");
+        if (this.#context.voiceCall) {
+          if (active.providerTurnId === turnId) return;
+          delete active.providerTurnId;
+          active.answered = false;
+          this.#voiceFinal = "";
+          this.#reasoningPartIndexes.clear();
+        }
         if (active.root === "starting") {
           this.#beginFollowUpTurn(active, turnId);
           break;
@@ -1963,6 +2038,18 @@ class CodexHarnessSession implements HarnessSession {
     if (active.providerTurnId && active.providerTurnId !== turnId) return;
     this.#setActiveTurnId(active, turnId);
     const status = requireString(turn.status, "turn/completed params.turn.status");
+    if (this.#context.voiceCall) {
+      if (this.#voiceFinal && status === "completed") {
+        void this.#context.voiceCall
+          .speak(`turn:${turnId}`, this.#voiceFinal)
+          .catch(() => this.#context.voiceCall?.end());
+      }
+      delete active.providerTurnId;
+      this.#voiceFinal = "";
+      active.root = "idle";
+      if (status === "failed") this.#context.voiceCall.end();
+      return;
+    }
     // The root answered while children it started still run: the Run waits
     // for them in the background. Codex never wakes the root on their own.
     if (status === "completed" && active.childTurns.size > 0) {
@@ -2030,7 +2117,10 @@ class CodexHarnessSession implements HarnessSession {
         type: "assistant.message",
       });
       const active = this.#activeTurn;
-      if (active && optionalString(item.phase) === "final_answer") active.answered = true;
+      if (active && optionalString(item.phase) === "final_answer") {
+        active.answered = true;
+        if (this.#context.voiceCall && typeof item.text === "string") this.#voiceFinal = item.text;
+      }
       return;
     }
     if (type === "reasoning") {
@@ -3490,6 +3580,7 @@ function threadStartupOptions(context: HarnessSessionContext): JsonObject {
     context.platformGuide,
     context.instructions,
     durableHistoryWindowNotice(context),
+    ...(context.voiceCall ? [context.machineAccessNotice] : []),
   ]
     .filter((value): value is string => Boolean(value))
     .join("\n\n");
@@ -3503,7 +3594,15 @@ function threadStartupOptions(context: HarnessSessionContext): JsonObject {
     // a session-flag permission profile that cannot expose Runner private state.
     ...(context.runtimeBoundary.kind === "isolated-service"
       ? { permissions: codexPermissionProfile(context.accessMode) }
-      : { sandbox: "read-only" }),
+      : {
+          sandbox: context.voiceCall
+            ? context.accessMode === "full-access"
+              ? "danger-full-access"
+              : context.accessMode === "approval-required"
+                ? "read-only"
+                : "workspace-write"
+            : "read-only",
+        }),
   };
 }
 

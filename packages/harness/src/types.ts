@@ -33,6 +33,7 @@ import type { z } from "zod";
 import type { InstalledEngineUpdateFacts } from "./engine-installation.js";
 
 export interface HarnessCapabilities {
+  readonly voiceCalls?: true;
   readonly approvals: boolean;
   readonly attachments: boolean;
   readonly messageAttachments?: {
@@ -269,7 +270,18 @@ export function isHarnessLiveEvent(event: HarnessEvent): event is HarnessLiveEve
   return harnessLiveEventTypes.has(event.type);
 }
 
+/** Ephemeral rendezvous and the call's single ordered speech writer. */
+export interface HarnessVoiceCall {
+  readonly offer: Promise<string>;
+  readonly signal: AbortSignal;
+  answer(sdp: string): void;
+  connect(writer: { speak(text: string): Promise<void>; note(text: string): Promise<void> }): void;
+  speak(id: string, text: string): Promise<void>;
+  end(): void;
+}
+
 export interface HarnessSessionContext {
+  readonly voiceCall?: HarnessVoiceCall;
   /** Model-visible, verified per-Thread attachment directory, outside private state. */
   readonly attachmentDirectory?: string;
   /** Shared cache root that a provider sandbox must deny on a shared Runner. */

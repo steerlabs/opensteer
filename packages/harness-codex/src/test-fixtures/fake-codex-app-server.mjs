@@ -673,8 +673,28 @@ function handleClientMethod(message) {
           method: scenario === "voice-refused" ? "thread/realtime/error" : "thread/realtime/closed",
           params: { threadId, message: "private voice payload" },
         });
-      } else {
+      } else if (scenario !== "voice-no-answer") {
         send({ method: "thread/realtime/sdp", params: { threadId, sdp: "fake-answer" } });
+        if (scenario === "voice-run") {
+          for (const [id, text] of [
+            ["v1", "first answer"],
+            ["v2", "second answer"],
+          ]) {
+            send({ method: "turn/started", params: { threadId, turn: { id } } });
+            send({
+              method: "item/completed",
+              params: {
+                threadId,
+                turnId: id,
+                item: { type: "agentMessage", id: `answer-${id}`, phase: "final_answer", text },
+              },
+            });
+            send({
+              method: "turn/completed",
+              params: { threadId, turn: { id, status: "completed" } },
+            });
+          }
+        }
         send({ method: "turn/started", params: { threadId, turn: { id: "voice-handoff" } } });
       }
       break;
