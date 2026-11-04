@@ -143,138 +143,141 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     const cookies = await session
       .fromPartition(`persist:opensteer-host-${context.deploymentId}`)
       .cookies.get({ url: context.hostOrigin });
-    const viewers = await Promise.all(
-      [0, 1].map(async (index) => {
-        const viewer = await browser.newContext({ viewport: viewerViewport });
-        await viewer.addCookies(
-          cookies.map((c) => ({
-            name: c.name,
-            value: c.value,
-            url: context.hostOrigin,
-            httpOnly: c.httpOnly ?? false,
-            secure: c.secure ?? false,
-            sameSite: c.sameSite === "strict" ? ("Strict" as const) : ("Lax" as const),
-          })),
-        );
-        const page = await viewer.newPage();
-        page.setDefaultTimeout(4000);
-        await page.addInitScript(() => {
-          Object.assign(window, { popupPresented: 0 });
-          document.addEventListener("browser-picture-presented", (event) => {
-            const canvas = event.target;
+    const openViewer = async (index: number) => {
+      const viewer = await browser.newContext({ viewport: viewerViewport });
+      await viewer.addCookies(
+        cookies.map((c) => ({
+          name: c.name,
+          value: c.value,
+          url: context.hostOrigin,
+          httpOnly: c.httpOnly ?? false,
+          secure: c.secure ?? false,
+          sameSite: c.sameSite === "strict" ? ("Strict" as const) : ("Lax" as const),
+        })),
+      );
+      const page = await viewer.newPage();
+      await page.bringToFront();
+      page.setDefaultTimeout(4000);
+      await page.addInitScript(() => {
+        Object.assign(window, { popupPresented: 0 });
+        document.addEventListener("browser-picture-presented", (event) => {
+          const canvas = event.target;
+          if (
+            canvas instanceof HTMLCanvasElement &&
+            canvas.getContext("2d")?.getImageData(0, 0, 1, 1).data[3]
+          )
+            Object.assign(window, {
+              popupPresented: Number(Reflect.get(window, "popupPresented")) + 1,
+            });
+        });
+      });
+      page.on("websocket", (socket) => {
+        socket.on("framereceived", ({ payload }) => {
+          if (typeof payload !== "string") return;
+          try {
+            const m: unknown = JSON.parse(payload);
+            const videoState = BrowserVideoStateSchema.safeParse(m);
+            if (videoState.success)
+              record(index, `video:${videoState.data.state}:${videoState.data.reason ?? "none"}`);
+            const popup = BrowserPopupServerMessageSchema.safeParse(m);
+            if (popup.success) {
+              if (popup.data.type === "browser.popup.opened" && tapStarted[index] != null) {
+                tapToPopupMs.push(performance.now() - tapStarted[index]!);
+                tapStarted[index] = null;
+              }
+              if (popup.data.type === "browser.popup.result") {
+                const started = answers.get(popup.data.operationId);
+                if (started !== undefined && popup.data.outcome === "applied")
+                  answerToAppliedMs.push(performance.now() - started);
+                answers.delete(popup.data.operationId);
+              }
+            }
+            if (popup.success)
+              record(
+                index,
+                `${popup.data.type}${"reason" in popup.data ? ":" + popup.data.reason : ""}${"state" in popup.data ? ":" + (typeof popup.data.state === "string" ? popup.data.state : popup.data.state.kind) : ""}`,
+              );
+            if (m && typeof m === "object" && "type" in m && m.type === "browser.snapshot")
+              sessionMatches[index] = "sessionId" in m && m.sessionId === context.sessionId;
+            const guarded = BrowserVideoClickResultSchema.safeParse(m);
+            if (guarded.success) {
+              const key = `${guarded.data.outcome}:${guarded.data.reason ?? guarded.data.hostReason ?? "none"}`;
+              guardedResults[key] = (guardedResults[key] ?? 0) + 1;
+              record(index, `result:${key}`);
+            }
+            if (m && typeof m === "object" && "type" in m && m.type === "browser.editing")
+              editingContexts[index] = (editingContexts[index] ?? 0) + 1;
+            if (m && typeof m === "object" && "type" in m && m.type === "browser.video.attached")
+              admissions[index] = (admissions[index] ?? 0) + 1;
             if (
-              canvas instanceof HTMLCanvasElement &&
-              canvas.getContext("2d")?.getImageData(0, 0, 1, 1).data[3]
+              m &&
+              typeof m === "object" &&
+              "type" in m &&
+              typeof m.type === "string" &&
+              m.type.startsWith("browser.popup.")
             )
-              Object.assign(window, {
-                popupPresented: Number(Reflect.get(window, "popupPresented")) + 1,
-              });
-          });
+              counts[index] = (counts[index] ?? 0) + 1;
+          } catch {
+            /* Binary media is observed only through presentation. */
+          }
         });
-        page.on("websocket", (socket) => {
-          socket.on("framereceived", ({ payload }) => {
-            if (typeof payload !== "string") return;
-            try {
-              const m: unknown = JSON.parse(payload);
-              const videoState = BrowserVideoStateSchema.safeParse(m);
-              if (videoState.success)
-                record(index, `video:${videoState.data.state}:${videoState.data.reason ?? "none"}`);
-              const popup = BrowserPopupServerMessageSchema.safeParse(m);
-              if (popup.success) {
-                if (popup.data.type === "browser.popup.opened" && tapStarted[index] != null) {
-                  tapToPopupMs.push(performance.now() - tapStarted[index]!);
-                  tapStarted[index] = null;
-                }
-                if (popup.data.type === "browser.popup.result") {
-                  const started = answers.get(popup.data.operationId);
-                  if (started !== undefined && popup.data.outcome === "applied")
-                    answerToAppliedMs.push(performance.now() - started);
-                  answers.delete(popup.data.operationId);
-                }
-              }
-              if (popup.success)
-                record(
-                  index,
-                  `${popup.data.type}${"reason" in popup.data ? ":" + popup.data.reason : ""}${"state" in popup.data ? ":" + (typeof popup.data.state === "string" ? popup.data.state : popup.data.state.kind) : ""}`,
-                );
-              if (m && typeof m === "object" && "type" in m && m.type === "browser.snapshot")
-                sessionMatches[index] = "sessionId" in m && m.sessionId === context.sessionId;
-              const guarded = BrowserVideoClickResultSchema.safeParse(m);
-              if (guarded.success) {
-                const key = `${guarded.data.outcome}:${guarded.data.reason ?? guarded.data.hostReason ?? "none"}`;
-                guardedResults[key] = (guardedResults[key] ?? 0) + 1;
-                record(index, `result:${key}`);
-              }
-              if (m && typeof m === "object" && "type" in m && m.type === "browser.editing")
-                editingContexts[index] = (editingContexts[index] ?? 0) + 1;
-              if (m && typeof m === "object" && "type" in m && m.type === "browser.video.attached")
-                admissions[index] = (admissions[index] ?? 0) + 1;
-              if (
-                m &&
-                typeof m === "object" &&
-                "type" in m &&
-                typeof m.type === "string" &&
-                m.type.startsWith("browser.popup.")
-              )
-                counts[index] = (counts[index] ?? 0) + 1;
-            } catch {
-              /* Binary media is observed only through presentation. */
+        socket.on("framesent", ({ payload }) => {
+          if (typeof payload !== "string") return;
+          try {
+            const m: unknown = JSON.parse(payload);
+            const popup = BrowserPopupClientMessageSchema.safeParse(m);
+            if (popup.success && popup.data.type === "popup.answer")
+              answers.set(popup.data.operationId, performance.now());
+            if (m && typeof m === "object" && "type" in m && typeof m.type === "string")
+              commands[m.type] = (commands[m.type] ?? 0) + 1;
+            if (
+              m &&
+              typeof m === "object" &&
+              "type" in m &&
+              (m.type === "input.cancel" ||
+                m.type === "input.control" ||
+                m.type === "input.guarded-click")
+            )
+              record(
+                index,
+                `send:${m.type}${"action" in m && (m.action === "acquire" || m.action === "release") ? ":" + m.action : ""}`,
+              );
+            if (
+              m &&
+              typeof m === "object" &&
+              "type" in m &&
+              m.type === "input.pointer" &&
+              "action" in m &&
+              ["move", "down", "up", "leave"].includes(String(m.action))
+            ) {
+              const action = `pointer.${String(m.action)}`;
+              commands[action] = (commands[action] ?? 0) + 1;
             }
-          });
-          socket.on("framesent", ({ payload }) => {
-            if (typeof payload !== "string") return;
-            try {
-              const m: unknown = JSON.parse(payload);
-              const popup = BrowserPopupClientMessageSchema.safeParse(m);
-              if (popup.success && popup.data.type === "popup.answer")
-                answers.set(popup.data.operationId, performance.now());
-              if (m && typeof m === "object" && "type" in m && typeof m.type === "string")
-                commands[m.type] = (commands[m.type] ?? 0) + 1;
-              if (
-                m &&
-                typeof m === "object" &&
-                "type" in m &&
-                (m.type === "input.cancel" ||
-                  m.type === "input.control" ||
-                  m.type === "input.guarded-click")
-              )
-                record(
-                  index,
-                  `send:${m.type}${"action" in m && (m.action === "acquire" || m.action === "release") ? ":" + m.action : ""}`,
-                );
-              if (
-                m &&
-                typeof m === "object" &&
-                "type" in m &&
-                m.type === "input.pointer" &&
-                "action" in m &&
-                ["move", "down", "up", "leave"].includes(String(m.action))
-              ) {
-                const action = `pointer.${String(m.action)}`;
-                commands[action] = (commands[action] ?? 0) + 1;
-              }
-            } catch {
-              /* No raw data enters evidence. */
-            }
-          });
+          } catch {
+            /* No raw data enters evidence. */
+          }
         });
-        await page.goto(context.hostOrigin);
-        const sidebar = page.getByRole("button", { name: "Open sidebar", exact: true });
-        if (await sidebar.isVisible()) await sidebar.click();
-        await page
-          .locator('.side-tab[data-group="web"] .side-tab__main')
-          .filter({ hasText: "Browser popup fixture" })
-          .click();
-        await page.getByRole("button", { name: "Hide the conversation", exact: true }).click();
-        await page.locator('canvas[aria-label="Live browser page"]').waitFor({ state: "visible" });
-        await page.waitForFunction(
-          () => Number(Reflect.get(window, "popupPresented")) > 0,
-          undefined,
-          { timeout: 4000 },
-        );
-        return { viewer, page };
-      }),
-    );
+      });
+      await page.goto(context.hostOrigin);
+      record(index, "viewer.loaded");
+      const sidebar = page.getByRole("button", { name: "Open sidebar", exact: true });
+      if (await sidebar.isVisible()) await sidebar.click();
+      await page
+        .locator('.side-tab[data-group="web"] .side-tab__main')
+        .filter({ hasText: "Browser popup fixture" })
+        .click();
+      await page.getByRole("button", { name: "Hide the conversation", exact: true }).click();
+      record(index, "viewer.selected");
+      await page.locator('canvas[aria-label="Live browser page"]').waitFor({ state: "visible" });
+      await page.waitForFunction(
+        () => Number(Reflect.get(window, "popupPresented")) > 0,
+        undefined,
+        { timeout: 4000 },
+      );
+      record(index, "viewer.presented");
+      return { viewer, page };
+    };
+    const viewers = [await openViewer(0), await openViewer(1)];
     const a = viewers[0]!.page,
       b = viewers[1]!.page;
     await b.evaluate(
