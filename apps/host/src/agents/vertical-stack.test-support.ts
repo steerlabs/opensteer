@@ -39,7 +39,6 @@ import {
 } from "@opensteer/protocol";
 import {
   AttachmentCache,
-  LocalWorkspaceService,
   ExecutionContainment,
   FileRunnerIdentityStore,
   LocalWorkspaceService,
