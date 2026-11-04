@@ -426,6 +426,10 @@ describe("frames a target cannot read", () => {
   it.each([
     ["unreadable JSON", (socket: TargetSocket) => socket.garbled()],
     ["a message its schema refuses", (socket: TargetSocket) => socket.receive(unreadable)],
+    [
+      "a message past its size limit",
+      (socket: TargetSocket) => socket.receive("x".repeat(1024 * 1024 + 1)),
+    ],
   ])("reconnects after %s, keeping the last picture and taking no input", (_name, lose) => {
     const f = target();
     const socket = f.sockets[0]!;

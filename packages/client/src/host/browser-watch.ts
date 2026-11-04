@@ -505,7 +505,8 @@ export class BrowserWatchStore {
       if (target.socket !== socket) return;
       try {
         if (typeof data === "string") {
-          if (data.length > 1024 * 1024) throw new Error("Browser message exceeds its byte limit.");
+          if (data.length > 1024 * 1024)
+            return fail(new Error("Browser message exceeds its byte limit."), true);
           const message = BrowserServerMessageSchema.parse(JSON.parse(data));
           if (synchronized) target.unreadableFrames = 0;
           if (message.type === "browser.snapshot") {
