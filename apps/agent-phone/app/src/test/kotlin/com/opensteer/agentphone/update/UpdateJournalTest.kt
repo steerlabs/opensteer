@@ -26,7 +26,7 @@ class UpdateJournalTest {
     private val preferences = Proxy.newProxyInstance(SharedPreferences::class.java.classLoader, arrayOf(SharedPreferences::class.java)) { _, method, args ->
         when (method.name) {
             "edit" -> editor
-            "getString", "getInt", "getLong" -> values[args!![0]] ?: args[1]
+            "getString", "getInt", "getLong", "getBoolean" -> values[args!![0]] ?: args[1]
             else -> error("Unexpected preferences operation ${method.name}")
         }
     } as SharedPreferences
@@ -64,12 +64,25 @@ class UpdateJournalTest {
     }
 
     @Test
-    fun compatibleAdmissionLeavesActiveInstallsAloneButClearsConsentBegunAtAnEarlierAddress() {
+    fun compatibleAdmissionLetsAnActiveInstallFinishButDropsItsLaterConsentRequestUntilRequiredAgain() {
         pending("installing")
         journal.clearObsoleteConsent({ fail("active install abandoned") }, { fail("active install notification cancelled") })
         assertEquals(7, values["sessionId"])
+        journal.required()
+        assertFalse("a new refusal makes the retained install necessary again", journal.dropObsoletePrompt { fail("required consent dropped") })
+        journal.clearObsoleteConsent({ fail("active install abandoned") }, {})
+        var abandoned = -1
+        assertTrue(journal.dropObsoletePrompt { abandoned = it })
+        assertEquals(7, abandoned)
+        assertEquals("idle", journal.state())
+        assertNull(values["sessionId"])
+        assertFalse(journal.dropObsoletePrompt { fail("dropped twice") })
+    }
+
+    @Test
+    fun compatibleAdmissionClearsConsentBegunAtAnEarlierAddress() {
         // Setup retargeted the phone to another address of the same Deployment while consent was pending.
-        values["state"] = "awaiting-user"
+        pending("awaiting-user")
         values["scope"] = "${identity.runnerId} https://old-route.example ${offer.sha256}"
         var abandoned = -1
         journal.clearObsoleteConsent({ abandoned = it }, {})

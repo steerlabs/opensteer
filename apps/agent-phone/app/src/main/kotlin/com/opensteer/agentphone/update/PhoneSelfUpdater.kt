@@ -57,6 +57,7 @@ class PhoneSelfUpdater(
         if (!identity.enrolled) return PhoneUpdateResult.Current
         val now = SystemClock.elapsedRealtime()
         journal.finishIfInstalled()
+        journal.required()
         cancellation(identity)?.let { return it }
         cancelled = false
         var release: UpdateOffer? = null

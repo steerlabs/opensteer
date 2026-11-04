@@ -32,8 +32,12 @@ class UpdateInstaller(private val context: Context) {
     fun takeCancelled(identity: PhoneIdentity) = lifecycle.takeCancelled(identity)
     fun begin(identity: PhoneIdentity, offer: UpdateOffer) = lifecycle.begin(identity, offer)
 
+    fun required() = lifecycle.required()
+
+    private fun abandonSession(session: Int) { runCatching { installer.abandonSession(session) } }
+
     fun clearObsoleteConsent() = lifecycle.clearObsoleteConsent(
-        abandon = { session -> runCatching { installer.abandonSession(session) } },
+        abandon = ::abandonSession,
         cancelNotification = { context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION) },
     )
 
@@ -104,6 +108,7 @@ class UpdateInstaller(private val context: Context) {
         when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
             PackageInstaller.STATUS_SUCCESS -> finishIfInstalled()
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                if (lifecycle.dropObsoletePrompt(::abandonSession)) return@result
                 @Suppress("DEPRECATION")
                 val pending = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT) ?: return@result failed()
                 journal.edit().putString("state", "awaiting-user").commit()
