@@ -141,7 +141,7 @@ const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
     maxMessages: z.number().int().min(1).max(100).default(100),
     query: z.string().trim().min(1).max(256).optional(),
     aroundMessageId: MessageIdSchema.optional(),
-    threadId: ThreadIdSchema,
+    threadId: z.union([ThreadIdSchema, z.literal("home")]),
     type: z.literal("thread.read"),
   }),
   z.strictObject({
@@ -333,6 +333,7 @@ const AgentModelSummarySchema = z.strictObject({
 export type AgentModelSummary = z.infer<typeof AgentModelSummarySchema>;
 
 const HarnessSummarySchema = z.strictObject({
+  lightModel: DelegationModelChoiceSchema.optional(),
   driverKind: HarnessIdSchema,
   enabled: z.boolean(),
   environmentId: EnvironmentIdSchema,

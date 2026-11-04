@@ -1,3 +1,4 @@
+import { schedulesClient } from "./schedules.js";
 import { EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema } from "@opensteer/core";
 import {
   BrowserTabGroupIdSchema,
@@ -1516,6 +1517,156 @@ describe("HttpHostClient durable realtime", () => {
     }
   });
 
+  it("refreshes only retained schedule anchors for worker control events without loading flashes", async () => {
+    const workspace = makeWorkspace();
+    const unrelated = makeThread(workspace.id);
+    let worker = { ...makeThread(workspace.id), listed: false };
+    const mock = new MockHostClient({ latencyMs: 0 });
+    const listed = await mock.rpc["triggers.list"]({});
+    if (!listed.ok) throw new Error("Missing schedule fixture");
+    const seed = listed.data.triggers[0]!;
+    const got = await mock.rpc["triggers.get"]({ triggerId: seed.id });
+    if (!got.ok) throw new Error("Missing detail fixture");
+    const otherWorker = makeThread(workspace.id);
+    const other = { ...seed, id: createId("trigger"), anchorThreadId: otherWorker.id };
+    const summary = { ...seed, anchorThreadId: worker.id, systemRole: "memory-light" as const };
+    const reads = { list: 0, worker: 0, other: 0 };
+    const sockets: FakeSocket[] = [];
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      reconnectBaseDelayMs: 1,
+      reconnectMaxDelayMs: 1,
+      fetch: async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.pathname === "/v1/rpc/triggers.list") {
+          reads.list++;
+          return json({ triggers: [summary, other] });
+        }
+        if (url.pathname === "/v1/rpc/triggers.get") {
+          const isOther = rpcPayload(url, init).triggerId === other.id;
+          if (isOther) reads.other++;
+          else reads.worker++;
+          return json({
+            ...got.data,
+            trigger: { ...got.data.trigger, ...(isOther ? other : summary) },
+            anchorThread: isOther ? otherWorker : worker,
+          });
+        }
+        return json(bootstrap([workspace]));
+      },
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const stops: (() => void)[] = [];
+    try {
+      await client.load();
+      const socket = sockets[0]!;
+      socket.open();
+      socket.receive({
+        type: "host.snapshot",
+        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [unrelated] },
+      });
+      socket.receive({
+        type: "host.synchronized",
+        workspaceId: workspace.id,
+        sequence: sequence("0"),
+      });
+      expect(reads).toEqual({ list: 0, worker: 0, other: 0 });
+      const store = schedulesClient(client);
+      const detail = store.detail(summary.id);
+      const otherDetail = store.detail(other.id);
+      const states: string[] = [];
+      stops.push(
+        store.list.subscribe(() => states.push(store.list.getSnapshot().status)),
+        detail.subscribe(() => states.push(detail.getSnapshot().status)),
+        otherDetail.subscribe(() => {}),
+      );
+      await vi.waitFor(
+        () => {
+          expect(store.list.getSnapshot().status).toBe("ready");
+          expect(detail.getSnapshot().status).toBe("ready");
+          expect(otherDetail.getSnapshot().status).toBe("ready");
+        },
+        { timeout: 1000 },
+      );
+      expect(reads).toEqual({ list: 1, worker: 1, other: 1 });
+      states.length = 0;
+      const state = (thread: Thread, at: string) =>
+        agentEvent(workspace.id, thread.id, null, at, "thread.state-changed", {
+          status: thread.status,
+          doneAt: thread.doneAt,
+          inputQueuePaused: thread.inputQueuePaused,
+          pendingRequests: 0,
+        });
+      socket.receive({
+        type: "host.events",
+        events: [state({ ...unrelated, status: "running" }, "1")],
+      });
+      expect(reads).toEqual({ list: 1, worker: 1, other: 1 });
+      for (const [index, patch] of [
+        { doneAt: "2026-11-03T10:00:00Z" },
+        { doneAt: null },
+        { inputQueuePaused: true },
+        { status: "running" as const },
+        {
+          modelSelection: ModelSelectionSchema.parse({
+            ...worker.modelSelection,
+            modelId: "another",
+          }),
+        },
+      ].entries()) {
+        worker = { ...worker, ...patch };
+        const at = String(index + 2);
+        socket.receive({
+          type: "host.events",
+          events: [
+            "modelSelection" in patch
+              ? agentEvent(workspace.id, worker.id, null, at, "thread.execution-updated", {
+                  thread: worker,
+                })
+              : state(worker, at),
+          ],
+        });
+        await vi.waitFor(
+          () => {
+            expect(reads).toEqual({ list: index + 2, worker: index + 2, other: 1 });
+            expect(detail.getSnapshot().data?.definition.anchorThread).toMatchObject(patch);
+          },
+          { timeout: 1000 },
+        );
+      }
+      expect(states).not.toContain("loading");
+      socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+      await vi.waitFor(() => expect(reads).toEqual({ list: 7, worker: 7, other: 2 }), {
+        timeout: 1000,
+      });
+      socket.receive({ type: "host.events", events: [state(worker, "7")] });
+      expect(reads).toEqual({ list: 7, worker: 7, other: 2 });
+      expect(client.getSnapshot().threads.some(({ id }) => id === worker.id)).toBe(false);
+      await vi.waitFor(() => expect(otherDetail.getSnapshot().status).toBe("ready"), {
+        timeout: 1000,
+      });
+      socket.serverClose();
+      await vi.waitFor(() => expect(sockets).toHaveLength(2), { timeout: 1000 });
+      sockets[1]!.open();
+      sockets[1]!.receive({
+        type: "host.synchronized",
+        workspaceId: workspace.id,
+        sequence: sequence("7"),
+      });
+      await vi.waitFor(() => expect(reads).toEqual({ list: 8, worker: 8, other: 3 }), {
+        timeout: 1000,
+      });
+    } finally {
+      for (const stop of stops) stop();
+      client.dispose();
+      mock.dispose();
+    }
+  });
+
   it("invalidates Trigger reads when a program-only occurrence changes", async () => {
     const workspace = makeWorkspace();
     const sockets: FakeSocket[] = [];
@@ -1539,6 +1690,24 @@ describe("HttpHostClient durable realtime", () => {
 
     expect(client.getSnapshot().triggerRevision).toBe(before + 1);
     expect(listener).toHaveBeenCalled();
+    const hidden = { ...makeThread(workspace.id), listed: false };
+    const events = [
+      agentEvent(workspace.id, hidden.id, null, "1", "thread.state-changed", {
+        status: "idle",
+        inputQueuePaused: false,
+        pendingRequests: 0,
+        doneAt: "2026-11-03T10:00:00Z",
+      }),
+      agentEvent(workspace.id, hidden.id, null, "2", "thread.input-queue-updated", {
+        paused: true,
+      }),
+      agentEvent(workspace.id, hidden.id, null, "3", "thread.execution-updated", {
+        thread: hidden,
+      }),
+    ];
+    sockets[0]!.receive({ type: "host.events", events });
+    expect(client.getSnapshot().triggerRevision).toBe(before + 1);
+    expect(client.getSnapshot().threads.some(({ id }) => id === hidden.id)).toBe(false);
     client.dispose();
   });
 

@@ -1,8 +1,11 @@
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { join, relative } from "node:path";
 import type { EvalCase } from "./cases.js";
 export interface RecordedCall {
   readonly tool: string;
   readonly args: unknown;
   readonly valid: boolean;
+  readonly result?: unknown;
 }
 export interface Check {
   readonly name: string;
@@ -42,6 +45,18 @@ export function grade(
       `calls[${i}]:${required.tool}`,
       valid.some((c) => toolMatches(c.tool, required.tool) && partialMatch(c.args, required.args)),
     );
+  for (const [i, rule] of expect.callsOnlyKeys.entries())
+    add(
+      `callsOnlyKeys[${i}]`,
+      calls
+        .filter((c) => toolMatches(c.tool, rule.tool) && partialMatch(c.args, rule.args))
+        .every(
+          (c) =>
+            c.args !== null &&
+            typeof c.args === "object" &&
+            Object.keys(c.args).every((key) => rule.keys.includes(key)),
+        ),
+    );
   for (const name of expect.notCalls)
     add(`notCalls:${name}`, !calls.some((c) => toolMatches(c.tool, name)));
   for (const [i, forbidden] of expect.notCallsWithArgs.entries())
@@ -52,7 +67,9 @@ export function grade(
       ),
     );
   for (const [i, match] of expect.callsArgMatch.entries()) {
-    const candidates = calls.filter((c) => toolMatches(c.tool, match.tool));
+    const candidates = calls.filter(
+      (c) => toolMatches(c.tool, match.tool) && partialMatch(c.args, match.args),
+    );
     add(
       `callsArgMatch[${i}]:${match.tool}`,
       (match.first ? candidates.slice(0, 1) : candidates).some((c) => {
@@ -91,4 +108,96 @@ export function grade(
 }
 export function majority(passes: readonly boolean[]): boolean {
   return passes.filter(Boolean).length > passes.length / 2;
+}
+
+/** Missing files fail positive matches; prohibitions cover every file in a subtree.
+ * Never follow agent-created symlinks out of the disposable Workspace. */
+export async function gradeWorkspaceFiles(
+  expect: EvalCase["expect"],
+  workspace: string,
+): Promise<Check[]> {
+  const checks: Check[] = [];
+  const physicalWorkspace = await realpath(workspace);
+  for (const [i, rule] of expect.files.entries()) {
+    const contents: string[] = [];
+    let exists = false;
+    async function visit(path: string): Promise<void> {
+      if (rule.exclude.some((excluded) => join(workspace, excluded) === path)) return;
+      let stat;
+      try {
+        stat = await lstat(path);
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
+        throw error;
+      }
+      exists = true;
+      if (
+        stat.isSymbolicLink() ||
+        relative(physicalWorkspace, await realpath(path)) !== relative(workspace, path)
+      )
+        throw new Error(`Cannot grade symlink: ${path}`);
+      if (stat.isFile()) contents.push(await readFile(path, "utf8"));
+      else if (stat.isDirectory() && rule.recursive)
+        for (const name of (await readdir(path)).sort())
+          if (!name.startsWith(".eval-")) await visit(join(path, name));
+    }
+    for (const path of typeof rule.path === "string" ? [rule.path] : rule.path)
+      await visit(join(workspace, path));
+    if (rule.exists !== undefined)
+      checks.push({ name: `files[${i}]:exists`, pass: exists === rule.exists });
+    for (const pattern of rule.textMust)
+      checks.push({
+        name: `files[${i}]:must:${pattern}`,
+        pass: contents.some((text) => new RegExp(pattern, "u").test(text)),
+      });
+    for (const pattern of rule.textMustNot)
+      checks.push({
+        name: `files[${i}]:mustNot:${pattern}`,
+        pass: contents.every((text) => !new RegExp(pattern, "u").test(text)),
+      });
+  }
+  return checks;
+}
+
+export async function gradeToolBoundary(
+  expect: EvalCase["expect"],
+  previous: readonly RecordedCall[],
+  current: Pick<RecordedCall, "tool" | "args">,
+  workspace: string,
+): Promise<Check[]> {
+  const checks: Check[] = [];
+  for (const [i, rule] of expect.boundaries.entries()) {
+    if (
+      rule.call &&
+      (!toolMatches(current.tool, rule.call.tool) || !partialMatch(current.args, rule.call.args))
+    )
+      continue;
+    let cursor = -1;
+    const complete =
+      rule.until.length > 0 &&
+      rule.until.every((group) => {
+        const matches = group.map((required) =>
+          previous.findIndex(
+            (call, index) =>
+              index > cursor &&
+              call.valid &&
+              toolMatches(call.tool, required.tool) &&
+              partialMatch(call.args, required.args) &&
+              call.result !== undefined &&
+              partialMatch(call.result, required.result ?? {}),
+          ),
+        );
+        if (matches.some((index) => index < 0)) return false;
+        cursor = Math.max(...matches);
+        return true;
+      });
+    if (complete) continue;
+    checks.push(
+      ...(await gradeWorkspaceFiles({ ...expect, files: rule.files }, workspace)).map((check) => ({
+        ...check,
+        name: `boundary[${i}]:${check.name}`,
+      })),
+    );
+  }
+  return checks;
 }

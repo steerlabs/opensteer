@@ -1908,8 +1908,38 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
 }
 
 describe("opencode Thread naming", () => {
-  it("returns both lines from an isolated, tool-free naming process", async () => {
+  it("publishes the same newest small-family choice with low effort", async () => {
+    expect(await inspect({ scenario: "light-model", sourceId: "opencode" })).toMatchObject({
+      status: "ready",
+      lightModel: { providerId: "openai", modelId: "gpt-6-nano", options: { effort: "low" } },
+    });
+  });
+
+  it("names with the task model when no light model is listed", async () => {
     const fixture = await setup("happy");
+    let titleArgs: readonly string[] | undefined;
+    const session = await fixture.adapter.startSession({
+      ...fixture.context,
+      wrapProcessLaunch: (launch) => {
+        if (launch.cwd.includes("title-")) titleArgs = launch.args;
+        return launch;
+      },
+    });
+    try {
+      expect(
+        await session.generateTitle!({ prompt: "Name it", signal: AbortSignal.timeout(2_000) }),
+      ).toBe("Support migration\nheadphones");
+      expect(titleArgs).toContain(
+        `opencode/${fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId}`,
+      );
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("returns both lines from an isolated, tool-free naming process", async () => {
+    const fixture = await setup("light-model");
     let namingConfig: unknown;
     let namingLaunch: import("@opensteer/harness").HarnessProcessLaunch | undefined;
     const prompt = threadTitlePrompt("Migrate support", { icon: true });
@@ -1928,6 +1958,9 @@ describe("opencode Thread naming", () => {
       );
       const launch = namingLaunch!;
       expect(launch.cwd).toContain("title-");
+      expect(launch.args).toEqual(
+        expect.arrayContaining(["opencode/gpt-6-nano", "--variant", "low"]),
+      );
 
       const config = namingConfig;
       expect(config).toMatchObject({

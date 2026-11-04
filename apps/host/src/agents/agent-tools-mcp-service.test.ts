@@ -1,8 +1,14 @@
+import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import { EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema } from "@opensteer/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { createId, type AgentCapabilityProfileId, type Request } from "@opensteer/core";
+import {
+  createId,
+  OpensteerError,
+  type AgentCapabilityProfileId,
+  type Request,
+} from "@opensteer/core";
 import { AgentControlRequestSchema, createBrowserSessionId } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -958,6 +964,18 @@ describe("AgentToolsMcpService", () => {
       "trigger_write",
     ]);
 
+    await client.callTool({
+      arguments: { action: "list", systemRole: "memory-light", limit: 1 },
+      name: "trigger_read",
+    });
+    expect(handle).toHaveBeenCalledWith(
+      "main-token",
+      expect.objectContaining({
+        input: { operation: "list", systemRole: "memory-light", limit: 1 },
+        tool: "trigger.read",
+      }),
+    );
+
     const read = await client.callTool({
       arguments: { action: "get", occurrenceLimit: 5, triggerId },
       name: "trigger_read",
@@ -971,6 +989,18 @@ describe("AgentToolsMcpService", () => {
         type: "trigger.control",
       }),
     );
+
+    handle.mockRejectedValueOnce(
+      new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED }),
+    );
+    const skipped = await client.callTool({
+      name: "thread_message",
+      arguments: { delivery: "queue", message: "Memory pass due", threadId: "home" },
+    });
+    expect(skipped).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: MANAGED_MEMORY_WAKE_SKIPPED }],
+    });
 
     await client.callTool({
       arguments: { action: "cancel", occurrenceId, triggerId },

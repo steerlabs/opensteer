@@ -1,3 +1,4 @@
+import { type HarnessModelDescriptor, resolveLightModel } from "@opensteer/harness";
 import { type ClaudeExecutableInspection } from "./executable.js";
 import { delay } from "@opensteer/shared/delay";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -1134,76 +1135,7 @@ export class ClaudeHarnessDriver implements HarnessDriver {
       if (config.provider !== "anthropic" && models.length === 0) {
         return claudeCloudIdentityRequired(config.provider);
       }
-      const providerId = ModelProviderIdSchema.parse("anthropic");
-      const groups = new Map<string, ModelInfo[]>();
-      for (const model of models) {
-        const modelId = ModelIdSchema.parse(model.resolvedModel ?? model.value);
-        const group = groups.get(modelId) ?? [];
-        group.push(model);
-        groups.set(modelId, group);
-      }
-      const descriptors = [...groups.entries()].map(([modelId, aliases]) => {
-        const representative =
-          aliases.find((model) => model.value === modelId) ??
-          aliases.find((model) => model.value !== claudeRecommendedModelValue) ??
-          aliases[0];
-        if (!representative) throw new Error("Claude returned an empty model alias group");
-        const supportedEfforts = [
-          ...new Set(
-            aliases.flatMap((model) =>
-              model.supportsEffort ? (model.supportedEffortLevels ?? []) : [],
-            ),
-          ),
-        ];
-        if ((supportedEfforts as readonly string[]).includes(claudeEngineDefaultEffort)) {
-          throw new Error(`Claude Code lists a reasoning level named ${claudeEngineDefaultEffort}`);
-        }
-        return {
-          // Every model Claude Code offers reads images; the CLI has never
-          // listed one that does not.
-          acceptsImages: true,
-          ...(representative.description
-            ? { description: representative.description.slice(0, 500) }
-            : {}),
-          displayName: representative.displayName,
-          isDefault: aliases.some((model) => model.value === claudeRecommendedModelValue),
-          modelId: ModelIdSchema.parse(modelId),
-          options: [
-            ...(supportedEfforts.length > 0
-              ? [
-                  {
-                    defaultValue: claudeEngineDefaultEffort,
-                    id: claudeEffortOptionId,
-                    label: "Reasoning",
-                    type: "select" as const,
-                    values: [
-                      {
-                        description: "Claude Code chooses for this model",
-                        label: "Default",
-                        value: claudeEngineDefaultEffort,
-                      },
-                      ...supportedEfforts.map((value) => ({
-                        label: reasoningEffortLabel(value),
-                        value,
-                      })),
-                    ],
-                  },
-                ]
-              : []),
-            ...(aliases.some((model) => model.supportsFastMode === true)
-              ? [
-                  {
-                    defaultValue: false,
-                    id: claudeFastModeOptionId,
-                    label: "Fast mode",
-                    type: "toggle" as const,
-                  },
-                ]
-              : []),
-          ],
-          providerId,
-        };
-      });
+      const descriptors = claudeCatalogModels(models);
       if (descriptors.length === 0) {
         return { detail: "Claude did not report any available models", status: "unavailable" };
       }
@@ -1211,6 +1143,7 @@ export class ClaudeHarnessDriver implements HarnessDriver {
         connections: [claudeConnectionSummary(account, config.provider)],
         detail: "Claude Code is signed in and ready",
         models: descriptors,
+        lightModel: resolveLightModel(descriptors, claudeLightModels),
         setupMethods:
           config.provider === "anthropic" ? claudeSetupMethods(context.providerState) : [],
         status: "ready",
@@ -1513,7 +1446,7 @@ class ClaudeHarnessSession implements HarnessSession {
         /unavailable|not found|not available|not supported|unsupported|access|invalid|permission|denied/iu.test(
           text,
         );
-      const attempt = async (model: string): Promise<{ text: string; refused: boolean }> => {
+      const attempt = async (useRunModel = false): Promise<{ text: string; refused: boolean }> => {
         signal.throwIfAborted();
         const abortController = new AbortController();
         const abort = () => abortController.abort();
@@ -1522,49 +1455,66 @@ class ClaudeHarnessSession implements HarnessSession {
         let stderr: Promise<string> | undefined;
         let query: ClaudeQueryHandle | undefined;
         try {
+          const options: Options = {
+            abortController,
+            cwd: directory,
+            env: environment,
+            pathToClaudeCodeExecutable: this.#dependencies.executable,
+            managedSettings: managedClaudeSettings(this.#context),
+            skills: [],
+            plugins: [],
+            tools: [],
+            mcpServers: {},
+            strictMcpConfig: true,
+            settingSources: [],
+            persistSession: false,
+            maxTurns: 1,
+            permissionMode: "default",
+            title: "Thread title",
+            canUseTool: async () => ({
+              behavior: "deny",
+              message: "Tools are disabled for Thread titles",
+            }),
+            spawnClaudeCodeProcess: ({ args, command, cwd, env }) => {
+              const inherited: Record<string, string> = {};
+              for (const [name, value] of Object.entries(env))
+                if (value !== undefined) inherited[name] = value;
+              child = spawnSupervised({
+                ...this.#context.wrapProcessLaunch({
+                  executable: command,
+                  args,
+                  cwd: cwd ?? directory,
+                  environment: inherited,
+                }),
+                maxOutputBytes: 8192,
+              });
+              stderr = collectStreamText(child.stderr);
+              void stderr.catch(() => undefined);
+              const stop = () => void child?.terminate(0).catch(() => undefined);
+              abortController.signal.addEventListener("abort", stop, { once: true });
+              if (abortController.signal.aborted) stop();
+              return child.child;
+            },
+          };
+          const inspection = await this.#dependencies.sdk.inspectModels?.(
+            options,
+            this.#config.startupTimeoutMs,
+            signal,
+          );
+          const light =
+            !useRunModel && inspection
+              ? resolveLightModel(claudeCatalogModels(inspection.models), claudeLightModels)
+              : undefined;
+          const selection = light ?? this.#context.modelSelection;
           query = this.#dependencies.sdk.query({
             prompt,
             options: {
-              abortController,
-              cwd: directory,
-              env: environment,
-              pathToClaudeCodeExecutable: this.#dependencies.executable,
-              managedSettings: managedClaudeSettings(this.#context),
-              skills: [],
-              plugins: [],
-              tools: [],
-              mcpServers: {},
-              strictMcpConfig: true,
-              settingSources: [],
-              persistSession: false,
-              maxTurns: 1,
-              permissionMode: "default",
-              title: "Thread title",
-              model,
-              canUseTool: async () => ({
-                behavior: "deny",
-                message: "Tools are disabled for Thread titles",
-              }),
-              spawnClaudeCodeProcess: ({ args, command, cwd, env }) => {
-                const inherited: Record<string, string> = {};
-                for (const [name, value] of Object.entries(env))
-                  if (value !== undefined) inherited[name] = value;
-                child = spawnSupervised({
-                  ...this.#context.wrapProcessLaunch({
-                    executable: command,
-                    args,
-                    cwd: cwd ?? directory,
-                    environment: inherited,
-                  }),
-                  maxOutputBytes: 8192,
-                });
-                stderr = collectStreamText(child.stderr);
-                void stderr.catch(() => undefined);
-                const stop = () => void child?.terminate(0).catch(() => undefined);
-                abortController.signal.addEventListener("abort", stop, { once: true });
-                if (abortController.signal.aborted) stop();
-                return child.child;
-              },
+              ...options,
+              model:
+                light?.modelId ??
+                this.#context.modelSelection.nativeModelId ??
+                this.#context.modelSelection.modelId,
+              ...(selection.options.effort === "low" ? { effort: "low" as const } : {}),
             },
           });
           let text = "";
@@ -1597,14 +1547,10 @@ class ClaudeHarnessSession implements HarnessSession {
           }
         }
       };
-      const first = await attempt("haiku");
-      if (!first.refused) return first.text;
-      signal.throwIfAborted();
-      const fallback = await attempt(
-        this.#context.modelSelection.nativeModelId ?? this.#context.modelSelection.modelId,
-      );
-      if (fallback.refused) throw new Error("Claude refused the Thread title model");
-      return fallback.text;
+      let result = await attempt();
+      if (result.refused) result = await attempt(true);
+      if (result.refused) throw new Error("Claude refused the Thread title model");
+      return result.text;
     });
   }
 
@@ -3604,4 +3550,81 @@ class BoundedTextCollector {
       ? clipUtf8(`${combined}\n[truncated]`, this.#maxBytes)
       : combined;
   }
+}
+
+const claudeLightModels = ["claude-haiku-5-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001"].map(
+  (modelId) => ({ modelId, options: { effort: "low" } }),
+);
+
+function claudeCatalogModels(models: readonly ModelInfo[]): readonly HarnessModelDescriptor[] {
+  const providerId = ModelProviderIdSchema.parse("anthropic");
+  const groups = new Map<string, ModelInfo[]>();
+  for (const model of models) {
+    const modelId = ModelIdSchema.parse(model.resolvedModel ?? model.value);
+    const group = groups.get(modelId) ?? [];
+    group.push(model);
+    groups.set(modelId, group);
+  }
+  return [...groups.entries()].map(([modelId, aliases]) => {
+    const representative =
+      aliases.find((model) => model.value === modelId) ??
+      aliases.find((model) => model.value !== claudeRecommendedModelValue) ??
+      aliases[0];
+    if (!representative) throw new Error("Claude returned an empty model alias group");
+    const supportedEfforts = [
+      ...new Set(
+        aliases.flatMap((model) =>
+          model.supportsEffort ? (model.supportedEffortLevels ?? []) : [],
+        ),
+      ),
+    ];
+    if ((supportedEfforts as readonly string[]).includes(claudeEngineDefaultEffort)) {
+      throw new Error(`Claude Code lists a reasoning level named ${claudeEngineDefaultEffort}`);
+    }
+    return {
+      // Every model Claude Code offers reads images; the CLI has never
+      // listed one that does not.
+      acceptsImages: true,
+      ...(representative.description
+        ? { description: representative.description.slice(0, 500) }
+        : {}),
+      displayName: representative.displayName,
+      isDefault: aliases.some((model) => model.value === claudeRecommendedModelValue),
+      modelId: ModelIdSchema.parse(modelId),
+      options: [
+        ...(supportedEfforts.length > 0
+          ? [
+              {
+                defaultValue: claudeEngineDefaultEffort,
+                id: claudeEffortOptionId,
+                label: "Reasoning",
+                type: "select" as const,
+                values: [
+                  {
+                    description: "Claude Code chooses for this model",
+                    label: "Default",
+                    value: claudeEngineDefaultEffort,
+                  },
+                  ...supportedEfforts.map((value) => ({
+                    label: reasoningEffortLabel(value),
+                    value,
+                  })),
+                ],
+              },
+            ]
+          : []),
+        ...(aliases.some((model) => model.supportsFastMode === true)
+          ? [
+              {
+                defaultValue: false,
+                id: claudeFastModeOptionId,
+                label: "Fast mode",
+                type: "toggle" as const,
+              },
+            ]
+          : []),
+      ],
+      providerId,
+    };
+  });
 }

@@ -198,7 +198,13 @@ function AutomationRow({
         <Icon name={problem ? "alert-circle" : automationGlyph[shape]} />
       </span>
       <span className="automation-row__body">
-        <span className="automation-row__name">{summary.name}</span>
+        <span className="automation-row__name">
+          {summary.systemRole === "memory-light"
+            ? "Light memory pass"
+            : summary.systemRole === "memory-nightly"
+              ? "Nightly memory pass"
+              : summary.name}
+        </span>
         <span className="automation-row__line">
           {problem ? (
             <span className="automation-row__problem">
@@ -220,7 +226,13 @@ function AutomationRow({
               ) : null}
               <span className="automation-row__where">
                 <Icon name="message" />
-                {conversationName(summary.anchorThreadId, summary.anchorThreadTitle, homeThreadId)}
+                {summary.systemRole
+                  ? "Findings through Chat"
+                  : conversationName(
+                      summary.anchorThreadId,
+                      summary.anchorThreadTitle,
+                      homeThreadId,
+                    )}
               </span>
               {run && !paused && shape !== "once" ? (
                 <State text={run.text} tone={run.tone} />

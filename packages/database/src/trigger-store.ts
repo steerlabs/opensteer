@@ -22,6 +22,8 @@ import {
   type Workspace,
 } from "@opensteer/core";
 import {
+  MANAGED_MEMORY_REFUSAL,
+  type TriggerSystemRole,
   MAX_PENDING_TRIGGER_OCCURRENCES,
   MAX_ACTIVE_WATCHES_PER_ENVIRONMENT,
   TRIGGER_AUTO_PAUSE_FAILURE_THRESHOLD,
@@ -64,6 +66,8 @@ import type {
 import { admitThreadExecution } from "./execution-authority.js";
 import { isFinalScheduledOccurrence, recordAutomationFailure } from "./automation-failure-store.js";
 import { runFromRow } from "./thread-row-mappers.js";
+import { getThreadForOwner } from "./thread-store.js";
+import type { Thread } from "@opensteer/core";
 
 type TriggerRow = Selectable<DatabaseSchema["triggers"]>;
 type TriggerRevisionRow = Selectable<DatabaseSchema["triggerRevisions"]>;
@@ -87,6 +91,7 @@ interface CreateTriggerInput {
 }
 
 export interface TriggerDetail {
+  readonly anchorThread: Thread | null;
   readonly activation: TriggerWatchActivation | null;
   readonly anchorThreadTitle: string;
   readonly createdByThreadTitle: string | null;
@@ -221,6 +226,150 @@ export async function assertActiveWatchBinding(
 
 class TriggerOccurrenceSetChanged extends TransactionScopeChanged {}
 
+export async function createTriggerInTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  input: CreateTriggerInput,
+  managed?: {
+    readonly systemRole: TriggerSystemRole;
+    readonly paused: boolean;
+    readonly pauseReason: string | null;
+  },
+) {
+  const source = TriggerSourceSchema.parse(input.source);
+  const program = TriggerProgramSchema.parse(input.program);
+  validateSource(source);
+  const requestFingerprint = fingerprint({
+    anchorThreadId: input.anchorThreadId,
+    name: input.name,
+    program:
+      program.toolContractVersion === 1
+        ? { language: program.language, source: program.source }
+        : program,
+    source,
+  });
+  await sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
+    "trigger-create",
+    input.createdBy,
+    input.idempotencyKey,
+  ])}, 0))`.execute(transaction);
+  const existing = await transaction
+    .selectFrom("triggers")
+    .selectAll()
+    .where("createdBy", "=", input.createdBy)
+    .where("idempotencyKey", "=", input.idempotencyKey)
+    .executeTakeFirst();
+  if (existing) {
+    await lockWatchCapacityForTrigger(transaction, existing.id);
+    const trigger = await lockTriggerForMutation(
+      transaction,
+      {
+        actorThreadId: input.actorThreadId,
+        ownerId: input.createdBy,
+        triggerId: existing.id,
+      },
+      "define",
+    );
+    if (trigger.requestFingerprint !== requestFingerprint) throw idempotencyConflict();
+    await requireTriggerExecutionAuthority(transaction, trigger);
+    const revision = await transaction
+      .selectFrom("triggerRevisions")
+      .selectAll()
+      .where("id", "=", trigger.currentRevisionId)
+      .executeTakeFirstOrThrow();
+    return {
+      revision: revisionFromRow(revision),
+      trigger: triggerFromRow(trigger),
+      wasDuplicate: true,
+    };
+  }
+
+  if (source.kind === "watch") {
+    const anchor = await transaction
+      .selectFrom("threads")
+      .select("workspaceId")
+      .where("id", "=", input.anchorThreadId)
+      .executeTakeFirst();
+    if (!anchor) throw notFound();
+    await lockWatchCapacity(transaction, input.anchorThreadId, anchor.workspaceId);
+  }
+  const authority = await lockTriggerAuthorityThreads(
+    transaction,
+    input.actorThreadId,
+    input.anchorThreadId,
+  );
+  assertTriggerAccess(authority, "define");
+  const anchor = await requireAnchorThread(transaction, input.anchorThreadId, input.createdBy);
+  const triggerId = createId("trigger");
+  const revisionId = createId("triggerRevision");
+  const now = new Date();
+  const nextFireAt =
+    !managed?.paused && source.kind === "schedule" ? firstTriggerFireAt(source.schedule) : null;
+  await transaction
+    .insertInto("triggers")
+    .values({
+      systemRole: managed?.systemRole ?? null,
+      anchorThreadId: anchor.id,
+      consecutiveFailures: 0,
+      createdAt: now,
+      createdBy: input.createdBy,
+      createdByThreadId: input.actorThreadId,
+      currentRevisionId: revisionId,
+      id: triggerId,
+      idempotencyKey: input.idempotencyKey,
+      kind: source.kind,
+      name: input.name,
+      nextFireAt,
+      pauseReason: managed?.pauseReason ?? null,
+      requestFingerprint,
+      status: managed?.paused ? "paused" : "active",
+      updatedAt: now,
+      webhookRouteKey: source.kind === "webhook" ? required(input.webhookRouteKey) : null,
+      webhookSecretHash: source.kind === "webhook" ? required(input.webhookSecretHash) : null,
+      workspaceId: anchor.workspaceId,
+    })
+    .execute();
+  await transaction
+    .insertInto("triggerRevisions")
+    .values({
+      createdAt: now,
+      createdBy: input.createdBy,
+      createdByThreadId: input.actorThreadId,
+      id: revisionId,
+      ordinal: 1,
+      program: jsonValue(program),
+      source: jsonValue(source),
+      triggerId,
+    })
+    .execute();
+  if (source.kind === "watch") {
+    await createWatchActivation(transaction, {
+      anchorThreadId: anchor.id,
+      createdBy: input.createdBy,
+      environmentId: anchor.environmentId,
+      revisionId,
+      triggerId,
+      workspaceId: anchor.workspaceId,
+    });
+  }
+  const [trigger, revision] = await Promise.all([
+    transaction
+      .selectFrom("triggers")
+      .selectAll()
+      .where("id", "=", triggerId)
+      .executeTakeFirstOrThrow(),
+    transaction
+      .selectFrom("triggerRevisions")
+      .selectAll()
+      .where("id", "=", revisionId)
+      .executeTakeFirstOrThrow(),
+  ]);
+  return {
+    revision: revisionFromRow(revision),
+    trigger: triggerFromRow(trigger),
+    wasDuplicate: false,
+  };
+}
+
 export class TriggerStore {
   readonly #database: Kysely<DatabaseSchema>;
 
@@ -228,144 +377,10 @@ export class TriggerStore {
     this.#database = database;
   }
 
-  async create(input: CreateTriggerInput): Promise<{
-    readonly revision: TriggerRevision;
-    readonly trigger: Trigger;
-    readonly wasDuplicate: boolean;
-  }> {
-    const source = TriggerSourceSchema.parse(input.source);
-    const program = TriggerProgramSchema.parse(input.program);
-    validateSource(source);
-    const requestFingerprint = fingerprint({
-      anchorThreadId: input.anchorThreadId,
-      name: input.name,
-      program:
-        program.toolContractVersion === 1
-          ? { language: program.language, source: program.source }
-          : program,
-      source,
-    });
-    return withDatabaseTransaction(this.#database, async (transaction) => {
-      await sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
-        "trigger-create",
-        input.createdBy,
-        input.idempotencyKey,
-      ])}, 0))`.execute(transaction);
-      const existing = await transaction
-        .selectFrom("triggers")
-        .selectAll()
-        .where("createdBy", "=", input.createdBy)
-        .where("idempotencyKey", "=", input.idempotencyKey)
-        .executeTakeFirst();
-      if (existing) {
-        await lockWatchCapacityForTrigger(transaction, existing.id);
-        const trigger = await lockTriggerForMutation(
-          transaction,
-          {
-            actorThreadId: input.actorThreadId,
-            ownerId: input.createdBy,
-            triggerId: existing.id,
-          },
-          "define",
-        );
-        if (trigger.requestFingerprint !== requestFingerprint) throw idempotencyConflict();
-        await requireTriggerExecutionAuthority(transaction, trigger);
-        const revision = await transaction
-          .selectFrom("triggerRevisions")
-          .selectAll()
-          .where("id", "=", trigger.currentRevisionId)
-          .executeTakeFirstOrThrow();
-        return {
-          revision: revisionFromRow(revision),
-          trigger: triggerFromRow(trigger),
-          wasDuplicate: true,
-        };
-      }
-
-      if (source.kind === "watch") {
-        const anchor = await transaction
-          .selectFrom("threads")
-          .select("workspaceId")
-          .where("id", "=", input.anchorThreadId)
-          .executeTakeFirst();
-        if (!anchor) throw notFound();
-        await lockWatchCapacity(transaction, input.anchorThreadId, anchor.workspaceId);
-      }
-      const authority = await lockTriggerAuthorityThreads(
-        transaction,
-        input.actorThreadId,
-        input.anchorThreadId,
-      );
-      assertTriggerAccess(authority, "define");
-      const anchor = await requireAnchorThread(transaction, input.anchorThreadId, input.createdBy);
-      const triggerId = createId("trigger");
-      const revisionId = createId("triggerRevision");
-      const now = new Date();
-      const nextFireAt = source.kind === "schedule" ? firstTriggerFireAt(source.schedule) : null;
-      await transaction
-        .insertInto("triggers")
-        .values({
-          anchorThreadId: anchor.id,
-          consecutiveFailures: 0,
-          createdAt: now,
-          createdBy: input.createdBy,
-          createdByThreadId: input.actorThreadId,
-          currentRevisionId: revisionId,
-          id: triggerId,
-          idempotencyKey: input.idempotencyKey,
-          kind: source.kind,
-          name: input.name,
-          nextFireAt,
-          pauseReason: null,
-          requestFingerprint,
-          status: "active",
-          updatedAt: now,
-          webhookRouteKey: source.kind === "webhook" ? required(input.webhookRouteKey) : null,
-          webhookSecretHash: source.kind === "webhook" ? required(input.webhookSecretHash) : null,
-          workspaceId: anchor.workspaceId,
-        })
-        .execute();
-      await transaction
-        .insertInto("triggerRevisions")
-        .values({
-          createdAt: now,
-          createdBy: input.createdBy,
-          createdByThreadId: input.actorThreadId,
-          id: revisionId,
-          ordinal: 1,
-          program: jsonValue(program),
-          source: jsonValue(source),
-          triggerId,
-        })
-        .execute();
-      if (source.kind === "watch") {
-        await createWatchActivation(transaction, {
-          anchorThreadId: anchor.id,
-          createdBy: input.createdBy,
-          environmentId: anchor.environmentId,
-          revisionId,
-          triggerId,
-          workspaceId: anchor.workspaceId,
-        });
-      }
-      const [trigger, revision] = await Promise.all([
-        transaction
-          .selectFrom("triggers")
-          .selectAll()
-          .where("id", "=", triggerId)
-          .executeTakeFirstOrThrow(),
-        transaction
-          .selectFrom("triggerRevisions")
-          .selectAll()
-          .where("id", "=", revisionId)
-          .executeTakeFirstOrThrow(),
-      ]);
-      return {
-        revision: revisionFromRow(revision),
-        trigger: triggerFromRow(trigger),
-        wasDuplicate: false,
-      };
-    });
+  async create(input: CreateTriggerInput) {
+    return withDatabaseTransaction(this.#database, (transaction) =>
+      createTriggerInTransaction(transaction, input),
+    );
   }
 
   async update(input: {
@@ -387,6 +402,17 @@ export class TriggerStore {
       await lockWatchCapacityForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(transaction, input, "define");
       await requireTriggerExecutionAuthority(transaction, trigger);
+      if (
+        trigger.systemRole &&
+        (input.name !== undefined ||
+          input.program !== undefined ||
+          (input.source !== undefined &&
+            (input.source.kind !== "schedule" ||
+              input.source.schedule.kind !== "cron" ||
+              input.source.schedule.payload !== undefined)))
+      ) {
+        throw conflict(MANAGED_MEMORY_REFUSAL);
+      }
       if (trigger.status === "archived") throw conflict("Archived Triggers cannot be changed");
       if (trigger.currentRevisionId !== input.expectedRevisionId) {
         throw conflict("Trigger revision changed; read it again before updating");
@@ -487,6 +513,7 @@ export class TriggerStore {
         input.status === "archived" ? "define" : "control",
       );
       await requireTriggerExecutionAuthority(transaction, trigger);
+      if (trigger.systemRole && input.status === "archived") throw conflict(MANAGED_MEMORY_REFUSAL);
       // Repeating the current status is a no-op: an auto-paused Trigger keeps
       // its reason and an active one keeps its failure count.
       if (trigger.status === input.status) return triggerFromRow(trigger);
@@ -595,20 +622,29 @@ export class TriggerStore {
     readonly limit?: number;
     readonly ownerId: UserId;
     readonly scope: ThreadReachScope;
+    readonly systemRole?: TriggerSystemRole;
     readonly workspaceId?: WorkspaceId;
   }): Promise<readonly TriggerSummary[]> {
     let query = this.#database
       .selectFrom("triggers")
       .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
+      .innerJoin("workspaceMemberships as reader", (join) =>
+        join
+          .onRef("reader.workspaceId", "=", "triggers.workspaceId")
+          .on("reader.userId", "=", input.ownerId)
+          .on("reader.state", "=", "active"),
+      )
       .selectAll("triggers")
       .select("threads.title as anchorThreadTitle")
       .where("triggers.createdBy", "=", input.ownerId)
       .where("triggers.status", "!=", "archived");
+    if (input.systemRole) query = query.where("triggers.systemRole", "=", input.systemRole);
     if (input.workspaceId) query = query.where("triggers.workspaceId", "=", input.workspaceId);
     if (input.anchorThreadId)
       query = query.where("triggers.anchorThreadId", "=", input.anchorThreadId);
     query = query.where(threadReachPredicate(input.scope));
     const rows = await query
+      .orderBy(sql<boolean>`triggers.system_role is not null`, "desc")
       .orderBy("triggers.updatedAt", "desc")
       .orderBy("triggers.id", "desc")
       .limit(Math.min(Math.max(input.limit ?? 50, 1), 100))
@@ -962,6 +998,12 @@ export class TriggerStore {
     let query = this.#database
       .selectFrom("triggers")
       .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
+      .innerJoin("workspaceMemberships as reader", (join) =>
+        join
+          .onRef("reader.workspaceId", "=", "triggers.workspaceId")
+          .on("reader.userId", "=", ownerId)
+          .on("reader.state", "=", "active"),
+      )
       .selectAll("triggers")
       // The author is named only when the reader could reach that Thread itself.
       .leftJoin("threads as authorThread", (join) =>
@@ -1064,6 +1106,7 @@ export class TriggerStore {
     ];
     return {
       activation: activation ? watchActivationFromRow(activation) : null,
+      anchorThread: await getThreadForOwner(this.#database, trigger.anchorThreadId, ownerId),
       anchorThreadTitle,
       createdByThreadTitle,
       downstreamRuns: downstreamRunRows.slice(0, 100).map((row) => ({
@@ -1138,6 +1181,7 @@ export class TriggerStore {
         throw conflict("Watch Triggers run continuously and cannot create occurrences");
       }
       await requireTriggerExecutionAuthority(transaction, trigger);
+      if (trigger.systemRole) throw conflict(MANAGED_MEMORY_REFUSAL);
       const enqueued = await enqueueOccurrence(
         transaction,
         trigger,
@@ -1663,7 +1707,14 @@ export class TriggerStore {
             .execute();
         await transaction
           .updateTable("triggers")
-          .set({ nextFireAt: null, pauseReason: null, status: "archived", updatedAt: now })
+          .set({
+            nextFireAt: null,
+            pauseReason: null,
+            status: sql<
+              "paused" | "archived"
+            >`case when system_role is not null then 'paused' else 'archived' end`,
+            updatedAt: now,
+          })
           .where("id", "in", triggerIds)
           .execute();
         await transaction
@@ -2253,6 +2304,7 @@ function withoutSchedulePayload(source: TriggerSource): TriggerSource {
 
 function triggerFromRow(row: TriggerRow): Trigger {
   return TriggerSchema.parse({
+    systemRole: row.systemRole,
     anchorThreadId: row.anchorThreadId,
     consecutiveFailures: row.consecutiveFailures,
     createdAt: row.createdAt.toISOString(),

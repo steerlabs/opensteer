@@ -1,3 +1,4 @@
+import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
@@ -5318,6 +5319,7 @@ export class HttpHostClient {
           (event.type === "run.status" && !isActiveRunStatus(event.data.status)))
       )
         this.#runPlaces.end(event.runId, false);
+      invalidateScheduleAnchor(this, event);
       const current = next.threads.find(({ id }) => id === event.threadId);
       const ownsState = this.#threadState.record(event);
       const retained =

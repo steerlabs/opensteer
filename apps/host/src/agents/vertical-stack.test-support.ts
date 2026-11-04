@@ -39,16 +39,15 @@ import {
 } from "@opensteer/protocol";
 import {
   AttachmentCache,
-  LocalWorkspaceService,
   ExecutionContainment,
   FileRunnerIdentityStore,
+  LocalWorkspaceService,
   ReconnectingHostConnection,
   RunnerRuntime,
   executionScopeVariable,
   providerContinuationIdentityProjector,
   type PreparedIntegrationsModule,
   type RunWorkspaceManager,
-  type RunnerAgentsConnection,
   type RunnerLogger,
   type RunnerRuntimeOptions,
 } from "@opensteer/runner";
@@ -91,6 +90,7 @@ const testAgentSkills = {
     "opensteer:computer-use": join(agentSkillsRoot, "skills", "computer-use"),
     "opensteer:computers": join(agentSkillsRoot, "skills", "computers"),
     "opensteer:skills": join(agentSkillsRoot, "skills", "skills"),
+    "opensteer:memory": join(agentSkillsRoot, "skills", "memory"),
     "opensteer:integrations": join(agentSkillsRoot, "skills", "integrations"),
     "opensteer:threads": join(agentSkillsRoot, "skills", "threads"),
     "opensteer:triggers": join(agentSkillsRoot, "skills", "triggers"),
@@ -784,13 +784,6 @@ async function startWithin(
       runnerId: executionRunnerId,
     });
     const identity = await identityStore.loadOrCreate();
-    const skillService = localAuthority
-      ? new LocalWorkspaceService({
-          authority: localAuthority,
-          appServers: runner.appServers,
-          filesystem: {} as never,
-        })
-      : undefined;
     const readinessAbort = new AbortController();
     const runnerConnection = new ReconnectingHostConnection({
       onDisconnected: () =>
@@ -821,58 +814,11 @@ async function startWithin(
           ? {
               localWorkspaces: {
                 inventory: () => localAuthority.inventory(),
-                // Only the lifecycle subset this journey uses is scripted. The
-                // authority still provisions and inspects its real native disk.
-                service: {
-                  scanSkills: (binding, signal) => skillService!.scanSkills(binding, signal),
-                  skillMetadata: (scan) => skillService!.skillMetadata(scan),
-                  async handle(request) {
-                    const echo = {
-                      binding: request.binding,
-                      fence: request.fence,
-                      operationId: request.operationId,
-                      requestId: request.requestId,
-                    };
-                    const signal = AbortSignal.timeout(30_000);
-                    if (request.type === "host.workspace.local.relocate") {
-                      await localAuthority.relocate(
-                        request.binding,
-                        request.slug,
-                        request.adopt,
-                        request.createdBy,
-                        signal,
-                      );
-                      return { ...echo, type: "runner.workspace.local.relocated" };
-                    }
-                    if (request.type === "host.workspace.local.provision") {
-                      const path = await localAuthority.provision(
-                        {
-                          binding: request.binding,
-                          fingerprint: request.fingerprint,
-                          idempotencyKey: request.operationId,
-                        },
-                        signal,
-                      );
-                      return { ...echo, path, type: "runner.workspace.local.provisioned" };
-                    }
-                    if (request.type === "host.workspace.local.inspect") {
-                      const health = await localAuthority.inspect(request.binding, signal);
-                      if (health.status !== "ready")
-                        throw new Error(`Personal journey disk is ${health.status}`);
-                      return {
-                        ...echo,
-                        type: "runner.workspace.local.inspected",
-                        health: { status: "ready" },
-                      };
-                    }
-                    throw new Error(
-                      `Unsupported Personal journey storage request: ${request.type}`,
-                    );
-                  },
-                } satisfies Pick<
-                  NonNullable<RunnerAgentsConnection["localWorkspaces"]>["service"],
-                  "handle" | "scanSkills" | "skillMetadata"
-                > as unknown as NonNullable<RunnerAgentsConnection["localWorkspaces"]>["service"],
+                service: new LocalWorkspaceService({
+                  appServers: { stopBinding: async () => undefined },
+                  authority: localAuthority,
+                  filesystem,
+                }),
               },
             }
           : {}),

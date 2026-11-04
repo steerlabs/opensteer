@@ -730,6 +730,27 @@ function providerList() {
       default: {},
     };
   }
+  if (scenario === "light-model") {
+    return {
+      all: [
+        {
+          id: "opencode",
+          name: "Zen",
+          models: {
+            "gpt-5-nano": { id: "gpt-5-nano", family: "gpt-nano", release_date: "2025-08-01" },
+            "gpt-6-nano": {
+              id: "gpt-6-nano",
+              family: "gpt-nano",
+              release_date: "2026-10-01",
+              variants: { low: {}, high: {} },
+            },
+          },
+        },
+      ],
+      connected: ["opencode"],
+      default: { opencode: "gpt-5-nano" },
+    };
+  }
   return {
     all: [
       {

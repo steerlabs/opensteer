@@ -220,7 +220,12 @@ export class TriggerControlService {
     }
 
     if (request.type === "thread.read") {
-      const thread = await this.#store.getThreadForOwner(request.threadId, claims.requestedBy);
+      const threadId =
+        request.threadId === "home"
+          ? (await this.#store.findMainWorkspaceForOwner(claims.requestedBy))?.homeThreadId
+          : request.threadId;
+      if (!threadId) throw conflict("Chat has not been started yet");
+      const thread = await this.#store.getThreadForOwner(threadId, claims.requestedBy);
       if (!thread) throw forbidden("Thread is unavailable to this user");
       assertProgramThreadScope(anchor, thread);
       const page = await this.#store.threadMessagePageForOwner({
@@ -230,7 +235,7 @@ export class TriggerControlService {
         maxBytes: 400 * 1_024,
         maxItems: request.maxMessages,
         ownerId: claims.requestedBy,
-        threadId: request.threadId,
+        threadId,
       });
       if (!page) throw forbidden("Thread is unavailable to this user");
       const assignments = await this.#store.listThreadAssignmentsForOwner({

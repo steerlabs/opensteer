@@ -686,6 +686,7 @@ export class AgentToolsMcpService {
               ? {
                   limit: read.limit,
                   operation: "list",
+                  ...(read.systemRole ? { systemRole: read.systemRole } : {}),
                   ...(read.workspaceId === undefined ? {} : { workspaceId: read.workspaceId }),
                 }
               : {

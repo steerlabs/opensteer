@@ -2,7 +2,13 @@ import { authenticatePasswordApproval } from "./password-approval-auth.js";
 // @vitest-environment happy-dom
 
 import type { SurfaceModel } from "@opensteer/client/host";
-import { requestAgentProposedDetail, type Request } from "@opensteer/core";
+import {
+  createId,
+  UserIdSchema,
+  WaitingRequestSchema,
+  requestAgentProposedDetail,
+  type Request,
+} from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -817,3 +823,67 @@ function requestBase() {
     targetWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
   } as const;
 }
+
+it.each(["live", "durable"] as const)(
+  "answers an unassigned hidden worker’s %s Request projected onto Chat",
+  async (mode) => {
+    const { waitingQuestion } = await import("./docked-requests.js");
+    const request = {
+      ...requestBase(),
+      kind: "harness.approval" as const,
+      payload: { kind: "harness.approval" as const },
+      mode,
+      ...(mode === "durable"
+        ? {
+            kind: "integration.install" as const,
+            payload: {
+              kind: "integration.install" as const,
+              reason: "Keep this source",
+              manifest: mockTmdbProposal.manifest,
+            },
+          }
+        : {}),
+      presentation: {
+        kind: "choice" as const,
+        options: [{ id: "allow", hint: "allow-once" as const, label: "Allow once" }],
+        risk: "medium" as const,
+        title: "Read memory source?",
+      },
+    };
+    const waiting = {
+      assignments: [],
+      subagent: null,
+      presentation: {
+        threadId: "chat",
+        workerThread: { id: request.originatingThreadId, title: "Light memory worker" },
+      },
+      request,
+    };
+    const chatId = createId("thread");
+    const question = waitingQuestion(
+      [
+        WaitingRequestSchema.parse({
+          ...waiting,
+          presentation: {
+            ...waiting.presentation,
+            threadId: chatId,
+          },
+        }),
+      ],
+      chatId,
+      {
+        id: UserIdSchema.parse(request.requestedBy),
+        instanceRole: "administrator",
+      },
+    );
+    expect(question?.waiting?.presentation?.workerThread.title).toBe("Light memory worker");
+    expect(question?.surface.request.originatingThreadId).toBe(request.originatingThreadId);
+    const dispatch = vi.fn(async () => undefined);
+    await render(question!.surface, dispatch);
+    await click("Review request");
+    await click("Allow once");
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "request.respond", requestId: request.id }),
+    );
+  },
+);

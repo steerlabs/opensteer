@@ -159,6 +159,7 @@ const releasedMigrationNames = [
   "0149_plugin_owner_settings",
   "0150_workspace_skill_inventory",
   "0151_plugin_settings_revisions",
+  "0152_managed_memory_passes",
 ];
 
 describe("migration names", () => {

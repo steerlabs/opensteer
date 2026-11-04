@@ -584,3 +584,63 @@ function windowFor(values: readonly unknown[]) {
     totalItems: values.length,
   };
 }
+
+it("reads home history using the resolved Chat ID", async () => {
+  const chat = { ...thread(), id: createId("thread") };
+  const entry = message(chat.id, createId("run"));
+  const read = vi.fn(async () => ({
+    messages: [entry],
+    window: { ...windowFor([entry]), threadId: chat.id },
+  }));
+  const { service } = makeService({
+    store: {
+      findMainWorkspaceForOwner: vi.fn(async () => ({ homeThreadId: chat.id })),
+      getThreadForOwner: vi.fn(async (id: Thread["id"]) => (id === chat.id ? chat : thread())),
+      threadMessagePageForOwner: read,
+      listThreadAssignmentsForOwner: vi.fn(async () => ({
+        assignments: [],
+        window: windowFor([]),
+      })),
+    },
+  });
+  await expect(
+    service.handle("trigger-token", {
+      type: "thread.read",
+      requestId: crypto.randomUUID(),
+      threadId: "home",
+      maxMessages: 1,
+    }),
+  ).resolves.toMatchObject({ thread: { id: chat.id, workspaceId }, messages: [entry] });
+  expect(read).toHaveBeenCalledWith(expect.objectContaining({ threadId: chat.id }));
+});
+it("reports a missing Chat for trigger home reads", async () => {
+  const { service } = makeService({ store: { findMainWorkspaceForOwner: async () => null } });
+  await expect(
+    service.handle("trigger-token", {
+      type: "thread.read",
+      requestId: crypto.randomUUID(),
+      threadId: "home",
+    }),
+  ).rejects.toThrow("Chat has not been started yet");
+});
+
+it("keeps trigger home reads within the anchor's delegation reach", async () => {
+  const anchor = { ...thread(), capabilityProfileId: "delegated" as const };
+  const chat = { ...thread(), id: createId("thread"), lineageRootThreadId: createId("thread") };
+  const read = vi.fn();
+  const { service } = makeService({
+    store: {
+      findMainWorkspaceForOwner: async () => ({ homeThreadId: chat.id }),
+      getThreadForOwner: async (id: Thread["id"]) => (id === chat.id ? chat : anchor),
+      threadMessagePageForOwner: read,
+    },
+  });
+  await expect(
+    service.handle("trigger-token", {
+      type: "thread.read",
+      requestId: crypto.randomUUID(),
+      threadId: "home",
+    }),
+  ).rejects.toMatchObject({ code: "forbidden" });
+  expect(read).not.toHaveBeenCalled();
+});

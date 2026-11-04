@@ -207,6 +207,7 @@ describe("Cursor inspection", () => {
       logoutSupported: false,
       status: "connected",
     });
+    expect(result.lightModel).toEqual({ providerId: "xai", modelId: "composer-2.5", options: {} });
     expect(result.setupMethods ?? []).toEqual([]);
     expect(result.models.length).toBeGreaterThan(30);
     expect(result.models.find((model) => model.modelId === "auto")?.isDefault).toBe(true);
@@ -1475,41 +1476,55 @@ function processExists(pid: number): boolean {
 export type { HarnessSession };
 
 describe("cursor Thread naming", () => {
-  it("returns both lines from an isolated, tool-free naming process", async () => {
-    const fixture = await setup({});
-    let namingLaunch: import("@opensteer/harness").HarnessProcessLaunch | undefined;
-    const prompt = threadTitlePrompt("Migrate support", { icon: true });
-    const session = await fixture.adapter.startSession({
-      ...fixture.context,
-      wrapProcessLaunch: (launch) => {
-        if (!launch.cwd.includes("title-")) return launch;
-        namingLaunch = launch;
-        return launch;
-      },
-    });
-    try {
-      expect(await session.generateTitle!({ prompt, signal: AbortSignal.timeout(2_000) })).toBe(
-        "Support migration\nheadphones",
-      );
-      const launch = namingLaunch!;
-      expect(launch.cwd).toContain("title-");
+  it.each(["happy", "no-light-model"])(
+    "returns both lines from an isolated, tool-free naming process (%s)",
+    async (scenario) => {
+      const fixture = await setup({
+        scenario,
+        ...(scenario === "no-light-model"
+          ? { modelSelection: { modelId: "claude-opus-4-6", providerId: "anthropic", options: {} } }
+          : {}),
+      });
+      let namingLaunch: import("@opensteer/harness").HarnessProcessLaunch | undefined;
+      const prompt = threadTitlePrompt("Migrate support", { icon: true });
+      const session = await fixture.adapter.startSession({
+        ...fixture.context,
+        wrapProcessLaunch: (launch) => {
+          if (!launch.cwd.includes("title-")) return launch;
+          namingLaunch = launch;
+          return launch;
+        },
+      });
+      try {
+        expect(await session.generateTitle!({ prompt, signal: AbortSignal.timeout(2_000) })).toBe(
+          "Support migration\nheadphones",
+        );
+        const launch = namingLaunch!;
+        expect(launch.cwd).toContain("title-");
 
-      expect(launch.args).toEqual(
-        expect.arrayContaining(["--output-format", "text", "--plugin-dir"]),
-      );
-      expect(launch.environment.CURSOR_DATA_DIR).toContain("title-");
-      expect(launch.environment.HOME).toContain("title-");
+        expect(launch.args).toEqual(
+          expect.arrayContaining([
+            "--output-format",
+            "text",
+            "--plugin-dir",
+            "--model",
+            scenario === "no-light-model" ? "claude-opus-4-6" : "composer-2.5",
+          ]),
+        );
+        expect(launch.environment.CURSOR_DATA_DIR).toContain("title-");
+        expect(launch.environment.HOME).toContain("title-");
 
-      expect(
-        (await readdir(fixture.context.threadStateDirectory)).filter((name) =>
-          name.startsWith("title-"),
-        ),
-      ).toEqual([]);
-    } finally {
-      await session.stop();
-      await fixture.adapter.close();
-    }
-  });
+        expect(
+          (await readdir(fixture.context.threadStateDirectory)).filter((name) =>
+            name.startsWith("title-"),
+          ),
+        ).toEqual([]);
+      } finally {
+        await session.stop();
+        await fixture.adapter.close();
+      }
+    },
+  );
 });
 
 it("delivers distinct full names for two plugins and a loose review skill", async () => {

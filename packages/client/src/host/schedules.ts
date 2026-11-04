@@ -1,3 +1,7 @@
+import {
+  ScheduleAnchorInvalidation,
+  type ScheduleAnchorState,
+} from "./schedule-anchor-invalidation.js";
 import type { TriggerSummary, TriggerSource } from "@opensteer/triggers";
 import { triggerOccurrenceErrorMessage } from "@opensteer/triggers";
 import {
@@ -9,7 +13,7 @@ import {
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { conversationName } from "./conversation-presentation.js";
-import { threadMark, type TaskMark } from "./task-marks.js";
+import { taskMark, threadMark, type TaskMark } from "./task-marks.js";
 import {
   describeEvent,
   describeRepeating,
@@ -30,6 +34,7 @@ export interface ScheduleItem {
   readonly id: string;
   readonly name: string;
   readonly kind: TriggerSummary["kind"];
+  readonly systemRole: TriggerSummary["systemRole"];
   readonly status: TriggerSummary["status"];
   readonly pauseReason: string | null;
   readonly statusWord: string;
@@ -54,6 +59,7 @@ export type ScheduleState<T> =
       readonly status: "loading" | "offline" | "unavailable" | "error";
       readonly data: null;
       readonly error: string | null;
+      readonly errorCode?: string;
     };
 
 export function scheduleTiming(source: TriggerSource): string {
@@ -62,13 +68,19 @@ export function scheduleTiming(source: TriggerSource): string {
     ? `${describeRepeating(source.schedule)} · ${source.schedule.timezone}`
     : `Once, ${formatFullMoment(source.schedule.at)} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
 }
-function scheduleItem(summary: TriggerSummary, snapshot: HostSnapshot): ScheduleItem {
-  const thread = threadInDirectory(summary.anchorThreadId, snapshot);
+function scheduleItem(
+  summary: TriggerSummary,
+  snapshot: HostSnapshot,
+  anchor?: TriggerDetail["anchorThread"],
+): ScheduleItem {
+  const thread =
+    anchor === undefined ? threadInDirectory(summary.anchorThreadId, snapshot) : anchor;
   const home = summary.anchorThreadId === snapshot.homeThreadId;
   return {
     id: summary.id,
     name: summary.name,
     kind: summary.kind,
+    systemRole: summary.systemRole,
     status: summary.status,
     pauseReason: summary.pauseReason,
     statusWord: scheduleStatusWord(summary.status, summary.pauseReason),
@@ -81,7 +93,7 @@ function scheduleItem(summary: TriggerSummary, snapshot: HostSnapshot): Schedule
       home,
       visible: home || thread !== null,
       title: home ? "Chat" : (thread?.title ?? "Unavailable thread"),
-      mark: threadMark(summary.anchorThreadId, snapshot),
+      mark: thread ? taskMark(thread) : threadMark(summary.anchorThreadId, snapshot),
     },
   };
 }
@@ -125,7 +137,7 @@ export function scheduleDetail(
       : null,
   };
   return {
-    item: scheduleItem(summary, snapshot),
+    item: scheduleItem(summary, snapshot, detail.anchorThread),
     definition: detail,
     occurrences: detail.occurrences.map((occurrence) => {
       const replies = detail.downstreamRuns.filter((reply) => reply.occurrenceId === occurrence.id);
@@ -171,7 +183,15 @@ export class ScheduleResource<Wire, Data> {
   readonly read: () => Promise<Wire>;
   readonly present: (wire: Wire, snapshot: HostSnapshot) => Data;
   readonly detail: boolean;
+  readonly discoverRuns: (wire: Wire) => boolean;
+  readonly relatedRuns: (wire: Wire) => readonly string[];
   #projection = "";
+  readonly #anchors = new ScheduleAnchorInvalidation();
+  #releaseAnchors: (() => void) | undefined;
+  readonly anchorThreads: (
+    wire: Wire,
+    snapshot: HostSnapshot,
+  ) => readonly ({ id: string } & ScheduleAnchorState)[];
   get retained(): boolean {
     return this.#listeners.size > 0;
   }
@@ -180,11 +200,20 @@ export class ScheduleResource<Wire, Data> {
     read: () => Promise<Wire>,
     present: (wire: Wire, snapshot: HostSnapshot) => Data,
     detail = false,
+    anchorThreads: (
+      wire: Wire,
+      snapshot: HostSnapshot,
+    ) => readonly ({ id: string } & ScheduleAnchorState)[] = () => [],
+    relatedRuns: (wire: Wire) => readonly string[] = () => [],
+    discoverRuns: (wire: Wire) => boolean = () => false,
   ) {
     this.client = client;
     this.read = read;
     this.present = present;
     this.detail = detail;
+    this.relatedRuns = relatedRuns;
+    this.discoverRuns = discoverRuns;
+    this.anchorThreads = anchorThreads;
   }
   // React reads before subscribing, including after a hidden screen changes readers.
   readonly getSnapshot = (): ScheduleState<Data> =>
@@ -194,6 +223,7 @@ export class ScheduleResource<Wire, Data> {
   readonly subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
     if (this.#listeners.size === 1) {
+      this.#releaseAnchors = this.#anchors.retain(this.client);
       this.#unsubscribe = this.client.subscribe(() => this.#changed());
       this.#signature = "";
       this.#changed();
@@ -201,6 +231,7 @@ export class ScheduleResource<Wire, Data> {
     return () => {
       this.#listeners.delete(listener);
       if (this.#listeners.size === 0) {
+        this.#releaseAnchors?.();
         this.#unsubscribe?.();
         this.#unsubscribe = undefined;
         this.#version++;
@@ -217,16 +248,55 @@ export class ScheduleResource<Wire, Data> {
     this.#state = state;
     for (const listener of this.#listeners) listener();
   }
-  #changed(): void {
-    const s = this.client.getSnapshot();
-    const signature = JSON.stringify([
+  #readSignature(s: HostSnapshot): string {
+    return JSON.stringify([
       scheduleReaderScope(s),
       s.connection,
       s.network,
       s.triggerRevision,
-      this.detail ? s.runQueue.map(({ id, status }) => [id, status]) : null,
-      this.detail ? s.threads.map(({ id, status }) => [id, status]) : null,
+      this.#anchors.revision,
+      s.threads
+        .filter(({ id }) => this.#anchors.anchors.has(id))
+        .map(
+          ({
+            id,
+            status,
+            doneAt,
+            inputQueuePaused,
+            environmentId,
+            harnessInstanceId,
+            modelSelection,
+            accessMode,
+          }) => [
+            id,
+            status,
+            doneAt,
+            inputQueuePaused,
+            environmentId,
+            harnessInstanceId,
+            modelSelection,
+            accessMode,
+          ],
+        ),
+      // Queued inputs have no Run ID or target in triggers.get until admitted.
+      // Ordinary details must discover them; lists and managed workers stay scoped.
+      this.#wire !== undefined && this.discoverRuns(this.#wire)
+        ? s.runQueue.map(({ id }) => id)
+        : null,
+      this.detail
+        ? s.runQueue
+            .filter(
+              ({ id, threadId }) =>
+                this.#anchors.anchors.has(threadId) ||
+                (this.#wire !== undefined && this.relatedRuns(this.#wire).includes(id)),
+            )
+            .map(({ id, status }) => [id, status])
+        : null,
     ]);
+  }
+  #changed(): void {
+    const s = this.client.getSnapshot();
+    const signature = this.#readSignature(s);
     if (signature !== this.#signature) {
       this.#signature = signature;
       void this.refresh().catch(() => undefined);
@@ -247,8 +317,12 @@ export class ScheduleResource<Wire, Data> {
     const version = ++this.#version;
     const snapshot = this.client.getSnapshot();
     const readerScope = scheduleReaderScope(snapshot);
+    const keepData = this.#readerScope === readerScope && this.#state.status === "ready";
     this.#readerScope = readerScope;
-    this.#wire = undefined;
+    if (!keepData) {
+      this.#wire = undefined;
+      this.#anchors.anchors.clear();
+    }
     if (!scheduleOnline(snapshot)) {
       this.#publish({
         status: "offline",
@@ -257,7 +331,11 @@ export class ScheduleResource<Wire, Data> {
       });
       return;
     }
-    this.#publish({ status: "loading", data: null, error: null });
+    if (!keepData) this.#publish({ status: "loading", data: null, error: null });
+    // Before discovery establishes the anchor, hidden control events cannot be
+    // scoped. A scalar fence keeps this window bounded without retaining events.
+    const discovering = this.#anchors.anchors.size === 0;
+    const controlRevision = this.#anchors.controlRevision;
     try {
       const wire = await this.read();
       if (
@@ -266,7 +344,18 @@ export class ScheduleResource<Wire, Data> {
         readerScope !== scheduleReaderScope(this.client.getSnapshot())
       )
         return;
+      if (discovering && controlRevision !== this.#anchors.controlRevision) {
+        await this.refresh();
+        return;
+      }
       this.#wire = wire;
+      const previousAnchors = new Map(this.#anchors.anchors);
+      this.#anchors.anchors.clear();
+      if (this.retained) {
+        for (const thread of this.anchorThreads(wire, this.client.getSnapshot()))
+          this.#anchors.anchors.set(thread.id, { ...previousAnchors.get(thread.id), ...thread });
+      }
+      this.#signature = this.#readSignature(this.client.getSnapshot());
       this.#publish({
         status: "ready",
         data: this.present(wire, this.client.getSnapshot()),
@@ -287,6 +376,7 @@ export class ScheduleResource<Wire, Data> {
           error.code === "unsupported");
       this.#publish({
         status: unavailable ? "unavailable" : "error",
+        ...(error instanceof HostClientRequestError ? { errorCode: error.code } : {}),
         data: null,
         error: unavailable
           ? "Schedules are unavailable on this Host."
@@ -322,6 +412,12 @@ export class SchedulesClient {
         unwrapRpcResult(await client.rpc["triggers.list"](workspaceId ? { workspaceId } : {}))
           .triggers,
       scheduleList,
+      false,
+      (summaries, snapshot) =>
+        summaries.map(
+          ({ anchorThreadId }) =>
+            snapshot.threads.find(({ id }) => id === anchorThreadId) ?? { id: anchorThreadId },
+        ),
     );
   }
   detail(triggerId: string): ScheduleResource<TriggerDetail, ScheduleDetail> {
@@ -332,6 +428,14 @@ export class SchedulesClient {
         async () => unwrapRpcResult(await this.client.rpc["triggers.get"]({ triggerId })),
         scheduleDetail,
         true,
+        (wire, snapshot) => [
+          wire.anchorThread ??
+            snapshot.threads.find(({ id }) => id === wire.trigger.anchorThreadId) ?? {
+              id: wire.trigger.anchorThreadId,
+            },
+        ],
+        (wire) => wire.downstreamRuns.map(({ run }) => run.id),
+        (wire) => wire.trigger.systemRole == null,
       );
       this.#details.set(triggerId, resource);
     }

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createId } from "@opensteer/core";
+import { createId, TimeZoneSchema } from "@opensteer/core";
 import { HarnessInputSchema } from "@opensteer/protocol";
 
 const regex = z.string().superRefine((value, ctx) => {
@@ -48,15 +48,29 @@ const structuredTurn = z
       for (const issue of result.error.issues)
         ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
   });
+const fileRules = z
+  .array(
+    z.strictObject({
+      path: z.union([fixturePath, z.literal("."), z.array(fixturePath).min(1)]),
+      exists: z.boolean().optional(),
+      recursive: z.boolean().default(false),
+      exclude: z.array(fixturePath).default([]),
+      textMust: z.array(regex).default([]),
+      textMustNot: z.array(regex).default([]),
+    }),
+  )
+  .default([]);
 export const CaseSchema = z.strictObject({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/u),
+  after: z.string().optional(),
   area: z.string().min(1),
   kind: z.enum(["bad", "guard", "control"]),
   source: z.strictObject({ commit: z.string().regex(/^[a-f0-9]{40}$/u), note: z.string().min(1) }),
   profile: z.enum(["main", "workspace", "delegated"]),
   role: z.enum(["conversation", "work"]),
-  /** Runs the turns on an Assignment; delegated Threads always have one. */
+  /** Overrides the profile default for workers without an Assignment. */
   assigned: z.boolean().optional(),
+  requesterTimeZone: TimeZoneSchema.optional(),
   engines: z
     .array(z.enum(["claude", "codex", "cursor", "opencode", "pi"]))
     .min(1)
@@ -65,6 +79,18 @@ export const CaseSchema = z.strictObject({
   turns: z.array(z.union([z.string().min(1), structuredTurn])).min(1),
   mocks: z.record(z.string(), z.json()).default({}),
   expect: z.strictObject({
+    files: fileRules,
+    /** Snapshot before matching calls, until ordered groups of successful results complete. */
+    boundaries: z
+      .array(
+        z.strictObject({
+          call: call.optional(),
+          until: z.array(z.array(call.extend({ result: z.json().optional() })).min(1)).default([]),
+          files: fileRules,
+        }),
+      )
+      .default([]),
+    callsOnlyKeys: z.array(call.extend({ keys: z.array(z.string()) })).default([]),
     calls: z.array(call).default([]),
     notCalls: z.array(z.string()).default([]),
     notCallsWithArgs: z.array(call).default([]),
@@ -72,6 +98,7 @@ export const CaseSchema = z.strictObject({
       .array(
         z.strictObject({
           tool: z.string().min(1),
+          args: z.record(z.string(), z.json()).default({}),
           path: z.array(z.string().min(1)).min(1),
           pattern: regex,
           first: z.boolean().default(false),
@@ -94,7 +121,7 @@ export const CaseSchema = z.strictObject({
 export type EvalCase = z.infer<typeof CaseSchema>;
 export function parseCases(text: string): EvalCase[] {
   const ids = new Set<string>();
-  return text.split(/\r?\n/u).flatMap((line, i) => {
+  const cases = text.split(/\r?\n/u).flatMap((line, i) => {
     if (!line.trim()) return [];
     try {
       const value = CaseSchema.parse(JSON.parse(line));
@@ -105,6 +132,11 @@ export function parseCases(text: string): EvalCase[] {
       throw new Error(`Case line ${i + 1}: ${String(cause)}`, { cause });
     }
   });
+  for (const c of cases) {
+    if (c.after && !cases.slice(0, cases.indexOf(c)).some((p) => p.id === c.after))
+      throw new Error(`Case ${c.id}: after must name an earlier case`);
+  }
+  return cases;
 }
 
 export function inputForCaseTurn(turn: EvalCase["turns"][number]) {

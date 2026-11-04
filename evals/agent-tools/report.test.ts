@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
-import { compareBaseline, fingerprint } from "./report.js";
+import { compareBaseline, fingerprint, caseOutcome, summary } from "./report.js";
+import { parseCases } from "./cases.js";
 it("rejects incompatible and incomplete baselines, allows changed treatment, fails majority regressions", () => {
   const identity = {
     engine: "codex",
@@ -28,9 +29,7 @@ it("rejects incompatible and incomplete baselines, allows changed treatment, fai
   expect(() => compareBaseline([row, row], now, ["one"], row.fingerprint)).toThrow(/duplicate/);
 });
 
-it("never classifies missing or incomplete required current samples as pass or regression", async () => {
-  const { caseOutcome, summary } = await import("./report.js");
-  const { parseCases } = await import("./cases.js");
+it("never classifies missing or incomplete required current samples as pass or regression", () => {
   const row = {
     caseId: "one",
     sample: 1,

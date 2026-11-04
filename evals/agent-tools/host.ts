@@ -11,7 +11,9 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createId } from "@opensteer/core";
+import { AgentControlRequestSchema } from "@opensteer/protocol";
 import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { partialMatch, gradeToolBoundary, type Check } from "./grader.js";
 import { AgentToolsMcpService } from "../../apps/host/src/agents/agent-tools-mcp-service.js";
 import { AgentControlTokenService } from "../../apps/host/src/agents/agent-control-service.js";
 import {
@@ -26,7 +28,8 @@ import type { EvalCase } from "./cases.js";
 import type { RecordedCall } from "./grader.js";
 
 // These are test doubles, never a real Host store, grant, credential or integration.
-// Every tool call first traverses the production MCP service's Zod boundary.
+// Product calls traverse the production action expansion and control request
+// validation before this sentinel allows a fixture to replace the backend.
 const validated = "EVAL_VALIDATED_NO_SIDE_EFFECT";
 function unavailable(): never {
   throw new Error(validated);
@@ -40,8 +43,9 @@ const bodySchema = z.looseObject({
   id: z.union([z.string(), z.number(), z.null()]).optional(),
 });
 
-export async function startFakeHost(testCase: EvalCase) {
+export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const calls: RecordedCall[] = [];
+  const boundaryChecks: Check[] = [];
   const secret = randomUUID();
   const scope = {
     bindingGeneration: 1,
@@ -85,7 +89,12 @@ export async function startFakeHost(testCase: EvalCase) {
   const url = new URL(`http://127.0.0.1:${address.port}`);
   const agent = new AgentToolsMcpService({
     publicUrl: url,
-    agentControl: { handle: async () => unavailable() },
+    agentControl: {
+      handle: async (_token, request) => {
+        AgentControlRequestSchema.parse(request);
+        return unavailable();
+      },
+    },
     apps: {
       publish: async () => unavailable(),
       list: async () => unavailable(),
@@ -107,6 +116,8 @@ export async function startFakeHost(testCase: EvalCase) {
   const clients: Client[] = [];
   const activeCalls = new Map<string, number>();
   const mockOffsets = new Map<string, number>();
+  const triggerWrites = new Map<string, unknown>();
+  const triggerSources = new Map<string, unknown>();
   const endpoints = new Map<
     string,
     {
@@ -145,7 +156,12 @@ export async function startFakeHost(testCase: EvalCase) {
       res.end(String(error));
     });
   });
-  async function close() {
+  // Chained samples close each stage's Host, then sample cleanup closes the last one again.
+  let closing: Promise<void> | undefined;
+  function close(): Promise<void> {
+    return (closing ??= closeOnce());
+  }
+  async function closeOnce() {
     const closed = await Promise.allSettled([
       ...clients.map((client) => client.close()),
       ...sessions.map(({ server }) => server.close()),
@@ -197,7 +213,13 @@ export async function startFakeHost(testCase: EvalCase) {
               (tool) => tool.name === name,
             );
             const valid = definition
-              ? definition.inputSchema.safeParse(args).success
+              ? definition.inputSchema.safeParse(args).success &&
+                (original.isError !== true ||
+                  (Array.isArray(original.content) &&
+                    original.content.some(
+                      (block) =>
+                        isRecord(block) && block.type === "text" && block.text === validated,
+                    )))
               : !text.includes("invalid_arguments:") &&
                 !text.includes("Unknown tool") &&
                 !text.includes("not available to this execution");
@@ -206,6 +228,14 @@ export async function startFakeHost(testCase: EvalCase) {
             let result = Object.hasOwn(testCase.mocks, name)
               ? testCase.mocks[name]
               : defaultResult(name);
+            if (isRecord(result) && Array.isArray(result.$byArgs)) {
+              const entry = result.$byArgs.find(
+                (candidate) => isRecord(candidate) && partialMatch(args, candidate.args),
+              );
+              result = isRecord(entry)
+                ? entry.result
+                : { status: "unavailable", message: "No case mock matches these arguments" };
+            }
             if (
               result !== null &&
               typeof result === "object" &&
@@ -226,6 +256,53 @@ export async function startFakeHost(testCase: EvalCase) {
                 content: [{ type: "text", text: result.$error }],
               };
             }
+            // Keep successful Trigger mutations readable; fixed fixture timestamps otherwise
+            // contradict the real Run clock and provoke spurious repair attempts.
+            if (name === "trigger_write" && isRecord(result) && typeof result.id === "string") {
+              const triggerId = result.id;
+              if (
+                args.action === "create" &&
+                isRecord(args.source) &&
+                typeof args.source.at === "string"
+              )
+                result = { ...result, nextFireAt: new Date(args.source.at).toISOString() };
+              triggerWrites.set(triggerId, result);
+              if (
+                args.action === "update" &&
+                isRecord(args.source) &&
+                args.source.kind === "schedule" &&
+                typeof args.source.cron === "string"
+              )
+                triggerSources.set(triggerId, {
+                  kind: "schedule",
+                  schedule: {
+                    kind: "cron",
+                    expression: args.source.cron,
+                    timezone: args.source.timezone,
+                  },
+                });
+            }
+            if (name === "trigger_read" && isRecord(result)) {
+              if (isRecord(result.trigger) && typeof result.trigger.id === "string") {
+                const triggerId = result.trigger.id;
+                result = {
+                  ...result,
+                  trigger: triggerWrites.get(triggerId) ?? result.trigger,
+                  ...(isRecord(result.revision) && triggerSources.has(triggerId)
+                    ? { revision: { ...result.revision, source: triggerSources.get(triggerId) } }
+                    : {}),
+                };
+              } else if (Array.isArray(result.triggers))
+                result = {
+                  ...result,
+                  triggers: result.triggers.map((trigger) =>
+                    isRecord(trigger) && typeof trigger.id === "string"
+                      ? (triggerWrites.get(trigger.id) ?? trigger)
+                      : trigger,
+                  ),
+                };
+            }
+            calls[index] = { tool: name, args, valid, result };
             return {
               content: [{ type: "text", text: JSON.stringify(result) }],
               ...(name !== "integration_describe" && isRecord(result)
@@ -244,6 +321,18 @@ export async function startFakeHost(testCase: EvalCase) {
             .looseObject({ name: z.string(), arguments: z.unknown().optional() })
             .safeParse(parsedBody.params);
           callKey = `${session.transport.sessionId}:${String(parsedBody.id)}`;
+          if (workspace && params.success)
+            boundaryChecks.push(
+              ...(await gradeToolBoundary(
+                testCase.expect,
+                calls,
+                {
+                  tool: params.data.name,
+                  args: params.data.arguments ?? {},
+                },
+                workspace,
+              )),
+            );
           activeCalls.set(callKey, calls.length);
           calls.push({
             tool: params.success ? params.data.name : "<invalid-name>",
@@ -262,7 +351,7 @@ export async function startFakeHost(testCase: EvalCase) {
         }
       });
     }
-    return { calls, scope, secret, url, endpoints, close };
+    return { calls, boundaryChecks, scope, secret, url, endpoints, close };
   } catch (error) {
     await close();
     throw error;

@@ -2,6 +2,7 @@ import { OpensteerError } from "@opensteer/core";
 import type {
   AgentEventType,
   AssignmentRunContext,
+  DelegationModelChoice,
   DeploymentKind,
   EnvironmentId,
   RunnerEventData,
@@ -674,6 +675,7 @@ export type HarnessInspectionResult =
       readonly detail?: string;
       readonly connections?: readonly HarnessObservedConnection[];
       readonly models: readonly HarnessModelDescriptor[];
+      readonly lightModel?: DelegationModelChoice | undefined;
       readonly setupMethods?: readonly HarnessSetupMethod[];
       readonly status: "ready";
     }

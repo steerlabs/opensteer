@@ -1,6 +1,11 @@
 import { threadMark, assignmentTitle } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import { waitingRequestSource, type HostClient, type SurfaceModel } from "@opensteer/client/host";
+import {
+  waitingRequestPresentationSource,
+  waitingRequestSource,
+  type HostClient,
+  type SurfaceModel,
+} from "@opensteer/client/host";
 import type { AuthenticatedUser, WaitingRequest } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import { useMemo, type ReactNode } from "react";
@@ -43,19 +48,23 @@ export function WaitingQuestions(props: {
   if (question === null) return null;
   const { surface, waiting: focused } = question;
   const task = focused ? waitingRequestSource(focused, props.threadId) : null;
+  const worker = focused ? waitingRequestPresentationSource(focused, props.threadId) : null;
+  const source =
+    worker ??
+    (task ? { id: task.workerThread.id, title: assignmentTitle(task, { threads }) } : null);
   return (
     <Animated.View entering={appear} style={styles.question}>
-      {task === null ? null : (
+      {source === null ? null : (
         <Pressable
           accessibilityHint="Opens the task that is asking"
           accessibilityRole="link"
           hitSlop={space[8]}
-          onPress={() => props.onOpenTask(task.workerThread.id)}
+          onPress={() => props.onOpenTask(source.id)}
           style={styles.source}
         >
-          <TaskMark mark={threadMark(task.workerThread.id, snapshot)} size={16} />
+          <TaskMark mark={threadMark(source.id, snapshot)} size={16} />
           <AppText numberOfLines={1} role="caption" style={styles.sourceTitle}>
-            {assignmentTitle(task, { threads })}
+            {source.title}
           </AppText>
           <Symbol name="chevron.right" size={11} tint={color.amber} />
         </Pressable>

@@ -55,6 +55,12 @@ import { messageFromRow } from "./thread-row-mappers.js";
 import { NotificationStateStore } from "./notification-state.js";
 import { issueRunGrant } from "./run-grants.js";
 import { encodeWindowCursor, jsonValue } from "./store-primitives.js";
+import { TriggerStore } from "./trigger-store.js";
+import {
+  pendingEvent,
+  testContinuationIdentity,
+  sealedTestRequestResponse,
+} from "./store.integration.test-support.js";
 import { requestInsert } from "./request-store.js";
 import { OpensteerStore } from "./store.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
@@ -293,6 +299,98 @@ integration("notification decision boundary", () => {
       });
       if (!admitted.run) throw new Error("Expected the Thread's turn to queue a Run");
       return { ...base, runId: admitted.run.id, threadId: thread.id, workspaceId };
+    }
+    async function claimRun(runId: RunId): Promise<void> {
+      const command = await database
+        .selectFrom("commands")
+        .select("id")
+        .where("runId", "=", runId)
+        .where("type", "=", "run.execute")
+        .executeTakeFirstOrThrow();
+      expect(await store.claimCommand(command.id, "notification-request-test")).not.toBeNull();
+    }
+    async function personSession(fixture: Fixture): Promise<string> {
+      const id = createId("authSession");
+      const now = new Date();
+      await database
+        .insertInto("authSessions")
+        .values({
+          id,
+          userId: fixture.ownerId,
+          token: randomUUID(),
+          expiresAt: new Date(Date.now() + 60_000),
+          absoluteExpiresAt: new Date(Date.now() + 60_000),
+          ipAddress: null,
+          userAgent: null,
+          deviceLabel: "Test phone",
+          lastSeenAt: now,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .execute();
+      return id;
+    }
+    async function startRequestRun(fixture: Fixture): Promise<number> {
+      await claimRun(fixture.runId);
+      const binding = await store.acquireExecutionBinding({
+        bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+        continuationIdentity: testContinuationIdentity,
+        harnessInstanceId: fixture.harnessInstance.id,
+        leaseTokenHash: `request-${fixture.runId}`,
+        membershipGeneration: 1,
+        runnerBootId: "test-boot",
+        runnerId: fixture.runnerId,
+        runId: fixture.runId,
+        threadId: fixture.threadId,
+      });
+      await store.bindProviderSession({
+        bindingGeneration: binding.bindingGeneration,
+        harnessInstanceId: fixture.harnessInstance.id,
+        providerSessionId: binding.providerSessionId,
+        providerSessionReference: `native-${fixture.threadId}`,
+        runId: fixture.runId,
+        runnerBootId: "test-boot",
+        runnerId: fixture.runnerId,
+        threadId: fixture.threadId,
+      });
+      await store.commitRunnerEvent({
+        environmentId: fixture.environmentId,
+        runnerBootId: "test-boot",
+        runnerId: fixture.runnerId,
+        event: pendingEvent({
+          bindingGeneration: binding.bindingGeneration,
+          environmentId: fixture.environmentId,
+          runId: fixture.runId,
+          threadId: fixture.threadId,
+          workspaceId: fixture.workspaceId,
+          ordinal: 0,
+          type: "run.started",
+          data: { status: "running" },
+        }),
+      });
+      return binding.bindingGeneration;
+    }
+    async function finishRequestRun(fixture: Fixture): Promise<void> {
+      const run = await database
+        .selectFrom("runs")
+        .select("bindingGeneration")
+        .where("id", "=", fixture.runId)
+        .executeTakeFirstOrThrow();
+      await store.commitRunnerEvent({
+        environmentId: fixture.environmentId,
+        runnerBootId: "test-boot",
+        runnerId: fixture.runnerId,
+        event: pendingEvent({
+          bindingGeneration: run.bindingGeneration!,
+          environmentId: fixture.environmentId,
+          runId: fixture.runId,
+          threadId: fixture.threadId,
+          workspaceId: fixture.workspaceId,
+          ordinal: 1,
+          type: "run.completed",
+          data: { status: "completed" },
+        }),
+      });
     }
     async function markRunning(fixture: Fixture, runId: RunId = fixture.runId): Promise<void> {
       const run = await database
@@ -620,6 +718,11 @@ integration("notification decision boundary", () => {
                   }
                 : { cause: "request-answered", kind },
       );
+      await database
+        .updateTable("runs")
+        .set({ personWaited: kind === "human" })
+        .where("id", "=", fixture.runId)
+        .execute();
       const seed = await database
         .selectFrom("runs")
         .select("seedInputId")
@@ -721,6 +824,10 @@ integration("notification decision boundary", () => {
       createFixture,
       addMember,
       addThread,
+      claimRun,
+      personSession,
+      startRequestRun,
+      finishRequestRun,
       markRunning,
       appendReply,
       appendRunnerEvent,
@@ -863,6 +970,262 @@ integration("notification decision boundary", () => {
         ]);
       },
     );
+
+    it.for(["trigger", "watch", "agent", "human"] as const)(
+      "notifies for a work reply only when the person asked (%s)",
+      async (seed, { storeFixture }) => {
+        const { createFixture, setRunSeedAuthor, appendCompletedReply, text, decideCommitted } =
+          storeFixture;
+        const fixture = await createFixture(`worker-${seed}`);
+        await setRunSeedAuthor(fixture, seed);
+        await appendCompletedReply(fixture, text("Done."));
+        expect((await decideCommitted(fixture)).decided).toHaveLength(seed === "human" ? 1 : 0);
+      },
+    );
+
+    it.for(["reply", "failure", "system"] as const)(
+      "notifies after a person answers a durable Request (%s)",
+      async (outcome, { storeFixture }) => {
+        const {
+          createFixture,
+          personSession,
+          startRequestRun,
+          finishRequestRun,
+          store,
+          appendCompletedReply,
+          appendRunFailed,
+          text,
+          observedViews,
+          decideCommitted,
+        } = storeFixture;
+        const fixture = await createFixture(`request-continuation-${outcome}`);
+        await startRequestRun(fixture);
+        const opened =
+          outcome === "system"
+            ? await store.requests.create({
+                callId: randomUUID(),
+                kind: "machine.full-disk-access",
+                mode: "durable",
+                originatingRunId: fixture.runId,
+                originatingThreadId: fixture.threadId,
+                originatingWorkspaceId: fixture.workspaceId,
+                targetWorkspaceId: fixture.workspaceId,
+                requestedBy: fixture.ownerId,
+                requiredActor: "requester",
+                payload: {
+                  kind: "machine.full-disk-access",
+                  machineId: fixture.runnerId,
+                  machineName: "Test Mac",
+                  reason: "Read files",
+                },
+                presentation: {
+                  kind: "external",
+                  title: "Full Disk Access",
+                  subject: { kind: "machine", id: fixture.runnerId },
+                },
+              })
+            : await store.requests.openPasswordSignIn({
+                callId: randomUUID(),
+                kind: "browser.password-sign-in",
+                mode: "durable",
+                originatingRunId: fixture.runId,
+                originatingThreadId: fixture.threadId,
+                originatingWorkspaceId: fixture.workspaceId,
+                targetWorkspaceId: fixture.workspaceId,
+                requestedBy: fixture.ownerId,
+                requiredActor: "requester",
+                payload: {
+                  kind: "browser.password-sign-in",
+                  operationId: randomUUID(),
+                  scope: "workspace",
+                  permissionVersion: 5,
+                  runnerId: fixture.runnerId,
+                  computerName: "Test Mac",
+                  reason: "Sign in",
+                  site: "https://example.com",
+                  expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                },
+                presentation: {
+                  kind: "external",
+                  title: "Sign in",
+                  subject: { kind: "browser-site", id: "https://example.com" },
+                },
+              });
+        if (outcome === "system")
+          await store.requests.fulfillMachineFullDiskAccessRequests(fixture.runnerId);
+        else
+          await store.requests.settlePasswordSignInRequest({
+            ownerId: fixture.ownerId,
+            requestId: opened.request.id,
+            settlementSessionId: await personSession(fixture),
+            settlement: { status: "declined" },
+          });
+        await finishRequestRun(fixture);
+        const admitted = await store.enqueueThreadInput({
+          content: text("The person declined sign-in."),
+          idempotencyKey: randomUUID(),
+          policy: "queue",
+          requestedBy: fixture.ownerId,
+          threadId: fixture.threadId,
+          source: {
+            kind: "platform",
+            cause: "request-resolved",
+            referenceId: opened.request.id,
+            sourceRunId: fixture.runId,
+          },
+        });
+        expect(admitted.run, JSON.stringify(admitted)).not.toBeNull();
+        const next = { ...fixture, runId: admitted.run!.id };
+        await startRequestRun(next);
+        if (outcome !== "failure") await appendCompletedReply(next, text("Continued."));
+        else await appendRunFailed(next);
+        await decideCommitted(next);
+        const decisions = await observedViews();
+        expect(
+          decisions.filter(
+            (d) => d.kind === (outcome !== "failure" ? "reply-published" : "run-failed"),
+          ),
+        ).toHaveLength(outcome === "system" ? 0 : 1);
+      },
+    );
+
+    it.for([true, false])(
+      "a live Request answer joins an automatic Run (person: %s)",
+      async (person, { storeFixture }) => {
+        const {
+          createFixture,
+          store,
+          database,
+          personSession,
+          startRequestRun,
+          finishRequestRun,
+          appendCompletedReply,
+          text,
+          observedViews,
+          decideCommitted,
+        } = storeFixture;
+        const fixture = await createFixture(`live-answer-${person}`);
+        // End the fixture's initial human turn before the scheduled work begins.
+        await startRequestRun(fixture);
+        await finishRequestRun(fixture);
+        const triggers = new TriggerStore(database);
+        const created = await triggers.create({
+          actorThreadId: null,
+          anchorThreadId: fixture.threadId,
+          createdBy: fixture.ownerId,
+          idempotencyKey: randomUUID(),
+          name: "Automatic work",
+          program: {
+            toolContractVersion: 3,
+            language: "javascript",
+            source: "export default async () => null",
+          },
+          source: {
+            kind: "schedule",
+            schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+          },
+        });
+        const occurrence = await triggers.enqueueManual({
+          actorThreadId: null,
+          ownerId: fixture.ownerId,
+          triggerId: created.trigger.id,
+        });
+        await store.claimCommand(occurrence.commandId, "request-test");
+        await triggers.startExecution({
+          commandId: occurrence.commandId,
+          runnerBootId: "test-boot",
+          runnerId: fixture.runnerId,
+        });
+        const admitted = await store.enqueueThreadInput({
+          content: text("Automatic wake"),
+          policy: "queue",
+          requestedBy: fixture.ownerId,
+          idempotencyKey: randomUUID(),
+          threadId: fixture.threadId,
+          source: { kind: "trigger", occurrenceId: occurrence.id },
+        });
+        expect(admitted.run, JSON.stringify(admitted)).not.toBeNull();
+        const automatic = { ...fixture, runId: admitted.run!.id };
+        const automaticBinding = await startRequestRun(automatic);
+        const requestId = createId("request");
+        const request = PendingRequestSchema.parse({
+          ...storeFixture.pendingRequest(automatic, "requester"),
+          id: requestId,
+        });
+        await store.commitRunnerEvent({
+          environmentId: automatic.environmentId,
+          runnerBootId: "test-boot",
+          runnerId: automatic.runnerId,
+          event: pendingEvent({
+            bindingGeneration: automaticBinding,
+            environmentId: automatic.environmentId,
+            runId: automatic.runId,
+            threadId: automatic.threadId,
+            workspaceId: automatic.workspaceId,
+            ordinal: 1,
+            type: "request.opened",
+            data: { request },
+          }),
+        });
+        if (person) {
+          const command = await store.enqueueRunnerControl({
+            type: "request.respond",
+            requestId,
+            response: { kind: "choice", optionId: "allow" },
+            settlementSessionId: await personSession(fixture),
+            sealedResponse: sealedTestRequestResponse(),
+            requestedBy: fixture.ownerId,
+            runId: automatic.runId,
+            threadId: fixture.threadId,
+            idempotencyKey: randomUUID(),
+          });
+          await store.claimCommand(command.command.id, "request-answer");
+          await store.succeedCommand(command.command.id);
+        } else await store.requests.cancelForRun(automatic.runId, "run-ended");
+        await appendCompletedReply(automatic, text("Finished."));
+        await decideCommitted(automatic);
+        const decisions = await observedViews();
+        expect(decisions.filter((d) => d.kind === "reply-published")).toHaveLength(person ? 1 : 0);
+      },
+    );
+
+    it("notifies when a person's input joins an automatic worker Run", async ({ storeFixture }) => {
+      const {
+        createFixture,
+        setRunSeedAuthor,
+        appendReply,
+        appendCompletedReply,
+        text,
+        decideCommitted,
+        database,
+      } = storeFixture;
+      const fixture = await createFixture("worker-human-join");
+      await setRunSeedAuthor(fixture, "trigger");
+      const joined = await appendReply(fixture, text("Please check this too."));
+      await database
+        .updateTable("messages")
+        .set({
+          kind: "input",
+          author: jsonValue({
+            kind: "human",
+            displayName: "Owner",
+            principalId: "test-principal",
+            userId: fixture.ownerId,
+          }),
+        })
+        .where("id", "=", joined.id)
+        .execute();
+      await appendCompletedReply(fixture, text("Checked."));
+      expect((await decideCommitted(fixture)).decided).toHaveLength(1);
+    });
+
+    it("does not notify for a failed Trigger-woken worker", async ({ storeFixture }) => {
+      const { createFixture, setRunSeedAuthor, appendRunFailed, decideCommitted } = storeFixture;
+      const fixture = await createFixture("worker-failed");
+      await setRunSeedAuthor(fixture, "trigger");
+      await appendRunFailed(fixture, "Something failed.");
+      expect((await decideCommitted(fixture)).decided).toEqual([]);
+    });
 
     it("alerts only for the Chat relay of delegated work, never the task's own reply or failure", async ({
       storeFixture,

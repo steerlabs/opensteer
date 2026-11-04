@@ -1,3 +1,4 @@
+import { resolveLightModel } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
@@ -509,6 +510,7 @@ export class OpencodeHarnessDriver implements HarnessDriver {
         ],
         detail: `${opencodeConnectionLabel(source.label, config.baseUrl)} is ready`,
         models,
+        lightModel: opencodeLightModel(entry, context.sourceId),
         setupMethods: opencodeSetupMethods(context.sourceId),
         status: "ready",
       };
@@ -768,10 +770,16 @@ class OpencodeHarnessSession implements HarnessSession {
         }),
         "provider list",
       );
-      const model = `${providerId}/${opencodeTitleModel(
-        providers.all.find((candidate) => candidate.id === providerId),
-        harnessModelId(context.modelSelection),
-      )}`;
+      const provider = providers.all.find((candidate) => candidate.id === providerId);
+      const light = provider && opencodeLightModel(provider, this.#sourceId);
+      const selection = light ?? context.modelSelection;
+      const descriptor =
+        provider &&
+        opencodeCatalogModels(provider, undefined, this.#sourceId).find(
+          (model) =>
+            model.modelId === selection.modelId && model.providerId === selection.providerId,
+        );
+      const model = `${providerId}/${descriptor?.nativeModelId ?? light?.modelId ?? harnessModelId(context.modelSelection)}`;
       const configuration = {
         provider: runConfig.provider,
         enabled_providers: [opencodeProviderId(this.#sourceId)],
@@ -836,6 +844,9 @@ class OpencodeHarnessSession implements HarnessSession {
             "json",
             "--model",
             model,
+            ...(typeof selection.options.effort === "string"
+              ? ["--variant", selection.options.effort]
+              : []),
             "--title",
             "Thread title",
             "--print-logs",
@@ -2197,31 +2208,26 @@ const OpencodeTitleCandidateSchema = z.looseObject({
 /** 1.18.32 `Provider.getSmallModel`'s families, which OpenCode's own titles prefer. */
 const opencodeSmallModelFamilies = ["gemini-flash", "gpt-nano", "claude-haiku"];
 
-/**
- * The model OpenCode itself would title with: the newest of the provider's
- * small-model families (only `gpt-nano` on OpenCode's own gateway), else the
- * Run's model, which this account is known to be able to use.
- */
-function opencodeTitleModel(
-  provider: z.infer<typeof OpencodeProviderSchema> | undefined,
-  runModelId: string,
-): string {
-  const models = Object.values(provider?.models ?? {}).flatMap((model) => {
+function opencodeLightModel(provider: z.infer<typeof OpencodeProviderSchema>, sourceId: string) {
+  const models = opencodeCatalogModels(provider, undefined, sourceId);
+  const candidates = Object.values(provider.models).flatMap((model) => {
     const parsed = OpencodeTitleCandidateSchema.safeParse(model);
     return parsed.success ? [parsed.data] : [];
   });
-  const families = provider?.id.startsWith("opencode") ? ["gpt-nano"] : opencodeSmallModelFamilies;
-  for (const family of families) {
-    const [small] = models
+  const families = provider.id.startsWith("opencode") ? ["gpt-nano"] : opencodeSmallModelFamilies;
+  const ranking = families.flatMap((family) =>
+    candidates
       .filter((model) => model.family === family)
       .sort(
-        (left, right) =>
-          (right.release_date ?? "").localeCompare(left.release_date ?? "") ||
-          right.id.localeCompare(left.id),
-      );
-    if (small) return small.id;
-  }
-  return runModelId;
+        (a, b) =>
+          (b.release_date ?? "").localeCompare(a.release_date ?? "") || b.id.localeCompare(a.id),
+      )
+      .map((model) => canonicalModelReference(model.id, sourceId).modelId),
+  );
+  return resolveLightModel(
+    models,
+    ranking.map((modelId) => ({ modelId, options: { effort: "low" } })),
+  );
 }
 
 function opencodeCatalogModels(

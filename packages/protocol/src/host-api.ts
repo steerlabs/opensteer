@@ -1985,6 +1985,7 @@ export const hostApi = defineRpc({
         .max(100),
       downstreamRunsTruncated: z.boolean(),
       activation: TriggerWatchActivationViewSchema.nullable(),
+      anchorThread: ThreadViewSchema.nullable().optional(),
       anchorThreadTitle: ThreadViewSchema.shape.title,
       createdByThreadTitle: ThreadViewSchema.shape.title.nullable().default(null),
       occurrences: z.array(TriggerOccurrenceViewSchema).max(100),
@@ -1995,6 +1996,7 @@ export const hostApi = defineRpc({
   "triggers.list": declaration(
     "GET",
     z.strictObject({
+      systemRole: z.enum(["memory-light", "memory-nightly"]).optional(),
       workspaceId: WorkspaceIdSchema.optional(),
       /** Only those that run in this conversation. Needs `task-family-v1`. */
       anchorThreadId: ThreadIdSchema.optional(),

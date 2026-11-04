@@ -6,7 +6,8 @@ description: Maintain standing instructions, skills and scripts in the current W
 # Durable instructions and skills
 
 Read existing instructions and relevant files first. Update the smallest useful source rather
-than creating a standard set of empty files. Use ordinary file tools in the current Workspace;
+than creating a standard set of empty files. Facts about the person belong in Main's memory
+(`opensteer:memory`); this skill covers how work is done. Use ordinary file tools in the current Workspace;
 Main can also use a Project path returned by `project_create`. Project agents work only in their
 own folder.
 
@@ -17,8 +18,9 @@ own folder.
   intended outcome, decision criteria and useful recovery paths. Put references beside it.
 - Turn repeated parsing, calculations or API work into scripts. Reuse working code; document
   dependencies, inputs and side effects. Agents can write and run ordinary code.
-- Keep changing task state apart from standing instructions. Record verified observations and
-  sources; distinguish hypotheses and agent choices from the person's requirements.
+- Keep changing task state apart from standing instructions. Record verified observations about
+  the work and their sources; distinguish hypotheses and agent choices from the person's
+  requirements.
 
 A skill's lowercase hyphenated local name must match its directory and frontmatter. Loose
 Workspace skills use that bare name and cannot contain `:`. Plugin skills are invoked as
@@ -73,6 +75,6 @@ Resolve the registration's access or binding choices, then call `thread_delegate
 `specialist` set to its registration id or plugin name. Continue it with `threadId` to retain
 context. Instructions should name per-task outputs in `PLUGIN_DATA`, shared by this registration.
 
-- Read [durable context](references/durable-context.md) when preserving corrections and task state.
+- Read [durable context](references/durable-context.md) when choosing where a correction, fact or task state belongs.
 - Read [skills](references/skills.md) when authoring procedures.
 - Read [verification](references/verification.md) when checking helpers and edited files.

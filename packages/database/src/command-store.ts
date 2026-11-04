@@ -1,3 +1,4 @@
+import { recordPersonWaited } from "./run-visibility.js";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { withDatabaseTransaction } from "./connection.js";
@@ -505,6 +506,7 @@ async function succeedCommandInTransaction(
       .returningAll()
       .executeTakeFirst();
     if (!resolved) return none;
+    await recordPersonWaited(transaction, observed.runId);
     const events: AgentEvent[] = [
       await appendHostWorkspaceEvent(transaction, {
         data: { request: requestFromRow(resolved) },

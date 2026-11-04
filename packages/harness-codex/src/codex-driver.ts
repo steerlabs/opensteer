@@ -1,3 +1,4 @@
+import { resolveLightModel } from "@opensteer/harness";
 import { startCodexVoiceCall, type CodexVoiceInput, type CodexVoiceCall } from "./voice.js";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
@@ -1118,16 +1119,16 @@ class CodexHarnessSession implements HarnessSession {
           features,
           this.#config.startupTimeoutMs,
         );
-        // A short Run's end waits for its name, and the Run's own model can
-        // take most of a minute to say one word. A fast model the account
-        // lists names it instead, as Codex's own thread titles do.
-        const listed = (await listCodexModels(client)).filter(isRecord);
-        const runModel = harnessModelId(context.modelSelection);
-        const model =
-          codexTitleModels
-            .map((id) => listed.find((value) => value.id === id))
-            .find((value) => value !== undefined) ?? listed.find((value) => value.id === runModel);
-        const modelId = typeof model?.id === "string" ? model.id : runModel;
+        // Light models are OpenAI's; a compatible endpoint names with the Run's model.
+        const light =
+          this.#source.sourceId === codexOpenAiSourceId
+            ? resolveLightModel(
+                codexCatalogModels(await listCodexModels(client), this.#source.sourceId),
+                codexLightModels,
+              )
+            : undefined;
+        const selection = light ?? this.#context.modelSelection;
+        const modelId = light?.modelId ?? harnessModelId(this.#context.modelSelection);
         const started = requireObject(
           await client.request("thread/start", {
             model: modelId,
@@ -1152,17 +1153,7 @@ class CodexHarnessSession implements HarnessSession {
           requireObject(started.thread, "title thread").id,
           "title thread id",
         );
-        const efforts =
-          model && Array.isArray(model.supportedReasoningEfforts)
-            ? model.supportedReasoningEfforts.flatMap((value) =>
-                isRecord(value) && typeof value.reasoningEffort === "string"
-                  ? [value.reasoningEffort]
-                  : [],
-              )
-            : [];
-        const effort = ["none", "minimal", "low", "medium", "high", "xhigh"].find((value) =>
-          efforts.includes(value),
-        );
+        const effort = selection.options.effort;
         await client.request("turn/start", {
           threadId,
           input: [{ type: "text", text: prompt, text_elements: [] }],
@@ -2421,75 +2412,7 @@ async function inspectCodexHarness(
         status: "authentication-required",
       };
     }
-    const parsed = (await listCodexModels(client)).flatMap((value) => {
-      const model = requireObject(value, "model/list model");
-      if (model.hidden === true) return [];
-      // The slug stays exactly as Codex spelled it, because it is what a Run
-      // sends back; only the lab it belongs to is read out of the registry.
-      const modelId = ModelIdSchema.parse(requireString(model.id, "model/list model.id"));
-      const providerId = ModelProviderIdSchema.parse(
-        canonicalModelReference(modelId, context.sourceId).providerId,
-      );
-      const efforts = Array.isArray(model.supportedReasoningEfforts)
-        ? model.supportedReasoningEfforts.map((entry) => {
-            const effort = requireObject(entry, "model reasoning effort");
-            return {
-              ...(typeof effort.description === "string"
-                ? { description: effort.description.slice(0, 500) }
-                : {}),
-              label: reasoningEffortLabel(
-                requireString(effort.reasoningEffort, "reasoning effort"),
-              ),
-              value: requireString(effort.reasoningEffort, "reasoning effort"),
-            };
-          })
-        : [];
-      if (
-        efforts.length > 0 &&
-        !efforts.some((effort) => effort.value === model.defaultReasoningEffort)
-      ) {
-        throw protocolError(
-          `Codex model ${modelId} does not name a listed default reasoning effort`,
-        );
-      }
-      const serviceTiers = codexServiceTierOption(model, modelId);
-      const inputModalities = Array.isArray(model.inputModalities)
-        ? model.inputModalities
-        : undefined;
-      return [
-        {
-          // `model/list` states each model's `inputModalities`, and some
-          // models Codex offers read text only. A build that omits the field
-          // leaves this absent rather than guessing.
-          ...(inputModalities === undefined
-            ? {}
-            : { acceptsImages: inputModalities.includes("image") }),
-          ...(typeof model.description === "string"
-            ? { description: model.description.slice(0, 500) }
-            : {}),
-          displayName: typeof model.displayName === "string" ? model.displayName : String(modelId),
-          isDefault: model.isDefault === true,
-          modelId,
-          options: [
-            ...(efforts.length > 0
-              ? [
-                  {
-                    ...(typeof model.defaultReasoningEffort === "string"
-                      ? { defaultValue: model.defaultReasoningEffort }
-                      : {}),
-                    id: codexEffortOptionId,
-                    label: "Reasoning",
-                    type: "select" as const,
-                    values: efforts,
-                  },
-                ]
-              : []),
-            ...(serviceTiers ? [serviceTiers] : []),
-          ],
-          providerId,
-        },
-      ];
-    });
+    const parsed = codexCatalogModels(await listCodexModels(client), context.sourceId);
     if (parsed.length === 0) {
       return { detail: "Codex did not report any available models", status: "unavailable" };
     }
@@ -2498,6 +2421,7 @@ async function inspectCodexHarness(
       connections: [connection],
       detail: "Codex is signed in and ready",
       models: parsed,
+      lightModel: resolveLightModel(parsed, codexLightModels),
       setupMethods: codexSetupMethods(context.providerState),
       status: "ready",
     };
@@ -2527,7 +2451,10 @@ const codexModelListPageSize = 256;
  * Codex 0.162.0's own thread titles use and its successor. The first the
  * account lists wins; an account listing none names with the Run's model.
  */
-const codexTitleModels = ["gpt-6-luna", "gpt-5.6-luna"] as const;
+const codexLightModels = ["gpt-6-luna", "gpt-5.6-luna"].map((modelId) => ({
+  modelId,
+  options: { effort: "low" },
+}));
 
 /**
  * Every page of `model/list`. The protocol's catalog limit bounds the walk, in
@@ -4365,4 +4292,75 @@ async function codexPrivateThreadConfig(
     default_permissions: ":read-only",
     mcp_servers: Object.fromEntries(Object.keys(servers).map((name) => [name, { enabled: false }])),
   };
+}
+
+function codexCatalogModels(
+  listed: readonly unknown[],
+  sourceId: string,
+): readonly HarnessModelDescriptor[] {
+  return listed.flatMap((value) => {
+    const model = requireObject(value, "model/list model");
+    if (model.hidden === true) return [];
+    // The slug stays exactly as Codex spelled it, because it is what a Run
+    // sends back; only the lab it belongs to is read out of the registry.
+    const modelId = ModelIdSchema.parse(requireString(model.id, "model/list model.id"));
+    const providerId = ModelProviderIdSchema.parse(
+      canonicalModelReference(modelId, sourceId).providerId,
+    );
+    const efforts = Array.isArray(model.supportedReasoningEfforts)
+      ? model.supportedReasoningEfforts.map((entry) => {
+          const effort = requireObject(entry, "model reasoning effort");
+          return {
+            ...(typeof effort.description === "string"
+              ? { description: effort.description.slice(0, 500) }
+              : {}),
+            label: reasoningEffortLabel(requireString(effort.reasoningEffort, "reasoning effort")),
+            value: requireString(effort.reasoningEffort, "reasoning effort"),
+          };
+        })
+      : [];
+    if (
+      efforts.length > 0 &&
+      !efforts.some((effort) => effort.value === model.defaultReasoningEffort)
+    ) {
+      throw protocolError(`Codex model ${modelId} does not name a listed default reasoning effort`);
+    }
+    const serviceTiers = codexServiceTierOption(model, modelId);
+    const inputModalities = Array.isArray(model.inputModalities)
+      ? model.inputModalities
+      : undefined;
+    return [
+      {
+        // `model/list` states each model's `inputModalities`, and some
+        // models Codex offers read text only. A build that omits the field
+        // leaves this absent rather than guessing.
+        ...(inputModalities === undefined
+          ? {}
+          : { acceptsImages: inputModalities.includes("image") }),
+        ...(typeof model.description === "string"
+          ? { description: model.description.slice(0, 500) }
+          : {}),
+        displayName: typeof model.displayName === "string" ? model.displayName : String(modelId),
+        isDefault: model.isDefault === true,
+        modelId,
+        options: [
+          ...(efforts.length > 0
+            ? [
+                {
+                  ...(typeof model.defaultReasoningEffort === "string"
+                    ? { defaultValue: model.defaultReasoningEffort }
+                    : {}),
+                  id: codexEffortOptionId,
+                  label: "Reasoning",
+                  type: "select" as const,
+                  values: efforts,
+                },
+              ]
+            : []),
+          ...(serviceTiers ? [serviceTiers] : []),
+        ],
+        providerId,
+      },
+    ];
+  });
 }

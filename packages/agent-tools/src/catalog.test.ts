@@ -336,6 +336,13 @@ describe("agent tool catalog", () => {
     expect(instructions).not.toContain("integration_request handles");
   });
 
+  it("reads Chat by its home alias", () => {
+    expect(
+      tool("main", "thread_read").inputSchema.safeParse({ threadId: "home", maxMessages: 1 })
+        .success,
+    ).toBe(true);
+  });
+
   it("names the history cursor input", () => {
     for (const name of ["thread_read", "thread_list", "project_list"] as const) {
       expect(tool("main", name).description).toContain("window.nextBefore as before");

@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
 import { afterAll, expect, it } from "vitest";
-import { createMachineAccessDatabase } from "./machine-access.test-support.js";
+// The parent bounds this worker's whole lifetime, including module loading.
+import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 
 declare module "vitest" {
   interface TaskMeta {
@@ -61,7 +62,8 @@ it("holds its body and a query beyond the timeout", { timeout: 1_000 }, async (c
     await exited;
   };
   fallbacks.push(stopProducer);
-  const database = await createMachineAccessDatabase(process.env.OPENSTEER_TEST_DATABASE_URL!, {
+  const database = await cloneTestDatabase("host", {
+    serverUrl: process.env.OPENSTEER_TEST_DATABASE_URL!,
     stopProducers: async () => {
       await stopProducer();
       if (failedCleanup) throw new Error("injected producer cleanup failure");
@@ -137,7 +139,9 @@ it("must fail before entering another fixture after contamination", async () => 
   if (failedCleanup) {
     return;
   }
-  const database = await createMachineAccessDatabase(process.env.OPENSTEER_TEST_DATABASE_URL!);
+  const database = await cloneTestDatabase("host", {
+    serverUrl: process.env.OPENSTEER_TEST_DATABASE_URL!,
+  });
   const pool = new Pool({ connectionString: database.url, max: 1 });
   stack = pool;
   try {

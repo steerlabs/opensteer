@@ -1,3 +1,4 @@
+import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import { assertLineageCompatibleReuse } from "./resource-access.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { z } from "zod";
@@ -1909,7 +1910,7 @@ async function lockThreadInputPreconditions(
       .executeTakeFirst();
   }
   const isPlatformCompletion = input.source.kind === "platform";
-  if (thread.doneAt && input.policy !== "report") {
+  if (input.source.kind !== "trigger" && thread.doneAt && input.policy !== "report") {
     throw new OpensteerError({ code: "conflict", message: "This task is Done. Reopen it first." });
   }
   if (
@@ -2142,6 +2143,9 @@ export async function enqueueThreadInputInTransaction(
     source: request.source,
     targetThread: thread,
   });
+  if (thread.doneAt && request.policy !== "report") {
+    throw new OpensteerError({ code: "conflict", message: "This task is Done. Reopen it first." });
+  }
   await lockThreadProjectionParents(transaction, {
     threadIds: [thread.id],
     runIds: prelockedActiveRunId ? [prelockedActiveRunId] : [],
@@ -2735,6 +2739,9 @@ async function resolveThreadInputFacts(
         "triggers.createdBy",
         "triggers.id as triggerId",
         "triggers.name",
+        "triggers.systemRole",
+        "triggers.anchorThreadId",
+        "triggers.status as triggerStatus",
       ])
       .where("triggerOccurrences.id", "=", source.occurrenceId)
       .forNoKeyUpdate("triggerOccurrences")
@@ -2742,6 +2749,34 @@ async function resolveThreadInputFacts(
       .executeTakeFirst();
     if (!origin || origin.createdBy !== input.requestedBy || origin.status !== "running") {
       throw new OpensteerError({ code: "forbidden", message: "Trigger source is invalid" });
+    }
+    if (origin.systemRole && origin.anchorThreadId === input.targetThread.id) {
+      const worker = input.targetThread;
+      const [busy, pending] = await Promise.all([
+        transaction
+          .selectFrom("runs")
+          .select("id")
+          .where("threadId", "=", worker.id)
+          .where("status", "in", nonTerminalRunStatuses)
+          .executeTakeFirst(),
+        transaction
+          .selectFrom("threadInputs")
+          .select("messageId")
+          .where("threadId", "=", worker.id)
+          .where("policy", "!=", "report")
+          .where("state", "in", ["pending", "claimed", "unknown"])
+          .executeTakeFirst(),
+      ]);
+      if (
+        origin.triggerStatus !== "active" ||
+        worker.doneAt ||
+        worker.inputQueuePaused ||
+        worker.status === "archived" ||
+        busy ||
+        pending
+      ) {
+        throw new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED });
+      }
     }
     let causalChainId = origin.causalChainId;
     if (!causalChainId) {
@@ -3218,6 +3253,7 @@ export async function ensureQueuedRun(
     })
     .returningAll()
     .executeTakeFirstOrThrow();
+  if (seed.messageKind === "continuation") await recordPersonWaited(transaction, runId);
   const payload = { runId, threadId: thread.id, type: "run.execute" } as const;
   const command = await transaction
     .insertInto("commands")
@@ -4311,7 +4347,15 @@ export async function delegateThreadInTransaction(
   if (reusedRow) await assertLineageCompatibleReuse(transaction, parent.id, reusedRow.id);
   const listed = await delegationListsThread(transaction, parent.role, input.origin);
   // Delegation can promote a task; only a migration can take it off the list.
-  const listedNow = reusedRow !== null && !reusedRow.listed && listed;
+  const managedAnchor = reusedRow
+    ? await transaction
+        .selectFrom("triggers")
+        .select("id")
+        .where("anchorThreadId", "=", reusedRow.id)
+        .where("systemRole", "is not", null)
+        .executeTakeFirst()
+    : null;
+  const listedNow = reusedRow !== null && !reusedRow.listed && listed && !managedAnchor;
   const threadRow = reusedRow
     ? listedNow
       ? await transaction

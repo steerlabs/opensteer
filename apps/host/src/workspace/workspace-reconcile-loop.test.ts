@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WorkspaceReconcileLoop } from "./workspace-reconcile-loop.js";
+import { WorkspaceReconcileLoop, reconcileWorkspaceServices } from "./workspace-reconcile-loop.js";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 
 describe("WorkspaceReconcileLoop", () => {
@@ -167,4 +167,27 @@ describe("WorkspaceReconcileLoop", () => {
     expect(reconcile).toHaveBeenCalledTimes(3);
     await loop.close();
   });
+});
+
+it("reconciles memory after storage/catalog settle and before unrelated aggregate errors escape", async () => {
+  const storage = Promise.withResolvers<void>();
+  const catalog = Promise.withResolvers<void>();
+  const afterSettled = vi.fn(async () => {});
+  const failure = new Error("An unrelated reconciler failed");
+  const pass = reconcileWorkspaceServices([storage.promise, catalog.promise], afterSettled);
+  const rejected = expect(pass).rejects.toMatchObject({ errors: [failure] });
+  storage.reject(failure);
+  await Promise.resolve();
+  expect(afterSettled).not.toHaveBeenCalled();
+  catalog.resolve();
+  await vi.waitFor(
+    () =>
+      expect(
+        afterSettled,
+        "Memory phase never ran after settled reconcilers",
+      ).toHaveBeenCalledTimes(1),
+    { timeout: 1000 },
+  );
+  await rejected;
+  expect(afterSettled).toHaveBeenCalledTimes(1);
 });

@@ -29,6 +29,7 @@ describe("Runner Agent Skills", () => {
 
     expect(skillNames(bundle, "main")).toEqual([
       "opensteer:skills",
+      "opensteer:memory",
       "opensteer:integrations",
       "opensteer:computer-use",
       "opensteer:browser",
@@ -48,6 +49,7 @@ describe("Runner Agent Skills", () => {
     ]);
     expect(skillNames(bundle, "delegated")).toEqual([
       "opensteer:skills",
+      "opensteer:memory",
       "opensteer:integrations",
       "opensteer:computer-use",
       "opensteer:browser",
@@ -349,3 +351,18 @@ describe("Runner Agent Skills", () => {
 function skillNames(...input: Parameters<typeof planAgentSkills>): readonly string[] | undefined {
   return planAgentSkills(...input).map(({ fullName }) => fullName);
 }
+
+it("ships role-based memory controls without an agent setup recipe", async () => {
+  const memory = await readFile(join(bundleDirectory, "skills/memory/SKILL.md"), "utf8");
+  const controls = await readFile(
+    join(bundleDirectory, "skills/memory/references/controls.md"),
+    "utf8",
+  );
+  expect(memory).toContain("references/controls.md");
+  expect(memory).not.toContain("references/setup.md");
+  for (const field of ["systemRole", "memory-light", "memory-nightly", "anchorThreadId"])
+    expect(controls).toContain(`\`${field}\``);
+  await expect(
+    readFile(join(bundleDirectory, "skills/memory/references/setup.md"), "utf8"),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+});

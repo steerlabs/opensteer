@@ -153,6 +153,7 @@ import {
   TriggerRevisionSchema,
   TriggerSchema,
   TriggerWatchActivationSchema,
+  MANAGED_MEMORY_REFUSAL,
   firstTriggerFireAt,
   type Trigger,
   type TriggerOccurrence,
@@ -919,6 +920,7 @@ const mockPiCatalog = HarnessInstanceCatalogSchema.parse({
 // Cursor signs itself in: the CLI holds the credential in the computer's own
 // keychain, so the catalog reports who it found and offers no setup method.
 const mockCursorCatalog = HarnessInstanceCatalogSchema.parse({
+  lightModel: { providerId: "xai", modelId: "composer-2.5", options: {} },
   connections: [
     {
       accountLabel: "demo@opensteer.test",
@@ -1780,6 +1782,7 @@ export interface MockHostClientOptions {
   readonly lifecycle?: ClientLifecycle;
   /** Automations covering every state the Automations page shows; seeded by default. */
   automations?: "seeded" | "absent";
+  memoryPasses?: "active" | "off" | "no-light-model";
   places?: "seeded" | "absent";
   /** Development fixture for the first message before a Chat exists. */
   initialHome?: "seeded" | "absent";
@@ -2371,7 +2374,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "triggers.list": async (input) =>
       rpcSuccess(
         hostApi["triggers.list"].success.parse({
-          triggers: client.listTriggers(input.workspaceId, input.anchorThreadId),
+          triggers: client.listTriggers(input.workspaceId, input.anchorThreadId, input.systemRole),
         }),
       ),
     "workspace.catalog.list": async () => {
@@ -5863,6 +5866,55 @@ class MockHostState {
         this.triggers.set(record.trigger.id, record);
       }
     }
+    if (homeThread && options.memoryPasses) {
+      for (const systemRole of ["memory-light", "memory-nightly"] as const) {
+        const worker: ThreadSummary = {
+          ...homeThread,
+          id: createId("thread"),
+          title: systemRole === "memory-light" ? "Memory light pass" : "Memory nightly pass",
+          role: "work",
+          listed: false,
+          parentThreadId: homeThread.id,
+          status: "idle",
+          pendingRequests: 0,
+          doneAt: null,
+          inputQueuePaused: false,
+        };
+        this.snapshot = { ...this.snapshot, threads: [...this.snapshot.threads, worker] };
+        const created = this.createTrigger({
+          anchorThreadId: ThreadIdSchema.parse(worker.id),
+          name: worker.title,
+          program: {
+            language: "typescript",
+            toolContractVersion: 3,
+            source: "export default async () => null",
+          },
+          source: {
+            kind: "schedule",
+            schedule: {
+              kind: "cron",
+              expression: systemRole === "memory-light" ? "*/30 8-22 * * *" : "0 3 * * *",
+              timezone: "America/New_York",
+            },
+          },
+        });
+        const record = this.getTrigger(created.trigger.id);
+        const pauseReason =
+          options.memoryPasses === "off"
+            ? "Memory is off at your request."
+            : options.memoryPasses === "no-light-model" && systemRole === "memory-light"
+              ? "This engine has no light model. Choose a model for the light pass, then resume."
+              : null;
+        this.triggers.set(created.trigger.id, {
+          ...record,
+          trigger: {
+            ...record.trigger,
+            systemRole,
+            ...(pauseReason ? { status: "paused", pauseReason, nextFireAt: null } : {}),
+          },
+        });
+      }
+    }
     // The setup request behind the seeded Numbers Request, dated from this
     // client's clock so it is pending for as long as a real one would be.
     if (options.initialHome !== "absent" && !firstRun)
@@ -6999,15 +7051,24 @@ class MockHostState {
   }
 
   /** What `triggers.list` answers: every Trigger still in use, most recently changed first. */
-  listTriggers(workspaceId?: string, anchorThreadId?: string): TriggerSummary[] {
+  listTriggers(
+    workspaceId?: string,
+    anchorThreadId?: string,
+    systemRole?: TriggerSummary["systemRole"],
+  ): TriggerSummary[] {
     return [...this.triggers.values()]
       .filter(
         ({ trigger }) =>
           trigger.status !== "archived" &&
+          (systemRole === undefined || trigger.systemRole === systemRole) &&
           (workspaceId === undefined || trigger.workspaceId === workspaceId) &&
           (anchorThreadId === undefined || trigger.anchorThreadId === anchorThreadId),
       )
-      .sort((left, right) => right.trigger.updatedAt.localeCompare(left.trigger.updatedAt))
+      .sort(
+        (left, right) =>
+          Number(Boolean(right.trigger.systemRole)) - Number(Boolean(left.trigger.systemRole)) ||
+          right.trigger.updatedAt.localeCompare(left.trigger.updatedAt),
+      )
       .slice(0, 100)
       .map((record) => mockTriggerSummary(record, this.anchorThreadTitle(record)));
   }
@@ -7017,6 +7078,15 @@ class MockHostState {
     const record = this.getTrigger(triggerId);
     return {
       ...record,
+      anchorThread: (() => {
+        const thread = this.snapshot.threads.find(({ id }) => id === record.trigger.anchorThreadId);
+        return thread
+          ? {
+              ...mockThread(thread),
+              ...(record.trigger.systemRole ? { capabilityProfileId: "delegated" as const } : {}),
+            }
+          : null;
+      })(),
       anchorThreadTitle: this.anchorThreadTitle(record),
       createdByThreadTitle:
         this.snapshot.threads.find(({ id }) => id === record.trigger.createdByThreadId)?.title ??
@@ -7110,6 +7180,16 @@ class MockHostState {
 
   updateTrigger(triggerId: string, input: ParsedCommandOf<"trigger.update">["input"]) {
     const record = this.getTrigger(triggerId);
+    if (
+      record.trigger.systemRole &&
+      (input.name !== undefined ||
+        input.program !== undefined ||
+        (input.source !== undefined &&
+          (input.source.kind !== "schedule" ||
+            input.source.schedule.kind !== "cron" ||
+            input.source.schedule.payload !== undefined)))
+    )
+      throw mockConflict(MANAGED_MEMORY_REFUSAL);
     if (record.trigger.status === "archived") {
       throw mockConflict("Archived Triggers cannot be changed");
     }
@@ -7163,6 +7243,8 @@ class MockHostState {
 
   setTriggerStatus(triggerId: string, status: Trigger["status"]): Trigger {
     const record = this.getTrigger(triggerId);
+    if (record.trigger.systemRole && status === "archived")
+      throw mockConflict(MANAGED_MEMORY_REFUSAL);
     if (record.trigger.status === status) return record.trigger;
     if (record.trigger.status === "archived") {
       throw mockConflict("Archived Triggers cannot be reactivated");
@@ -7203,6 +7285,7 @@ class MockHostState {
    */
   runTrigger(triggerId: string, payload: unknown): TriggerOccurrence {
     const record = this.getTrigger(triggerId);
+    if (record.trigger.systemRole) throw mockConflict(MANAGED_MEMORY_REFUSAL);
     if (record.trigger.status === "archived") throw mockConflict("Archived Trigger cannot run");
     const thread = this.snapshot.threads.find(({ id }) => id === record.trigger.anchorThreadId);
     if (!thread) throw new Error("Anchor Thread not found.");
@@ -11623,7 +11706,28 @@ class MockHostState {
             : undefined;
         }
         // The preview's engines start no subagents.
-        return { assignments: held, request: PendingRequestSchema.parse(request), subagent: null };
+        const trigger = [...this.triggers.values()].find(
+          ({ trigger }) =>
+            trigger.systemRole && trigger.anchorThreadId === request.originatingThreadId,
+        );
+        const worker = this.snapshot.threads.find(({ id }) => id === request.originatingThreadId);
+        const presentation =
+          trigger &&
+          worker &&
+          !worker.listed &&
+          worker.parentThreadId === this.snapshot.homeThreadId &&
+          trigger.trigger.createdBy === user.id
+            ? {
+                threadId: ThreadIdSchema.parse(this.snapshot.homeThreadId),
+                workerThread: { id: ThreadIdSchema.parse(worker.id), title: worker.title },
+              }
+            : null;
+        return {
+          assignments: held,
+          presentation,
+          request: PendingRequestSchema.parse(request),
+          subagent: null,
+        };
       })
       .sort((left, right) => right.request.createdAt.localeCompare(left.request.createdAt));
   }

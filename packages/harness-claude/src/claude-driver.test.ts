@@ -2768,6 +2768,11 @@ describe("Claude Agent SDK harness", () => {
 
     expect(catalog.status).toBe("ready");
     if (catalog.status !== "ready") throw new Error("Expected a ready Claude inspection");
+    expect(catalog.lightModel).toEqual({
+      providerId: "anthropic",
+      modelId: "claude-haiku-4-5",
+      options: {},
+    });
     // Every Claude model reads images, so every descriptor declares it.
     expect(catalog.models.every((model) => model.acceptsImages === true)).toBe(true);
     expect(catalog.models).toEqual([
@@ -3690,13 +3695,72 @@ async function waitForSdkCall(sdk: FakeSdk): Promise<void> {
 }
 
 describe("Claude Thread naming", () => {
+  it("retries a refused light model with the Run model", async () => {
+    const sdk = new FakeSdk(
+      (parameters) => {
+        if (parameters.options.model === "claude-haiku-5-5") throw new Error("Model access denied");
+        return scriptedQuery([successMessage("naming", "Title")]);
+      },
+      [
+        {
+          value: "haiku",
+          resolvedModel: "claude-haiku-5-5",
+          description: "Fast",
+          displayName: "Haiku",
+        },
+      ],
+    );
+    const fixture = await openSession(sdk);
+    try {
+      await expect(
+        fixture.session.generateTitle!({ prompt: "Name it", signal: AbortSignal.timeout(2_000) }),
+      ).resolves.toBe("Title");
+      expect(sdk.calls.map((call) => call.options.model)).toEqual([
+        "claude-haiku-5-5",
+        fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId,
+      ]);
+    } finally {
+      await fixture.session.stop();
+      await fixture.adapter.close();
+    }
+  });
+  it("uses the Run model when the live catalog has no light model", async () => {
+    const sdk = new FakeSdk(() => scriptedQuery([successMessage("naming", "Title")]));
+    const fixture = await openSession(sdk);
+    try {
+      expect(
+        await fixture.session.generateTitle!({
+          prompt: "Name it",
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toBe("Title");
+      expect(sdk.calls[0]?.options.model).toBe(
+        fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId,
+      );
+    } finally {
+      await fixture.session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
   it("returns the complete reply with no tools, MCP, skills, plugins or persistence", async () => {
-    const sdk = new FakeSdk((parameters) =>
-      scriptedQuery(
-        typeof parameters.prompt === "string"
-          ? [successMessage("naming", "Support migration\nheadphones")]
-          : [],
-      ),
+    const sdk = new FakeSdk(
+      (parameters) =>
+        scriptedQuery(
+          typeof parameters.prompt === "string"
+            ? [successMessage("naming", "Support migration\nheadphones")]
+            : [],
+        ),
+      [
+        {
+          description: "Fast",
+          displayName: "Haiku",
+          value: "haiku",
+          resolvedModel: "claude-haiku-5-5",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "high"],
+        },
+      ],
     );
     const fixture = await openSession(sdk);
     try {
@@ -3716,7 +3780,8 @@ describe("Claude Thread naming", () => {
           settingSources: [],
           persistSession: false,
           maxTurns: 1,
-          model: "haiku",
+          model: "claude-haiku-5-5",
+          effort: "low",
         },
       });
       expect(call.options).not.toHaveProperty("maxTokens");
