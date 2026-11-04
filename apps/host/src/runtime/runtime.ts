@@ -2266,7 +2266,7 @@ export async function createHostRuntime(
               });
               const pluginId = result.installation.pluginId;
               const registration =
-                !result.unchanged && result.specialist && pluginId
+                result.specialist && pluginId
                   ? await integrationPlatform.store.specialists.add({
                       activate: false,
                       workspaceId: scope.workspaceId,

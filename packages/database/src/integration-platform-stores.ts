@@ -4,6 +4,7 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { replaceSecrets, type LocalMcpSecretsUpdate } from "./local-mcp-server-store.js";
+import { PluginStore } from "./plugin-store.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { resolveResourceAccess } from "./resource-access.js";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
@@ -464,8 +465,11 @@ abstract class IntegrationPlatformStoreBase {
 
 export interface InstallIntegrationInput {
   readonly administration?: AdministrationCommandIdentity | undefined;
-  readonly beforeServerTools?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
-  readonly retainedServerSecrets?: (
+  /**
+   * For each server an install keeps on a computer: whether it keeps its
+   * approval for the new launch, and its secrets for it.
+   */
+  readonly retainedServer?: (
     existing: {
       id: IntegrationServerId;
       status: string;
@@ -473,7 +477,7 @@ export interface InstallIntegrationInput {
       transport: IntegrationServer["transport"];
     },
     discovered: DiscoveredIntegrationServer,
-  ) => { carryApproval: boolean; update: LocalMcpSecretsUpdate } | null;
+  ) => { carryApproval: boolean; secrets: LocalMcpSecretsUpdate } | null;
   readonly beforeInstall?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
   readonly settlementSessionId?: string | undefined;
   readonly adapterSnapshot: IntegrationAdapterSnapshot | null;
@@ -1171,12 +1175,12 @@ export async function installIntegrationInTransaction(
 
   const retainedUpdates = new Map<
     IntegrationServerId,
-    { carryApproval: boolean; update: LocalMcpSecretsUpdate }
+    { carryApproval: boolean; secrets: LocalMcpSecretsUpdate }
   >();
   for (const existing of existingServers) {
     const discovered = input.servers.find((s) => s.name === existing.name);
     if (!discovered) continue;
-    const retained = input.retainedServerSecrets?.(
+    const retained = input.retainedServer?.(
       { ...existing, transport: IntegrationServerTransportSchema.parse(existing.transport) },
       discovered,
     );
@@ -1186,12 +1190,14 @@ export async function installIntegrationInTransaction(
         transaction,
         existing.id,
         discovered.transport.runnerId,
-        retained.update,
+        retained.secrets,
         now,
       );
     }
   }
-  await input.beforeServerTools?.(transaction);
+  // After servers and their secrets, as the lock order takes them.
+  if (input.installation.pluginId)
+    await new PluginStore(transaction).repinSpecialists(transaction, input.installation.pluginId);
   if (existingServers.length > 0) {
     const serverIds = existingServers.map(({ id }) => id);
     await transaction

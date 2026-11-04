@@ -38,7 +38,7 @@ export const plugin_install = defineAgentTool({
   name: "plugin_install",
   title: "Install a plugin",
   description:
-    "Install a Workspace-relative Agent Plugins 1.0 folder; symlinks refused. Full-access Run only. Call again on the same folder to update a plugin you made (unchanged is a no-op); a plugin.json name a person's plugin holds is refused, so pick a specific one. Returns installation/activation, issues and specialist state. Skills activate here; resource grants, specialist bindings and local MCP launch approval need the person.",
+    "Install a Workspace-relative Agent Plugins 1.0 folder; symlinks refused. Full-access Run only. Call again on the same folder to update a plugin you made (unchanged is a no-op); a plugin.json name a person's plugin here holds is refused, so pick a specific one. Returns installation/activation, issues and specialist state. Skills activate here; resource grants, specialist bindings and local MCP launch approval need the person.",
   input: z
     .strictObject({ directory: z.string().min(1).max(4096) })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),

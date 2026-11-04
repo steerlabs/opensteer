@@ -1017,45 +1017,44 @@ export class IntegrationPlatformService {
     readonly installation: IntegrationInstallation;
     readonly issues: readonly unknown[];
     readonly specialist: boolean;
-    readonly unchanged?: boolean;
   }> {
-    if (input.workspaceId && !input.pluginId) {
+    let pluginId = input.pluginId;
+    let currentPlugin:
+      Awaited<ReturnType<IntegrationPlatformStore["plugins"]["list"]>>[number] | undefined;
+    if (input.workspaceId && !pluginId) {
+      // A plugin.json the loader can't read reports why below, in its own words.
       const name = await readAgentPluginName(input.directory);
-      const plugins = await this.#store.plugins.list(input.workspaceId);
-      const clash = plugins.find(
-        (p) =>
-          p.name === name &&
-          p.scope === "deployment" &&
-          p.activations.some((a) => a.workspaceId === input.workspaceId),
-      );
-      if (clash)
+      const plugins = name === null ? [] : await this.#store.plugins.list(input.workspaceId);
+      const here = (plugin: (typeof plugins)[number]) =>
+        plugin.activations.some((a) => a.workspaceId === input.workspaceId);
+      if (plugins.some((p) => p.name === name && p.scope === "deployment" && here(p)))
         throw new OpensteerError({
           code: "conflict",
           message:
             "A person-installed plugin already uses that name here. Choose a more specific name.",
         });
-      const owned = plugins.find(
-        (p) => p.name === name && p.scope === "workspace" && p.workspaceId === input.workspaceId,
-      );
-      // An update stays on the plugin's computer, not the computer of the Run that updated it.
-      if (owned) input = { ...input, pluginId: owned.id, runnerId: undefined };
+      // Copies installed before updates existed: the one turned on here, else the newest.
+      currentPlugin = plugins
+        .filter(
+          (p) => p.name === name && p.scope === "workspace" && p.workspaceId === input.workspaceId,
+        )
+        .sort(
+          (a, b) =>
+            Number(here(b)) - Number(here(a)) || b.updatedAt.getTime() - a.updatedAt.getTime(),
+        )[0];
+      pluginId = currentPlugin?.id;
+    } else if (pluginId) {
+      currentPlugin = (await this.#store.plugins.list()).find((p) => p.id === pluginId);
+      // Before the folder is read: an agent-made plugin's source is a Workspace folder, not a Host path.
+      if (currentPlugin?.scope === "workspace")
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Agent-made plugins update when an agent installs their folder again.",
+        });
     }
-    const pluginId = input.pluginId ?? createIntegrationId("installation");
-    // Checked before the folder is read: an agent-made plugin's recorded source is not a Host path.
-    const currentPlugin = input.pluginId
-      ? (await this.#store.plugins.list()).find((p) => p.id === pluginId)
-      : undefined;
-    if (currentPlugin?.scope === "workspace" && currentPlugin.workspaceId !== input.workspaceId)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Agent-made plugins update when an agent installs their folder again.",
-      });
-    if (input.workspaceId && currentPlugin?.scope === "deployment")
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Agents cannot update person-installed plugins. Choose a more specific name.",
-      });
-    const previous = input.pluginId
+    const updating = pluginId !== undefined;
+    pluginId ??= createIntegrationId("installation");
+    const previous = updating
       ? (await this.#store.listInstallations()).find((i) => i.pluginId === pluginId)
       : undefined;
     const plugin = await loadAgentPlugin({
@@ -1068,9 +1067,7 @@ export class IntegrationPlatformService {
       ? (await this.#store.localMcp.list()).filter((s) => s.installationId === previous.id)
       : [];
     const runnerId = plugin.servers.some(runsOnComputer)
-      ? await this.#pluginComputer(
-          input.runnerId ?? previousServers.find((s) => s.runnerId)?.runnerId ?? undefined,
-        )
+      ? await this.#pluginComputer(await this.#updateComputer(input, previousServers))
       : null;
     if (plugin.manifest.name === "opensteer")
       throw new OpensteerError({
@@ -1088,7 +1085,6 @@ export class IntegrationPlatformService {
         .every((s) => s.runnerId === runnerId && s.status !== "disabled")
     )
       return {
-        unchanged: true,
         installation: previous,
         issues: plugin.issues,
         specialist: plugin.specialistManifest !== null,
@@ -1116,7 +1112,7 @@ export class IntegrationPlatformService {
     const mutation = await this.#store.install({
       administration: input.administration,
       beforeInstall: async (transaction) => {
-        if (input.pluginId)
+        if (updating)
           await this.#store.plugins.update(
             {
               pluginId,
@@ -1127,7 +1123,6 @@ export class IntegrationPlatformService {
                   }
                 : {}),
               ...version,
-              deferSpecialists: true,
             },
             transaction,
           );
@@ -1146,29 +1141,15 @@ export class IntegrationPlatformService {
             transaction,
           );
       },
-      beforeServerTools: async (transaction) => {
-        if (input.pluginId) await this.#store.plugins.repinSpecialists(transaction, pluginId);
-      },
-      retainedServerSecrets: (existing, discovered) => {
-        if (existing.transport.type !== "runner" || discovered.transport.type !== "runner")
-          return null;
-        const old = existing.transport;
-        const next = discovered.transport;
-        const carry =
-          this.#personal &&
-          old.runnerId === next.runnerId &&
-          existing.status !== "disabled" &&
-          existing.approvedLaunchDigest === localMcpLaunchDigest(old.launch) &&
-          localMcpLaunchSecrets(next.launch).every(({ name }) =>
-            localMcpLaunchSecrets(old.launch).some((s) => s.name === name),
-          );
-        return {
-          carryApproval: carry,
-          update: carry
-            ? this.#localSecrets.update(existing.id, next.launch, {})
-            : this.#localSecrets.prune(existing.id, next.launch),
-        };
-      },
+      retainedServer: (existing, discovered) =>
+        existing.transport.type === "runner" && discovered.transport.type === "runner"
+          ? {
+              carryApproval:
+                this.#personal &&
+                carriesApproval(existing, existing.transport, discovered.transport),
+              secrets: this.#localSecrets.prune(existing.id, discovered.transport.launch),
+            }
+          : null,
       actorUserId: input.actorUserId,
       adapterSnapshot: null,
       installation: {
@@ -1207,6 +1188,23 @@ export class IntegrationPlatformService {
       this.#startApprovedServers((server) => server.installationId === installation.id);
     }
     return { installation, issues: plugin.issues, specialist: plugin.specialistManifest !== null };
+  }
+
+  /**
+   * The computer an install asks for. An agent's update stays on the plugin's
+   * computer while it is enrolled, not the computer of the Run that updated it;
+   * a person's names one or keeps it.
+   */
+  async #updateComputer(
+    input: { readonly runnerId?: RunnerId | undefined; readonly workspaceId?: unknown },
+    previousServers: readonly { readonly runnerId: RunnerId | null }[],
+  ): Promise<RunnerId | undefined> {
+    const previous = previousServers.find((s) => s.runnerId)?.runnerId ?? null;
+    const kept =
+      previous !== null && (await this.#store.localMcp.computerName(previous)) !== null
+        ? previous
+        : undefined;
+    return input.workspaceId ? (kept ?? input.runnerId) : (input.runnerId ?? kept);
   }
 
   /** The computer a plugin's own servers run on: the one named, or the Main one. */
@@ -3621,6 +3619,25 @@ function portableComputerLaunch(server: LoadedAgentPluginServer): LocalMcpLaunch
 }
 
 /** A plugin server pinned to its computer, waiting for that computer's approval. */
+/**
+ * Whether a Personal Deployment's update keeps a server's approval: on the same
+ * computer, approved as it launched, not declined, and asking for no secret it
+ * didn't, whose value its owner would have to enter.
+ */
+export function carriesApproval(
+  existing: { readonly approvedLaunchDigest: string | null; readonly status: string },
+  previous: { readonly launch: LocalMcpLaunch; readonly runnerId: RunnerId | null },
+  next: { readonly launch: LocalMcpLaunch; readonly runnerId: RunnerId | null },
+): boolean {
+  const declared = new Set(localMcpLaunchSecrets(previous.launch).map(({ name }) => name));
+  return (
+    previous.runnerId === next.runnerId &&
+    existing.status !== "disabled" &&
+    existing.approvedLaunchDigest === localMcpLaunchDigest(previous.launch) &&
+    localMcpLaunchSecrets(next.launch).every(({ name }) => declared.has(name))
+  );
+}
+
 function computerServer(
   server: LoadedAgentPluginServer,
   runnerId: RunnerId,

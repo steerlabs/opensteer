@@ -57,8 +57,8 @@ When repeated work needs skills, scripts or MCP servers together, package it as 
 turn on here; connections still need grants, and local MCP servers need the computer owner's launch
 approval.
 
-Give the plugin a specific `plugin.json` name (`tapo-camera`, not `camera`); a name a person's plugin
-already holds is refused. To change your plugin, edit its folder and call `plugin_install` on it
+Give the plugin a specific `plugin.json` name (`tapo-camera`, not `camera`); a name held by a plugin
+a person turned on here is refused. To change your plugin, edit its folder and call `plugin_install` on it
 again; never install a renamed copy. On the person's own computer an approved server's updates need
 no new approval, but a new secret or server does.
 

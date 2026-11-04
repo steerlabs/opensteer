@@ -134,31 +134,28 @@ snapshots do not carry them. The Host binds consent to the server, its target Ru
 the launch digest it approved, and rechecks that binding in admission before opening the
 MCP session. The authenticated target Runner trusts that Host decision; there is no
 separate local approval file or desktop signature. Removal/reinstallation closes existing
-sessions; an unchanged launch retains consent. On a Personal Deployment, a changed launch
-of an approved server on the same computer moves consent to the new digest unless it
-declares a secret name the approved launch didn't: a Personal Runner runs agent commands
-as its owner with no isolation ([Shared Runner sandbox](ai-engines.md#shared-runner-sandbox)),
-so reviewing code any agent there could already run protects nothing. On server
-Deployments every changed launch requires review, because shared Runners isolate agent
-commands while plugin servers run outside that isolation. A new or moved server, a new or
-renamed secret, and a declined server always ask.
+sessions; an unchanged launch retains consent. The rule is the Deployment's shape: on a
+Personal Deployment, a changed launch of an approved server on the same computer keeps
+consent unless it declares a secret name the approved launch didn't, because a Personal
+Runner runs agent commands as its owner with no isolation
+([Shared Runner sandbox](ai-engines.md#shared-runner-sandbox)), so review would cover code
+any agent there could already run. On server Deployments every changed launch requires
+review: shared Runners isolate agent commands, and plugin servers run outside that
+isolation. A new or moved server, a new or renamed secret, and a declined server always ask.
 An offline computer can retain consent but starts nothing until it reconnects.
 Protocol-incompatible Runners retain other modules and show an update refusal.
 
-An agent updates a plugin it made by calling `plugin_install` on the same Workspace folder
-again: the Workspace-scoped plugin with that `plugin.json` name takes the new version, its
-specialist moves with it, and whether it is on stays as it was. An agent install never
-replaces a plugin a person installed for the Deployment; a name one holds is refused.
-Settings' Update reads a person-installed plugin's folder again and refuses agent-made
-ones, whose source only an agent's install reads.
+An agent-made plugin records its Workspace folder, not a Host path, so only an agent
+updates it, by installing that folder again. Settings' Update and `plugin_manage` update
+only person-installed plugins.
 
 Agent Plugins forbids credentials in `env`, so a program server declares the environment
 variables its owner must supply in `plugin.json` under `extensions["com.opensteer"].secrets`
 (see [the loader](../packages/agent-plugins/src/loader.ts)). Only names and labels are part
 of the launch and its digest. The computer's owner enters the values when allowing it and
 can change them later without new consent; a new launch keeps values for names it still
-declares and deletes the rest. Consent and values belong to one computer: a server moved to another is asked
-there again, with nothing kept. Values are sealed per server in a table of their own, so no server listing,
+declares and deletes the rest. Consent and values belong to one computer: a server moved
+to another is asked there again, with nothing kept. Values are sealed per server in a table of their own, so no server listing,
 Request event or snapshot carries them, and are opened only to start that server: the Host
 adds them to the launch it sends, which leaves the Runner's wire unchanged. Why a session
 ended quotes the server's output and becomes its status and agents' readiness, so the Host

@@ -212,8 +212,6 @@ export class PluginStore {
     input: {
       pluginId: string;
       workspaceId?: WorkspaceId;
-      /** Installation reconciliation locks servers and secrets before specialist rows. */
-      deferSpecialists?: boolean;
       source?: Readonly<Record<string, unknown>>;
       specialistManifest?: SpecialistManifest | null;
       digest: string;
@@ -264,11 +262,11 @@ export class PluginStore {
         })
         .where("id", "=", plugin.id)
         .execute();
-      if (!input.deferSpecialists) await this.repinSpecialists(tx, plugin.id);
     };
     return transaction ? persist(transaction) : this.database.transaction().execute(persist);
   }
 
+  /** Moves the plugin's specialist registrations to its current version; installs call it. */
   async repinSpecialists(tx: Transaction<DatabaseSchema>, pluginId: string): Promise<void> {
     const current = await tx
       .selectFrom("plugins")

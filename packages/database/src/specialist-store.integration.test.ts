@@ -68,12 +68,14 @@ describeStore("specialist registration", (test) => {
       .set({ bindings: sql`${JSON.stringify(bindings)}::jsonb` })
       .where("pluginId", "=", pluginId)
       .execute();
+    // As an install does: the new version, then its registrations moved to it.
     const update = (digest: string, specialistManifest: typeof manifest | null) =>
-      platform.plugins.update({
-        pluginId,
-        digest,
-        manifest: { name: "repin" },
-        specialistManifest,
+      fixture.database.transaction().execute(async (tx) => {
+        await platform.plugins.update(
+          { pluginId, digest, manifest: { name: "repin" }, specialistManifest },
+          tx,
+        );
+        await platform.plugins.repinSpecialists(tx, pluginId);
       });
     await update("same-access", { ...manifest, models: [{ engine: "claude", model: "haiku" }] });
     const rows = () =>
@@ -503,17 +505,9 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "researcher" },
       specialistManifest: { ...manifest, models: [{ engine: "codex", model: "fast" }] },
     });
-    expect(
-      (await platform.specialists.list(workspace.id, run.userId))[0]?.pluginVersionId,
-    ).not.toBe(version.id);
-    const repinned = await fixture.database
-      .selectFrom("specialists")
-      .selectAll()
-      .where("pluginId", "=", pluginId)
-      .execute();
-    expect(repinned).toHaveLength(2);
-    expect(new Set(repinned.map((r) => r.pluginVersionId)).size).toBe(1);
-    expect(repinned.find((r) => r.id === ready.id)?.bindings).toEqual(beforeOff.bindings);
+    expect((await platform.specialists.list(workspace.id, run.userId))[0]?.pluginVersionId).toBe(
+      version.id,
+    );
     const updated = await add();
     expect(updated.id).toBe(pending.id);
     expect(updated.pluginVersionId).not.toBe(version.id);

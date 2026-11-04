@@ -59,8 +59,16 @@ const PluginManifestSchema = z
   })
   .strip();
 
-export async function readAgentPluginName(directory: string): Promise<string> {
-  return PluginManifestSchema.parse(await readJsonDocument(join(directory, "plugin.json"))).name;
+/** The plugin.json name, or null when it can't be read; loading the plugin then says why. */
+export async function readAgentPluginName(directory: string): Promise<string | null> {
+  try {
+    const manifest = PluginManifestSchema.safeParse(
+      await readJsonDocument(join(directory, "plugin.json")),
+    );
+    return manifest.success ? manifest.data.name : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

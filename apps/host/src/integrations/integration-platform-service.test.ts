@@ -54,9 +54,11 @@ import {
 
 import { describe, expect, it, vi } from "vitest";
 import {
+  carriesApproval,
   IntegrationAuthorizationRequiredError,
   IntegrationPlatformService,
 } from "./integration-platform-service.js";
+import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 import type {
   ComputerAppHub,
   ComputerAppInvokeOutcome,
@@ -191,7 +193,6 @@ describe("agent plugin replacement", () => {
         expect.anything(),
       );
       expect(installNew).not.toHaveBeenCalled();
-      expect(owned.activations).toEqual([]);
       expect((await service.installAgentPlugin(input)).installation).toEqual(first.installation);
       expect(install).toHaveBeenCalledTimes(1);
       // An administration command records its result in the install, so it never skips it.
@@ -258,6 +259,138 @@ describe("agent plugin replacement", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+  it("updates the copy turned on here when older installs left several", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "plugin-copies-"));
+    try {
+      await writeFile(
+        join(directory, "plugin.json"),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+          name: "mine",
+        }),
+      );
+      const workspaceId = createId("workspace");
+      const copy = (id: string, updatedAt: string, on: boolean) => ({
+        id,
+        name: "mine",
+        scope: "workspace",
+        workspaceId,
+        updatedAt: new Date(updatedAt),
+        currentVersionId: "v",
+        versions: [{ id: "v", digest: "old" }],
+        activations: on ? [{ workspaceId }] : [],
+      });
+      const update = vi.fn();
+      const service = platform({
+        adapters: [],
+        store: {
+          plugins: {
+            list: async () => [
+              copy("newer-off", "2026-11-02", false),
+              copy("older-on", "2026-11-01", true),
+            ],
+            update,
+          } as never,
+          localMcp: { list: async () => [] } as never,
+          listInstallations: async () => [],
+          install: async (input: Parameters<IntegrationPlatformStore["install"]>[0]) => {
+            await input.beforeInstall?.({} as never);
+            return {
+              installation: { ...input.installation, createdAt: now, revision: 1, updatedAt: now },
+              requestEvents: [],
+            };
+          },
+        },
+      });
+      await service.installAgentPlugin({
+        directory,
+        workspaceId,
+        actorUserId: createId("user"),
+        requestId: "copies",
+      });
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({ pluginId: "older-on" }),
+        expect.anything(),
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("moves an agent's update off a computer that left the Deployment", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "plugin-computer-"));
+    try {
+      await writeFile(
+        join(directory, "plugin.json"),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+          name: "mine",
+        }),
+      );
+      await writeFile(
+        join(directory, "mcp.json"),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+          mcpServers: { camera: { type: "stdio", command: "node", args: ["server.js"] } },
+        }),
+      );
+      const workspaceId = createId("workspace");
+      const gone = createId("runner"),
+        agents = createId("runner");
+      const previous = {
+        id: createIntegrationId("installation"),
+        pluginId: "owned",
+      } as IntegrationInstallation;
+      let ranOn: unknown;
+      const service = platform({
+        adapters: [],
+        store: {
+          plugins: {
+            list: async () => [
+              {
+                id: "owned",
+                name: "mine",
+                scope: "workspace",
+                workspaceId,
+                updatedAt: new Date(now),
+                currentVersionId: "v",
+                versions: [{ id: "v", digest: "old" }],
+                activations: [{ workspaceId }],
+              },
+            ],
+            update: vi.fn(),
+          } as never,
+          localMcp: {
+            list: async () => [
+              { installationId: previous.id, name: "camera", runnerId: gone, status: "active" },
+            ],
+            computerName: async (runnerId: unknown) => (runnerId === gone ? null : "Mac"),
+            requestApprovals: async () => [],
+          } as never,
+          computerAppRunner: async () => null,
+          listInstallations: async () => [previous],
+          install: async (input: Parameters<IntegrationPlatformStore["install"]>[0]) => {
+            ranOn = input.servers[0]?.transport;
+            return {
+              installation: { ...input.installation, createdAt: now, revision: 1, updatedAt: now },
+              requestEvents: [],
+            };
+          },
+        },
+      });
+      await service.installAgentPlugin({
+        directory,
+        workspaceId,
+        runnerId: agents,
+        actorUserId: createId("user"),
+        requestId: "computer",
+      });
+      expect(ranOn).toMatchObject({ runnerId: agents, type: "runner" });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a folder update of an agent-made plugin before reading the folder", async () => {
     const install = vi.fn();
     const service = platform({
@@ -280,6 +413,33 @@ describe("agent plugin replacement", () => {
       }),
     ).rejects.toThrow("Agent-made plugins update when an agent installs their folder again.");
     expect(install).not.toHaveBeenCalled();
+  });
+});
+
+describe("carriesApproval", () => {
+  const mac = createId("runner");
+  const launch = (env: Record<string, string>, secrets: string[] = []) => ({
+    args: [],
+    command: "node",
+    cwd: "/plugin",
+    env,
+    type: "stdio" as const,
+    ...(secrets.length ? { secrets: secrets.map((name) => ({ name, title: name })) } : {}),
+  });
+  const old = launch({ EDITION: "1" }, ["CAMERA_PASSWORD", "OLD_TOKEN"]);
+  const approved = { approvedLaunchDigest: localMcpLaunchDigest(old), status: "active" };
+  it.each([
+    ["new code, same secrets", approved, mac, launch({ EDITION: "2" }, ["CAMERA_PASSWORD"]), true],
+    ["no secrets left", approved, mac, launch({ EDITION: "2" }), true],
+    ["a new secret", approved, mac, launch({ EDITION: "2" }, ["CAMERA_PASSWORD", "NEW"]), false],
+    ["another computer", approved, createId("runner"), launch({ EDITION: "2" }), false],
+    ["declined", { ...approved, status: "disabled" }, mac, launch({ EDITION: "2" }), false],
+    ["never approved", { ...approved, approvedLaunchDigest: null }, mac, launch({}), false],
+    ["waiting on an older answer", { ...approved, approvedLaunchDigest: "other" }, mac, old, false],
+  ])("%s", (_, existing, runnerId, next, carries) => {
+    expect(
+      carriesApproval(existing, { launch: old, runnerId: mac }, { launch: next, runnerId }),
+    ).toBe(carries);
   });
 });
 
