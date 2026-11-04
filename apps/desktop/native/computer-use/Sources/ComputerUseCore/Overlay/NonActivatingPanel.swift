@@ -1,6 +1,6 @@
 import AppKit
 
-/// Nothing the helper draws may take the keyboard (§2 "What the person sees").
+/// Nothing the helper draws may take the keyboard.
 ///
 /// A panel that can become key would put the person's insertion point in the
 /// helper's window the moment they clicked `Stop`, which is exactly the focus

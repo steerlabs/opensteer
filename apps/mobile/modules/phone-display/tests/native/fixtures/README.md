@@ -1,18 +1,7 @@
-Synthetic VideoToolbox Baseline fixtures, no B frames, 2.5 Mbps target, GOP 60,
-Annex B with AUD and SPS/PPS on keyframes. No screen capture. `mac.h264` is
-1512×982 (two frames); `resized.h264` is 1280×800 (two frames). `mac-high.h264`
-is `mac.h264` encoded `-profile:v constrained_high`, as a negotiated Mac sends.
-`noisy.h264` is one 1920×1248 random-noise frame. Its encoded access unit is
-larger than 1 MiB despite the average bitrate target; it remains below the
-protocol's 4 MiB payload bound.
-
-Generate two concatenated lavfi colour sources (lime then blue) at 1512x982
-(or 1280x800), rate 2, duration 0.5 each,
-`-frames:v 2 -c:v h264_videotoolbox -profile:v baseline -bf 0 -g 60
--b:v 2500k -bsf:v h264_metadata=aud=insert -f h264`.
-For noise use `nullsrc=size=1920x1248:rate=30,geq=lum=random(1)*255:cb=random(2)*255:cr=random(3)*255`
-and `-frames:v 1` with the same encoder options.
-
-The 128×128 lime key and blue delta use the same encoder recipe. They stay above
-the emulator hardware AVC decoder minimum (96×96); 64×64 selects the software
-decoder, which buffers still pictures despite zero reordered frames.
+Synthetic VideoToolbox H.264 fixtures: Baseline with no B-frames, Annex B with AUD and SPS/PPS on
+keyframes, no screen capture. `mac-high.h264` is `mac.h264` re-encoded as Constrained High, as a
+negotiated Mac sends. `noisy.h264` is one random-noise frame whose access unit exceeds 1 MiB while
+staying under the protocol's 4 MiB payload bound. The 128×128 key and delta stay above the emulator
+hardware AVC decoder's 96×96 minimum; 64×64 selects the software decoder, which buffers still
+pictures despite zero reordered frames. The recipe is in the
+[mobile skill](../../../../../../../.agents/skills/mobile/SKILL.md).

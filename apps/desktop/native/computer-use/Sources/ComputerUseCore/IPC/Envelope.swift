@@ -1,6 +1,6 @@
 import Foundation
 
-/// `{id, method, params, timeoutMs?}` — every message the peer sends (§2 "IPC").
+/// `{id, method, params, timeoutMs?}` — every message the peer sends.
 public struct RequestEnvelope: Decodable, Sendable {
   public let id: JSONValue
   public let method: String
@@ -56,7 +56,7 @@ public struct RequestEnvelope: Decodable, Sendable {
   }
 }
 
-/// `{id, result}` or `{id, error: {code, message}}` (§2 "IPC").
+/// `{id, result}` or `{id, error: {code, message}}`.
 public struct ResponseEnvelope: Encodable {
   public struct ErrorBody: Encodable {
     public let code: HelperErrorCode
@@ -91,7 +91,7 @@ public struct ResponseEnvelope: Encodable {
   }
 }
 
-/// `{event, params}` — sent by the helper for a session it holds (§2 "IPC").
+/// `{event, params}` — sent by the helper for a session it holds.
 public struct EventEnvelope: Encodable {
   public let event: String
   public let params: AnyEncodable

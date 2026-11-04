@@ -2,7 +2,7 @@
 import PackageDescription
 
 /// `Opensteer Computer Use.app` — the only process on the Mac that holds the
-/// Accessibility and Screen Recording grants (docs/computer-use.md §1).
+/// Accessibility and Screen Recording grants (docs/computer-use.md#the-helper).
 ///
 /// The helper and shared Apple data package are signed into one executable.
 /// Its designated requirement is what the desktop app trusts, so every byte

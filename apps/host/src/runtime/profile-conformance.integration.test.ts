@@ -213,7 +213,7 @@ integration("shipped configuration conformance", () => {
  * The Personal stack's fourth supervised process, from the Host's side.
  *
  * The desktop app mints this token, keeps it in its protected store and hands
- * it to the Host on every start (`docs/messaging.md` §7), so the Host enrols a
+ * it to the Host on every start (`docs/messaging.md#ownership-and-transport`), so the Host enrols a
  * Deployment-owned messaging Runner from it at startup. That Runner is not a
  * computer anybody lent this Deployment: it runs on this same Mac, reaches the
  * Host over loopback, and is admitted whatever remote access says. Both halves

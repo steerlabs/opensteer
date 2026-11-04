@@ -15,7 +15,7 @@ public struct WindowIdentity: Sendable, Equatable {
 /// Accessibility reads of an app's windows. Each is a message to the app, so
 /// these run on the work executor, never on the main thread.
 public enum KeyWindow {
-  /// `AXFocusedWindow`, else `AXMainWindow`, else the first window (§2).
+  /// `AXFocusedWindow`, else `AXMainWindow`, else the first window.
   ///
   /// A minimized window is `unsupported` with a sentence that says what to
   /// ask the person: restoring it would take their screen. A window on another

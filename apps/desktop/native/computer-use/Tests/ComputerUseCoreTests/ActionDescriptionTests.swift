@@ -5,7 +5,7 @@ import XCTest
 @testable import ComputerUseCore
 
 /// `performed`: what each completed action did, in the words a person reading
-/// the transcript and the model reading the result both use (§2 "Actions").
+/// the transcript and the model reading the result both use.
 final class ActionDescriptionTests: XCTestCase {
   private func element(
     _ role: String, title: String? = nil, value: String? = nil, help: String? = nil,

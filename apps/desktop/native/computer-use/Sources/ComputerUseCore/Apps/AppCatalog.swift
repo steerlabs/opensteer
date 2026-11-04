@@ -212,7 +212,7 @@ public actor AppCatalog {
 
   /// The installed bundle behind an identity the Host carried, read fresh from
   /// disk, or the refusal that says why it is not the approved app. This is
-  /// the first-use check of an app in a session (§1 invariant 3).
+  /// the first-use check of an app in a session.
   public func verifiedRecord(for approved: AppIdentity) async throws -> AppBundleRecord {
     let indexed = try await resolve(query: approved.bundleId)
     guard let record = Self.freshRecord(indexed) else {

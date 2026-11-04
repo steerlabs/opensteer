@@ -1,6 +1,6 @@
 import Foundation
 
-/// The complete error vocabulary of docs/computer-use.md §2. Nothing else is
+/// The helper's complete error vocabulary. Nothing else is
 /// ever put on the wire, because the Host maps these codes one for one.
 public enum HelperErrorCode: String, Codable, Sendable, CaseIterable {
   case permissionRequired = "permission-required"
@@ -15,7 +15,7 @@ public enum HelperErrorCode: String, Codable, Sendable, CaseIterable {
   case unsupported = "unsupported"
   case failed = "failed"
   /// The action may have happened. Nothing after it in the batch is posted and
-  /// nothing is ever retried (§1 invariant 6).
+  /// nothing is ever retried.
   case outcomeUnknown = "outcome-unknown"
   /// The channel's persisted attempt has no confirmation; repeating the key
   /// cannot resolve it. Unlike a lost bridge answer, this is terminal.
@@ -24,7 +24,7 @@ public enum HelperErrorCode: String, Codable, Sendable, CaseIterable {
 }
 
 /// Every error carries one sentence a person or a model can act on, and never a
-/// filesystem path (§2 "Errors").
+/// filesystem path.
 public struct HelperError: Error, Sendable, Equatable {
   public let code: HelperErrorCode
   public let message: String
