@@ -64,7 +64,7 @@ export function createConnectOperations(
   tracking: IntegrationAuthorizationTracking,
 ): ConnectOperations {
   return {
-    appButtonOffered: (status) => integrationAppButtonOffered(desktopBridge(), client, status),
+    appButtonOffered: (status) => integrationAppButtonOffered(client, status),
     checkRepositoryAccess: async (connectionId) =>
       unwrapRpcResult(
         await client.rpc["integration.repositoryAccess.check"]({

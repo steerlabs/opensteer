@@ -81,11 +81,15 @@ export async function beginIntegrationAuthorization(input: {
 /** `app-button`: the person chose to return by the page's button, so no listener opens. */
 export type IntegrationAuthorizationReturnRoute = "app-button";
 
+/** Whether a client's latest sign-in tried to return by itself. */
+const automaticReturns = new WeakMap<object, boolean>();
+
 export async function integrationAuthorizationFinish(
   bridge: Pick<OpensteerDesktopBridge, "prepareIntegrationAuthorizationReturn"> | null,
   client: Pick<HostClient, "getSnapshot">,
   route?: IntegrationAuthorizationReturnRoute,
 ): Promise<{ readonly appReturnPort?: number; readonly finish?: "app" }> {
+  automaticReturns.delete(client);
   const snapshot = client.getSnapshot();
   if (!bridge || !snapshot.integrationAppFinishAvailable) return {};
   if (route === "app-button" || !snapshot.integrationAppReturnPortAvailable)
@@ -93,19 +97,21 @@ export async function integrationAuthorizationFinish(
   const { port } = await bridge
     .prepareIntegrationAuthorizationReturn()
     .catch(() => ({ port: null }));
-  return port === null ? { finish: "app" } : { appReturnPort: port, finish: "app" };
+  if (port === null) return { finish: "app" };
+  automaticReturns.set(client, true);
+  return { appReturnPort: port, finish: "app" };
 }
 
-/** A sign-in that ended here could have lost an automatic return, so the person may choose. */
+/**
+ * A sign-in that tried to return by itself and ended this way may have lost that
+ * return, so the person may choose the button. One that used it has nothing to offer.
+ */
 export function integrationAppButtonOffered(
-  bridge: object | null,
   client: Pick<HostClient, "getSnapshot">,
   status: IntegrationAuthorizationStatus["status"],
 ): boolean {
   return (
-    bridge !== null &&
-    client.getSnapshot().integrationAppReturnPortAvailable === true &&
-    integrationAuthorizationReturnMayHaveFailed(status)
+    automaticReturns.get(client) === true && integrationAuthorizationReturnMayHaveFailed(status)
   );
 }
 

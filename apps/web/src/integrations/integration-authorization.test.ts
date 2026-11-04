@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConnectOperations } from "../components/integrations/connect-operations.js";
 import {
   beginIntegrationAuthorization,
+  integrationAppButtonOffered,
   integrationAuthorizationCompletionPath,
   integrationAuthorizationFinish,
   subscribeIntegrationAuthorizationReturns,
@@ -59,7 +60,9 @@ describe("integrationAuthorizationFinish", () => {
     });
     await expect(
       integrationAuthorizationFinish(
-        { prepareIntegrationAuthorizationReturn: vi.fn(async () => Promise.reject(new Error("x"))) },
+        {
+          prepareIntegrationAuthorizationReturn: vi.fn(async () => Promise.reject(new Error("x"))),
+        },
         capable,
       ),
     ).resolves.toEqual({ finish: "app" });
@@ -75,6 +78,22 @@ describe("integrationAuthorizationFinish", () => {
 
   it("asks nothing of a browser", async () => {
     await expect(integrationAuthorizationFinish(null, capable)).resolves.toEqual({});
+  });
+
+  it("offers the app button only after a sign-in that tried to return by itself", async () => {
+    const client = {
+      getSnapshot: capable.getSnapshot,
+    } as unknown as HostClient;
+    expect(integrationAppButtonOffered(client, "expired")).toBe(false);
+    await integrationAuthorizationFinish(prepared(48_203), client);
+    expect(integrationAppButtonOffered(client, "expired")).toBe(true);
+    expect(integrationAppButtonOffered(client, "denied")).toBe(false);
+    // No port was free, or this computer offers none: that sign-in already used the button.
+    await integrationAuthorizationFinish(prepared(null), client);
+    expect(integrationAppButtonOffered(client, "expired")).toBe(false);
+    await integrationAuthorizationFinish(prepared(48_203), client);
+    await integrationAuthorizationFinish(prepared(48_203), client, "app-button");
+    expect(integrationAppButtonOffered(client, "expired")).toBe(false);
   });
 });
 

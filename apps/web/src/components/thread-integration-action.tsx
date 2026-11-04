@@ -460,9 +460,7 @@ export function ThreadIntegrationAction({
       tracking.finished(started.attemptId);
       const outcome = integrationAuthorizationError(status.status, status.failureCode);
       if (outcome) {
-        setAppButtonOffered(
-          integrationAppButtonOffered(desktopBridge(), hostClient, status.status),
-        );
+        setAppButtonOffered(integrationAppButtonOffered(hostClient, status.status));
         throw new Error(outcome);
       }
       if (!status.connectionId)
@@ -912,9 +910,7 @@ export function ThreadIntegrationAction({
       if (outcome) {
         answerAfterConnect.current = null;
         setError(outcome);
-        setAppButtonOffered(
-          integrationAppButtonOffered(desktopBridge(), hostClient, status.status),
-        );
+        setAppButtonOffered(integrationAppButtonOffered(hostClient, status.status));
         return;
       }
       setPending(true);
