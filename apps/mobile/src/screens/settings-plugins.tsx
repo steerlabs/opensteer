@@ -72,15 +72,26 @@ function Plugins({
   const [serverEntries, setServerEntries] = useState<
     SettingsRpcData<"integration.platform.get">["installations"]
   >([]);
-  const [placementAccounts, setPlacementAccounts] = useState<PluginDetailView["places"][number]["accounts"]>([]);
+  const [placementAccounts, setPlacementAccounts] = useState<
+    PluginDetailView["places"][number]["accounts"]
+  >([]);
   const [detailTarget, setDetailTarget] = useState(target);
-  useEffect(() => { setDetailTarget(target); setPlacementAccounts([]); }, [target]);
-  const detailRead = useSettingsRead(host, async () => {
-    if (!detailTarget) return null;
-    return unwrapRpcResult(await host.rpc["plugins.detail.get"]({
-      target: PluginTargetSchema.parse(detailTarget),
-    }));
-  }, JSON.stringify(detailTarget));
+  useEffect(() => {
+    setDetailTarget(target);
+    setPlacementAccounts([]);
+  }, [target]);
+  const detailRead = useSettingsRead(
+    host,
+    async () => {
+      if (!detailTarget) return null;
+      return unwrapRpcResult(
+        await host.rpc["plugins.detail.get"]({
+          target: PluginTargetSchema.parse(detailTarget),
+        }),
+      );
+    },
+    JSON.stringify(detailTarget),
+  );
   const detail = detailRead.data;
   useEffect(() => {
     if (!detail) {
@@ -155,7 +166,8 @@ function Plugins({
   const command = (key: string, value: HostApiCommandInput) =>
     run(key, async () => {
       const intent = JSON.stringify(
-        (value.type === "settings.plugin.enabled.set" || value.type === "settings.plugin.placement.set")
+        value.type === "settings.plugin.enabled.set" ||
+          value.type === "settings.plugin.placement.set"
           ? { type: value.type, target: value.target }
           : { ...value, idempotencyKey: "" },
       );
@@ -248,11 +260,11 @@ function Plugins({
       ],
     );
   const sections: NativeSettingsSection[] = [];
-  if (error || overview.error)
+  if (error || overview.error || detailRead.error)
     sections.push({
       key: "error",
       title: "Needs you",
-      rows: [text("error", error ?? overview.error ?? "")],
+      rows: [text("error", error ?? detailRead.error ?? overview.error ?? "")],
     });
   if (detail) {
     const row = detail.row;
@@ -343,13 +355,28 @@ function Plugins({
       title: "Where it’s on",
       rows: [
         ...detail.accounts.map((account): NativeSettingsRow => ({
-          key: `access:${account.connectionId}`, kind: "chips", label: `Access for ${account.displayName}`,
-          value: placementAccounts.find((a) => a.connectionId === account.connectionId)?.access ?? "",
-          choices: [{ value: "", label: "Choose access" }, { value: "read", label: "Read" }, { value: "read-write", label: "Read and update" }],
-          onChange: (access) => setPlacementAccounts((previous) => [
-            ...previous.filter((a) => a.connectionId !== account.connectionId),
-            ...(access === "read" || access === "read-write" ? [{ connectionId: account.connectionId, access: access === "read" ? "read" as const : "read-write" as const }] : []),
-          ]),
+          key: `access:${account.connectionId}`,
+          kind: "chips",
+          label: `Access for ${account.displayName}`,
+          value:
+            placementAccounts.find((a) => a.connectionId === account.connectionId)?.access ?? "",
+          choices: [
+            { value: "", label: "Choose access" },
+            { value: "read", label: "Read" },
+            { value: "read-write", label: "Read and update" },
+          ],
+          onChange: (access) =>
+            setPlacementAccounts((previous) => [
+              ...previous.filter((a) => a.connectionId !== account.connectionId),
+              ...(access === "read" || access === "read-write"
+                ? [
+                    {
+                      connectionId: account.connectionId,
+                      access: access === "read" ? ("read" as const) : ("read-write" as const),
+                    },
+                  ]
+                : []),
+            ]),
         })),
 
         ...(host.getSnapshot().deploymentShape?.kind === "personal"
@@ -359,7 +386,12 @@ function Plugins({
                 kind: "toggle" as const,
                 label: "Everywhere, including new Projects",
                 value: row.placement.personalEverywhere,
-                disabled: pending !== null || !row.permissions.canPlace || (detail.accounts.length > 0 && !placementAccounts.length && !row.placement.personalEverywhere),
+                disabled:
+                  pending !== null ||
+                  !row.permissions.canPlace ||
+                  ((row.target.kind === "service" || row.target.kind === "device-app") &&
+                    !placementAccounts.length &&
+                    !row.placement.personalEverywhere),
                 onChange: (enabled: boolean) =>
                   command("everywhere", {
                     type: "settings.plugin.placement.set",
@@ -370,11 +402,19 @@ function Plugins({
                       .filter((place) => place.kind === "project" && (enabled || place.selected))
                       .map((place) => ({
                         workspaceId: place.workspaceId,
-                        accounts: pluginPlacementAccounts(enabled ? [] : place.accounts, placementAccounts, detail.accounts.length > 0),
+                        accounts: pluginPlacementAccounts(
+                          enabled ? [] : place.accounts,
+                          placementAccounts,
+                          row.target.kind === "service" || row.target.kind === "device-app",
+                        ),
                       })),
                     personalEverywhere: enabled
                       ? {
-                          accounts: pluginPlacementAccounts([], placementAccounts, detail.accounts.length > 0),
+                          accounts: pluginPlacementAccounts(
+                            [],
+                            placementAccounts,
+                            row.target.kind === "service" || row.target.kind === "device-app",
+                          ),
                         }
                       : null,
                     idempotencyKey: mutationIdempotencyKey("settings-plugin-everywhere"),
@@ -389,7 +429,14 @@ function Plugins({
               kind: "toggle",
               label: place.name,
               value: place.selected,
-              disabled: pending !== null || !place.canSelect || !row.permissions.canPlace || (detail.accounts.length > 0 && place.kind === "project" && !place.selected && !placementAccounts.length),
+              disabled:
+                pending !== null ||
+                !place.canSelect ||
+                !row.permissions.canPlace ||
+                ((row.target.kind === "service" || row.target.kind === "device-app") &&
+                  place.kind === "project" &&
+                  !place.selected &&
+                  !placementAccounts.length),
               onChange: (selected) =>
                 command(`${row.target.kind}:${pluginTargetKey(row.target)}`, {
                   type: "settings.plugin.placement.set",
@@ -402,7 +449,14 @@ function Plugins({
                         p.kind === "project" &&
                         (p.workspaceId === place.workspaceId ? selected : p.selected),
                     )
-                    .map((p) => ({ workspaceId: p.workspaceId, accounts: pluginPlacementAccounts(p.accounts, placementAccounts, detail.accounts.length > 0) })),
+                    .map((p) => ({
+                      workspaceId: p.workspaceId,
+                      accounts: pluginPlacementAccounts(
+                        p.accounts,
+                        placementAccounts,
+                        row.target.kind === "service" || row.target.kind === "device-app",
+                      ),
+                    })),
                   personalEverywhere: null,
                   idempotencyKey: mutationIdempotencyKey("settings-plugin-placement"),
                 }),
@@ -438,9 +492,7 @@ function Plugins({
           )
           .map((item) =>
             button(item.definitionId, `${item.title}${item.added ? " · Added" : " · Add"}`, () => {
-              if (!item.added) {
-                openAdd(item);
-              }
+              openAdd(item);
             }),
           ),
       ],
@@ -824,11 +876,15 @@ function Plugins({
                       : [
                           button("add", "Add and continue to sign-in", () =>
                             run("catalog", async () => {
-                              await host.dispatch({
-                                type: "integration.catalog.install",
-                                input: { definitionId: add.definitionId, digest: addEntry.digest },
-                                idempotencyKey: mutationIdempotencyKey("plugin-catalog-install"),
-                              });
+                              if (!add.added)
+                                await host.dispatch({
+                                  type: "integration.catalog.install",
+                                  input: {
+                                    definitionId: add.definitionId,
+                                    digest: addEntry.digest,
+                                  },
+                                  idempotencyKey: mutationIdempotencyKey("plugin-catalog-install"),
+                                });
                               if (!isCurrent()) return;
                               const target: PluginTarget = {
                                 kind: addEntry.definition.computerApp ? "device-app" : "service",
@@ -837,8 +893,13 @@ function Plugins({
                               await addPluginService(host, target);
                               if (isCurrent()) {
                                 addConsent.current = {
-                                  target, everywhere: addEverywhere, places: addPlaces, access: "read",
-                                  idempotencyKey: mutationIdempotencyKey("plugin-add-account-placement"),
+                                  target,
+                                  everywhere: addEverywhere,
+                                  places: addPlaces,
+                                  access: "read",
+                                  idempotencyKey: mutationIdempotencyKey(
+                                    "plugin-add-account-placement",
+                                  ),
                                   command: null,
                                 };
                                 setAddInstalled(true);

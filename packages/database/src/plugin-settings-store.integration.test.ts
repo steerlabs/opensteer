@@ -15,48 +15,87 @@ import { integrationDefinitionDigest } from "@opensteer/integration-core/digest"
 import { describeStore } from "./store.integration.test-support.js";
 
 describeStore("plugin Settings authority", (test) => {
-  test("a viewer can add an installed catalog service before connecting an account", async ({ storeFixture: f }) => {
+  test("a viewer can add an installed catalog service before connecting an account", async ({
+    storeFixture: f,
+  }) => {
     const run = await f.createRunFixture("settings-unconnected");
     const platform = new IntegrationPlatformStore(f.database);
     await platform.install({
-      actorUserId: run.userId, adapterSnapshot: null, requestId: "unconnected-install",
+      actorUserId: run.userId,
+      adapterSnapshot: null,
+      requestId: "unconnected-install",
       installation: {
-        id: createIntegrationId("installation"), name: "unconnected", title: "Unconnected",
-        description: "", version: "1", sourceKind: "built-in", status: "active", trust: "built-in",
-        manifest: { definition: { id: "unconnected" } }, provenance: {},
-      }, servers: [],
+        id: createIntegrationId("installation"),
+        name: "unconnected",
+        title: "Unconnected",
+        description: "",
+        version: "1",
+        sourceKind: "built-in",
+        status: "active",
+        trust: "built-in",
+        manifest: { definition: { id: "unconnected", authMethods: [{ id: "sign-in" }] } },
+        provenance: {},
+      },
+      servers: [],
     });
     const viewer = await f.store.createUser("new-member");
     const target = { kind: "service", definitionId: "unconnected" } as const;
     expect((await platform.settings.overview(viewer)).rows).toHaveLength(0);
-    const detail = await platform.settings.detail(viewer, target);
-    expect(detail.accounts).toEqual([]);
+    await expect(platform.settings.detail(viewer, target)).rejects.toMatchObject({
+      code: "forbidden",
+    });
     await platform.settings.setEnabled(viewer, {
-      type: "settings.plugin.enabled.set", target, enabled: true, expectedRevision: detail.row.placement.revision,
+      type: "settings.plugin.enabled.set",
+      target,
+      enabled: true,
+      expectedRevision: 0,
       idempotencyKey: "explicit-add",
     });
+    expect((await platform.settings.detail(viewer, target)).accounts).toEqual([]);
     expect((await platform.settings.overview(viewer)).rows).toMatchObject([
       { target, accountCount: 0, issues: ["needs-sign-in"] },
     ]);
   });
-  test("deployment packages show Main only after explicit activation", async ({ storeFixture: f }) => {
+  test("deployment packages show Main only after explicit activation", async ({
+    storeFixture: f,
+  }) => {
     const run = await f.startRunFixture("settings-main-activation");
     const platform = new IntegrationPlatformStore(f.database);
     const pluginId = randomUUID();
     await platform.plugins.install({
-      id: pluginId, name: "unplaced", actorUserId: run.userId,
-      source: {}, digest: "unplaced", manifest: { name: "unplaced", skills: [] },
+      id: pluginId,
+      name: "unplaced",
+      actorUserId: run.userId,
+      source: {},
+      digest: "unplaced",
+      manifest: { name: "unplaced", skills: [] },
     });
     const target = { kind: "plugin", pluginId } as const;
     const detail = await platform.settings.detail(run.userId, target);
     expect(detail.row.placement.mainIncluded).toBe(false);
-    await platform.settings.setPlacement(run.userId, {
-      type: "settings.plugin.placement.set", target, expectedRevision: detail.row.placement.revision,
-      mainIncluded: true, projects: [], personalEverywhere: null, idempotencyKey: "activate-main",
-    }, {});
-    expect((await platform.settings.detail(run.userId, target)).row.placement.mainIncluded).toBe(true);
-    expect(await f.database.selectFrom("pluginActivations").selectAll()
-      .where("pluginId", "=", pluginId).execute()).toHaveLength(1);
+    await platform.settings.setPlacement(
+      run.userId,
+      {
+        type: "settings.plugin.placement.set",
+        target,
+        expectedRevision: detail.row.placement.revision,
+        mainIncluded: true,
+        projects: [],
+        personalEverywhere: null,
+        idempotencyKey: "activate-main",
+      },
+      {},
+    );
+    expect((await platform.settings.detail(run.userId, target)).row.placement.mainIncluded).toBe(
+      true,
+    );
+    expect(
+      await f.database
+        .selectFrom("pluginActivations")
+        .selectAll()
+        .where("pluginId", "=", pluginId)
+        .execute(),
+    ).toHaveLength(1);
   });
   test("server roles cannot discover another person's private accounts, policy or source files", async ({
     storeFixture: f,
