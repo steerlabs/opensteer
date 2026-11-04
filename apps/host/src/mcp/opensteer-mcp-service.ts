@@ -437,7 +437,13 @@ export class OpensteerMcpService {
       ) => Promise<unknown>;
       const output = tool.output.safeParse(await handler(call));
       // A result outside the contract is the Host's fault, never the caller's arguments.
-      if (!output.success) throw new Error("Opensteer produced an invalid result for this tool");
+      // Field paths only: a value could be anything the tool returned.
+      if (!output.success)
+        throw new Error(
+          `Opensteer produced an invalid result for this tool at ${[
+            ...new Set(output.error.issues.map(({ path }) => path.join(".") || "(result)")),
+          ].join(", ")}`,
+        );
       return output.data as Record<string, unknown> | string;
     };
     await check();

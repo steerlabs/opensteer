@@ -521,10 +521,13 @@ describe("Opensteer MCP spine", () => {
         undefined,
         { timeout: 5000 },
       );
-      expect(result).toMatchObject({
-        isError: true,
-        content: [{ type: "text", text: "Opensteer produced an invalid result for this tool" }],
-      });
+      expect(result).toMatchObject({ isError: true });
+      const text = (result.content as [{ text: string }])[0].text;
+      expect(text).toMatch(/^Opensteer produced an invalid result for this tool at /u);
+      // It names where the result broke the contract, never what the result held.
+      expect(text).toContain("total");
+      expect(text).not.toContain("many");
+      expect(text).not.toContain("invalid_arguments");
     } finally {
       await client.close();
       await f.service.close();
