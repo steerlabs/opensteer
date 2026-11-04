@@ -4,6 +4,7 @@ import { access } from "node:fs/promises";
 import path from "node:path";
 import {
   BrowserVideoClickResultSchema,
+  BrowserPopupClientMessageSchema,
   BrowserPopupServerMessageSchema,
   BrowserVideoStateSchema,
 } from "@opensteer/protocol";
@@ -15,9 +16,9 @@ import type { OpensteerInputOwner } from "../src/browser/electron-browser-presen
 /** Real Personal Host and real web picker, in a separate viewer browser process. */
 export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<void> {
   assert.equal(
-    process.versions.electron,
-    "44.9.2",
-    "Popup journey requires the qualified Electron",
+    process.versions["opensteer"],
+    "1",
+    "Popup journey requires private owner contract version 1",
   );
   const executable = process.env.OPENSTEER_POPUP_VIEWER_EXECUTABLE ?? chromium.executablePath();
   await access(executable).catch(() => {
@@ -131,6 +132,10 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   const admissions: [number, number] = [0, 0];
   const sessionMatches = [false, false];
   const guardedResults: Record<string, number> = {};
+  const tapStarted: (number | null)[] = [null, null];
+  const answers = new Map<string, number>();
+  const tapToPopupMs: number[] = [];
+  const answerToAppliedMs: number[] = [];
   try {
     // These are the journey's temporary owner cookies, held in live memory only.
     const cookies = await session
@@ -173,6 +178,18 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
               if (videoState.success)
                 record(index, `video:${videoState.data.state}:${videoState.data.reason ?? "none"}`);
               const popup = BrowserPopupServerMessageSchema.safeParse(m);
+              if (popup.success) {
+                if (popup.data.type === "browser.popup.opened" && tapStarted[index] != null) {
+                  tapToPopupMs.push(performance.now() - tapStarted[index]!);
+                  tapStarted[index] = null;
+                }
+                if (popup.data.type === "browser.popup.result") {
+                  const started = answers.get(popup.data.operationId);
+                  if (started !== undefined && popup.data.outcome === "applied")
+                    answerToAppliedMs.push(performance.now() - started);
+                  answers.delete(popup.data.operationId);
+                }
+              }
               if (popup.success)
                 record(
                   index,
@@ -206,6 +223,9 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
             if (typeof payload !== "string") return;
             try {
               const m: unknown = JSON.parse(payload);
+              const popup = BrowserPopupClientMessageSchema.safeParse(m);
+              if (popup.success && popup.data.type === "popup.answer")
+                answers.set(popup.data.operationId, performance.now());
               if (m && typeof m === "object" && "type" in m && typeof m.type === "string")
                 commands[m.type] = (commands[m.type] ?? 0) + 1;
               if (
@@ -306,6 +326,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       )) as { x: number; y: number; w: number; h: number };
       const canvas = await page.locator('canvas[aria-label="Live browser page"]').boundingBox();
       assert(canvas);
+      tapStarted[page === a ? 0 : 1] = performance.now();
       await page.mouse.click(
         canvas.x + (point.x / point.w) * canvas.width,
         canvas.y + (point.y / point.h) * canvas.height,
@@ -608,6 +629,8 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       popupCounts: counts,
       commands,
       guardedResults,
+      tapToPopupMs,
+      answerToAppliedMs,
       nativeStops,
       events,
       sessionMatches,
@@ -616,6 +639,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       viewerPid: pid,
       producerPid: process.pid,
       electron: process.versions.electron,
+      ownerContract: process.versions["opensteer"],
       foreground: app.isHidden() ? "hidden" : "visible",
     });
     let screenshot = 0;
