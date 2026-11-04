@@ -99,22 +99,22 @@ it started is what refuses the proof.
 
 Every login on a computer shares loopback ports, while the operating system routes an app link to
 the current login's app. So a desktop listener runs only while its app's login session owns the
-console, and otherwise the attempt uses the app link. It closes when that session resigns; pending
-attempts keep their authority and get their sealed port back if it is still free. The app's
-attempts live in memory, so a restarted app refuses them and the person starts again.
+console, and otherwise the attempt uses the app link. Only macOS reports that, so other desktops
+always use the app link. The listener closes when its session resigns; pending attempts keep their
+authority and get their sealed port back if it is still free. The app's attempts live in memory, so
+a restarted app refuses them and the person starts again.
 
 This covers links from Deployments the person does not belong to, not a hostile operator of a joined
 server Deployment, malware on the device, or a deliberately hostile process under another login on
-the same computer. Launch consumes a one-use ticket, and the atomic
-callback claim matches state, provider and that attempt's own browser-binding cookie. That ticket
-is known to the Host that created the attempt, so its cookie can never authorize releasing a proof.
-A relay claim
-authorizes one exchange; a failed exchange needs fresh consent. Completion rechecks the Account-link
-generation in the transaction that stores credentials, and a replayed relay response cannot replace
-them. Return only to the initiating Deployment's verified origin and stored relative path, the
-fixed native callback, or a sealed port in the reserved block on `127.0.0.1` at the fixed path,
-never a caller-supplied URL. Failures persist with safe classifications and
-never log provider bodies or credentials.
+the same computer. Launch consumes a one-use ticket, and the atomic callback claim matches state,
+provider and that attempt's own browser-binding cookie. That ticket is known to the Host that
+created the attempt, so its cookie can never authorize releasing a proof. A relay claim authorizes
+one exchange; a failed exchange needs fresh consent. Completion rechecks the Account-link generation
+in the transaction that stores credentials, and a replayed relay response cannot replace them.
+Return only to the initiating Deployment's verified origin and stored relative path, the fixed
+native callback, or a sealed port in the reserved block on `127.0.0.1` at the fixed path, never a
+caller-supplied URL. Failures persist with safe classifications and never log provider bodies or
+credentials.
 
 ## Integration access requests
 
