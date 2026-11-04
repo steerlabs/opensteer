@@ -1,3 +1,5 @@
+import type { BackgroundModelsSettings, BackgroundProviderRow } from "@opensteer/client/host";
+import type { BackgroundModelRole } from "@opensteer/core";
 import type {
   AccountSettingsModel,
   ComputerSettingsDestination,
@@ -19,6 +21,16 @@ export interface AgentNotificationRow {
   readonly muted: boolean;
   readonly name: string;
   readonly workspaceId: string;
+}
+
+/** Which models do Opensteer's own small jobs; null settings while loading. */
+export interface BackgroundModelsForm {
+  readonly settings: BackgroundModelsSettings | null;
+  readonly error: string | null;
+  readonly pending: boolean;
+  readonly onRole: (role: BackgroundModelRole, value: string) => void;
+  readonly onConsent: (providerId: BackgroundProviderRow["providerId"], allowed: boolean) => void;
+  readonly onNotNow: (providerId: BackgroundProviderRow["providerId"]) => void;
 }
 
 export interface EngineUpdateRow {
@@ -79,6 +91,8 @@ export interface SettingsFormProps extends SettingsFormActionHandlers {
   readonly computers: readonly ComputerSettingsRow[];
   readonly deployment: DeploymentSettingsModel;
   readonly engineUpdates?: readonly EngineUpdateRow[] | undefined;
+  /** Null while no Deployment is open. */
+  readonly background?: BackgroundModelsForm | null | undefined;
   readonly notificationError: string | null;
   /** Null in a build without an Account service, which nothing can notify. */
   readonly notifications: NotificationSettingsModel | null;

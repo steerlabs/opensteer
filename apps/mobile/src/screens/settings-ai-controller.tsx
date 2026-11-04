@@ -1,10 +1,12 @@
-import { mutationIdempotencyKey } from "@opensteer/client/host";
+import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import { harnessDriverLabel } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
 import { useMemo, useState, type ReactNode } from "react";
 import { operationDetail } from "../client/mobile-client.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { AiSettingsForm } from "./settings-ai-form.js";
+import { useBackgroundModelsForm } from "./settings-background-models.js";
+import type { BackgroundModelsForm } from "./settings-form.types.js";
 import { engineInstallationUpdateModel } from "./settings-model.js";
 import { SettingsPageLayout } from "./settings-page-layout.js";
 import { useSettingsHost } from "./use-settings-host.js";
@@ -34,40 +36,56 @@ export function AiSettingsController(): ReactNode {
       };
     });
   }, [engineUpdateError, engineUpdatePending, snapshot]);
-  return (
-    <>
-      <SettingsPageLayout>
-        <AiSettingsForm
-          onChooseModel={() => {
-            if (selection.deploymentId)
-              navigation.navigate("NewThread", { deploymentId: selection.deploymentId });
-          }}
-          page={page}
-          engineUpdates={engineUpdates}
-          onEngineUpdate={(environmentId, driverKind) => {
-            const hostClient = selection.hostClient;
-            if (!hostClient || engineUpdatePending) return;
-            const key = `${environmentId}:${driverKind}`;
-            setEngineUpdatePending(key);
-            setEngineUpdateError(null);
-            void hostClient
-              .dispatch({
-                driverKind,
-                environmentId,
-                idempotencyKey: mutationIdempotencyKey(`harness-update:${key}`),
-                type: "harness.update",
-              })
-              .then(() => hostClient.refresh())
-              .catch((error: unknown) =>
-                setEngineUpdateError({
-                  detail: operationDetail(error, "Update failed. Try again."),
-                  key: `${environmentId}:${driverKind}`,
-                }),
-              )
-              .finally(() => setEngineUpdatePending(null));
-          }}
-        />
-      </SettingsPageLayout>
-    </>
+  const hostClient = selection.hostClient;
+  const form = (background: BackgroundModelsForm | null) => (
+    <AiSettingsForm
+      onChooseModel={() => {
+        if (selection.deploymentId)
+          navigation.navigate("NewThread", { deploymentId: selection.deploymentId });
+      }}
+      background={background}
+      page={page}
+      engineUpdates={engineUpdates}
+      onEngineUpdate={(environmentId, driverKind) => {
+        const hostClient = selection.hostClient;
+        if (!hostClient || engineUpdatePending) return;
+        const key = `${environmentId}:${driverKind}`;
+        setEngineUpdatePending(key);
+        setEngineUpdateError(null);
+        void hostClient
+          .dispatch({
+            driverKind,
+            environmentId,
+            idempotencyKey: mutationIdempotencyKey(`harness-update:${key}`),
+            type: "harness.update",
+          })
+          .then(() => hostClient.refresh())
+          .catch((error: unknown) =>
+            setEngineUpdateError({
+              detail: operationDetail(error, "Update failed. Try again."),
+              key: `${environmentId}:${driverKind}`,
+            }),
+          )
+          .finally(() => setEngineUpdatePending(null));
+      }}
+    />
   );
+  return (
+    <SettingsPageLayout>
+      {hostClient === null ? (
+        form(null)
+      ) : (
+        <WithBackgroundModels host={hostClient} key={selection.deploymentId}>
+          {form}
+        </WithBackgroundModels>
+      )}
+    </SettingsPageLayout>
+  );
+}
+
+function WithBackgroundModels(props: {
+  readonly children: (background: BackgroundModelsForm) => ReactNode;
+  readonly host: HostClient;
+}): ReactNode {
+  return props.children(useBackgroundModelsForm(props.host));
 }

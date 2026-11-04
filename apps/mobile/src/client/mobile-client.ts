@@ -134,6 +134,7 @@ export interface MobileClientOptions {
   readonly doneShelfFilePath: string;
   readonly draftsFilePath: string;
   readonly usageNoticesFilePath: string;
+  readonly backgroundNoticesFilePath: string;
   readonly fetch: HostFetch;
   /** Everything that reaches a Host: what to present, what to attach, what epoch. */
   readonly hostPort: MobileHostPortFactory;
@@ -195,6 +196,8 @@ export class MobileClient {
   readonly doneShelf: DoneShelfFile;
   /** Usage-limit notices dismissed on this phone, shared by every composer. */
   readonly usageNotices: UsageNoticeDismissals;
+  /** Background-model consent notices answered "Not now" on this phone. */
+  readonly backgroundNotices: UsageNoticeDismissals;
   /** Unsent message text, per Thread, kept where a killed app cannot lose it. */
   readonly drafts: ThreadDraftStore;
   readonly oauth: NativeOAuthManager;
@@ -366,6 +369,12 @@ export class MobileClient {
     this.usageNotices = createUsageNoticeDismissals(
       createUsageNoticesFile({
         filePath: options.usageNoticesFilePath,
+        privateFiles: options.privateFiles,
+      }),
+    );
+    this.backgroundNotices = createUsageNoticeDismissals(
+      createUsageNoticesFile({
+        filePath: options.backgroundNoticesFilePath,
         privateFiles: options.privateFiles,
       }),
     );
