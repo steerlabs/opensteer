@@ -125,7 +125,7 @@ describe("AgentTranscript", () => {
     expect(markup).toContain("Connected research agent");
   });
 
-  it("names connection-authored input in a conversation", () => {
+  it("gives connection-authored input no row in a conversation, like other agent input", () => {
     const entry: MessageEntry = {
       author: { kind: "connection", connectionId: "mcn_external", displayName: "Research agent" },
       body: "External agent input",
@@ -140,8 +140,9 @@ describe("AgentTranscript", () => {
         <AgentTranscript conversation entries={[entry]} viewerUserId="owner" />
       </MemoryRouter>,
     );
-    expect(markup).toContain("Research agent");
-    expect(markup).toContain('class="update-line"');
+    // A conversation draws what its agent says and what needs the reader; an
+    // external agent's input is for that agent, and is never drawn as the person.
+    expect(markup).not.toContain("External agent input");
     expect(markup).not.toContain('class="msg--user"');
   });
 
