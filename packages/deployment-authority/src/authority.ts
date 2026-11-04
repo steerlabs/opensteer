@@ -260,6 +260,12 @@ export const HostCapabilitySchema = z.enum([
   "browser-search-suggestions-v1",
   /** This Host runs its own OAuth authorization server for native clients. */
   "native-oauth",
+  /**
+   * Account-brokered consent started from an app may finish in that app: it
+   * returns the browser's one-use proof through `integration.authorization.return`
+   * instead of the browser signing into the Opensteer Account.
+   */
+  "integration-app-finish-v1",
   /** This Host accepts a Personal remote session delivered in a request header. */
   "personal-session-header",
   /** Threads can be renamed, and a new one can ask to be named from its first message. */

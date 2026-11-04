@@ -18,12 +18,11 @@ import { person_message, person_show } from "./person.js";
 import {
   browser_profile_list,
   sign_in,
-  browser_access_request,
+  browser_profile_request,
   browser_tab_read,
   browser_tab_write,
   browser_session_list,
   browser_session_open,
-  browser_profile_create,
   browser_session_close,
 } from "./browser.js";
 import { machine_full_disk_access_request } from "./computer.js";
@@ -53,13 +52,12 @@ export const agentTools = [
   thread_queue,
   browser_profile_list,
   sign_in,
-  browser_access_request,
+  browser_profile_request,
   machine_full_disk_access_request,
   browser_tab_read,
   browser_tab_write,
   browser_session_list,
   browser_session_open,
-  browser_profile_create,
   browser_session_close,
   trigger_read,
   trigger_write,

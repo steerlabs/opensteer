@@ -263,7 +263,7 @@ class RunnerConnection(
             else AttemptEnd.Violation("The Host sent a frame this phone cannot read: ${unreadable.message}")
         }
         if (end is AttemptEnd.Refused && end.error.reason == "agent-phone-outdated" && identity.enrolled) {
-            updateEnding(updater?.check(identity, required = true))?.let { end = it }
+            updateEnding(updater?.check(identity))?.let { end = it }
         }
         val enrolled = identity.enrolled || welcomed
         when (val decision = policy.next(end, enrolled, identity.deploymentName)) {
@@ -364,7 +364,6 @@ class RunnerConnection(
                 is HostDiscovery.Result.Unreachable -> return AttemptEnd.Unreachable(result.detail)
             }
         }
-        updateEnding(updater?.check(identity, required = false))?.let { throw Ended(it) }
         val primary = Socket("/internal/v1/runners", identity.hostUrl)
         try {
             val welcome = authenticate(primary, identity)
@@ -449,6 +448,7 @@ class RunnerConnection(
         // unpairing in between wins, and this connection is abandoned.
         if (!record.replace(identity, identity.welcomed(welcome.fence.connectionGeneration))) throw Interrupted(stop = false)
         welcomed = true
+        updater?.admitted()
         return welcome
     }
 

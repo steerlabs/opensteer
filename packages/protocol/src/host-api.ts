@@ -124,6 +124,7 @@ import {
   InstallCatalogIntegrationSchema,
   InstallRemoteMcpSchema,
   IntegrationAuthorizationAttemptIdSchema,
+  IntegrationAuthorizationReturnProofSchema,
   IntegrationAuthorizationStartViewSchema,
   IntegrationAuthorizationStatusViewSchema,
   IntegrationConnectionIdSchema,
@@ -848,6 +849,17 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("integration.authorization.cancel"),
   }),
+  /**
+   * The app that started an app-finished consent hands back the browser's
+   * one-use return proof; until then the Account service keeps the result
+   * sealed. Sent only to a Host advertising `integration-app-finish-v1`.
+   */
+  z.strictObject({
+    attemptId: IntegrationAuthorizationAttemptIdSchema,
+    idempotencyKey: idempotencyKeySchema,
+    returnProof: IntegrationAuthorizationReturnProofSchema,
+    type: z.literal("integration.authorization.return"),
+  }),
   z.strictObject({
     connectionId: IntegrationConnectionIdSchema,
     idempotencyKey: idempotencyKeySchema,
@@ -1379,6 +1391,9 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   IntegrationAuthorizationStatusViewSchema.extend({
     type: z.literal("integration.authorization.cancel"),
   }),
+  IntegrationAuthorizationStatusViewSchema.extend({
+    type: z.literal("integration.authorization.return"),
+  }),
   z.object({ type: z.literal("integration.mcp.disconnect") }),
   z.object({ type: z.literal("plugin.update") }),
   z.object({ type: z.literal("plugin.remove") }),
@@ -1427,7 +1442,14 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   IntegrationAuthorizationStartViewSchema.extend({
     type: z.literal("integration.authorization.begin"),
   }),
-  z.object({ type: z.literal("integration.apiKey.connect") }),
+  /**
+   * The exact account the key connected or reconnected, so a card answers its
+   * request with that account and never a look-alike. Older Hosts omit it.
+   */
+  z.object({
+    connectionId: IntegrationConnectionIdSchema.optional(),
+    type: z.literal("integration.apiKey.connect"),
+  }),
   z.object({ grant: IntegrationGrantViewSchema, type: z.literal("integration.grant.create") }),
   /**
    * Revocation is best effort: the credential is always destroyed locally, and

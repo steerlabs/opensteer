@@ -151,9 +151,18 @@ export const OAuthBrokerTokenBundleSchema = z.strictObject({
   tokenResponseIdentity: OAuthTokenResponseIdentitySchema.optional(),
 });
 
+/**
+ * `app`: the attempt finishes in the desktop or native app that started it. Its
+ * launch needs no Account browser session; the callback holds the sealed result
+ * and returns a one-use proof to the app, which its Host redeems through
+ * `/return`. Without it the browser's Account session proves the requester.
+ */
+export const OAuthBrokerFinishSchema = z.literal("app");
+
 export const CreateHostedOAuthAttemptRequestSchema = z.strictObject({
   accountSubject: OAuthBrokerAccountSubjectSchema,
   clientSurface: OAuthBrokerClientSurfaceSchema.default("web"),
+  finish: OAuthBrokerFinishSchema.optional(),
   attemptId: HostedOAuthAttemptIdSchema,
   authorizationDigest: OAuthBrokerDigestSchema,
   definitionId: z.string().min(1).max(64),
@@ -169,6 +178,7 @@ export type CreateHostedOAuthAttemptRequest = z.infer<typeof CreateHostedOAuthAt
 const CreateProviderOAuthCallbackRelayRequestSchema = z.strictObject({
   accountSubject: OAuthBrokerAccountSubjectSchema,
   clientSurface: OAuthBrokerClientSurfaceSchema.default("web"),
+  finish: OAuthBrokerFinishSchema.optional(),
   attemptId: HostedOAuthAttemptIdSchema,
   authorizationDigest: OAuthBrokerDigestSchema,
   authorizationUrl: z.url().max(262_144),
@@ -238,6 +248,13 @@ export const PullHostedOAuthResultResponseSchema = HostedOAuthAttemptStatusRespo
   sealedResult: OAuthBrokerSealedEnvelopeSchema.nullable(),
 }).strict();
 
+/** The app's browser return, redeemed once by the attempt's own Host. */
+export const ReturnHostedOAuthAttemptRequestSchema = z.strictObject({
+  attemptId: HostedOAuthAttemptIdSchema,
+  returnProof: z.string().regex(secretPattern),
+});
+export const ReturnHostedOAuthAttemptResponseSchema = HostedOAuthAttemptStatusResponseSchema;
+
 export const AcknowledgeHostedOAuthResultRequestSchema = z.strictObject({
   attemptId: HostedOAuthAttemptIdSchema,
 });
@@ -305,6 +322,8 @@ export const OAuthBrokerPublicMetadataSchema = z
   .object({
     callbackRelayProviders: z.array(OAuthBrokerProviderSchema).max(32).default([]),
     mcpCallbackRelay: z.literal(1).optional(),
+    /** The broker accepts `finish: "app"` attempts and their `/return`. */
+    appFinish: z.literal(1).optional(),
     encryptionPublicKey: OAuthBrokerPublicKeySchema,
     installationUrls: z.record(OAuthBrokerProviderSchema, z.url()).default({}),
     issuer: z.url(),

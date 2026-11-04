@@ -476,6 +476,26 @@ export const SetIntegrationApplicationSourceDefaultSchema = z.strictObject({
   applicationSource: z.enum(["hosted-oauth", "deployment-oauth"]),
 });
 
+/**
+ * `app`: the consent finishes in the app that started it, which returns the
+ * browser's one-use proof to its own Host. Only apps can receive that return;
+ * a browser-only client stays proven by its Account sign-in.
+ */
+export const IntegrationAuthorizationFinishSchema = z.literal("app");
+
+function refineIntegrationAuthorizationFinish(
+  value: { readonly finish?: "app" | undefined; readonly surface: "desktop" | "native" | "web" },
+  context: z.RefinementCtx,
+): void {
+  if (value.finish === "app" && value.surface === "web") {
+    context.addIssue({
+      code: "custom",
+      message: "Only desktop and native apps can finish an authorization",
+      path: ["finish"],
+    });
+  }
+}
+
 export const BeginIntegrationAuthorizationSchema = z
   .strictObject({
     applicationSource: z.enum(["hosted-oauth", "deployment-oauth"]).optional(),
@@ -487,6 +507,7 @@ export const BeginIntegrationAuthorizationSchema = z
       .max(2_048)
       .default("/"),
     surface: z.enum(["desktop", "native", "web"]),
+    finish: IntegrationAuthorizationFinishSchema.optional(),
   })
   .superRefine((value, context) => {
     if (value.applicationSource && value.exactApplicationSource) {
@@ -495,6 +516,7 @@ export const BeginIntegrationAuthorizationSchema = z
         message: "Choose either a legacy source kind or one exact application source",
       });
     }
+    refineIntegrationAuthorizationFinish(value, context);
   });
 
 export const IntegrationAuthorizationAttemptIdSchema = z.union([
@@ -1354,17 +1376,20 @@ export type IntegrationPlatformDashboardView = z.infer<
   typeof IntegrationPlatformDashboardViewSchema
 >;
 
-export const BeginMcpAuthorizationSchema = z.strictObject({
-  requestId: RequestIdSchema,
-  displayName: z.string().trim().min(1).max(160),
-  returnPath: z
-    .string()
-    .regex(/^\/(?!\/)(?!.*\\)[^\p{Cc}]*$/u)
-    .max(2_048)
-    .default("/"),
-  serverId: IntegrationServerIdSchema,
-  surface: z.enum(["desktop", "native", "web"]),
-});
+export const BeginMcpAuthorizationSchema = z
+  .strictObject({
+    requestId: RequestIdSchema,
+    displayName: z.string().trim().min(1).max(160),
+    returnPath: z
+      .string()
+      .regex(/^\/(?!\/)(?!.*\\)[^\p{Cc}]*$/u)
+      .max(2_048)
+      .default("/"),
+    serverId: IntegrationServerIdSchema,
+    surface: z.enum(["desktop", "native", "web"]),
+    finish: IntegrationAuthorizationFinishSchema.optional(),
+  })
+  .superRefine(refineIntegrationAuthorizationFinish);
 
 export const InstallAgentPluginSchema = z.strictObject({
   directory: z.string().trim().min(1).max(4_096),

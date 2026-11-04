@@ -310,13 +310,11 @@ run("Browser Sessions through a whole deployment", () => {
       name: "Slow navigation",
       ownerId: owner.id,
       idempotencyKey: randomUUID(),
-      workspaceId: stack.mainWorkspaceId,
     });
     const fastProfile = await stack.host.browser.createProfile({
       name: "Independent identity",
       ownerId: owner.id,
       idempotencyKey: randomUUID(),
-      workspaceId: stack.mainWorkspaceId,
     });
     const slow = stack.api["commands.dispatch"]({
       type: "browser.tab.open",
@@ -412,7 +410,6 @@ run("Browser Sessions through a whole deployment", () => {
       name: "Uncertain start",
       ownerId: owner.id,
       idempotencyKey: randomUUID(),
-      workspaceId: stack.mainWorkspaceId,
     });
     const starting = {
       type: "browser.tab.open" as const,

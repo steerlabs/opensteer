@@ -54,7 +54,7 @@ type Step =
   | { readonly connection: IntegrationConnectionSummary; readonly kind: "connected" };
 
 /**
- * The one Connect flow, used by Settings and by an agent's access Request.
+ * Account setup in Settings. Access Requests connect directly from their card.
  *
  * Two things it will not do: report a connection that the durable attempt and a
  * reloaded connection row do not both show, and change the sign-in app a person

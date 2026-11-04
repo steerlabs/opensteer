@@ -297,7 +297,6 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
   const profile = await stack.host.browser.createProfile({
     name: "Native",
     ownerId: owner.id,
-    workspaceId: stack.mainWorkspaceId,
     idempotencyKey: randomUUID(),
   });
   const row = () =>

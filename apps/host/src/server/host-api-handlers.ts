@@ -251,7 +251,10 @@ export function createHostApiHandlers(
         const output = await handleIntegrationCommand(integrations, command, context);
         return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));
       }
-      if (command.type === "integration.authorization.cancel") {
+      if (
+        command.type === "integration.authorization.cancel" ||
+        command.type === "integration.authorization.return"
+      ) {
         const output = await handleIntegrationAuthorizationCommand(
           integrationAuthorization,
           command,

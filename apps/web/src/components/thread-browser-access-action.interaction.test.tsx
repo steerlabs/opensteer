@@ -11,7 +11,7 @@ const shell = vi.hoisted(() => ({
   snapshot: {
     browserProfiles: [{ id: "personal", name: "Personal", revision: 1 }],
     browserProfileGrants: [{ profileId: "personal", workspaceId: "workspace" }],
-    workspaces: [{ id: "workspace", name: "Marketplace" }],
+    workspaces: [{ id: "workspace", kind: "project", name: "Marketplace" }],
   },
 }));
 vi.mock("./app-shell.js", () => ({ useShell: () => shell }));

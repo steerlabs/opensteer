@@ -1,9 +1,11 @@
-import { randomBytes } from "node:crypto";
+import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
+import { createId, OpensteerError } from "@opensteer/core";
+import { createHash, randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { sql } from "kysely";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { createIntegrationId, McpOAuthAttemptIdSchema } from "@opensteer/integration-core";
-import { IntegrationPlatformStore } from "@opensteer/database";
+import { IntegrationPlatformStore, IntegrationAuthAttemptStore } from "@opensteer/database";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { IntegrationAuthAttemptLifecycle } from "./integration-auth-attempt-service.js";
 import {
@@ -80,287 +82,447 @@ const baseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = baseUrl ? describe : describe.skip;
 
 integration("MCP OAuth reconnect", () => {
-  it("reconnects an unbound legacy credential in place and fulfills its pinned request", async () => {
-    const database = await createMachineAccessDatabase(baseUrl!);
-    const closers: Array<() => Promise<unknown>> = [];
-    try {
-      const host = await startMachineAccessHost(database.url);
-      closers.unshift(() => host.close());
-      const caller = await connectCallerMachine(host, {
-        name: "MCP caller",
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "mcp-caller",
+  it.each([false, true])(
+    "reconnects and fulfills its pinned request (app=%s)",
+    async (appFinish) => {
+      const database = await createMachineAccessDatabase(baseUrl!);
+      const closers: Array<() => Promise<unknown>> = [];
+      try {
+        const host = await startMachineAccessHost(database.url);
+        closers.unshift(() => host.close());
+        const caller = await connectCallerMachine(host, {
           name: "MCP caller",
-        }),
-      });
-      closers.unshift(() => caller.close());
-      const main = await host.store.database
-        .selectFrom("workspaces")
-        .select("id")
-        .where("createdBy", "=", host.ownerId)
-        .where("kind", "=", "main")
-        .executeTakeFirstOrThrow();
-      const run = await dispatchCallerRun(host, caller, {
-        key: "mcp-reconnect",
-        title: "Reconnect MCP",
-        workspaceId: main.id,
-      });
-      closers.unshift(() => run.complete());
-      const store = new IntegrationPlatformStore(host.store.database);
-      const installationId = createIntegrationId("installation"),
-        serverId = createIntegrationId("server"),
-        connectionId = createIntegrationId("connection");
-      const installation = {
-        description: "Test MCP",
-        id: installationId,
-        manifest: {},
-        name: "mcp-test",
-        provenance: { transport: "streamable-http", url: "https://mcp.example.test/mcp" },
-        sourceKind: "remote-mcp" as const,
-        status: "active" as const,
-        title: "Test MCP",
-        trust: "administrator-approved" as const,
-        version: null,
-      };
-      const server = {
-        connectionRequirement: { kind: "mcp-oauth" as const },
-        id: serverId,
-        name: "default",
-        status: "active" as const,
-        statusDetail: null,
-        catalog: { definitions: {}, tools: [] },
-        transport: {
-          headers: {},
-          type: "streamable-http" as const,
-          url: "https://mcp.example.test/mcp",
-        },
-      };
-      await store.install({
-        actorUserId: host.ownerId,
-        adapterSnapshot: null,
-        installation,
-        requestId: "install-mcp-reconnect",
-        servers: [server],
-      });
-      await host.store.database
-        .insertInto("integrationConnections")
-        .values({
-          accountIdentifier: null,
-          applicationSource: null,
-          authMethodId: null,
-          authorizationDigest: null,
-          capabilities: sql`'[]'::jsonb`,
-          runnerId: null,
-          connectionKind: "mcp-oauth",
-          connectionMethod: "managed-oauth",
-          credentialId: null,
-          displayName: "Existing",
-          externalIdentityId: null,
-          externalTenantId: null,
-          grantedScopes: sql`'[]'::jsonb`,
-          id: connectionId,
-          integrationDefinitionId: null,
-          integrationServerId: serverId,
-          ownerUserId: host.ownerId,
-          provider: `mcp:${serverId}`,
-          providerApplicationId: null,
-          status: "connected",
+          token: await enrollmentToken(host, {
+            allowedModules: ["agents"],
+            idempotencyKey: "mcp-caller",
+            name: "MCP caller",
+          }),
+        });
+        closers.unshift(() => caller.close());
+        const main = await host.store.database
+          .selectFrom("workspaces")
+          .select("id")
+          .where("createdBy", "=", host.ownerId)
+          .where("kind", "=", "main")
+          .executeTakeFirstOrThrow();
+        const run = await dispatchCallerRun(host, caller, {
+          key: "mcp-reconnect",
+          title: "Reconnect MCP",
+          workspaceId: main.id,
+        });
+        closers.unshift(() => run.complete());
+        const store = new IntegrationPlatformStore(host.store.database);
+        const installationId = createIntegrationId("installation"),
+          serverId = createIntegrationId("server"),
+          connectionId = createIntegrationId("connection");
+        const installation = {
+          description: "Test MCP",
+          id: installationId,
+          manifest: {},
+          name: "mcp-test",
+          provenance: { transport: "streamable-http", url: "https://mcp.example.test/mcp" },
+          sourceKind: "remote-mcp" as const,
+          status: "active" as const,
+          title: "Test MCP",
+          trust: "administrator-approved" as const,
+          version: null,
+        };
+        const server = {
+          connectionRequirement: { kind: "mcp-oauth" as const },
+          id: serverId,
+          name: "default",
+          status: "active" as const,
           statusDetail: null,
-          transportKind: null,
-          updatedAt: new Date(),
-        })
-        .executeTakeFirstOrThrow();
-      const legacyState = {
-        clientInformation: { client_id: "legacy", client_secret: "old-secret" },
-        tokens: { access_token: "old-token", refresh_token: "old-refresh", token_type: "Bearer" },
-      };
-      await host.store.database
-        .insertInto("mcpOAuthCredentials")
-        .values({
-          connectionId,
-          encryptedState: Buffer.from(JSON.stringify({ state: JSON.stringify(legacyState) })),
-          encryptionKeyVersion: 1,
-          revision: 1,
-          updatedAt: new Date(),
-        })
-        .executeTakeFirstOrThrow();
-      const grant = await store.createGrant({
-        access: "read",
-        alias: "Existing",
-        connectionId,
-        createdBy: host.ownerId,
-        installationId,
-        isDefault: true,
-        ownerUserId: host.ownerId,
-        providerAuthorizations: {},
-        workspaceId: run.workspaceId,
-      });
-      let savedPayload: Readonly<Record<string, string>> = {};
-      let attemptId: ReturnType<typeof createIntegrationId<"mcpOauthAttempt">> | undefined;
-      const attempts = {
-        begin: async (input: Parameters<IntegrationAuthAttemptLifecycle["begin"]>[0]) => {
-          attemptId = McpOAuthAttemptIdSchema.parse(input.id);
-          const built = await input.payload("s".repeat(43));
-          savedPayload = built.payload;
-          return {
-            attemptId,
-            expiresAt: new Date(Date.now() + 60_000),
-            launchTicket: "t".repeat(43),
-            state: "s".repeat(43),
-          };
-        },
-        claim: async () => ({
-          id: attemptId!,
-          ownerUserId: host.ownerId,
-          payload: savedPayload,
-          surface: "desktop" as const,
-        }),
-        fail: vi.fn(async () => undefined),
-      };
-      const vault = {
-        open: vi.fn(async (envelope: Buffer) => JSON.parse(envelope.toString())),
-        seal: vi.fn(async (value: Record<string, string>) => ({
-          envelope: Buffer.from(JSON.stringify(value)),
-          keyVersion: 1,
-        })),
-      };
-      let platform!: IntegrationPlatformService;
-      const oauth = new McpOAuthService({
-        attempts: attempts as never,
-        exposure: "loopback",
-        publicUrl: new URL(host.origin),
-        store,
-        vault: vault as never,
-        onConnectionConnected: (input) => platform.connectionConnected(input).then(() => undefined),
-      });
-      platform = new IntegrationPlatformService({
-        store,
-        secretVault: new AesGcmSecretVault(
-          new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
-        ),
-        mcpOauth: oauth,
-        adapters: [],
-        definitions: [],
-        dataDirectory: "/tmp",
-        listConnections: async () => [],
-        authorizationSource: { providerAuthorizations: async () => ({}) },
-        credentialMaterializer: {} as never,
-        computerApps: {} as never,
-        onWorkspaceEvent: () => {},
-        onConnectionsChanged: () => {},
-        onRequestsChanged: () => {},
-        isRunnerConnected: () => true,
-      });
-      const callable = {
-        installation: { ...installation, title: "Test MCP" },
-        server,
-        grant: { connectionId, ownerUserId: host.ownerId },
-        tool: { name: "search", title: "Search" },
-      } as never;
-      await expect(platform.callTool(callable, {}, {} as never)).rejects.toThrow(
-        /authorization is required/i,
-      );
-      expect(
-        await host.store.database
-          .selectFrom("integrationConnections")
-          .select("status")
-          .where("id", "=", connectionId)
-          .executeTakeFirstOrThrow(),
-      ).toEqual({ status: "needs-attention" });
-      const request = await store.requests.createIntegrationAccessRequest({
-        access: "read",
-        callId: "mcp-reconnect-request",
-        installationId,
-        originatingRunId: run.runId,
-        originatingThreadId: run.threadId,
-        originatingWorkspaceId: run.workspaceId,
-        reason: "Reconnect",
-        requestedBy: host.ownerId,
-        requestedConnectionId: connectionId,
-        requestedServerId: serverId,
-        targetWorkspaceId: run.workspaceId,
-      });
-      const started = await oauth.beginAuthorization({
-        displayName: "Existing",
-        ownerUserId: host.ownerId,
-        requestId: request.request.id,
-        requestSurface: "canonical",
-        returnPath: "/",
-        serverId,
-        surface: "desktop",
-      });
-      const now = new Date();
-      await host.store.database
-        .insertInto("integrationAuthAttempts")
-        .values({
-          id: started.attemptId,
-          flow: "mcp-oauth",
-          ownerUserId: host.ownerId,
-          stateHash: "a".repeat(43),
-          launchTicketHash: "b".repeat(43),
-          browserBindingHash: "c".repeat(43),
-          encryptedPayload: Buffer.from("attempt"),
-          encryptionKeyVersion: 1,
-          status: "claimed",
-          surface: "desktop",
-          failureReason: null,
-          resultConnectionId: null,
-          expiresAt: new Date(now.getTime() + 60_000),
-          launchedAt: now,
-          claimedAt: now,
-          completedAt: null,
-          createdAt: now,
-        })
-        .executeTakeFirstOrThrow();
-      await expect(
-        store.completeMcpOAuthAttempt({
-          attemptId: started.attemptId,
-          connectionId,
-          displayName: "Existing",
-          encryptedState: Buffer.from("must-not-commit"),
-          encryptionKeyVersion: 1,
-          ownerUserId: host.ownerId,
-          serverId,
-          tools: [],
-          accountBinding: {
-            kind: "personal",
-            issuer: "https://accounts.example.test",
-            subject: `acct_${crypto.randomUUID()}`,
-            linkGeneration: "g".repeat(43),
+          catalog: { definitions: {}, tools: [] },
+          transport: {
+            headers: {},
+            type: "streamable-http" as const,
+            url: "https://mcp.example.test/mcp",
           },
-        }),
-      ).rejects.toMatchObject({ reason: "account-link-mismatch" });
-      expect(
+        };
+        await store.install({
+          actorUserId: host.ownerId,
+          adapterSnapshot: null,
+          installation,
+          requestId: "install-mcp-reconnect",
+          servers: [server],
+        });
         await host.store.database
-          .selectFrom("mcpOAuthCredentials")
-          .select("revision")
-          .where("connectionId", "=", connectionId)
-          .executeTakeFirstOrThrow(),
-      ).toEqual({ revision: 1 });
-      const result = await oauth.handleAuthorizationCallback({
-        attemptId: started.attemptId,
-        browserBinding: "b".repeat(43),
-        parameters: new URLSearchParams({ code: "code", state: "s".repeat(43) }),
-        state: "s".repeat(43),
-      });
-      expect(result).toMatchObject({ status: "completed", connectionId });
-      expect(await store.requests.get(request.request.id)).toMatchObject({ status: "fulfilled" });
-      expect(
-        await store.getMcpOAuthConnection({ connectionId, ownerUserId: host.ownerId, serverId }),
-      ).toMatchObject({ revision: 2 });
-      expect(
-        await store.listGrants({ ownerUserId: host.ownerId, workspaceId: run.workspaceId }),
-      ).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ id: grant.id, connectionId, status: "active" }),
-        ]),
-      );
-      expect(attempts.fail).not.toHaveBeenCalled();
-      await platform.close();
-    } finally {
-      for (const close of closers) await close();
-      await database.drop();
-    }
-  }, 120_000);
+          .insertInto("integrationConnections")
+          .values({
+            accountIdentifier: null,
+            applicationSource: null,
+            authMethodId: null,
+            authorizationDigest: null,
+            capabilities: sql`'[]'::jsonb`,
+            runnerId: null,
+            connectionKind: "mcp-oauth",
+            connectionMethod: "managed-oauth",
+            credentialId: null,
+            displayName: "Existing",
+            externalIdentityId: null,
+            externalTenantId: null,
+            grantedScopes: sql`'[]'::jsonb`,
+            id: connectionId,
+            integrationDefinitionId: null,
+            integrationServerId: serverId,
+            ownerUserId: host.ownerId,
+            provider: `mcp:${serverId}`,
+            providerApplicationId: null,
+            status: "connected",
+            statusDetail: null,
+            transportKind: null,
+            updatedAt: new Date(),
+          })
+          .executeTakeFirstOrThrow();
+        const legacyState = {
+          clientInformation: { client_id: "legacy", client_secret: "old-secret" },
+          tokens: { access_token: "old-token", refresh_token: "old-refresh", token_type: "Bearer" },
+        };
+        await host.store.database
+          .insertInto("mcpOAuthCredentials")
+          .values({
+            connectionId,
+            encryptedState: Buffer.from(JSON.stringify({ state: JSON.stringify(legacyState) })),
+            encryptionKeyVersion: 1,
+            revision: 1,
+            updatedAt: new Date(),
+          })
+          .executeTakeFirstOrThrow();
+        const grant = await store.createGrant({
+          access: "read",
+          alias: "Existing",
+          connectionId,
+          createdBy: host.ownerId,
+          installationId,
+          isDefault: true,
+          ownerUserId: host.ownerId,
+          providerAuthorizations: {},
+          workspaceId: run.workspaceId,
+        });
+        let savedPayload: Readonly<Record<string, string>> = {};
+        let attemptId: ReturnType<typeof createIntegrationId<"mcpOauthAttempt">> | undefined;
+        const attemptStore = new IntegrationAuthAttemptStore(host.store.database);
+        const attempts = {
+          inspect: async () => savedPayload,
+          status: async (input: Parameters<IntegrationAuthAttemptLifecycle["status"]>[0]) => {
+            const row = await host.store.database
+              .selectFrom("integrationAuthAttempts")
+              .selectAll()
+              .where("id", "=", input.id)
+              .where("ownerUserId", "=", input.ownerUserId)
+              .executeTakeFirst();
+            return row
+              ? {
+                  connectionId: row.resultConnectionId,
+                  expiresAt: row.expiresAt,
+                  failureCode: row.failureReason,
+                  status: row.status === "claimed" ? "launched" : row.status,
+                }
+              : null;
+          },
+          claimHosted: async (
+            input: Parameters<NonNullable<IntegrationAuthAttemptLifecycle["claimHosted"]>>[0],
+          ) => {
+            const claimed = await attemptStore.claimHostedAuthAttempt({
+              ...input,
+              now: new Date(),
+              ...(input.state
+                ? { stateHash: createHash("sha256").update(input.state).digest("base64url") }
+                : {}),
+            });
+            return claimed ? { ...claimed, payload: savedPayload } : null;
+          },
+          begin: async (input: Parameters<IntegrationAuthAttemptLifecycle["begin"]>[0]) => {
+            attemptId = McpOAuthAttemptIdSchema.parse(input.id);
+            const built = await input.payload("s".repeat(43));
+            savedPayload = built.payload;
+            return {
+              attemptId,
+              expiresAt: new Date(Date.now() + 60_000),
+              launchTicket: "t".repeat(43),
+              state: "s".repeat(43),
+            };
+          },
+          claim: async () => ({
+            id: attemptId!,
+            ownerUserId: host.ownerId,
+            payload: savedPayload,
+            surface: "desktop" as const,
+          }),
+          fail: vi.fn(async () => undefined),
+        };
+        const vault = {
+          open: vi.fn(async (envelope: Buffer) => JSON.parse(envelope.toString())),
+          seal: vi.fn(async (value: Record<string, string>) => ({
+            envelope: Buffer.from(JSON.stringify(value)),
+            keyVersion: 1,
+          })),
+        };
+        const binding = {
+          issuer: "https://account.example.test",
+          subject: `acct_${crypto.randomUUID()}`,
+          linkGeneration: "g".repeat(43),
+        };
+        let hostPublicKey = "";
+        let returned = false;
+        const broker = {
+          issuer: binding.issuer,
+          metadata: async () => ({ appFinish: 1, mcpCallbackRelay: 1 }),
+          callbackUrl: () => `${binding.issuer}/v1/oauth-broker/callback/mcp`,
+          createCallbackRelay: async (input: {
+            hostPublicKey: string;
+            attemptId: string;
+            expiresAt: string;
+          }) => {
+            hostPublicKey = input.hostPublicKey;
+            return { ...input, launchUrl: `${binding.issuer}/launch` };
+          },
+          status: async () => ({ status: returned ? "sealed" : "launched" }),
+          returnAttempt: vi.fn(async () => {
+            returned = true;
+          }),
+          pull: vi.fn(async () => ({
+            status: "sealed",
+            sealedResult: sealOAuthBrokerPayload(
+              {
+                parameters: [
+                  ["state", "s".repeat(43)],
+                  ["code", "code"],
+                ],
+              },
+              hostPublicKey,
+              JSON.parse(savedPayload.payload!).relay.context,
+            ),
+          })),
+          acknowledge: vi.fn(async () => undefined),
+        };
+        if (appFinish) {
+          const now = new Date();
+          await host.store.database
+            .insertInto("personalRemoteAccountLink")
+            .values({
+              singletonKey: "opensteer-account",
+              challengeId: `phc_${crypto.randomUUID()}`,
+              grantId: `phg_${crypto.randomUUID()}`,
+              hostCredential: `osc_${"c".repeat(43)}`,
+              issuer: binding.issuer,
+              linkGeneration: binding.linkGeneration,
+              linkedAt: now,
+              state: "active",
+              subject: binding.subject,
+              updatedAt: now,
+            })
+            .executeTakeFirstOrThrow();
+        }
+        let platform!: IntegrationPlatformService;
+        const oauth = new McpOAuthService({
+          ...(appFinish
+            ? {
+                hostedOAuth: {
+                  kind: "personal" as const,
+                  accountSubject: async () => binding as never,
+                  broker: broker as never,
+                  deploymentAuthorityDigest: "d".repeat(43),
+                },
+                deploymentPosture: async () => "account-linked-personal" as const,
+              }
+            : {}),
+          attempts: attempts as never,
+          exposure: "loopback",
+          publicUrl: new URL(host.origin),
+          store,
+          vault: vault as never,
+          onConnectionConnected: (input) =>
+            platform.connectionConnected(input).then(() => undefined),
+        });
+        platform = new IntegrationPlatformService({
+          store,
+          secretVault: new AesGcmSecretVault(
+            new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
+          ),
+          mcpOauth: oauth,
+          adapters: [],
+          definitions: [],
+          dataDirectory: "/tmp",
+          listConnections: async () => [],
+          authorizationSource: { providerAuthorizations: async () => ({}) },
+          credentialMaterializer: {} as never,
+          computerApps: {} as never,
+          onWorkspaceEvent: () => {},
+          onConnectionsChanged: () => {},
+          onRequestsChanged: () => {},
+          isRunnerConnected: () => true,
+        });
+        const callable = {
+          installation: { ...installation, title: "Test MCP" },
+          server,
+          grant: { connectionId, ownerUserId: host.ownerId },
+          tool: { name: "search", title: "Search" },
+        } as never;
+        await expect(platform.callTool(callable, {}, {} as never)).rejects.toThrow(
+          /authorization is required/i,
+        );
+        expect(
+          await host.store.database
+            .selectFrom("integrationConnections")
+            .select("status")
+            .where("id", "=", connectionId)
+            .executeTakeFirstOrThrow(),
+        ).toEqual({ status: "needs-attention" });
+        const request = await store.requests.createIntegrationAccessRequest({
+          access: "read",
+          callId: "mcp-reconnect-request",
+          installationId,
+          originatingRunId: run.runId,
+          originatingThreadId: run.threadId,
+          originatingWorkspaceId: run.workspaceId,
+          reason: "Reconnect",
+          requestedBy: host.ownerId,
+          requestedConnectionId: connectionId,
+          requestedServerId: serverId,
+          targetWorkspaceId: run.workspaceId,
+        });
+        const started = await oauth.beginAuthorization({
+          ...(appFinish ? { finish: "app" as const } : {}),
+          displayName: "Existing",
+          ownerUserId: host.ownerId,
+          requestId: request.request.id,
+          requestSurface: "canonical",
+          returnPath: "/",
+          serverId,
+          surface: "desktop",
+        });
+        const now = new Date();
+        await host.store.database
+          .insertInto("integrationAuthAttempts")
+          .values({
+            id: started.attemptId,
+            flow: "mcp-oauth",
+            ownerUserId: host.ownerId,
+            stateHash: createHash("sha256").update("s".repeat(43)).digest("base64url"),
+            launchTicketHash: "b".repeat(43),
+            browserBindingHash: "c".repeat(43),
+            encryptedPayload: Buffer.from("attempt"),
+            encryptionKeyVersion: 1,
+            status: appFinish ? "launched" : "claimed",
+            surface: "desktop",
+            failureReason: null,
+            resultConnectionId: null,
+            expiresAt: new Date(now.getTime() + 60_000),
+            launchedAt: now,
+            claimedAt: appFinish ? null : now,
+            completedAt: null,
+            createdAt: now,
+          })
+          .executeTakeFirstOrThrow();
+        await expect(
+          store.completeMcpOAuthAttempt({
+            attemptId: started.attemptId,
+            connectionId,
+            displayName: "Existing",
+            encryptedState: Buffer.from("must-not-commit"),
+            encryptionKeyVersion: 1,
+            ownerUserId: host.ownerId,
+            serverId,
+            tools: [],
+            accountBinding: {
+              kind: "personal",
+              issuer: "https://accounts.example.test",
+              subject: `acct_${crypto.randomUUID()}`,
+              linkGeneration: "g".repeat(43),
+            },
+          }),
+        ).rejects.toMatchObject({ reason: "account-link-mismatch" });
+        expect(
+          await host.store.database
+            .selectFrom("mcpOAuthCredentials")
+            .select("revision")
+            .where("connectionId", "=", connectionId)
+            .executeTakeFirstOrThrow(),
+        ).toEqual({ revision: 1 });
+        if (appFinish) {
+          const returnInput = {
+            attemptId: started.attemptId,
+            ownerUserId: host.ownerId,
+            returnProof: "r".repeat(43),
+          };
+          await expect(oauth.authorizationStatus(returnInput)).resolves.toMatchObject({
+            status: "launched",
+          });
+          await expect(
+            oauth.returnAuthorization({ ...returnInput, ownerUserId: createId("user") }),
+          ).resolves.toBeNull();
+          expect(broker.returnAttempt).not.toHaveBeenCalled();
+          broker.returnAttempt.mockRejectedValueOnce(
+            new OpensteerError({
+              code: "conflict",
+              message: "Account unavailable",
+              retryable: true,
+            }),
+          );
+          await expect(oauth.returnAuthorization(returnInput)).rejects.toMatchObject({
+            retryable: true,
+          });
+          broker.pull.mockRejectedValueOnce(
+            new OpensteerError({ code: "conflict", message: "Lost result", retryable: true }),
+          );
+          await expect(oauth.returnAuthorization(returnInput)).rejects.toMatchObject({
+            retryable: true,
+          });
+          expect(
+            (
+              await host.store.database
+                .selectFrom("integrationAuthAttempts")
+                .select("status")
+                .where("id", "=", started.attemptId)
+                .executeTakeFirstOrThrow()
+            ).status,
+          ).toBe("launched");
+        }
+        const result = appFinish
+          ? await oauth.returnAuthorization({
+              attemptId: started.attemptId,
+              ownerUserId: host.ownerId,
+              returnProof: "r".repeat(43),
+            })
+          : await oauth.handleAuthorizationCallback({
+              attemptId: started.attemptId,
+              browserBinding: "b".repeat(43),
+              parameters: new URLSearchParams({ code: "code", state: "s".repeat(43) }),
+              state: "s".repeat(43),
+            });
+        expect(result).toMatchObject({ status: "completed", connectionId });
+        if (appFinish) {
+          const calls = broker.returnAttempt.mock.calls.length;
+          await expect(
+            oauth.returnAuthorization({
+              attemptId: started.attemptId,
+              ownerUserId: host.ownerId,
+              returnProof: "r".repeat(43),
+            }),
+          ).resolves.toMatchObject({ status: "completed", connectionId });
+          expect(broker.returnAttempt).toHaveBeenCalledTimes(calls);
+          expect(broker.acknowledge).toHaveBeenCalledOnce();
+        }
+        expect(await store.requests.get(request.request.id)).toMatchObject({ status: "fulfilled" });
+        expect(
+          await store.getMcpOAuthConnection({ connectionId, ownerUserId: host.ownerId, serverId }),
+        ).toMatchObject({ revision: 2 });
+        expect(
+          await store.listGrants({ ownerUserId: host.ownerId, workspaceId: run.workspaceId }),
+        ).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: grant.id, connectionId, status: "active" }),
+          ]),
+        );
+        expect(attempts.fail).not.toHaveBeenCalled();
+        await platform.close();
+      } finally {
+        for (const close of closers) await close();
+        await database.drop();
+      }
+    },
+    120_000,
+  );
 });

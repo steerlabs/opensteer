@@ -1,10 +1,9 @@
 // @vitest-environment happy-dom
 
-import { renderToStaticMarkup } from "react-dom/server";
 import { act, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import {
   accessPlan,
   accessServerChoices,
@@ -14,6 +13,8 @@ import {
   resolveIntegrationAccess,
   type LoadedAccessRequest,
 } from "@opensteer/client/integrations";
+import type { HostSnapshot } from "@opensteer/client/host";
+import type { Request } from "@opensteer/core";
 import { activityStepHead } from "@opensteer/client/host";
 import {
   MockHostClient,
@@ -29,7 +30,6 @@ import {
 import { createIntegrationId } from "@opensteer/integration-core";
 import {
   integrationAccountCanChange,
-  IntegrationAccountActions,
   ThreadIntegrationAction,
 } from "./thread-integration-action.js";
 
@@ -37,41 +37,532 @@ const shellState = vi.hoisted(() => ({ current: null as unknown }));
 vi.mock("./app-shell.js", () => ({ useShell: () => shellState.current }));
 
 const mountedRoots: Root[] = [];
+import { beforeEach } from "vitest";
+beforeEach(() => {
+  vi.spyOn(window, "open").mockReturnValue({
+    opener: null,
+    closed: false,
+    close: vi.fn(),
+    location: { replace: vi.fn() },
+  } as unknown as Window);
+});
 const macMini = "rnr_11111111-1111-4111-8111-111111111111";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 afterEach(() => {
   for (const root of mountedRoots.splice(0)) act(() => root.unmount());
   shellState.current = null;
+  vi.restoreAllMocks();
 });
 
-const render = (overrides: Partial<Parameters<typeof IntegrationAccountActions>[0]> = {}) =>
-  renderToStaticMarkup(
-    <IntegrationAccountActions
-      authorizationActive={false}
-      canAllow={false}
-      canConnect={true}
-      hasAccount={false}
-      onAllow={vi.fn()}
-      onConnect={vi.fn()}
-      pending={false}
-      primaryLabel="Use this account"
-      {...overrides}
-    />,
+describe("ThreadIntegrationAction one-tap Connect", () => {
+  it.each([
+    ["main", false],
+    ["project", false],
+    ["main", true],
+  ] as const)(
+    "connects and fulfills %s access from one tap, with catalog setup %s",
+    async (kind, autoInstall) => {
+      const loaded = oauthRequest();
+      loaded.dashboard.isAdministrator = true;
+      let installed = !autoInstall;
+      const attemptId = createIntegrationId("oauthAttempt");
+      let complete!: () => void;
+      let requestPending = true;
+      const terminal = new Promise((resolve) => {
+        complete = () => {
+          loaded.dashboard.connections.push({
+            accountIdentifier: "you@example.com",
+            createdAt: "2026-01-01T00:00:00Z",
+            definitionId: "provider-integration",
+            displayName: "You",
+            id: "connected-account",
+            provider: "linear",
+            status: "connected",
+            computer: null,
+          } as never);
+          if (kind === "main") requestPending = false;
+          resolve({
+            ok: true,
+            data: {
+              status: "completed",
+              connectionId: "connected-account",
+              expiresAt: "2099-01-01T00:00:00Z",
+              failureCode: null,
+            },
+          });
+        };
+      });
+      const dispatch = vi.fn(async (command: { type: string }) => {
+        if (command.type === "request.respond") {
+          if (!installed) installed = true;
+          else requestPending = false;
+        }
+        return {
+          type: command.type,
+          attemptId,
+          expiresAt: "2099-01-01T00:00:00Z",
+          launchTicket: "t".repeat(43),
+        };
+      });
+      const snapshot = {
+        ...shellSnapshot(),
+        workspaces: shellSnapshot().workspaces.map((workspace) => ({
+          ...workspace,
+          kind,
+          name: kind === "main" ? "Main" : "Support",
+        })),
+      };
+      shellState.current = {
+        snapshot,
+        hostClient: {
+          dispatch,
+          getSnapshot: () => snapshot,
+          rpc: {
+            "integrations.get": async () => ({ ok: true, data: loaded.dashboard }),
+            "integration.platform.get": async () => ({
+              ok: true,
+              data: {
+                ...loaded.platform,
+                installations: installed ? loaded.platform.installations : [],
+              },
+            }),
+            "integration.authorization.get": () => terminal,
+            "thread.requests.list": async () => ({
+              ok: true,
+              data: {
+                requests: requestPending ? [{ id: "req_test" }] : [],
+                window: { hasMore: false, nextBefore: null },
+              },
+            }),
+          },
+        },
+      };
+      const record = requestRecord(loaded, "Connect integration");
+      // The fake's pending set follows this request's real id.
+      const client = (shellState.current as { hostClient: { rpc: Record<string, unknown> } })
+        .hostClient;
+      client.rpc["thread.requests.list"] = async () => ({
+        ok: true,
+        data: {
+          requests: requestPending ? [record] : [],
+          window: { hasMore: false, nextBefore: null },
+        },
+      });
+      const shown = autoInstall
+        ? ({
+            ...record,
+            payload: {
+              ...loaded.request,
+              installationId: null,
+              manifest: {
+                kind: "catalog",
+                definition: loaded.platform.installations[0]!.installation.manifest["definition"],
+                digest: "a".repeat(43),
+              },
+            },
+          } as unknown as Request)
+        : record;
+      const container = await mountThreadAction(shown, "Connect Provider integration");
+      expect(container.querySelector("button")?.textContent).toBe("Connect Provider integration");
+      expect(container.querySelector("select")).toBeNull();
+      expect(container.textContent).not.toMatch(/OAuth|redirect URI|Install and continue/u);
+      await act(async () => buttonWithText(container, "Connect Provider integration")!.click());
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "integration.authorization.begin",
+          input: expect.objectContaining({
+            exactApplicationSource: loaded.dashboard.providerAuthorizations.linear!.selectedSource,
+          }),
+        }),
+      );
+      expect(container.textContent).toContain("Connecting…");
+      expect(container.textContent).not.toContain("connected ·");
+      await act(async () => complete());
+      await vi.waitFor(() =>
+        expect(container.textContent).toContain(
+          "✓ Provider integration connected · you@example.com",
+        ),
+      );
+      expect(buttonWithText(container, "Use you@example.com")).toBeNull();
+      const grants = dispatch.mock.calls.filter(([command]) => command.type === "request.respond");
+      expect(grants).toHaveLength((kind === "main" ? 0 : 1) + (autoInstall ? 1 : 0));
+      if (autoInstall)
+        expect(grants[0]?.[0]).toMatchObject({
+          response: { kind: "choice", optionId: "installed" },
+        });
+      if (kind === "project")
+        expect(grants[0]?.[0]).toMatchObject({
+          response: {
+            value: { access: "read", connectionId: "connected-account", decision: "fulfilled" },
+          },
+        });
+    },
   );
 
-describe("IntegrationAccountActions", () => {
-  it("hides connection actions while OAuth is active or account creation is unavailable", () => {
-    expect(render({ authorizationActive: true, canAllow: true, hasAccount: true })).toBe("");
-    expect(render({ canAllow: true, canConnect: false, hasAccount: true })).not.toContain(
-      "Connect another account",
+  it.each([
+    {
+      returnsConnectionId: true,
+      behavior: "fulfills a project request with API-key account A when account B sorts first",
+    },
+    {
+      returnsConnectionId: false,
+      behavior: "waits for explicit Use on an older Host before granting project access",
+    },
+  ])("$behavior", async ({ returnsConnectionId }) => {
+    const loaded = apiKeyRequest();
+    const record = requestRecord(loaded, "Connect integration");
+    let accounts = loaded.dashboard.connections;
+    let requestPending = true;
+    const dispatch = vi.fn(async (command: { type: string }) => {
+      if (command.type === "integration.apiKey.connect") {
+        const account = {
+          accountIdentifier: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          definitionId: "provider-integration",
+          displayName: "Account A",
+          id: "connection-a",
+          provider: "linear",
+          status: "connected",
+          computer: null,
+        };
+        accounts = [{ ...account, id: "connection-b", displayName: "Account B" }, account] as never;
+        return {
+          type: command.type,
+          ...(returnsConnectionId ? { connectionId: account.id } : {}),
+        };
+      }
+      if (command.type === "request.respond") requestPending = false;
+      return { type: command.type };
+    });
+    const dashboard = vi.fn(async () => ({
+      ok: true,
+      data: { ...loaded.dashboard, connections: accounts },
+    }));
+    shellState.current = {
+      snapshot: shellSnapshot(),
+      hostClient: {
+        dispatch,
+        getSnapshot: () => shellSnapshot(),
+        rpc: {
+          "integrations.get": dashboard,
+          "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+          "thread.requests.list": async () => ({
+            ok: true,
+            data: {
+              requests: requestPending ? [record] : [],
+              window: { hasMore: false, nextBefore: null },
+            },
+          }),
+        },
+      },
+    };
+    const container = await mountThreadAction(record, "Connect Provider integration");
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]');
+    if (!key) throw new Error("The Connect card never showed the API key field.");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        key,
+        "test-api-key",
+      );
+      key.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => key.form?.requestSubmit());
+    expect(accounts.map(({ id }) => id)).toEqual(["connection-b", "connection-a"]);
+    if (!returnsConnectionId) {
+      expect(dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([]);
+      expect(container.textContent).not.toContain("✓ Provider integration connected");
+      await act(async () => buttonWithText(container, "Use Account B")!.click());
+    }
+    expect(dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([
+      [
+        expect.objectContaining({
+          requestId: record.id,
+          response: {
+            kind: "external",
+            value: {
+              access: "read",
+              alias: `Account ${returnsConnectionId ? "A" : "B"}`,
+              isDefault: false,
+              connectionId: returnsConnectionId ? "connection-a" : "connection-b",
+              decision: "fulfilled",
+            },
+          },
+        }),
+      ],
+    ]);
+    expect(container.textContent).toContain(
+      `✓ Provider integration connected · Account ${returnsConnectionId ? "A" : "B"}`,
     );
+    expect(dashboard).toHaveBeenCalledTimes(2);
   });
 
-  it("disables every available action while another request operation is pending", () => {
-    const markup = render({ canAllow: true, hasAccount: true, pending: true });
+  it.each(["denied", "cancelled", "failed"] as const)(
+    "never fulfills an old selection after another account is %s",
+    async (status) => {
+      const loaded = oauthRequest({ connected: true });
+      const dispatch = vi.fn(async (command: { type: string }) => ({
+        type: command.type,
+        attemptId: createIntegrationId("oauthAttempt"),
+        expiresAt: "2099-01-01T00:00:00Z",
+        launchTicket: "t".repeat(43),
+      }));
+      shellState.current = {
+        snapshot: shellSnapshot(),
+        hostClient: {
+          dispatch,
+          getSnapshot: () => shellSnapshot(),
+          rpc: {
+            "integrations.get": async () => ({ ok: true, data: loaded.dashboard }),
+            "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+            "integration.authorization.get": async () => ({
+              ok: true,
+              data: {
+                status,
+                connectionId: null,
+                failureCode: null,
+                expiresAt: "2099-01-01T00:00:00Z",
+              },
+            }),
+          },
+        },
+      };
+      const container = await mountThreadAction(
+        requestRecord(loaded, "Connect"),
+        "Use alex@example.com",
+      );
+      await act(async () => container.querySelector<HTMLButtonElement>('[role="radio"]')!.click());
+      await act(async () => buttonWithText(container, "Connect another account")!.click());
+      expect(container.textContent).not.toContain("connected ·");
+      expect(dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toHaveLength(0);
+      // Try again repeats the sign-in for another account, never approval of the old one.
+      await vi.waitFor(() => expect(buttonWithText(container, "Try again")).toBeTruthy(), {
+        timeout: 2_000,
+      });
+      await act(async () => buttonWithText(container, "Try again")!.click());
+      await vi.waitFor(
+        () =>
+          expect(
+            dispatch.mock.calls.filter(([c]) => c.type === "integration.authorization.begin"),
+          ).toHaveLength(2),
+        { timeout: 2_000 },
+      );
+      expect(
+        dispatch.mock.calls.filter(([c]) =>
+          ["request.respond", "integration.grant.create"].includes(c.type),
+        ),
+      ).toHaveLength(0);
+    },
+  );
 
-    expect(markup.match(/disabled=""/gu)).toHaveLength(2);
+  it("requires explicit Use for an unbound completed return URL", async () => {
+    const loaded = oauthRequest({ connected: true });
+    const dispatch = vi.fn();
+    const record = requestRecord(loaded, "Connect");
+    const attemptId = createIntegrationId("oauthAttempt");
+    shellState.current = {
+      snapshot: shellSnapshot(),
+      hostClient: {
+        dispatch,
+        getSnapshot: () => shellSnapshot(),
+        rpc: {
+          "integrations.get": async () => ({ ok: true, data: loaded.dashboard }),
+          "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+          "integration.authorization.get": async () => ({
+            ok: true,
+            data: {
+              status: "completed",
+              connectionId: "connection-linear",
+              failureCode: null,
+              expiresAt: "2099-01-01T00:00:00Z",
+            },
+          }),
+          "thread.requests.list": async () => ({
+            ok: true,
+            data: {
+              requests: [record],
+              window: { hasMore: false, nextBefore: null },
+            },
+          }),
+        },
+      },
+    };
+    const container = await mountThreadAction(
+      record,
+      "Use alex@example.com",
+      `/threads/thr_test?integrationAttempt=${attemptId}`,
+    );
+    expect(dispatch).not.toHaveBeenCalled();
+    await act(async () => buttonWithText(container, "Use alex@example.com")!.click());
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "request.respond" }));
+  });
+
+  it("shows required read-write access before auto-installing Connect", async () => {
+    const loaded = oauthRequest();
+    loaded.dashboard.isAdministrator = true;
+    const record = requestRecord(loaded, "Connect");
+    const shown = {
+      ...record,
+      payload: {
+        ...loaded.request,
+        access: "read-write",
+        installationId: null,
+        manifest: {
+          kind: "catalog",
+          definition: loaded.platform.installations[0]!.installation.manifest["definition"],
+          digest: "a".repeat(43),
+        },
+      },
+    } as unknown as Request;
+    shellState.current = {
+      snapshot: shellSnapshot(),
+      hostClient: {
+        dispatch: vi.fn(),
+        rpc: {
+          "integrations.get": async () => ({ ok: true, data: loaded.dashboard }),
+          "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+        },
+      },
+    };
+    const container = await mountThreadAction(shown, "Connect Provider integration");
+    expect(container.textContent).toContain("requires read-write access");
+  });
+
+  it("adds a credential-free catalog integration and grants access in the same tap", async () => {
+    const loaded = genericProjectRequest();
+    loaded.dashboard.isAdministrator = true;
+    const bound = requestRecord(loaded, "Connect Test integration");
+    let answered = false;
+    const dispatch = vi.fn(async (command: { type: string; response?: { kind: string } }) => {
+      if (command.response?.kind === "external") answered = true;
+      return { type: command.type };
+    });
+    shellState.current = {
+      snapshot: shellSnapshot(),
+      hostClient: {
+        dispatch,
+        getSnapshot: () => shellSnapshot(),
+        rpc: {
+          "integrations.get": async () => ({ ok: true, data: loaded.dashboard }),
+          "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+          "thread.requests.list": async () => ({
+            ok: true,
+            data: {
+              requests: answered ? [] : [bound],
+              window: { hasMore: false, nextBefore: null },
+            },
+          }),
+        },
+      },
+    };
+    const shown = {
+      ...bound,
+      payload: {
+        ...loaded.request,
+        installationId: null,
+        manifest: {
+          kind: "catalog",
+          definition: loaded.platform.installations[0]!.installation.manifest["definition"],
+          digest: "a".repeat(43),
+        },
+      },
+    } as unknown as Request;
+    const container = await mountThreadAction(shown, "Connect Test integration");
+    await act(async () => buttonWithText(container, "Connect Test integration")!.click());
+    await vi.waitFor(() => expect(container.textContent).toContain("Request answered"));
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(dispatch.mock.calls[0]?.[0]).toMatchObject({
+      response: { kind: "choice", optionId: "installed" },
+    });
+    expect(dispatch.mock.calls[1]?.[0]).toMatchObject({
+      response: {
+        kind: "external",
+        value: { access: "read", connectionId: null, decision: "fulfilled" },
+      },
+    });
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
+  it("disables account actions while Connect opens, then hides the primary while authorization is active", async () => {
+    const loaded = oauthRequest({ connected: true });
+    loaded.dashboard.connections[0] = {
+      ...loaded.dashboard.connections[0]!,
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    let open!: () => void;
+    const dispatch = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          open = () =>
+            resolve({
+              type: "integration.authorization.begin",
+              attemptId: createIntegrationId("oauthAttempt"),
+              expiresAt: "2099-01-01T00:00:00Z",
+              launchTicket: "t".repeat(43),
+            });
+        }),
+    );
+    shellState.current = {
+      snapshot: shellSnapshot(),
+      hostClient: {
+        dispatch,
+        getSnapshot: () => shellSnapshot(),
+        rpc: {
+          "integrations.get": async () => ({ ok: true, data: loaded.dashboard }),
+          "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+          "integration.authorization.get": () => new Promise(() => {}),
+        },
+      },
+    };
+    const container = await mountThreadAction(
+      requestRecord(loaded, "Use account"),
+      "Use alex@example.com",
+    );
+    await act(async () => buttonWithText(container, "Connect another account")!.click());
+    expect(buttonWithText(container, "Connecting…")?.disabled).toBe(true);
+    expect(buttonWithText(container, "Connect another account")?.disabled).toBe(true);
+    expect(buttonWithText(container, "Not now")?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[role="radio"]')?.disabled).toBe(true);
+    await act(async () => open());
+    expect(buttonWithText(container, "Use alex@example.com")).toBeNull();
+    expect(buttonWithText(container, "Cancel")).not.toBeNull();
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps account rows keyboard-accessible with the primary action first", async () => {
+    const loaded = oauthRequest({ connected: true });
+    loaded.dashboard.connections[0] = {
+      ...loaded.dashboard.connections[0]!,
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    loaded.dashboard.connections.push({
+      ...loaded.dashboard.connections[0]!,
+      id: "second" as never,
+      accountIdentifier: "second@example.com",
+    });
+    shellState.current = {
+      snapshot: shellSnapshot(),
+      hostClient: {
+        dispatch: vi.fn(),
+        getSnapshot: () => shellSnapshot(),
+        rpc: {
+          "integrations.get": async () => ({ ok: true, data: loaded.dashboard }),
+          "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+        },
+      },
+    };
+    const container = await mountThreadAction(
+      requestRecord(loaded, "Use account"),
+      "Use alex@example.com",
+    );
+    expect(container.querySelector("button")?.textContent).toBe("Use alex@example.com");
+    const rows = container.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+    await act(async () =>
+      rows[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })),
+    );
+    expect(rows[1]!.getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(rows[1]);
+    expect(buttonWithText(container, "Use second@example.com")).not.toBeNull();
   });
 });
 
@@ -110,7 +601,7 @@ describe("ThreadIntegrationAction computer access", () => {
     expect(container.textContent).toContain(
       "Agents can search and read your conversations, and send messages as you.",
     );
-    expect(buttonWithText(container, "Allow in Support")).not.toBeNull();
+    expect(buttonWithText(container, "Use Mac mini")).not.toBeNull();
 
     const optionalWrite = container.querySelector<HTMLInputElement>(
       '.check-item input[type="checkbox"]',
@@ -119,7 +610,7 @@ describe("ThreadIntegrationAction computer access", () => {
     await act(async () => optionalWrite.click());
 
     expect(buttonWithText(container, "Request sending access on Mac mini")).not.toBeNull();
-    expect(buttonWithText(container, "Allow in Support")).toBeNull();
+    expect(buttonWithText(container, "Use Mac mini")).toBeNull();
 
     await act(async () => buttonWithText(container, "Request sending access on Mac mini")?.click());
 
@@ -287,11 +778,11 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
       }
 
       await act(async () => buttonWithText(document.body, "Finish later")?.click());
-      await act(async () => buttonWithText(container, "Connect account")?.click());
-      expect(document.body.textContent).toContain("Connect Provider integration");
+      await act(async () => buttonWithText(container, "Connect Provider integration")?.click());
+      expect(document.body.textContent).toContain("Connecting…");
       await act(async () => (late === "check" ? refuse() : answerReload()));
 
-      expect(document.body.textContent).toContain("Connect Provider integration");
+      expect(document.body.textContent).toContain("Connecting…");
       expect(document.body.textContent).not.toContain(rejected);
       expect(check).toHaveBeenCalledTimes(1);
     },
@@ -317,7 +808,7 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
       await act(async () => answer());
 
       expect(document.body.textContent).not.toContain("Choose GitHub repositories");
-      expect(buttonWithText(container, "Connect account")?.disabled).toBe(false);
+      expect(buttonWithText(container, "Connect Provider integration")?.disabled).toBe(false);
       expect(check).toHaveBeenCalledTimes(late === "recheck" ? 2 : 1);
     },
   );
@@ -406,7 +897,11 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
     await act(async () => refuse());
     await act(async () => answerRecheck());
 
-    await vi.waitFor(() => expect(buttonWithText(container, "Allow in Support")).not.toBeNull());
+    await vi.waitFor(() => expect(container.textContent).toContain("Use steerlabs"));
+    await act(async () => buttonWithText(container, "Use steerlabs")!.click());
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("✓ Provider integration connected · steerlabs"),
+    );
     expect(document.body.textContent).not.toContain(refused);
     expect(buttonWithText(container, "Try again")).toBeNull();
     expect(document.body.textContent).not.toContain("Choose GitHub repositories");
@@ -420,15 +915,14 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
     const { check, container } = await returnFromGitHubSignIn("Recheck repository access", 0);
 
     await act(async () => buttonWithText(document.body, "Finish later")?.click());
-    await act(async () => buttonWithText(container, "Connect account")?.click());
-    expect(document.body.textContent).toContain("Connect Provider integration");
-    await act(async () =>
-      document.querySelector<HTMLButtonElement>('button[aria-label="Close dialog"]')?.click(),
-    );
+    await act(async () => buttonWithText(container, "Connect Provider integration")?.click());
+    expect(document.body.textContent).toContain("Connecting…");
+    await act(async () => buttonWithText(container, "Cancel")?.click());
 
-    expect(document.body.textContent).not.toContain("Connect Provider integration");
     expect(document.body.textContent).not.toContain("Choose GitHub repositories");
-    expect(buttonWithText(container, "Connect account")?.disabled).toBe(false);
+    expect(document.body.textContent).not.toContain("Choose GitHub repositories");
+    expect(container.textContent).toContain("Authorization was cancelled.");
+    expect(buttonWithText(container, "Try again")?.disabled).toBe(false);
     expect(check).toHaveBeenCalledTimes(1);
   });
 });
@@ -443,7 +937,12 @@ describe("ThreadIntegrationAction finding its target Workspace", () => {
     const loaded = oauthRequest({ provider: "github" });
     let failPage = (_reason: Error) => {};
     const hostClient = {
-      dispatch: vi.fn(),
+      dispatch: vi.fn(async (command: { type: string }) => ({
+        type: command.type,
+        attemptId: createIntegrationId("oauthAttempt"),
+        launchTicket: "t".repeat(43),
+        expiresAt: "2099-01-01T00:00:00Z",
+      })),
       getSnapshot: () => shellSnapshot(),
       loadEarlierWorkspaces: vi.fn(
         () =>
@@ -453,6 +952,7 @@ describe("ThreadIntegrationAction finding its target Workspace", () => {
       ),
       refresh: async () => undefined,
       rpc: {
+        "integration.authorization.get": () => new Promise(() => {}),
         "integration.platform.get": async () => ({ data: loaded.platform, ok: true as const }),
         "integrations.get": async () => ({ data: loaded.dashboard, ok: true as const }),
       },
@@ -478,12 +978,14 @@ describe("ThreadIntegrationAction finding its target Workspace", () => {
 
     shellState.current = { hostClient, reportActionError: vi.fn(), snapshot: shellSnapshot() };
     await act(async () => root.render(card()));
-    await vi.waitFor(() => expect(buttonWithText(container, "Connect account")).not.toBeNull());
-    await act(async () => buttonWithText(container, "Connect account")?.click());
-    expect(document.body.textContent).toContain("Connect Provider integration");
+    await vi.waitFor(() =>
+      expect(buttonWithText(container, "Connect Provider integration")).not.toBeNull(),
+    );
+    await act(async () => buttonWithText(container, "Connect Provider integration")?.click());
+    expect(document.body.textContent).toContain("Connecting…");
     await act(async () => failPage(new Error(failed)));
 
-    expect(document.body.textContent).toContain("Connect Provider integration");
+    expect(document.body.textContent).toContain("Connecting…");
     expect(document.body.textContent).not.toContain(failed);
   });
 });
@@ -562,17 +1064,16 @@ describe("ThreadIntegrationAction cancelling a sign-in", () => {
       };
       const container = await mountThreadAction(
         requestRecord(loaded, "Connect Test integration"),
-        "Connect account",
+        "Connect Test integration",
       );
-      const waiting = "Finish connecting in your browser.";
-      await act(async () => buttonWithText(container, "Connect account")?.click());
+      const waiting = "Connecting…";
+      await act(async () => buttonWithText(container, "Connect Test integration")?.click());
       expect(container.textContent).toContain(waiting);
       await act(async () => buttonWithText(container, "Cancel")?.click());
       await act(async () => finishFirst());
-      await vi.waitFor(() =>
-        expect(buttonWithText(container, "Connect account")?.disabled).toBe(false),
-      );
-      await act(async () => buttonWithText(container, "Connect account")?.click());
+      await vi.waitFor(() => expect(buttonWithText(container, "Try again")).not.toBeNull());
+      await act(async () => buttonWithText(container, "Try again")?.click());
+      await act(async () => buttonWithText(container, "Connect Test integration")?.click());
       expect(container.textContent).toContain(waiting);
 
       await act(async () => (late === "answers" ? settleCancel.answer() : settleCancel.fail()));
@@ -622,9 +1123,9 @@ describe("ThreadIntegrationAction reconnecting the account a request names", () 
       container.querySelector<HTMLInputElement>('input[placeholder="Vapi API account"]')?.value,
     ).toBe("Vapi API");
     // The form's own submit is the only Reconnect: no step precedes the key field.
-    expect(buttonWithText(container, "Reconnect account")?.getAttribute("type")).toBe("submit");
+    expect(buttonWithText(container, "Reconnect Vapi API")?.getAttribute("type")).toBe("submit");
     // Declining sits in the submit's own row, the card's one row of answers.
-    expect(actionRowLabels(container)).toEqual([["Not now", "Reconnect account"]]);
+    expect(actionRowLabels(container)).toEqual([["Not now", "Reconnect Vapi API"]]);
     for (const absent of ["Connect another account", "Use this account"]) {
       expect(buttonWithText(container, absent)).toBeNull();
     }
@@ -682,9 +1183,7 @@ describe("ThreadIntegrationAction adding another key beside a usable account", (
     };
     const container = await mountThreadAction(request, "Read and write · 1 operation");
 
-    expect(actionRowLabels(container)).toEqual([
-      ["Not now", "Connect another account", "Use this account"],
-    ]);
+    expect(actionRowLabels(container)).toEqual([["Use Vapi API", "Not now"]]);
     await act(async () => buttonWithText(container, "Connect another account")?.click());
 
     expect(container.querySelector('input[type="password"]')).not.toBeNull();
@@ -692,9 +1191,7 @@ describe("ThreadIntegrationAction adding another key beside a usable account", (
     await act(async () => buttonWithText(container, "Cancel")?.click());
 
     expect(container.querySelector('input[type="password"]')).toBeNull();
-    expect(actionRowLabels(container)).toEqual([
-      ["Not now", "Connect another account", "Use this account"],
-    ]);
+    expect(actionRowLabels(container)).toEqual([["Use Vapi API", "Not now"]]);
     expect(dispatch).not.toHaveBeenCalled();
   });
 });
@@ -721,7 +1218,11 @@ describe("ThreadIntegrationAction says what connecting does before it is done", 
     await vi.waitFor(() => expect(notes(container)).toContain("Read and write · 4 operations"));
 
     // What Main gets, not the read the agent asked for: its tasks use every operation.
-    expect(notes(container)).toEqual(["Read and write · 4 operations", allows]);
+    expect(notes(container)).toEqual([
+      requestAgentProposedDetail,
+      allows,
+      "Read and write · 4 operations",
+    ]);
     const setup = container.querySelector('a[href="https://www.themoviedb.org/settings/api"]');
     expect(setup?.textContent).toBe("www.themoviedb.org");
     expect(actionRowLabels(container)).toEqual([["Not now", "Connect TMDB"]]);
@@ -767,12 +1268,11 @@ describe("ThreadIntegrationAction says what connecting does before it is done", 
     const container = await mountThreadAction(request);
 
     expect(notes(container)).toEqual([
+      "Only Customer launch gets access",
+      requestAgentProposedDetail,
       "Read only · 1 operation",
-      "Access will be granted to Customer launch.",
     ]);
-    expect(actionRowLabels(container)).toEqual([
-      ["Not now", "Connect another account", "Allow in Customer launch"],
-    ]);
+    expect(actionRowLabels(container)).toEqual([["Use Vapi API", "Not now"]]);
   });
 });
 
@@ -806,9 +1306,9 @@ describe("ThreadIntegrationAction when the account a request names is gone", () 
     );
     expect(container.textContent).not.toContain("Dismiss");
     expect(container.querySelector('input[type="password"]')).toBeNull();
-    expect(actionRowLabels(container)).toEqual([["Decline request"]]);
+    expect(actionRowLabels(container)).toEqual([["Not now"]]);
 
-    await act(async () => buttonWithText(container, "Decline request")?.click());
+    await act(async () => buttonWithText(container, "Not now")?.click());
 
     await vi.waitFor(() =>
       expect(client.getSnapshot().requests[mockVapi.threadId] ?? []).toEqual([]),
@@ -860,7 +1360,7 @@ describe("ThreadIntegrationAction installing an agent's proposal", () => {
       "After it’s installed, you’ll finish setting it up and review its access here.",
     ]);
     expect(container.textContent).not.toMatch(/tmdb-api|operation|Agent proposal|https:/u);
-    expect(actionRowLabels(container)).toEqual([["Not now", "Install and continue"]]);
+    expect(actionRowLabels(container)).toEqual([["Install and continue", "Not now"]]);
 
     await act(async () => buttonWithText(container, "Install and continue")?.click());
     await vi.waitFor(() => expect(notes(container)).toContain("Read and write · 4 operations"));
@@ -1035,18 +1535,17 @@ describe("ThreadIntegrationAction reviewing what a request would install", () =>
     };
 
     // Not installed, so no snapshot has said where its key would go yet.
-    const resend = await mountThreadAction(preset("resend"), "Install and continue");
-    expect(reviewLines(resend)).toEqual([
+    const resend = await mountThreadAction(preset("resend"), "Connect Resend REST");
+    expect(["Resend REST", ...notes(resend)]).toEqual([
       "Resend REST",
+      "Your tasks in Main can read and make changes with every account you connect, so connecting also allows this request.",
       "Send transactional email and inspect sending domains through Resend.",
     ]);
-    expect(notes(resend)).toEqual([
-      "After it’s installed, you’ll finish setting it up and review its access here.",
-    ]);
 
-    const linear = await mountThreadAction(preset("linear"), "Install and continue");
-    expect(reviewLines(linear)).toEqual([
+    const linear = await mountThreadAction(preset("linear"), "Connect Linear GraphQL");
+    expect(["Linear GraphQL", ...notes(linear)]).toEqual([
       "Linear GraphQL",
+      "Your tasks in Main can read and make changes with every account you connect, so connecting also allows this request.",
       "Read and update Linear issues, projects, teams, and comments.",
       "Your key is stored encrypted by your Opensteer and sent to api.linear.app when used.",
       "Opensteer checks the key with Linear GraphQL before saving it.",
@@ -1098,7 +1597,11 @@ async function mockConnections(client: MockHostClient) {
 }
 
 function notes(container: HTMLElement): readonly string[] {
-  return [...container.querySelectorAll(".action-note")].map((note) => note.textContent ?? "");
+  return [
+    ...container.querySelectorAll(
+      ".connect-card__disclosure .field__hint, .action-note, .connect-card > p.field__hint",
+    ),
+  ].map((note) => note.textContent ?? "");
 }
 
 /** Each row of answers on the card, as the labels of its buttons in order. */
@@ -1408,7 +1911,23 @@ function providerRequest(input: {
         : [],
       hostedOAuthDisclosure: "Disclosure",
       isAdministrator: false,
-      providerAuthorizations: {},
+      providerAuthorizations: {
+        [provider]: {
+          code: "READY",
+          availableSources: [
+            {
+              kind: "hosted-oauth",
+              brokerIssuer: "https://account.test",
+              providerApplicationRevision: 1,
+            },
+          ],
+          selectedSource: {
+            kind: "hosted-oauth",
+            brokerIssuer: "https://account.test",
+            providerApplicationRevision: 1,
+          },
+        },
+      },
       providers: [],
     },
     platform: {
@@ -1645,6 +2164,38 @@ async function mountThreadAction(
   ready = "Read only · 1 operation",
   path = "/threads/thr_test",
 ) {
+  const shell = shellState.current as {
+    hostClient: {
+      dispatch: Mock<(command: { type: string }) => Promise<unknown>>;
+      rpc: Record<string, (input: { attemptId?: string }) => Promise<unknown>>;
+    };
+  };
+  if (
+    vi.isMockFunction(shell.hostClient.dispatch) &&
+    shell.hostClient.dispatch.getMockImplementation() === undefined
+  ) {
+    shell.hostClient.dispatch.mockImplementation((command: { type: string }) =>
+      Promise.resolve({
+        status: command.type === "integration.authorization.cancel" ? "cancelled" : undefined,
+        failureCode: null,
+        connectionId: null,
+        type: command.type,
+        attemptId: createIntegrationId("oauthAttempt"),
+        launchTicket: "t".repeat(43),
+        expiresAt: "2099-01-01T00:00:00Z",
+      }),
+    );
+    const get = shell.hostClient.rpc["integration.authorization.get"];
+    if (get) {
+      const returned = new URL(path, "https://test").searchParams.get("integrationAttempt");
+      shell.hostClient.rpc["integration.authorization.get"] = (input) =>
+        input.attemptId === returned ? get(input) : new Promise(() => {});
+    }
+  }
+  shell.hostClient.rpc["thread.requests.list"] ??= async () => ({
+    ok: true,
+    data: { requests: [], window: { hasMore: false, nextBefore: null } },
+  });
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -1754,7 +2305,7 @@ function requestRecord(loaded: LoadedAccessRequest, title: string) {
     presentation: { kind: "external", title },
     status: "pending",
     targetWorkspaceId: "wsp_support",
-  } as never;
+  } as unknown as Request;
 }
 
 function computerRequestRecord() {
@@ -1775,5 +2326,5 @@ function shellSnapshot() {
     machines: [],
     workspaceWindow: { hasMore: false, itemCount: 1 },
     workspaces: [{ id: "wsp_support", kind: "project", name: "Support" }],
-  } as never;
+  } as unknown as HostSnapshot;
 }

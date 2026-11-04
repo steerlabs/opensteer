@@ -3,11 +3,12 @@ import { authenticatePasswordApproval } from "./password-approval-auth.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { HostClient, SurfaceModel } from "@opensteer/client/host";
 import {
-  browserAccessAvailableLabel,
+  browserAccessChoices,
   browserAccessGrantable,
   browserAccessGrantLabel,
   browserAccessInitialName,
   browserAccessInitialSelection,
+  browserAccessProfileNote,
   browserAccessResponse,
   browserAccessWarning,
   browserSignInProblemCopy,
@@ -83,6 +84,7 @@ import {
 } from "../theme.js";
 import {
   AppText,
+  Chip,
   monoFontFamily,
   Notice,
   PrimaryButton,
@@ -94,7 +96,7 @@ import {
 import { Sheet } from "../ui/sheet.js";
 import { Symbol } from "../ui/symbol.js";
 import { requestTitle, requestTitleLine } from "./docked-requests.js";
-import { IntegrationConnectSheet } from "./integration-connect-sheet.js";
+import { IntegrationConnectCard } from "./integration-connect-sheet.js";
 import { InstallReview } from "./integration-install-review.js";
 import {
   nextRequestSubmission,
@@ -168,9 +170,6 @@ export function RequestCard(props: {
   // The draft lives with the card, not the sheet, so closing the sheet to read
   // the transcript and opening it again finds every answer where it was left.
   const [answers, setAnswers] = useState<RequestFormDraft>({});
-  // The connect sheet replaces the review sheet rather than stacking on it: two
-  // modals deep is not a place to type a client secret.
-  const [connecting, setConnecting] = useState(false);
   // Like the form draft, a profile choice survives closing the sheet. Undefined
   // means untouched, so the agent's suggestion still applies.
   const [browserSelection, setBrowserSelection] = useState<
@@ -520,6 +519,32 @@ export function RequestCard(props: {
   const form = answerable && presentation.kind === "form" ? presentation.fields : null;
   const review = answerable ? "Review" : "View";
   const askedBy = props.subagentTitle ? `Asked by subagent ${props.subagentTitle}` : null;
+  if (request.payload.kind === "integration.access")
+    return (
+      <View style={[styles.card, props.highlighted && styles.cardHighlighted]}>
+        <IntegrationConnectCard
+          hostClient={props.hostClient}
+          request={request}
+          disabled={
+            !props.canRespond || props.surface.denied !== null || request.status !== "pending"
+          }
+          disabledReason={props.disabledReason ?? props.surface.denied}
+          canStartResponse={props.canStartResponse}
+          mutationGate={props.mutationGate}
+          onPresent={() => {
+            props.onPresent();
+            openRef.current = true;
+          }}
+          onClose={() => {
+            if (openRef.current) {
+              openRef.current = false;
+              settle.current();
+            }
+          }}
+          onResponded={() => {}}
+        />
+      </View>
+    );
   return (
     <View style={[styles.card, props.highlighted && styles.cardHighlighted]}>
       {computerApproval.dialog}
@@ -644,10 +669,6 @@ export function RequestCard(props: {
             failure={failure}
             onAnswersChange={setAnswers}
             onChoose={(optionId) => void submit({ kind: "choice", optionId }, optionId)}
-            onConnectIntegration={() => {
-              dismiss();
-              setConnecting(true);
-            }}
             onDeclineComputerApp={() =>
               void submit(
                 { kind: "external", value: { decision: "declined" } },
@@ -688,13 +709,6 @@ export function RequestCard(props: {
           />
         </View>
       </Sheet>
-      <IntegrationConnectSheet
-        hostClient={props.hostClient}
-        onClose={() => setConnecting(false)}
-        onResponded={() => setConnecting(false)}
-        open={connecting}
-        request={request}
-      />
     </View>
   );
 }
@@ -769,7 +783,6 @@ function RequestBody(props: {
   readonly failure: string | null;
   readonly onAnswersChange: (answers: RequestFormDraft) => void;
   readonly onChoose: (optionId: string) => void;
-  readonly onConnectIntegration: () => void;
   readonly onAllowComputerApp: () => void;
   readonly onDeclineComputerApp: () => void;
   readonly onDeclineFullDiskAccess: () => void;
@@ -859,16 +872,7 @@ function RequestBody(props: {
         />
       );
     case "external":
-      // An integration access Request is answered here: the connect sheet runs
-      // the same flow the browser does against this deployment's Host.
-      return request.kind === "integration.access" ? (
-        <Notice
-          action={{ label: "Review connection", onPress: props.onConnectIntegration }}
-          detail="Choose the account and the access this integration gets. Nothing is connected until you finish at the provider."
-          title="This integration needs a connected account"
-          tone="neutral"
-        />
-      ) : request.kind === "machine.full-disk-access" &&
+      return request.kind === "machine.full-disk-access" &&
         request.payload.kind === "machine.full-disk-access" ? (
         <View style={styles.choices}>
           <Notice
@@ -978,47 +982,55 @@ function BrowserAccessBody(props: {
         ? browserAccessInitialSelection(suggestion, profiles)
         : null;
   const name = props.state.name ?? (suggestion ? browserAccessInitialName(suggestion) : "");
-  const workspaceName =
-    snapshot.workspaces.find((workspace) => workspace.id === props.request.targetWorkspaceId)
-      ?.name ?? "this Workspace";
-  const available = new Set(
-    snapshot.browserProfileGrants
-      .filter((grant) => grant.workspaceId === props.request.targetWorkspaceId)
-      .map((grant) => grant.profileId),
-  );
+  const choices = browserAccessChoices(snapshot, props.request.targetWorkspaceId);
   const busy = props.pendingId !== null;
   const disabled = !props.canRespond || busy;
-  const alreadyAvailable = selection?.kind === "existing" && available.has(selection.profileId);
   const choose = (next: BrowserAccessSelection): void => {
     void Haptics.selectionAsync();
     props.state.onSelect(next);
   };
   const nameField = (
-    <TextInput
-      accessibilityLabel="Profile name"
-      autoCapitalize="words"
-      cursorColor={color.ember}
-      editable={!busy}
-      maxFontSizeMultiplier={controlFontScaleLimit}
-      maxLength={120}
-      onChangeText={props.state.onChangeName}
-      placeholder="New browser profile"
-      placeholderTextColor={color.muted}
-      selectionColor={color.ember}
-      style={[type.body, styles.input, busy && styles.disabled]}
-      value={name}
-    />
+    <View style={styles.nameField}>
+      <TextInput
+        accessibilityLabel="Profile name"
+        autoCapitalize="words"
+        cursorColor={color.ember}
+        editable={!busy}
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        maxLength={120}
+        onChangeText={props.state.onChangeName}
+        placeholder="Personal, Work, Finance…"
+        placeholderTextColor={color.muted}
+        selectionColor={color.ember}
+        style={[type.body, styles.input, busy && styles.disabled]}
+        value={name}
+      />
+      {choices.nameSuggestions.length > 0 ? (
+        <View accessibilityLabel="Suggested names" style={styles.nameSuggestions}>
+          {choices.nameSuggestions.map((suggestion) => (
+            <Chip
+              accessibilityLabel={`Name it ${suggestion}`}
+              disabled={busy}
+              key={suggestion}
+              label={suggestion}
+              onPress={() => {
+                void Haptics.selectionAsync();
+                props.state.onChangeName(suggestion);
+              }}
+            />
+          ))}
+        </View>
+      ) : null}
+    </View>
   );
   return (
     <View style={styles.choices}>
       {
         <>
           <RowGroup>
-            {profiles.map((profile) => (
+            {choices.profiles.map((profile) => (
               <FormChoiceRow
-                description={
-                  available.has(profile.id) ? browserAccessAvailableLabel(workspaceName) : undefined
-                }
+                description={browserAccessProfileNote(choices, profile) ?? undefined}
                 disabled={busy}
                 hint="Choose one"
                 key={profile.id}
@@ -1032,7 +1044,7 @@ function BrowserAccessBody(props: {
               description={undefined}
               disabled={busy}
               hint="Choose one"
-              label="Create a new profile"
+              label="New profile"
               mode="one"
               onPress={() => choose({ kind: "new" })}
               selected={selection?.kind === "new"}
@@ -1040,7 +1052,7 @@ function BrowserAccessBody(props: {
           </RowGroup>
           {selection?.kind === "new" ? nameField : null}
           <AppText role="caption" tone="muted">
-            {browserAccessWarning(workspaceName)}
+            {browserAccessWarning(choices)}
           </AppText>
         </>
       }
@@ -1048,7 +1060,7 @@ function BrowserAccessBody(props: {
       <PrimaryButton
         busy={props.pendingId === browserAccessGrantId}
         disabled={disabled || !browserAccessGrantable(selection, name, profiles)}
-        label={browserAccessGrantLabel(alreadyAvailable)}
+        label={browserAccessGrantLabel(selection, choices)}
         onPress={() => props.state.onRespond(selection, name)}
       />
       <SecondaryButton
@@ -1836,6 +1848,8 @@ const styles = StyleSheet.create({
     textAlignVertical: "top",
   },
   mediumRisk: { color: color.amber },
+  nameField: { gap: space[8] },
+  nameSuggestions: { flexDirection: "row", flexWrap: "wrap", gap: space[6] },
   monoDetail: {
     backgroundColor: color.surfaceCode,
     borderColor: color.line,

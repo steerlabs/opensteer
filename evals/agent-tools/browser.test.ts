@@ -59,8 +59,11 @@ describe("browser profile corpus", () => {
           args: { profileId: "bpr_00000000-0000-4000-8000-000000000099" },
           valid: true,
         },
-        { tool: "browser_profile_create", args: { name: "Work" }, valid: true },
-        { tool: "browser_access_request", args: {}, valid: false },
+        {
+          tool: "browser_profile_request",
+          args: { reason: "Replace it", suggestion: { kind: "new", suggestedName: "Work" } },
+          valid: true,
+        },
       ];
       for (const workaround of workarounds) {
         expect(

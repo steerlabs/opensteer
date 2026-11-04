@@ -358,6 +358,7 @@ describe("Host signing keys", () => {
           "iphone-apps-v1",
           "ownerViewWindows",
           "browser-target-control-v1",
+          "integration-app-finish-v1",
           "browser-frame-window-v1",
           "browser-raster-demand-v1",
           "browser-capture-region-v1",
@@ -495,6 +496,7 @@ describe("Host signing keys", () => {
           "iphone-apps-v1",
           "ownerViewWindows",
           "browser-target-control-v1",
+          "integration-app-finish-v1",
           "browser-frame-window-v1",
           "browser-raster-demand-v1",
           "browser-capture-region-v1",
@@ -1534,6 +1536,64 @@ describe("rpc envelope", () => {
       await app.close();
     }
   });
+
+  it.each(["provider", "mcp"] as const)(
+    "dispatches %s app returns to the owner service",
+    async (kind) => {
+      const session = testAuthenticatedSession(createId("user"));
+      const authenticator = new HostAuthenticator({
+        identity: {
+          ...testIdentity,
+          requireSession: async () => session,
+          userSessionProfile: async () => session.user,
+        } as never,
+        publicUrl: new URL("https://opensteer.example"),
+      });
+      const returnAuthorization = vi.fn(async () => ({
+        connectionId: null,
+        expiresAt: new Date("2030-01-01T00:00:00Z"),
+        failureCode: null,
+        status: "launched",
+      }));
+      const app = await createHostServer({
+        authenticator,
+        discovery: testDiscovery,
+        integrations: {
+          authAttempts: {} as never,
+          continuations: {} as never,
+          dashboard: {} as never,
+          service: (kind === "provider" ? { returnAuthorization } : {}) as never,
+          mcpOauth: (kind === "mcp" ? { returnAuthorization } : {}) as never,
+          platform: {} as never,
+          skills: {} as never,
+        },
+      });
+      const attemptId = createIntegrationId(
+        kind === "provider" ? "oauthAttempt" : "mcpOauthAttempt",
+      );
+      const command = {
+        type: "integration.authorization.return",
+        attemptId,
+        returnProof: "r".repeat(43),
+        idempotencyKey: "app-return",
+      };
+      try {
+        const response = await injectRpcRequest(app, "commands.dispatch", command, {
+          cookie: "opensteer.session=test",
+          origin: "https://opensteer.example",
+        });
+        expect(response.statusCode, response.body).toBe(200);
+        expect(rpcData(response)).toMatchObject({ type: command.type, status: "launched" });
+        expect(returnAuthorization).toHaveBeenCalledExactlyOnceWith({
+          attemptId,
+          ownerUserId: session.user.id,
+          returnProof: command.returnProof,
+        });
+      } finally {
+        await app.close();
+      }
+    },
+  );
 
   it("allows header integration uninstall and protects cookie mutations", async () => {
     const session = testAuthenticatedSession(createId("user"));

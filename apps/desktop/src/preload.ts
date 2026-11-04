@@ -1,4 +1,11 @@
 import {
+  DesktopIntegrationAuthorizationReturnSchema,
+  DesktopIntegrationAuthorizationSubscriptionSchema,
+  DesktopFinishIntegrationAuthorizationInputSchema,
+  type DesktopIntegrationAuthorizationReturn,
+  type DesktopFinishIntegrationAuthorizationInput,
+} from "@opensteer/protocol/desktop";
+import {
   IssuePersonalHostAccountLinkChallengeRequestSchema,
   IssuePersonalHostAccountLinkChallengeResponseSchema,
   CompletePersonalHostAccountLinkRequestSchema,
@@ -689,6 +696,34 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
         desktopBridgeChannels.openIntegrationAuthorization,
         DesktopOpenIntegrationAuthorizationInputSchema.parse(input),
       ),
+    ),
+  onIntegrationAuthorizationReturn: (
+    identity: { readonly deploymentId: string; readonly userId: string },
+    listener: (callback: DesktopIntegrationAuthorizationReturn) => void,
+  ) => {
+    const input = DesktopIntegrationAuthorizationSubscriptionSchema.parse({
+      ...identity,
+      generation: crypto.randomUUID(),
+      ready: true,
+    });
+    const receive = (_event: Electron.IpcRendererEvent, value: unknown) =>
+      listener(DesktopIntegrationAuthorizationReturnSchema.parse(value));
+    ipcRenderer.on(desktopBridgeChannels.integrationAuthorizationReturn, receive);
+    void invoke(desktopBridgeChannels.integrationAuthorizationSubscription, input).catch(
+      () => undefined,
+    );
+    return () => {
+      ipcRenderer.removeListener(desktopBridgeChannels.integrationAuthorizationReturn, receive);
+      void invoke(desktopBridgeChannels.integrationAuthorizationSubscription, {
+        ...input,
+        ready: false,
+      }).catch(() => undefined);
+    };
+  },
+  finishIntegrationAuthorization: (input: DesktopFinishIntegrationAuthorizationInput) =>
+    invoke<void>(
+      desktopBridgeChannels.finishIntegrationAuthorization,
+      DesktopFinishIntegrationAuthorizationInputSchema.parse(input),
     ),
   pickFolder: async () =>
     DesktopPickFolderResultSchema.parse(

@@ -1065,6 +1065,76 @@ describeStore("PostgreSQL store", (it) => {
     },
   );
 
+  it("lets the owner answer a Main profile request with another profile, granting nothing, even at the limit", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, store, database } = storeFixture;
+    const fixture = await startRunFixture("browser-access-main");
+    const personal = await store.createBrowserProfile({
+      idempotencyKey: "store.integration.test-browser-profile-main",
+      ownerId: fixture.userId,
+      name: "Personal",
+    });
+    const opened = await store.requests.create({
+      callId: "browser-access-main",
+      kind: "browser.access",
+      mode: "durable",
+      originatingRunId: fixture.run.id,
+      originatingThreadId: fixture.thread.id,
+      originatingWorkspaceId: fixture.workspace.id,
+      targetWorkspaceId: fixture.workspace.id,
+      requestedBy: fixture.userId,
+      requiredActor: "requester",
+      payload: {
+        kind: "browser.access",
+        reason: "Sign in to Brex",
+        suggestion: { kind: "new", suggestedName: "Brex" },
+      },
+      presentation: {
+        kind: "external",
+        title: "Browser profile",
+        subject: { id: fixture.workspace.id, kind: "workspace" },
+      },
+    });
+
+    // Approval creates profiles through the owner's one limit, like their own command.
+    for (let index = 1; index < 128; index++)
+      await store.createBrowserProfile({
+        idempotencyKey: `store.integration.test-browser-profile-main-${index}`,
+        ownerId: fixture.userId,
+        name: `Profile ${index}`,
+      });
+    await expect(
+      store.requests.resolveBrowserRequest({
+        requestId: opened.request.id,
+        resolvedBy: fixture.userId,
+        response: {
+          kind: "external",
+          value: { decision: "fulfilled", createProfile: { name: "Brex" } },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "conflict", message: "Browser profile limit reached" });
+
+    // The person knows Personal is already signed in, so they choose it over the suggestion.
+    const resolved = await store.requests.resolveBrowserRequest({
+      requestId: opened.request.id,
+      resolvedBy: fixture.userId,
+      response: { kind: "external", value: { decision: "fulfilled", profileId: personal.id } },
+    });
+
+    expect(resolved.request.status).toBe("fulfilled");
+    expect(resolved.profile).toMatchObject({ id: personal.id, name: "Personal" });
+    // Main already reaches every owner profile, so it never holds grant rows.
+    expect(resolved.grant).toBeNull();
+    expect(
+      await database
+        .selectFrom("browserProfileGrants")
+        .select("id")
+        .where("workspaceId", "=", fixture.workspace.id)
+        .execute(),
+    ).toEqual([]);
+  });
+
   it("fulfills repeated browser access requests with one existing grant, including at capacity", async ({
     storeFixture,
   }) => {

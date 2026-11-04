@@ -16,6 +16,8 @@ import {
   OAuthBrokerPublicMetadataSchema,
   PullHostedOAuthRefreshResponseSchema,
   PullHostedOAuthResultResponseSchema,
+  ReturnHostedOAuthAttemptRequestSchema,
+  ReturnHostedOAuthAttemptResponseSchema,
   type CreateHostedOAuthAttemptRequest,
   type HostedOAuthAttemptId,
   type HostedOAuthRefreshTransactionId,
@@ -81,6 +83,19 @@ export class HostedOAuthBrokerClient {
     );
   }
 
+  async returnAttempt(attemptId: HostedOAuthAttemptId, returnProof: string) {
+    const body = ReturnHostedOAuthAttemptRequestSchema.parse({ attemptId, returnProof });
+    return ReturnHostedOAuthAttemptResponseSchema.parse(
+      await this.#request(
+        `/v1/host/oauth-broker/attempts/${encodeURIComponent(attemptId)}/return`,
+        {
+          body,
+          method: "POST",
+        },
+      ),
+    );
+  }
+
   async pull(attemptId: HostedOAuthAttemptId) {
     return PullHostedOAuthResultResponseSchema.parse(
       await this.#request(`/v1/host/oauth-broker/attempts/${encodeURIComponent(attemptId)}/result`),
@@ -138,9 +153,8 @@ export class HostedOAuthBrokerClient {
     if (!hostCredential) {
       throw new Error("Attach this Deployment to an Opensteer Account to use the OAuth broker");
     }
-    let response: Response;
     try {
-      response = await this.#fetch(new URL(path, this.#serviceOrigin), {
+      const response = await this.#fetch(new URL(path, this.#serviceOrigin), {
         ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
         headers: {
           accept: "application/json",
@@ -151,14 +165,28 @@ export class HostedOAuthBrokerClient {
         redirect: "manual",
         signal: AbortSignal.timeout(15_000),
       });
+      if (!response.ok) throw await brokerRefusal(response);
+      return await readBoundedJson(response, {
+        maximumBytes: maximumBrokerResponseBytes,
+        sizeError: () =>
+          new OpensteerError({
+            code: "conflict",
+            message: "Opensteer hosted OAuth response is too large",
+          }),
+        invalidJsonError: () =>
+          new OpensteerError({
+            code: "conflict",
+            message: "Opensteer hosted OAuth response is invalid",
+          }),
+      });
     } catch (error) {
-      throw new Error("Opensteer hosted OAuth service is unavailable", { cause: error });
+      if (error instanceof OpensteerError) throw error;
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Opensteer hosted OAuth service is unavailable",
+        retryable: true,
+      });
     }
-    if (!response.ok) throw await brokerRefusal(response);
-    return readBoundedJson(response, {
-      maximumBytes: maximumBrokerResponseBytes,
-      sizeError: () => new Error("Opensteer hosted OAuth response is too large"),
-    });
   }
 }
 

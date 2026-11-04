@@ -1,5 +1,9 @@
 import type { IntegrationAuthorizationStatus } from "@opensteer/integration-core";
 
+export const integrationAuthorizationTerminalStatuses: ReadonlySet<
+  IntegrationAuthorizationStatus["status"]
+> = new Set(["completed", "denied", "failed", "cancelled", "expired"]);
+
 /**
  * What a finished authorization attempt says, in one sentence a person can act
  * on. Every surface reads the same durable status, so they say the same thing;

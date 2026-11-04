@@ -1266,6 +1266,8 @@ export class HttpHostClient {
       savedViewReadiness: this.#savedViewReadiness,
       threadRenameAvailable: this.#capabilities?.includes("thread-titles-v1") === true,
       taskMarksAvailable: this.#capabilities?.includes("task-marks-v1") === true,
+      integrationAppFinishAvailable:
+        this.#capabilities?.includes("integration-app-finish-v1") === true,
       sharedTaskDoneAvailable: this.#capabilities?.includes("shared-task-done-v1") === true,
       harnessUpdateAvailable: this.#capabilities?.includes("harness-update-v1") === true,
       workspaceTabReopenAvailable: this.#capabilities?.includes("workspace-tab-reopen-v1") === true,
@@ -3950,6 +3952,7 @@ export class HttpHostClient {
       ...this.#snapshot,
       threadRenameAvailable: capabilities.includes("thread-titles-v1"),
       taskMarksAvailable: capabilities.includes("task-marks-v1"),
+      integrationAppFinishAvailable: capabilities.includes("integration-app-finish-v1"),
       sharedTaskDoneAvailable: capabilities.includes("shared-task-done-v1"),
       harnessUpdateAvailable: capabilities.includes("harness-update-v1"),
       workspaceTabReopenAvailable: capabilities.includes("workspace-tab-reopen-v1"),
@@ -5949,13 +5952,10 @@ export class HttpHostClient {
     const authority = this.#browserTargetAuthorities.get(sessionId);
     if (!authority) return true;
     if (this.#forbiddenWorkspaces.has(authority.workspaceId)) return false;
+    // People view sessions on profiles they own; grants only decide which Workspaces' agents may use them.
     return (
       authority.profileId === null ||
-      (snapshot.browserProfiles.some((profile) => profile.id === authority.profileId) &&
-        snapshot.browserProfileGrants.some(
-          (grant) =>
-            grant.profileId === authority.profileId && grant.workspaceId === authority.workspaceId,
-        ))
+      snapshot.browserProfiles.some((profile) => profile.id === authority.profileId)
     );
   }
 
@@ -6138,7 +6138,6 @@ export class HttpHostClient {
         snapshot.connection !== this.#snapshot.connection ||
         snapshot.workspaceTabs !== this.#snapshot.workspaceTabs ||
         snapshot.browserProfiles !== this.#snapshot.browserProfiles ||
-        snapshot.browserProfileGrants !== this.#snapshot.browserProfileGrants ||
         snapshot.workspaces !== this.#snapshot.workspaces
       ) {
         const places = placeList(snapshot);
@@ -6268,6 +6267,8 @@ export class HttpHostClient {
       savedViewReadiness: this.#savedViewReadiness,
       threadRenameAvailable: this.#capabilities?.includes("thread-titles-v1") === true,
       taskMarksAvailable: this.#capabilities?.includes("task-marks-v1") === true,
+      integrationAppFinishAvailable:
+        this.#capabilities?.includes("integration-app-finish-v1") === true,
       sharedTaskDoneAvailable: this.#capabilities?.includes("shared-task-done-v1") === true,
       harnessUpdateAvailable: this.#capabilities?.includes("harness-update-v1") === true,
       workspaceTabReopenAvailable: this.#capabilities?.includes("workspace-tab-reopen-v1") === true,

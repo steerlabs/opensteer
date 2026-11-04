@@ -1,12 +1,19 @@
+import type { DesktopIntegrationAuthorizationReturn } from "@opensteer/protocol/desktop";
+import { createId } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
-import type { HostClient } from "@opensteer/client/host";
+import { HostClientRequestError, type HostClient } from "@opensteer/client/host";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConnectOperations } from "../components/integrations/connect-operations.js";
 import {
   beginIntegrationAuthorization,
   integrationAuthorizationCompletionPath,
+  integrationAuthorizationFinish,
+  subscribeIntegrationAuthorizationReturns,
+  waitForIntegrationAuthorization,
 } from "./integration-authorization.js";
 
+const deploymentId = createId("deployment");
+const userId = createId("user");
 const started = {
   attemptId: createIntegrationId("oauthAttempt"),
   expiresAt: "2099-08-20T23:10:00.000Z",
@@ -109,6 +116,9 @@ describe("integration authorization client", () => {
     await expect(
       beginIntegrationAuthorization({
         bridge: { openIntegrationAuthorization },
+        client: {
+          getSnapshot: () => ({ deploymentId, user: { id: userId } }),
+        } as unknown as HostClient,
         begin,
         returnPath: "/threads/thread_123?panel=apps#request",
       }),
@@ -119,6 +129,9 @@ describe("integration authorization client", () => {
     expect(openIntegrationAuthorization).toHaveBeenCalledWith({
       attemptId: started.attemptId,
       launchTicket: started.launchTicket,
+      deploymentId,
+      userId,
+      expiresAt: started.expiresAt,
     });
   });
 
@@ -136,7 +149,13 @@ describe("integration authorization client", () => {
       return { ...started, type: "integration.authorization.begin" as const };
     });
     const tracking = { finished: vi.fn(), started: vi.fn() };
-    const operations = createConnectOperations({ dispatch } as unknown as HostClient, tracking);
+    const operations = createConnectOperations(
+      {
+        dispatch,
+        getSnapshot: () => ({ integrationAppFinishAvailable: true }),
+      } as unknown as HostClient,
+      tracking,
+    );
 
     await operations.beginAuthorization({
       applicationSource: null,
@@ -145,6 +164,11 @@ describe("integration authorization client", () => {
     });
 
     expect(events).toEqual(["open", "dispatch", "navigate"]);
+    expect(dispatch.mock.calls[0]).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ input: expect.objectContaining({ finish: "app" }) }),
+      ]),
+    );
     expect(tracking.started).toHaveBeenCalledWith(started.attemptId);
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -233,3 +257,148 @@ function installWindow(
   vi.stubGlobal("window", { location, open });
   return { href: () => href, open };
 }
+
+it("opts only a capable desktop into app finish", () => {
+  const client = {
+    getSnapshot: () => ({ integrationAppFinishAvailable: true }),
+  } as unknown as HostClient;
+  expect(integrationAuthorizationFinish({}, client)).toEqual({ finish: "app" });
+  expect(integrationAuthorizationFinish(null, client)).toEqual({});
+  expect(
+    integrationAuthorizationFinish({}, { getSnapshot: () => ({}) } as unknown as HostClient),
+  ).toEqual({});
+});
+it("dispatches a desktop return to its exact attachment once and wakes its waiter", async () => {
+  const { createId } = await import("@opensteer/core");
+  const deploymentId = createId("deployment");
+  const userId = createId("user");
+  const status = {
+    connectionId: null,
+    failureCode: null,
+    expiresAt: started.expiresAt,
+    status: "completed" as const,
+  };
+  const dispatch = vi.fn(async () => ({ ...status, type: "integration.authorization.return" }));
+  let receive!: (value: DesktopIntegrationAuthorizationReturn) => void;
+  const bridge = {
+    onIntegrationAuthorizationReturn: (_identity: unknown, listener: typeof receive) => {
+      receive = listener;
+      return () => {};
+    },
+    finishIntegrationAuthorization: vi.fn(async () => {}),
+  };
+  const client = {
+    dispatch,
+    subscribe: () => () => {},
+    getSnapshot: () => ({ user: { id: userId }, deploymentId }),
+  } as unknown as HostClient;
+  const stop = subscribeIntegrationAuthorizationReturns(bridge, client);
+  const callback = { deploymentId, attemptId: started.attemptId, returnProof: "r".repeat(43) };
+  receive({ ...callback, deploymentId: createId("deployment") });
+  expect(dispatch).not.toHaveBeenCalled();
+  receive(callback);
+  receive(callback);
+  await vi.waitFor(() => expect(bridge.finishIntegrationAuthorization).toHaveBeenCalledOnce(), {
+    timeout: 1000,
+  });
+  expect(dispatch).toHaveBeenCalledOnce();
+  expect(dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      attemptId: started.attemptId,
+      returnProof: callback.returnProof,
+      type: "integration.authorization.return",
+      idempotencyKey: expect.any(String),
+    }),
+  );
+  stop();
+});
+
+it.each([true, false])(
+  "provider begin opts into app finish only with the desktop capability (%s)",
+  async (capable) => {
+    const openIntegrationAuthorization = vi.fn(async () => ({ opened: true as const }));
+    installWindow();
+    Object.assign(window, { opensteerDesktop: { openIntegrationAuthorization } });
+    const dispatch = vi.fn(async () => ({
+      ...started,
+      type: "integration.authorization.begin" as const,
+    }));
+    const client = {
+      dispatch,
+      getSnapshot: () => ({
+        deploymentId,
+        user: { id: userId },
+        integrationAppFinishAvailable: capable,
+      }),
+    } as unknown as HostClient;
+    const operations = createConnectOperations(client, { started: vi.fn(), finished: vi.fn() });
+    await operations.beginAuthorization({
+      applicationSource: null,
+      definitionId: "github",
+      returnPath: "/integrations",
+    });
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: {
+          definitionId: "github",
+          returnPath: "/integrations",
+          surface: "desktop",
+          ...(capable ? { finish: "app" } : {}),
+        },
+      }),
+    );
+    expect(openIntegrationAuthorization).toHaveBeenCalledWith({ ...started, deploymentId, userId });
+  },
+);
+
+it.each([400, 403, 404, 408, 429, 503])(
+  "handles desktop proof redemption HTTP %i according to refusal classification",
+  async (httpStatus) => {
+    const attemptId = createIntegrationId("oauthAttempt");
+    const dispatch = vi.fn(async () => {
+      throw new HostClientRequestError({
+        code: "forbidden",
+        message: "Return refused",
+        status: httpStatus,
+      });
+    });
+    let receive!: (value: DesktopIntegrationAuthorizationReturn) => void;
+    const bridge = {
+      onIntegrationAuthorizationReturn: (_identity: unknown, listener: typeof receive) => {
+        receive = listener;
+        return () => {};
+      },
+      finishIntegrationAuthorization: vi.fn(async () => {}),
+    };
+    const client = {
+      dispatch,
+      subscribe: () => () => {},
+      getSnapshot: () => ({ deploymentId, user: { id: userId } }),
+    } as unknown as HostClient;
+    const stop = subscribeIntegrationAuthorizationReturns(bridge, client);
+    vi.useFakeTimers();
+    try {
+      const callback = { deploymentId, attemptId, returnProof: "r".repeat(43) };
+      receive(callback);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(dispatch).toHaveBeenCalledOnce();
+      if ([400, 403, 404].includes(httpStatus)) {
+        expect(bridge.finishIntegrationAuthorization).toHaveBeenCalledWith({
+          deploymentId,
+          attemptId,
+        });
+        await expect(waitForIntegrationAuthorization({ attemptId, client })).resolves.toMatchObject(
+          { status: "failed", failureCode: "grant-rejected" },
+        );
+      } else {
+        receive(callback);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(dispatch).toHaveBeenCalledTimes(2);
+        expect(bridge.finishIntegrationAuthorization).not.toHaveBeenCalled();
+      }
+    } finally {
+      stop();
+      vi.useRealTimers();
+    }
+  },
+);

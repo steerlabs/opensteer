@@ -51,18 +51,3 @@ export function phoneUpdateRelease(
     throw new Error("Agent Phone self-update release differs from its verified receipt");
   return { apk, manifest, manifestJson: manifestBytes.toString("utf8"), receipt };
 }
-
-export function agentPhoneVersionCode(version: string): number | null {
-  if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(version)) return null;
-  const [major, minor, patch] = version.split(".").map(Number);
-  if (
-    major === undefined ||
-    minor === undefined ||
-    patch === undefined ||
-    minor >= 1000 ||
-    patch >= 1000
-  )
-    return null;
-  const code = major * 1_000_000 + minor * 1000 + patch;
-  return Number.isSafeInteger(code) ? code : null;
-}

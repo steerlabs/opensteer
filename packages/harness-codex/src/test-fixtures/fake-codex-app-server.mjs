@@ -2299,7 +2299,7 @@ await cdp("DOM.setFileInputFiles", { files: ["/etc/hosts"], objectId: found.resu
   const profileId = /PROFILE_ID=(\S+)/u.exec(text)?.[1];
   if (profileId) {
     report.accessAlreadyAvailable = await tools
-      .call("browser_access_request", {
+      .call("browser_profile_request", {
         reason: "List the mattress",
         suggestion: { kind: "existing", profileId },
       })
@@ -2443,30 +2443,24 @@ async function browserProfilesTurn(input) {
       if (!report.tools.includes(name)) throw new Error(`${name} is not offered`);
       return tools.call(name, args, replayId);
     };
-    if (plan.create) {
-      report.created = await call("browser_profile_create", { name: plan.create.name }, 9001);
-      if (plan.create.replay)
-        report.replayed = await call("browser_profile_create", { name: plan.create.name }, 9001);
-      if (plan.create.independent)
-        report.independent = await call("browser_profile_create", { name: plan.create.name }, 9002);
-    }
     if (plan.delegate)
       report.delegated = await call("thread_delegate", {
         workspaceId: plan.delegate,
         task: 'Report your tool inventory. BROWSER_PROFILE_JOURNEY:{"kind":"delegated"}',
         title: "Profile authority inventory",
       });
-    if (plan.request)
-      report.request = await call("browser_access_request", {
+    if (plan.request) {
+      const input = {
         reason: "Create an isolated profile for the fixture account",
-        suggestion: { kind: "new", suggestedName: "brex-ops" },
-      });
+        suggestion: plan.request.suggestion ?? { kind: "new", suggestedName: "brex-ops" },
+        ...(plan.request.workspaceId ? { workspaceId: plan.request.workspaceId } : {}),
+      };
+      report.request = await call("browser_profile_request", input, 9001);
+      if (plan.request.replay) report.replayed = await call("browser_profile_request", input, 9001);
+    }
     let sessionId = plan.sessionId;
     if (plan.open) {
-      report.opened = await call(
-        "browser_session_open",
-        plan.open === "created" ? { profileId: report.created.profile.id } : plan.open,
-      );
+      report.opened = await call("browser_session_open", plan.open);
       sessionId = report.opened.session.id;
     } else if (sessionId && plan.visit) {
       report.opened = await call("browser_session_open", { sessionId });

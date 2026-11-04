@@ -112,6 +112,7 @@ async function executeIntegrationCommand(
         ...(input.exactApplicationSource
           ? { exactApplicationSource: input.exactApplicationSource }
           : {}),
+        ...(input.finish ? { finish: input.finish } : {}),
         definitionId: input.definitionId,
         ownerUserId: session.user.id,
         requestSurface: requireSurface(context),
@@ -126,11 +127,11 @@ async function executeIntegrationCommand(
       };
     }
     case "integration.apiKey.connect": {
-      await options.integrations.connectApiKey(command.input, {
+      const connection = await options.integrations.connectApiKey(command.input, {
         ownerUserId: session.user.id,
         requestId: context.requestId,
       });
-      return { type: command.type };
+      return { connectionId: connection.id, type: command.type };
     }
     case "integration.providerApplication.status.set": {
       const application = await options.integrations.setProviderApplicationStatus(
