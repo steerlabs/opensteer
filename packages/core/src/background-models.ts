@@ -5,17 +5,20 @@ import { harnessKinds } from "./harness-catalog.js";
 
 export const AutomaticModelRoleSchema = z.enum(["light", "deep"]);
 export type AutomaticModelRole = z.infer<typeof AutomaticModelRoleSchema>;
+const EngineSchema = HarnessIdSchema.refine(
+  (value) => harnessKinds.some((kind) => kind === value),
+  "Unknown engine",
+);
 export const ExactModelWantSchema = z.strictObject({
-  engine: HarnessIdSchema.refine(
-    (value) => harnessKinds.some((kind) => kind === value),
-    "Unknown engine",
-  ),
+  engine: EngineSchema,
   model: ModelSelectionSchema.shape.modelId,
   options: ModelSelectionSchema.shape.options.optional(),
 });
-export const AutomaticModelWantSchema = ExactModelWantSchema.extend({
-  harnessInstanceId: HarnessInstanceIdSchema.optional(),
-});
+/** A person's preference: an exact model, or an engine alone for that account's own small model. */
+export const AutomaticModelWantSchema = z.union([
+  ExactModelWantSchema.extend({ harnessInstanceId: HarnessInstanceIdSchema.optional() }),
+  z.strictObject({ engine: EngineSchema, harnessInstanceId: HarnessInstanceIdSchema.optional() }),
+]);
 export type AutomaticModelWant = z.infer<typeof AutomaticModelWantSchema>;
 export const ModelPolicyEntrySchema = z.union([
   ExactModelWantSchema,
@@ -57,7 +60,10 @@ const ExactModelWantViewSchema = z.object({
   model: ModelSelectionSchema.shape.modelId,
   options: ModelSelectionSchema.shape.options.optional(),
 });
-const PersonWantViewSchema = ExactModelWantViewSchema.extend({
+const PersonWantViewSchema = z.object({
+  engine: HarnessIdSchema,
+  model: ModelSelectionSchema.shape.modelId.optional(),
+  options: ModelSelectionSchema.shape.options.optional(),
   harnessInstanceId: HarnessInstanceIdSchema.optional(),
 });
 const RankViewSchemas = [
