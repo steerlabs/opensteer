@@ -339,16 +339,16 @@ export class SurfaceLedger {
   durableSnapshot(): BrowserWorkspaceTabDescriptor[] {
     return [...this.records.values()]
       .filter((record) => record.announced)
-      .map((record) => ({
-        id: record.id,
-        title: record.title.slice(0, 256),
-        url:
-          record.committedUrl.length <= browserWorkspaceTabUrlMaxLength
-            ? record.committedUrl
-            : "opensteer:unavailable-url",
-        order: record.order,
-        openerId: record.openerId,
-      }));
+      .map((record) => {
+        const url = record.unreachableUrl ?? record.committedUrl;
+        return {
+          id: record.id,
+          title: record.title.slice(0, 256),
+          url: url.length <= browserWorkspaceTabUrlMaxLength ? url : "opensteer:unavailable-url",
+          order: record.order,
+          openerId: record.openerId,
+        };
+      });
   }
 
   /** Correlates only this Page.navigate with the document Chromium says it produced. */
@@ -1054,7 +1054,7 @@ export class SurfaceLedger {
               record.unreachableUrl =
                 "unreachableUrl" in parameters.frame &&
                 typeof parameters.frame.unreachableUrl === "string"
-                  ? parameters.frame.unreachableUrl
+                  ? attemptedAddress(parameters.frame.unreachableUrl)
                   : null;
               record.url = surfaceAddress(record);
             }
@@ -1731,6 +1731,19 @@ function sameMetrics(left: CdpParameters, right: CdpParameters): boolean {
 
 function normalizeTitle(value: string): string {
   return value.slice(0, 1_000);
+}
+
+/** Chromium reports what was typed, so credentials are kept out before it is shown or saved. */
+function attemptedAddress(address: string): string | null {
+  try {
+    const url = new URL(address);
+    if (!url.username && !url.password) return address;
+    url.username = "";
+    url.password = "";
+    return url.href;
+  } catch {
+    return null;
+  }
 }
 
 function surfaceAddress(record: Pick<SurfaceRecord, "committedUrl" | "unreachableUrl">): string {

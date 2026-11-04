@@ -553,7 +553,7 @@ export class HttpHostClient {
       if (message.type === "browser.snapshot" || message.type === "browser.dialog.changed")
         this.#patchBrowserSession(sessionId, { dialog: message.dialog });
     },
-    (attempt) => this.#reconnectDelay(attempt),
+    (attempt, unreadableFrames) => this.#retryDelay(attempt, unreadableFrames),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
     (sessionId, surfaceId) => {
       this.#browserEditing.disconnect(sessionId, surfaceId);
@@ -569,7 +569,7 @@ export class HttpHostClient {
       if (message.type === "browser.snapshot" || message.type === "browser.status")
         this.#patchBrowserSession(sessionId, { state: message.state });
     },
-    (attempt) => this.#reconnectDelay(attempt),
+    (attempt, unreadableFrames) => this.#retryDelay(attempt, unreadableFrames),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
     undefined,
     () => this.#capabilities?.includes("browser-frame-window-v1") === true,
@@ -5483,6 +5483,7 @@ export class HttpHostClient {
       viewerError: null,
       viewerState: "connecting",
     });
+    let gaveUp = false;
     socket.addEventListener("message", (event) => {
       if (channel.socket !== socket || socket.readyState >= 2) return;
       const synchronized = channel.synchronized;
@@ -5492,6 +5493,7 @@ export class HttpHostClient {
         // every connect would otherwise never back off.
         if (synchronized) channel.unreadableFrames = 0;
       } catch {
+        gaveUp = true;
         channel.unreadableFrames += 1;
         this.#setBrowserFrame(channel.sessionId, null, channel.mode);
         socket.close(4002, "Invalid browser protocol frame");
@@ -5510,12 +5512,16 @@ export class HttpHostClient {
         );
         return;
       }
-      if (event.code === browserViewerCloseCodes.accessEnded) {
+      // The Host's own 4002 refuses what this client sent, and stays a refusal.
+      if (
+        (event.code === browserViewerCloseCodes.protocolViolation && !gaveUp) ||
+        event.code === browserViewerCloseCodes.accessEnded
+      ) {
         this.#patchBrowserViewerState(channel.sessionId, channel.mode, {
           viewerError:
             (channel.mode === "watch" ? session.watchViewerError : session.viewerError) ||
             event.reason ||
-            "Access to this browser ended.",
+            "The browser viewer protocol failed.",
           viewerState: "disconnected",
         });
         return;

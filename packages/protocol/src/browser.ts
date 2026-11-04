@@ -1063,13 +1063,16 @@ export const browserSessionMaxThreads = 16;
 /**
  * Where a page is, as a person may see it at a glance: the origin of a web
  * page, `about:` pages whole, and only the scheme of anything else, so a local
- * file's path or a page's query never leaves the browser this way.
+ * file's path or a page's query never leaves the browser this way. Chromium's
+ * error document names no site, and clients before the pure site check refuse
+ * its scheme, including from a saved tab that still holds that address.
  */
 export function browserPageSite(address: string): string {
   try {
     const url = new URL(address);
     if (url.protocol === "http:" || url.protocol === "https:") return url.origin;
     if (url.protocol === "about:") return url.href.slice(0, 2048);
+    if (url.protocol === "chrome-error:") return "";
     return url.protocol;
   } catch {
     return "";

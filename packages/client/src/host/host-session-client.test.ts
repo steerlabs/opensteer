@@ -7408,7 +7408,7 @@ describe("HttpHostClient hosted browser", () => {
     client.dispose();
   });
 
-  async function viewerClient() {
+  async function viewerClient(surfaceId?: string, mode: "control" | "watch" = "control") {
     vi.useFakeTimers();
     const workspace = makeWorkspace();
     const profileId = createId("browserProfile");
@@ -7441,6 +7441,27 @@ describe("HttpHostClient hosted browser", () => {
                 profileId,
                 runtimeId: "runtime-1",
                 state: "ready",
+                ...(surfaceId
+                  ? {
+                      tabCatalog: {
+                        generation: 1,
+                        revision: 1,
+                        tabs: [
+                          {
+                            availability: "ready" as const,
+                            documentId: null,
+                            iconRef: null,
+                            id: BrowserSurfaceIdSchema.parse(surfaceId),
+                            occupants: [],
+                            openerId: null,
+                            order: 0,
+                            site: "https://example.com",
+                            title: "Page",
+                          },
+                        ],
+                      },
+                    }
+                  : {}),
                 updatedAt: now,
                 workspaceId: workspace.id,
               },
@@ -7457,7 +7478,10 @@ describe("HttpHostClient hosted browser", () => {
       },
     });
     await client.load();
-    const release = client.retainBrowserViewer(sessionId);
+    const release =
+      mode === "watch"
+        ? client.retainBrowserWatch(sessionId, surfaceId)
+        : client.retainBrowserViewer(sessionId, surfaceId);
     const viewers = () =>
       sockets.filter(({ url }) => url.includes("/browser-sessions/")).map(({ socket }) => socket);
     const snapshot = {
@@ -7465,6 +7489,7 @@ describe("HttpHostClient hosted browser", () => {
       sessionId,
       state: "ready",
       access: "read-write",
+      targetedStreamingVersion: 1,
       dialog: null,
       surfaces: [{ id: "page-1", active: true, title: "Page", url: "https://example.com" }],
     };
@@ -7559,24 +7584,49 @@ describe("HttpHostClient hosted browser", () => {
     }
   });
 
-  it("still stops a viewer whose access ended, which the Host alone decides", async () => {
-    const f = await viewerClient();
-    try {
-      const socket = f.viewers()[0]!;
-      socket.open();
-      socket.receiveRaw(f.snapshot);
-      socket.serverClose(browserViewerCloseCodes.accessEnded, "Browser access ended");
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(f.viewers()).toHaveLength(1);
-      expect(f.client.getSnapshot().browserSessions[0]).toMatchObject({
-        viewerError: "Browser access ended",
-        viewerState: "disconnected",
-      });
-    } finally {
-      f.release();
-      f.client.dispose();
-    }
-  });
+  it.each([
+    [browserViewerCloseCodes.accessEnded, "Browser access ended"],
+    [browserViewerCloseCodes.protocolViolation, "Invalid browser command"],
+  ])(
+    "still stops a viewer the Host closes with %i, which is the Host's to decide",
+    async (code, reason) => {
+      const f = await viewerClient();
+      try {
+        const socket = f.viewers()[0]!;
+        socket.open();
+        socket.receiveRaw(f.snapshot);
+        socket.serverClose(code, reason);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(f.viewers()).toHaveLength(1);
+        expect(f.client.getSnapshot().browserSessions[0]).toMatchObject({
+          viewerError: reason,
+          viewerState: "disconnected",
+        });
+      } finally {
+        f.release();
+        f.client.dispose();
+      }
+    },
+  );
+
+  it.each(["control", "watch"] as const)(
+    "backs a targeted %s viewer off past each snapshot",
+    async (mode) => {
+      const f = await viewerClient("page-1", mode);
+      try {
+        let socket = f.viewers()[0]!;
+        socket.open();
+        for (const delay of [10, 20, 40]) {
+          socket.receiveRaw(f.snapshot);
+          socket.receiveRaw({ type: "browser.surfaces.changed", surfaces: "unreadable" });
+          socket = await f.viewerAfter(delay);
+        }
+      } finally {
+        f.release();
+        f.client.dispose();
+      }
+    },
+  );
 
   it("closes viewer transport when the durable Host session becomes terminal", async () => {
     const workspace = makeWorkspace();

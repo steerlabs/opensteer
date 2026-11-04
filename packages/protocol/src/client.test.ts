@@ -153,7 +153,7 @@ describe("browser tab sites", () => {
     ["https://example.com/private?token=1#x", "https://example.com"],
     ["http://localhost:3000/a", "http://localhost:3000"],
     ["about:blank", "about:blank"],
-    ["chrome-error://chromewebdata/", "chrome-error:"],
+    ["chrome-error://chromewebdata/", ""],
     ["chrome://newtab/", "chrome:"],
     ["devtools://devtools/bundled/inspector.html", "devtools:"],
     ["file:///Users/person/private.html", "file:"],
