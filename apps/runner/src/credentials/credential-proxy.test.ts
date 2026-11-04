@@ -15,7 +15,8 @@ import {
   writeTransportCloseReport,
 } from "@opensteer/shared/test-support/httpServer";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { CredentialProxy } from "./credential-proxy.js";
+import { agentTools } from "@opensteer/agent-tools";
+import { CredentialProxy, requestOpeningTools } from "./credential-proxy.js";
 
 /*
  * Ways an engine-facing credential proxy can leak or overreach:
@@ -101,6 +102,12 @@ describe("credential proxy", () => {
     proxies.push(proxy);
     return { proxy, ...(await proxy.start()) };
   }
+
+  it("keeps every Request-opening tool name in the agent catalog", () => {
+    expect(
+      [...requestOpeningTools].filter((name) => !agentTools.some((tool) => tool.name === name)),
+    ).toEqual([]);
+  });
 
   it("forwards with the Host token and never passes the engine's secret on", async () => {
     const host = await upstream((_request, response) => {
@@ -214,6 +221,79 @@ describe("credential proxy", () => {
     proxy.resume();
     await (await call("tools/call", "browser_session_open")).arrayBuffer();
     expect(host.seen).toHaveLength(12);
+  });
+
+  it("refuses each work call in a batch while forwarding setup and protocol messages", async () => {
+    const host = await upstream((_request, response) => {
+      const message = JSON.parse(host.seen.at(-1)!.body);
+      response.writeHead(message.id === undefined ? 202 : 200, {
+        "content-type": "application/json",
+        "x-opensteer-request-pending": "1",
+      });
+      response.end(
+        message.id === undefined
+          ? undefined
+          : JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [] } }),
+      );
+    });
+    const { secret, urls } = await proxyFor(host.origin, { current: "host-token" });
+    const call = async (body: unknown) =>
+      fetch(urls["agent-tools"], {
+        body: JSON.stringify(body),
+        headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+        method: "POST",
+      });
+    await (
+      await call({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "integration_request" },
+      })
+    ).arrayBuffer();
+    const response = await call([
+      { jsonrpc: "2.0", id: 42, method: "tools/call", params: { name: "thread_list" } },
+      {
+        jsonrpc: "2.0",
+        id: "second",
+        method: "tools/call",
+        params: { name: "browser_session_open" },
+      },
+      {
+        jsonrpc: "2.0",
+        id: "setup",
+        method: "tools/call",
+        params: { name: "browser_profile_request" },
+      },
+      { jsonrpc: "2.0", id: "list", method: "tools/list" },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+    ]);
+    expect(await response.json()).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 42,
+        result: {
+          isError: true,
+          content: [{ type: "text", text: expect.stringContaining("This Run is stopping") }],
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        id: "second",
+        result: {
+          isError: true,
+          content: [{ type: "text", text: expect.stringContaining("This Run is stopping") }],
+        },
+      },
+      { jsonrpc: "2.0", id: "setup", result: { content: [] } },
+      { jsonrpc: "2.0", id: "list", result: { content: [] } },
+    ]);
+    expect(host.seen.map(({ body }) => JSON.parse(body).method)).toEqual([
+      "tools/call",
+      "tools/call",
+      "tools/list",
+      "notifications/initialized",
+    ]);
   });
 
   it("breaks the engine's connection when the Host fails partway through a body", async () => {

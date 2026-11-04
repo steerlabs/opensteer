@@ -240,7 +240,7 @@ describe("Opensteer MCP integration access classes", () => {
     expect(call?.description).toContain("Describing grants no access");
     const describe = listed.tools.find(({ name }) => name === "integration_describe");
     expect(describe?.description).toContain("input/output schemas before calling");
-    expect(request?.description).toContain("never repeat pending/declined asks");
+    expect(request?.description).toContain("Never repeat pending/declined asks");
     expect(request?.description).not.toContain("requestSelection");
     // One object for every request shape: Claude Code drops tools whose input
     // root is a union. The Host still enforces each shape when called.
@@ -413,7 +413,7 @@ describe("Opensteer MCP integration access classes", () => {
         expect(full).toMatchObject({
           guidance: {
             readiness: expect.stringContaining("REAUTHORIZATION_REQUIRED"),
-            computers: expect.stringContaining("Do not repeat pending requests"),
+            computers: expect.stringContaining("do not repeat pending Requests"),
           },
           results: expect.arrayContaining([
             expect.objectContaining({
@@ -443,6 +443,7 @@ describe("Opensteer MCP integration access classes", () => {
 
   it("describes and calls an operation while preserving the schema digest fence", async () => {
     const entry = inventoryEntry();
+    entry.accounts[0]!.account = "Tim Jang (tim@opensteer.com)";
     const callable = callableTool({
       entry,
       effect: "read",
@@ -471,7 +472,11 @@ describe("Opensteer MCP integration access classes", () => {
     const text = (described as { content: [{ text: string }] }).content[0].text;
     const newline = text.indexOf("\n");
     expect(JSON.parse(text.slice(0, newline))).toMatchObject({
-      account: { alias: "Work", connectionId: callable.grant.connectionId, isDefault: true },
+      account: {
+        alias: "Tim Jang (tim@opensteer.com)",
+        connectionId: callable.grant.connectionId,
+        isDefault: true,
+      },
       cursor: 0,
       nextCursor: null,
       operation: { title: "Get issue" },
@@ -1441,8 +1446,7 @@ async function createHarness(input: {
         if (request.callId) requestByCallId.set(request.callId, existing);
         return {
           status: "pending",
-          nextAction:
-            "Approval is pending on Alex's Mac. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.",
+          nextAction: "Approval is pending on Alex's Mac. Pending stops the Run.",
           replayed: true,
           request: existing,
           setupRequest: { id: "setup" },
@@ -1452,8 +1456,7 @@ async function createHarness(input: {
       accessByKey.set(key, created.request);
       return {
         status: "pending",
-        nextAction:
-          "Approval is pending on Alex's Mac. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.",
+        nextAction: "Approval is pending on Alex's Mac. Pending stops the Run.",
         replayed: false,
         request: created.request,
         setupRequest: { id: "setup" },

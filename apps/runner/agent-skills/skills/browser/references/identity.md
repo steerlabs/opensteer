@@ -8,7 +8,7 @@ Choose the identity for each piece of work yourself. Ask the person which profil
 
 A profile the Workspace that needs it can already use never needs a Request; asking for it is refused. Omit `workspaceId` to ask for this Workspace. From Main, `browser_profile_list` shows every profile the person has, but a Project can use only those granted to it: to give a Project one, pass the Project's `workspaceId`.
 
-The Request returns `pending`. Stop calling tools, tell the person in one short sentence what you asked for, and end your turn. Opensteer continues this Thread when this Run's Requests settle. Do not poll, repeat the Request or route around it. The continuation names the profile the person chose, which may differ from your suggestion: open that one, before anyone signs in. If they decline, carry on without it and do not ask again unless the person brings it up.
+The Request returns `pending`. Pending stops the Run. The continuation names the profile the person chose, which may differ from your suggestion: open that one, before anyone signs in. If they decline, carry on without it and do not ask again unless the person brings it up.
 
 ## Sessions
 

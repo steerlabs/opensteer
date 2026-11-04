@@ -3568,13 +3568,7 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
           !blockedDefinitions.has(installationDefinitionId(installation))
         );
       })
-      .map(({ grant, tool }) => {
-        const account = connections.find(({ id }) => id === grant.connectionId);
-        return callableToolFromRow(byId.get(tool.id)!, {
-          ...grant,
-          alias: account ? integrationAccountLabel(account) : grant.alias,
-        });
-      });
+      .map(({ grant, tool }) => callableToolFromRow(byId.get(tool.id)!, grant));
   }
 }
 

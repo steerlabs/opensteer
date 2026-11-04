@@ -802,13 +802,6 @@ integration.sequential("PostgreSQL integration uninstall", () => {
       .set({ provider: "records" })
       .where("id", "=", connectionId)
       .execute();
-    const callable = await platform.listCallableTools({
-      ownerUserId: userId,
-      workspaceId: workspace.id,
-      threadId: run.threadId,
-      providerAuthorizations: {},
-    });
-    expect(callable[0]?.grant.alias).toBe("Alex (alex@example.com)");
     const inventory = await platform.listDiscoveryInventory({
       ownerUserId: userId,
       workspaceId: workspace.id,

@@ -2365,7 +2365,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       kind: "computer.app.access",
       status: "pending",
       replayed: false,
-      nextAction: `Approval for ${mac} is pending; the owner can allow or decline from any Opensteer app. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.`,
+      nextAction: `Approval for ${mac} is pending; the owner can allow or decline from any Opensteer app. Pending stops the Run.`,
     });
     const [setup] = await world.persistence.listComputerAppSetupRequests(world.owner.userId);
     expect(setup).toMatchObject({
@@ -2409,7 +2409,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(approved.guidance.computers).toContain(
       "With callable:true, use app() in the computer tool",
     );
-    expect(approved.guidance.computers).toContain("Do not repeat pending requests");
+    expect(approved.guidance.computers).toContain("do not repeat pending Requests");
     const [legacy] = await world.platform.listCallableTools({
       ownerUserId: world.owner.userId,
       workspaceId: runA.workspaceId,
@@ -2704,7 +2704,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(widen).toMatchObject({
       kind: "computer.app.access",
       status: "pending",
-      nextAction: `Approval for ${mac} is pending; the owner can allow or decline from any Opensteer app. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.`,
+      nextAction: `Approval for ${mac} is pending; the owner can allow or decline from any Opensteer app. Pending stops the Run.`,
     });
     await vi.waitFor(() => expect(world.fakeMac.reviews).toHaveLength(reviews + 1));
     expect(await world.appAccess()).toMatchObject({ TextEdit: "read" });
@@ -3679,7 +3679,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     );
     expect(pending).toMatchObject({
       kind: "computer.app.access",
-      nextAction: `Approval is pending; the owner can allow or decline from any Opensteer app. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.`,
+      nextAction: `Approval is pending; the owner can allow or decline from any Opensteer app. Pending stops the Run.`,
       replayed: false,
       status: "pending",
     });
@@ -4220,8 +4220,8 @@ function json(result: ToolResult) {
       "blocked: only the computer owner can unblock it from any Opensteer app",
       "pending:mac waits for its owner",
       "pending:workspace waits on a Workspace grant",
-      "Do not repeat pending requests",
-      "Opensteer continues this thread when resolved",
+      "do not repeat pending Requests",
+      "Pending stops the Run",
       "do not retry in a loop",
       "permission-required",
       "appApproval:automatic",
@@ -4233,7 +4233,7 @@ function json(result: ToolResult) {
       'integration_request {kind: "computer-app", runnerId, access, reason}',
       "owner approves from any Opensteer app",
       "approval:pending",
-      "do not repeat the request",
+      "do not repeat the Request",
       "do not retry in a loop",
       "permission-required",
       "release when done",

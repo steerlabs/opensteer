@@ -2188,6 +2188,80 @@ describeStore("PostgreSQL store", (it) => {
     ).resolves.toEqual({ cancelReason: "steer-refused", state: "cancelled" });
   });
 
+  it("returns a strict steer refused for a pending Request to the inbox and starts its next Run", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, database, store } = storeFixture;
+    const started = await startRunFixture("parked-strict-steer");
+    const { thread: parent } = await store.createThread({
+      createdBy: started.userId,
+      environmentId: started.environmentId,
+      harnessInstanceId: started.harnessInstance.id,
+      idempotencyKey: "parked-strict-parent",
+      modelSelection: testModelSelection,
+      title: "Parent",
+      workspaceId: started.workspace.id,
+    });
+    const parentTurn = await store.enqueueThreadInput({
+      content: [{ text: "Coordinate the child", type: "text" }],
+      idempotencyKey: "parked-strict-parent-turn",
+      policy: "queue",
+      requestedBy: started.userId,
+      source: { kind: "human" },
+      threadId: parent.id,
+    });
+    if (!parentTurn.run) throw new Error("Expected a parent Run");
+    await database
+      .updateTable("runs")
+      .set({ status: "running" })
+      .where("id", "=", parentTurn.run.id)
+      .execute();
+    const steered = await store.enqueueThreadInput({
+      content: [{ text: "Use my work account", type: "text" }],
+      idempotencyKey: "parked-strict-steer",
+      policy: "steer",
+      requestedBy: started.userId,
+      source: { kind: "agent", runId: parentTurn.run.id },
+      threadId: started.thread.id,
+    });
+    expect(steered.disposition).toBe("steering");
+    if (!steered.command) throw new Error("Expected a strict steer Command");
+    await store.refuseSteer(
+      steered.command.id,
+      "Run is stopping for a pending Request",
+      "request-pending",
+    );
+    expect(
+      await database
+        .selectFrom("threadInputs")
+        .select(["state", "runId"])
+        .where("messageId", "=", steered.message.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "pending", runId: null });
+    await store.commitRunnerEvent({
+      environmentId: started.environmentId,
+      runnerBootId: started.runnerBootId,
+      runnerId: started.runnerId,
+      event: pendingEvent({
+        bindingGeneration: started.bindingGeneration,
+        environmentId: started.environmentId,
+        ordinal: 1,
+        runId: started.run.id,
+        threadId: started.thread.id,
+        workspaceId: started.workspace.id,
+        type: "run.completed",
+        data: { status: "completed" },
+      }),
+    });
+    const next = await database
+      .selectFrom("runs")
+      .select(["id", "seedInputId", "status"])
+      .where("threadId", "=", started.thread.id)
+      .where("id", "!=", started.run.id)
+      .executeTakeFirstOrThrow();
+    expect(next).toMatchObject({ seedInputId: steered.message.id, status: "queued" });
+  });
+
   it("keeps an ambiguous steer attached without retrying it", async ({ storeFixture }) => {
     const { startRunFixture, store, database } = storeFixture;
     const unknownRun = await startRunFixture("thread-steer-unknown");

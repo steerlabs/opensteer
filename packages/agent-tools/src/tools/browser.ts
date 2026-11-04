@@ -39,7 +39,7 @@ export const sign_in = defineAgentTool({
   name: "sign_in",
   title: "Request sign-in",
   description:
-    "Request saved-login or Chrome sign-in authorization from the person. Run-only. Returns ready/applied/pending/refusal; only a passwords field means Opensteer Passwords can help, and says what it needs. On pending, stop calling tools, briefly name what you requested and end your turn; Opensteer continues when this Run's Requests settle. Do not poll, repeat or route around it. Use ready loginRef only for sealed field filling; never read/reveal credentials. Verify the account. Open a website sign-in page first; omit sessionId for a genuine Mac/phone app.",
+    "Request saved-login or Chrome sign-in authorization from the person. Run-only. Returns ready/applied/pending/refusal; only a passwords field means Opensteer Passwords can help, and says what it needs. Pending stops the Run. Use ready loginRef only for sealed field filling; never read/reveal credentials. Verify the account. Open a website sign-in page first; omit sessionId for a genuine Mac/phone app.",
   input: z
     .strictObject({
       reason: z.string().trim().min(1).max(500).describe("Why this task needs the account."),
@@ -63,7 +63,7 @@ export const browser_profile_request = defineAgentTool({
   name: "browser_profile_request",
   title: "Request a browser profile",
   description:
-    "Ask the person for a browser profile when none in browser_profile_list fits: they want a new one, the work needs a separate identity, or a Project lacks the profile it needs (from Main, pass its workspaceId). Never for signed-out work (open fresh: true) or a profile the target Workspace can already use (open it). Only the person creates or grants profiles. Suggest an existing profileId, or a new name of one or two plain words such as Brex, Work or Finance; the person may choose differently. Returns requestId/status/replayed. Pending gives no profile: stop calling tools, briefly name what you requested and end your turn; Opensteer continues when this Run's Requests settle and names the profile chosen. Do not poll, repeat or route around it.",
+    "Ask the person for a browser profile when none in browser_profile_list fits: they want a new one, the work needs a separate identity, or a Project lacks the profile it needs (from Main, pass its workspaceId). Never for signed-out work (open fresh: true) or a profile the target Workspace can already use (open it). Only the person creates or grants profiles. Suggest an existing profileId, or a new name of one or two plain words such as Brex, Work or Finance; the person may choose differently. Returns requestId/status/replayed. Pending gives no profile and stops the Run; the continuation names the profile chosen.",
   input: z
     .strictObject({
       reason: z.string().trim().min(1).max(500).describe("Why this task needs the profile."),

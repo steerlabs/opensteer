@@ -166,6 +166,7 @@ export interface RunnerRuntimeOptions {
   readonly maxConcurrentTriggerPrograms?: number;
   readonly maxRunEventBytes?: number;
   readonly maxRunEvents?: number;
+  readonly requestParkDeadlineMs?: number;
   readonly machineAccess?: {
     readonly controlCaPath?: string;
     readonly helperBinary: string;
@@ -370,6 +371,7 @@ export class RunnerRuntime {
   readonly #maxConcurrentTriggerPrograms: number;
   readonly #maxRunEventBytes: number;
   readonly #maxRunEvents: number;
+  readonly #requestParkDeadlineMs: number;
   readonly #credentialRefreshClock: Pick<Clock, "schedule">;
   readonly #executionClock: Clock | undefined;
   readonly #executionNow: () => number;
@@ -488,6 +490,7 @@ export class RunnerRuntime {
       "maxRunEvents",
     );
     this.#machineAccess = options.machineAccess;
+    this.#requestParkDeadlineMs = options.requestParkDeadlineMs ?? 60_000;
     this.#mode = options.mode ?? "development";
     this.#privateStateDirectory = resolve(options.privateStateDirectory);
     this.#voice = new VoiceCalls(join(this.#privateStateDirectory, "voice"));
@@ -2553,9 +2556,10 @@ export class RunnerRuntime {
       const parkForRequest = () => {
         if (active.requestParkTimer || active.settling || active.abort.signal.aborted) return;
         active.requestParkTimer = setTimeout(() => {
+          if (terminal) return;
           active.requestParkForced = true;
           active.abort.abort(new Error("Run stopped for a pending durable Request"));
-        }, 60_000);
+        }, this.#requestParkDeadlineMs);
         active.requestParkTimer.unref();
       };
       if (warmEngine) {
@@ -3319,9 +3323,17 @@ export class RunnerRuntime {
   ): Promise<CommandDecision> {
     const active = this.#runs.get(command.runId);
     if (!active) return reject("not_found", "Active run was not found", false);
+    if (active.requestParkTimer || active.credentialProxy?.parking)
+      return {
+        status: "rejected",
+        error: {
+          code: "conflict",
+          reason: "request-pending",
+          message: "Run is stopping for a pending Request; queue the message",
+          retryable: false,
+        },
+      };
     if (active.settling) return reject("conflict", "Run is finishing", false);
-    if (active.credentialProxy?.parking)
-      return reject("conflict", "Run is stopping for a pending Request; queue the message", false);
     if (active.command.context.threadId !== command.threadId) {
       return reject("forbidden", "Steer targets a different thread", false);
     }

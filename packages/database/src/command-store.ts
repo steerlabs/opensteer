@@ -1708,9 +1708,10 @@ export async function refuseSteer(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
   reason: string,
+  reasonCode?: string,
 ): Promise<readonly AgentEvent[]> {
   return withDatabaseTransaction(database, (transaction) =>
-    settleSteer(transaction, commandId, "failed", reason),
+    settleSteer(transaction, commandId, "failed", reason, reasonCode),
   );
 }
 

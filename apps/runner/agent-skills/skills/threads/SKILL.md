@@ -15,7 +15,7 @@ work or end your turn for continuation; `thread_wait` is absent. Connections get
 or automatic return: keep `thread.id`, observe with `thread_wait` and `thread_read`. Programs
 may also use `thread_wait`. A wait timing out or disconnecting never stops the work.
 
-A pending durable Request stops its Run: call no more tools, tell the person in one short sentence what you asked for, and end your turn. Opensteer continues this Thread when that Run's Requests settle; do not poll, repeat the Request or route around it. This differs from delegation, where independent work may continue.
+A pending durable Request stops its Run. Delegation permits independent work.
 
 - `thread_message`: report saves passive context; queue asks for a next turn; steer changes a
   compatible active Run. Accepted is not read; cancelled will not execute.

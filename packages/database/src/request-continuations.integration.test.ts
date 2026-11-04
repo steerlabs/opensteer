@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect } from "vitest";
 import { sql } from "kysely";
-import { type RequestCancellationReason } from "@opensteer/core";
+import { createId, type RequestCancellationReason } from "@opensteer/core";
 import { OpensteerStore } from "./store.js";
 import { cancelPending } from "./request-cancellation.js";
 import { withDatabaseTransaction } from "./connection.js";
@@ -58,72 +58,92 @@ async function finish(store: OpensteerStore, fixture: Started) {
 }
 
 describeStore("Request continuation admission", (it) => {
-  it("sends the channel an input-needed notice when a parked Run has no reply", async ({
-    storeFixture,
-  }) => {
-    const { store, database, createChannelDeliveryFixture, enqueueHumanTrigger } = storeFixture;
-    const channel = await createChannelDeliveryFixture("durable-request-notice");
-    const base = channel.fixture;
-    const turn = await enqueueHumanTrigger({
-      content: [{ type: "text", text: "Check email" }],
-      idempotencyKey: "channel-parked-seed",
-      requestedBy: base.userId,
-      threadId: base.thread.id,
-    });
-    await store.claimCommand(turn.command.id, "channel-parked-dispatcher");
-    const runnerBootId = "channel-parked-boot";
-    const binding = await store.acquireExecutionBinding({
-      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
-      continuationIdentity: testContinuationIdentity,
-      harnessInstanceId: base.harnessInstance.id,
-      leaseTokenHash: "channel-parked-lease",
-      membershipGeneration: 1,
-      runnerBootId,
-      runnerId: base.runnerId,
-      runId: turn.run.id,
-      threadId: base.thread.id,
-    });
-    const fixture = {
-      ...base,
-      run: turn.run,
-      turn,
-      runnerBootId,
-      bindingGeneration: binding.bindingGeneration,
-    };
-    await store.commitRunnerEvent({
-      environmentId: fixture.environmentId,
-      runnerId: fixture.runnerId,
-      runnerBootId,
-      event: pendingEvent({
-        bindingGeneration: fixture.bindingGeneration,
+  for (const narration of [null, "Let me check your calendar", "I asked you to connect Gmail."]) {
+    it(`sends the channel an input-needed notice alongside ${narration ?? "no reply"}`, async ({
+      storeFixture,
+    }) => {
+      const { store, database, createChannelDeliveryFixture, enqueueHumanTrigger } = storeFixture;
+      const channel = await createChannelDeliveryFixture("durable-request-notice");
+      const base = channel.fixture;
+      const turn = await enqueueHumanTrigger({
+        content: [{ type: "text", text: "Check email" }],
+        idempotencyKey: "channel-parked-seed",
+        requestedBy: base.userId,
+        threadId: base.thread.id,
+      });
+      await store.claimCommand(turn.command.id, "channel-parked-dispatcher");
+      const runnerBootId = "channel-parked-boot";
+      const binding = await store.acquireExecutionBinding({
+        bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+        continuationIdentity: testContinuationIdentity,
+        harnessInstanceId: base.harnessInstance.id,
+        leaseTokenHash: "channel-parked-lease",
+        membershipGeneration: 1,
+        runnerBootId,
+        runnerId: base.runnerId,
+        runId: turn.run.id,
+        threadId: base.thread.id,
+      });
+      const fixture = {
+        ...base,
+        run: turn.run,
+        turn,
+        runnerBootId,
+        bindingGeneration: binding.bindingGeneration,
+      };
+      await store.commitRunnerEvent({
         environmentId: fixture.environmentId,
-        runId: fixture.run.id,
-        threadId: fixture.thread.id,
-        workspaceId: fixture.workspace.id,
-        ordinal: 0,
-        type: "run.started",
-        data: { status: "running" },
-      }),
+        runnerId: fixture.runnerId,
+        runnerBootId,
+        event: pendingEvent({
+          bindingGeneration: fixture.bindingGeneration,
+          environmentId: fixture.environmentId,
+          runId: fixture.run.id,
+          threadId: fixture.thread.id,
+          workspaceId: fixture.workspace.id,
+          ordinal: 0,
+          type: "run.started",
+          data: { status: "running" },
+        }),
+      });
+      await database
+        .updateTable("runs")
+        .set({
+          replyTarget: sql`${JSON.stringify({ kind: "channel", conversationId: channel.conversationId })}::jsonb`,
+        })
+        .where("id", "=", fixture.run.id)
+        .execute();
+      await open(store, fixture, "needs-profile");
+      if (narration)
+        await store.commitRunnerEvent({
+          environmentId: fixture.environmentId,
+          runnerId: fixture.runnerId,
+          runnerBootId,
+          event: pendingEvent({
+            bindingGeneration: fixture.bindingGeneration,
+            environmentId: fixture.environmentId,
+            runId: fixture.run.id,
+            threadId: fixture.thread.id,
+            workspaceId: fixture.workspace.id,
+            ordinal: 1,
+            type: "assistant.message",
+            data: { content: [{ type: "text", text: narration }], messageId: createId("message") },
+          }),
+        });
+      await finish(store, fixture);
+      const notices = await database
+        .selectFrom("channelDeliveries")
+        .select("content")
+        .where("conversationId", "=", channel.conversationId)
+        .where("kind", "=", "status")
+        .execute();
+      expect(notices).toHaveLength(1);
+      expect(JSON.stringify(notices)).toContain(
+        "The agent needs your input before it can continue.",
+      );
+      expect(JSON.stringify(notices)).toContain(fixture.thread.id);
     });
-    await database
-      .updateTable("runs")
-      .set({
-        replyTarget: sql`${JSON.stringify({ kind: "channel", conversationId: channel.conversationId })}::jsonb`,
-      })
-      .where("id", "=", fixture.run.id)
-      .execute();
-    await open(store, fixture, "needs-profile");
-    await finish(store, fixture);
-    const notices = await database
-      .selectFrom("channelDeliveries")
-      .select("content")
-      .where("conversationId", "=", channel.conversationId)
-      .where("kind", "=", "status")
-      .execute();
-    expect(notices).toHaveLength(1);
-    expect(JSON.stringify(notices)).toContain("The agent needs your input before it can continue.");
-    expect(JSON.stringify(notices)).toContain(fixture.thread.id);
-  });
+  }
   it("holds early answers until the Run ends and all durable siblings settle across Hosts", async ({
     storeFixture,
   }) => {

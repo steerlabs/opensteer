@@ -160,6 +160,7 @@ export interface VerticalStackOptions {
   readonly catalogTimeoutMs: number;
   /** How long one Run may take to complete. */
   readonly runTimeoutMs: number;
+  readonly requestParkDeadlineMs?: number;
   /** Captures Runner diagnostics for engine lifecycle journeys. */
   readonly runnerLogger?: RunnerLogger;
   /** Original Host diagnostics, before an acceptance journey scrubs exports. */
@@ -709,6 +710,9 @@ async function startWithin(
     const containment = new ExecutionContainment({ bootId, dataDirectory: executionDataDirectory });
     const earlierBoots = await containment.reapEarlierBoots();
     const runner = new RunnerRuntime({
+      ...(options.requestParkDeadlineMs === undefined
+        ? {}
+        : { requestParkDeadlineMs: options.requestParkDeadlineMs }),
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
       ...(options.credentialRefreshClock
         ? { credentialRefreshClock: options.credentialRefreshClock }

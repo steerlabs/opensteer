@@ -120,6 +120,100 @@ afterAll(async () => {
 });
 
 describe("RunnerRuntime", () => {
+  it("keeps a terminal failure while title generation outlives the parking deadline", async () => {
+    const host = createServer((request, response) => {
+      if (ignoreForeignTestRequest(request, response, (path) => path === "/internal/v1/mcp"))
+        return;
+      request.resume();
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "x-opensteer-request-pending": "1",
+      });
+      response.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
+    });
+    host.listen(0, "127.0.0.1");
+    await once(host, "listening");
+    const address = host.address();
+    if (!address || typeof address === "string") throw new Error("No fake Host address");
+    const ended = deferred<void>();
+    const title = deferred<string>();
+    const interrupt = vi.fn(async () => undefined);
+    const session: HarnessSession = {
+      providerSessionReference: "terminal-before-deadline",
+      events: (async function* () {
+        yield { type: "run.started", data: { status: "running" } } as const;
+        await ended.promise;
+        yield {
+          type: "run.failed",
+          data: {
+            status: "failed",
+            code: "real_failure",
+            message: "The engine failed",
+            retryable: false,
+          },
+        } as const;
+      })(),
+      execute: async () => ended.promise,
+      generateTitle: async () => title.promise,
+      interrupt,
+      resolveRequest: async () => undefined,
+      stop: async () => undefined,
+    };
+    const driver = new FakeHarnessDriver("test-driver", () => session);
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry, requestParkDeadlineMs: 1 });
+    const command = executeCommand(environmentId);
+    command.context = {
+      ...command.context,
+      titleRequest: { request: "Check email" },
+      agentTools: {
+        ...command.context.agentTools,
+        url: `http://127.0.0.1:${address.port}/internal/v1/mcp`,
+      },
+    };
+    const messages: RunnerOperationalReport[] = [];
+    try {
+      await probeTestServer(host);
+      await reconcile(registry, command);
+      await runtime.handleCommand(command, {
+        send: async (message) => void messages.push(message),
+      });
+      await waitUntil(() => hasEvent(messages, "run.started"));
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await (
+        await fetch(driver.context!.agentTools.url, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${driver.context!.agentTools.token}`,
+            "content-type": "application/json",
+          },
+          body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integration_request"}}',
+        })
+      ).arrayBuffer();
+      ended.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1);
+      title.resolve("Email check");
+      vi.useRealTimers();
+      await waitUntil(() => runtime.activeRunIds().length === 0);
+      expect(
+        messages.find(
+          (message) => message.type === "runner.event" && message.event.type === "run.failed",
+        ),
+      ).toMatchObject({ event: { type: "run.failed", data: { code: "real_failure" } } });
+      expect(hasEvent(messages, "run.completed")).toBe(false);
+      expect(interrupt).not.toHaveBeenCalled();
+    } finally {
+      ended.resolve();
+      title.resolve("");
+      vi.useRealTimers();
+      await runtime.close();
+      host.closeAllConnections();
+      await new Promise<void>((resolve) => host.close(() => resolve()));
+    }
+  });
   it.each([false, true])(
     "ends a parked Run at its deadline, preserving a person's Stop (%s)",
     async (personStops) => {
@@ -180,7 +274,10 @@ describe("RunnerRuntime", () => {
           }),
           sink,
         );
-        expect(refused).toMatchObject({ status: "rejected", error: { code: "conflict" } });
+        expect(refused).toMatchObject({
+          status: "rejected",
+          error: { code: "conflict", reason: "request-pending" },
+        });
         expect(steer).not.toHaveBeenCalled();
         if (personStops)
           await runtime.handleCommand(
@@ -6012,6 +6109,7 @@ function runtimeWithLeaseGrants(
 }
 
 function configuredRuntime(input: {
+  readonly requestParkDeadlineMs?: number;
   readonly containment?: ConstructorParameters<typeof RunnerRuntime>[0]["containment"];
   readonly manualLeaseGrants?: boolean;
   readonly harnessSandbox?: HarnessProcessSandbox;
@@ -6031,6 +6129,9 @@ function configuredRuntime(input: {
   return runtimeWithLeaseGrants(
     {
       nodeExecutable: process.execPath,
+      ...(input.requestParkDeadlineMs === undefined
+        ? {}
+        : { requestParkDeadlineMs: input.requestParkDeadlineMs }),
       agentSkills: testAgentSkills,
       plugins: noPlugins,
       bootId: "boot-control-test",

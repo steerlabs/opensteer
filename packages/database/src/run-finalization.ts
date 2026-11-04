@@ -164,15 +164,15 @@ export async function finalizeRunTransaction(
         messageId: reply.id,
         threadId: run.threadId,
       });
-    } else if (
-      !reply &&
-      (await transaction
+    }
+    if (
+      await transaction
         .selectFrom("requests")
         .select("id")
         .where("originatingRunId", "=", run.id)
         .where("mode", "=", "durable")
         .where("status", "=", "pending")
-        .executeTakeFirst())
+        .executeTakeFirst()
     ) {
       await enqueueChannelConversationStatus(transaction, {
         conversationId: replyTarget.conversationId,

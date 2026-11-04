@@ -1497,6 +1497,7 @@ export async function settleSteer(
   commandId: CommandRow["id"],
   outcome: "failed" | "unknown",
   reason: string,
+  reasonCode?: string,
 ): Promise<readonly AgentEvent[]> {
   const observed = await transaction
     .selectFrom("commands")
@@ -1578,10 +1579,11 @@ export async function settleSteer(
         : stopped
           ? { cancelReason: "stopped", state: "cancelled", updatedAt: now }
           : outcome === "failed"
-            ? observed.policy === "queue"
+            ? observed.policy === "queue" || reasonCode === "request-pending"
               ? {
                   cancelReason: null,
                   state: "pending",
+                  policy: reasonCode === "request-pending" ? "queue" : observed.policy,
                   runId: null,
                   steerCommandId: null,
                   updatedAt: now,

@@ -112,9 +112,11 @@ integration("API-key reconnect incident", () => {
         title: "Connect Vapi API and list assistants",
         workspaceId: main.id,
       });
-      closers.unshift(() => run.complete());
-      const gateway = await integrationGateway(run.integrationTools);
-      closers.unshift(() => gateway.close());
+      let completed: Promise<void> | undefined;
+      const complete = () => (completed ??= run.complete());
+      closers.unshift(complete);
+      let gateway = await integrationGateway(run.integrationTools);
+      closers.unshift(gateway.close.bind(gateway));
       const connect = (key: string, input: ConnectIntegrationApiKey, headers = host.ownerHeaders) =>
         testRpcData(
           host.origin,
@@ -346,6 +348,15 @@ integration("API-key reconnect incident", () => {
           .execute(),
       ).toEqual([]);
 
+      await complete();
+      const verification = await dispatchCallerRun(host, caller, {
+        key: "api-key-reconnect-verification",
+        title: "Verify repaired accounts",
+        workspaceId: main.id,
+      });
+      closers.unshift(() => verification.complete());
+      gateway = await integrationGateway(verification.integrationTools);
+      closers.unshift(gateway.close.bind(gateway));
       const credentialBefore = await credentialRow(host, aId);
       const connectionIdsBefore = oldBehaviorRows.map(({ id }) => id).sort();
       // This is the updated command sent by both the web card and mobile sheet.
@@ -381,7 +392,11 @@ integration("API-key reconnect incident", () => {
       const queuedInput = await host.store.database
         .selectFrom("threadInputs")
         .selectAll()
-        .where("idempotencyKey", "=", `request-continuation:${reconnectRequestId}`)
+        .where("authoritySource", "@>", {
+          kind: "platform",
+          cause: "request-resolved",
+          sourceRunId: run.runId,
+        })
         .executeTakeFirstOrThrow();
       expect(queuedInput).toMatchObject({
         threadId: run.threadId,
@@ -591,7 +606,11 @@ integration("API-key reconnect incident", () => {
         .selectFrom("threadInputs")
         .innerJoin("messages", "messages.id", "threadInputs.messageId")
         .select("messages.content")
-        .where("threadInputs.idempotencyKey", "=", `request-continuation:${delayedRequestId}`)
+        .where("threadInputs.authoritySource", "@>", {
+          kind: "platform",
+          cause: "request-resolved",
+          referenceId: delayedRequestId,
+        })
         .executeTakeFirstOrThrow();
       const unusable = JSON.stringify(delayedMessage.content);
       expect(unusable).toContain(aId);
@@ -654,7 +673,11 @@ integration("API-key reconnect incident", () => {
         .selectFrom("threadInputs")
         .innerJoin("messages", "messages.id", "threadInputs.messageId")
         .select("messages.content")
-        .where("threadInputs.idempotencyKey", "=", `request-continuation:${mixedServerRequestId}`)
+        .where("threadInputs.authoritySource", "@>", {
+          kind: "platform",
+          cause: "request-resolved",
+          referenceId: mixedServerRequestId,
+        })
         .executeTakeFirstOrThrow();
       const mixedText = JSON.stringify(mixedMessage.content);
       expect(mixedText).toContain("not usable");

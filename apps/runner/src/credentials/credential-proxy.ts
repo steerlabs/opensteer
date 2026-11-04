@@ -24,7 +24,7 @@ const allowedMethods = new Set(["DELETE", "GET", "POST"]);
 const defaultMaxBodyBytes = agentToolPayloadMaxSerializedBytes + 32 * 1_024;
 /** A body that has not arrived by then never will. */
 const bodyReadTimeoutMs = 30_000;
-const requestOpeningTools = new Set([
+export const requestOpeningTools: ReadonlySet<string> = new Set([
   "sign_in",
   "integration_request",
   "integration_propose",
@@ -186,6 +186,29 @@ export class CredentialProxy {
       const body = await this.#readBody(request, call.signal);
       if (body === "too-large") return reply(response, 413);
       if (body === "timed-out") return reply(response, 408);
+      const forward = async (payload: Buffer) => {
+        const headers = new Headers({ authorization: `Bearer ${route.token()}` });
+        for (const name of forwardedRequestHeaders) {
+          const value = request.headers[name];
+          if (typeof value === "string") headers.set(name, value);
+        }
+        const upstream = await fetch(route.upstream, {
+          ...(payload.length > 0 ? { body: new Uint8Array(payload) } : {}),
+          headers,
+          method: request.method ?? "GET",
+          redirect: "manual",
+          signal: call.signal,
+        });
+        if (upstream.status >= 300 && upstream.status < 400) {
+          await upstream.body?.cancel();
+          throw new Error("Credential upstream redirected");
+        }
+        if (upstream.headers.get(requestPendingHeader) === "1" && !this.#parking) {
+          this.#parking = true;
+          this.#onPark?.();
+        }
+        return upstream;
+      };
       if (this.#parking && request.method === "POST") {
         let message: unknown;
         try {
@@ -193,55 +216,33 @@ export class CredentialProxy {
         } catch {
           /* The Host validates malformed RPC. */
         }
-        if (
-          typeof message === "object" &&
-          message !== null &&
-          "method" in message &&
-          message.method === "tools/call" &&
-          "id" in message &&
-          (typeof message.id === "string" || typeof message.id === "number")
-        ) {
-          const params = "params" in message ? message.params : undefined;
-          const name =
-            typeof params === "object" && params !== null && "name" in params
-              ? params.name
-              : undefined;
-          if (typeof name === "string" && !requestOpeningTools.has(name)) {
-            response.writeHead(200, { "content-type": "application/json" });
-            response.end(
-              JSON.stringify({
-                jsonrpc: "2.0",
-                id: message.id,
-                result: {
-                  isError: true,
-                  content: [{ type: "text", text: requestPendingStopText }],
-                },
-              }),
-            );
-            return;
+        if (Array.isArray(message) && message.length > 0) {
+          const results: unknown[] = [];
+          for (const item of message) {
+            const refused = requestParkingResult(item);
+            if (refused) results.push(refused);
+            else {
+              const upstream = await forward(Buffer.from(JSON.stringify(item)));
+              for (const name of forwardedResponseHeaders) {
+                const value = upstream.headers.get(name);
+                if (value !== null) response.setHeader(name, value);
+              }
+              const text = await upstream.text();
+              if (text) results.push(JSON.parse(text));
+            }
           }
+          response.writeHead(results.length ? 200 : 202, { "content-type": "application/json" });
+          response.end(results.length ? JSON.stringify(results) : undefined);
+          return;
+        }
+        const refused = requestParkingResult(message);
+        if (refused) {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify(refused));
+          return;
         }
       }
-      const headers = new Headers({ authorization: `Bearer ${route.token()}` });
-      for (const name of forwardedRequestHeaders) {
-        const value = request.headers[name];
-        if (typeof value === "string") headers.set(name, value);
-      }
-      const upstream = await fetch(route.upstream, {
-        ...(body.length > 0 ? { body: new Uint8Array(body) } : {}),
-        headers,
-        method: request.method ?? "GET",
-        redirect: "manual",
-        signal: call.signal,
-      });
-      if (upstream.status >= 300 && upstream.status < 400) {
-        await upstream.body?.cancel();
-        return reply(response, 502);
-      }
-      if (upstream.headers.get(requestPendingHeader) === "1" && !this.#parking) {
-        this.#parking = true;
-        this.#onPark?.();
-      }
+      const upstream = await forward(body);
       const outgoing: Record<string, string> = {};
       for (const name of forwardedResponseHeaders) {
         const value = upstream.headers.get(name);
@@ -388,4 +389,25 @@ function validateUpstream(value: string, transport: Pick<RunnerConfig, "mode">):
     );
   }
   return url;
+}
+
+function requestParkingResult(message: unknown) {
+  if (
+    typeof message !== "object" ||
+    message === null ||
+    !("method" in message) ||
+    message.method !== "tools/call" ||
+    !("id" in message) ||
+    (typeof message.id !== "string" && typeof message.id !== "number")
+  )
+    return undefined;
+  const params = "params" in message ? message.params : undefined;
+  const name =
+    typeof params === "object" && params !== null && "name" in params ? params.name : undefined;
+  if (typeof name !== "string" || requestOpeningTools.has(name)) return undefined;
+  return {
+    jsonrpc: "2.0",
+    id: message.id,
+    result: { isError: true, content: [{ type: "text", text: requestPendingStopText }] },
+  };
 }
