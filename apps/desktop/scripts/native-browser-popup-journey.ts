@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
+import path from "node:path";
+import { BrowserVideoClickResultSchema } from "@opensteer/protocol";
 import { session, app } from "electron";
 import { chromium, type Page } from "playwright-core";
 import type { NativeBrowserE2EKit } from "./electron-native-browser-kit.js";
@@ -47,6 +49,8 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   const commands: Record<string, number> = {};
   const editingContexts: [number, number] = [0, 0];
   const admissions: [number, number] = [0, 0];
+  const sessionMatches = [false, false];
+  const guardedResults: Record<string, number> = {};
   try {
     // These are the journey's temporary owner cookies, held in live memory only.
     const cookies = await session
@@ -85,6 +89,13 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
             if (typeof payload !== "string") return;
             try {
               const m: unknown = JSON.parse(payload);
+              if (m && typeof m === "object" && "type" in m && m.type === "browser.snapshot")
+                sessionMatches[index] = "sessionId" in m && m.sessionId === context.sessionId;
+              const guarded = BrowserVideoClickResultSchema.safeParse(m);
+              if (guarded.success) {
+                const key = `${guarded.data.outcome}:${guarded.data.reason ?? guarded.data.hostReason ?? "none"}`;
+                guardedResults[key] = (guardedResults[key] ?? 0) + 1;
+              }
               if (m && typeof m === "object" && "type" in m && m.type === "browser.editing")
                 editingContexts[index] = (editingContexts[index] ?? 0) + 1;
               if (m && typeof m === "object" && "type" in m && m.type === "browser.video.attached")
@@ -119,7 +130,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
           .locator('.side-tab[data-group="web"] .side-tab__main')
           .filter({ hasText: "Browser popup fixture" })
           .click();
-        await page.locator("canvas").first().waitFor({ state: "visible" });
+        await page.locator('canvas[aria-label="Live browser page"]').waitFor({ state: "visible" });
         await page.waitForFunction(
           () => Number(Reflect.get(window, "popupPresented")) > 0,
           undefined,
@@ -179,7 +190,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       const point = (await read(
         `(()=>{const r=document.getElementById(${JSON.stringify(id)}).getBoundingClientRect();return{x:r.x+(["date","time","datetime-local","month","week"].includes(document.getElementById(${JSON.stringify(id)}).type)?r.width-12:r.width/2),y:r.y+r.height/2,w:innerWidth,h:innerHeight}})()`,
       )) as { x: number; y: number; w: number; h: number };
-      const canvas = await page.locator("canvas").first().boundingBox();
+      const canvas = await page.locator('canvas[aria-label="Live browser page"]').boundingBox();
       assert(canvas);
       await page.mouse.click(
         canvas.x + (point.x / point.w) * canvas.width,
@@ -197,6 +208,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       );
     };
     await a.bringToFront();
+    assert(sessionMatches.every(Boolean), "Viewers must attach to the original fixture session");
     const before = await kit.popupInventory();
     await tap(a, "single");
     await a.getByRole("dialog", { name: "Choose an option" }).waitFor();
@@ -405,15 +417,24 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     });
     assert(closed.ok);
     await a.getByRole("dialog").waitFor({ state: "hidden" });
+  } finally {
     kit.artifacts.json("cases/popups/transport.json", {
       popupCounts: counts,
       commands,
+      guardedResults,
+      sessionMatches,
+      admissions,
       viewerPid: pid,
       producerPid: process.pid,
       electron: process.versions.electron,
       foreground: app.isHidden() ? "hidden" : "visible",
     });
-  } finally {
+    let screenshot = 0;
+    for (const viewer of browser.contexts())
+      for (const page of viewer.pages())
+        await page
+          .screenshot({ path: path.join(kit.run, "cases/popups", `viewer-${screenshot++}.png`) })
+          .catch(() => undefined);
     await browser.close();
     await server.close();
     kit.ownedPids.delete(pid);

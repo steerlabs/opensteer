@@ -337,13 +337,18 @@ export class BrowserRuntimeServer {
         if (video.success) {
           const operation = video.data;
           const media = this.videoChannels.get(options.channelId)?.media.get(operation.streamId);
-          if (operation.channelId !== options.channelId || !media) {
+          // Media departure stops its source before the control cleanup can arrive.
+          if (
+            operation.channelId !== options.channelId ||
+            (!media && operation.type !== "browser.video.stop")
+          ) {
             websocket.close(4003, "Browser video channel is not admitted");
             return;
           }
           void attachment
             .video(operation, (bytes) => {
               if (
+                !media ||
                 media.readyState !== WebSocket.OPEN ||
                 media.bufferedAmount + bytes.byteLength > 2 * displayMaxEnvelopeBytes
               )
@@ -354,7 +359,7 @@ export class BrowserRuntimeServer {
             })
             .catch(() => {
               if (operation.type === "browser.video.start")
-                media.close(1011, "Browser producer failed");
+                media?.close(1011, "Browser producer failed");
             });
           return;
         }
