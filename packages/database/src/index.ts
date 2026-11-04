@@ -48,3 +48,5 @@ export type { WorkspaceSkillInventory } from "./workspace-skill-inventory-store.
 export * from "./administration-command.js";
 
 export * from "./background-model-store.js";
+
+export * from "./background-model-store.js";

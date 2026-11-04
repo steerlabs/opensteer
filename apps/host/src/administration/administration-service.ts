@@ -67,8 +67,7 @@ const coreTypes = [
   "workspace.delete",
   "workspace.deletion.recover",
   "execution.preferences.remember",
-  "backgroundModels.role.set",
-  "backgroundModels.consent.set",
+  "automaticModels.set",
   "harness.model.configure",
   "harness.rename",
   "harness.enabled.set",
@@ -136,10 +135,10 @@ export class AdministrationService {
   }
   async authorize(caller: AdministrationCaller, command: AdministrationCommand) {
     if (caller.kind === "person") return;
-    if (command.type.startsWith("backgroundModels."))
+    if (command.type.startsWith("automaticModels."))
       throw new OpensteerError({
         code: "forbidden",
-        message: "Background provider consent and preferences require the person",
+        message: "Automatic model preferences require the person",
       });
     settings(caller, []);
     if ("workspaceId" in command) {
@@ -239,7 +238,7 @@ export class AdministrationService {
     if (
       command.type.startsWith("workspace.") ||
       command.type.startsWith("harness.") ||
-      command.type.startsWith("backgroundModels.") ||
+      command.type.startsWith("automaticModels.") ||
       command.type === "execution.preferences.remember" ||
       command.type === "viewer.timeZone.update" ||
       command.type === "browser.site.remove"
@@ -306,7 +305,7 @@ export class AdministrationService {
         }
         if (
           command.type === "execution.preferences.remember" ||
-          command.type.startsWith("backgroundModels.")
+          command.type.startsWith("automaticModels.")
         )
           fields = { preferences: result };
         if (command.type === "viewer.timeZone.update") fields = { timeZone: result };
@@ -479,28 +478,12 @@ export class AdministrationService {
           workspace: await workspaceView(dependencies.workspaces, workspace),
         };
       }
-      case "backgroundModels.role.set":
-      case "backgroundModels.consent.set": {
-        if (command.type === "backgroundModels.role.set" && command.mode.kind === "pinned") {
-          const selection = command.mode.selection;
-          const harness = await dependencies.store.getHarnessInstance(selection.harnessInstanceId);
-          const environments = await dependencies.store.listEnvironmentsForUser(userId);
-          if (
-            !harness ||
-            harness.environmentId !== selection.environmentId ||
-            !environments.some((environment) => environment.id === selection.environmentId)
-          )
-            throw new OpensteerError({ code: "not_found", message: "AI account not found" });
-        }
-        const change =
-          command.type === "backgroundModels.role.set"
-            ? { role: command.role, mode: command.mode }
-            : { providerId: command.providerId, acknowledged: command.acknowledged };
+      case "automaticModels.set": {
         return {
           type: command.type,
-          preferences: await dependencies.store.updateBackgroundModelPreferences(
+          config: await dependencies.store.setAutomaticModelConfig(
             userId,
-            change,
+            command.config,
             administration,
           ),
         };

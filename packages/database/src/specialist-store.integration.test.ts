@@ -1,3 +1,4 @@
+import { ExactModelWantSchema } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
@@ -18,7 +19,7 @@ describeStore("specialist registration", (test) => {
     const pluginId = randomUUID();
     const manifest = SpecialistManifestSchema.parse({
       version: 1,
-      models: [{ engine: "claude", model: "haiku" }],
+      models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
       access: [{ type: "browser-profile", level: "read", reason: "Research invoices" }],
     });
     await platform.plugins.install({
@@ -364,7 +365,10 @@ describeStore("specialist registration", (test) => {
       pluginId,
       digest: "b".repeat(64),
       manifest: { name: "researcher" },
-      specialistManifest: { ...manifest, models: [{ engine: "codex", model: "fast" }] },
+      specialistManifest: {
+        ...manifest,
+        models: [ExactModelWantSchema.parse({ engine: "codex", model: "fast" })],
+      },
     });
     expect((await platform.specialists.list(workspace.id, run.userId))[0]?.pluginVersionId).toBe(
       version.id,
@@ -372,7 +376,9 @@ describeStore("specialist registration", (test) => {
     const updated = await add();
     expect(updated.id).toBe(pending.id);
     expect(updated.pluginVersionId).not.toBe(version.id);
-    expect(updated.models[0]?.engine).toBe("codex");
+    expect(
+      updated.models[0] && "engine" in updated.models[0] ? updated.models[0].engine : undefined,
+    ).toBe("codex");
     await fixture.database
       .updateTable("browserProfileGrants")
       .set({ revokedAt: new Date() })
@@ -427,7 +433,7 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "retire" },
       specialistManifest: SpecialistManifestSchema.parse({
         version: 1,
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
       }),
     });
     const registration = await platform.specialists.add({
@@ -493,7 +499,7 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "purge" },
       specialistManifest: SpecialistManifestSchema.parse({
         version: 1,
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
       }),
     });
     for (const workspace of [a, b]) {
@@ -558,7 +564,7 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "agent-installed" },
       specialistManifest: SpecialistManifestSchema.parse({
         version: 1,
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
         access: [{ type: "browser-profile", level: "read", reason: "Browse" }],
       }),
     });
@@ -617,7 +623,7 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "chooser" },
       specialistManifest: SpecialistManifestSchema.parse({
         version: 1,
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
         access: [{ type: "browser-profile", level: "read-write", reason: "Browse" }],
       }),
     });
@@ -807,7 +813,7 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "owner-only" },
       specialistManifest: SpecialistManifestSchema.parse({
         version: 1,
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
         access: [
           { type: "browser-profile", level: "read", reason: "Read" },
           { type: "integration", service: "gmail", level: "read", reason: "Read mail" },

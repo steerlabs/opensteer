@@ -1,3 +1,4 @@
+import { ExactModelWantSchema } from "@opensteer/core";
 import { pauseAfterLock } from "./lock-race.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createTestWorkspace } from "./workspace-fixture.test-support.js";
@@ -530,7 +531,7 @@ describeStore("plugin Settings authority", (test) => {
       specialistManifest: {
         version: 1,
         fallback: "none",
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
         access: [],
       },
     });

@@ -1,10 +1,7 @@
 import {
-  BackgroundModelPreferencesSchema,
-  emptyBackgroundModelPreferences,
-  type BackgroundModelPreferences,
-  type BackgroundModelMode,
-  type BackgroundModelRole,
-  type ModelSelection,
+  AutomaticModelConfigSchema,
+  emptyAutomaticModelConfig,
+  type AutomaticModelConfig,
   type UserId,
 } from "@opensteer/core";
 import type { Kysely } from "kysely";
@@ -15,28 +12,25 @@ import {
 } from "./administration-command.js";
 import { jsonValue } from "./store-primitives.js";
 
-export async function getBackgroundModelPreferences(
+export async function getAutomaticModelConfig(
   database: Kysely<DatabaseSchema>,
   userId: UserId,
-): Promise<BackgroundModelPreferences> {
+): Promise<AutomaticModelConfig> {
   const row = await database
     .selectFrom("userBackgroundModelPreferences")
     .select("preferences")
     .where("userId", "=", userId)
     .executeTakeFirst();
   return row
-    ? BackgroundModelPreferencesSchema.parse(row.preferences)
-    : structuredClone(emptyBackgroundModelPreferences);
+    ? AutomaticModelConfigSchema.parse(row.preferences)
+    : structuredClone(emptyAutomaticModelConfig);
 }
-export type BackgroundModelPreferenceChange =
-  | { readonly role: BackgroundModelRole; readonly mode: BackgroundModelMode }
-  | { readonly providerId: ModelSelection["providerId"]; readonly acknowledged: boolean };
-export async function updateBackgroundModelPreferences(
+export async function setAutomaticModelConfig(
   database: Kysely<DatabaseSchema>,
   userId: UserId,
-  change: BackgroundModelPreferenceChange,
+  config: AutomaticModelConfig,
   administration?: AdministrationCommandIdentity,
-): Promise<BackgroundModelPreferences> {
+): Promise<AutomaticModelConfig> {
   return withAdministrationTransaction(database, administration, async (transaction) => {
     // Lock the person, including when no preferences row exists yet.
     await transaction
@@ -45,13 +39,7 @@ export async function updateBackgroundModelPreferences(
       .where("id", "=", userId)
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
-    const preferences = await getBackgroundModelPreferences(transaction, userId);
-    if ("role" in change) preferences.backgroundModels[change.role] = change.mode;
-    else
-      preferences.backgroundProviderConsent = change.acknowledged
-        ? [...new Set([...preferences.backgroundProviderConsent, change.providerId])].sort()
-        : preferences.backgroundProviderConsent.filter((id) => id !== change.providerId);
-    const parsed = BackgroundModelPreferencesSchema.parse(preferences);
+    const parsed = AutomaticModelConfigSchema.parse(config);
     await transaction
       .insertInto("userBackgroundModelPreferences")
       .values({ userId, preferences: jsonValue(parsed), updatedAt: new Date() })

@@ -38,3 +38,6 @@ export * from "./resource-access.js";
 export * from "./specialists.js";
 
 export * from "./background-models.js";
+
+export * from "./model-selection.js";
+export * from "./model-candidates.js";
