@@ -23,9 +23,11 @@ import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   Deferred,
-  withTitleDirectory,
+  withBackgroundTextDirectory,
+  backgroundTextResult,
   runTitleProcess,
-  type HarnessTitleInput,
+  type HarnessGenerateTextInput,
+  type HarnessGenerateTextResult,
   HarnessSessionRegistry,
   TurnPublisher,
   assertFreshProviderSessionContext,
@@ -363,6 +365,87 @@ class CursorHarnessAdapter implements HarnessAdapter {
     this.#dependencies = dependencies;
   }
 
+  async generateText({
+    context,
+    modelSelection,
+    prompt,
+    signal,
+  }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
+    if (context.runtimeBoundary.kind !== "native-user")
+      return { ok: false, failure: "unavailable" };
+    return backgroundTextResult(signal, async () => {
+      return withBackgroundTextDirectory(context, signal, async (directory) => {
+        const workspace = join(directory, "workspace");
+        const config = join(directory, ".cursor");
+        await mkdir(workspace, { recursive: true, mode: 0o700 });
+        await mkdir(config, { recursive: true, mode: 0o700 });
+        const inherited = context.environment;
+        // macOS credentials remain in the same keychain. On file-backed
+        // platforms copy only auth, never ambient MCP, plugins, hooks or rules.
+        const originalHome = inherited.HOME ?? homedir();
+        const authRoot =
+          platform() === "darwin"
+            ? join(originalHome, ".cursor")
+            : platform() === "win32"
+              ? join(inherited.APPDATA ?? join(originalHome, "AppData", "Roaming"), "Cursor")
+              : join(inherited.XDG_CONFIG_HOME ?? join(originalHome, ".config"), "cursor");
+        const titleAuthRoot =
+          platform() === "darwin"
+            ? config
+            : platform() === "win32"
+              ? join(directory, "Cursor")
+              : join(directory, "cursor");
+        await mkdir(titleAuthRoot, { recursive: true, mode: 0o700 });
+        await copyFile(join(authRoot, "auth.json"), join(titleAuthRoot, "auth.json")).catch(
+          (error: unknown) => {
+            if (nodeErrorCode(error) !== "ENOENT") throw error;
+          },
+        );
+        const plugin = await materializeCursorPlugin({
+          accessMode: "approval-required",
+          titleOnly: true,
+          agentTools: { token: "", url: "" },
+          // The existing hook fails closed without a socket, denying every tool.
+          hookSocketPath: "",
+          hookTimeoutSeconds: this.#config.hookTimeoutSeconds,
+          nodeExecutable: this.#dependencies.nodeExecutable,
+          threadStateDirectory: directory,
+        });
+        return runTitleProcess(
+          context,
+          {
+            executable: this.#dependencies.executable,
+            args: [
+              "-p",
+              "--output-format",
+              "text",
+              "--trust",
+              "--disable-auto-update",
+              "--workspace",
+              workspace,
+              "--plugin-dir",
+              plugin.path,
+              "--model",
+              modelSelection.nativeModelId ?? modelSelection.modelId,
+              prompt,
+            ],
+            cwd: workspace,
+            environment: {
+              ...inherited,
+              HOME: directory,
+              USERPROFILE: directory,
+              APPDATA: directory,
+              XDG_CONFIG_HOME: directory,
+              CURSOR_CONFIG_DIR: config,
+              CURSOR_DATA_DIR: join(directory, "data"),
+            },
+          },
+          signal,
+        );
+      });
+    });
+  }
+
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     assertNativeUserBoundary(context);
@@ -509,83 +592,6 @@ class CursorHarnessSession implements HarnessSession {
       await session.#stop(false);
       throw error;
     }
-  }
-
-  async generateTitle({ prompt, signal }: HarnessTitleInput): Promise<string> {
-    return withTitleDirectory(this.#context, async (directory) => {
-      const workspace = join(directory, "workspace");
-      const config = join(directory, ".cursor");
-      await mkdir(workspace, { recursive: true, mode: 0o700 });
-      await mkdir(config, { recursive: true, mode: 0o700 });
-      const inherited = this.#context.environment;
-      // macOS credentials remain in the same keychain. On file-backed
-      // platforms copy only auth, never ambient MCP, plugins, hooks or rules.
-      const originalHome = inherited.HOME ?? homedir();
-      const authRoot =
-        platform() === "darwin"
-          ? join(originalHome, ".cursor")
-          : platform() === "win32"
-            ? join(inherited.APPDATA ?? join(originalHome, "AppData", "Roaming"), "Cursor")
-            : join(inherited.XDG_CONFIG_HOME ?? join(originalHome, ".config"), "cursor");
-      const titleAuthRoot =
-        platform() === "darwin"
-          ? config
-          : platform() === "win32"
-            ? join(directory, "Cursor")
-            : join(directory, "cursor");
-      await mkdir(titleAuthRoot, { recursive: true, mode: 0o700 });
-      await copyFile(join(authRoot, "auth.json"), join(titleAuthRoot, "auth.json")).catch(
-        (error: unknown) => {
-          if (nodeErrorCode(error) !== "ENOENT") throw error;
-        },
-      );
-      const plugin = await materializeCursorPlugin({
-        accessMode: "approval-required",
-        titleOnly: true,
-        agentTools: this.#context.agentTools,
-        // The existing hook fails closed without a socket, denying every tool.
-        hookSocketPath: "",
-        hookTimeoutSeconds: this.#config.hookTimeoutSeconds,
-        nodeExecutable: this.#dependencies.nodeExecutable,
-        threadStateDirectory: directory,
-      });
-      const listing = await this.#modelListing(signal);
-      const light = resolveLightModel(
-        cursorModelDescriptors(listing, cursorSourceId),
-        cursorLightModels,
-      );
-      return runTitleProcess(
-        this.#context,
-        {
-          executable: this.#dependencies.executable,
-          args: [
-            "-p",
-            "--output-format",
-            "text",
-            "--trust",
-            "--disable-auto-update",
-            "--workspace",
-            workspace,
-            "--plugin-dir",
-            plugin.path,
-            "--model",
-            cursorModelArgument(listing, light ?? this.#context.modelSelection),
-            prompt,
-          ],
-          cwd: workspace,
-          environment: {
-            ...inherited,
-            HOME: directory,
-            USERPROFILE: directory,
-            APPDATA: directory,
-            XDG_CONFIG_HOME: directory,
-            CURSOR_CONFIG_DIR: config,
-            CURSOR_DATA_DIR: join(directory, "data"),
-          },
-        },
-        signal,
-      );
-    });
   }
 
   async execute(run: HarnessRunInput): Promise<void> {

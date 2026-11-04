@@ -49,10 +49,12 @@ import {
 } from "@opensteer/core";
 import {
   Deferred,
-  withTitleDirectory,
+  withBackgroundTextDirectory,
+  backgroundTextResult,
   collectStreamText,
   type SupervisedProcess,
-  type HarnessTitleInput,
+  type HarnessGenerateTextInput,
+  type HarnessGenerateTextResult,
   HarnessSessionRegistry,
   SubagentNodes,
   TurnPublisher,
@@ -1290,6 +1292,109 @@ class ClaudeHarnessAdapter implements HarnessAdapter {
     this.#dependencies = dependencies;
   }
 
+  async generateText({
+    context,
+    modelSelection,
+    prompt,
+    signal,
+  }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
+    return backgroundTextResult(signal, async () => {
+      const environment = await claudeProviderEnvironment(
+        context.environment,
+        this.#config.provider,
+        context.providerState,
+      );
+      return withBackgroundTextDirectory(context, signal, async (directory) => {
+        const attempt = async (): Promise<string> => {
+          signal.throwIfAborted();
+          const abortController = new AbortController();
+          const abort = () => abortController.abort();
+          signal.addEventListener("abort", abort, { once: true });
+          let child: SupervisedProcess | undefined;
+          let stderr: Promise<string> | undefined;
+          let query: ClaudeQueryHandle | undefined;
+          try {
+            const options: Options = {
+              abortController,
+              cwd: directory,
+              env: environment,
+              pathToClaudeCodeExecutable: this.#dependencies.executable,
+              managedSettings: managedClaudeSettings({
+                ...context,
+                machineAccessPlatform: undefined,
+                machineAccessRelaySocket: undefined,
+              }),
+              skills: [],
+              plugins: [],
+              tools: [],
+              mcpServers: {},
+              strictMcpConfig: true,
+              settingSources: [],
+              persistSession: false,
+              maxTurns: 1,
+              permissionMode: "default",
+              title: "Thread title",
+              canUseTool: async () => ({
+                behavior: "deny",
+                message: "Tools are disabled for Thread titles",
+              }),
+              spawnClaudeCodeProcess: ({ args, command, cwd, env }) => {
+                const inherited: Record<string, string> = {};
+                for (const [name, value] of Object.entries(env))
+                  if (value !== undefined) inherited[name] = value;
+                child = spawnSupervised({
+                  ...context.wrapProcessLaunch({
+                    executable: command,
+                    args,
+                    cwd: cwd ?? directory,
+                    environment: inherited,
+                  }),
+                  maxOutputBytes: 8192,
+                });
+                stderr = collectStreamText(child.stderr);
+                void stderr.catch(() => undefined);
+                const stop = () => void child?.terminate(0).catch(() => undefined);
+                abortController.signal.addEventListener("abort", stop, { once: true });
+                if (abortController.signal.aborted) stop();
+                return child.child;
+              },
+            };
+            query = this.#dependencies.sdk.query({
+              prompt,
+              options: {
+                ...options,
+                model: modelSelection.nativeModelId ?? modelSelection.modelId,
+                ...(modelSelection.options.effort === "low" ? { effort: "low" as const } : {}),
+              },
+            });
+            let text = "";
+            for await (const message of query) {
+              signal.throwIfAborted();
+              if (message.type === "result") {
+                if (message.subtype === "success") text = message.result;
+                else {
+                  throw new Error(message.errors.join(" "));
+                }
+              }
+            }
+            return text;
+          } finally {
+            signal.removeEventListener("abort", abort);
+            abortController.abort();
+            try {
+              query?.close();
+            } finally {
+              await child?.terminate(0);
+              await child?.exited;
+              await stderr;
+            }
+          }
+        };
+        return attempt();
+      });
+    });
+  }
+
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     assertFreshProviderSessionContext(context);
@@ -1431,126 +1536,6 @@ class ClaudeHarnessSession implements HarnessSession {
       onClose,
       await synthesizeSkillPlugin(context),
     );
-  }
-
-  async generateTitle({ prompt, signal }: HarnessTitleInput): Promise<string> {
-    const environment = await claudeProviderEnvironment(
-      this.#context.environment,
-      this.#config.provider,
-      this.#context.providerState,
-    );
-    return withTitleDirectory(this.#context, async (directory) => {
-      const modelRefused = (text: string) =>
-        /model/iu.test(text) &&
-        /unavailable|not found|not available|not supported|unsupported|access|invalid|permission|denied/iu.test(
-          text,
-        );
-      const attempt = async (useRunModel = false): Promise<{ text: string; refused: boolean }> => {
-        signal.throwIfAborted();
-        const abortController = new AbortController();
-        const abort = () => abortController.abort();
-        signal.addEventListener("abort", abort, { once: true });
-        let child: SupervisedProcess | undefined;
-        let stderr: Promise<string> | undefined;
-        let query: ClaudeQueryHandle | undefined;
-        try {
-          const options: Options = {
-            abortController,
-            cwd: directory,
-            env: environment,
-            pathToClaudeCodeExecutable: this.#dependencies.executable,
-            managedSettings: managedClaudeSettings(this.#context),
-            skills: [],
-            plugins: [],
-            tools: [],
-            mcpServers: {},
-            strictMcpConfig: true,
-            settingSources: [],
-            persistSession: false,
-            maxTurns: 1,
-            permissionMode: "default",
-            title: "Thread title",
-            canUseTool: async () => ({
-              behavior: "deny",
-              message: "Tools are disabled for Thread titles",
-            }),
-            spawnClaudeCodeProcess: ({ args, command, cwd, env }) => {
-              const inherited: Record<string, string> = {};
-              for (const [name, value] of Object.entries(env))
-                if (value !== undefined) inherited[name] = value;
-              child = spawnSupervised({
-                ...this.#context.wrapProcessLaunch({
-                  executable: command,
-                  args,
-                  cwd: cwd ?? directory,
-                  environment: inherited,
-                }),
-                maxOutputBytes: 8192,
-              });
-              stderr = collectStreamText(child.stderr);
-              void stderr.catch(() => undefined);
-              const stop = () => void child?.terminate(0).catch(() => undefined);
-              abortController.signal.addEventListener("abort", stop, { once: true });
-              if (abortController.signal.aborted) stop();
-              return child.child;
-            },
-          };
-          const inspection = await this.#dependencies.sdk.inspectModels?.(
-            options,
-            this.#config.startupTimeoutMs,
-            signal,
-          );
-          const light =
-            !useRunModel && inspection
-              ? resolveLightModel(claudeCatalogModels(inspection.models), claudeLightModels)
-              : undefined;
-          const selection = light ?? this.#context.modelSelection;
-          query = this.#dependencies.sdk.query({
-            prompt,
-            options: {
-              ...options,
-              model:
-                light?.modelId ??
-                this.#context.modelSelection.nativeModelId ??
-                this.#context.modelSelection.modelId,
-              ...(selection.options.effort === "low" ? { effort: "low" as const } : {}),
-            },
-          });
-          let text = "";
-          let refused = false;
-          for await (const message of query) {
-            signal.throwIfAborted();
-            if (message.type === "result") {
-              if (message.subtype === "success") text = message.result;
-              else {
-                const errorText = message.errors.join(" ");
-                refused = modelRefused(errorText);
-                if (!refused) throw new Error("Claude Thread title request failed");
-              }
-            }
-          }
-          return { text, refused };
-        } catch (error) {
-          if (!signal.aborted && error instanceof Error && modelRefused(error.message))
-            return { text: "", refused: true };
-          throw error;
-        } finally {
-          signal.removeEventListener("abort", abort);
-          abortController.abort();
-          try {
-            query?.close();
-          } finally {
-            await child?.terminate(0);
-            await child?.exited;
-            await stderr;
-          }
-        }
-      };
-      let result = await attempt();
-      if (result.refused) result = await attempt(true);
-      if (result.refused) throw new Error("Claude refused the Thread title model");
-      return result.text;
-    });
   }
 
   async execute(run: HarnessRunInput): Promise<void> {

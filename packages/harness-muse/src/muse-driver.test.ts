@@ -437,14 +437,17 @@ describe("Muse Code sessions", () => {
       instanceId: fixture.context.harnessInstanceId,
       sourceId: "meta",
     });
-    const session = await adapter.startSession(fixture.context);
+
     expect(
-      await session.generateTitle?.({
+      await adapter.generateText!({
+        context: { ...fixture.context, scratchDirectory: fixture.context.threadStateDirectory },
+        modelSelection: fixture.context.modelSelection,
         prompt: "Name this thread",
         signal: AbortSignal.timeout(5_000),
       }),
-    ).toBe("Hello from Muse");
+    ).toEqual({ ok: true, text: "Hello from Muse" });
     const launches = (await fixture.messages()).filter((entry) => entry.argv?.includes("serve"));
+    expect(launches).toHaveLength(1);
     const title = launches.find((entry) => entry.argv?.includes("--no-session-log"));
     expect(title?.argv).toEqual([
       "serve",
@@ -453,8 +456,8 @@ describe("Muse Code sessions", () => {
       "--no-session-log",
     ]);
     expect(title?.argv).not.toContain("--trust-workspace");
-    expect(title?.environment?.XDG_CONFIG_HOME).toContain("title-");
-    await session.stop();
+    expect(title?.environment?.XDG_CONFIG_HOME).toContain("text-");
+
     await adapter.close();
   });
 });

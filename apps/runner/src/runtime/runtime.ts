@@ -6,7 +6,7 @@ import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, lstat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, readFile, lstat } from "node:fs/promises";
 import { platform } from "node:os";
 import { join, resolve } from "node:path";
 import { defaultRunnerMaxConcurrentTriggerPrograms, type RunnerConfig } from "@opensteer/config";
@@ -46,10 +46,7 @@ import {
   identifyModelServer,
   isHarnessLiveEvent,
   LiveSessionDirectory,
-  threadTitlePrompt,
-  threadTitleBudgetMs,
-  threadTitleCleanupMs,
-  parseGeneratedThreadName,
+  type HarnessGenerateTextResult,
   type HarnessDurableEvent,
   type EngineUpdatePlan,
   type HarnessLiveEvent,
@@ -885,6 +882,97 @@ export class RunnerRuntime {
   }
 
   /** Applies the complete desired profile set before concurrent Run admission resumes. */
+  readonly #backgroundText = new Map<
+    string,
+    {
+      accountId: HarnessInstanceId;
+      driverKind: HarnessId;
+      abort: AbortController;
+      task: Promise<HarnessGenerateTextResult>;
+    }
+  >();
+
+  async generateBackgroundText(
+    request: Extract<HostToRunnerMessage, { type: "host.background-text" }>,
+  ): Promise<HarnessGenerateTextResult> {
+    const definition = this.#harnesses.state(request.harnessInstanceId)?.definition;
+    if (
+      this.#draining ||
+      request.environmentId !== this.#environmentId ||
+      !definition ||
+      definition.runtimeRevision !== request.harnessRevision ||
+      this.#harnessMaintenance.has(definition.id) ||
+      this.#driverMaintenance.has(definition.driverKind) ||
+      this.#backgroundText.size >= 2 ||
+      this.#backgroundText.has(request.attemptId)
+    )
+      return { ok: false, failure: "unavailable" };
+    const remaining = Date.parse(request.deadline) - Date.now();
+    if (remaining <= 0) return { ok: false, failure: "timeout" };
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), Math.min(remaining, 60_000));
+    const task = Promise.resolve().then(async (): Promise<HarnessGenerateTextResult> => {
+      let directory: string | undefined;
+      try {
+        const options = await this.#providerStateOptions(definition.driverKind);
+        const { providerState } = await prepareHarnessProviderState(definition, options);
+        const adapter = await this.#harnesses.adapter(definition.id);
+        if (!adapter.generateText) return { ok: false, failure: "unavailable" };
+        await mkdir(join(this.#privateStateDirectory, "background"), {
+          recursive: true,
+          mode: 0o700,
+        });
+        directory = await mkdtemp(join(this.#privateStateDirectory, "background", "text-"));
+        const wrapProcessLaunch = await this.#wrapProcessLaunch({
+          environment: options.environment,
+          providerState,
+          launchDirectory: undefined,
+          pluginCacheDirectories: [],
+          threadStateDirectory: directory,
+          workspacePath: directory,
+          writableRoots: [directory],
+        });
+        abort.signal.throwIfAborted();
+        return await adapter.generateText({
+          context: {
+            environment: options.environment,
+            providerState,
+            runtimeBoundary: this.#harnessRuntimeBoundary,
+            wrapProcessLaunch,
+            scratchDirectory: directory,
+          },
+          modelSelection: request.modelSelection,
+          prompt: request.prompt,
+          signal: abort.signal,
+        });
+      } catch {
+        return { ok: false, failure: abort.signal.aborted ? "timeout" : "failed" };
+      } finally {
+        if (directory) await rm(directory, { recursive: true, force: true });
+      }
+    });
+    this.#backgroundText.set(request.attemptId, {
+      accountId: definition.id,
+      driverKind: definition.driverKind,
+      abort,
+      task,
+    });
+    try {
+      return await task;
+    } finally {
+      clearTimeout(timer);
+      this.#backgroundText.delete(request.attemptId);
+    }
+  }
+
+  async #cancelBackgroundText(
+    predicate: (attempt: { accountId: HarnessInstanceId; driverKind: HarnessId }) => boolean,
+  ): Promise<void> {
+    const attempts = [...this.#backgroundText.values()].filter(predicate);
+    for (const attempt of attempts) attempt.abort.abort();
+    await Promise.all(attempts.map((attempt) => attempt.task));
+  }
+
   async reconcileHarnesses(
     definitions: Extract<
       HostToRunnerMessage,
@@ -895,6 +983,14 @@ export class RunnerRuntime {
     await setPrivateDirectoryMode(this.#privateStateDirectory);
     // An engine started under an account's former definition is not kept.
     await this.#warm.evict(() => true);
+    await this.#cancelBackgroundText((attempt) => {
+      const next = definitions.find((definition) => definition.id === attempt.accountId);
+      return (
+        !next ||
+        next.runtimeRevision !==
+          this.#harnesses.state(attempt.accountId)?.definition.runtimeRevision
+      );
+    });
     await this.#harnesses.reconcileInstances(definitions);
   }
 
@@ -933,6 +1029,7 @@ export class RunnerRuntime {
     }
     this.#harnessMaintenance.add(harnessInstanceId);
     try {
+      await this.#cancelBackgroundText((attempt) => attempt.accountId === harnessInstanceId);
       await this.#warm.evict((engine) => engine.harnessInstanceId === harnessInstanceId);
       return await operation();
     } finally {
@@ -1433,6 +1530,7 @@ export class RunnerRuntime {
       return reject("conflict", "This AI engine is already updating", true);
     }
     this.#driverMaintenance.add(driverKind);
+    await this.#cancelBackgroundText((attempt) => attempt.driverKind === driverKind);
     let admitted = false;
     try {
       for (const active of this.#runs.values()) {
@@ -1937,6 +2035,7 @@ export class RunnerRuntime {
 
   async close(): Promise<void> {
     this.#draining = true;
+    await this.#cancelBackgroundText(() => true);
     const voiceClosed = this.#voice.close();
     const appsClosed = this.appServers.stopAll();
     this.#stopLeaseWatchdog?.();
@@ -2240,7 +2339,6 @@ export class RunnerRuntime {
     let plugins: Awaited<ReturnType<typeof cacheRunPlugins>> | undefined;
     let terminal: HarnessDurableEvent | undefined;
     let consumptionError: unknown;
-    let titleTask: Promise<void> | undefined;
     let internalBinding: ReturnType<LiveSessionDirectory["acquire"]> | undefined;
     // An engine this Run took from the warm pool, or one it may leave there.
     let warmEngine: WarmEngine | undefined;
@@ -2722,8 +2820,6 @@ export class RunnerRuntime {
       };
       await this.#pumpJournal(active);
 
-      titleTask = this.#generateThreadTitle(active, active.session);
-
       const consume = this.#consumeHarnessEvents(active, active.session)
         .then((value) => {
           // A stream that ends while the Runner is already failing the Run
@@ -2759,7 +2855,6 @@ export class RunnerRuntime {
       // A warm engine has published its Run's end by now and must outlive it;
       // any other engine is stopped so its event stream ends.
       if (warmEngine && !active.abort.signal.aborted) await Promise.race([consume, halted]);
-      await titleTask;
       if (!terminal) {
         await this.#containment.note(active.containmentScope).catch(() => undefined);
         await Promise.race([active.session.stop(), halted]);
@@ -2787,7 +2882,6 @@ export class RunnerRuntime {
       }
       // Naming owns another process in this containment scope. It must exit
       // before stop, the single-tree warm check, or credential teardown.
-      await titleTask;
       active.settling = true;
       unlinkEngineLifetime?.();
       // SSH ends with the Run, before anything below waits on the engine: no
@@ -2849,60 +2943,6 @@ export class RunnerRuntime {
           Object.assign(active, { settledAt: this.#executionNow() }),
         );
       }
-    }
-  }
-
-  async #generateThreadTitle(active: ActiveRun, session: HarnessSession): Promise<void> {
-    const { context } = active.command;
-    const request = context.titleRequest;
-    const generateTitle = session.generateTitle?.bind(session);
-    if (!request || !generateTitle || active.abort.signal.aborted) return;
-    const lifetime = new AbortController();
-    const abort = () => lifetime.abort(active.abort.signal.reason);
-    active.abort.signal.addEventListener("abort", abort, { once: true });
-    // Naming is stopped early enough that its process has exited, and the
-    // Run's teardown can go on, by the time the budget ends.
-    const timer = setTimeout(() => lifetime.abort(), threadTitleBudgetMs - threadTitleCleanupMs);
-    timer.unref?.();
-    try {
-      const reply = await withTimeout(
-        Promise.resolve().then(async () => {
-          lifetime.signal.throwIfAborted();
-          return generateTitle({
-            prompt: threadTitlePrompt(request.request, { icon: request.icon === true }),
-            signal: lifetime.signal,
-          });
-        }),
-        threadTitleBudgetMs,
-        { timeoutError: () => new Error("Thread title process did not settle") },
-      );
-      if (!reply.trim() || lifetime.signal.aborted || active.revoked || active.abort.signal.aborted)
-        return;
-      const name = parseGeneratedThreadName(reply, { icon: request.icon === true });
-      if (!name.title && !name.icon) return;
-      await this.#transmit({
-        bindingGeneration: context.bindingGeneration,
-        environmentId: context.environmentId,
-        runId: context.runId,
-        threadId: context.threadId,
-        ...(name.title ? { title: name.title } : {}),
-        ...(name.icon ? { icon: name.icon } : {}),
-        type: "runner.thread-title",
-        workspaceId: context.workspaceId,
-      });
-    } catch (error) {
-      if (!active.abort.signal.aborted)
-        this.#logger?.error("Thread title generation failed or exceeded its cleanup budget", {
-          runId: context.runId,
-          failure: error instanceof Error ? error.name : "unknown",
-          ...(error instanceof OpensteerError && typeof error.details?.exitCode === "number"
-            ? { exitCode: error.details.exitCode }
-            : {}),
-        });
-    } finally {
-      lifetime.abort();
-      clearTimeout(timer);
-      active.abort.signal.removeEventListener("abort", abort);
     }
   }
 

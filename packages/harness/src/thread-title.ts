@@ -7,20 +7,6 @@ import {
 } from "@opensteer/core";
 
 /**
- * How long naming a Thread may take, from when the Run's engine is bound until
- * the naming process has exited. The Run's own teardown waits for it, so a
- * short Run ends at most this long after it began.
- */
-export const threadTitleBudgetMs = 15_000;
-
-/**
- * The part of the budget kept for ending the naming process: naming is asked
- * to stop this long before the budget ends, and every driver ends its process
- * at once and waits for it to exit.
- */
-export const threadTitleCleanupMs = 2_000;
-
-/**
  * What every engine is asked, so a Thread reads the same whichever engine
  * named it. The request is the person's words, which the engine reads as data:
  * naming runs with every tool off, so nothing in it can act.
