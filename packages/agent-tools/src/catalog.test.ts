@@ -359,7 +359,7 @@ describe("agent tool catalog", () => {
     for (const profileId of AgentCapabilityProfileIdSchema.options) {
       const instructions = agentCapabilityProfile(profileId).instructions;
       const cue =
-        "For Mac app interfaces or Android phones, read opensteer:computer-use and use the computer tool.";
+        "For Mac app interfaces or Android phones, read opensteer:computer-use and use the computer tool; never in place of a missing service integration unless the person named that device.";
       expect(instructions.split(cue).length - 1).toBe(profileId === "trigger" ? 0 : 1);
       expect(
         skillsForCapabilityProfile(profileId).some(({ name }) => name === "opensteer:computer-use"),

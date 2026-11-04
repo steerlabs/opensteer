@@ -136,48 +136,9 @@ async function choose(name: string) {
   if (!item) throw new Error(`Missing menu item: ${name}`);
   await act(async () => item.click());
 }
-function updateToggle(node: ParentNode): HTMLButtonElement {
-  const found = node.querySelector<HTMLButtonElement>(".update-line__toggle");
-  if (!found) throw new Error("Missing update line");
-  return found;
-}
 
 describe("Home conversation", () => {
-  it("keeps a worker update to one line naming its sender, opening in place and quotable", async () => {
-    const { node, root } = setup();
-    const ask = vi.fn();
-    await act(async () =>
-      root.render(
-        <MemoryRouter>
-          <AgentTranscript
-            conversation
-            entries={[report]}
-            askAbout={{ label: "Ask about this", quote: ask }}
-            // The reader belongs to the Workspace the update came from, so its
-            // source is somewhere they can go.
-            workspaces={[
-              { id: reportWorkspaceId, name: "Research" } as unknown as WorkspaceSummary,
-            ]}
-          />
-        </MemoryRouter>,
-      ),
-    );
-    expect(node.textContent).toContain("Mattress research");
-    expect(node.textContent).toContain("left a note");
-    expect(node.textContent).not.toContain("Three options meet your criteria.");
-    expect(node.querySelector(".msg--user")).toBeNull();
-    expect(updateToggle(node).getAttribute("aria-expanded")).toBe("false");
-    await act(async () => updateToggle(node).click());
-    expect(updateToggle(node).getAttribute("aria-expanded")).toBe("true");
-    expect(node.textContent).toContain("FINAL SOURCE");
-    await press(node, "Ask about this");
-    expect(ask).toHaveBeenCalledWith(report);
-    await act(async () => updateToggle(node).click());
-    expect(node.textContent).not.toContain("FINAL SOURCE");
-    expect(node.querySelector("a")?.getAttribute("href")).toContain("/threads/");
-  });
-
-  it("says what woke Opensteer, keeps delivery errors visible, and never truncates Home's own answer", async () => {
+  it("leaves what woke Opensteer to its agent and never truncates Home's own answer", async () => {
     const { node, root } = setup();
     const news: MessageEntry = {
       ...report,
@@ -215,12 +176,10 @@ describe("Home conversation", () => {
         </MemoryRouter>,
       ),
     );
-    const caption = (id: string) =>
-      node.querySelector(`[data-message-id="${id}"] .update-line__toggle`)?.firstChild?.textContent;
-    expect(caption(reminder.id)).toBe("ran");
-    expect(caption(news.id)).toBe("asked Opensteer");
+    expect(node.querySelector(".update-line")).toBeNull();
+    expect(node.textContent).not.toContain(reminder.body);
     expect(node.textContent).not.toContain(news.body);
-    expect(node.textContent).toContain("Delivery is unconfirmed");
+    expect(node.textContent).not.toContain("Delivery is unconfirmed");
     expect(node.textContent).toContain("FINAL SOURCE");
   });
 
@@ -1050,7 +1009,7 @@ function stubLayoutApis(): void {
   );
 }
 
-it("Chat shows automatic work by its source, names its reply source and opens homeRun human Activity", async () => {
+it("Chat draws automatic work only for a reply or a failure, names its source and opens human Activity", async () => {
   const { node, root } = setup();
   const open = vi.fn();
   const waking = { ...report, runId: homeRun.runId, policy: "queue" as const };
@@ -1085,14 +1044,21 @@ it("Chat shows automatic work by its source, names its reply source and opens ho
         </MemoryRouter>,
       ),
     );
+  // Nobody asked, so nothing says a reply is coming, and a silent turn draws nothing.
   await render([waking, { ...automated, status: "running" }]);
-  expect(node.textContent).toContain("Mattress research");
-  expect(node.textContent).not.toContain("FINAL SOURCE");
-  // A silent automatic turn still has a row: its source and how long it worked.
+  expect(node.textContent).toBe("");
   await render([waking, automated]);
+  expect(node.textContent).toBe("");
+  await render([
+    waking,
+    {
+      ...automated,
+      status: "failed",
+      error: { code: "failed", message: "Could not relay", retryable: false },
+    },
+  ]);
   expect(node.textContent).toContain("Mattress research");
-  expect(node.textContent).toContain("Worked");
-  expect(node.textContent).not.toContain("FINAL SOURCE");
+  expect(node.textContent).toContain("Could not relay");
   await render([waking, { ...automated, replyMessageId: answer.id }, answer]);
   expect(node.textContent).toContain(answer.body);
   expect(node.querySelector(".update-line")).toBeNull();

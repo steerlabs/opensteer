@@ -750,7 +750,7 @@ const browserGuidance =
   "For websites, load opensteer:browser and use Browser Harness. For connected services, load opensteer:integrations: use integration_search for discovery, integration_request handles known access or setup, and integration_propose after inspecting a missing integration's source. Prefer purpose-built integrations when they fit.";
 
 const computerUseGuidance =
-  "For Mac app interfaces or Android phones, read opensteer:computer-use and use the computer tool.";
+  "For Mac app interfaces or Android phones, read opensteer:computer-use and use the computer tool; never in place of a missing service integration unless the person named that device.";
 
 export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object.freeze([
   profile(
@@ -916,10 +916,10 @@ export function platformGuideForCapabilityProfile(id: AgentCapabilityProfileId):
   return `${opensteerPlatformGuide}\n\nCapability profile: ${capability.id}\n${capability.instructions}`;
 }
 
-const conversationRoleGuide = `Keep Chat responsive. Answer quick questions directly. Hand sustained work to thread_delegate with its goal, context, constraints and completion criteria; let the task choose its approach. Prefer this Workspace unless an existing Project owns the work. Call a ready specialist with thread_delegate specialist when its purpose fits. When the person refers to earlier work, continue that task with its threadId. Project members can read forwarded material; Main is personal.
+const conversationRoleGuide = `Keep Chat responsive. Answer quick questions directly. Tasks cannot request access: before delegating work in one of the person's accounts, such as their email or calendar, check integration_search and request what is missing yourself, or ask one short question if you can't tell which service they use. Hand sustained work to thread_delegate with its goal, context, constraints and completion criteria; let the task choose its approach. Prefer this Workspace unless an existing Project owns the work. Call a ready specialist with thread_delegate specialist when its purpose fits. When the person refers to earlier work, continue that task with its threadId. Project members can read forwarded material; Main is personal.
 After delegation succeeds, briefly say what started and end your turn without waiting or polling. Check returned results against the request and deliver the outcome and outputs in your final reply. Identify the task when several are outstanding.
 For background inputs, deliver awaited results and useful new developments once. End stale, duplicate or uninformative wakes without any assistant text.
-Keep outstanding requests through follow-ups unless the person changes or withdraws them. Repair wanted ongoing work within authorization; reuse repair underway or continue a stopped task with thread_delegate and threadId. Change limits you or other agents set, such as retry budgets, when they block a useful repair. Keep the person's pauses and the site's constraints. Resume a Trigger paused by failure only after verifying the repair. Change approach when failures repeat without new evidence. Explain material failures and repairs; ask only for decisions or access you need.
+Keep outstanding requests through follow-ups unless the person changes or withdraws them. Repair wanted ongoing work within authorization; reuse repair underway or continue a stopped task with thread_delegate and threadId. Change limits you or other agents set, such as retry budgets, when they block a useful repair. Keep the person's pauses and the site's constraints. Resume a Trigger paused by failure only after verifying the repair. Change approach when failures repeat without new evidence. Tell the person outcomes, material failures and repairs, never the routes a task tried; ask only for decisions or access you need.
 Answer a task's question, or ask the person, then continue it with thread_delegate and threadId. Change active work with thread_message; stop it with assignment_cancel and confirm the returned status.
 When talking to the person, call Main's conversation "Chat" (threadId "home") and a project Workspace a "Project".`;
 

@@ -316,9 +316,7 @@ describe("native transcript prose", () => {
     expect(container.textContent).not.toContain("earlier steps");
   });
 
-  it("keeps an incoming update to one line on Home and opens the exact report in place", () => {
-    const { container, render, onOpenThread } = setup(true);
-    const threadId = createId("thread");
+  it("draws an incoming report in a task from its bounded excerpt until opened in place", () => {
     const workspaceId = createId("workspace");
     const update: MessageEntry = {
       ...note,
@@ -329,26 +327,12 @@ describe("native transcript prose", () => {
         displayName: "Travel research",
         kind: "agent",
         runId: createId("run"),
-        threadId,
+        threadId: createId("thread"),
         workspaceId,
         workspaceName: "Travel",
       },
       body: `Three flights fit. ${"Details and evidence. ".repeat(100)}FINAL SOURCE`,
     };
-    // The reader belongs to the Workspace the update came from, so its source
-    // is somewhere they can go.
-    render([update], [{ id: workspaceId, name: "Travel" } as unknown as WorkspaceSummary]);
-    expect(container.textContent).toContain("Travel research");
-    expect(container.textContent).not.toContain("Three flights fit.");
-    press(container, "left a note");
-    expect(container.textContent).toContain("FINAL SOURCE");
-    press(container, "left a note");
-    expect(container.textContent).not.toContain("FINAL SOURCE");
-    press(container, "Travel research");
-    expect(onOpenThread).toHaveBeenCalledWith(threadId);
-
-    // In a task the same update is a message, drawn from its bounded excerpt
-    // until the reader opens it from inside the message.
     const task = setup();
     task.render([update], [{ id: workspaceId, name: "Travel" } as unknown as WorkspaceSummary]);
     expect(task.container.textContent).toContain("Three flights fit.");
@@ -699,7 +683,7 @@ describe("a Computer use row", () => {
   });
 });
 
-it("quiet Chat keeps automatic replies and lets silent human work open Activity", () => {
+it("quiet Chat keeps only automatic replies and lets silent human work open Activity", () => {
   const { container, render, onOpenActivity, onOpenThread } = setup(true);
   const author = {
     kind: "agent" as const,
@@ -709,11 +693,19 @@ it("quiet Chat keeps automatic replies and lets silent human work open Activity"
     workspaceId: createId("workspace"),
     workspaceName: "Main",
   };
-  render([{ ...run, startedBy: author, status: "running" }]);
-  expect(container.textContent).not.toBe("");
+  // Whether a silent automatic turn has a row is the shared model's
+  // (`conversationRows`); a failed one says so.
+  render([
+    {
+      ...run,
+      startedBy: author,
+      status: "failed",
+      error: { code: "failed", message: "Could not relay", retryable: false },
+    },
+  ]);
+  expect(container.textContent).toContain("Could not relay");
   render([{ ...run, startedBy: author, status: "completed" }]);
-  expect(container.textContent).toContain("Worked");
-  expect(container.textContent).toContain("Research");
+  expect(container.textContent).not.toContain("Worked");
   render(
     [{ ...run, startedBy: author, replyMessageId: note.id, status: "completed" }, note],
     [
