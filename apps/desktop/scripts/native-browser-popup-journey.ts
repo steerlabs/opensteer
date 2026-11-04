@@ -36,8 +36,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   const surfaceId = opened.data.tabId;
   await kit.clickApp('button[aria-label="Hide the conversation"]');
   await kit.selectNativePage(context.sessionId, surfaceId);
-  // Remove the fixture's initial agent-sized emulation through the person's Fit action.
-  await kit.clickApp('button[aria-label="Fit page to view"]');
   const producer = [...kit.pages.values()].find((p) => p.surfaceId === surfaceId);
   assert(producer, "Popup fixture has a production runtime page");
   const contents = (
@@ -285,13 +283,59 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     };
     await a.bringToFront();
     assert(sessionMatches.every(Boolean), "Viewers must attach to the original fixture session");
-    const dimensions = (await contents.executeJavaScript(
+    let dimensions = (await contents.executeJavaScript(
       "({width:innerWidth,height:innerHeight})",
       false,
     )) as { width: number; height: number };
-    const bounds = (await import("../src/browser/electron-browser-launcher.js"))
-      .electronPagePresentation(producer.page)!
-      .view.getBounds();
+    const native = (
+      await import("../src/browser/electron-browser-launcher.js")
+    ).electronPagePresentation(producer.page)!.view;
+    if (
+      dimensions.width > native.getBounds().width ||
+      dimensions.height > native.getBounds().height
+    ) {
+      const stage = await a.locator(".browser-stage").boundingBox();
+      assert(stage);
+      const expected = { width: Math.round(stage.width), height: Math.round(stage.height) };
+      const fitted = Promise.withResolvers<void>();
+      void fitted.promise.catch(() => undefined);
+      const remove = producer.onEvent((event) => {
+        if (event.type !== "geometry") return;
+        const size = event.geometry.agent ?? event.geometry.person;
+        if (size.width === expected.width && size.height === expected.height) fitted.resolve();
+      });
+      const timer = setTimeout(
+        () => fitted.reject(new Error("Viewer Fit geometry never applied")),
+        4000,
+      );
+      try {
+        await a.getByRole("button", { name: "Fit page to view", exact: true }).click();
+        await fitted.promise;
+        await a.waitForFunction(
+          ({ width, height }) => {
+            const canvas = document.querySelector<HTMLCanvasElement>(
+              'canvas[aria-label="Live browser page"]',
+            );
+            return (
+              canvas &&
+              canvas.height > 0 &&
+              Math.abs(canvas.width / canvas.height - width / height) < 0.01 &&
+              canvas.getContext("2d")?.getImageData(0, 0, 1, 1).data[3]
+            );
+          },
+          expected,
+          { timeout: 4000 },
+        );
+      } finally {
+        clearTimeout(timer);
+        remove();
+      }
+      dimensions = (await contents.executeJavaScript(
+        "({width:innerWidth,height:innerHeight})",
+        false,
+      )) as { width: number; height: number };
+    }
+    const bounds = native.getBounds();
     kit.artifacts.json("cases/popups/producer-geometry.json", { dimensions, bounds });
     assert(
       dimensions.width <= bounds.width && dimensions.height <= bounds.height,
