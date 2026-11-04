@@ -119,6 +119,8 @@ export async function resolveResourceAccess(
       : root
         ? root.workspaceId === input.workspaceId && root.inheritsMain
         : !input.threadId && !input.agentBindingId);
+  // Owner Off and Main exclusion bind every agent, including connections without a Thread.
+  const agentRequester = Boolean(threadId || input.agentBindingId || input.connectionId);
   let specialistAccess = input.specialistAccess;
   const specialistId = root?.specialistId ?? input.specialistId;
   let specialistPolicyAllowed = true;
@@ -144,7 +146,7 @@ export async function resolveResourceAccess(
       .where("workspaceMemberships.userId", "=", input.ownerUserId)
       .where("workspaceMemberships.state", "=", "active")
       .executeTakeFirst();
-    if (registration && (threadId || input.agentBindingId))
+    if (registration && agentRequester)
       specialistPolicyAllowed =
         (await pluginPolicyAllows(
           database,
@@ -246,7 +248,7 @@ export async function resolveResourceAccess(
   }
   let policyAllowed = true;
   if (
-    (threadId || input.agentBindingId) &&
+    agentRequester &&
     input.resource &&
     input.resource.type !== "browser-profile"
   ) {
