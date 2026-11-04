@@ -961,7 +961,7 @@ describe("page rail", () => {
   });
 });
 
-it("draws a silent automatic turn with its source and elapsed work", () => {
+it("draws nothing for a silent automatic turn, and its source and failure when it fails", () => {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -985,6 +985,25 @@ it("draws a silent automatic turn with its source and elapsed work", () => {
       </MemoryRouter>,
     ),
   );
-  expect(container.textContent).toContain("Worked for 2m");
+  expect(container.textContent).toBe("");
+  act(() =>
+    root.render(
+      <MemoryRouter>
+        <AgentTranscript
+          conversation
+          entries={[
+            {
+              ...run,
+              status: "failed",
+              error: { code: "failed", message: "Could not relay", retryable: false },
+              replyMessageId: null,
+              startedBy: { kind: "platform", cause: "automatic" },
+            },
+          ]}
+        />
+      </MemoryRouter>,
+    ),
+  );
+  expect(container.textContent).toContain("Could not relay");
   expect(container.querySelector(".turn-source")).not.toBeNull();
 });

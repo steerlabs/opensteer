@@ -196,12 +196,20 @@ survives history boundaries. See
 
 ## Conversation history
 
-Conversations page by whole turns like any Thread. Every settled turn draws its
-reply or an outcome, including silent automatic work, so a page shows the turns
-it counts without the Host predicting client visibility. Oversized turns can be
-split by the page budget. Automatic input messages remain hidden behind their
-turn's source and never count as unread. See
-[`snapshot-store.ts`](../packages/database/src/snapshot-store.ts).
+Conversations page by whole turns like any Thread, and the Host never predicts
+what a client draws: a second copy of that rule drifts, and the pages it counts
+then draw almost nothing. `conversationRows` in
+[`agent-activity-model.ts`](../packages/client/src/host/agent-activity-model.ts)
+alone decides what a conversation shows, and opening and Earlier read back in
+bounded scans until something draws. Oversized turns can be split by the page
+budget.
+
+A conversation shows what its agent says to the reader and what needs them. A
+turn nobody waited on draws only its reply, a task needing the reader, a failure
+or live computer work. Inputs from agents, Triggers and Opensteer, reports
+included, are for the agent: they never get a row or count as unread. Keeping
+silent wakes rare is the waker's job, since each run of them costs scan reads: an
+empty task result wakes nobody, and Triggers queue to Chat only with news.
 
 ## Personal process recovery and diagnostics
 

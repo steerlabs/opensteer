@@ -3605,7 +3605,7 @@ describe("HttpHostClient durable realtime", () => {
           });
         }
         await finishOpening(f);
-        expect(openingRows(f)).toEqual([undefined, "Buffered 9"]);
+        expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply", "Buffered 9"]);
       } finally {
         f.olderAnswer.resolve();
         f.client.dispose();
@@ -3613,21 +3613,13 @@ describe("HttpHostClient durable realtime", () => {
     });
 
     it.each([[["history-turns-v1"] as const], [[] as const]])(
-      "opens Chat with its newest silent automatic turn, then Earlier reveals the next page (%j)",
+      "opens Chat past silent automatic turns to what was said (%j)",
       async (capabilities) => {
         const f = await openThread("conversation", capabilities, { silentTurns: 10 });
         try {
           await finishOpening(f);
-          expect(f.requests.map(({ before }) => before)).toEqual([undefined]);
-          expect(openingRows(f)).toHaveLength(10);
-          expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBe("4");
-          await f.client.loadEarlierTranscript(f.thread.id);
           expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
-          expect(openingRows(f)).toEqual([
-            "Earlier question",
-            "Earlier reply",
-            ...Array(10).fill(undefined),
-          ]);
+          expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply"]);
         } finally {
           f.olderAnswer.resolve();
           f.client.dispose();
@@ -3718,11 +3710,11 @@ describe("HttpHostClient durable realtime", () => {
         f.socket.receive({ type: "host.events", events: [...f.pages.newest!.events, event] });
         f.socket.receive({ type: "host.events", events: [event] });
         await finishOpening(f);
-        expect(openingRows(f)).toEqual([undefined, "Live question"]);
+        expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply", "Live question"]);
         expect(
           f.client.getSnapshot().transcripts[f.thread.id]?.filter((entry) => entry.kind === "run"),
-        ).toHaveLength(1);
-        expect(f.requests.map(({ before }) => before)).toEqual([undefined]);
+        ).toHaveLength(2);
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
       } finally {
         f.olderAnswer.resolve();
         f.client.dispose();
@@ -3747,7 +3739,7 @@ describe("HttpHostClient durable realtime", () => {
           snapshot: { ...workspaceSnapshot(f.workspace, "6"), threads: [f.thread] },
         });
         await finishOpening(f);
-        expect(f.requests.map(({ before }) => before)).toEqual([undefined, undefined]);
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4", undefined]);
         expect(openingRows(f)).toEqual(["Fresh question"]);
         expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBeNull();
       } finally {

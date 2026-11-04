@@ -1934,10 +1934,50 @@ describe("quiet Chat", () => {
   const startedBy = { kind: "platform" as const, cause: "assignment-result" };
   const rows = (entries: TranscriptEntry[], atComputer = false) =>
     conversationRows(groupTranscriptEntries(entries), { live: true, atComputer: () => atComputer });
+  it("relays a task's dead end as Chat's reply alone, not the task's report or its finished run", () => {
+    const asked = input({ id: "asked", runId: "run-person", sequence: "1" });
+    const started = message({ id: "started", runId: "run-person", sequence: "2" });
+    const report = input({
+      id: "report",
+      runId: null,
+      sequence: "3",
+      body: "I couldn't access your inbox, and the phone is locked.",
+      policy: "report",
+      author: {
+        displayName: "Review recent email",
+        kind: "agent",
+        runId: createId("run"),
+        threadId: createId("thread"),
+        workspaceId: createId("workspace"),
+        workspaceName: "Main",
+      },
+    });
+    const relayed = message({ id: "relayed", runId: "run-relay", sequence: "4" });
+    const entries = [
+      asked,
+      run({ id: "run:run-person", runId: "run-person", replyMessageId: started.id }),
+      started,
+      report,
+      run({ id: "run:run-relay", runId: "run-relay", startedBy, replyMessageId: relayed.id }),
+      relayed,
+    ];
+    const drawn = rows(entries);
+    expect(drawn.map(({ group }) => group.kind)).toEqual(["message", "turn", "turn"]);
+    expect(
+      drawn.some(({ group }) => group.kind === "message" && group.entry.id === report.id),
+    ).toBe(false);
+    const relay = drawn[2]?.group;
+    expect(relay?.kind === "turn" && conversationTurn(relay.turn).reply?.id).toBe(relayed.id);
+    expect(incomingTranscriptMessages(entries, "viewer", true).map(({ id }) => id)).toEqual([
+      asked.id,
+      started.id,
+      relayed.id,
+    ]);
+  });
   it("does not count hidden automatic inputs as incoming Chat messages", () => {
     const hidden = input({ author: startedBy, sequence: "10" });
     const entries = [hidden, run({ startedBy })];
-    expect(rows(entries)).toHaveLength(1);
+    expect(rows(entries)).toHaveLength(0);
     expect(incomingTranscriptMessages(entries, "viewer", true)).toEqual([]);
     expect(incomingTranscriptMessages(entries, "viewer", false)).toEqual([hidden]);
     const reply = message({ id: "reply", sequence: "11" });
@@ -1975,13 +2015,12 @@ describe("quiet Chat", () => {
       expect(drawnTranscriptRowKeys(after, context)).toEqual(keys);
     }
   });
-  it("shows a returning task's silent turn, including typing and failures", () => {
+  it("shows a returning task's silent turn only when it failed, and never types for it", () => {
     for (const status of ["running", "completed", "failed", "interrupted"] as const) {
       const entry = run({ startedBy, status });
-      expect(rows([entry])).toHaveLength(1);
+      expect(rows([entry]), status).toHaveLength(status === "failed" ? 1 : 0);
       const group = groupTranscriptEntries([entry])[0];
-      if (group?.kind === "turn")
-        expect(conversationTurn(group.turn).composing).toBe(status === "running");
+      if (group?.kind === "turn") expect(conversationTurn(group.turn).composing).toBe(false);
     }
   });
   it("keeps the reply, live computer use, human steers and unknown older Hosts", () => {
@@ -2005,7 +2044,7 @@ describe("quiet Chat", () => {
   });
 });
 
-it("shows every turn task and only standalone assignments needing the reader", () => {
+it("shows only the tasks needing the reader from work nobody waited on", () => {
   const automatic = run({ startedBy: { kind: "platform", cause: "assignment-result" } });
   const task: import("./client.js").AssignmentEntry = {
     kind: "assignment",
@@ -2070,7 +2109,7 @@ it("shows every turn task and only standalone assignments needing the reader", (
             : [],
       });
       expect(rows.length, `${origin} ${state}`).toBe(
-        origin === "run" || state === "waiting" || state === "failed" ? 1 : 0,
+        state === "waiting" || state === "failed" ? 1 : 0,
       );
     }
   }
@@ -2109,7 +2148,7 @@ it("shows every turn task and only standalone assignments needing the reader", (
   );
 });
 
-it("a human restart or steer keeps automatic work's outcomes, and reports remain updates", () => {
+it("a human restart or steer keeps automatic work's outcomes, and a report is the agent's", () => {
   for (const status of ["completed", "failed", "interrupted", "running"] as const) {
     const automatic = run({
       status,
@@ -2127,12 +2166,11 @@ it("a human restart or steer keeps automatic work's outcomes, and reports remain
     policy: "report",
   });
   expect(
-    conversationRows(groupTranscriptEntries([report]), { live: true, atComputer: () => false })[0]
-      ?.group,
-  ).toMatchObject({ kind: "message", entry: report });
+    conversationRows(groupTranscriptEntries([report]), { live: true, atComputer: () => false }),
+  ).toEqual([]);
 });
 
-it("keeps an automatic message that joined a person's Run, and lets an automatic turn stand for its own", () => {
+it("draws no automatic message, whether it joined a person's Run or started its own", () => {
   const options = { live: false, atComputer: () => false };
   const joined = input({
     id: "joined",
@@ -2151,17 +2189,19 @@ it("keeps an automatic message that joined a person's Run, and lets an automatic
     conversationRows(groupTranscriptEntries([personRun, input(), joined]), options).some(
       (row) => row.group.kind === "message" && row.group.entry.id === joined.id,
     ),
-  ).toBe(true);
+  ).toBe(false);
   const seed = input({
     id: "seed",
     runId: "run-a",
     author: { kind: "platform", cause: "assignment-result" },
   });
+  const relayed = message({ id: "relayed", runId: "run-a" });
   const automatic = run({
     id: "run-a",
+    replyMessageId: relayed.id,
     startedBy: { kind: "platform", cause: "assignment-result" },
   });
-  const rows = conversationRows(groupTranscriptEntries([seed, automatic]), options);
+  const rows = conversationRows(groupTranscriptEntries([seed, automatic, relayed]), options);
   expect(rows.map((row) => row.group.kind)).toEqual(["turn"]);
 });
 

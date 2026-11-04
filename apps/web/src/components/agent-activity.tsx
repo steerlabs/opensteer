@@ -752,7 +752,9 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   const kept = useKeptComputerStop(turn, now);
   const composing = view.composing && live && now === null && kept === null;
   const startHold = live ? view.startHold : null;
-  const outcome = turn.run !== null && showsRunOutcome(turn.run);
+  const outcome =
+    turn.run !== null &&
+    (view.unprompted ? turn.run.status === "failed" : showsRunOutcome(turn.run));
   const settled = turnState(turn) === "settled";
   // A Run that ended without a reply, stopped or failed, keeps its places under how it ended.
   const placesUnderOutcome = settled && outcome && view.reply === null;
@@ -1730,19 +1732,8 @@ export function TranscriptMessage({
     );
   }
 
-  if (
-    (conversation && message.author.kind !== "human") ||
-    (message.author.kind === "platform" && message.author.cause === "run-recovery")
-  ) {
-    return (
-      <UpdateLine
-        author={message.author}
-        message={message}
-        askAbout={askAbout}
-        reveal={reveal}
-        workspaces={workspaces}
-      />
-    );
+  if (message.author.kind === "platform" && message.author.cause === "run-recovery") {
+    return <RecoveryNote author={message.author} message={message} reveal={reveal} />;
   }
 
   // In a conversation every message joins the reply under way, so only a task marks it.
@@ -1912,42 +1903,29 @@ function UnreadDivider() {
 type UpdateAuthor = Exclude<MessageEntry["author"], { kind: "human" }>;
 
 /**
- * In a conversation, what another agent or an automation sent its agent: one
- * line saying who, and whether it was left for later or is work now, opening in
- * place to what was said. The conversation stays between the reader and the
- * agent they are talking to.
+ * What Opensteer noted when it recovered a Run: one line naming it, opening in
+ * place to what was said.
  */
-function UpdateLine({
+function RecoveryNote({
   author,
   message,
-  askAbout,
   reveal,
-  workspaces,
 }: {
-  author: UpdateAuthor;
+  author: Extract<MessageEntry["author"], { kind: "platform" }>;
   message: MessageEntry;
-  askAbout?: AskAbout | undefined;
   reveal: { readonly id: string } | null;
-  workspaces: readonly WorkspaceSummary[];
 }) {
   const [open, setOpen] = useState(reveal !== null);
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
   const bodyId = useId();
-  const source = updateSource(author, message.messageKind, workspaces, useContext(HomeThread));
-  const said = incomingMessageAction(message);
+  const name = messageAuthorName(author, message.messageKind, useContext(HomeThread));
   return (
     <div className="update-line" data-message-id={message.id}>
       <div className="update-line__head">
-        <Icon className="update-line__glyph" name={source.glyph} />
-        {source.href ? (
-          <AreaLink className="update-line__source" to={source.href}>
-            {source.name}
-          </AreaLink>
-        ) : (
-          <span className="update-line__source">{source.name}</span>
-        )}
+        <Icon className="update-line__glyph" name="message" />
+        <span className="update-line__source">{name}</span>
         <button
           aria-controls={open ? bodyId : undefined}
           aria-expanded={open}
@@ -1955,7 +1933,7 @@ function UpdateLine({
           onClick={() => setOpen(!open)}
           type="button"
         >
-          {said}
+          {incomingMessageAction(message)}
           <time dateTime={message.createdAt}>{formatClockTime(message.createdAt)}</time>
           <Icon name={open ? "chevron-down" : "chevron-right"} />
         </button>
@@ -1972,15 +1950,6 @@ function UpdateLine({
             <Suspense fallback={<p className="md-prose md-prose--plain">{message.body}</p>}>
               <Markdown text={message.body} />
             </Suspense>
-          ) : null}
-          {askAbout && author.kind === "agent" && message.body ? (
-            <button
-              className="btn btn--ghost btn--small update-line__ask"
-              onClick={() => askAbout.quote(message)}
-              type="button"
-            >
-              {askAbout.label}
-            </button>
           ) : null}
         </div>
       ) : null}

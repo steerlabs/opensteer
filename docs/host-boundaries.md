@@ -171,7 +171,7 @@ capabilities and never use them to gate mandatory behavior.
 
 - Added response fields are tolerated, including opaque values parsed later and
   other sockets. The [tolerance guard](../tests/host-response-tolerance.test.ts)
-  does not cover every such path. Missing optional facts mean unknown; every settled turn remains visible.
+  does not cover every such path. Missing optional facts mean unknown; a turn with no known automatic start is one a person waited on.
 - Readers skip/fall back on unknown union members and enum values rather than
   refusing a whole list/frame. Presentation tolerance also covers stored consent
   manifests; executable definitions and authenticated inputs remain strict.
