@@ -39,7 +39,7 @@ export const sign_in = defineAgentTool({
   name: "sign_in",
   title: "Request sign-in",
   description:
-    "Request saved-login or Chrome sign-in authorization from the person. Run-only. Returns ready/applied/pending/refusal; on pending, do other work then end your turn for continuation. Use ready loginRef only for sealed field filling; never read/reveal credentials. Verify the account. Open a website sign-in page first; omit sessionId for a genuine Mac/phone app.",
+    "Request saved-login or Chrome sign-in authorization from the person. Run-only. Returns ready/applied/pending/refusal; only a passwords field means Opensteer Passwords can help, and says what it needs. On pending, do other work then end your turn for continuation. Use ready loginRef only for sealed field filling; never read/reveal credentials. Verify the account. Open a website sign-in page first; omit sessionId for a genuine Mac/phone app.",
   input: z
     .strictObject({
       reason: z.string().trim().min(1).max(500).describe("Why this task needs the account."),

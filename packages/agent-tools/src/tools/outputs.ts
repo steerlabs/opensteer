@@ -268,6 +268,7 @@ export const SignInOutputSchema = z.object({
   sourceName: z.string().optional(),
   method: z.string().optional(),
   reason: z.string().optional(),
+  passwords: z.string().optional(),
   expiresAt: z.string().optional(),
   requestId: RequestIdSchema.optional(),
   replayed: z.boolean().optional(),

@@ -27,6 +27,7 @@ import { AgentTranscript } from "./components/agent-activity.js";
 import type { ShellContext } from "./components/app-shell.js";
 import { InputSurface } from "./components/input-surface.js";
 import { SettingsSectionRoute, SettingsShell } from "./components/settings/settings-shell.js";
+import { PasswordsSuggestion } from "./components/passwords-suggestion.js";
 import { PasswordSignInRequestBody } from "./components/thread-password-sign-in-action.js";
 import { ToastProvider } from "./components/toast.js";
 import { previewPasswordsSignInCard } from "./desktop/desktop-preview-bridge.js";
@@ -41,6 +42,8 @@ import { previewPasswordsSignInCard } from "./desktop/desktop-preview-bridge.js"
  *   cards     every card stage side by side, here and elsewhere
  *   resolved  every way a sign-in ends: cards, Request receipts and `sign_in` steps
  *   settings  Settings → Passwords                            `&state=` below, `&waiting` adds two sign-ins
+ *   suggestion the offer under a reply, elsewhere; `&here&state=not-set-up` on the Mac, where
+ *             Set up finishes setup; `&work` reads as a task
  *
  * Settings states: not-set-up, ready (default), ready-off, development,
  * needs-reset, unsupported (hardware), unsupported-platform, unsupported-os,
@@ -343,6 +346,56 @@ function ResolvedView() {
   );
 }
 
+function SuggestionView() {
+  const runId = "run_00000000-0000-4000-8000-000000000004";
+  const at = "2026-10-11T09:00:00.000Z";
+  const entries: TranscriptEntry[] = [
+    {
+      author: { displayName: "You", kind: "human", principalId: "user:preview" },
+      body: "Pull this month’s card spend from Brex",
+      createdAt: at,
+      id: "preview-ask",
+      kind: "message",
+      messageKind: "input",
+      runId: null,
+    },
+    {
+      ...signInStep(
+        { passwords: "not-set-up", site: "https://brex.com", status: "not-signed-in" },
+        0,
+      ),
+      runId,
+    },
+    {
+      author: { cause: "preview", kind: "platform" },
+      body: "I can’t sign in to Brex yet because Chrome isn’t signed in to it. You can sign in yourself in the Brex tab, or set up Opensteer Passwords so I can sign in for you. Tell me when you’re ready.",
+      createdAt: at,
+      id: "preview-reply",
+      kind: "message",
+      messageKind: "assistant",
+      runId,
+    },
+    {
+      createdAt: at,
+      error: null,
+      id: `run:${runId}`,
+      kind: "run",
+      replyMessageId: "preview-reply",
+      runId,
+      status: "completed",
+    },
+  ];
+  return (
+    <div style={{ margin: "0 auto", maxWidth: 720, padding: 24 }}>
+      <AgentTranscript
+        conversation={!search.has("work")}
+        entries={entries}
+        renderPasswordsSuggestion={(site) => <PasswordsSuggestion site={site} />}
+      />
+    </div>
+  );
+}
+
 function App() {
   if (view === "resolved") return <ResolvedView />;
   if (view === "cards") return <CardsView />;
@@ -358,7 +411,7 @@ function App() {
                 <Route element={<SettingsSectionRoute section="passwords" />} path="passwords" />
                 <Route element={<SettingsSectionRoute section="chrome" />} path="chrome" />
               </Route>
-              <Route element={<CardView />} path="*" />
+              <Route element={view === "suggestion" ? <SuggestionView /> : <CardView />} path="*" />
             </Route>
           </Routes>
         </main>
@@ -370,13 +423,18 @@ function App() {
 /** The Mac's side, as `&state=` and `&card=` describe it. */
 function passwordsBridge(): OpensteerDesktopBridge {
   const status = previewStatus(settingsState);
+  let statusListener: ((next: DesktopPasswordsStatus) => void) | null = null;
   const fake: Pick<
     OpensteerDesktopBridge,
     "onPasswordsStatusChanged" | "passwordsOpen" | "passwordsStatus"
   > = {
-    onPasswordsStatusChanged: () => () => undefined,
+    onPasswordsStatusChanged: (listener) => {
+      statusListener = listener;
+      return () => undefined;
+    },
     passwordsOpen: async () => {
-      window.alert("The Passwords window opens.");
+      if (view === "suggestion") statusListener?.(previewStatus("ready"));
+      else window.alert("The Passwords window opens.");
     },
     passwordsStatus: async () => {
       if (settingsState === "broken") {

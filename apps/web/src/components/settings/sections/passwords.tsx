@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   mutationIdempotencyKey,
   passwordsAgentSignInsDetail,
@@ -24,11 +24,12 @@ import {
   type PasswordsSettingsState,
 } from "@opensteer/client/host";
 import type { Request } from "@opensteer/core";
-import type { DesktopPasswordsStatus, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
+import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { actionErrorMessage } from "../../../ui-utils.js";
 import { useShell } from "../../app-shell.js";
 import { Icon, type IconName } from "../../icon.js";
 import { LoadingRows } from "../../loading-rows.js";
+import { useDesktopPasswordsStatus } from "../../use-desktop-passwords-status.js";
 import { SettingsError, SettingsRow, type SettingsView } from "../primitives.js";
 import { useHomeComputer } from "./devices.js";
 
@@ -86,12 +87,9 @@ function PasswordsOnThisMac({
   readonly client: Pick<HostClient, "dispatch">;
   readonly waiting: readonly { readonly request: Request }[];
 }) {
-  const [status, setStatus] = useState<DesktopPasswordsStatus | null>(null);
-  const [readError, setReadError] = useState<string | null>(null);
+  const { read, readError, status } = useDesktopPasswordsStatus(bridge);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
-  // A change pushed by the Passwords window is newer than any read still in flight.
-  const pushed = useRef(false);
   const live = useRef(true);
   // One key per Request, so a decline whose reply was lost is retried, not repeated.
   const declineKeys = useRef(new Map<string, string>());
@@ -106,31 +104,12 @@ function PasswordsOnThisMac({
     [waiting],
   );
   const waitingSignIns = signIns;
-  const read = useCallback(async () => {
-    pushed.current = false;
-    try {
-      const next = await bridge.passwordsStatus();
-      if (!live.current || pushed.current) return;
-      setStatus(next);
-      setReadError(null);
-    } catch (reason) {
-      if (live.current) setReadError(actionErrorMessage(reason));
-    }
-  }, [bridge]);
-
   useEffect(() => {
     live.current = true;
-    const stop = bridge.onPasswordsStatusChanged((next) => {
-      pushed.current = true;
-      setStatus(next);
-      setReadError(null);
-    });
-    void read();
     return () => {
       live.current = false;
-      stop();
     };
-  }, [bridge, read]);
+  }, []);
 
   function run(kind: Exclude<Busy, null>, action: () => Promise<void>) {
     if (busy !== null) return;

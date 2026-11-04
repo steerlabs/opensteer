@@ -31,6 +31,7 @@ import {
   activityStepHead,
   displayCommand,
   groupTranscriptEntries,
+  passwordsSetUpSuggestion,
   toolBody,
   toolArgumentsText,
   toolPresentation,
@@ -897,6 +898,58 @@ describe("workRows", () => {
       "reasoning",
     ]);
     expect(rows.at(-1)).toMatchObject({ kind: "reasoning" });
+  });
+});
+
+describe("passwordsSetUpSuggestion", () => {
+  const site = "https://brex.com";
+  const signIn = (result: unknown, runId = "run-a") =>
+    tool({
+      arguments: { site },
+      output: { text: JSON.stringify(result) },
+      runId,
+      tool: { name: "sign_in", namespace: "opensteer" },
+    });
+  const notSetUp = { passwords: "not-set-up", site, status: "not-signed-in" };
+  const offer = (entries: Parameters<typeof groupTranscriptEntries>[0]) =>
+    passwordsSetUpSuggestion(groupTranscriptEntries(entries));
+
+  it("offers Passwords once the agent stops, from any result that found it not set up", () => {
+    expect(offer([signIn(notSetUp), message(), run()])).toBe(site);
+    expect(offer([signIn(notSetUp), run({ status: "running" })])).toBeNull();
+    expect(
+      offer([
+        signIn({
+          passwords: "not-set-up",
+          replayed: false,
+          requestId: createId("request"),
+          status: "pending",
+        }),
+        run(),
+      ]),
+    ).toBe(site);
+    expect(
+      offer([signIn({ reason: "passwords-not-set-up", site, status: "unavailable" }), run()]),
+    ).toBe(site);
+  });
+
+  it("keeps the offer through a turn the Host resumed, until the person speaks", () => {
+    const first = [signIn(notSetUp), message(), run()];
+    const resumed = [
+      message({ id: "resumed", runId: "run-b" }),
+      run({ id: "run:run-b", runId: "run-b" }),
+    ];
+    expect(offer([...first, ...resumed])).toBe(site);
+    expect(offer([...first, input({ runId: null }), ...resumed])).toBeNull();
+  });
+
+  it("leaves it to the latest sign-in, and never offers what Passwords can't do", () => {
+    const signedIn = { profileName: null, site, sourceName: "Work", status: "applied" };
+    expect(offer([signIn(notSetUp), signIn(signedIn), run()])).toBeNull();
+    expect(offer([signIn({ site, status: "not-signed-in" }), run()])).toBeNull();
+    expect(
+      offer([signIn({ passwords: "no-login", site, status: "not-signed-in" }), run()]),
+    ).toBeNull();
   });
 });
 

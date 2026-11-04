@@ -441,6 +441,37 @@ export function turnState(turn: Turn): TurnState {
 }
 
 /**
+ * The site to name when offering Opensteer Passwords, or null. The latest
+ * sign-in since the person last spoke decides, and only once the agent has
+ * stopped: their next message, or a sign-in that got further, ends the offer,
+ * so a Thread shows it once, at its end.
+ */
+export function passwordsSetUpSuggestion(groups: readonly TranscriptGroup[]): string | null {
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const group = groups[index]!;
+    if (group.kind === "message" && group.entry.author.kind === "human") return null;
+    if (group.kind !== "turn") continue;
+    const state = turnState(group.turn);
+    if (state === "live" || state === "stopping") return null;
+    for (let step = group.turn.work.length - 1; step >= 0; step -= 1) {
+      const entry = group.turn.work[step]!;
+      if (entry.kind !== "tool" || !isSignInTool(entry) || !entry.output) continue;
+      const result = readBrowserSignInResult(entry.output.text);
+      if (result === null) continue;
+      const notSetUp =
+        ("passwords" in result && result.passwords === "not-set-up") ||
+        (result.status === "unavailable" && result.reason === "passwords-not-set-up");
+      return notSetUp
+        ? "site" in result
+          ? result.site
+          : stringField(effectiveArguments(entry), "site")
+        : null;
+    }
+  }
+  return null;
+}
+
+/**
  * Whether a task's turn has steps to fold behind its status line. The line
  * leads the turn whether it is live or settled, so finishing changes only its
  * words. A turn that only spoke has nothing to fold.
@@ -2345,15 +2376,16 @@ function signInPresentation(tool: ToolEntry, args: unknown): ToolPresentation {
   });
 }
 
+function isSignInTool(tool: ToolEntry): boolean {
+  return (
+    tool.tool?.namespace === "opensteer" &&
+    (tool.tool.name === "browser_sign_in" || tool.tool.name === "sign_in") &&
+    tool.state === "done"
+  );
+}
+
 function signInResult(tool: ToolEntry): BrowserSignInStep | null {
-  if (
-    tool.tool?.namespace !== "opensteer" ||
-    (tool.tool.name !== "browser_sign_in" && tool.tool.name !== "sign_in") ||
-    tool.state !== "done" ||
-    !tool.output
-  ) {
-    return null;
-  }
+  if (!isSignInTool(tool) || !tool.output) return null;
   const result = readBrowserSignInResult(tool.output.text);
   return result === null
     ? null

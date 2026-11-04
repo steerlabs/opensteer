@@ -7,6 +7,7 @@ import {
   conversationRows,
   conversationTurnRevealing,
   groupTranscriptEntries,
+  passwordsSetUpSuggestion,
   incomingTranscriptMessages,
   observedSequence,
   threadActivity,
@@ -88,6 +89,7 @@ import { TranscriptSurfacesContext, type TranscriptSurfaces } from "./surface-ch
 import { TranscriptHostClientContext } from "./attachment-views.js";
 import { Composer } from "./composer.js";
 import { LivePlace } from "./live-place.js";
+import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { QueuedMessages } from "./queued-messages.js";
 import {
   TranscriptComputersContext,
@@ -1043,6 +1045,20 @@ function ThreadPaneForUser(
       ) : null,
     [thread?.role, inputQueue, queueCanRespond, hostClient, restoreQueuedDraft, viewerUserId],
   );
+  const offersPasswords = useMemo(() => passwordsSetUpSuggestion(groups) !== null, [groups]);
+  const listFooter =
+    offersPasswords && viewerUserId !== null ? (
+      <>
+        <PasswordsSuggestion
+          deploymentId={props.deploymentId}
+          hostClient={hostClient}
+          userId={viewerUserId}
+        />
+        {queueFooter}
+      </>
+    ) : (
+      (queueFooter ?? undefined)
+    );
 
   // Never under a finger: the list moves only where the reader puts it.
   const keepPinned = (): void => {
@@ -1177,7 +1193,7 @@ function ThreadPaneForUser(
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         keyExtractor={(item) => item.key}
-        ListFooterComponent={queueFooter ?? undefined}
+        ListFooterComponent={listFooter}
         // Beside a page, before anything has been said, the page is the subject.
         ListEmptyComponent={
           companion === null ? <EmptyThread loading={snapshot.lookup === "loading"} /> : undefined

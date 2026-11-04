@@ -19,7 +19,11 @@ import {
   browserSiteFromUrl,
   validateBrowserSourceSnapshot,
 } from "@opensteer/browser-profile/source-state";
-import { BrowserSessionIdSchema, type BrowserSessionId } from "@opensteer/protocol";
+import {
+  BrowserSessionIdSchema,
+  type BrowserSessionId,
+  type PasswordSignInAvailability,
+} from "@opensteer/protocol";
 import {
   BrowserSignInRequestResponseSchema,
   BrowserSourceClientMessageSchema,
@@ -29,7 +33,9 @@ import {
   type AgentBrowserSignInResult,
   type BrowserSignInDecision,
   type BrowserSignInOutcome,
+  type BrowserSignInPasswords,
   type BrowserSignInProblem,
+  type BrowserSignInRequestResponse,
   type BrowserSourceClientMessage,
   type BrowserSourceHostMessage,
   type BrowserSourceInspection,
@@ -639,10 +645,11 @@ export class BrowserSourceService {
     });
     // A Runner that cannot fill logins never starts Passwords; Chrome still
     // serves it exactly as before.
-    const passwords =
-      !grant && target.signIn && input.loginFill
+    const probePasswords = async () =>
+      target.signIn && input.loginFill
         ? await this.#passwords.probe(input.ownerId, site)
         : "unavailable";
+    const passwords = grant ? "unavailable" : await probePasswords();
     if (passwords === "has-login") {
       return this.#passwords.request({
         ...input,
@@ -670,10 +677,11 @@ export class BrowserSourceService {
       workspaceId: target.workspaceId,
     });
     if (pending) return this.#completePending(pending, grant, sources, sessionId, site);
-    const ask = async (): Promise<AgentBrowserSignInResult> =>
-      input.canRequest
-        ? this.#openRequest({ ...input, site, target })
-        : { reason: "needs-approval", site, status: "unavailable" };
+    const ask = async (): Promise<AgentBrowserSignInResult> => {
+      if (!input.canRequest) return { reason: "needs-approval", site, status: "unavailable" };
+      const opened = await this.#openRequest({ ...input, site, target });
+      return opened.status === "pending" ? { ...opened, ...passwordsOffer(passwords) } : opened;
+    };
     if (grant) {
       const chosen = await this.#standingSource(grant, sources, site);
       if (chosen) {
@@ -689,13 +697,16 @@ export class BrowserSourceService {
           target,
         });
         const result = agentResult(delivered, site);
+        if (result?.status === "not-signed-in") {
+          return { ...result, ...passwordsOffer(await probePasswords()) };
+        }
         if (result) return result;
       }
       return ask();
     }
     if (!input.canRequest) return { reason: "needs-approval", site, status: "unavailable" };
     if (candidates.length > 0 && candidates.every((candidate) => candidate.status === "no-state")) {
-      return { site, status: "not-signed-in" };
+      return { site, status: "not-signed-in", ...passwordsOffer(passwords) };
     }
     const asked = await ask();
     // A Chrome that connected after `candidates` may have run its check before
@@ -873,7 +884,7 @@ export class BrowserSourceService {
    * The same rule `agentSignIn` applies before it opens one.
    */
   async #endUnservable(ownerId: UserId, sourceId: BrowserSourceId): Promise<void> {
-    const unservable = new Map<string, Promise<boolean>>();
+    const unservable = new Map<string, Promise<BrowserSignInRequestResponse | null>>();
     let after: RequestId | null = null;
     for (;;) {
       if (this.#closed || !this.#isConnected(sourceId)) return;
@@ -900,23 +911,17 @@ export class BrowserSourceService {
   async #endIfUnservable(
     ownerId: UserId,
     request: Request,
-    unservable: Map<string, Promise<boolean>>,
+    unservable: Map<string, Promise<BrowserSignInRequestResponse | null>>,
   ): Promise<void> {
     if (request.payload.kind !== "browser.sign-in") return;
     const { site } = request.payload;
     let check = unservable.get(site);
     if (!check) {
-      check = this.#store
-        .list(ownerId)
-        .then((sources) => this.#candidates(sources, site))
-        .then(
-          (candidates) =>
-            candidates.length > 0 &&
-            candidates.every((candidate) => candidate.status === "no-state"),
-        );
+      check = this.#unservableResponse(ownerId, site);
       unservable.set(site, check);
     }
-    if (!(await check)) return;
+    const response = await check;
+    if (!response) return;
     // In the Request's turn, after an Allow already delivering.
     await this.#inTurn(`request\0${request.id}`, async () => {
       const grant = await this.#store.getGrant({
@@ -928,12 +933,29 @@ export class BrowserSourceService {
       const settled = await this.#requests.fulfilBrowserSignInRequest({
         ownerId,
         requestId: request.id,
-        response: { outcome: "not-signed-in" },
+        response,
       });
       if (!settled) return;
       for (const event of settled.events) this.#onWorkspaceEvent(event);
       this.#onRequestResolved();
     });
+  }
+
+  async #unservableResponse(
+    ownerId: UserId,
+    site: string,
+  ): Promise<BrowserSignInRequestResponse | null> {
+    const candidates = await this.#candidates(await this.#store.list(ownerId), site);
+    if (
+      candidates.length === 0 ||
+      !candidates.every((candidate) => candidate.status === "no-state")
+    ) {
+      return null;
+    }
+    const passwords = await this.#passwords
+      .probe(ownerId, site)
+      .catch(() => "unavailable" as const);
+    return { outcome: "not-signed-in", ...passwordsOffer(passwords) };
   }
 
   /**
@@ -1114,7 +1136,11 @@ export class BrowserSourceService {
               status: "applied",
             };
           case "not-signed-in":
-            return { site, status: "not-signed-in" };
+            return {
+              site,
+              status: "not-signed-in",
+              ...(response.passwords ? { passwords: response.passwords } : {}),
+            };
           case "session-closed":
             return { reason: "session-closed", site, status: "unavailable" };
         }
@@ -1585,6 +1611,14 @@ function problem(
   sourceName: string | null,
 ): BrowserSignInOutcome {
   return { problem: reason, site, sourceName, status: "problem" };
+}
+
+function passwordsOffer(availability: PasswordSignInAvailability): {
+  readonly passwords?: BrowserSignInPasswords;
+} {
+  return availability === "no-login" || availability === "not-set-up" || availability === "off"
+    ? { passwords: availability }
+    : {};
 }
 
 function appliedOutcome(receipt: BrowserSignInReceipt): BrowserSignInOutcome {

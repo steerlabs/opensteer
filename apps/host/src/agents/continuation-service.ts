@@ -277,8 +277,17 @@ export async function continuationMessage(
       switch (response.outcome) {
         case "applied":
           return `Request ${request.id} was fulfilled. Signed in to ${site} with ${response.sourceName} in Browser Session ${sessionId}. Reload the page and confirm the account before continuing.`;
-        case "not-signed-in":
-          return `Request ${request.id} ended without signing in: Chrome is connected but not signed in to ${site}, so there is no Chrome sign-in to reuse. The user did not decline. Ask them to sign in to ${site} themselves in Browser Session ${sessionId}, or to save the login in Opensteer Passwords, then call sign_in again.`;
+        case "not-signed-in": {
+          const passwords =
+            response.passwords === "not-set-up"
+              ? ", or to set up Opensteer Passwords on their Mac so agents can sign in for them (Opensteer shows them where under your reply)"
+              : response.passwords === "no-login"
+                ? ", or to add this login in Opensteer Passwords"
+                : response.passwords === "off"
+                  ? ", or to turn agent sign-ins back on in the Passwords window"
+                  : "";
+          return `Request ${request.id} ended without signing in: Chrome is connected but not signed in to ${site}, so there is no Chrome sign-in to reuse. The user did not decline. Ask them to sign in to ${site} themselves in Browser Session ${sessionId}${passwords}, then call sign_in again.`;
+        }
         case "session-closed":
           return `Request ${request.id} was fulfilled. The user allowed ${site}. Your Browser Session had closed; call sign_in again in your current session.`;
       }

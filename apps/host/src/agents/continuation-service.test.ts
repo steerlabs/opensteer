@@ -1,3 +1,4 @@
+import type { BrowserSignInRequestResponse } from "@opensteer/protocol/browser-sources";
 import { OpensteerError, PendingRequestSchema, RequestSchema, createId } from "@opensteer/core";
 import type { Request } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
@@ -197,6 +198,27 @@ describe("ContinuationService", () => {
 });
 
 describe("continuationMessage", () => {
+  it.each([
+    ["not-set-up", "set up Opensteer Passwords"],
+    ["no-login", "add this login in Opensteer Passwords"],
+    ["off", "turn agent sign-ins back on"],
+    [undefined, null],
+  ] as const)(
+    "offers Passwords a sign-in Chrome couldn't serve as %s allows",
+    async (state, offer) => {
+      const message = await continuationMessage(
+        browserSignInRequest({
+          outcome: "not-signed-in",
+          ...(state === undefined ? {} : { passwords: state }),
+        }),
+        inventory(),
+      );
+      expect(message).toContain("did not decline");
+      if (offer === null) expect(message).not.toContain("Passwords");
+      else expect(message).toContain(offer);
+    },
+  );
+
   it.each(["browser.access", "browser.profile.save"] as const)(
     "names the exact Host-recorded profile for %s",
     async (kind) => {
@@ -470,6 +492,20 @@ const macConnectionId = createIntegrationId("connection");
 const macGrantId = createIntegrationId("grant");
 const macObserveId = createIntegrationId("tool");
 const macActId = createIntegrationId("tool");
+
+function browserSignInRequest(value: BrowserSignInRequestResponse) {
+  return RequestSchema.parse({
+    ...fulfilledRequest("browser.access"),
+    kind: "browser.sign-in",
+    payload: {
+      kind: "browser.sign-in",
+      reason: "Pull this month's spend",
+      sessionId: `bsn_${crypto.randomUUID()}`,
+      site: "https://brex.com",
+    },
+    response: { kind: "external", value },
+  });
+}
 
 function computerAppAccessRequest(status: "declined" | "fulfilled") {
   const pending = PendingRequestSchema.parse({
