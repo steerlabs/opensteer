@@ -18,6 +18,7 @@ export function ApiKeyForm({
   method,
   onSubmit,
   pending,
+  primaryLabel,
   proposed = false,
   secondaryAction,
 }: {
@@ -31,6 +32,7 @@ export function ApiKeyForm({
     readonly values: Readonly<Record<string, string>>;
   }) => void;
   readonly pending: boolean;
+  readonly primaryLabel?: string;
   readonly proposed?: boolean;
   /** The surface's own other answer, kept in one row with the submit. */
   readonly secondaryAction?: ReactNode;
@@ -109,9 +111,8 @@ export function ApiKeyForm({
             ? definition.apiKey?.check
               ? "Checking…"
               : "Saving…"
-            : reconnectedName === undefined
-              ? `Connect ${definition.name}`
-              : "Reconnect account"}
+            : (primaryLabel ??
+              (reconnectedName === undefined ? `Connect ${definition.name}` : "Reconnect account"))}
         </button>
       </div>
     </form>
