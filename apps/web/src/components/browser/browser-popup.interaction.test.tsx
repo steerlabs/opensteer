@@ -102,8 +102,9 @@ it("shows groups and disabled rows and commits an empty editable multiple select
   expect(select.querySelector("optgroup")?.label).toBe("Group");
   expect(select.querySelector("optgroup")?.disabled).toBe(false);
   expect(select.options[1]?.disabled).toBe(true);
+  expect(select.options[1]?.selected).toBe(true);
   act(() => {
-    for (const o of select.options) o.selected = false;
+    for (const o of select.options) if (!o.disabled) o.selected = false;
     select.dispatchEvent(new Event("change", { bubbles: true }));
   });
   act(() => {

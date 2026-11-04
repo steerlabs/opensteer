@@ -60,6 +60,9 @@ function PopupForm({ target, state }: { target: BrowserPopupTarget; state: Brows
   );
   const [value, setValue] = useState("value" in state ? state.value : "");
   const [error, setError] = useState<string | null>(null);
+  const disabledSelected = state.items
+    .filter((i) => i.kind === "option" && i.selected && !i.enabled)
+    .map((i) => i.id);
   const title = browserPopupTitle(state);
   if (state.kind === "datalist")
     return (
@@ -148,10 +151,14 @@ function PopupForm({ target, state }: { target: BrowserPopupTarget; state: Brows
             aria-label={title}
             multiple={state.multiple}
             size={Math.min(12, Math.max(2, state.items.length))}
-            value={state.multiple ? ids : (ids[0] ?? "")}
+            value={
+              state.multiple ? [...ids, ...disabledSelected] : (ids[0] ?? disabledSelected[0] ?? "")
+            }
             disabled={view.pending}
             onChange={(e) => {
-              const next = Array.from(e.currentTarget.selectedOptions, (o) => o.value);
+              const next = Array.from(e.currentTarget.selectedOptions)
+                .filter((o) => !o.disabled)
+                .map((o) => o.value);
               setIds(next);
               if (!state.multiple) target.answer(popup.ref, { itemIds: next });
             }}
