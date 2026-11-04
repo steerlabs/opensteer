@@ -708,6 +708,9 @@
   gap: var(--space-8);
   order: 10;
 }
+.connect-card__foot--lead {
+  order: 0;
+}
 .connect-card__foot-row {
   display: flex;
   flex-wrap: wrap;

@@ -273,21 +273,24 @@ const accountLabel = (account: Pick<AccessRequestAccount, "accountIdentifier" | 
 
 /**
  * A row's second line, only where its label alone does not tell it from
- * another row: a name it was given, or else when it was added.
+ * another row: a name only it has, or else when it was added.
  */
 function accountRowDetail(
   account: AccessRequestAccount,
   accounts: readonly AccessRequestAccount[],
 ): string | null {
-  const label = accountLabel(account).trim().toLocaleLowerCase();
-  const twin = accounts.some(
-    (other) => other.id !== account.id && accountLabel(other).trim().toLocaleLowerCase() === label,
-  );
-  if (!twin) return null;
-  return account.accountIdentifier !== null &&
-    account.displayName.trim().toLocaleLowerCase() !== label
-    ? account.displayName
-    : integrationAccountDetail(account, accounts);
+  const comparable = (value: string) => value.trim().toLocaleLowerCase();
+  const label = comparable(accountLabel(account));
+  const alike = accounts.filter((other) => comparable(accountLabel(other)) === label);
+  if (alike.length < 2) return null;
+  const name = comparable(account.displayName);
+  const nameSetsItApart =
+    name !== label &&
+    alike.every(({ displayName, id }) => id === account.id || comparable(displayName) !== name);
+  if (nameSetsItApart) return account.displayName;
+  // Without identifiers the detail is the date: the identifier is the label already.
+  const dated = (other: AccessRequestAccount) => ({ ...other, accountIdentifier: null });
+  return integrationAccountDetail(dated(account), alike.map(dated));
 }
 
 /**

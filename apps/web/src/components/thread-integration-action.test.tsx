@@ -296,6 +296,104 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
     expect(dashboard).toHaveBeenCalledTimes(2);
   });
 
+  it("offers a project's access beside the key form, and the key answers with it", async () => {
+    const loaded = apiKeyRequest();
+    loaded.platform.installations[0]!.tools = [
+      { annotations: { readOnlyHint: false }, connectionId: null, serverId: "server-provider" },
+    ] as never;
+    const record = requestRecord(loaded, "Connect integration");
+    const account = {
+      accountIdentifier: null,
+      computer: null,
+      createdAt: "2026-01-01T00:00:00Z",
+      definitionId: "provider-integration",
+      displayName: "Account A",
+      id: "connection-a",
+      provider: "linear",
+      status: "connected",
+    };
+    let accounts = loaded.dashboard.connections;
+    let requestPending = true;
+    const dispatch = vi.fn(async (command: { type: string }) => {
+      if (command.type === "integration.apiKey.connect") {
+        accounts = [account] as never;
+        return { connectionId: account.id, type: command.type };
+      }
+      if (command.type === "request.respond") requestPending = false;
+      return { type: command.type };
+    });
+    shellState.current = {
+      snapshot: shellSnapshot(),
+      hostClient: {
+        dispatch,
+        getSnapshot: () => shellSnapshot(),
+        rpc: {
+          "integrations.get": async () => ({
+            ok: true,
+            data: { ...loaded.dashboard, connections: accounts },
+          }),
+          "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+          "thread.requests.list": async () => ({
+            ok: true,
+            data: {
+              requests: requestPending ? [record] : [],
+              window: { hasMore: false, nextBefore: null },
+            },
+          }),
+        },
+      },
+    };
+    const container = await mountThreadAction(record);
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]');
+    if (!key) throw new Error("The Connect card never showed the API key field.");
+    const readWrite = container.querySelector<HTMLButtonElement>(
+      '.connect-card__access [data-value="read-write"]',
+    );
+    if (!readWrite) throw new Error("The key form hid the project's access choice.");
+    await act(async () => readWrite.click());
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        key,
+        "test-api-key",
+      );
+      key.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => key.form?.requestSubmit());
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          response: expect.objectContaining({
+            value: expect.objectContaining({ access: "read-write" }),
+          }),
+          type: "request.respond",
+        }),
+      ),
+    );
+  });
+
+  it("still names the request when its account details cannot load", async () => {
+    const loaded = oauthRequest();
+    shellState.current = {
+      snapshot: shellSnapshot(),
+      hostClient: {
+        dispatch: vi.fn(),
+        getSnapshot: () => shellSnapshot(),
+        rpc: {
+          "integrations.get": async () => {
+            throw new Error("The Host could not be reached.");
+          },
+          "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+        },
+      },
+    };
+    const container = await mountThreadAction(
+      requestRecord(loaded, "Gmail access"),
+      "The Host could not be reached.",
+    );
+    expect(container.textContent).toContain("Gmail access");
+    expect(container.textContent).toContain(loaded.request.reason);
+  });
+
   it.each(["denied", "cancelled", "failed"] as const)(
     "never fulfills an old selection after another account is %s",
     async (status) => {

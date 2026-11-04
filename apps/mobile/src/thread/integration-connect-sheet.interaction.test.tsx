@@ -295,6 +295,24 @@ describe("IntegrationConnectCard", () => {
     },
   );
 
+  // Dismissing a sheet abandons the operation it belongs to, so the account list
+  // must not open over a sign-in the card is still waiting on.
+  it("keeps the full account list closed while a sign-in is out", async () => {
+    const client = fakeClient({
+      connections: ["a", "b", "c", "d"].map((id) => connection(id)),
+      selected: hosted,
+      sources: [hosted],
+    });
+    beginIntegrationAuthorization.mockImplementation(() => new Promise(() => {}));
+    await render(client);
+    await click("Add another account");
+    expect(text()).toContain("Finish signing in");
+
+    await click("See all 4 accounts");
+
+    expect(document.querySelector("h1")).toBeNull();
+  });
+
   it("does not grant a different mobile request when consent finishes", async () => {
     const client = fakeClient({ workspaceKind: "project", sources: [hosted] });
     let complete!: (value: ReturnType<typeof completed>) => void;

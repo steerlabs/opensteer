@@ -752,11 +752,16 @@ export function IntegrationConnectCard(props: {
           {collapsed.hidden > 0 ? (
             <Pressable
               accessibilityRole="button"
+              accessibilityState={{ disabled: busy || connecting }}
+              // Dismissing a sheet abandons what it belongs to, so the list
+              // cannot open over an answer the card is still waiting on.
+              disabled={busy || connecting}
               onPress={() => showForm("accounts")}
               style={({ pressed }) => [
                 styles.row,
                 styles.rowSeparated,
                 pressed && styles.rowPressed,
+                (busy || connecting) && styles.rowDisabled,
               ]}
             >
               <AppText role="secondaryMedium" style={styles.rowText} tone="soft">

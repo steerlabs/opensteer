@@ -226,6 +226,17 @@ describe("connectCard", () => {
       ]),
     ).toEqual([["you0@gmail.com", "Work inbox"]]);
   });
+  it("falls back to when look-alikes were added once their names match too", () => {
+    const value = loaded("provider", 2);
+    value.dashboard.connections = value.dashboard.connections.map((connection, index) => ({
+      ...connection,
+      accountIdentifier: "you@gmail.com",
+      createdAt: `2026-01-0${index + 1}T00:00:00Z`,
+      displayName: "Work inbox",
+    }));
+    const card = connectCard({ loaded: value, workspace });
+    expect(card.accounts.map(({ detail }) => detail)).toEqual(["Added Jan 1", "Added Jan 2"]);
+  });
   it("repairs a pinned account and never offers another", () => {
     const original = loaded("provider", 2);
     let value = {

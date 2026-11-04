@@ -505,10 +505,16 @@ export function ThreadIntegrationAction({
   };
 
   if (!requestPayload)
-    return <ActionNote alert>This integration access Request is invalid.</ActionNote>;
+    return (
+      <>
+        <RequestNameHead request={request} />
+        <ActionNote alert>This integration access Request is invalid.</ActionNote>
+      </>
+    );
   if (!targetWorkspace || !loaded)
     return (
       <>
+        <RequestNameHead request={request} />
         <ActionNote alert={Boolean(error)}>
           {error ??
             (!targetWorkspace
@@ -670,7 +676,13 @@ export function ThreadIntegrationAction({
         {card.success}
       </div>
     );
-  if (requestSettled) return <ActionNote>Request answered</ActionNote>;
+  if (requestSettled)
+    return (
+      <>
+        <RequestNameHead request={request} />
+        <ActionNote>Request answered</ActionNote>
+      </>
+    );
   const foot = (actions: ReactNode, access: ReactNode = null) => (
     <ConnectCardFoot
       access={access}
@@ -1089,7 +1101,7 @@ export function ThreadIntegrationAction({
             </>,
             accessChoice,
           )
-        : foot(null)}
+        : foot(null, accessChoice)}
       {card.error ? <ActionNote alert>{card.error}</ActionNote> : null}
       {computerSetupNotice ? (
         <>
@@ -1281,6 +1293,20 @@ function accountInitial(label: string): string {
   return (label.trim()[0] ?? "?").toLocaleUpperCase();
 }
 
+/** What the Request says of itself, for the states with no card to name it. */
+function RequestNameHead({ request }: { readonly request: Request }) {
+  const reason = request.payload.kind === "integration.access" ? request.payload.reason : null;
+  return (
+    <div className="connect-card__titles">
+      <span className="connect-card__title">
+        <strong>{request.presentation.title}</strong>
+        {request.presentation.agentProposed ? <AgentProposedChip /> : null}
+      </span>
+      {reason ? <p className="connect-card__reason">{reason}</p> : null}
+    </div>
+  );
+}
+
 function ConnectCardHead({ card }: { readonly card: ConnectCard }) {
   return (
     <div className="connect-card__heading">
@@ -1299,7 +1325,8 @@ function ConnectCardHead({ card }: { readonly card: ConnectCard }) {
 /**
  * The card's last line: where the access lands, which opens what it means, and
  * the answer. It comes first in the markup so the primary action is the first
- * focus stop, and CSS places it at the foot.
+ * focus stop, and CSS places it at the foot. Beside a key form, which brings its
+ * own answer, it stays above the form: a key can answer the Request on submit.
  */
 function ConnectCardFoot({
   access,
@@ -1318,7 +1345,7 @@ function ConnectCardFoot({
 }) {
   const canOpen = details.length > 0;
   return (
-    <div className="connect-card__foot">
+    <div className={`connect-card__foot${actions === null ? " connect-card__foot--lead" : ""}`}>
       <div className="connect-card__foot-row">
         {actions === null ? null : <div className="connect-card__actions">{actions}</div>}
         {access}
