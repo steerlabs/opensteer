@@ -33,18 +33,19 @@ gh workflow run ci.yml --repo steerlabs/opensteer --ref main
 gh workflow run release.yml --repo steerlabs/opensteer --ref main -f channel=stable -f insider_tag=vX.Y.Z-insider
 ```
 
-Check the Stable ZIP hash equals the insider's, and inspect its launch-check evidence and the draft.
+Check the Stable and immutable insider provenance name the same source SHA; inspect the rebuilt
+Stable package's launch-check evidence and draft.
 Repeat with `-f publish=true`; publication waits for Tim's `publish` approval.
 
 ## Manual packaging
 
 Only for an authorized manual operation, into new absolute directories. Set `--launch-check-passed`
 only after the launch checker passed for those exact ZIP bytes. Publish only through the workflow,
-which carries the verified insider ZIP hash into `--certified-zip-sha256`.
+which verifies the immutable insider source provenance before Stable publication.
 
 ```sh
 pnpm desktop:public-release prepare --channel beta --app-zip /absolute/app.zip --version X.Y.Z --source-sha FULL_40_CHARACTER_SHA --out /absolute/new-insider --launch-check-passed
-pnpm desktop:public-release promote --repo steerlabs/opensteer --tag vX.Y.Z-insider --version X.Y.Z --source-sha FULL_40_CHARACTER_SHA --out /absolute/new-stable
+pnpm desktop:public-release promote --repo steerlabs/opensteer --tag vX.Y.Z-insider --version X.Y.Z --source-sha FULL_40_CHARACTER_SHA --app-zip /absolute/rebuilt-stable.zip --launch-check-passed --out /absolute/new-stable
 ```
 
 ## Previous-release baseline

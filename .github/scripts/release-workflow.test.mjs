@@ -222,6 +222,7 @@ function published(source) {
   return {
     tag_name: source.tag,
     target_commitish: source.sha,
+    immutable: true,
     draft: false,
     prerelease: true,
     published_at: "2026-10-30T00:00:00Z",
@@ -254,6 +255,7 @@ test("stable promotes the exact published insider source and version, even after
       { ...f.source, channel: "stable", tag: "desktop-v1.2.4" },
     );
     for (const mutation of [
+      { immutable: false },
       { draft: true },
       { prerelease: false },
       { target_commitish: "b".repeat(40) },
@@ -577,10 +579,7 @@ test("publication needs no certificate and verifies the resolved source", () => 
         context.github.sha,
       );
       const step = steps.find((s) => s.run?.includes("publish --repo"));
-      assert.equal(
-        step.env.CERTIFIED_ZIP_SHA256,
-        job === "publish-stable" ? "${{ needs.promote.outputs.zipSha256 }}" : undefined,
-      );
+      assert.equal(step.env.CERTIFIED_ZIP_SHA256, undefined);
       assert.equal(step.env.SOURCE_SHA, "${{ needs.preflight.outputs.sha }}");
       for (const hash of ["a".repeat(64), ""]) {
         execFileSync("bash", ["-c", step.run], {
@@ -593,7 +592,7 @@ test("publication needs no certificate and verifies the resolved source", () => 
         });
         assert.equal(
           readFileSync(calls, "utf8").trim(),
-          `desktop:public-release publish --repo steerlabs/opensteer --tag t --source-sha ${source}${job === "publish-stable" ? ` --certified-zip-sha256${hash ? ` ${hash}` : ""}` : ""}`,
+          `desktop:public-release publish --repo steerlabs/opensteer --tag t --source-sha ${source}`,
         );
       }
     }
@@ -840,18 +839,13 @@ test("launch tooling comes from the workflow commit", () => {
   );
 });
 
-test("stable promotion has no signing environment or rebuild and publication binds its verified hash", () => {
-  assert.match(workflow.jobs.build.if, /channel == 'beta'/);
-  const promotion = workflow.jobs.promote;
-  assert.equal(promotion.environment, undefined);
-  assert.doesNotMatch(JSON.stringify(promotion), /secrets\.|build-release|CSC_|APPLE_API/);
-  assert.match(JSON.stringify(promotion), /public-release promote/);
-  assert.match(workflow.jobs["publish-stable"].steps.at(-1).run, /--certified-zip-sha256/);
-  assert.equal(
-    workflow.jobs["publish-stable"].steps.at(-1).env.CERTIFIED_ZIP_SHA256,
-    "${{ needs.promote.outputs.zipSha256 }}",
-  );
-  assert.doesNotMatch(text, /OPENSTEER_DESKTOP_RELEASE_CHANNEL|Opensteer Beta.app|release\/beta/);
+test("stable rebuilds in release and publishes through secret-free approval", () => {
+  assert.doesNotMatch(workflow.jobs.build.if, /channel == 'beta'/);
+  assert.equal(workflow.jobs.build.environment, "release");
+  assert.equal(workflow.jobs.promote, undefined);
+  assert.match(workflow.jobs.build.env.OPENSTEER_RELEASE_TRACK, /preflight.outputs.channel/);
+  assert.equal(workflow.jobs["publish-stable"].environment, "publish");
+  assert.doesNotMatch(JSON.stringify(workflow.jobs["publish-stable"]), /secrets\.|certified-zip/);
 });
 
 test("stable discovery refuses equal/older published Stable and tolerates first release or unrelated insiders", () => {

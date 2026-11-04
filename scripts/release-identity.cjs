@@ -18,7 +18,10 @@ function requireCanonicalReleaseIdentity(repositoryRoot, environment = process.e
     throw new Error("The Opensteer root package manifest must be a real regular file.");
   }
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  const version = manifest?.version;
+  const version =
+    typeof manifest?.version === "string"
+      ? manifest.version.replace(/-insider$/u, "")
+      : manifest?.version;
   if (
     typeof version !== "string" ||
     version.length > releaseVersionMaxLength ||

@@ -130,6 +130,9 @@ describe("canonical release identity", () => {
       builderArguments: [
         "-c.buildVersion=1.2.3",
         "-c.extraMetadata.version=1.2.3",
+        "-c.productName=Opensteer",
+        "-c.mac.executableName=Opensteer",
+        "-c.mac.bundleShortVersion=1.2.3",
         "-c.extraMetadata.opensteerBuild.version=1.2.3",
         `-c.extraMetadata.opensteerBuild.sourceRevision=${sourceRevision}`,
       ],
@@ -187,3 +190,22 @@ function git(repository: string, ...arguments_: string[]): string {
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
 }
+
+it("builds Beta branding with fixed paths and numeric native versions", async () => {
+  const repository = await fixtureRepository("1.2.3-insider");
+  const result = desktopReleaseMetadata(
+    repository,
+    { OPENSTEER_SOURCE_REVISION: "a".repeat(40) },
+    { verifyRepository: false },
+  );
+  expect(result.identity.version).toBe("1.2.3");
+  expect(result.builderArguments).toEqual(
+    expect.arrayContaining([
+      "-c.extraMetadata.version=1.2.3-insider",
+      "-c.productName=Opensteer (Beta)",
+      "-c.mac.executableName=Opensteer",
+      "-c.buildVersion=1.2.3",
+      "-c.mac.bundleShortVersion=1.2.3",
+    ]),
+  );
+});

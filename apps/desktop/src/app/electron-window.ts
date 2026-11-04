@@ -1,7 +1,9 @@
+import { resolveDesktopAppBranding } from "./DesktopEnvironment.js";
 import { isAppPrefixNavigation } from "@opensteer/shared/appFrame";
 import { configureDesktopPermissions } from "./media-permissions.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import {
+  app,
   BaseWindow,
   BrowserWindow,
   WebContentsView,
@@ -167,7 +169,7 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
         minHeight: 560,
         minWidth: 760,
         show: false,
-        title: "Opensteer",
+        title: resolveDesktopAppBranding(app.getVersion()).displayName,
         ...desktopWindowChromeOptions(process.platform),
         width: 1_360,
       },

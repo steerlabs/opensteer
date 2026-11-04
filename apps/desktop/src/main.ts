@@ -74,6 +74,7 @@ import {
   desktopWindowForContents,
   ElectronWindowFactory,
 } from "./app/electron-window.js";
+import { resolveDesktopAppBranding } from "./app/DesktopEnvironment.js";
 import { createDesktopApplicationMenu, showDesktopUpdateMenuItem } from "./app/application-menu.js";
 import { DesktopTrayService } from "./app/desktop-tray.js";
 import { AgentPhoneAdbServer } from "./app/agent-phone-adb-server.js";
@@ -218,6 +219,9 @@ if (acceptLaunch()) {
       process.env.OPENSTEER_DESKTOP_MODE?.trim() === "test" ? "test" : defaultMode(),
     ),
   );
+  app.setAboutPanelOptions({
+    applicationName: resolveDesktopAppBranding(app.getVersion()).displayName,
+  });
   app.enableSandbox();
   void startDesktop().catch((error: unknown) => {
     if (shutdown.requested) return;
@@ -1116,6 +1120,7 @@ async function runDesktop(
   };
   Menu.setApplicationMenu(
     createDesktopApplicationMenu({
+      displayName: resolveDesktopAppBranding(app.getVersion()).displayName,
       workspaceContents: (window) => (mainWindows.owns(window) ? window.webContents : null),
       browserKey: (key) => browserPresentation.menuKey(key),
       ...(loaded.config.updates

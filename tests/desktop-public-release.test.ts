@@ -82,6 +82,7 @@ it.skipIf(process.platform !== "darwin").each(["stable", "beta"] as const)(
       }
       if (exe === "/usr/libexec/PlistBuddy") {
         const values: Record<string, string> = {
+          CFBundleName: beta ? "Opensteer (Beta)" : "Opensteer",
           CFBundleIdentifier: "com.opensteer.opensteer",
           CFBundleShortVersionString: version,
           CFBundleVersion: version,
@@ -115,7 +116,7 @@ it.skipIf(process.platform !== "darwin").each(["stable", "beta"] as const)(
     expect(manifest.notes).toContain("Known issue");
     const metadata = parseYaml(await readFile(path.join(input.out, metadataName), "utf8"));
     const bytes = await readFile(zip);
-    expect(metadata.version).toBe(version);
+    expect(metadata.version).toBe(version + (beta ? "-insider" : ""));
     expect(metadata.files).toEqual([
       {
         url: zipName,
@@ -139,6 +140,7 @@ it.skipIf(process.platform !== "darwin").each(["stable", "beta"] as const)(
     if (channel === "beta") {
       const published = {
         id: 1,
+        immutable: true,
         draft: false,
         prerelease: true,
         tag_name: manifest.tag,
@@ -157,17 +159,29 @@ it.skipIf(process.platform !== "darwin").each(["stable", "beta"] as const)(
         }
         return JSON.stringify([[published]]);
       };
+      const stableRun: typeof runBounded = (exe, args, options) =>
+        exe === "/usr/libexec/PlistBuddy" && args.includes("Print :CFBundleName")
+          ? Promise.resolve("Opensteer")
+          : promotionRun(exe, args, options);
       const promotedDir = path.join(root, "promoted");
       const stable = await promote(
-        { repo: "steerlabs/opensteer", tag: manifest.tag, sourceSha, version, out: promotedDir },
-        promotionRun,
+        {
+          repo: "steerlabs/opensteer",
+          tag: manifest.tag,
+          sourceSha,
+          version,
+          out: promotedDir,
+          appZip: zip,
+          launchCheckPassed: true,
+        },
+        stableRun,
       );
       expect(stable.assets[zipName]).toBe(manifest.assets[zipName]);
       expect(stable.assets[zipName + ".blockmap"]).toBe(manifest.assets[zipName + ".blockmap"]);
       expect(stable.launchCheck).toBe("passed");
       expect(
         parseYaml(await readFile(path.join(promotedDir, "latest-mac.yml"), "utf8")).releaseDate,
-      ).toBe(metadata.releaseDate);
+      ).toEqual(expect.any(String));
       const again = await promote(
         {
           repo: "steerlabs/opensteer",
@@ -175,10 +189,12 @@ it.skipIf(process.platform !== "darwin").each(["stable", "beta"] as const)(
           sourceSha,
           version,
           out: path.join(root, "promoted-again"),
+          appZip: zip,
+          launchCheckPassed: true,
         },
-        promotionRun,
+        stableRun,
       );
-      expect(again).toEqual(stable);
+      expect(again.sourceSha).toBe(stable.sourceSha);
     }
     cache = "wrong-cache";
     await expect(prepare(input, run)).rejects.toThrow();
@@ -332,6 +348,31 @@ it("creates alpha drafts beside legacy releases, reuses exact assets, refuses dr
   await expect(draft(dir, "steerlabs/opensteer", run)).rejects.toThrow("Asset differs");
 });
 
+async function withInsider(run: typeof runBounded): Promise<typeof runBounded> {
+  const insider = await releaseFixture("beta");
+  Object.assign(insider.release, { draft: false, immutable: true });
+  return async (exe, args, options) => {
+    if (exe === "gh" && args[1] === "download" && args[2] === insider.manifest.tag) {
+      const dest = args[args.indexOf("--dir") + 1]!;
+      for (const name of [...Object.keys(insider.manifest.assets), "release.json"])
+        await copyFile(path.join(insider.dir, name), path.join(dest, name));
+      return "";
+    }
+    const result = await run(exe, args, options);
+    if (
+      exe === "gh" &&
+      args[0] === "api" &&
+      !args.includes("PATCH") &&
+      args.at(-1)?.startsWith("repos/steerlabs/opensteer/releases?")
+    ) {
+      const pages = JSON.parse(result) as unknown[][];
+      pages.push([insider.release]);
+      return JSON.stringify(pages);
+    }
+    return result;
+  };
+}
+
 // Optional pinning must ship exactly the selected zip, even when a later swap
 // rewrote release.json and SHA256SUMS to match the new bytes.
 it("binds publication to the verified ZIP and requires certification for Stable", async () => {
@@ -394,8 +435,8 @@ it("binds publication to the verified ZIP and requires certification for Stable"
   await writeFile(path.join(stable.dir, "release.json"), JSON.stringify(stable.manifest));
   await expect(
     publish("steerlabs/opensteer", stable.manifest.tag, provider(stable)),
-  ).rejects.toThrow(/verified insider ZIP hash/);
-  await publish("steerlabs/opensteer", stable.manifest.tag, provider(stable), {
+  ).rejects.toThrow(/published insider/);
+  await publish("steerlabs/opensteer", stable.manifest.tag, await withInsider(provider(stable)), {
     channel: "stable",
     certifiedZipSha256: certifiedZip(stable.manifest),
   });
@@ -437,14 +478,14 @@ it("publishes only verified drafts through a fake provider and rechecks anonymou
     } else throw new Error("Unexpected provider");
     return "";
   };
-  await publish("steerlabs/opensteer", manifest.tag, run, {
+  await publish("steerlabs/opensteer", manifest.tag, await withInsider(run), {
     certifiedZipSha256: certifiedZip(manifest),
   });
   expect(patches).toBe(1);
   // A draft retargeted away from the built source must not be published.
   release.target_commitish = "main";
   await expect(
-    publish("steerlabs/opensteer", manifest.tag, run, {
+    publish("steerlabs/opensteer", manifest.tag, await withInsider(run), {
       certifiedZipSha256: certifiedZip(manifest),
     }),
   ).rejects.toThrow("disagree");
@@ -453,7 +494,7 @@ it("publishes only verified drafts through a fake provider and rechecks anonymou
   // A draft whose bytes drifted must never become public or Latest.
   tamperDraft = true;
   await expect(
-    publish("steerlabs/opensteer", manifest.tag, run, {
+    publish("steerlabs/opensteer", manifest.tag, await withInsider(run), {
       certifiedZipSha256: certifiedZip(manifest),
     }),
   ).rejects.toThrow("Asset differs");
@@ -461,14 +502,14 @@ it("publishes only verified drafts through a fake provider and rechecks anonymou
   tamperDraft = false;
   tamperPublic = true;
   await expect(
-    publish("steerlabs/opensteer", manifest.tag, run, {
+    publish("steerlabs/opensteer", manifest.tag, await withInsider(run), {
       certifiedZipSha256: certifiedZip(manifest),
     }),
   ).rejects.toThrow("Asset differs");
   // Rerunning on an already published release only repeats the anonymous check.
   release.draft = false;
   tamperPublic = false;
-  await publish("steerlabs/opensteer", manifest.tag, run, {
+  await publish("steerlabs/opensteer", manifest.tag, await withInsider(run), {
     certifiedZipSha256: certifiedZip(manifest),
   });
   expect(patches).toBe(2);
@@ -513,7 +554,7 @@ it("beta drafts and publication never mark Latest", async () => {
     return "";
   };
   await draft(dir, "steerlabs/opensteer", run, "beta");
-  await publish("steerlabs/opensteer", manifest.tag, run, { channel: "beta" });
+  await publish("steerlabs/opensteer", manifest.tag, await withInsider(run), { channel: "beta" });
 });
 
 it.skipIf(process.platform !== "darwin")("rejects a real ad-hoc-signed archive", async () => {
@@ -553,7 +594,7 @@ async function fixtureBundle(root: string, id: string, bundleVersion: string) {
 function writeFixturePlist(bundle: string, id: string, bundleVersion: string) {
   return writeFile(
     path.join(bundle, "Contents/Info.plist"),
-    `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${id}</string><key>CFBundleVersion</key><string>${bundleVersion}</string><key>CFBundleShortVersionString</key><string>${bundleVersion}</string><key>OpensteerSourceRevision</key><string>${sourceSha}</string><key>OpensteerUpdateFeed</key><string>https://github.com/steerlabs/opensteer</string><key>CFBundleExecutable</key><string>Opensteer</string></dict></plist>`,
+    `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleName</key><string>Opensteer</string><key>CFBundleIdentifier</key><string>${id}</string><key>CFBundleVersion</key><string>${bundleVersion}</string><key>CFBundleShortVersionString</key><string>${bundleVersion}</string><key>OpensteerSourceRevision</key><string>${sourceSha}</string><key>OpensteerUpdateFeed</key><string>https://github.com/steerlabs/opensteer</string><key>CFBundleExecutable</key><string>Opensteer</string></dict></plist>`,
   );
 }
 
@@ -653,47 +694,67 @@ describe.skipIf(process.platform !== "darwin" || process.arch !== "arm64")(
     // Signing tools and process state are shimmed so the transition is
     // deterministic: while the installer waits for the app to quit, ShipIt
     // installs a newer staged update than the installer's pinned release.
-    it("keeps a newer update ShipIt installed while the installer waited", async () => {
-      const root = await scratch();
-      const bundle = await fixtureBundle(root, "com.opensteer.opensteer", version);
-      const zip = path.join(root, "application.zip");
-      await exec("ditto", ["-c", "-k", "--keepParent", bundle, zip]);
-      const target = path.join(root, "Applications");
-      const installed = path.join(target, "Opensteer.app");
-      await mkdir(target);
-      await exec("ditto", [bundle, installed]);
-      await writeFixturePlist(installed, "com.opensteer.opensteer", "0.1.219");
-      const state = path.join(root, "state");
-      await mkdir(state);
-      await writeFile(path.join(state, "running"), "");
-      const shims = path.join(root, "bin");
-      await mkdir(shims);
-      const shim = (name: string, body: string) =>
-        writeFile(path.join(shims, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
-      await shim("codesign", `case "$*" in *-dv*) echo TeamIdentifier=B47U2LLKHW >&2 ;; esac`);
-      await shim("spctl", "exit 0");
-      await shim(
-        "ps",
-        `[ -e "${state}/running" ] && echo "${installed}/Contents/MacOS/Opensteer"; exit 0`,
-      );
-      await shim(
-        "osascript",
-        `/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.1.221" -c "Set :CFBundleVersion 0.1.221" "${installed}/Contents/Info.plist" && rm "${state}/running"`,
-      );
-      const mirror = await fixtureMirror(zip, () => false);
-      try {
-        await installer(mirror.url, target, { PATH: `${shims}:${process.env.PATH ?? ""}` });
-        await expect(
-          exec("/usr/libexec/PlistBuddy", [
+    it.each(["newer ShipIt update", "same-base Beta"])(
+      "handles %s during Stable installation",
+      async (scenario) => {
+        const root = await scratch();
+        const bundle = await fixtureBundle(root, "com.opensteer.opensteer", version);
+        const zip = path.join(root, "application.zip");
+        await exec("ditto", ["-c", "-k", "--keepParent", bundle, zip]);
+        const target = path.join(root, "Applications");
+        const installed = path.join(target, "Opensteer.app");
+        await mkdir(target);
+        await exec("ditto", [bundle, installed]);
+        await writeFixturePlist(installed, "com.opensteer.opensteer", "0.1.219");
+        const state = path.join(root, "state");
+        await mkdir(state);
+        if (scenario === "same-base Beta") {
+          await writeFixturePlist(installed, "com.opensteer.opensteer", version);
+          await exec("/usr/libexec/PlistBuddy", [
             "-c",
-            "Print :CFBundleShortVersionString",
+            "Set :CFBundleName Opensteer (Beta)",
             path.join(installed, "Contents/Info.plist"),
-          ]),
-        ).resolves.toMatchObject({ stdout: "0.1.221\n" });
-      } finally {
-        await mirror.close();
-      }
-    });
+          ]);
+        } else await writeFile(path.join(state, "running"), "");
+        const shims = path.join(root, "bin");
+        await mkdir(shims);
+        const shim = (name: string, body: string) =>
+          writeFile(path.join(shims, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+        await shim("codesign", `case "$*" in *-dv*) echo TeamIdentifier=B47U2LLKHW >&2 ;; esac`);
+        await shim("spctl", "exit 0");
+        await shim(
+          "ps",
+          `[ -e "${state}/running" ] && echo "${installed}/Contents/MacOS/Opensteer"; exit 0`,
+        );
+        await shim(
+          "osascript",
+          `/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.1.221" -c "Set :CFBundleVersion 0.1.221" "${installed}/Contents/Info.plist" && rm "${state}/running"`,
+        );
+        const mirror = await fixtureMirror(zip, () => false);
+        try {
+          await installer(mirror.url, target, { PATH: `${shims}:${process.env.PATH ?? ""}` });
+          await expect(
+            exec("/usr/libexec/PlistBuddy", [
+              "-c",
+              "Print :CFBundleShortVersionString",
+              path.join(installed, "Contents/Info.plist"),
+            ]),
+          ).resolves.toMatchObject({
+            stdout: scenario === "same-base Beta" ? `${version}\n` : "0.1.221\n",
+          });
+          if (scenario === "same-base Beta")
+            await expect(
+              exec("/usr/libexec/PlistBuddy", [
+                "-c",
+                "Print :CFBundleName",
+                path.join(installed, "Contents/Info.plist"),
+              ]),
+            ).resolves.toMatchObject({ stdout: "Opensteer\n" });
+        } finally {
+          await mirror.close();
+        }
+      },
+    );
   },
 );
 
@@ -718,6 +779,8 @@ it("promotion rejects drafts, missing blockmaps and mismatched source evidence b
     sourceSha,
     version,
     out: path.join(await scratch(), "promoted"),
+    appZip: "/unused.zip",
+    launchCheckPassed: true,
   };
   let missing = false;
   const run: typeof runBounded = async (exe, args) => {
@@ -734,6 +797,7 @@ it("promotion rejects drafts, missing blockmaps and mismatched source evidence b
   };
   await expect(promote(input, run)).rejects.toThrow(/published insider/);
   fixture.release.draft = false;
+  Object.assign(fixture.release, { immutable: true });
   missing = true;
   await expect(promote(input, run)).rejects.toThrow(/ENOENT/);
   missing = false;

@@ -163,3 +163,17 @@ it("refuses unreadable manifests and shallow histories", async () => {
   versionGit(root, "commit", "-m", "missing manifest");
   expect(() => deriveReleaseVersion(root, versionGit(root, "rev-parse", "HEAD"))).toThrow();
 });
+
+it("stamps Beta independently while preserving numeric canonical provenance", async () => {
+  const root = await history();
+  const sha = await addCommit(root, "beta");
+  stampReleaseVersion(root, sha, "1.2.4", "beta");
+  expect(JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version).toBe(
+    "1.2.4-insider",
+  );
+  expect(requireCanonicalReleaseIdentity(root, { OPENSTEER_SOURCE_REVISION: sha }).version).toBe(
+    "1.2.4",
+  );
+  stampReleaseVersion(root, sha, "1.2.4", "stable");
+  expect(JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version).toBe("1.2.4");
+});

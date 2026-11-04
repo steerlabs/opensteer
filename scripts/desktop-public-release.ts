@@ -28,6 +28,7 @@ function channelConfig(channel: Channel) {
   const beta = channel === "beta";
   return {
     app: "Opensteer.app",
+    productName: beta ? "Opensteer (Beta)" : "Opensteer",
     bundleId: "com.opensteer.opensteer",
     zip: "Opensteer-mac-arm64.zip",
     metadata: beta ? "insider-mac.yml" : "latest-mac.yml",
@@ -102,6 +103,7 @@ type Run = typeof runBounded;
 export const releaseSchema = z.object({
   id: z.number().int(),
   draft: z.boolean(),
+  immutable: z.boolean().optional(),
   prerelease: z.boolean(),
   tag_name: z.string(),
   target_commitish: z.string(),
@@ -192,6 +194,7 @@ export async function prepare(
       (await plist("CFBundleVersion")) !== version
     )
       throw new Error("Bundle versions disagree");
+    if ((await plist("CFBundleName")) !== config.productName) throw Error("Wrong product name");
     if ((await plist("OpensteerSourceRevision")) !== sourceSha)
       throw new Error("Source revision disagrees");
     const embeddedFeed = await plist("OpensteerUpdateFeed");
@@ -217,8 +220,7 @@ export async function prepare(
       throw new Error("Private updater host requires --allow-private-feed");
     privateFeed ||= updater.host !== undefined;
     const executable = await plist("CFBundleExecutable");
-    if (!executable || path.basename(executable) !== executable || [".", ".."].includes(executable))
-      throw new Error("Invalid bundle executable");
+    if (executable !== "Opensteer") throw new Error("Invalid bundle executable");
     if (
       (await command("lipo", ["-archs", path.join(app, "Contents/MacOS", executable)])).trim() !==
       "arm64"
@@ -263,7 +265,7 @@ export async function prepare(
     await writeFile(
       path.join(out, config.metadata),
       stringifyYaml({
-        version,
+        version: version + (channel === "beta" ? "-insider" : ""),
         files: [{ url, sha512, size }],
         path: url,
         sha512,
@@ -459,14 +461,14 @@ async function stableHeadGuard(repo: string, version: string, run: Run) {
   requireNewerStable(version, releases);
 }
 
-export async function promote(
-  input: { repo: string; tag: string; sourceSha: string; version: string; out: string },
+export async function verifyInsiderProvenance(
+  input: { repo: string; tag: string; sourceSha: string; version: string },
   run: Run = runBounded,
 ) {
   const repo = repoSchema.parse(input.repo);
   const tag = tagSchema.parse(input.tag);
   const release = await findRelease(repo, tag, run);
-  if (!release || release.draft || !release.prerelease)
+  if (!release || release.draft || !release.prerelease || release.immutable !== true)
     throw new Error("Promotion requires a published insider");
   const temp = await mkdtemp(path.join(tmpdir(), "opensteer-promote-"));
   try {
@@ -487,28 +489,36 @@ export async function promote(
       throw new Error("Insider source/version/launch-check evidence disagree");
     await verifyAssets(temp, manifest);
     await stableHeadGuard(repo, manifest.version, run);
-    const metadata = z
-      .object({ releaseDate: z.string() })
-      .parse(parseYaml(await readFile(path.join(temp, "insider-mac.yml"), "utf8")));
-    const stable = await prepare(
-      {
-        channel: "stable",
-        appZip: path.join(temp, "Opensteer-mac-arm64.zip"),
-        blockmap: path.join(temp, "Opensteer-mac-arm64.zip.blockmap"),
-        releaseDate: metadata.releaseDate,
-        version: manifest.version,
-        sourceSha: manifest.sourceSha,
-        out: input.out,
-        launchCheckPassed: true,
-      },
-      run,
-    );
-    if (stable.assets["Opensteer-mac-arm64.zip"] !== manifest.assets["Opensteer-mac-arm64.zip"])
-      throw new Error("Promoted ZIP differs from verified insider");
-    return stable;
+    return manifest;
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
+}
+
+export async function promote(
+  input: {
+    repo: string;
+    tag: string;
+    sourceSha: string;
+    version: string;
+    out: string;
+    appZip: string;
+    launchCheckPassed: boolean;
+  },
+  run: Run = runBounded,
+) {
+  await verifyInsiderProvenance(input, run);
+  return prepare(
+    {
+      channel: "stable",
+      appZip: input.appZip,
+      version: input.version,
+      sourceSha: input.sourceSha,
+      out: input.out,
+      launchCheckPassed: input.launchCheckPassed,
+    },
+    run,
+  );
 }
 
 export async function publish(
@@ -551,8 +561,15 @@ export async function publish(
   // only repeats the anonymous check below.
   if (release.draft) {
     if (manifest.channel === "stable") {
-      if (!certifiedZipSha256)
-        throw new Error("Stable publication requires the verified insider ZIP hash");
+      await verifyInsiderProvenance(
+        {
+          repo,
+          tag: `v${manifest.version}-insider`,
+          sourceSha: manifest.sourceSha,
+          version: manifest.version,
+        },
+        run,
+      );
       await stableHeadGuard(repo, manifest.version, run);
     }
     await run("gh", [
@@ -640,6 +657,8 @@ export async function main(args = process.argv.slice(2)) {
       sourceSha: required("source-sha"),
       version: required("version"),
       out: required("out"),
+      appZip: required("app-zip"),
+      launchCheckPassed: values["launch-check-passed"] === true,
     });
     if (process.env.GITHUB_OUTPUT) {
       const { appendFile } = await import("node:fs/promises");

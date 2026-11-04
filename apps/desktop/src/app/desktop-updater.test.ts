@@ -394,3 +394,55 @@ it("reserves the check before notifying subscribers that may request a switch", 
   expect(save).toHaveBeenCalledWith("beta");
   expect(updater.state().channel).toBe("beta");
 });
+
+it("offers Stable over the same Beta base and refuses the reverse through electron-updater", async () => {
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { parse } = createRequire(require.resolve("electron-updater"))("semver") as {
+    parse: (version: string) => { version: string };
+  };
+  const available = (
+    AppUpdater.prototype as unknown as {
+      isUpdateAvailable: (
+        this: AppUpdater,
+        value: {
+          version: string;
+          files: never[];
+          path: string;
+          sha512: string;
+          releaseDate: string;
+        },
+      ) => Promise<boolean>;
+    }
+  ).isUpdateAvailable;
+  const candidate = (version: string) => ({
+    version,
+    files: [],
+    path: "",
+    sha512: "",
+    releaseDate: "",
+  });
+  const native = {
+    currentVersion: parse("0.1.396-insider"),
+    allowDowngrade: false,
+    isUpdateSupported: () => true,
+    isUserWithinRollout: () => true,
+  };
+  expect(await available.call(native as unknown as AppUpdater, candidate("0.1.396"))).toBe(true);
+  native.currentVersion = parse("0.1.396");
+  expect(await available.call(native as unknown as AppUpdater, candidate("0.1.396-insider"))).toBe(
+    false,
+  );
+  expect(await available.call(native as unknown as AppUpdater, candidate("0.1.397-insider"))).toBe(
+    true,
+  );
+  mocks.updater.checkForUpdates.mockResolvedValueOnce({
+    isUpdateAvailable: false,
+    updateInfo: { version: "0.1.396-insider" },
+  });
+  const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
+  expect(await updater.check()).toMatchObject({
+    status: "ahead",
+    latestVersion: "0.1.396-insider",
+  });
+});

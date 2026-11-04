@@ -127,7 +127,7 @@ try {
     values.version ?? deriveReleaseVersion({ repositoryRoot: source, revision }),
   );
   assert(compareStableVersions(version, baseVersion) > 0);
-  stampReleaseVersion(source, revision, version);
+  stampReleaseVersion(source, revision, version, channel);
   await run("pnpm", ["install", "--frozen-lockfile", "--prefer-offline"], {
     cwd: source,
     timeoutMs: 300_000,

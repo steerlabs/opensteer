@@ -132,7 +132,10 @@ function verifyHelperBundleRelease(resources, directoryName, appName, programs) 
 }
 
 function verifyDesktopApplicationIdentity(desktop, appInfo, protocols) {
-  if (desktop.application.name !== appInfo.productName) {
+  if (
+    appInfo.productName !== desktop.application.name &&
+    appInfo.productName !== `${desktop.application.name} (Beta)`
+  ) {
     throw new Error("Packaged Desktop application name does not match its release manifest.");
   }
   if (desktop.application.id !== appInfo.id) {

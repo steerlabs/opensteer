@@ -56,23 +56,24 @@ with fresh data, refuses any machine but an ephemeral CI runner or the test VM g
 no shipped behavior.
 
 Publication re-verifies the draft's assets, hashes, `SHA256SUMS`, source and signer with the
-workflow commit's publisher; no certification receipt is needed. Versions are numeric `X.Y.Z`,
+workflow commit's publisher; no certification receipt is needed. Provenance and native bundle versions are numeric `X.Y.Z`,
 the manifest base plus first-parent commits since it changed ([release-version.cjs](../scripts/release-version.cjs)).
 A new base must exceed the last derived version, and a release checkout may differ from its
 source only by the exact version stamp.
 
-Stable copies a published insider's byte-identical ZIP and blockmap, with no rebuild, signing or
-secrets. It re-verifies every asset, launch evidence, signature, team, staple and Gatekeeper,
-refuses versions at or below published Stable, and needs the source on first-parent main with
-green push CI and a green full main run at or after it. Tim approves only publication, through the
-`publish` environment.
+Stable resolves the exact source from a published immutable insider's provenance and rebuilds
+it with the Stable stamp in the `release` environment, including signing, notarization, stapling
+and a fresh launch check. Publication verifies matching insider source provenance rather than ZIP
+equality. It refuses versions at or below published Stable and requires first-parent main with
+green CI. Tim approves publication through the secret-free `publish` environment.
 
 ## Tim's one-time setup and rotation
 
 The `release` environment holds the signing secrets with **no required reviewer**, so insiders
 build automatically; its deployment refs are `main`, `desktop-v*` and `v*-insider`. Stable
 publication alone uses `publish`, with required reviewer `timjang3` and **no secrets**. Tim
-configures both; agents change no settings.
+configures both and enables immutable GitHub releases; Stable refuses mutable insider
+provenance. Agents change no settings.
 
 | Secret                                        | Contents and rotation                                                                                                                                                                                                                           |
 | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -112,7 +113,10 @@ Stable and Beta are settings of the one app, `com.opensteer.opensteer`; fresh in
 to Stable, and switching never downgrades. Stable uses channel `latest`, `desktop-vX.Y.Z` tags
 and GitHub Latest; Beta uses channel `insider` and `vX.Y.Z-insider` prereleases, because
 channel `beta` accepts legacy semver stable releases and prerelease discovery skips
-`desktop-v` tags. One Beta per numeric version satisfies Squirrel's downgrade guard. Beta takes
+`desktop-v` tags. Beta package versions are `X.Y.Z-insider`, Stable `X.Y.Z`; both native bundle versions remain
+numeric. Squirrel accepts equality, while semver permits Beta to Stable of the same base and
+refuses the reverse. Beta displays as “Opensteer (Beta)”; the executable, `Opensteer.app`, data
+and credential identities stay fixed. Beta takes
 the first eligible Atom entry, not the highest version, so publish in order with every asset
 ready. Updates run only from Applications and download only when the person asks. Log only the
 fixed failure reason, since native errors carry URLs and paths, and stop children and destroy

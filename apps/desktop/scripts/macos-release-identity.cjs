@@ -12,10 +12,10 @@ function appleTeamId() {
   const mode = loadSigningMode();
   return mode.mode === "signed" ? mode.signing.teamId : "";
 }
-function desktopReleaseIdentity() {
+function desktopReleaseIdentity(version = "") {
   return Object.freeze({
     bundleId: "com.opensteer.opensteer",
-    productName: "Opensteer",
+    productName: version.endsWith("-insider") ? "Opensteer (Beta)" : "Opensteer",
     teamId: appleTeamId(),
   });
 }
@@ -60,6 +60,12 @@ function verifyPackagedMacReleaseIdentity(appPath, identity) {
     throw new Error(`The packaged app must use product name ${identity.productName}.`);
   }
 
+  if (readPlistString(infoPath, "CFBundleExecutable") !== "Opensteer")
+    throw Error("Unexpected app executable");
+  for (const key of ["CFBundleShortVersionString", "CFBundleVersion"]) {
+    if (!/^\d+\.\d+\.\d+$/u.test(readPlistString(infoPath, key)))
+      throw Error("Native versions must be numeric");
+  }
   const signature = runText("/usr/bin/codesign", ["-dv", "--verbose=4", appPath]);
   if (!signature.split(/\r?\n/u).includes(`Identifier=${identity.bundleId}`)) {
     throw new Error(`The signed app must use code-signing identifier ${identity.bundleId}.`);
