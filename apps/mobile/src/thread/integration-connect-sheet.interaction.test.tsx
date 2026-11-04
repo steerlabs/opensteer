@@ -443,6 +443,80 @@ describe("IntegrationConnectCard", () => {
     );
   });
 
+  it.each([
+    {
+      returnsConnectionId: true,
+      behavior: "fulfills a project request with API-key account A when account B sorts first",
+    },
+    {
+      returnsConnectionId: false,
+      behavior: "waits for explicit Use on an older Host before granting project access",
+    },
+  ])("$behavior", async ({ returnsConnectionId }) => {
+    const client = fakeClient({
+      requirementKind: "api-key",
+      sources: [],
+      workspaceKind: "project",
+    });
+    const accountA = keyConnection(
+      "con_00000000-0000-4000-8000-0000000000a1",
+      "2026-09-17T09:12:00.000Z",
+    );
+    accountA.displayName = "Account A";
+    const accountB = {
+      ...accountA,
+      id: "con_00000000-0000-4000-8000-0000000000b1",
+      displayName: "Account B",
+    };
+    const dispatch = client.dispatch.getMockImplementation()!;
+    client.dispatch.mockImplementation(async (command) => {
+      if (command.type === "integration.apiKey.connect") {
+        client.setConnections([accountB, accountA]);
+        return {
+          type: command.type,
+          ...(returnsConnectionId ? { connectionId: accountA.id } : {}),
+        };
+      }
+      return dispatch(command);
+    });
+    const getDashboard = client.rpc["integrations.get"];
+    const dashboard = vi.spyOn(client.rpc, "integrations.get").mockImplementation(async () => {
+      const result = await getDashboard();
+      return { ...result, data: { ...result.data, connections: [...result.data.connections] } };
+    });
+    const onResponded = vi.fn();
+    await render(client, request(), { onResponded });
+    await click("Connect Slack");
+    typeInto("API token", "test-api-key");
+    await click("Connect Slack");
+    if (!returnsConnectionId) {
+      expect(dashboard).toHaveBeenCalledTimes(2);
+      expect(client.dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([]);
+      expect(onResponded).not.toHaveBeenCalled();
+      expect(text()).not.toContain("✓ Slack connected");
+      await click("Use Account B");
+    }
+    expect(client.dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([
+      [
+        expect.objectContaining({
+          requestId,
+          response: {
+            kind: "external",
+            value: {
+              access: "read",
+              alias: `Account ${returnsConnectionId ? "A" : "B"}`,
+              isDefault: false,
+              connectionId: returnsConnectionId ? accountA.id : accountB.id,
+              decision: "fulfilled",
+            },
+          },
+        }),
+      ],
+    ]);
+    expect(onResponded).toHaveBeenCalledOnce();
+    expect(text()).toContain(`✓ Slack connected · Account ${returnsConnectionId ? "A" : "B"}`);
+  });
+
   // Instruction failures: a proposed label loses its case, the method title
   // replaces the input label, several inputs name only the first, or an unsafe
   // setup URL becomes a link instead of naming the service account.

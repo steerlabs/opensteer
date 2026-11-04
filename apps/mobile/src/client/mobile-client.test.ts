@@ -642,6 +642,145 @@ describe("MobileClient integration authorization", () => {
   );
 
   it.each([
+    { failure: "discovery", mode: "recover" },
+    { failure: "discovery", mode: "retry" },
+    { failure: "discovery", mode: "signed-out" },
+    { failure: "discovery", mode: "expire" },
+    { failure: "discovery", mode: "refuse" },
+    { failure: "session-exchange", mode: "recover" },
+    { failure: "session-exchange", mode: "signed-out" },
+    { failure: "session-exchange", mode: "refuse" },
+  ] as const)(
+    "retains a mobile return proof through $failure selection failure until $mode",
+    async ({ failure, mode }) => {
+      const records = createSecureRecordStore({
+        keyPrefix: "test",
+        secureStore: new MemorySecureStore(),
+      });
+      let unavailable = false;
+      const failedSelection = vi.fn();
+      const returned = vi.fn(async (_command: unknown) => ({
+        type: "integration.authorization.return" as const,
+        status: "completed" as const,
+        connectionId: null,
+        failureCode: null,
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      }));
+      const portOptions = {
+        held: true,
+        configureClient: (host: MockHostClient) => {
+          const dispatch = host.dispatch.bind(host);
+          host.dispatch = async (command) =>
+            command.type === "integration.authorization.return"
+              ? returned(command)
+              : dispatch(command);
+        },
+      };
+      const port = testPort(portOptions);
+      const factory: MobileHostPortFactory = (options) => {
+        const host = port.factory(options);
+        return {
+          ...host,
+          verifyEpoch: async (...args) => {
+            if (unavailable && failure === "discovery") {
+              failedSelection();
+              return mode === "refuse" ? "identity-mismatch" : "unreachable";
+            }
+            return host.verifyEpoch(...args);
+          },
+        };
+      };
+      let callback = "";
+      const { client } = open(factory, new MemoryPrivateFilesystem(), {
+        records,
+        openIntegrationAuthorization: async (url) => {
+          callback = buildNativeIntegrationAuthorizationCallback({
+            deploymentId: DeploymentIdSchema.parse(serverId),
+            attemptId: IntegrationOAuthAttemptIdSchema.parse(
+              new URL(url).pathname.split("/").at(-2),
+            ),
+            returnProof: "r".repeat(43),
+          });
+          await client.deselect();
+          unavailable = true;
+          if (failure === "session-exchange") portOptions.held = false;
+          return callback;
+        },
+      });
+      vi.spyOn(client.sessionExchange, "establish").mockImplementation(async () => {
+        if (unavailable) {
+          failedSelection();
+          throw new HostSessionExchangeError(
+            mode === "refuse" ? "blocked" : "unavailable",
+            "Session exchange failed",
+          );
+        }
+        portOptions.held = true;
+        return sessionExchangeResponse();
+      });
+      await client.catalog.upsert(connectComputer(1));
+      await client.initialize();
+      await client.select(serverId);
+      vi.useFakeTimers();
+      try {
+        let finished = false;
+        const outcome = client
+          .beginIntegrationAuthorization({ definitionId: "slack" })
+          .catch((error: unknown) => error)
+          .then((result) => {
+            finished = true;
+            return result;
+          });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(failedSelection).toHaveBeenCalledOnce();
+        expect(client.getSnapshot().selection.hostClient).toBeNull();
+        expect(returned).not.toHaveBeenCalled();
+        if (mode === "refuse") {
+          await expect(outcome).resolves.toBeInstanceOf(Error);
+          expect(await records.read("integration-authorization-attempts")).toBeNull();
+          unavailable = false;
+          await expect(client.handleIntegrationAuthorizationCallback(callback)).resolves.toBeNull();
+          await vi.advanceTimersByTimeAsync(30_000);
+          expect(returned).not.toHaveBeenCalled();
+          return;
+        }
+        expect(finished, "Transient selection failure discarded the return proof").toBe(false);
+        expect(await records.read("integration-authorization-attempts")).toContain("attemptId");
+        if (mode === "signed-out") await client.signOut(serverId);
+        unavailable = false;
+        if (mode === "recover" || mode === "retry") {
+          if (mode === "recover") await client.retrySelection();
+          else await vi.advanceTimersByTimeAsync(1000);
+          await vi.advanceTimersByTimeAsync(0);
+          expect(finished, "Ready attachment never resumed the retained return proof").toBe(true);
+          await expect(outcome).resolves.toMatchObject({ status: "completed" });
+          expect(returned).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+              returnProof: "r".repeat(43),
+              idempotencyKey: expect.stringMatching(/^integration-auth-return:/u),
+            }),
+          );
+          expect(failedSelection).toHaveBeenCalledOnce();
+        } else {
+          if (mode === "expire") vi.setSystemTime(Date.now() + 600_001);
+          await vi.advanceTimersByTimeAsync(1000);
+          if (mode === "expire")
+            await expect(outcome).resolves.toMatchObject({ status: "expired" });
+          else
+            await expect(outcome).resolves.toBeInstanceOf(IntegrationAuthorizationCancelledError);
+          expect(await records.read("integration-authorization-attempts")).toBeNull();
+          await expect(client.handleIntegrationAuthorizationCallback(callback)).resolves.toBeNull();
+        }
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(returned).toHaveBeenCalledTimes(mode === "recover" || mode === "retry" ? 1 : 0);
+      } finally {
+        client.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
     "complete",
     "bootstrap-failed",
     "attachment-ready",
@@ -661,6 +800,7 @@ describe("MobileClient integration authorization", () => {
       let cold = false;
       const loaded = deferred<void>();
       const loading = vi.fn();
+      const changedUserId = createId("user");
       const port = testPort({
         held: true,
         verification: { status: "compatible", capabilities: ["integration-app-finish-v1"] },
@@ -674,7 +814,7 @@ describe("MobileClient integration authorization", () => {
               ...(!ready
                 ? { user: null }
                 : mode === "owner-changed"
-                  ? { user: { ...snapshot().user!, id: createId("user") } }
+                  ? { user: { ...snapshot().user!, id: changedUserId } }
                   : {}),
             }));
             host.load = async () => {

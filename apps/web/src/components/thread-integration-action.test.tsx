@@ -200,6 +200,103 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
     },
   );
 
+  it.each([
+    {
+      returnsConnectionId: true,
+      behavior: "fulfills a project request with API-key account A when account B sorts first",
+    },
+    {
+      returnsConnectionId: false,
+      behavior: "waits for explicit Use on an older Host before granting project access",
+    },
+  ])("$behavior", async ({ returnsConnectionId }) => {
+    const loaded = apiKeyRequest();
+    const record = requestRecord(loaded, "Connect integration");
+    let accounts = loaded.dashboard.connections;
+    let requestPending = true;
+    const dispatch = vi.fn(async (command: { type: string }) => {
+      if (command.type === "integration.apiKey.connect") {
+        const account = {
+          accountIdentifier: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          definitionId: "provider-integration",
+          displayName: "Account A",
+          id: "connection-a",
+          provider: "linear",
+          status: "connected",
+          computer: null,
+        };
+        accounts = [{ ...account, id: "connection-b", displayName: "Account B" }, account] as never;
+        return {
+          type: command.type,
+          ...(returnsConnectionId ? { connectionId: account.id } : {}),
+        };
+      }
+      if (command.type === "request.respond") requestPending = false;
+      return { type: command.type };
+    });
+    const dashboard = vi.fn(async () => ({
+      ok: true,
+      data: { ...loaded.dashboard, connections: accounts },
+    }));
+    shellState.current = {
+      snapshot: shellSnapshot(),
+      hostClient: {
+        dispatch,
+        getSnapshot: () => shellSnapshot(),
+        rpc: {
+          "integrations.get": dashboard,
+          "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+          "thread.requests.list": async () => ({
+            ok: true,
+            data: {
+              requests: requestPending ? [record] : [],
+              window: { hasMore: false, nextBefore: null },
+            },
+          }),
+        },
+      },
+    };
+    const container = await mountThreadAction(record, "Connect Provider integration");
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]');
+    if (!key) throw new Error("The Connect card never showed the API key field.");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        key,
+        "test-api-key",
+      );
+      key.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => key.form?.requestSubmit());
+    expect(accounts.map(({ id }) => id)).toEqual(["connection-b", "connection-a"]);
+    if (!returnsConnectionId) {
+      expect(dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([]);
+      expect(container.textContent).not.toContain("✓ Provider integration connected");
+      await act(async () => buttonWithText(container, "Use Account B")!.click());
+    }
+    expect(dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([
+      [
+        expect.objectContaining({
+          requestId: record.id,
+          response: {
+            kind: "external",
+            value: {
+              access: "read",
+              alias: `Account ${returnsConnectionId ? "A" : "B"}`,
+              isDefault: false,
+              connectionId: returnsConnectionId ? "connection-a" : "connection-b",
+              decision: "fulfilled",
+            },
+          },
+        }),
+      ],
+    ]);
+    expect(container.textContent).toContain(
+      `✓ Provider integration connected · Account ${returnsConnectionId ? "A" : "B"}`,
+    );
+    expect(dashboard).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["denied", "cancelled", "failed"] as const)(
     "never fulfills an old selection after another account is %s",
     async (status) => {

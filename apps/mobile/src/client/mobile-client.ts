@@ -27,6 +27,7 @@ import {
   DeploymentCatalogStore,
   HostAttachmentFence,
   HostTransportError,
+  ClientOperationError,
   clientPublicDetail,
   emptyDeploymentCatalog,
   resolveConnection,
@@ -230,7 +231,7 @@ export class MobileClient {
   #accountSubject: string | null = null;
   /** Invalidates authorization work before queued credential cleanup can begin. */
   #authorizationEpoch = 0;
-  readonly #integrationReturnControllers = new Set<AbortController>();
+  readonly #integrationReturnControllers = new Map<AbortController, HostClient | null>();
   #directoryGeneration = 0;
   #directoryState: MobileDirectoryState = idleDirectoryState();
   #attachedDeploymentId: DeploymentId | null = null;
@@ -968,32 +969,29 @@ export class MobileClient {
         throw new Error("That integration attempt belongs to an unknown deployment.");
       }
       if (epoch !== this.#authorizationEpoch) throw new IntegrationAuthorizationCancelledError();
-      if (this.#attachedDeploymentId !== callback.deploymentId || this.#hostClient === null)
-        await this.select(callback.deploymentId);
-      const client = this.#hostClient;
+      let client: HostClient | null = null;
+      let selecting = true;
       const controller = new AbortController();
       const abort = () => controller.abort(new IntegrationAuthorizationCancelledError());
       signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) abort();
-      this.#integrationReturnControllers.add(controller);
+      this.#integrationReturnControllers.set(controller, null);
       const assertAttached = () => {
         if (controller.signal.aborted || epoch !== this.#authorizationEpoch)
           throw new IntegrationAuthorizationCancelledError();
         if (
-          !client ||
-          client !== this.#hostClient ||
-          this.#attachedDeploymentId !== callback.deploymentId
+          !selecting &&
+          ((client !== null && client !== this.#hostClient) ||
+            this.#attachedDeploymentId !== callback.deploymentId)
         )
           throw new Error("Reconnect to that deployment to finish integration authorization.");
       };
       const remaining = () => Math.max(0, Date.parse(entry.expiresAt) - Date.now());
       try {
         assertAttached();
-        if (!client)
-          throw new Error("Reconnect to that deployment to finish integration authorization.");
         const assertOwner = () => {
           assertAttached();
-          const user = client.getSnapshot().user;
+          const user = client?.getSnapshot().user;
           if (user && entry.userId !== undefined && entry.userId !== user.id)
             throw new Error("That sign-in belongs to a different user.");
         };
@@ -1018,6 +1016,36 @@ export class MobileClient {
             };
           let status;
           try {
+            if (client === null) {
+              if (
+                this.#hostClient === null ||
+                this.#attachedDeploymentId !== callback.deploymentId
+              ) {
+                this.cancelOpenComputer();
+                try {
+                  const outcome = await withTimeout(
+                    this.#startSelection(callback.deploymentId, true),
+                    Math.min(20_000, remaining()),
+                    {
+                      signal: controller.signal,
+                      timeoutError: () => new HostTransportError("timed-out"),
+                    },
+                  );
+                  if (outcome.kind === "session-failed") throw outcome.error;
+                  if (outcome.kind === "verification-failed")
+                    throw new ClientOperationError(
+                      verificationFailureDetail(outcome.verification),
+                      "blocked",
+                    );
+                } finally {
+                  selecting = false;
+                }
+              } else selecting = false;
+              assertAttached();
+              client = this.#hostClient;
+              if (client === null) throw new HostTransportError("unreachable");
+              this.#integrationReturnControllers.set(controller, client);
+            }
             if (client.getSnapshot().user === null) {
               await withTimeout(client.load(), Math.min(20_000, remaining()), {
                 signal: controller.signal,
@@ -1033,21 +1061,33 @@ export class MobileClient {
             });
           } catch (error) {
             assertOwner();
-            if ((error instanceof HostTransportError && !error.retryable) || isHostRefusal(error)) {
+            if (
+              (error instanceof ClientOperationError && error.classification === "blocked") ||
+              isHostRefusal(error)
+            ) {
               await this.#integrationAttempts.forget(entry);
               throw error;
             }
-            // Retain the proof across bootstrap, transport and response timeouts.
+            // Retain the proof across selection, bootstrap and transport failures.
             const wait = Math.min(backoff, remaining());
-            if (client.getSnapshot().user === null) {
+            if (client === null || client.getSnapshot().user === null) {
               const deadline = new Error("Retry integration authentication.");
               let detach = () => {};
               try {
                 await withTimeout(
                   new Promise<void>((resolve) => {
-                    detach = client.subscribe(() => {
-                      if (client.getSnapshot().user !== null) resolve();
-                    });
+                    const ready = () => {
+                      if (
+                        epoch !== this.#authorizationEpoch ||
+                        this.#attachedDeploymentId !== callback.deploymentId ||
+                        (client === null
+                          ? this.#hostClient !== null
+                          : client.getSnapshot().user !== null)
+                      )
+                        resolve();
+                    };
+                    detach = client === null ? this.subscribe(ready) : client.subscribe(ready);
+                    ready();
                   }),
                   wait,
                   { signal: controller.signal, timeoutError: () => deadline },
@@ -1204,6 +1244,9 @@ export class MobileClient {
     this.#authorizationEpoch += 1;
     this.cancelOpenComputer();
     this.#disposed = true;
+    for (const controller of this.#integrationReturnControllers.keys())
+      controller.abort(new IntegrationAuthorizationCancelledError());
+    this.#integrationReturnControllers.clear();
     this.savedViews.dispose();
     this.#releaseAttachment();
     for (const detach of this.#detach.splice(0)) detach();
@@ -1739,9 +1782,12 @@ export class MobileClient {
   }
 
   #disposeHostClient(): void {
-    for (const controller of this.#integrationReturnControllers)
+    for (const [controller, client] of this.#integrationReturnControllers) {
+      // A callback still waiting for its first attachment survives reattachment.
+      if (client === null) continue;
       controller.abort(new IntegrationAuthorizationCancelledError());
-    this.#integrationReturnControllers.clear();
+      this.#integrationReturnControllers.delete(controller);
+    }
     this.savedViews.detach();
     this.#hostClientDetach?.();
     this.#hostClientDetach = null;

@@ -46,6 +46,32 @@ describe("integration routes", () => {
     });
   });
 
+  it.each([false, true])(
+    "returns the API-key command's exact connection id (reconnect: %s)",
+    async (reconnect) => {
+      const ownerUserId = createId("user");
+      const connectionId = createIntegrationId("connection");
+      const connectApiKey = vi.fn(async () => ({ id: connectionId }));
+      const input = {
+        authMethodId: "api-key",
+        definitionId: "test-integration",
+        values: { apiKey: "test-api-key" },
+        ...(reconnect ? { connectionId } : {}),
+      };
+      await expect(
+        handleIntegrationCommand(
+          { integrations: { connectApiKey } } as never,
+          { type: "integration.apiKey.connect", idempotencyKey: "connect-key", input },
+          testHostApiContext(ownerUserId),
+        ),
+      ).resolves.toEqual({ type: "integration.apiKey.connect", connectionId });
+      expect(connectApiKey).toHaveBeenCalledExactlyOnceWith(input, {
+        ownerUserId,
+        requestId: "test-request",
+      });
+    },
+  );
+
   it("dispatches computer disconnects without opening provider credentials", async () => {
     const userId = createId("user");
     const connectionId = createIntegrationId("connection");
