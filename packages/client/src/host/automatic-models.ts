@@ -1,5 +1,6 @@
 import {
   AutomaticModelConfigSchema,
+  AutomaticModelWantSchema,
   type AutomaticModelConfig,
   type AutomaticModelRole,
   type AutomaticModelWant,
@@ -35,6 +36,7 @@ export function automaticModelsDismissalKey(deploymentId: string, userId: string
   return `automatic-models\n${deploymentId}\n${userId}`;
 }
 export const automaticRoleTitles = { light: "Task names and quick memory", deep: "Nightly memory" };
+/** A pick names one account and one lab's model, so it runs exactly there. */
 export function automaticModelChoices(view: AutomaticModelsView) {
   return view.accounts.flatMap((account) =>
     account.catalog?.status === "ready"
@@ -42,13 +44,11 @@ export function automaticModelChoices(view: AutomaticModelsView) {
           .filter((model) => !model.unavailableReason)
           .map((model) => ({
             label: `${model.displayName} · ${account.accountDisplayName}`,
-            want: {
+            want: AutomaticModelWantSchema.parse({
               engine: account.driverKind,
-              model: model.modelId,
-              ...(account.sourceId === "openai-compatible"
-                ? { harnessInstanceId: account.harnessInstanceId }
-                : {}),
-            } satisfies AutomaticModelWant,
+              model: `${model.providerId}/${model.modelId}`,
+              harnessInstanceId: account.harnessInstanceId,
+            }),
           }))
       : [],
   );
