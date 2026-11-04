@@ -29,7 +29,9 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   const context = kit.context;
   const events: string[] = [];
   const record = (index: number, event: string) => {
-    if (events.length < 128) events.push(`${index}:${event}`);
+    if (events.length >= 128) return;
+    events.push(`${index}:${event}`);
+    kit.artifacts.event("popup.event", { index, event });
   };
   const opened = await context.api["commands.dispatch"]({
     type: "browser.tab.open",
