@@ -130,7 +130,7 @@ export class PluginSettingsStore {
     };
   }
 
-  private async snapshot(owner: UserId, availableRunnerIds?: ReadonlySet<string>) {
+  private async snapshot(owner: UserId, availableRunnerIds?: ReadonlySet<string>, opening?: PluginTarget) {
     const memberWorkspaces = this.database
       .selectFrom("workspaceMemberships")
       .select("workspaceId")
@@ -290,10 +290,16 @@ export class PluginSettingsStore {
           (s.target.kind === "service" || s.target.kind === "device-app") &&
           s.target.definitionId === definitionId,
       );
-      if (!accounts.length && !ownGrants.length && !saved) continue;
+      // Catalog service metadata is public to signed-in viewers opening setup.
+      // Overview still requires an account, grant, or explicit saved directory choice.
+      const adding = installation.sourceKind === "built-in" &&
+        (opening?.kind === "service" || opening?.kind === "device-app") &&
+        opening.definitionId === definitionId;
+      if (!accounts.length && !ownGrants.length && !saved && !adding) continue;
       const device =
         accounts.some((c) => c.connectionKind === "computer") ||
-        saved?.target.kind === "device-app";
+        saved?.target.kind === "device-app" ||
+        (typeof definition === "object" && definition !== null && "computerApp" in definition && !!definition.computerApp);
       const target: PluginTarget = { kind: device ? "device-app" : "service", definitionId };
       rows.push({
         target,
@@ -307,7 +313,7 @@ export class PluginSettingsStore {
         ),
         accountCount: accounts.length,
         issues: [
-          ...(accounts.some((c) => c.status === "needs-attention") ||
+          ...(!accounts.length || accounts.some((c) => c.status === "needs-attention") ||
           saved?.personalEverywhereAccounts?.some(
             (a) => !accounts.some((c) => c.id === a.connectionId),
           )
@@ -758,7 +764,7 @@ export class PluginSettingsStore {
   }
 
   async detail(owner: UserId, target: PluginTarget, availableRunnerIds?: ReadonlySet<string>) {
-    const snapshot = await this.snapshot(owner, availableRunnerIds);
+    const snapshot = await this.snapshot(owner, availableRunnerIds, target);
     const {
       rows,
       places,

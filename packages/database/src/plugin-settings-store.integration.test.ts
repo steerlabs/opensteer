@@ -15,6 +15,30 @@ import { integrationDefinitionDigest } from "@opensteer/integration-core/digest"
 import { describeStore } from "./store.integration.test-support.js";
 
 describeStore("plugin Settings authority", (test) => {
+  test("a viewer can add an installed catalog service before connecting an account", async ({ storeFixture: f }) => {
+    const run = await f.createRunFixture("settings-unconnected");
+    const platform = new IntegrationPlatformStore(f.database);
+    await platform.install({
+      actorUserId: run.userId, adapterSnapshot: null, requestId: "unconnected-install",
+      installation: {
+        id: createIntegrationId("installation"), name: "unconnected", title: "Unconnected",
+        description: "", version: "1", sourceKind: "built-in", status: "active", trust: "built-in",
+        manifest: { definition: { id: "unconnected" } }, provenance: {},
+      }, servers: [],
+    });
+    const viewer = await f.store.createUser("new-member");
+    const target = { kind: "service", definitionId: "unconnected" } as const;
+    expect((await platform.settings.overview(viewer)).rows).toHaveLength(0);
+    const detail = await platform.settings.detail(viewer, target);
+    expect(detail.accounts).toEqual([]);
+    await platform.settings.setEnabled(viewer, {
+      type: "settings.plugin.enabled.set", target, enabled: true, expectedRevision: detail.row.placement.revision,
+      idempotencyKey: "explicit-add",
+    });
+    expect((await platform.settings.overview(viewer)).rows).toMatchObject([
+      { target, accountCount: 0, issues: ["needs-sign-in"] },
+    ]);
+  });
   test("deployment packages show Main only after explicit activation", async ({ storeFixture: f }) => {
     const run = await f.startRunFixture("settings-main-activation");
     const platform = new IntegrationPlatformStore(f.database);

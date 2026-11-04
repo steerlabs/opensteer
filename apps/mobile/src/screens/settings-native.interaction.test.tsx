@@ -491,7 +491,7 @@ it.each(["ios", "android"])(
     await press("Add and continue to sign-in");
     expect(dispatch.mock.calls.map(([command]) => command.type)).toEqual([
       "integration.catalog.install",
-      "settings.plugin.placement.set",
+      "settings.plugin.enabled.set",
     ]);
     const overview = await host.rpc["plugins.overview.get"]({});
     if (!overview.ok) throw new Error("Missing overview");

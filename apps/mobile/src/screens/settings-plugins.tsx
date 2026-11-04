@@ -7,6 +7,7 @@ import {
 import { PluginAccounts } from "./settings-plugin-accounts.js";
 import {
   completePluginConsent,
+  addPluginService,
   type PluginAddConsent,
   settingsMutationRejected,
   pluginPlacementAccounts,
@@ -829,48 +830,15 @@ function Plugins({
                                 idempotencyKey: mutationIdempotencyKey("plugin-catalog-install"),
                               });
                               if (!isCurrent()) return;
-                              const installed = unwrapRpcResult(
-                                await host.rpc["plugins.detail.get"]({
-                                  target: {
-                                    kind: addEntry.definition.computerApp
-                                      ? "device-app"
-                                      : "service",
-                                    definitionId: add.definitionId,
-                                  },
-                                }),
-                              );
-                              if (!isCurrent()) return;
-                              await host.dispatch({
-                                type: "settings.plugin.placement.set",
-                                target: installed.row.target,
-                                expectedRevision: installed.row.placement.revision,
-                                mainIncluded:
-                                  addEverywhere ||
-                                  installed.places.some(
-                                    (p) => p.kind === "main" && addPlaces.includes(p.workspaceId),
-                                  ),
-                                projects: installed.places
-                                  .filter(
-                                    (p) =>
-                                      p.kind === "project" &&
-                                      (addEverywhere || addPlaces.includes(p.workspaceId)),
-                                  )
-                                  .map((p) => ({
-                                    workspaceId: p.workspaceId,
-                                    accounts: p.accounts,
-                                  })),
-                                personalEverywhere: addEverywhere ? { accounts: [] } : null,
-                                idempotencyKey: mutationIdempotencyKey("plugin-add-placement"),
-                              });
+                              const target: PluginTarget = {
+                                kind: addEntry.definition.computerApp ? "device-app" : "service",
+                                definitionId: add.definitionId,
+                              };
+                              await addPluginService(host, target);
                               if (isCurrent()) {
                                 addConsent.current = {
-                                  target: installed.row.target,
-                                  everywhere: addEverywhere,
-                                  places: addPlaces,
-                                  access: "read",
-                                  idempotencyKey: mutationIdempotencyKey(
-                                    "plugin-add-account-placement",
-                                  ),
+                                  target, everywhere: addEverywhere, places: addPlaces, access: "read",
+                                  idempotencyKey: mutationIdempotencyKey("plugin-add-account-placement"),
                                   command: null,
                                 };
                                 setAddInstalled(true);

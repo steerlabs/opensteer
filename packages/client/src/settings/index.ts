@@ -86,6 +86,7 @@ export function pluginState(row: PluginRow): {
   label: string;
 } {
   if (!row.placement.enabled) return { group: "Turned off", label: "Turned off" };
+  if ((row.target.kind === "service" || row.target.kind === "device-app") && row.accountCount === 0) return { group: "Needs you", label: "Connect" };
   for (const issue of row.issues)
     if (issue in repairLabels)
       return { group: "Needs you", label: repairLabels[issue as keyof typeof repairLabels] };
@@ -206,4 +207,19 @@ export function pluginPlacementAccounts<T extends { connectionId: string; access
   if (existing.length) return [...existing];
   if (requiresAccount && !reviewed.length) throw new Error("Choose an account and its access first.");
   return [...reviewed];
+}
+
+
+/** Record an explicit directory choice without granting account access. */
+export async function addPluginService(
+  client: import("../host/client.js").HostClient,
+  target: PluginTarget,
+) {
+  const { unwrapRpcResult, mutationIdempotencyKey } = await import("../host/index.js");
+  const detail = unwrapRpcResult(await client.rpc["plugins.detail.get"]({ target }));
+  await client.dispatch({
+    type: "settings.plugin.enabled.set", target, enabled: true,
+    expectedRevision: detail.row.placement.revision,
+    idempotencyKey: mutationIdempotencyKey("plugin-add"),
+  });
 }
