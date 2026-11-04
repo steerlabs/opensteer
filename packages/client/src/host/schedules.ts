@@ -59,6 +59,7 @@ export type ScheduleState<T> =
       readonly status: "loading" | "offline" | "unavailable" | "error";
       readonly data: null;
       readonly error: string | null;
+      readonly errorCode?: string;
     };
 
 export function scheduleTiming(source: TriggerSource): string {
@@ -182,6 +183,7 @@ export class ScheduleResource<Wire, Data> {
   readonly read: () => Promise<Wire>;
   readonly present: (wire: Wire, snapshot: HostSnapshot) => Data;
   readonly detail: boolean;
+  readonly discoverRuns: (wire: Wire) => boolean;
   readonly relatedRuns: (wire: Wire) => readonly string[];
   #projection = "";
   readonly #anchors = new ScheduleAnchorInvalidation();
@@ -203,12 +205,14 @@ export class ScheduleResource<Wire, Data> {
       snapshot: HostSnapshot,
     ) => readonly ({ id: string } & ScheduleAnchorState)[] = () => [],
     relatedRuns: (wire: Wire) => readonly string[] = () => [],
+    discoverRuns: (wire: Wire) => boolean = () => false,
   ) {
     this.client = client;
     this.read = read;
     this.present = present;
     this.detail = detail;
     this.relatedRuns = relatedRuns;
+    this.discoverRuns = discoverRuns;
     this.anchorThreads = anchorThreads;
   }
   // React reads before subscribing, including after a hidden screen changes readers.
@@ -274,6 +278,11 @@ export class ScheduleResource<Wire, Data> {
             accessMode,
           ],
         ),
+      // Queued inputs have no Run ID or target in triggers.get until admitted.
+      // Ordinary details must discover them; lists and managed workers stay scoped.
+      this.#wire !== undefined && this.discoverRuns(this.#wire)
+        ? s.runQueue.map(({ id }) => id)
+        : null,
       this.detail
         ? s.runQueue
             .filter(
@@ -323,6 +332,10 @@ export class ScheduleResource<Wire, Data> {
       return;
     }
     if (!keepData) this.#publish({ status: "loading", data: null, error: null });
+    // Before discovery establishes the anchor, hidden control events cannot be
+    // scoped. A scalar fence keeps this window bounded without retaining events.
+    const discovering = this.#anchors.anchors.size === 0;
+    const controlRevision = this.#anchors.controlRevision;
     try {
       const wire = await this.read();
       if (
@@ -331,6 +344,10 @@ export class ScheduleResource<Wire, Data> {
         readerScope !== scheduleReaderScope(this.client.getSnapshot())
       )
         return;
+      if (discovering && controlRevision !== this.#anchors.controlRevision) {
+        await this.refresh();
+        return;
+      }
       this.#wire = wire;
       const previousAnchors = new Map(this.#anchors.anchors);
       this.#anchors.anchors.clear();
@@ -359,6 +376,7 @@ export class ScheduleResource<Wire, Data> {
           error.code === "unsupported");
       this.#publish({
         status: unavailable ? "unavailable" : "error",
+        ...(error instanceof HostClientRequestError ? { errorCode: error.code } : {}),
         data: null,
         error: unavailable
           ? "Schedules are unavailable on this Host."
@@ -417,6 +435,7 @@ export class SchedulesClient {
             },
         ],
         (wire) => wire.downstreamRuns.map(({ run }) => run.id),
+        (wire) => wire.trigger.systemRole == null,
       );
       this.#details.set(triggerId, resource);
     }

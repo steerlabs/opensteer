@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+} from "react";
 import { useLocation, useParams } from "react-router";
 import {
-  HostClientRequestError,
   conversationName,
   mutationIdempotencyKey,
   schedulesClient,
-  unwrapRpcResult,
   type HostClient,
-  type HostSnapshot,
   type TriggerDetail,
 } from "@opensteer/client/host";
 import {
@@ -56,35 +60,14 @@ function AutomationDetail({ triggerId }: { readonly triggerId: string }) {
   const { hostClient, openMobileNavigation, snapshot } = useShell();
   const location = useLocation();
   const now = useMinuteClock();
-  const [detail, setDetail] = useState<TriggerDetail | null>(null);
-  const [missing, setMissing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const runs = useMemo(
-    () => triggerRunLifecycleSignature(snapshot),
-    [snapshot.runQueue, snapshot.threads],
+  const resource = useMemo(
+    () => schedulesClient(hostClient).detail(triggerId),
+    [hostClient, triggerId],
   );
-
-  // Everything below is read again whenever a Trigger changes or one of the
-  // Runs it started moves on, so the page never shows an outcome that is over.
-  useEffect(() => {
-    let current = true;
-    void hostClient.rpc["triggers.get"]({ triggerId })
-      .then((result) => {
-        if (!current) return;
-        setDetail(unwrapRpcResult(result));
-        setError(null);
-      })
-      .catch((reason: unknown) => {
-        if (!current) return;
-        if (reason instanceof HostClientRequestError && reason.code === "not_found") {
-          setMissing(true);
-        } else setError(actionErrorMessage(reason));
-      });
-    return () => {
-      current = false;
-    };
-  }, [attempt, hostClient, runs, snapshot.triggerRevision, triggerId]);
+  const state = useSyncExternalStore(resource.subscribe, resource.getSnapshot);
+  const detail = state.data?.definition ?? null;
+  const error = state.error;
+  const missing = state.status === "error" && state.errorCode === "not_found";
 
   const webhookState = location.state as { readonly webhook?: CreatedWebhook } | null;
   const webhook = webhookState?.webhook?.triggerId === triggerId ? webhookState.webhook : null;
@@ -102,7 +85,7 @@ function AutomationDetail({ triggerId }: { readonly triggerId: string }) {
             </p>
           </>
         ) : null}
-        {error && !detail ? (
+        {error && !detail && !missing ? (
           <>
             <PageHeader back={<BackToAutomations />} title="Automation" />
             <p aria-live="assertive" className="notice notice--error" role="alert">
@@ -110,7 +93,7 @@ function AutomationDetail({ triggerId }: { readonly triggerId: string }) {
               <span>{error}</span>
               <button
                 className="btn btn--small"
-                onClick={() => setAttempt((value) => value + 1)}
+                onClick={() => void resource.refresh().catch(() => undefined)}
                 type="button"
               >
                 Try again
@@ -133,7 +116,6 @@ function AutomationDetail({ triggerId }: { readonly triggerId: string }) {
             homeThreadId={snapshot.homeThreadId}
             machine={machineOf(snapshot, detail.trigger.anchorThreadId)}
             now={now}
-            onChanged={setDetail}
             webhook={webhook}
           />
         ) : null}
@@ -180,7 +162,6 @@ function AutomationView({
   homeThreadId,
   machine,
   now,
-  onChanged,
   webhook,
 }: {
   readonly client: HostClient;
@@ -188,7 +169,6 @@ function AutomationView({
   readonly homeThreadId: string | null;
   readonly machine: string | null;
   readonly now: number;
-  readonly onChanged: (detail: TriggerDetail) => void;
   readonly webhook: CreatedWebhook | null;
 }) {
   const navigate = useAreaNavigate();
@@ -217,8 +197,8 @@ function AutomationView({
   );
 
   const refresh = useCallback(async () => {
-    onChanged(unwrapRpcResult(await client.rpc["triggers.get"]({ triggerId: trigger.id })));
-  }, [client, onChanged, trigger.id]);
+    await schedulesClient(client).detail(trigger.id).refresh();
+  }, [client, trigger.id]);
 
   const act = async (work: () => Promise<string | null>) => {
     setPending(true);
@@ -247,16 +227,7 @@ function AutomationView({
   const runNow = () =>
     act(async () => {
       const schedules = schedulesClient(client);
-      try {
-        const confirmed = await schedules.act(trigger.id, "run", undefined, {
-          requestedFrom: "web",
-        });
-        onChanged(confirmed.definition);
-      } catch (error) {
-        const state = schedules.detail(trigger.id).getSnapshot();
-        if (state.status === "ready") onChanged(state.data.definition);
-        throw error;
-      }
+      await schedules.act(trigger.id, "run", undefined, { requestedFrom: "web" });
       return "Running now";
     });
 
@@ -997,22 +968,4 @@ function CopyRow({ label, value }: { readonly label: string; readonly value: str
       </div>
     </div>
   );
-}
-
-/**
- * What changes when a Run an automation started moves on: Run and Thread
- * statuses, not streaming metadata, so the detail is read again only when an
- * outcome it shows could have changed.
- */
-export function triggerRunLifecycleSignature(
-  snapshot: Pick<HostSnapshot, "runQueue" | "threads">,
-): string {
-  return JSON.stringify({
-    runs: snapshot.runQueue
-      .map(({ id, status, threadId }) => ({ id, status, threadId }))
-      .sort((left, right) => left.id.localeCompare(right.id)),
-    threads: snapshot.threads
-      .map(({ id, status, doneAt, inputQueuePaused }) => ({ id, status, doneAt, inputQueuePaused }))
-      .sort((left, right) => left.id.localeCompare(right.id)),
-  });
 }

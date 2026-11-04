@@ -28,6 +28,7 @@ const fields = [
 export class ScheduleAnchorInvalidation {
   readonly anchors = new Map<string, ScheduleAnchorState>();
   revision = 0;
+  controlRevision = 0;
   retain(client: HostClient): () => void {
     let set = readers.get(client);
     if (!set) readers.set(client, (set = new Set()));
@@ -38,6 +39,7 @@ export class ScheduleAnchorInvalidation {
     };
   }
   record(threadId: string, patch: ScheduleAnchorState): void {
+    this.controlRevision++;
     const previous = this.anchors.get(threadId);
     if (!previous) return;
     if (

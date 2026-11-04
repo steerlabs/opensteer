@@ -3,8 +3,14 @@ import { act, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, expect, it, vi } from "vitest";
+import { createId, ModelSelectionSchema } from "@opensteer/core";
 import { MockHostClient } from "@opensteer/client/mock";
-import { unwrapRpcResult, type HostClient } from "@opensteer/client/host";
+import {
+  HttpHostClient,
+  unwrapRpcResult,
+  type HostClient,
+  type WebSocketClient,
+} from "@opensteer/client/host";
 import { AutomationDetailPage } from "./automation-detail.js";
 import { AutomationEditorPage } from "./automation-editor.js";
 
@@ -20,13 +26,17 @@ vi.mock("../toast.js", () => ({ useToast: () => ({ success: vi.fn(), error: vi.f
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
 let client: MockHostClient;
+let http: HttpHostClient | undefined;
 afterEach(() => {
   act(() => root?.unmount());
+  http?.dispose();
+  http = undefined;
   client?.dispose();
   document.body.replaceChildren();
 });
 async function mount(memoryPasses?: "active" | "no-light-model", edit = false) {
   client = new MockHostClient({ latencyMs: 0, ...(memoryPasses ? { memoryPasses } : {}) });
+  await client.load();
   harness.client = client;
   const triggers = unwrapRpcResult(await client.rpc["triggers.list"]({})).triggers;
   const trigger = memoryPasses
@@ -127,3 +137,165 @@ it("offers Resume worker for a stopped managed worker", async () => {
   expect(resume).toHaveBeenCalledWith(trigger.anchorThreadId);
   await vi.waitFor(() => expect(button(node, "Resume worker")).toBeUndefined(), { timeout: 2000 });
 });
+
+it("uses authorized hidden-worker events on the real page and HTTP client, ignoring unrelated tasks and refreshing on reconnect", async () => {
+  client = new MockHostClient({ latencyMs: 0, memoryPasses: "active" });
+  const trigger = unwrapRpcResult(await client.rpc["triggers.list"]({})).triggers.find(
+    (t) => t.systemRole === "memory-light",
+  )!;
+  const seed = unwrapRpcResult(await client.rpc["triggers.get"]({ triggerId: trigger.id }));
+  let worker: NonNullable<typeof seed.anchorThread> = {
+    ...seed.anchorThread!,
+    listed: false,
+    doneAt: "2026-11-03T10:00:00Z",
+    inputQueuePaused: false,
+  };
+  const sockets: TestSocket[] = [];
+  const read = vi.fn(() => ({ ...seed, anchorThread: worker }));
+  http = new HttpHostClient({
+    baseUrl: "http://127.0.0.1",
+    refreshIntervalMs: 0,
+    reconnectBaseDelayMs: 1,
+    reconnectMaxDelayMs: 1,
+    fetch: async (input) => {
+      const path = new URL(String(input)).pathname;
+      const data = path.endsWith("triggers.get")
+        ? read()
+        : path.endsWith("bootstrap.get")
+          ? unwrapRpcResult(await client.rpc["bootstrap.get"]({}))
+          : {};
+      return new Response(JSON.stringify({ ok: true, data }), {
+        headers: { "content-type": "application/json" },
+      });
+    },
+    webSocketFactory: () => {
+      const socket = new TestSocket();
+      sockets.push(socket);
+      return socket;
+    },
+  });
+  await http.load();
+  const workspace = unwrapRpcResult(await client.rpc["bootstrap.get"]({})).workspaces.find(
+    (w) => w.id === trigger.workspaceId,
+  )!;
+  const window = { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 };
+  const connect = (socket: TestSocket) => {
+    socket.emit("open", {});
+    socket.receive({
+      type: "host.snapshot",
+      snapshot: {
+        workspace,
+        sequence: "0",
+        serializedBytes: 256,
+        notificationPreferences: [],
+        readStates: [],
+        messages: [],
+        messageWindows: [],
+        pendingRequests: [],
+        pendingRequestWindow: window,
+        runQueue: [],
+        threads: [],
+        threadWindow: window,
+      },
+    });
+    socket.receive({ type: "host.synchronized", workspaceId: workspace.id, sequence: "0" });
+  };
+  connect(sockets[0]!);
+  harness.client = http;
+  const node = document.createElement("div");
+  document.body.append(node);
+  root = createRoot(node);
+  await act(async () =>
+    root!.render(
+      <MemoryRouter initialEntries={[`/automations/${trigger.id}`]}>
+        <Routes>
+          <Route path="/automations/:triggerId" element={<AutomationDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    ),
+  );
+  await vi.waitFor(() => expect(button(node, "Reopen worker")).toBeDefined(), { timeout: 2000 });
+  expect(http.getSnapshot().threads.some((t) => t.id === worker.id)).toBe(false);
+  let sequence = 0;
+  const event = (type: string, data: object, threadId: string = worker.id) =>
+    sockets[0]!.receive({
+      type: "host.events",
+      events: [
+        {
+          type,
+          data,
+          threadId,
+          workspaceId: workspace.id,
+          runId: null,
+          environmentId: worker.environmentId,
+          createdAt: worker.createdAt,
+          eventId: createId("event"),
+          sequence: String(++sequence),
+        },
+      ],
+    });
+  await act(async () => {
+    worker = { ...worker, doneAt: null };
+    event("thread.state-changed", {
+      status: worker.status,
+      doneAt: null,
+      inputQueuePaused: false,
+      pendingRequests: 0,
+    });
+  });
+  await vi.waitFor(() => expect(button(node, "Reopen worker")).toBeUndefined(), { timeout: 2000 });
+  await act(async () => {
+    worker = { ...worker, inputQueuePaused: true };
+    event("thread.input-queue-updated", { paused: true });
+  });
+  await vi.waitFor(() => expect(button(node, "Resume worker")).toBeDefined(), { timeout: 2000 });
+  await act(async () => {
+    worker = {
+      ...worker,
+      modelSelection: ModelSelectionSchema.parse({
+        ...worker.modelSelection!,
+        modelId: "changed-model",
+      }),
+    };
+    event("thread.execution-updated", { thread: worker });
+  });
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(4), { timeout: 2000 });
+  await act(async () =>
+    event(
+      "thread.state-changed",
+      { status: "running", doneAt: null, inputQueuePaused: false, pendingRequests: 0 },
+      client.getSnapshot().homeThreadId!,
+    ),
+  );
+  expect(read).toHaveBeenCalledTimes(4);
+  await act(async () => sockets[0]!.emit("close", { code: 1006, reason: "Disconnected" }));
+  await vi.waitFor(() => expect(sockets).toHaveLength(2), { timeout: 2000 });
+  await act(async () => {
+    worker = { ...worker, inputQueuePaused: false };
+    connect(sockets[1]!);
+  });
+  await vi.waitFor(() => expect(button(node, "Resume worker")).toBeUndefined(), { timeout: 2000 });
+  expect(read).toHaveBeenCalledTimes(5);
+});
+
+class TestSocket implements WebSocketClient {
+  binaryType: BinaryType = "blob";
+  readyState = 0;
+  listeners = new Map<string, Set<(event: never) => void>>();
+  addEventListener(type: string, listener: (event: never) => void) {
+    const set = this.listeners.get(type) ?? new Set();
+    set.add(listener);
+    this.listeners.set(type, set);
+  }
+  send() {}
+  close() {
+    this.readyState = 3;
+  }
+  receive(message: unknown) {
+    this.emit("message", { data: JSON.stringify(message) });
+  }
+  emit(type: string, event: unknown) {
+    if (type === "open") this.readyState = 1;
+    for (const listener of this.listeners.get(type) ?? []) listener(event as never);
+  }
+}

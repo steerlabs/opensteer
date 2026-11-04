@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createId } from "@opensteer/core";
+import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
+import { createId, type AgentEventView } from "@opensteer/core";
 import type { TriggerSummary } from "@opensteer/triggers";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { HostClientRequestError, type HostClient, type HostSnapshot } from "./client.js";
@@ -289,47 +290,71 @@ describe("schedules", () => {
       });
     },
   );
-  it("refreshes known downstream replies but ignores unrelated queued runs", async () => {
-    const f = fixture();
-    const summaries = unwrapRpcResult(await f.mock.rpc["triggers.list"]({})).triggers;
-    const summary = summaries.find((s) => s.name === "Morning email summary")!;
-    const wire = unwrapRpcResult(await f.mock.rpc["triggers.get"]({ triggerId: summary.id }));
-    const reply = wire.downstreamRuns[0]!;
-    expect(reply).toBeDefined();
-    const resource = schedulesClient(f.client).detail(summary.id);
-    const stop = resource.subscribe(() => {});
-    try {
-      await ready(resource.getSnapshot);
-      const queued = {
-        id: createId("run"),
-        threadId: createId("thread"),
-        status: "running" as const,
-        createdAt: "2026-11-03T10:00:00Z",
-        runOrdinal: 1,
+  it.each(["completed", "failed"] as const)(
+    "discovers delayed non-anchor work and follows it to %s without refreshing the list",
+    async (status) => {
+      const f = fixture();
+      const summaries = unwrapRpcResult(await f.mock.rpc["triggers.list"]({})).triggers;
+      const summary = summaries.find((s) => s.name === "Morning email summary")!;
+      const wire = unwrapRpcResult(await f.mock.rpc["triggers.get"]({ triggerId: summary.id }));
+      const reply = wire.downstreamRuns[0]!;
+      const delayed = {
+        ...reply,
+        run: {
+          ...reply.run,
+          id: createId("run"),
+          threadId: createId("thread"),
+          status: "running" as const,
+        },
       };
-      const baseQueue = f.snapshot().runQueue;
-      f.emit({ runQueue: [...baseQueue, queued] });
-      expect(f.get).toHaveBeenCalledTimes(1);
-      f.emit({
-        runQueue: [
-          ...baseQueue.filter(({ id }) => id !== reply.run.id),
-          {
-            ...queued,
-            id: reply.run.id,
-            threadId: reply.run.threadId,
-            status:
-              baseQueue.find(({ id }) => id === reply.run.id)?.status === "running"
-                ? "waiting"
-                : "running",
-          },
-        ],
-      });
-      expect(f.get).toHaveBeenCalledTimes(2);
-      expect(resource.getSnapshot().status).toBe("ready");
-    } finally {
-      stop();
-    }
-  });
+      f.get.mockResolvedValue({ ok: true, data: { ...wire, downstreamRuns: [] } });
+      const store = schedulesClient(f.client);
+      const resource = store.detail(summary.id);
+      const stopList = store.list.subscribe(() => {});
+      const stop = resource.subscribe(() => {});
+      try {
+        await ready(store.list.getSnapshot);
+        await ready(resource.getSnapshot);
+        expect(resource.getSnapshot().data?.occurrences[0]?.outcome).toBe(
+          "Finished without a message",
+        );
+        f.get.mockResolvedValue({ ok: true, data: { ...wire, downstreamRuns: [delayed] } });
+        const baseQueue = f.snapshot().runQueue;
+        const queued = {
+          id: delayed.run.id,
+          threadId: delayed.run.threadId,
+          status: "running" as const,
+          createdAt: delayed.run.createdAt,
+          runOrdinal: 1,
+        };
+        f.emit({ runQueue: [...baseQueue, queued] });
+        await vi.waitFor(
+          () =>
+            expect(resource.getSnapshot().data?.definition.downstreamRuns[0]?.run.status).toBe(
+              "running",
+            ),
+          { timeout: 1000 },
+        );
+        f.get.mockResolvedValue({
+          ok: true,
+          data: { ...wire, downstreamRuns: [{ ...delayed, run: { ...delayed.run, status } }] },
+        });
+        f.emit({ runQueue: baseQueue });
+        await vi.waitFor(
+          () =>
+            expect(resource.getSnapshot().data?.definition.downstreamRuns[0]?.run.status).toBe(
+              status,
+            ),
+          { timeout: 1000 },
+        );
+        expect(f.get).toHaveBeenCalledTimes(3);
+        expect(f.list).toHaveBeenCalledTimes(1);
+      } finally {
+        stop();
+        stopList();
+      }
+    },
+  );
   it("refreshes visible detail on run lifecycle changes and fences reads on sign-out", async () => {
     const f = fixture();
     const summary = unwrapRpcResult(await f.mock.rpc["triggers.list"]({})).triggers[0]!;
@@ -447,3 +472,89 @@ it("uses authorized detail for a hidden managed anchor and refreshes when anothe
     stop();
   }
 });
+
+it.each(["initial", "offline", "error"])(
+  "fences hidden-worker controls during %s discovery",
+  async (recovery) => {
+    const f = fixture();
+    const summary = unwrapRpcResult(await f.mock.rpc["triggers.list"]({})).triggers[0]!;
+    const detail = unwrapRpcResult(await f.mock.rpc["triggers.get"]({ triggerId: summary.id }));
+    const worker = {
+      ...detail.anchorThread!,
+      id: createId("thread"),
+      listed: false,
+      doneAt: "2026-11-03T10:00:00Z",
+    };
+    const stale = {
+      ...detail,
+      trigger: {
+        ...detail.trigger,
+        anchorThreadId: worker.id,
+        systemRole: "memory-light" as const,
+      },
+      anchorThread: worker,
+    };
+    const fresh = { ...stale, anchorThread: { ...worker, doneAt: null, inputQueuePaused: true } };
+    const resource = schedulesClient(f.client).detail(summary.id);
+    if (recovery === "offline") f.get.mockResolvedValue({ ok: true, data: stale });
+    if (recovery === "error") f.get.mockRejectedValueOnce(new Error("Lost response"));
+    let finish!: (value: Awaited<ReturnType<typeof f.get>>) => void;
+    if (recovery === "initial")
+      f.get.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+    const seen: unknown[] = [];
+    const stop = resource.subscribe(() => {
+      if (resource.getSnapshot().status === "ready")
+        seen.push(resource.getSnapshot().data?.definition.anchorThread);
+    });
+    try {
+      if (recovery !== "initial") {
+        if (recovery === "offline") {
+          await ready(resource.getSnapshot);
+          f.emit({ connection: "offline" });
+          seen.length = 0;
+        }
+        if (recovery === "error")
+          await vi.waitFor(() => expect(resource.getSnapshot().status).toBe("error"), {
+            timeout: 1000,
+          });
+        f.get.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finish = resolve;
+            }),
+        );
+        if (recovery === "offline") f.emit({ connection: "connected" });
+        else void resource.refresh();
+      }
+      expect(finish).toBeTypeOf("function");
+      invalidateScheduleAnchor(f.client, {
+        type: "thread.state-changed",
+        threadId: worker.id,
+        data: { doneAt: null },
+      } as unknown as AgentEventView);
+      f.emit({});
+      invalidateScheduleAnchor(f.client, {
+        type: "thread.input-queue-updated",
+        threadId: worker.id,
+        data: { paused: true },
+      } as unknown as AgentEventView);
+      f.emit({});
+      f.get.mockResolvedValue({ ok: true, data: fresh });
+      finish({ ok: true, data: stale });
+      await vi.waitFor(
+        () =>
+          expect(resource.getSnapshot().data?.definition.anchorThread).toEqual(fresh.anchorThread),
+        { timeout: 1000 },
+      );
+      expect(seen).not.toContainEqual(worker);
+      expect(f.get).toHaveBeenCalledTimes(recovery === "initial" ? 2 : 3);
+    } finally {
+      stop();
+    }
+  },
+);
