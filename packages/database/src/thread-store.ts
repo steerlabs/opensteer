@@ -1,3 +1,4 @@
+import type { MemoryPassExecution } from "./memory-pass-store.js";
 import { getThreadNamingInput } from "./execution-store.js";
 import { environmentIsAvailableToUser } from "./environment-store.js";
 import {
@@ -141,6 +142,7 @@ import { projectThreadState } from "./thread-status.js";
 
 export interface CreateThreadInput {
   readonly specialistId?: string;
+  readonly expectedHarnessRevision?: number;
   readonly icon?: WorkspaceIconName;
   readonly authority?: ThreadCallerAuthority;
   readonly accessMode?: ThreadAccessMode;
@@ -224,10 +226,8 @@ export interface EnqueueThreadInputRequest {
   readonly threadId: ThreadId;
   readonly forwardedPlaces?: true;
   /** Host-resolved model for a managed memory pass's own wake; without it the wake is skipped. */
-  readonly memoryPass?: {
-    readonly harnessInstanceId: HarnessInstanceId;
-    readonly modelSelection: ModelSelection;
-  };
+  readonly memoryPass?: MemoryPassExecution;
+  readonly expectedHarnessRevision?: number;
   /** Host-only live route check, called after durable replay and before a new claim. */
   readonly validateNewAttachmentInput?: (selection: {
     readonly driverKind: HarnessId;
@@ -296,6 +296,7 @@ export interface MovedThreadInput {
 
 export interface DelegateThreadRequest {
   readonly specialistId?: string;
+  readonly expectedHarnessRevision?: number;
   readonly callerIntent?: Pick<RunToolAdmissionInput, "requestId" | "requestFingerprint">;
   readonly accessMode: ThreadAccessMode;
   readonly createdBy: UserId;
@@ -440,6 +441,9 @@ function canonicalCreateThreadInput(input: CreateThreadInput): Readonly<Record<s
   const { nativeModelId: _nativeModelId, ...modelSelection } = input.modelSelection;
   return {
     ...(input.specialistId ? { specialistId: input.specialistId } : {}),
+    ...(input.expectedHarnessRevision === undefined
+      ? {}
+      : { expectedHarnessRevision: input.expectedHarnessRevision }),
     ...(input.icon ? { icon: input.icon } : {}),
     accessMode: input.accessMode ?? DEFAULT_THREAD_ACCESS_MODE,
     createdBy: input.createdBy,
@@ -1079,11 +1083,15 @@ export async function createThreadInTransaction(
   }
   const insertThread =
     prepared?.insertThread ??
-    (await prepareThreadInsertion(transaction, {
-      createdBy: input.createdBy,
-      environmentId: input.environmentId,
-      harnessInstanceId: input.harnessInstanceId,
-    }));
+    (await prepareThreadInsertion(
+      transaction,
+      {
+        createdBy: input.createdBy,
+        environmentId: input.environmentId,
+        harnessInstanceId: input.harnessInstanceId,
+      },
+      input.expectedHarnessRevision,
+    ));
   if (workspace.status !== "ready") {
     throw new OpensteerError({
       code: "conflict",

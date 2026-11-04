@@ -469,16 +469,16 @@ integration.sequential("Thread title lifecycle", () => {
   it("paginates provisional naming work with an immutable id cursor", async () => {
     const f = await fixture();
     const ids: ThreadId[] = [];
-    for (let index = 0; index < 103; index++) {
+    for (let index = 0; index < 3; index++) {
       const { thread } = await f.create({ generateTitle: true });
       await send(f, thread.id, [{ type: "text", text: `Work ${index}` }]);
       ids.push(thread.id);
     }
     ids.sort();
-    const first = await store.listThreadNamingCandidates(100);
-    expect(first.map((row) => row.id)).toEqual(ids.slice(0, 100));
-    const next = await store.listThreadNamingCandidates(100, first.at(-1)!.id);
-    expect(next.map((row) => row.id)).toEqual(ids.slice(100));
+    const first = await store.listThreadNamingCandidates(2);
+    expect(first.map((row) => row.id)).toEqual(ids.slice(0, 2));
+    const next = await store.listThreadNamingCandidates(2, first.at(-1)!.id);
+    expect(next.map((row) => row.id)).toEqual(ids.slice(2));
   });
 
   it("fences naming apply by source, expiry, account revision and live membership", async () => {

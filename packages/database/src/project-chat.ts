@@ -54,7 +54,6 @@ export async function ensureProjectChat(
   return { ...workspace, homeThreadId: result.thread.id };
 }
 
-/** No history: the owner's automatic default among the accounts on that computer they left on. */
 async function automaticChoice(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,

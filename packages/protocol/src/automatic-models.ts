@@ -1,5 +1,10 @@
-import { HarnessIdSchema, ModelCandidateSkipReasonSchema } from "@opensteer/core";
-import { HarnessInstanceCatalogViewSchema } from "./runner.js";
+import {
+  DelegationModelChoiceSchema,
+  HarnessIdSchema,
+  ModelCandidateSkipReasonSchema,
+  type SelectionCatalog,
+} from "@opensteer/core";
+import { HarnessModelDescriptorViewSchema } from "./runner.js";
 import { z } from "zod";
 import {
   AutomaticModelConfigViewSchema,
@@ -19,12 +24,42 @@ const displayNames = {
   accountDisplayName: z.string(),
   computerDisplayName: z.string(),
 };
+/** What the editor needs from a catalog: Settings is read over cellular links. */
+const AutomaticModelCatalogViewSchema = z.object({
+  status: z.string(),
+  detail: z.string().optional(),
+  lightModel: DelegationModelChoiceSchema.strip().optional(),
+  models: z.array(
+    HarnessModelDescriptorViewSchema.pick({
+      providerId: true,
+      modelId: true,
+      displayName: true,
+      unavailableReason: true,
+    }),
+  ),
+});
+export function automaticModelCatalogView(catalog: SelectionCatalog | null) {
+  return (
+    catalog && {
+      status: catalog.status,
+      ...(catalog.detail ? { detail: catalog.detail } : {}),
+      ...(catalog.lightModel
+        ? { lightModel: { ...catalog.lightModel, options: catalog.lightModel.options ?? {} } }
+        : {}),
+      models: catalog.models.map(({ providerId, modelId, displayName, unavailableReason }) => ({
+        providerId,
+        modelId,
+        displayName,
+        ...(unavailableReason ? { unavailableReason } : {}),
+      })),
+    }
+  );
+}
 export const AutomaticModelCandidateViewSchema = z.object({
   environmentId: EnvironmentIdSchema,
   harnessInstanceId: HarnessInstanceIdSchema,
   harnessRevision: HarnessRuntimeRevisionSchema,
-  storedModelSelection: ModelSelectionViewSchema,
-  runModelSelection: ModelSelectionViewSchema,
+  modelSelection: ModelSelectionViewSchema,
   usageLimited: z.boolean(),
   original: z.boolean(),
   providerDisplayName: z.string(),
@@ -65,7 +100,7 @@ export const AutomaticModelsViewSchema = z.object({
       enabled: z.boolean(),
       removed: z.boolean(),
       available: z.boolean(),
-      catalog: HarnessInstanceCatalogViewSchema.nullable(),
+      catalog: AutomaticModelCatalogViewSchema.nullable(),
       eligible: z.boolean(),
       reason: SkipReasonViewSchema.nullable(),
     }),

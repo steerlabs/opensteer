@@ -30,7 +30,6 @@ export const chatModelPreferences: readonly ChatModelPreference[] = [
   { providerId: "google", modelId: "gemini-3.1-pro", effort: "default" },
 ];
 
-/** Applies the shared Chat preference through the catalog's own effort vocabulary. */
 export function selectionForModelEffort(
   model: SelectionModelDescriptor,
   effort: ModelEffortTier | "default" | "highest",

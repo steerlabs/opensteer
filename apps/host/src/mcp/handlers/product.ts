@@ -77,6 +77,11 @@ interface AgentWorkspaceCreator {
   }): Promise<Workspace>;
 }
 
+interface ConnectionTask {
+  readonly thread: Thread;
+  readonly expectedHarnessRevision?: number;
+}
+
 export class ProductToolHandlers {
   readonly #threads: ThreadService;
   readonly #realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
@@ -750,7 +755,7 @@ export class ProductToolHandlers {
     caller: Extract<AgentCaller, { kind: "connection" }>,
     input: ToolCall<"thread_delegate">["input"],
     operationKey: string,
-  ): Promise<Thread | null> {
+  ): Promise<ConnectionTask | null> {
     if (input.threadId) return null;
     const requestId = operationId(caller, operationKey, "thread_delegate");
     const key = idempotencyKey(caller, requestId, "create");
@@ -791,16 +796,29 @@ export class ProductToolHandlers {
         code: "conflict",
         message: "The idempotency key was already used for a different command",
       });
-    return this.#threads.assertTarget(caller, prior.threadId);
+    const { expectedHarnessRevision } = requested;
+    return {
+      thread: await this.#threads.assertTarget(caller, prior.threadId),
+      ...(typeof expectedHarnessRevision === "number" ? { expectedHarnessRevision } : {}),
+    };
   }
   async #createConnectionTask(
     caller: Extract<AgentCaller, { kind: "connection" }>,
     input: ToolCall<"thread_delegate">["input"],
     requestId: string,
-  ): Promise<Thread> {
-    const { existing, workspace, environmentId, harnessInstanceId, modelSelection, specialist } =
-      await this.#prepareConnectionDelegation(caller, input);
-    if (existing) return existing;
+  ): Promise<ConnectionTask> {
+    const {
+      existing,
+      workspace,
+      environmentId,
+      harnessInstanceId,
+      harnessRevision,
+      modelSelection,
+      specialist,
+    } = await this.#prepareConnectionDelegation(caller, input);
+    if (existing) return { thread: existing };
+    const expected =
+      harnessRevision === undefined ? {} : { expectedHarnessRevision: harnessRevision };
     const { thread } = await this.#threads.create(
       caller,
       {
@@ -816,18 +834,20 @@ export class ProductToolHandlers {
       },
       {
         ...(specialist ? { specialistId: specialist.id } : {}),
+        ...expected,
         ...(input.icon ? { icon: input.icon } : {}),
       },
     );
-    return thread;
+    return { thread, ...expected };
   }
   async thread_delegate({ caller, input, operationKey }: ToolCall<"thread_delegate">) {
     if (caller.kind === "connection") {
       const requestId = operationId(caller, operationKey, "thread_delegate");
-      const created =
+      const { thread: created, expectedHarnessRevision } =
         (await this.#priorConnectionTask(caller, input, operationKey)) ??
         (await this.#createConnectionTask(caller, input, requestId));
       const delivered = await this.#threads.sendInput(caller, {
+        ...(expectedHarnessRevision === undefined ? {} : { expectedHarnessRevision }),
         threadId: created.id,
         requestedBy: caller.userId,
         content: [{ type: "text", text: input.task }],
@@ -874,6 +894,9 @@ export class ProductToolHandlers {
         } = await this.prepareDelegation({ caller, input, operationKey });
         const delegateInput = {
           ...(specialist ? { specialistId: specialist.id } : {}),
+          ...(placement.harnessRevision === undefined
+            ? {}
+            : { expectedHarnessRevision: placement.harnessRevision }),
           callerIntent: {
             requestId: requestId,
             requestFingerprint: fingerprint(input),
@@ -1241,9 +1264,16 @@ export class ProductToolHandlers {
         await this.#store.getHarnessCatalog(environmentId, harnessInstanceId),
       );
     if (!modelSelection) throw badRequest("Choose a model for the new task");
-    return { existing, workspace, environmentId, harnessInstanceId, modelSelection, specialist };
+    return {
+      existing,
+      workspace,
+      environmentId,
+      harnessInstanceId,
+      harnessRevision: undefined,
+      modelSelection,
+      specialist,
+    };
   }
-  /** Nobody named an account: the person's automatic default among those they left on. */
   async #automaticDefault(userId: UserId, environmentId: EnvironmentId) {
     const [{ excludedAccounts }, harnesses, catalogs] = await Promise.all([
       this.#store.getAutomaticModelConfig(userId),

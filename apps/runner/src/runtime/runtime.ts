@@ -854,7 +854,6 @@ export class RunnerRuntime {
       : [await identifyModelServer(address, options)];
   }
 
-  /** Applies the complete desired profile set before concurrent Run admission resumes. */
   readonly #backgroundText = new Map<
     string,
     {

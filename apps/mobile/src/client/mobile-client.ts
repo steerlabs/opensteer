@@ -195,7 +195,6 @@ export class MobileClient {
   readonly doneShelf: DoneShelfFile;
   /** Usage-limit notices dismissed on this phone, shared by every composer. */
   readonly usageNotices: UsageNoticeDismissals;
-  /** Background-model consent notices answered "Not now" on this phone. */
   /** Unsent message text, per Thread, kept where a killed app cannot lose it. */
   readonly drafts: ThreadDraftStore;
   readonly oauth: NativeOAuthManager;

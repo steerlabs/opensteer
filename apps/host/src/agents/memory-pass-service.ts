@@ -11,13 +11,12 @@ import {
 import {
   createMemoryPass,
   missingMemoryPassMains,
-  setMemoryPassWaiting,
+  recordMemoryPassWake,
   withDatabaseOperationSignal,
   type MemoryPassExecution,
   type OpensteerStore,
 } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
-import { sql } from "kysely";
 import { MANAGED_MEMORY_WAKE_SKIPPED, type TriggerSystemRole } from "@opensteer/triggers";
 import type { WorkspaceFilesService } from "../workspace/files/workspace-files-service.js";
 import { resolveAutomaticModels, workspaceExecution } from "./automatic-models.js";
@@ -128,8 +127,9 @@ export class MemoryPassService {
 
   /**
    * The model a managed pass's own wake runs on, resolved afresh for each
-   * pass; undefined for every other Trigger. Without a usable model the pass
-   * waits: the wake is skipped and the next one resolves again, so the
+   * pass; undefined for every other Trigger, and for an occurrence whose pass
+   * was accepted, whose retry replays that receipt as is. Without a usable model
+   * the pass waits: the wake is skipped and the next one resolves again, so the
    * schedule recovers by itself and a pause stays the person's.
    */
   async admissionSelection(
@@ -150,31 +150,24 @@ export class MemoryPassService {
       .where("triggerOccurrences.id", "=", occurrenceId)
       .executeTakeFirst();
     if (!trigger?.systemRole || trigger.anchorThreadId !== worker.id) return undefined;
-    // An occurrence admits one pass: once accepted, its retry replays that receipt as is.
-    const accepted = await store.database
-      .selectFrom("threadInputs")
-      .select("messageId")
-      .where("threadId", "=", worker.id)
-      .where(sql<string>`authority_source->>'occurrenceId'`, "=", occurrenceId)
-      .executeTakeFirst();
-    if (accepted) return undefined;
     const chosen = await this.#resolve(
       trigger.createdBy,
       worker,
       trigger.systemRole === "memory-light" ? "light" : "deep",
     );
-    if (
-      await setMemoryPassWaiting(
-        store.database,
-        trigger.id,
-        chosen ? null : memoryPassWaitingReason,
-      )
-    )
-      this.#options.onChanged(trigger.workspaceId);
+    const { accepted, changed } = await recordMemoryPassWake(store.database, {
+      occurrenceId,
+      triggerId: trigger.id,
+      workerId: worker.id,
+      waitingReason: chosen ? null : memoryPassWaitingReason,
+    });
+    if (changed) this.#options.onChanged(trigger.workspaceId);
+    if (accepted) return undefined;
     if (!chosen)
       throw new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED });
     return {
       harnessInstanceId: chosen.harnessInstanceId,
+      harnessRevision: chosen.harnessRevision,
       modelSelection: chosen.storedModelSelection,
     };
   }

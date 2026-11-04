@@ -20,7 +20,11 @@ considers authorized configured accounts, and treats usage exhaustion as advisor
 cached readings can be wrong. An eligible original stays once, last. Eligibility and endpoint checks
 always prevail, so a switched-off account stays off even for a task's own model. Selection never
 replays accepted or uncertain work: naming may advance after a contained generation failure, while
-memory and specialists choose before admission and freeze that choice. The person's list and
+memory and specialists choose before admission and freeze that choice. Admission checks the account
+revision it resolved under the account's row lock, and refuses a changed endpoint rather than adopt
+it: a specialist reports the error, and a memory pass resolves again at its next wake. From then on
+the account's queued Run holds the endpoint, because its config can't change under one. The person's
+list and
 excluded accounts are the only consent; an unbound entry never reaches an `openai-compatible`
 account, and a manifest can't bind one. This differs from T3, which reaches other accounts only
 after a known exhaustion: here declared order holds, default account first within each entry.

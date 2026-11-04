@@ -1,4 +1,5 @@
 import {
+  automaticAccountEligibility,
   automaticModelDefaults,
   automaticModelWants,
   modelLabLabels,
@@ -7,7 +8,6 @@ import {
   type AutomaticModelConfig,
   type EnvironmentId,
   type HarnessInstanceId,
-  type ModelCandidateSkipReason,
   type ModelRunEligibility,
   type ModelSelection,
   type ModelUsageFact,
@@ -20,7 +20,11 @@ import {
 } from "@opensteer/core";
 import type { HarnessInstanceRecord, OpensteerStore } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
-import type { AutomaticModelsView, HarnessInstanceCatalog } from "@opensteer/protocol";
+import {
+  automaticModelCatalogView,
+  type AutomaticModelsView,
+  type HarnessInstanceCatalog,
+} from "@opensteer/protocol";
 
 export interface AutomaticModelDependencies {
   readonly store: Pick<
@@ -40,7 +44,6 @@ type Runners = Pick<
 
 const ok: ModelRunEligibility = { ok: true };
 
-/** Naming runs outside any Run, so it needs only a Runner that generates background text. */
 export function backgroundTextSupport(
   runners: Pick<Runners, "canRunHarness" | "identityForEnvironment">,
 ): ModelRunPredicate {
@@ -53,7 +56,6 @@ export function backgroundTextSupport(
       : { ok: false, reason: "unsupported-capability" };
 }
 
-/** A Run in a Workspace: its owning computer, and an engine that enforces its access mode there. */
 export function workspaceExecution(
   runners: Pick<Runners, "canRunHarness" | "harnessAccessModes">,
   boundary: { readonly environmentId: EnvironmentId; readonly accessMode: ThreadAccessMode },
@@ -79,7 +81,6 @@ function sourceBoundary(harness: HarnessInstanceRecord): string {
   ]);
 }
 
-/** Exhausted windows only, per provider the connection serves; the resolver demotes on them. */
 function usageFacts(catalog: HarnessInstanceCatalog | null): ModelUsageFact[] {
   if (!catalog) return [];
   const providers = new Set(catalog.models.map((model) => model.providerId));
@@ -105,7 +106,6 @@ function usageFacts(catalog: HarnessInstanceCatalog | null): ModelUsageFact[] {
   );
 }
 
-/** The snapshot with the stored catalog's full type, which Settings shows. */
 export type HostModelAccount = AuthorizedModelAccountSnapshot & {
   readonly catalog: HarnessInstanceCatalog | null;
 };
@@ -115,7 +115,6 @@ export interface AuthorizedModelAccounts {
   readonly environments: readonly { readonly id: EnvironmentId; readonly name: string }[];
 }
 
-/** Every account on a computer this person may run work on, with its stored catalog. */
 export async function readAuthorizedModelAccounts(
   { store, runners }: AutomaticModelDependencies,
   userId: UserId,
@@ -185,15 +184,18 @@ export interface AutomaticModelResolution extends AuthorizedModelAccounts {
   readonly skipped: readonly SkippedModelCandidate[];
 }
 
-/** Every automatic site resolves through here: the person's config over their own accounts. */
-export async function resolveAutomaticModels(
-  dependencies: AutomaticModelDependencies,
-  request: AutomaticModelRequest,
-): Promise<AutomaticModelResolution> {
-  const [config, snapshot] = await Promise.all([
-    dependencies.store.getAutomaticModelConfig(request.userId),
-    readAuthorizedModelAccounts(dependencies, request.userId),
+function readAutomaticModelInputs(dependencies: AutomaticModelDependencies, userId: UserId) {
+  return Promise.all([
+    dependencies.store.getAutomaticModelConfig(userId),
+    readAuthorizedModelAccounts(dependencies, userId),
   ]);
+}
+
+function resolveWithin(
+  config: AutomaticModelConfig,
+  snapshot: AuthorizedModelAccounts,
+  request: Omit<AutomaticModelRequest, "userId">,
+): AutomaticModelResolution {
   const resolved = resolveModelCandidates({
     wants: request.wants(config),
     ...(request.original
@@ -207,16 +209,13 @@ export async function resolveAutomaticModels(
   return { ...snapshot, config, ...resolved };
 }
 
-function accountReason(
-  account: AuthorizedModelAccountSnapshot,
-  config: AutomaticModelConfig,
-): ModelCandidateSkipReason | null {
-  if (config.excludedAccounts.includes(account.harnessInstanceId)) return "excluded";
-  if (account.removed) return "removed";
-  if (!account.enabled) return "disabled";
-  if (!account.available) return "offline";
-  if (account.catalog?.status !== "ready") return "catalog-not-ready";
-  return null;
+/** Every automatic site resolves through here: the person's config over their own accounts. */
+export async function resolveAutomaticModels(
+  dependencies: AutomaticModelDependencies,
+  request: AutomaticModelRequest,
+): Promise<AutomaticModelResolution> {
+  const [config, snapshot] = await readAutomaticModelInputs(dependencies, request.userId);
+  return resolveWithin(config, snapshot, request);
 }
 
 /**
@@ -244,20 +243,16 @@ export async function readAutomaticModelPreview(
           original: chat,
         }
       : { canRun: () => ok };
-  const [light, deep] = await Promise.all([
-    resolveAutomaticModels(dependencies, {
-      userId,
-      wants: (config) => automaticModelWants(config, "light"),
-      canRun: () => ok,
-    }),
-    resolveAutomaticModels(dependencies, {
-      userId,
-      wants: (config) => automaticModelWants(config, "deep"),
-      ...memory,
-    }),
-  ]);
-  const { accounts, harnesses, environments, config } = light;
-  // Display names only for this person's own accounts.
+  const [config, snapshot] = await readAutomaticModelInputs(dependencies, userId);
+  const light = resolveWithin(config, snapshot, {
+    wants: (current) => automaticModelWants(current, "light"),
+    canRun: () => ok,
+  });
+  const deep = resolveWithin(config, snapshot, {
+    wants: (current) => automaticModelWants(current, "deep"),
+    ...memory,
+  });
+  const { accounts, harnesses, environments } = snapshot;
   const names = (environmentId?: EnvironmentId, harnessInstanceId?: HarnessInstanceId) => {
     const account = accounts.find(
       (candidate) =>
@@ -287,16 +282,19 @@ export async function readAutomaticModelPreview(
     };
   };
   const preview = ({ candidates, skipped }: AutomaticModelResolution) => ({
-    candidates: candidates.map(({ account: _snapshot, ...candidate }) => {
-      const { account, ...own } = names(candidate.environmentId, candidate.harnessInstanceId)!;
-      const { providerId, modelId } = candidate.storedModelSelection;
-      return {
-        ...candidate,
-        ...own,
-        providerDisplayName: modelLabLabels[providerId] ?? providerId,
-        modelDisplayName: modelNames(account, modelId, providerId).modelDisplayName,
-      };
-    }),
+    candidates: candidates.map(
+      ({ account: _snapshot, runModelSelection: _run, storedModelSelection, ...candidate }) => {
+        const { account, ...own } = names(candidate.environmentId, candidate.harnessInstanceId)!;
+        const { providerId, modelId } = storedModelSelection;
+        return {
+          ...candidate,
+          ...own,
+          modelSelection: storedModelSelection,
+          providerDisplayName: modelLabLabels[providerId] ?? providerId,
+          modelDisplayName: modelNames(account, modelId, providerId).modelDisplayName,
+        };
+      },
+    ),
     skipped: skipped.map((skip) => {
       const own = names(skip.environmentId, skip.harnessInstanceId);
       if (!own) return skip;
@@ -323,7 +321,10 @@ export async function readAutomaticModelPreview(
       deep: [...automaticModelDefaults.deep],
     },
     accounts: accounts.map((account) => {
-      const reason = accountReason(account, config);
+      const eligibility = automaticAccountEligibility(account, {
+        excludedAccounts: config.excludedAccounts,
+        canRun: () => ok,
+      });
       const { accountDisplayName, computerDisplayName } = names(
         account.environmentId,
         account.harnessInstanceId,
@@ -340,9 +341,9 @@ export async function readAutomaticModelPreview(
         enabled: account.enabled,
         removed: account.removed,
         available: account.available,
-        catalog: account.catalog,
-        eligible: reason === null,
-        reason,
+        catalog: automaticModelCatalogView(account.catalog),
+        eligible: eligibility.ok,
+        reason: eligibility.ok ? null : eligibility.reason,
       };
     }),
     light: { label: "General preference", ...preview(light) },

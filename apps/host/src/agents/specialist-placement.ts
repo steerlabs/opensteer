@@ -48,6 +48,7 @@ export async function specialistPlacement(
   if (chosen)
     return {
       harnessInstanceId: chosen.harnessInstanceId,
+      harnessRevision: chosen.harnessRevision,
       modelSelection: chosen.storedModelSelection,
     };
   const reasons = [

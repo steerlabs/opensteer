@@ -63,6 +63,7 @@ export class ThreadService {
     command: Command<"thread.create">,
     selection: {
       readonly specialistId?: string;
+      readonly expectedHarnessRevision?: number;
       readonly icon?: import("@opensteer/core").WorkspaceIconName;
     } = {},
   ) {
