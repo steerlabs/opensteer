@@ -1148,6 +1148,9 @@ export interface HostClient {
    */
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void;
   /** Invalidates remote administration on Host changes and stream recovery. */
+  subscribePluginsChanged(
+    listener: (message: { type: "host.plugins-changed" }) => void,
+  ): () => void;
   subscribePersonalRemoteAccess(listener: () => void): () => void;
   subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void;
   markThreadRead(threadId: string, throughSequence: string): Promise<void>;

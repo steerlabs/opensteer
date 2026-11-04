@@ -447,7 +447,7 @@ integration("messaging pipeline", () => {
       externalUserId: "U-EXTERNAL",
     });
     const text = statusText(claimed);
-    expect(text).toContain(`${canonicalOrigin}/settings/apps/messaging`);
+    expect(text).toContain(`${canonicalOrigin}/settings/messaging`);
     expect(text).toContain("expires in 1 hour");
     const code = /\*\*([A-HJ-NP-Z2-9]{8})\*\*/u.exec(text)?.[1];
     expect(code).toBeDefined();

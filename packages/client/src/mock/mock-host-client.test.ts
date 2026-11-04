@@ -555,6 +555,7 @@ describe("MockHostClient", () => {
     const platform = IntegrationPlatformDashboardSchema.parse(await integrationPlatform(client));
 
     expect(platform.catalog.map(({ definition }) => definition.id)).toEqual([
+      "google-gmail",
       "apple-contacts",
       "apple-calendar",
       "apple-reminders",
@@ -588,6 +589,8 @@ describe("MockHostClient", () => {
     expect(platform.connections.map(({ status }) => status)).toEqual(["connected", "connected"]);
     expect(dashboard.connections.map(({ definitionId, status }) => [definitionId, status])).toEqual(
       [
+        ["google-gmail", "connected"],
+        ["google-gmail", "connected"],
         ["github", "connected"],
         // One pins an app revision that is gone; two wait for their
         // repositories, and GitHub has revoked the token of the second.
@@ -1211,6 +1214,32 @@ it("mock specialists reevaluate missing, ambiguous, chosen and revoked access", 
   try {
     const workspaceId = createId("workspace");
     const send = (command: Parameters<typeof client.dispatch>[0]) => client.dispatch(command);
+    const userId = client.getSnapshot().user!.id;
+    await send({
+      type: "workspace.member.update",
+      workspaceId,
+      userId,
+      state: "revoked",
+      idempotencyKey: "revoke-before-activation",
+    });
+    await expect(
+      send({
+        type: "specialist.add",
+        workspaceId,
+        pluginId: "research",
+        idempotencyKey: "refused-add",
+      }),
+    ).rejects.toThrow("Only the Workspace owner or administrator");
+    expect(await client.rpc["specialist.list"]({ workspaceId })).toMatchObject({
+      data: { specialists: [] },
+    });
+    await send({
+      type: "workspace.member.update",
+      workspaceId,
+      userId,
+      state: "active",
+      idempotencyKey: "restore-before-activation",
+    });
     const added = await send({
       type: "specialist.add",
       workspaceId,

@@ -53,7 +53,7 @@ describe("computerAppRoute", () => {
   it("names one app on one computer, and reads the name back", () => {
     const route = computerAppRoute({ definitionId: "apple-messages", runnerId: laptopId });
 
-    expect(route).toBe(`/settings/computers/${laptopId}#computer-app-apple-messages`);
+    expect(route).toBe(`/settings/devices/computers/${laptopId}#computer-app-apple-messages`);
     expect(computerAppIdFromHash(new URL(route, "https://x.test").hash)).toBe("apple-messages");
   });
 
@@ -97,7 +97,7 @@ describe("machineRemovalPrompt", () => {
         machineFixture({ localWorkspaces: 2, name: "Mac mini", pinnedThreads: 1 }),
       ),
     ).toBe(
-      "Remove Mac mini? Agents will no longer be able to use it. 1 Thread runs here and 2 Workspaces keep their files on its disk, and will have nowhere to run until you move them.",
+      "Remove Mac mini? Agents will no longer be able to use it. 1 Thread runs here and 2 Workspaces keep their files on its disk, and will have nowhere to run until you move them.\n\nAgent access: apps, Terminal, screen control and shared folders stop being available here.\nFiles and saved browser profiles: stay on the computer.\nSigned-in sessions: remain signed in. Manage those in Account.",
     );
   });
 });
@@ -270,7 +270,7 @@ describe("ComputersPage", () => {
       expect(steps(off.container)[0]).toContain("Turn on remote access for Mac mini"),
     );
     expect(
-      off.container.querySelector('.add-computer__steps a[href="/settings/devices"]'),
+      off.container.querySelector('.add-computer__steps a[href="/settings/account/remote-access"]'),
     ).not.toBeNull();
     await vi.waitFor(() => expect(steps(on.container)).toHaveLength(2));
     expect(steps(on.container)[0]).toContain(
@@ -299,7 +299,7 @@ describe("ComputerDetailPage", () => {
     const dispatch = vi.spyOn(client, "dispatch");
     const page = await interactivePage({
       client,
-      path: `/settings/computers/${laptopId}`,
+      path: `/settings/devices/computers/${laptopId}`,
       snapshot: client.getSnapshot(),
     });
     await vi.waitFor(() => expect(buttonTexts(page.container)).toContain("Review request"));
@@ -344,7 +344,7 @@ describe("ComputerDetailPage", () => {
     });
     const page = await interactivePage({
       client,
-      path: `/settings/computers/${laptopId}`,
+      path: `/settings/devices/computers/${laptopId}`,
       snapshot: client.getSnapshot(),
     });
     await vi.waitFor(() => expect(buttonTexts(page.container)).toContain("Review request"));
@@ -367,7 +367,7 @@ describe("ComputerDetailPage", () => {
     });
     const page = await interactivePage({
       client,
-      path: `/settings/computers/${laptopId}`,
+      path: `/settings/devices/computers/${laptopId}`,
       snapshot: client.getSnapshot(),
     });
     await vi.waitFor(() => expect(buttonTexts(page.container)).toContain("Set up"));
@@ -384,7 +384,7 @@ describe("ComputerDetailPage", () => {
       desktopBridge: {} as OpensteerDesktopBridge,
       desktopDeploymentKind: "personal",
       onThisComputer: true,
-      path: `/settings/computers/${macMiniId}`,
+      path: `/settings/devices/computers/${macMiniId}`,
       snapshot: client.getSnapshot(),
     });
 
@@ -408,7 +408,7 @@ describe("ComputerDetailPage", () => {
       desktopBridge: {} as OpensteerDesktopBridge,
       desktopDeploymentKind: "personal",
       localExecutionStatus: localStatus({ enrolled: true, runnerId: laptopId }),
-      path: `/settings/computers/${laptopId}`,
+      path: `/settings/devices/computers/${laptopId}`,
       snapshot: client.getSnapshot(),
     });
 
@@ -429,7 +429,7 @@ describe("ComputerDetailPage", () => {
       client,
       desktopBridge: {} as OpensteerDesktopBridge,
       localExecutionStatus: localStatus({ enrolled: true, runAgents: false, runnerId: macMiniId }),
-      path: `/settings/computers/${macMiniId}`,
+      path: `/settings/devices/computers/${macMiniId}`,
       performLocalExecutionAction,
       snapshot,
     });
@@ -444,7 +444,11 @@ describe("ComputerDetailPage", () => {
     );
 
     // The same computer read from another device: a fact, not a control.
-    const elsewhere = renderPage({ client, path: `/settings/computers/${macMiniId}`, snapshot });
+    const elsewhere = renderPage({
+      client,
+      path: `/settings/devices/computers/${macMiniId}`,
+      snapshot,
+    });
     expect(elsewhere).toContain("Agents work here");
     expect(elsewhere).not.toContain("Agents work on Mac mini");
   });
@@ -457,7 +461,7 @@ describe("ComputerDetailPage", () => {
     // Read from anywhere else, the block says where the switch lives.
     const elsewhere = renderPage({
       client,
-      path: `/settings/computers/${laptopId}`,
+      path: `/settings/devices/computers/${laptopId}`,
       snapshot: denied,
     });
     expect(elsewhere).toContain("Mac permissions");
@@ -474,7 +478,7 @@ describe("ComputerDetailPage", () => {
       client,
       desktopBridge: { requestFullDiskAccess } as unknown as OpensteerDesktopBridge,
       localExecutionStatus: localStatus({ enrolled: true, runnerId: laptopId }),
-      path: `/settings/computers/${laptopId}`,
+      path: `/settings/devices/computers/${laptopId}`,
       snapshot: denied,
     });
     expect(here.container.textContent).toContain(
@@ -513,7 +517,7 @@ describe("ComputerDetailPage", () => {
       client,
       desktopBridge: bridge,
       desktopDeploymentKind: "personal",
-      path: `/settings/computers/${macMiniId}`,
+      path: `/settings/devices/computers/${macMiniId}`,
       snapshot: denied,
     });
     expect(elsewhere).toContain(fullAccessElsewhere("Mac mini"));
@@ -524,7 +528,7 @@ describe("ComputerDetailPage", () => {
       desktopBridge: bridge,
       desktopDeploymentKind: "personal",
       onThisComputer: true,
-      path: `/settings/computers/${macMiniId}`,
+      path: `/settings/devices/computers/${macMiniId}`,
       snapshot: denied,
     });
     expect(here.container.textContent).not.toContain("Complete setup in Opensteer on");
@@ -544,7 +548,7 @@ describe("ComputerDetailPage", () => {
   it("finishes an app's macOS setup on the Mac that hosts a Personal Deployment, from that Mac", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const snapshot = withMessagesNeedingFullDiskAccess(client, macMiniId);
-    const path = `/settings/computers/${macMiniId}`;
+    const path = `/settings/devices/computers/${macMiniId}`;
     const computerUseApprovalKey = vi.fn(async () => ({
       keyId: macMiniApprovalKeyId,
       publicKey: "public-key",
@@ -605,7 +609,7 @@ describe("ComputerDetailPage", () => {
       desktopBridge: {} as OpensteerDesktopBridge,
       desktopDeploymentKind: "personal",
       onThisComputer: true,
-      path: `/settings/computers/${macMiniId}`,
+      path: `/settings/devices/computers/${macMiniId}`,
       snapshot: client.getSnapshot(),
     });
     await vi.waitFor(() => expect(buttonTexts(page.container)).toContain("Set up"));
@@ -624,7 +628,7 @@ describe("ComputerDetailPage", () => {
     Object.defineProperty(window, "confirm", { configurable: true, value: confirm });
     const page = await interactivePage({
       client,
-      path: `/settings/computers/${laptopId}`,
+      path: `/settings/devices/computers/${laptopId}`,
       snapshot: client.getSnapshot(),
     });
 
@@ -632,7 +636,7 @@ describe("ComputerDetailPage", () => {
     await click(dangerButton(page.container));
 
     expect(confirm).toHaveBeenCalledWith(
-      "Remove Alex's MacBook Pro? Agents will no longer be able to use it.",
+      "Remove Alex's MacBook Pro? Agents will no longer be able to use it.\n\nAgent access: apps, Terminal, screen control and shared folders stop being available here.\nFiles and saved browser profiles: stay on the computer.\nSigned-in sessions: remain signed in. Manage those in Account.",
     );
     await vi.waitFor(() =>
       expect(dispatch).toHaveBeenCalledWith(
@@ -650,7 +654,7 @@ describe("ComputerDetailPage", () => {
       client,
       desktopBridge: {} as OpensteerDesktopBridge,
       localExecutionStatus: localStatus({ enrolled: true, runnerId: laptopId }),
-      path: `/settings/computers/${laptopId}`,
+      path: `/settings/devices/computers/${laptopId}`,
       performLocalExecutionAction,
       snapshot: client.getSnapshot(),
     });
@@ -671,7 +675,7 @@ describe("ComputerDetailPage", () => {
       client,
       desktopBridge: {} as OpensteerDesktopBridge,
       localExecutionStatus: localStatus({ enrolled: true, runnerId: laptopId }),
-      path: `/settings/computers/${laptopId}`,
+      path: `/settings/devices/computers/${laptopId}`,
       performLocalExecutionAction,
       snapshot: client.getSnapshot(),
     });
@@ -689,7 +693,7 @@ describe("ComputerDetailPage", () => {
     Object.defineProperty(window, "confirm", { configurable: true, value: vi.fn(() => true) });
     const page = await interactivePage({
       client,
-      path: `/settings/computers/${laptopId}`,
+      path: `/settings/devices/computers/${laptopId}`,
       snapshot: client.getSnapshot(),
     });
 
@@ -725,7 +729,7 @@ describe("ComputerDetailPage for an iPhone", () => {
     const snapshot = serverSnapshot(client);
     const html = renderPage({
       client,
-      path: `/settings/computers/${iphoneId}`,
+      path: `/settings/devices/computers/${iphoneId}`,
       snapshot: { ...snapshot, machines: [...snapshot.machines, iphone] },
     });
     const text = html.replace(/<[^>]+>/g, " ");
@@ -749,7 +753,7 @@ describe("ComputerDetailPage for an iPhone", () => {
     const pending = { ...iphone, lastSeenAt: null, status: "pending" as const };
     const text = renderPage({
       client,
-      path: `/settings/computers/${iphoneId}`,
+      path: `/settings/devices/computers/${iphoneId}`,
       snapshot: { ...snapshot, machines: [...snapshot.machines, pending] },
     });
 
@@ -951,11 +955,11 @@ function pageElement(input: PageInput) {
     snapshot: input.snapshot,
   };
   return (
-    <MemoryRouter initialEntries={[input.path ?? "/settings/computers"]}>
+    <MemoryRouter initialEntries={[input.path ?? "/settings/devices/computers"]}>
       <Routes>
         <Route element={<Outlet context={context} />}>
-          <Route element={<ComputersPage />} path="settings/computers" />
-          <Route element={<ComputerDetailPage />} path="settings/computers/:computerId" />
+          <Route element={<ComputersPage />} path="settings/devices/computers" />
+          <Route element={<ComputerDetailPage />} path="settings/devices/computers/:computerId" />
         </Route>
       </Routes>
     </MemoryRouter>

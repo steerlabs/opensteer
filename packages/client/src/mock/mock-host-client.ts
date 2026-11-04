@@ -1,3 +1,4 @@
+import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
 import type { PersonShowMessage } from "@opensteer/protocol";
@@ -2038,6 +2039,65 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess(await client.checkChannelConnection(input.connectionId)),
     "channels.get": async () =>
       rpcSuccess(hostApi["channels.get"].success.parse(await client.loadChannels())),
+    "plugins.overview.get": async () => {
+      const workspaceId = WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id);
+      client.settings.syncServices(workspaceId, await client.loadIntegrationPlatform());
+      client.settings.syncPackages(workspaceId, await client.listPlugins(workspaceId));
+      return rpcSuccess(client.settings.overview(workspaceId));
+    },
+    "plugins.detail.get": async ({ target }) => {
+      try {
+        client.settings.syncServices(
+          WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
+          await client.loadIntegrationPlatform(),
+        );
+        client.settings.syncPackages(
+          WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
+          await client.listPlugins(),
+        );
+        return rpcSuccess(
+          client.settings.detail(
+            WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
+            target,
+          ),
+        );
+      } catch (error) {
+        return mockRefusal(error);
+      }
+    },
+    "plugins.directory.get": async () => {
+      const platform = await client.loadIntegrationPlatform();
+      return rpcSuccess({
+        hasMoreRequests:
+          client
+            .getSnapshot()
+            .waitingRequests.filter(({ request }) => request.payload.kind === "integration.access")
+            .length > 100,
+        catalog: platform.catalog.map((item) => ({
+          definitionId: item.definition.id,
+          title: item.definition.name,
+          description: item.definition.description,
+          added: item.installationId !== null,
+          contents: (item.definition.computerApp?.operations ?? []).map(({ name }) => ({
+            name,
+            kind: "tool" as const,
+          })),
+          access: item.definition.authMethods.flatMap((method) =>
+            method.kind === "oauth" ? method.oauth.scopes : [method.label],
+          ),
+        })),
+        requests: client
+          .getSnapshot()
+          .waitingRequests.filter(({ request }) => request.payload.kind === "integration.access")
+          .slice(0, 100)
+          .map(({ request }) => ({
+            requestId: request.id,
+            title: request.presentation.title,
+            workspaceId: request.targetWorkspaceId,
+          })),
+      });
+    },
+    "devices.overview.get": async () => rpcSuccess(client.settings.devices),
     "commands.dispatch": (command) =>
       client
         .executeCommandOnce(command)
@@ -2388,6 +2448,14 @@ function placeMockMessage(
 
 async function executeMockCommand(client: MockHostState, command: HostApiCommand) {
   switch (command.type) {
+    case "settings.plugin.enabled.set":
+    case "settings.plugin.placement.set":
+      return rpcSuccess(
+        client.settings.mutate(
+          WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
+          command,
+        ),
+      );
     case "attachment.upload.create":
       return rpcSuccess({ type: command.type, attachment: client.createAttachment(command) });
     case "attachment.upload.discard":
@@ -2898,7 +2966,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "specialist.add":
       return rpcSuccess({
         type: command.type,
-        specialist: client.addSpecialist(command.workspaceId, command.pluginId),
+        specialist: await client.addSpecialist(command.workspaceId, command.pluginId),
       });
     case "specialist.bind":
       return rpcSuccess({ type: command.type, specialist: client.bindSpecialist(command) });
@@ -3515,6 +3583,12 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
+  subscribePluginsChanged(
+    listener: (message: { type: "host.plugins-changed" }) => void,
+  ): () => void {
+    this.#state.settings.listeners.add(listener);
+    return () => this.#state.settings.listeners.delete(listener);
+  }
   readonly #personShowListeners = new Set<(message: PersonShowMessage) => void>();
   subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void {
     this.#personShowListeners.add(listener);
@@ -4768,6 +4842,25 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  readonly settings = new MockSettingsFixtures(
+    () => this.emit(),
+    () =>
+      this.snapshot.workspaces.map(({ id, name, kind }) => ({
+        workspaceId: WorkspaceIdSchema.parse(id),
+        name,
+        kind,
+      })),
+    () => ({
+      devices: this.snapshot.machines.filter(
+        (machine) =>
+          machine.ownership !== "deployment" || machine.allowedModules.includes("agents"),
+      ),
+    }),
+    (definitionId) =>
+      this.integrations.connections.filter(
+        (connection) => connection.definitionId === definitionId,
+      ),
+  );
   private readonly plugins: MockPlugin[] = [];
   private readonly specialists: {
     id: string;
@@ -4873,7 +4966,7 @@ class MockHostState {
       access,
     };
   }
-  addSpecialist(workspaceId: string, pluginId: string) {
+  async addSpecialist(workspaceId: string, pluginId: string) {
     const plugin = this.plugins.find((p) => p.id === pluginId);
     const version = plugin?.versions.find((v) => v.id === plugin.currentVersionId);
     if (!plugin || !version?.specialistManifest)
@@ -4885,7 +4978,7 @@ class MockHostState {
     );
     if (previous && previous.ownerUserId !== ownerUserId)
       throw new Error("Only the consent owner may re-add this specialist");
-    this.mutatePlugin({
+    await this.mutatePlugin({
       type: "plugin.activation.set",
       idempotencyKey: crypto.randomUUID(),
       pluginId,
@@ -5967,6 +6060,8 @@ class MockHostState {
   executeCommandOnce(input: HostApiCommand): ReturnType<typeof executeMockCommand> {
     const command = hostApi["commands.dispatch"].payload.parse(input);
     if (
+      command.type !== "settings.plugin.enabled.set" &&
+      command.type !== "settings.plugin.placement.set" &&
       command.type !== "thread.sendMessage" &&
       command.type !== "thread.icon.set" &&
       command.type !== "workspace.color.set"

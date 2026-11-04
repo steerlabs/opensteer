@@ -537,6 +537,8 @@ export async function createHostServer(
   };
   registerIntegrationAuthorizationRoutes(app, integrationAuthorizationRpcOptions);
   const integrationRpcOptions: IntegrationRpcOptions = {
+    pluginsChanged: (viewers) =>
+      dependencies.realtime.sendToUsers(viewers, { type: "host.plugins-changed" }),
     authenticator: dependencies.authenticator,
     dashboard: dependencies.integrations.dashboard,
     deploymentId: dependencies.discovery.document.deploymentId,
@@ -545,6 +547,8 @@ export async function createHostServer(
   };
   registerIntegrationRoutes(app, integrationRpcOptions);
   const integrationPlatformRpcOptions: IntegrationPlatformRpcOptions = {
+    pluginsChanged: (viewers) =>
+      dependencies.realtime.sendToUsers(viewers, { type: "host.plugins-changed" }),
     authenticator: dependencies.authenticator,
     dashboard: dependencies.integrations.dashboard,
     deploymentId: dependencies.discovery.document.deploymentId,
@@ -1598,6 +1602,27 @@ export async function createHostServer(
     const session = requireRpcSession(context);
     const userId = session.user.id;
     switch (command.type) {
+      case "settings.plugin.enabled.set": {
+        const result = await dependencies.integrations.platform.store.settings.setEnabled(
+          userId,
+          command,
+        );
+        dependencies.realtime.sendToUsers([userId], { type: "host.plugins-changed" });
+        return result;
+      }
+      case "settings.plugin.placement.set": {
+        const result = await dependencies.integrations.platform.setPluginPlacement(userId, command);
+        const affected =
+          command.target.kind === "plugin" || command.target.kind === "specialist"
+            ? await dependencies.integrations.platform.store.settings.affectedViewers({
+                pluginId: command.target.pluginId,
+              })
+            : [];
+        dependencies.realtime.sendToUsers([...new Set([userId, ...affected])], {
+          type: "host.plugins-changed",
+        });
+        return result;
+      }
       case "thread.read.mark": {
         const state = await dependencies.store.notificationState.markRead({
           threadId: command.threadId,
@@ -1688,6 +1713,7 @@ export async function createHostServer(
           kind: "project",
           name: command.name,
         });
+        dependencies.realtime.sendToUsers([userId], { type: "host.plugins-changed" });
         if (workspace.storageIssue) {
           app.log.warn(
             { storageIssue: workspace.storageIssue.code, workspaceId: workspace.id },
@@ -1744,11 +1770,15 @@ export async function createHostServer(
         };
       }
       case "workspace.delete": {
+        const affected = await dependencies.integrations.platform.store.settings.affectedViewers({
+          workspaceId: command.workspaceId,
+        });
         const workspace = await dependencies.workspaceDeletion.requestDeletion(
           command.workspaceId,
           userId,
         );
         await dependencies.apps.stopWorkspace(command.workspaceId);
+        dependencies.realtime.sendToUsers(affected, { type: "host.plugins-changed" });
         return {
           type: command.type,
           workspace: await workspaceView(dependencies.workspaces, workspace),
@@ -1814,6 +1844,9 @@ export async function createHostServer(
           workspaceId: command.workspaceId,
         });
         dependencies.realtime.publishViewerTasksChanged(changed.membership.userId);
+        dependencies.realtime.sendToUsers([changed.membership.userId], {
+          type: "host.plugins-changed",
+        });
         for (const event of changed.requestEvents) publishWorkspaceEvent(event);
         void dependencies.securityEffects
           .reconcile()
@@ -2921,8 +2954,12 @@ export async function createHostServer(
         ...identityRpcHandlers,
         "auth.invitation.accept": async (input, context) => {
           const result = await identityRpcHandlers["auth.invitation.accept"](input, context);
-          if (result.ok)
+          if (result.ok) {
             dependencies.realtime.publishViewerTasksChanged(result.data.membership.userId);
+            dependencies.realtime.sendToUsers([result.data.membership.userId], {
+              type: "host.plugins-changed",
+            });
+          }
           return result;
         },
       },

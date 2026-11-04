@@ -14,8 +14,6 @@ import { ProjectsPage } from "./components/projects-page.js";
 import { ProjectSettingsRoute } from "./components/project-settings.js";
 import { ThreadRoute } from "./components/thread-view.js";
 import { InviteRoute } from "./components/invitation-onboarding.js";
-import { IntegrationsPage } from "./components/integrations/integrations-page.js";
-import { ChannelsPage } from "./components/channels-page.js";
 import { AutomationDetailPage } from "./components/automations/automation-detail.js";
 import { AutomationEditorPage } from "./components/automations/automation-editor.js";
 import { AutomationsPage } from "./components/automations/automations-page.js";
@@ -26,7 +24,7 @@ import {
   SettingsNotFound,
 } from "./components/settings/settings-shell.js";
 import { SettingsRedirect } from "./components/settings/settings-redirect.js";
-import { ConnectedAppsLayout } from "./components/settings/connected-apps.js";
+import { settingsRedirects } from "@opensteer/client/settings";
 import type {
   DeploymentAccessSnapshot,
   DesktopDeploymentSummary,
@@ -483,11 +481,11 @@ export function App({
             <Route path="workspaces/:workspaceId/settings" element={<ProjectSettingsRoute />} />
             <Route
               path="channels"
-              element={<SettingsRedirect from="/channels" to="/settings/apps/messaging" />}
+              element={<SettingsRedirect from="/channels" to="/settings/messaging" />}
             />
             <Route
               path="computers/*"
-              element={<SettingsRedirect from="/computers" to="/settings/computers" />}
+              element={<SettingsRedirect from="/computers" to="/settings/devices/computers" />}
             />
             <Route
               path="triggers"
@@ -498,49 +496,37 @@ export function App({
             <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
             <Route path="automations/:triggerId/edit" element={<AutomationEditorPage />} />
             <Route path="settings" element={<SettingsShell />}>
-              <Route
-                index
-                element={<SettingsRedirect from="/settings" to="/settings/ai-engines" />}
-              />
-              <Route path="ai-engines" element={<SettingsSectionRoute section="ai-engines" />} />
-              <Route path="account" element={<SettingsSectionRoute section="account" />} />
-              <Route path="general" element={<SettingsSectionRoute section="general" />} />
-              <Route
-                path="connections"
-                element={<SettingsRedirect from="/settings/connections" to="/settings/account" />}
-              />
+              <Route index element={<SettingsRedirect from="/settings" to="/settings/general" />} />
+              {(["general", "account", "messaging", "ai", "plugins", "sign-ins"] as const).map(
+                (section) => (
+                  <Route
+                    key={section}
+                    path={`${section}/*`}
+                    element={<SettingsSectionRoute section={section} />}
+                  />
+                ),
+              )}
               <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
-              <Route path="chrome" element={<SettingsSectionRoute section="chrome" />} />
+              <Route path="devices/computers" element={<ComputersPage />} />
+              <Route path="devices/computers/:computerId" element={<ComputerDetailPage />} />
+              <Route path="sign-ins/chrome/*" element={<SettingsSectionRoute section="chrome" />} />
               <Route
-                path="browser-profiles"
+                path="sign-ins/browsers/*"
                 element={<SettingsSectionRoute section="browser-profiles" />}
               />
-              <Route path="passwords" element={<SettingsSectionRoute section="passwords" />} />
-              <Route path="plugins" element={<SettingsSectionRoute section="plugins" />} />
               <Route
-                path="remote-access"
-                element={<SettingsRedirect from="/settings/remote-access" to="/settings/devices" />}
+                path="sign-ins/passwords/*"
+                element={<SettingsSectionRoute section="passwords" />}
               />
-              <Route
-                path="this-device"
-                element={<SettingsRedirect from="/settings/this-device" to="/settings/devices" />}
-              />
-              <Route
-                path="integrations"
-                element={
-                  <SettingsRedirect from="/settings/integrations" to="/settings/apps/tools" />
-                }
-              />
-              <Route path="apps" element={<ConnectedAppsLayout />}>
-                <Route
-                  index
-                  element={<SettingsRedirect from="/settings/apps" to="/settings/apps/tools" />}
-                />
-                <Route path="tools" element={<IntegrationsPage embedded />} />
-                <Route path="messaging" element={<ChannelsPage embedded />} />
-              </Route>
-              <Route path="computers" element={<ComputersPage />} />
-              <Route path="computers/:computerId" element={<ComputerDetailPage />} />
+              {settingsRedirects
+                .filter(([from]) => from.startsWith("/settings/"))
+                .map(([from, to]) => (
+                  <Route
+                    key={from}
+                    path={`${from.slice(10)}/*`}
+                    element={<SettingsRedirect from={from} to={to} />}
+                  />
+                ))}
               <Route path="*" element={<SettingsNotFound />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

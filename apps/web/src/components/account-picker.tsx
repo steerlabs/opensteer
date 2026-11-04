@@ -56,7 +56,7 @@ export function ManageAccountsLink({ environmentId }: { readonly environmentId: 
   return (
     <Link
       className="picker__manage"
-      to={`/settings/ai-engines?location=${encodeURIComponent(environmentId)}`}
+      to={`/settings/ai?location=${encodeURIComponent(environmentId)}`}
     >
       Manage accounts
       <Icon name="chevron-right" />

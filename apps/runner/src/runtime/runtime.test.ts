@@ -3477,7 +3477,11 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it.each([false, true])("resolves skill layers with specialist=%s", async (specialist) => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+  ])("resolves skill layers with specialist=%s disabled=%s", async (specialist, disabled) => {
     const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-skill-layer-test-"));
     const workspacePath = join(temporaryRoot, "workspace");
     const stateRoot = join(temporaryRoot, "private", "harness-state");
@@ -3542,9 +3546,20 @@ describe("RunnerRuntime", () => {
         }),
       },
     });
+    const reports: string[][] = [];
+    runtime.observeWorkspaceSkills(async (_workspaceId, scan) => {
+      reports.push(scan?.metadata.map((skill) => skill.fullName) ?? []);
+      // A known file mutation after preparation must appear in the settled scan.
+      if (reports.length === 1) await writeWorkspaceSkill(workspacePath, "after-run");
+    });
     const sink: RunnerMessageSink = { send: async () => undefined };
     try {
       const command = executeCommand(environmentId);
+      if (disabled)
+        command.context.plugins.workspaceSkillPolicy = {
+          revision: 1,
+          disabledFullNames: ["research"],
+        };
       if (specialist) {
         command.context.specialistId = "registration-1";
         command.context.agentTools.capabilityProfileId = "specialist";
@@ -3597,75 +3612,81 @@ describe("RunnerRuntime", () => {
         });
         return;
       }
-      expect(driver.context?.providerState.privateStateRoot).toBe(dirname(stateRoot));
-      expect(driver.context?.skills?.skills).toEqual([
-        {
-          plugin: "opensteer",
-          localName: "skills",
-          fullName: "opensteer:skills",
-          path: "/runner/agent-skills/skills/skills",
-        },
-        {
-          plugin: "opensteer",
-          localName: "integrations",
-          fullName: "opensteer:integrations",
-          path: "/runner/agent-skills/skills/integrations",
-        },
-        {
-          plugin: "opensteer",
-          localName: "computer-use",
-          fullName: "opensteer:computer-use",
-          path: "/runner/agent-skills/skills/computer-use",
-        },
-        {
-          plugin: "opensteer",
-          localName: "browser",
-          fullName: "opensteer:browser",
-          path: "/runner/agent-skills/skills/browser",
-        },
-        {
-          plugin: "opensteer",
-          localName: "computers",
-          fullName: "opensteer:computers",
-          path: "/runner/agent-skills/skills/computers",
-        },
-        {
-          plugin: "opensteer",
-          localName: "threads",
-          fullName: "opensteer:threads",
-          path: "/runner/agent-skills/skills/threads",
-        },
-        {
-          plugin: "opensteer",
-          localName: "triggers",
-          fullName: "opensteer:triggers",
-          path: "/runner/agent-skills/skills/triggers",
-        },
-        {
-          plugin: "example",
-          localName: "research",
-          fullName: "example:research",
-          path: "/state/plugin-cache/example/research",
-        },
-        {
-          plugin: "example",
-          localName: "helper",
-          fullName: "example:helper",
-          path: "/state/plugin-cache/example/helper",
-        },
-        {
-          plugin: null,
-          localName: "release-notes",
-          fullName: "release-notes",
-          path: join(workspacePath, "skills", "release-notes"),
-        },
-        {
-          plugin: null,
-          localName: "research",
-          fullName: "research",
-          path: join(workspacePath, "skills", "research"),
-        },
+      expect(reports).toEqual([
+        ["release-notes", "research"],
+        ["after-run", "release-notes", "research"],
       ]);
+      expect(driver.context?.providerState.privateStateRoot).toBe(dirname(stateRoot));
+      expect(driver.context?.skills?.skills).toEqual(
+        [
+          {
+            plugin: "opensteer",
+            localName: "skills",
+            fullName: "opensteer:skills",
+            path: "/runner/agent-skills/skills/skills",
+          },
+          {
+            plugin: "opensteer",
+            localName: "integrations",
+            fullName: "opensteer:integrations",
+            path: "/runner/agent-skills/skills/integrations",
+          },
+          {
+            plugin: "opensteer",
+            localName: "computer-use",
+            fullName: "opensteer:computer-use",
+            path: "/runner/agent-skills/skills/computer-use",
+          },
+          {
+            plugin: "opensteer",
+            localName: "browser",
+            fullName: "opensteer:browser",
+            path: "/runner/agent-skills/skills/browser",
+          },
+          {
+            plugin: "opensteer",
+            localName: "computers",
+            fullName: "opensteer:computers",
+            path: "/runner/agent-skills/skills/computers",
+          },
+          {
+            plugin: "opensteer",
+            localName: "threads",
+            fullName: "opensteer:threads",
+            path: "/runner/agent-skills/skills/threads",
+          },
+          {
+            plugin: "opensteer",
+            localName: "triggers",
+            fullName: "opensteer:triggers",
+            path: "/runner/agent-skills/skills/triggers",
+          },
+          {
+            plugin: "example",
+            localName: "research",
+            fullName: "example:research",
+            path: "/state/plugin-cache/example/research",
+          },
+          {
+            plugin: "example",
+            localName: "helper",
+            fullName: "example:helper",
+            path: "/state/plugin-cache/example/helper",
+          },
+          {
+            plugin: null,
+            localName: "release-notes",
+            fullName: "release-notes",
+            path: join(workspacePath, "skills", "release-notes"),
+          },
+          {
+            plugin: null,
+            localName: "research",
+            fullName: "research",
+            path: join(workspacePath, "skills", "research"),
+          },
+        ].filter((skill) => !disabled || skill.fullName !== "research"),
+      );
       expect(logged).toEqual([
         "Workspace skill opensteer:threads was skipped: the directory name is not a valid skill name",
       ]);
@@ -6062,6 +6083,9 @@ it("invalidates warm engines when the pinned package set changes, regardless of 
   const second = { pluginId: "b", name: "beta", digest: "b".repeat(64) };
   context.plugins.versions = [first, second];
   const before = warmEngineKey(input);
+  context.plugins.workspaceSkillPolicy = { revision: 1, disabledFullNames: [] };
+  expect(warmEngineKey(input)).not.toBe(before);
+  delete context.plugins.workspaceSkillPolicy;
   context.plugins.versions = [second, first];
   expect(warmEngineKey(input)).toBe(before);
   context.plugins.versions = [{ ...first, digest: "c".repeat(64) }, second];

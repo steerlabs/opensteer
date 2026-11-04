@@ -4700,7 +4700,10 @@ export function migrationProvider() {
         "0146_every_turn_shows": everyTurnShowsMigration,
         "0147_quiet_assignment_results": quietAssignmentResultsMigration,
         "0148_local_mcp_server_secrets": localMcpServerSecretsMigration,
-        "0149_managed_memory_passes": managedMemoryPassesMigration,
+        "0149_plugin_owner_settings": pluginOwnerSettingsMigration,
+        "0150_workspace_skill_inventory": workspaceSkillInventoryMigration,
+        "0151_plugin_settings_revisions": pluginSettingsRevisionsMigration,
+        "0152_managed_memory_passes": managedMemoryPassesMigration,
       };
     },
   };
@@ -7086,6 +7089,125 @@ export const quietAssignmentResultsMigration: Migration = {
             and (result_message_id is not null or result_text is not distinct from '') and result_reason is null)
           or (result_status = 'undeliverable' and completed_at is not null
             and result_message_id is null and result_reason is not null));
+    `.execute(database);
+  },
+};
+
+export const pluginOwnerSettingsMigration: Migration = {
+  async up(database) {
+    await sql`CREATE TABLE plugin_owner_settings (
+      owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      target_key text NOT NULL, target jsonb NOT NULL,
+      enabled boolean NOT NULL DEFAULT true, main_included boolean NOT NULL DEFAULT true,
+      revision integer NOT NULL DEFAULT 0 CHECK (revision >= 0),
+      personal_everywhere_accounts jsonb,
+      PRIMARY KEY(owner_user_id, target_key)
+    );
+    CREATE TRIGGER plugin_settings_authority AFTER INSERT OR UPDATE OR DELETE ON plugin_owner_settings
+    FOR EACH ROW EXECUTE FUNCTION opensteer_bump_integration_owner_authority()`.execute(database);
+  },
+};
+
+export const workspaceSkillInventoryMigration: Migration = {
+  async up(database) {
+    await sql`create table workspace_skill_inventory (
+      workspace_id text primary key references workspaces(id) on delete cascade,
+      binding_id text not null, binding_generation bigint not null,
+      storage_authority_id text not null, owner_runner_id text not null,
+      metadata_owner_runner_id text,
+      boot_id text not null, connection_generation bigint not null,
+      connection_id text not null, connection_lease_id text not null,
+      scan_sequence bigint not null, scanned_at timestamptz not null,
+      scan_status text not null check (scan_status in ('complete','failed')),
+      metadata jsonb not null check (jsonb_typeof(metadata) = 'array')
+    )`.execute(database);
+  },
+};
+
+export const pluginSettingsRevisionsMigration: Migration = {
+  async up(database) {
+    // Capture targets before source deletion; acquire consent rows after source mutations.
+    await sql`
+      create table plugin_settings_revision_pending (
+        transaction_id xid8 not null, owner_user_id text not null,
+        target_key text not null, target jsonb not null, revision integer not null,
+        primary key(transaction_id, owner_user_id, target_key)
+      );
+      create function opensteer_flush_plugin_settings_revisions() returns void language plpgsql as $$
+      declare pending record;
+      begin
+        for pending in select * from plugin_settings_revision_pending
+          where transaction_id = pg_current_xact_id() order by owner_user_id, target_key loop
+          if exists(select 1 from users where id = pending.owner_user_id) then
+            insert into plugin_owner_settings(owner_user_id,target_key,target,revision)
+              values(pending.owner_user_id,pending.target_key,pending.target,pending.revision)
+              on conflict(owner_user_id,target_key) do update
+                set revision = plugin_owner_settings.revision + excluded.revision;
+          end if;
+        end loop;
+        delete from plugin_settings_revision_pending where transaction_id = pg_current_xact_id();
+      end $$;
+      create or replace function public.opensteer_flush_integration_authority() returns trigger
+      language plpgsql as $$
+      declare authority_owner_id text;
+      begin
+        perform opensteer_flush_plugin_settings_revisions();
+        for authority_owner_id in
+          select owner_user_id from public.integration_authority_pending
+          where transaction_id = pg_current_xact_id() order by owner_user_id
+        loop
+          insert into public.integration_authority_generations (owner_user_id, generation, updated_at)
+          values (authority_owner_id, 1, now())
+          on conflict (owner_user_id) do update
+          set generation = integration_authority_generations.generation + 1,
+              updated_at = excluded.updated_at;
+        end loop;
+        delete from public.integration_authority_pending where transaction_id = pg_current_xact_id();
+        return null;
+      end;
+      $$;
+      create function opensteer_advance_plugin_setting(consent_owner text, setting_target jsonb) returns void language plpgsql as $$
+      declare setting_key text;
+      begin
+        if not exists(select 1 from users where id = consent_owner) then return; end if;
+        setting_key := case setting_target->>'kind'
+          when 'plugin' then '["plugin",' || to_json(setting_target->>'pluginId')::text || ']'
+          when 'specialist' then '["specialist",' || to_json(setting_target->>'pluginId')::text || ',' || to_json(setting_target->>'ownerUserId')::text || ']'
+          else '[' || to_json(setting_target->>'kind')::text || ',' || to_json(setting_target->>'definitionId')::text || ']' end;
+        insert into plugin_settings_revision_pending(transaction_id,owner_user_id,target_key,target,revision)
+          values(pg_current_xact_id(),consent_owner,setting_key,setting_target,1)
+          on conflict(transaction_id,owner_user_id,target_key) do update
+            set revision = plugin_settings_revision_pending.revision + 1;
+        insert into integration_authority_pending(transaction_id,owner_user_id)
+          values(pg_current_xact_id(),consent_owner) on conflict do nothing;
+      end $$;
+      create function opensteer_legacy_plugin_revision() returns trigger language plpgsql as $$
+      declare changed jsonb; consent_owner text; definition_id text; target_kind text;
+      begin
+        changed := case when TG_OP = 'DELETE' then to_jsonb(OLD) else to_jsonb(NEW) end;
+        if TG_OP = 'UPDATE' then
+          if TG_TABLE_NAME = 'specialists' then
+            if NEW.bindings is not distinct from OLD.bindings and NEW.plugin_version_id is not distinct from OLD.plugin_version_id and NEW.removed_at is not distinct from OLD.removed_at then return NEW; end if;
+          end if;
+          if TG_TABLE_NAME = 'integration_grants' and to_jsonb(NEW) is not distinct from to_jsonb(OLD) then return NEW; end if;
+        end if;
+        if TG_TABLE_NAME = 'plugin_activations' then
+          for consent_owner in select user_id from workspace_memberships where workspace_id = changed->>'workspace_id' and state = 'active' order by user_id loop
+            perform opensteer_advance_plugin_setting(consent_owner,jsonb_build_object('kind','plugin','pluginId',changed->>'plugin_id'));
+          end loop;
+        elsif TG_TABLE_NAME = 'specialists' then
+          perform opensteer_advance_plugin_setting(changed->>'owner_user_id',jsonb_build_object('kind','specialist','pluginId',changed->>'plugin_id','ownerUserId',changed->>'owner_user_id'));
+        else
+          select coalesce(manifest->'definition'->>'id',name) into definition_id from integration_installations where id = changed->>'installation_id';
+          target_kind := 'service';
+          if exists(select 1 from integration_connections where id = changed->>'connection_id' and connection_kind = 'computer') then target_kind := 'device-app'; end if;
+          if definition_id is not null then perform opensteer_advance_plugin_setting(changed->>'owner_user_id',jsonb_build_object('kind',target_kind,'definitionId',definition_id)); end if;
+        end if;
+        return null;
+      end $$;
+      create trigger plugin_activation_settings_revision after insert or update or delete on plugin_activations for each row execute function opensteer_legacy_plugin_revision();
+      create trigger specialist_settings_revision after insert or update or delete on specialists for each row execute function opensteer_legacy_plugin_revision();
+      create trigger integration_grant_settings_revision after insert or update or delete on integration_grants for each row execute function opensteer_legacy_plugin_revision();
     `.execute(database);
   },
 };

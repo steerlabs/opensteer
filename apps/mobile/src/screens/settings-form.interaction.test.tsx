@@ -60,7 +60,7 @@ vi.mock("../ui/primitives.js", () => ({
   SwitchRow: () => null,
 }));
 
-const { SettingsForm } = await import("./settings-form.js");
+const { SettingsForm } = await import("../../test-support/settings-form-fixture.js");
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
@@ -71,6 +71,21 @@ afterEach(() => {
 });
 
 describe("Settings on a phone", () => {
+  it("keeps General separate from Account and agent access", async () => {
+    await render({ page: "general" });
+    expect(document.body.textContent).toContain("About");
+    expect(document.body.textContent).toContain("Notifications");
+    expect(document.body.textContent).not.toContain("Opensteer Account");
+    expect(document.body.textContent).not.toContain("Chrome");
+  });
+  it("keeps Sign-ins distinct from Plugins and accounts agents use", async () => {
+    await render({ page: "sign-ins" });
+    expect(document.body.textContent).toContain("Chrome");
+    expect(document.body.textContent).toContain("Passwords");
+    expect(document.body.textContent).not.toContain("Plugins");
+    expect(document.body.textContent).not.toContain("About");
+  });
+
   it("offers Remove for the current session and other signed-in devices", async () => {
     const onRemove = vi.fn();
     const first = {
@@ -197,7 +212,7 @@ describe("Settings → AI services on a phone", () => {
       ],
       onEngineUpdate,
     });
-    expect(document.body.textContent).toContain("AI services");
+    expect(document.body.textContent).toContain("AI");
     expect(document.body.textContent).toContain("Update available · 0.166.0");
     const update = [...document.querySelectorAll("button")].find(
       (button) => button.textContent === "Update",

@@ -768,7 +768,7 @@ export class ChannelService {
     const local = isLoopbackHostname(hostname);
     const verificationLocation = local
       ? "Open Opensteer on the computer running this bot, then open Messaging"
-      : `Sign in at ${this.#canonicalOrigin}/settings/apps/messaging`;
+      : `Sign in at ${this.#canonicalOrigin}/settings/messaging`;
     return {
       approvalPending:
         "Your access request was sent to the person who connected this bot. I will let you know when it is approved.",

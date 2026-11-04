@@ -1528,7 +1528,10 @@ describe("rpc envelope", () => {
           continuations: {} as never,
           dashboard: {} as never,
           mcpOauth: {} as never,
-          platform: { uninstallIntegration } as never,
+          platform: {
+            store: { settings: { affectedViewers: async () => [] } },
+            uninstallIntegration,
+          } as never,
           service: {} as never,
           skills: {} as never,
           tools: {} as never,
@@ -1597,7 +1600,10 @@ describe("rpc envelope", () => {
           dashboard: {} as never,
           mcpOauth: {} as never,
           platform: {
-            store: { getConnectionKind: async () => "oauth" },
+            store: {
+              getConnectionKind: async () => "oauth",
+              settings: { affectedViewers: async () => [] },
+            },
             uninstallIntegration,
           } as never,
           service: { disconnect } as never,

@@ -20,7 +20,7 @@ import { Icon } from "../../icon.js";
 import { LoadingRows } from "../../loading-rows.js";
 import { useToast } from "../../toast.js";
 import { WorkspaceOrb } from "../../workspace-orb.js";
-import { SectionHeader, SettingsError } from "../primitives.js";
+import { SettingsError } from "../primitives.js";
 
 const refreshEveryMs = 10_000;
 
@@ -61,10 +61,7 @@ export function ChromeSection() {
 
   return (
     <>
-      <SectionHeader
-        lead="Let agents use websites you’re already signed in to in Chrome. You approve each site once."
-        title="Chrome"
-      />
+      <h2 className="settings-group__title">Chrome</h2>
       <section aria-labelledby="chrome-profiles-title" className="settings-group">
         <h2 className="settings-group__title" id="chrome-profiles-title">
           Connected Chrome
@@ -454,11 +451,14 @@ function AllowedSites({
         )}
       </div>
       <SettingsError message={error} />
-      <p className="settings-footnote">
-        Removing a site stops new sign-ins; browsers already signed in stay signed in. Chrome shares
-        a site’s sign-in cookies. Opensteer’s browser can’t use passkeys, so a site that asks for
-        one, or relies on this device, may still ask you to sign in.
-      </p>
+      <details className="settings-footnote">
+        <summary>About Chrome sign-ins</summary>
+        <p>
+          Removing a site stops new sign-ins; browsers already signed in stay signed in. Chrome
+          shares a site’s sign-in cookies. Opensteer’s browser can’t use passkeys, so a site that
+          asks for one, or relies on this device, may still ask you to sign in.
+        </p>
+      </details>
     </section>
   );
 }

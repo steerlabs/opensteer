@@ -31,11 +31,11 @@ import { ToastProvider } from "./components/toast.js";
  *
  * `?scenario=` picks the situation and `?path=` the page within it. The
  * phone scenarios show an agent phone in use, one whose access was declined
- * (`/settings/computers/rnr_dddddddd-dddd-4ddd-8ddd-dddddddddddd`) and one
+ * (`/settings/devices/computers/rnr_dddddddd-dddd-4ddd-8ddd-dddddddddddd`) and one
  * paused on the phone; `personal-phone` opens Add a phone from the list.
  * `personal-messages-unfinished` and its `-browser` twin show Messages waiting
  * for Full Disk Access on the Mac mini
- * (`/settings/computers/rnr_11111111-1111-4111-8111-111111111111`): finished
+ * (`/settings/devices/computers/rnr_11111111-1111-4111-8111-111111111111`): finished
  * there, and pointed to from anywhere else.
  */
 
@@ -499,7 +499,7 @@ function fakeBridge(_scenario: Scenario): OpensteerDesktopBridge {
 const search = new URLSearchParams(location.search);
 const scenario =
   scenarios[search.get("scenario") ?? "personal-home"] ?? scenarios["personal-home"]!;
-const path = search.get("path") ?? "/settings/computers";
+const path = search.get("path") ?? "/settings/devices/computers";
 const client = new MockHostClient({ latencyMs: 0, sessions: scenario.sessions });
 const snapshot: ShellContext["snapshot"] = {
   ...base,

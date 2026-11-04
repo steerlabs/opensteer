@@ -28,15 +28,15 @@ const noOp = () => undefined;
 const placeholderEmail = "owner@personal.opensteer.invalid";
 
 describe("Settings navigation", () => {
-  it("defaults to AI services and treats an unknown child as a real missing setting", () => {
-    expect(defaultSettingsSection).toBe("ai-engines");
-    expect(settingsSectionForPath("/settings")).toBe("ai-engines");
+  it("defaults to General and treats an unknown child as a real missing setting", () => {
+    expect(defaultSettingsSection).toBe("general");
+    expect(settingsSectionForPath("/settings")).toBe("general");
     expect(settingsSectionForPath("/settings/apps/tools")).toBe("apps");
     expect(settingsSectionForPath("/settings/not-a-setting")).toBeNull();
 
     const html = renderSettings(placementFixtures().browser, "/settings/not-a-setting");
     expect(html).toContain("Setting not found");
-    expect(html).toContain('href="/settings/ai-engines"');
+    expect(html).toContain('href="/settings/ai"');
     expect(html).not.toContain("AI service accounts");
   });
 });
@@ -46,32 +46,45 @@ describe("Device settings placement", () => {
     const personal = renderSettings(placementFixtures()["personal-remote"], "/settings/devices");
     const server = renderSettings(placementFixtures()["self-hosted"], "/settings/devices");
 
-    expect(personal).toContain(">Remote access<");
-    expect(server).toContain(">Signed-in devices<");
+    expect(personal).toContain(">Devices<");
+    expect(server).toContain(">Devices<");
     for (const html of [personal, server]) {
-      expect(html).toContain("What agents can use");
+      expect(html).toContain("For your agents");
       expect(html).not.toContain("Your devices");
-      expect(html).toContain('href="/settings/computers"');
+      expect(html).toContain('href="/settings/devices"');
     }
   });
 
+  it("opens remote access and session children without the Account landing page", () => {
+    const context = placementFixtures()["personal-remote"];
+    const remote = renderSettings(context, "/settings/account/remote-access");
+    expect(remote).toContain("Connection options");
+    expect(remote).not.toContain("Where you’re signed in");
+    expect(remote).not.toContain("Your account");
+    const session = renderSettings(context, "/settings/account/sessions/session-id");
+    expect(session).toContain("Where you’re signed in");
+    expect(session).not.toContain("Your account");
+    expect(session).not.toContain("Connection options");
+    expect(renderSettings(context, "/settings/account")).not.toContain("Connection options");
+  });
   it("shows remote access administration on a remote Personal device", () => {
-    const html = renderSettings(placementFixtures()["personal-remote"], "/settings/devices");
+    const html = renderSettings(placementFixtures()["personal-remote"], "/settings/account");
 
-    expect(html).toContain('aria-label="Remote access"');
-    expect(html).toContain("Disconnecting ends this device’s access to Mac mini.");
-    expect(html).toContain("Nothing on Mac mini changes");
-    expect(html).toContain("Changing remote access");
-    expect(html).not.toContain("Sign out");
+    expect(html).toContain('href="/settings/account/remote-access"');
+    expect(html).toContain("Loading devices");
+    expect(
+      renderSettings(placementFixtures()["personal-remote"], "/settings/account/remote-access"),
+    ).toContain("Connection options");
+    expect(html).toContain("Where you’re signed in");
   });
 
   it("gives a signed-in machine-owner browser the same remote access controls", () => {
     const context = { ...placementFixtures().browser, snapshot: machineOwnerSnapshot() };
-    const html = renderSettings(context, "/settings/devices");
+    const html = renderSettings(context, "/settings/account/remote-access");
 
-    expect(html).toContain('aria-label="Remote access"');
-    expect(html).toContain('value="private"');
-    expect(html).toContain("Changing remote access");
+    expect(html).toContain('aria-label="Open Opensteer from anywhere"');
+    expect(html).toContain("Connection options");
+    expect(html).toContain("Connection options");
   });
 
   it("shows administration to a Personal remote browser", () => {
@@ -79,10 +92,10 @@ describe("Device settings placement", () => {
       ...placementFixtures().browser,
       snapshot: { ...machineOwnerSnapshot(), sessionSurface: "personal-remote" as const },
     };
-    const html = renderSettings(context, "/settings/devices");
+    const html = renderSettings(context, "/settings/account");
 
-    expect(html).toContain('aria-label="Remote access"');
-    expect(html).toContain("Disconnecting ends this device’s access to Mac mini.");
+    expect(html).toContain('href="/settings/account/remote-access"');
+    expect(html).toContain("Where you’re signed in");
     expect(html).not.toContain("turn on remote access in the Opensteer app");
   });
 });
@@ -100,10 +113,13 @@ describe("Settings identity honesty", () => {
     expect(renderSettings({ ...context, deploymentAccess }, "/settings/general")).not.toContain(
       "Add to your Account",
     );
-    const html = renderSettings({ ...context, deploymentAccess }, "/settings/devices");
+    const html = renderSettings(
+      { ...context, deploymentAccess },
+      "/settings/account/remote-access",
+    );
     expect(html).toContain("Loading remote access");
     expect(html).not.toContain('value="connect"');
-    expect(html).toContain('value="private"');
+    expect(html).toContain("Connection options");
   });
 
   it("never renders the seeded machine-owner address in any placement", () => {
@@ -131,7 +147,7 @@ describe("Settings identity honesty", () => {
     expect(html).not.toContain(placeholderEmail);
     expect(html).not.toContain("Signed in to this deployment");
     expect(html).not.toContain("Remove from Account list");
-    expect(renderSettings(context, "/settings/general")).toContain("Runs on this computer");
+    expect(renderSettings(context, "/settings/general")).toContain("Running here");
   });
 });
 
@@ -209,7 +225,7 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
           <Route element={<SettingsShell />} path="settings">
             <Route index element={<SettingsSectionRoute section="ai-engines" />} />
             <Route element={<SettingsSectionRoute section="ai-engines" />} path="ai-engines" />
-            <Route element={<SettingsSectionRoute section="account" />} path="account" />
+            <Route element={<SettingsSectionRoute section="account" />} path="account/*" />
             <Route element={<SettingsSectionRoute section="devices" />} path="devices" />
             <Route element={<SettingsSectionRoute section="general" />} path="general" />
             <Route element={<p>Connected apps route</p>} path="apps/*" />

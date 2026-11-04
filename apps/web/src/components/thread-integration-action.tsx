@@ -477,8 +477,8 @@ export function ThreadIntegrationAction({
   // which account an unidentified key belongs to.
   const reconnectedConnectionId = reconnect?.method === "api-key" ? reconnect.account.id : null;
   const settingsPath = plan.definition
-    ? `/settings/apps/tools?provider=${encodeURIComponent(plan.definition.id)}`
-    : "/settings/apps/tools";
+    ? `/settings/plugins?provider=${encodeURIComponent(plan.definition.id)}`
+    : "/settings/plugins";
   const computerRequirement = plan.requirement.kind === "computer";
   // A computer is chosen here, inline: there is no sign-in to hand off to.
   const showComputerPicker = computerRequirement && !pinned && (connectOpen || !hasAccount);

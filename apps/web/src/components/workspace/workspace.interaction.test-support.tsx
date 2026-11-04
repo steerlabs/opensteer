@@ -157,20 +157,22 @@ async function mount(
                 <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
                 <Route
                   path="computers/*"
-                  element={<SettingsRedirect from="/computers" to="/settings/computers" />}
+                  element={<SettingsRedirect from="/computers" to="/settings/devices/computers" />}
                 />
                 <Route path="settings" element={<SettingsShell />}>
                   <Route
                     index
-                    element={<SettingsRedirect from="/settings" to="/settings/ai-engines" />}
+                    element={<SettingsRedirect from="/settings" to="/settings/general" />}
                   />
+                  <Route path="general" element={<SettingsSectionRoute section="general" />} />
                   <Route
                     path="ai-engines"
-                    element={<SettingsSectionRoute section="ai-engines" />}
+                    element={<SettingsRedirect from="/settings/ai-engines" to="/settings/ai" />}
                   />
+                  <Route path="ai" element={<SettingsSectionRoute section="ai" />} />
                   <Route path="account" element={<SettingsSectionRoute section="account" />} />
-                  <Route path="plugins" element={<SettingsSectionRoute section="plugins" />} />
-                  <Route path="computers" element={<ComputersPage />} />
+                  <Route path="plugins/*" element={<SettingsSectionRoute section="plugins" />} />
+                  <Route path="devices/computers" element={<ComputersPage />} />
                 </Route>
               </Route>
             </Routes>

@@ -236,7 +236,24 @@ Non-file resource access uses the [resource guard](../packages/database/src/reso
 Main inherits the requester's resources only when the Run's lineage root has the
 `main` profile. Projects require explicit grants belonging to the requester;
 browser consent additionally requires the grant creator's active membership.
-Connection ceilings and optional specialist restrictions can only narrow access.
+Personal Everywhere consent names exact accounts and access ceilings, and creates
+those grants atomically with future Projects. Project creation and consent edits
+serialize on the owner; unavailable consent rolls back creation. Server Projects
+always require explicit selection. Reads never create grants.
+Connection ceilings, owner Off/Main exclusions and optional specialist restrictions
+can only narrow access. Off retains credentials, grants, activations and specialist
+bindings; Main exclusion also blocks direct grants. Owner management and repair
+remain available while Off. These ceilings govern managed discovery and new
+admission; they cannot erase instructions already in an engine's history or
+revoke files it can read. Loose-skill changes participate in Run planning and
+warm-engine reuse, and require a Runner advertising the Settings policy
+capability. Settings reads use membership-authorized cached skill metadata;
+refreshing Settings does not scan a computer's disk. Offline and failed scans
+retain the last complete inventory. Detail identifies that inventory’s source
+Workspace and metadata-owning computer; a failed replacement scan does not
+relabel old metadata as coming from the new owner. Offline inventory reports
+Waiting for device; failed scans report setup attention. These are freshness
+hints, never evidence of execution authority.
 A caller cannot reuse, queue work to, or steer a Thread with Main lineage unless
 its own lineage has Main authority; start a new task instead. Cross-Workspace
 delegation still requires the caller's `main` profile. A specialist may send only

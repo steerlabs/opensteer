@@ -36,3 +36,6 @@ export { readIntegrationAccountBinding } from "./integration-account-binding.js"
 
 export { requestSettlementActor } from "./request-settlement.js";
 export * from "./memory-pass-store.js";
+
+export * from "./plugin-settings-store.js";
+export type { WorkspaceSkillInventory } from "./workspace-skill-inventory-store.js";

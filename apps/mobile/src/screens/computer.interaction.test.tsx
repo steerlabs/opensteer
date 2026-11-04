@@ -79,6 +79,7 @@ vi.mock("../ui/mobile-client-context.js", () => ({
     selection: { deploymentId: "deployment", hostClient: host },
   }),
 }));
+vi.mock("./settings-device-capabilities.js", () => ({ SettingsDeviceCapabilities: () => null }));
 vi.mock("../computers/use-computer-use-data.js", () => ({
   useComputerUseData: () => ({ data: {}, reload: vi.fn() }),
 }));

@@ -1,3 +1,4 @@
+import type { NativeSettingsSection, NativeSettingsRow } from "./native-settings-page.types.js";
 import {
   canRespondToRequests,
   mutationIdempotencyKey,
@@ -10,9 +11,10 @@ import {
   integrationAccountTitle,
   integrationAuthorizationError,
   type IntegrationOAuthApplicationSource,
+  type IntegrationPlatformDashboardView,
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
-import { useIsFocused, type StaticScreenProps } from "@react-navigation/native";
+import { useIsFocused } from "@react-navigation/native";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AccessibilityInfo,
@@ -27,7 +29,7 @@ import {
 import { operationDetail } from "../client/mobile-client.js";
 import { color, space, touchTarget } from "../theme.js";
 import { IntegrationIcon } from "../ui/integration-icon.js";
-import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
+import { useMobileClient } from "../ui/mobile-client-context.js";
 import { AppText, Notice, RowGroup, SecondaryButton, StatusDot } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import {
@@ -36,41 +38,13 @@ import {
   type ConnectedAppModel,
 } from "./connected-apps-model.js";
 
-export type ConnectedAppsDestination = { readonly deploymentId: string };
-
-/**
- * The accounts agents use, from the phone: each one's state, a sign-in that
- * repairs or adds one, and the way to remove one. A sign-in that returns to the
- * Account service finishes in the phone's own browser sheet.
- */
-export function ConnectedAppsScreen({
-  route,
-}: StaticScreenProps<ConnectedAppsDestination>): ReactNode {
-  const { deploymentId } = route.params;
-  const { rows, selection } = useMobileState();
-  const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
-  const hostClient =
-    selection.deploymentId === deploymentId && row?.signIn === null ? selection.hostClient : null;
-  if (hostClient === null || row === undefined) {
-    return (
-      <Screen>
-        <View style={styles.away}>
-          <AppText role="secondary" tone="muted">
-            {row === undefined
-              ? "This deployment is no longer on this phone."
-              : `Open ${row.name} to manage its connections.`}
-          </AppText>
-        </View>
-      </Screen>
-    );
-  }
-  return <SignedInConnectedApps hostClient={hostClient} hostName={row.name} />;
-}
-
 /** Keyed by who is signed in, so a changed account never sees the last one's apps. */
-function SignedInConnectedApps(props: {
+export function PluginAccounts(props: {
   readonly hostClient: HostClient;
   readonly hostName: string;
+  readonly definitionId?: string | undefined;
+  readonly render?: (sections: NativeSettingsSection[]) => ReactNode;
+  readonly onConnected?: (connectionId: string) => Promise<void>;
 }): ReactNode {
   const userId = useHostSelector(props.hostClient, selectUserId);
   if (userId === null) {
@@ -87,16 +61,47 @@ function SignedInConnectedApps(props: {
   return <ConnectedApps key={userId} {...props} />;
 }
 
-function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostName: string }) {
+function ConnectedApps(props: {
+  readonly hostClient: HostClient;
+  readonly hostName: string;
+  readonly definitionId?: string | undefined;
+  readonly render?: (sections: NativeSettingsSection[]) => ReactNode;
+  readonly onConnected?: (connectionId: string) => Promise<void>;
+}) {
   const { hostClient, hostName } = props;
   const mobile = useMobileClient();
+  const active = useRef(true);
+  const viewer = useRef(hostClient.getSnapshot().user?.id);
+  const current = useCallback(
+    () =>
+      active.current &&
+      hostClient.getSnapshot().user?.id === viewer.current &&
+      canRespondToRequests(hostClient.getSnapshot()),
+    [hostClient],
+  );
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+    };
+  }, [hostClient]);
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
   const focused = useIsFocused();
   const online = useHostSelector(hostClient, canRespondToRequests);
+  const [platform, setPlatform] = useState<IntegrationPlatformDashboardView | null>(null);
+  const [keyValues, setKeyValues] = useState<Record<string, string>>({});
+  const keyAttempt = useRef<{
+    command: Extract<
+      import("@opensteer/protocol").HostApiCommandInput,
+      { type: "integration.apiKey.connect" }
+    >;
+    known: Set<string>;
+  } | null>(null);
   const [apps, setApps] = useState<readonly ConnectedAppModel[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pendingConnection, setPendingConnection] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   /** The row whose action is under way; every other action waits for it. */
   const [busy, setBusy] = useState<string | null>(null);
@@ -111,14 +116,16 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
         hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
         hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
       ]);
+      if (!current()) return null;
+      setPlatform(platform);
       setApps(connectedAppsModel({ dashboard, hostName, platform }));
       setLoadError(null);
       return dashboard;
     } catch (reason) {
-      setLoadError(operationDetail(reason, "Connections could not be loaded."));
+      if (current()) setLoadError(operationDetail(reason, "Connections could not be loaded."));
       return null;
     }
-  }, [hostClient, hostName]);
+  }, [hostClient, hostName, current]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
@@ -135,20 +142,20 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
 
   /** One action at a time, its failure said once, and the list read again after it. */
   const run = async (key: string, action: () => Promise<string | null>) => {
-    if (busy !== null) return;
+    if (busy !== null || !current()) return;
     setBusy(key);
     setError(null);
     setDone(null);
     try {
       const message = await action();
-      if (message !== null) {
+      if (current() && message !== null) {
         setDone(message);
         void AccessibilityInfo.announceForAccessibility(message);
       }
     } catch (reason) {
-      setError(operationDetail(reason, "That did not finish. Try again."));
+      if (current()) setError(operationDetail(reason, "That did not finish. Try again."));
     } finally {
-      setBusy(null);
+      if (current()) setBusy(null);
     }
   };
 
@@ -195,6 +202,7 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
           applicationSource: source,
           definitionId: app.definitionId,
         });
+        if (!current()) return null;
         const outcome = integrationAuthorizationError(status.status, status.failureCode);
         if (outcome !== null) throw new Error(outcome);
         const dashboard = await load();
@@ -205,6 +213,10 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
             `${app.name} reported success, but no connected account is recorded here. Try again.`,
           );
         }
+        setPendingConnection(connection.id);
+        await props.onConnected?.(connection.id);
+        setPendingConnection(null);
+        if (!current()) return null;
         const account = { id: connection.id, title: integrationAccountTitle(connection) };
         return connection.status === "connected"
           ? `${account.title} is connected.`
@@ -248,16 +260,161 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
       { style: "cancel", text: "Cancel" },
     ]);
 
+  if (props.render) {
+    const button = (
+      key: string,
+      label: string,
+      onPress: () => void,
+    ): Extract<NativeSettingsRow, { kind: "button" }> => ({
+      key,
+      kind: "button",
+      label,
+      onPress,
+      disabled: busy !== null || !online,
+    });
+    const sections: NativeSettingsSection[] = [];
+    if (busy)
+      sections.push({
+        key: "pending",
+        title: "Connecting",
+        rows: [
+          { key: "pending", kind: "text", label: "Waiting for sign-in and saving placement…" },
+        ],
+      });
+    if (error || loadError || done)
+      sections.push({
+        key: "account-status",
+        title: error || loadError ? "Needs you" : "Sign-in",
+        rows: [
+          { key: "status", kind: "text", label: error ?? loadError ?? done ?? "" },
+          ...(loadError ? [button("retry", "Try again", () => void load())] : []),
+        ],
+      });
+    if (pendingConnection && props.onConnected)
+      sections.push({
+        key: "placement-retry",
+        title: "Finish adding",
+        rows: [
+          button(
+            "retry-placement",
+            "Retry placement",
+            () =>
+              void run("placement", async () => {
+                await props.onConnected?.(pendingConnection);
+                setPendingConnection(null);
+                return "Connected and turned on in your chosen places.";
+              }),
+          ),
+        ],
+      });
+    const definition = platform?.catalog.find(
+      (entry) => entry.definition.id === props.definitionId,
+    )?.definition;
+    for (const method of definition?.authMethods ?? []) {
+      if (method.kind !== "api-key") continue;
+      sections.push({
+        key: `key:${method.id}`,
+        title: method.label,
+        rows: [
+          ...method.inputs.map((input): NativeSettingsRow => ({
+            key: input.variable,
+            kind: "input",
+            label: input.label,
+            secure: input.secret,
+            value: keyValues[input.variable] ?? "",
+            onChange: (value) => setKeyValues((prior) => ({ ...prior, [input.variable]: value })),
+          })),
+          button(
+            `connect-key:${method.id}`,
+            keyAttempt.current ? "Retry connection" : "Connect account",
+            () =>
+              void run("api-key", async () => {
+                if (!keyAttempt.current) {
+                  const before = await load();
+                  if (!before || !current()) throw new Error("Reconnect before adding an account.");
+                  keyAttempt.current = {
+                    known: new Set(before.connections.map((connection) => connection.id)),
+                    command: {
+                      type: "integration.apiKey.connect",
+                      idempotencyKey: mutationIdempotencyKey("plugin-api-key"),
+                      input: {
+                        definitionId: definition!.id,
+                        authMethodId: method.id,
+                        values: { ...keyValues },
+                      },
+                    },
+                  };
+                }
+                const attempt = keyAttempt.current;
+                await hostClient.dispatch(attempt.command);
+                const after = await load();
+                if (!after || !current()) return null;
+                const matches = after.connections.filter(
+                  (connection) =>
+                    connection.definitionId === definition!.id && !attempt.known.has(connection.id),
+                );
+                if (matches.length !== 1)
+                  throw new Error(
+                    "The connected account could not be identified. Review it in Plugins.",
+                  );
+                const connection = matches[0]!;
+                setKeyValues({});
+                setPendingConnection(connection.id);
+                keyAttempt.current = null;
+                await props.onConnected?.(connection.id);
+                setPendingConnection(null);
+                return "Connected and turned on in your chosen places.";
+              }),
+          ),
+        ],
+      });
+    }
+    for (const app of apps ?? []) {
+      if (props.definitionId && app.definitionId !== props.definitionId) continue;
+      const rows: NativeSettingsRow[] = [];
+      for (const account of app.accounts) {
+        rows.push({
+          key: account.id,
+          kind: "text",
+          label: `${account.title} · ${account.status.text}`,
+        });
+        if (account.repair === "sign-in")
+          rows.push(button(`${account.id}:repair`, "Reconnect", () => signIn(app, account.id)));
+        if (account.repair === "choose-repositories")
+          rows.push(
+            button(`${account.id}:repos`, "Choose repositories", () => chooseRepositories(account)),
+          );
+        rows.push({
+          ...button(`${account.id}:remove`, `Disconnect ${account.title}`, () =>
+            disconnect(account),
+          ),
+          destructive: true,
+        });
+      }
+      if (app.signIn?.kind === "direct" || app.signIn?.kind === "choose")
+        rows.push(
+          button(
+            `add:${app.definitionId}`,
+            app.accounts.length ? "Add another account" : `Connect your ${app.name} account`,
+            () => signIn(app, `add:${app.definitionId}`),
+          ),
+        );
+      else if (app.signIn?.kind === "elsewhere" || app.signIn?.kind === "unavailable")
+        rows.push({
+          key: "unavailable",
+          kind: "text",
+          label: app.signIn.kind === "elsewhere" ? app.signIn.note : app.signIn.detail,
+        });
+      sections.push({ key: `accounts:${app.definitionId}`, title: "Sign in", rows });
+    }
+    return props.render(sections);
+  }
   return (
     <Screen edgeToEdge>
       <ScrollView
         contentContainerStyle={[styles.content, column, insets]}
         contentInsetAdjustmentBehavior="automatic"
       >
-        <AppText role="secondary" tone="soft">
-          The accounts agents use. Which Workspaces can use each one is set from Opensteer on a
-          computer.
-        </AppText>
         {online ? null : (
           <Notice
             detail="Reconnect to see your apps or make changes."
@@ -279,16 +436,18 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
             No apps yet. Add one from Opensteer on a computer, or when an agent asks for it.
           </AppText>
         ) : null}
-        {(apps ?? []).map((app) => (
-          <AppGroup
-            app={app}
-            busy={busy}
-            key={app.definitionId}
-            onChooseRepositories={chooseRepositories}
-            onDisconnect={disconnect}
-            onSignIn={(key) => signIn(app, key)}
-          />
-        ))}
+        {(apps ?? [])
+          .filter((app) => !props.definitionId || app.definitionId === props.definitionId)
+          .map((app) => (
+            <AppGroup
+              app={app}
+              busy={busy}
+              key={app.definitionId}
+              onChooseRepositories={chooseRepositories}
+              onDisconnect={disconnect}
+              onSignIn={(key) => signIn(app, key)}
+            />
+          ))}
       </ScrollView>
     </Screen>
   );

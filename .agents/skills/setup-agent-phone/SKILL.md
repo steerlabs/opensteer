@@ -10,7 +10,7 @@ phone; do not take another task's device. Use a dedicated Android 11+ phone, dat
 USB debugging and Chromium WebUSB or Opensteer Desktop. Unlock and accept the USB debugging
 prompt if needed. Safari/Firefox cannot perform setup. A charging-only cable exposes no ADB.
 
-Open Settings → Computers → Add a phone. Enable Personal remote access first and keep its
+Open Settings → Devices → Add a phone. Enable Personal remote access first and keep its
 Mac awake. Select the intended phone; cancellation selects nothing. Desktop automatically shares an
 existing local ADB server for the selected USB phone. If browser setup is busy, use Desktop;
 another direct USB controller must release its session. Run `adb kill-server` only for a

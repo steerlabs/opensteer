@@ -1,3 +1,7 @@
+import { SurfaceMenu } from "./surface-menu.js";
+import { SectionHeader, SettingsSwitch } from "./settings/primitives.js";
+import { IntegrationIcon } from "./integrations/integration-icon.js";
+import { Link, useLocation } from "react-router";
 import { Fragment, useCallback, useEffect, useState, type FormEvent } from "react";
 import type {
   ChannelAccessPolicy,
@@ -52,6 +56,10 @@ interface ChannelDraft {
 
 /** Routed page for connecting messaging accounts and routing them to Workspaces. */
 export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean }) {
+  const location = useLocation();
+  const connectionId = location.pathname.startsWith("/settings/messaging/")
+    ? decodeURIComponent(location.pathname.slice("/settings/messaging/".length))
+    : null;
   const { hostClient, openMobileNavigation, snapshot } = useShell();
   const workspaces = snapshot.workspaces;
   const homeWorkspaceId =
@@ -415,15 +423,61 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
           </button>
         ) : null}
 
-        <PageHeader
-          description={subheading(view, step, provider?.label)}
-          eyebrow="Messaging"
-          title={heading(view, step, provider?.label)}
-        />
+        {connectionId ? <Link to="/settings/messaging">All connections</Link> : null}
+        {view === "overview" ? (
+          <SectionHeader
+            title="Messaging"
+            action={
+              <button
+                className="btn btn--primary"
+                disabled={
+                  !dashboard?.providers.some(({ availability }) => availability === "available")
+                }
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setView("providers");
+                }}
+              >
+                Add
+              </button>
+            }
+          />
+        ) : (
+          <PageHeader
+            description={subheading(view, step, provider?.label)}
+            eyebrow="Messaging"
+            title={heading(view, step, provider?.label)}
+          />
+        )}
 
         {view === "overview" ? (
           <ChannelOverview
-            dashboard={dashboard}
+            dashboard={
+              dashboard && connectionId
+                ? {
+                    ...dashboard,
+                    connections: dashboard.connections.filter(
+                      (connection) => connection.id === connectionId,
+                    ),
+                    accounts: dashboard.accounts.filter(
+                      (account) => account.connectionId === connectionId,
+                    ),
+                    bindings: dashboard.bindings.filter((binding) =>
+                      dashboard.accounts.some(
+                        (account) =>
+                          account.id === binding.accountId && account.connectionId === connectionId,
+                      ),
+                    ),
+                    accessGrants: dashboard.accessGrants.filter((grant) =>
+                      dashboard.accounts.some(
+                        (account) =>
+                          account.id === grant.accountId && account.connectionId === connectionId,
+                      ),
+                    ),
+                  }
+                : dashboard
+            }
             error={error}
             homeWorkspaceId={homeWorkspaceId}
             linkError={linkError}
@@ -666,18 +720,7 @@ export function ChannelOverview({
         <div className="section__head">
           <div>
             <h2 className="section__title">Messaging identities</h2>
-            <p className="section__hint">
-              Give a Workspace its own bot, or route one shared bot to several Workspaces.
-            </p>
           </div>
-          <button
-            className="btn btn--primary btn--small"
-            disabled={!providerReady}
-            onClick={onAdd}
-            type="button"
-          >
-            <Icon name="plus" /> Add identity
-          </button>
         </div>
         <div className="card">
           {dashboard?.connections.length ? (
@@ -695,13 +738,20 @@ export function ChannelOverview({
                 connection.status === "needs-attention" && connection.transportKind !== "computer";
               return (
                 <Fragment key={connection.id}>
-                  <div className="card__row">
-                    <span className="card__row-glyph" aria-hidden="true">
-                      {(provider?.label ?? connection.provider).slice(0, 1).toUpperCase()}
-                    </span>
+                  <div className="card__row settings-messaging-row">
+                    <IntegrationIcon
+                      id={
+                        connection.provider === "apple-messages"
+                          ? "apple-messages"
+                          : connection.provider
+                      }
+                      name={provider?.label ?? connection.provider}
+                    />
                     <div className="card__row-body">
                       <span className="card__row-title">
-                        {connection.displayName}
+                        <Link to={`/settings/messaging/${encodeURIComponent(connection.id)}`}>
+                          {connection.displayName}
+                        </Link>
                         <span className={`chip ${statusChip(connection.status)}`}>
                           {statusLabel(connection.status)}
                         </span>
@@ -720,43 +770,49 @@ export function ChannelOverview({
                       ) : null}
                     </div>
                     <div className="card__row-actions">
-                      <button
-                        aria-label={`Check ${connection.displayName}`}
-                        className="icon-btn"
-                        disabled={pending}
-                        onClick={() => onCheck(connection.id, connection.displayName)}
-                        type="button"
+                      {repairable ? (
+                        <button
+                          className="btn btn--small"
+                          disabled={pending}
+                          type="button"
+                          onClick={() => onRepair(connection.id, connection.provider)}
+                        >
+                          Fix setup
+                        </button>
+                      ) : (
+                        <SettingsSwitch
+                          label={`Enable ${connection.displayName}`}
+                          checked={connection.status !== "paused"}
+                          disabled={pending}
+                          onChange={(enabled) =>
+                            onStatus(connection.id, enabled ? "connected" : "paused")
+                          }
+                        />
+                      )}
+                      <Link
+                        aria-label={`Details for ${connection.displayName}`}
+                        to={`/settings/messaging/${encodeURIComponent(connection.id)}`}
                       >
-                        <Icon name="reload" />
-                      </button>
-                      <button
-                        className="btn btn--small"
-                        disabled={pending}
-                        onClick={() => {
-                          if (repairable) onRepair(connection.id, connection.provider);
-                          else
-                            onStatus(
-                              connection.id,
-                              connection.status === "paused" ? "connected" : "paused",
-                            );
-                        }}
-                        type="button"
-                      >
-                        {repairable
-                          ? "Fix setup"
-                          : connection.status === "paused"
-                            ? "Resume"
-                            : "Pause"}
-                      </button>
-                      <button
-                        aria-label={`Revoke ${connection.displayName}`}
-                        className="icon-btn"
-                        disabled={pending}
-                        onClick={() => onRevoke(connection.id)}
-                        type="button"
-                      >
-                        <Icon name="trash" />
-                      </button>
+                        <Icon name="chevron-right" />
+                      </Link>
+                      <SurfaceMenu
+                        label={`Actions for ${connection.displayName}`}
+                        items={[
+                          {
+                            icon: "reload",
+                            label: "Check connection",
+                            disabled: pending,
+                            onSelect: () => onCheck(connection.id, connection.displayName),
+                          },
+                          {
+                            icon: "trash",
+                            label: "Remove connection",
+                            danger: true,
+                            disabled: pending,
+                            onSelect: () => onRevoke(connection.id),
+                          },
+                        ]}
+                      />
                     </div>
                   </div>
                   {accounts.map((account) => (

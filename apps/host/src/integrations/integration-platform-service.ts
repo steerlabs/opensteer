@@ -1,3 +1,4 @@
+import { catalogContents } from "@opensteer/integration-core";
 import { z } from "zod";
 import {
   ComputerReplService,
@@ -317,6 +318,10 @@ export class IntegrationPlatformService {
   readonly #mcpOauth: Pick<McpOAuthService, "providerFor">;
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
   readonly #onConnectionsChanged: () => void;
+  readonly #onSettingsChanged: (input: {
+    installationId?: string;
+    ownerUserId?: UserId;
+  }) => Promise<void>;
   readonly #onRequestsChanged: () => void;
   readonly #deploymentName: string | null;
   readonly #isRunnerConnected: (runnerId: RunnerId) => boolean;
@@ -374,6 +379,10 @@ export class IntegrationPlatformService {
     readonly mcpOauth: Pick<McpOAuthService, "providerFor">;
     readonly onWorkspaceEvent: (event: AgentEvent) => void;
     readonly onConnectionsChanged: () => void;
+    readonly onSettingsChanged?: (input: {
+      installationId?: string;
+      ownerUserId?: UserId;
+    }) => Promise<void>;
     readonly onInputAccessWithdrawn?: (runnerId: RunnerId) => void;
     readonly onRequestsChanged: () => void;
     readonly isRunnerConnected: (runnerId: RunnerId) => boolean;
@@ -406,6 +415,7 @@ export class IntegrationPlatformService {
     this.#mcpOauth = options.mcpOauth;
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
     this.#onConnectionsChanged = options.onConnectionsChanged;
+    this.#onSettingsChanged = options.onSettingsChanged ?? (async () => undefined);
     this.#onRequestsChanged = options.onRequestsChanged;
     this.#isRunnerConnected = options.isRunnerConnected;
     this.#computerUse = options.computerUse ?? null;
@@ -453,6 +463,17 @@ export class IntegrationPlatformService {
         ? this.#adapter(definition.adapter).credentialDisclosure(definition.config)
         : null,
     );
+  }
+
+  async settingsCatalog() {
+    const added = new Set(await this.#store.installations.installedCatalogDefinitionIds());
+    return this.#definitions.map((definition) => ({
+      definitionId: definition.id,
+      title: definition.name,
+      description: definition.description,
+      added: added.has(definition.id),
+      ...catalogContents(definition),
+    }));
   }
 
   get store(): IntegrationPlatformStore {
@@ -711,6 +732,23 @@ export class IntegrationPlatformService {
       }
     }
     return fulfilled;
+  }
+
+  async setPluginPlacement(
+    owner: UserId,
+    command: import("zod").infer<
+      typeof import("@opensteer/protocol").SettingsPluginPlacementCommandSchema
+    >,
+  ) {
+    const result = await this.#store.settings.setPlacement(
+      owner,
+      command,
+      await this.#authorizationSource.providerAuthorizations(owner),
+    );
+    if (command.target.kind === "specialist") {
+      await this.#store.specialists.finishPlacementRemovals(command.target.pluginId, owner);
+    }
+    return result;
   }
 
   async createGrant(input: Omit<CreateIntegrationGrantInput, "providerAuthorizations">) {
@@ -1054,6 +1092,7 @@ export class IntegrationPlatformService {
       requestId: input.requestId,
       servers,
     });
+    await this.#onSettingsChanged({ installationId: mutation.installation.id });
     const installation = this.#acceptInstallMutation(mutation);
     if (runnerId !== null) {
       await this.requestLocalServerApprovals();
@@ -1175,6 +1214,8 @@ export class IntegrationPlatformService {
       this.#discoveries.delete(serverId);
     }
     this.#onConnectionsChanged();
+    const server = await this.#store.localMcp.get(serverId);
+    if (server) await this.#onSettingsChanged({ installationId: server.installationId });
   }
 
   async #discoverOnce(serverId: IntegrationServerId): Promise<void> {
@@ -1274,6 +1315,7 @@ export class IntegrationPlatformService {
       requestId: input.requestId,
       servers: [server],
     });
+    await this.#onSettingsChanged({ installationId: mutation.installation.id });
     return this.#acceptInstallMutation(mutation);
   }
 
@@ -1376,6 +1418,7 @@ export class IntegrationPlatformService {
           current.id,
           "Opensteer couldn’t update this integration. Reinstall it from its page.",
         );
+        await this.#onSettingsChanged({ installationId: current.id });
         installations.push(current);
       }
     }
@@ -1531,6 +1574,7 @@ export class IntegrationPlatformService {
       actorUserId: input.actorUserId,
       requestId: input.requestId,
     });
+    await this.#onSettingsChanged({ installationId: mutation.installation.id });
     return this.#acceptInstallMutation(mutation);
   }
 
@@ -1672,6 +1716,7 @@ export class IntegrationPlatformService {
       actorUserId: input.actorUserId,
       requestId: input.requestId,
     });
+    await this.#onSettingsChanged({ installationId: mutation.installation.id });
     return this.#acceptInstallMutation(mutation);
   }
 
@@ -2197,6 +2242,7 @@ export class IntegrationPlatformService {
             message: "MCP credentials changed; retry the request",
             retryable: true,
           });
+        await this.#onSettingsChanged({ ownerUserId: callable.grant.ownerUserId as UserId });
         throw new IntegrationAuthorizationRequiredError(callable);
       }
       const unconfirmedWrite =
@@ -2963,6 +3009,7 @@ export class IntegrationPlatformService {
           error instanceof OpensteerError &&
           (error.code === "conflict" || error.code === "not_found")
         ) {
+          await this.#onSettingsChanged({ ownerUserId: callable.grant.ownerUserId as UserId });
           throw new IntegrationAuthorizationRequiredError(callable);
         }
         // A classified authorization failure already says something true and bounded; restating it
@@ -3054,6 +3101,7 @@ export class IntegrationPlatformService {
           error instanceof OpensteerError &&
           (error.code === "conflict" || error.code === "not_found")
         ) {
+          await this.#onSettingsChanged({ ownerUserId: callable.grant.ownerUserId as UserId });
           throw new IntegrationAuthorizationRequiredError(callable);
         }
         // A classified refresh failure is the truest account of this 401; only an unclassified

@@ -1,3 +1,5 @@
+import { z } from "zod";
+import { integrationDefinitionSummary } from "./adapter.js";
 import type { IntegrationDefinition } from "./adapter.js";
 import { IntegrationProviderManifestSchema, type IntegrationProviderManifest } from "./models.js";
 
@@ -54,4 +56,39 @@ export function integrationDefinitionsToProviderManifests(
     manifests.set(candidate.provider, current);
   }
   return [...manifests.values()];
+}
+
+// Remote providers may discover additional tools only after authentication. The
+// directory describes the declared tool set without contacting those providers.
+export function catalogContents(definition: IntegrationDefinition) {
+  const summary = integrationDefinitionSummary(definition);
+  const config = z
+    .object({
+      operationFilter: z
+        .object({
+          include: z.array(
+            z.union([z.string(), z.object({ operationId: z.array(z.string()).optional() })]),
+          ),
+        })
+        .optional(),
+      operations: z.object({ include: z.array(z.string()).optional() }).optional(),
+    })
+    .safeParse(definition.config);
+  const operations =
+    summary.computerApp?.operations.map(({ name }) => name) ??
+    (config.success
+      ? (config.data.operationFilter?.include.flatMap((item) =>
+          typeof item === "string" ? [item] : (item.operationId ?? []),
+        ) ?? config.data.operations?.include)
+      : undefined);
+  return {
+    contents: operations?.length
+      ? operations.map((name) => ({ name, kind: "tool" as const }))
+      : [{ name: `${definition.name} tools (provider-discovered)`, kind: "tool" as const }],
+    access: summary.computerApp
+      ? [summary.computerApp.accessSummaries.read, summary.computerApp.accessSummaries.readWrite]
+      : definition.authMethods.flatMap((method) =>
+          method.kind === "oauth" ? method.oauth.scopes : [method.label],
+        ),
+  };
 }
