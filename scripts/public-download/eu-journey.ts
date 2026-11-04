@@ -32,7 +32,8 @@ export async function githubJourney(c: {
   app: string;
   data: string;
   bundleId: string;
-  product: string;
+  appScript: string;
+  processScript: string;
   run: (
     exe: string,
     args: string[],
@@ -50,7 +51,7 @@ export async function githubJourney(c: {
   record: (name: string, output?: string) => void;
   installed: (sha256: string) => void;
 }) {
-  const { channel, input, root, out, app, product } = c;
+  const { channel, input, root, out, app, appScript, processScript } = c;
   const asset = "Opensteer-mac-arm64.zip";
   const yml = channel === "stable" ? "latest-mac.yml" : "insider-mac.yml";
   const tag = (v: string, ch = channel) => (ch === "stable" ? `desktop-v${v}` : `v${v}-insider`);
@@ -96,12 +97,12 @@ export async function githubJourney(c: {
       "osascript",
       [
         "-e",
-        `tell application "System Events" to tell process "${product}" to get name of every menu item of menu 1 of menu bar item "${product}" of menu bar 1`,
+        `tell application "System Events" to tell ${processScript} to get name of every menu item of menu 1 of menu bar item 2 of menu bar 1`,
       ],
       { encoding: "utf8" },
     ).stdout ?? "";
   const restart = async () => {
-    c.script(`tell application "${product}" to quit`);
+    c.script(`tell ${appScript} to quit`);
     await c.wait("app quit", () => !c.running());
     c.run("open", ["-n", app]);
     await c.wait("Personal healthy after launch", c.health);
@@ -132,7 +133,7 @@ export async function githubJourney(c: {
   const download = async () => {
     await c.wait("update offered", () => menu().includes("Download Update…"), 180);
     c.script(
-      `tell application "System Events" to tell process "${product}" to click menu item "Download Update…" of menu 1 of menu bar item "${product}" of menu bar 1`,
+      `tell application "System Events" to tell ${processScript} to click menu item "Download Update…" of menu 1 of menu bar item 2 of menu bar 1`,
     );
   };
   const noOffer = async (name: string) => {
@@ -189,7 +190,7 @@ export async function githubJourney(c: {
       20,
     );
     if (method === "quit") {
-      c.script(`tell application "${product}" to quit`);
+      c.script(`tell ${appScript} to quit`);
       await c.wait("ordinary quit", () => !c.running());
       await c.wait(
         "ordinary quit installed N+1",
@@ -198,14 +199,14 @@ export async function githubJourney(c: {
       c.run("open", ["-n", app]);
     } else if (method === "tray") {
       c.script(
-        `tell application "System Events" to tell process "${product}" to perform action "AXShowMenu" of menu bar item 1 of menu bar 2`,
+        `tell application "System Events" to tell ${processScript} to perform action "AXShowMenu" of menu bar item 1 of menu bar 2`,
       );
       c.script(
-        `tell application "System Events" to tell process "${product}" to click menu item "Restart to Update" of menu 1 of menu bar item 1 of menu bar 2`,
+        `tell application "System Events" to tell ${processScript} to click menu item "Restart to Update" of menu 1 of menu bar item 1 of menu bar 2`,
       );
     } else
       c.script(
-        `tell application "System Events" to tell process "${product}" to click menu item "Restart to Update" of menu 1 of menu bar item "${product}" of menu bar 1`,
+        `tell application "System Events" to tell ${processScript} to click menu item "Restart to Update" of menu 1 of menu bar item 2 of menu bar 1`,
       );
     await c.wait(
       "ShipIt installed N+1",

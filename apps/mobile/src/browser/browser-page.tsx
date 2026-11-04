@@ -5,7 +5,7 @@ import { ActionReviewSheet } from "../ui/action-review.js";
 import {
   passkeyNotice,
   browserActingTabId,
-  browserSiteForUrl,
+  browserSiteForTab,
   browserTabTitle,
   parseNavigationInput,
   reviewHostAction,
@@ -134,6 +134,7 @@ export function BrowserPage(props: {
     (catalogTab
       ? { id: surfaceId, title: catalogTab.title, url: catalogTab.site, active: false }
       : undefined);
+  const navigationFailed = tab?.navigationFailed || catalogTab?.navigationFailed;
   const [problem, setProblem] = useState<string | null>(null);
   const [addressOpen, setAddressOpen] = useState(props.editAddress);
   // Null shows the page's own address; anything else is the person's, kept
@@ -232,7 +233,7 @@ export function BrowserPage(props: {
     }
   }, [fieldFocused, mayType, ready]);
 
-  const viewed = tab === undefined ? null : viewedPage(session, tab);
+  const viewed = tab === undefined ? null : viewedPage(session, { ...tab, navigationFailed });
   const viewedKey =
     viewed === null ? null : `${viewed.tabId}\u0000${viewed.url}\u0000${viewed.title}`;
   const latestViewed = useRef(viewed);
@@ -364,14 +365,14 @@ export function BrowserPage(props: {
     else apply();
   };
 
-  const navigationProblem =
-    tab?.navigationFailed || catalogTab?.navigationFailed
-      ? "This page could not be loaded. Reload to try again."
-      : null;
+  const navigationProblem = navigationFailed
+    ? "This page could not be loaded. Reload to try again."
+    : null;
   const pageProblem = problem ?? navigationProblem;
   const site = tab ? pageSite(tab.url) : null;
   const title = tab ? browserTabTitle(tab) : "Page";
-  const signInSite = session.state === "ready" && tab?.url ? browserSiteForUrl(tab.url) : null;
+  const signInSite =
+    session.state === "ready" && tab ? browserSiteForTab({ navigationFailed, url: tab.url }) : null;
   const pageUrl = site === null ? null : (tab?.url ?? null);
   const acting = browserActingTabId(session) === tabId;
   const loading = liveTab?.loading === true || catalogTab?.loading === true;

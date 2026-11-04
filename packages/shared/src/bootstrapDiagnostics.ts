@@ -9,6 +9,7 @@ export const bootstrapReasons = [
   "reauthenticate",
   "reconnect",
   "foreground",
+  "host.frame-lost",
   "host.browser-sessions-changed",
   "host.machines.changed",
   "host.machine.access.session.started",

@@ -100,6 +100,24 @@ describe("HostSession", () => {
     expect(fixture.exchange.establish).toHaveBeenCalledOnce();
   });
 
+  it("waits out a failed recovery, unless the Account sign-in changed", async () => {
+    const connection = remotePersonalConnection("connect", 7);
+    const fixture = hostSessionFixture(connection);
+    fixture.exchange.establish.mockRejectedValueOnce(new Error("Account unavailable"));
+    fixture.exchange.establish.mockResolvedValue(establishedCookieSession());
+
+    const failed = await fixture.sessions.recoverUnauthorized(fixture.attachment);
+    expect(failed).not.toBe("recovered");
+    await expect(fixture.sessions.recoverUnauthorized(fixture.attachment)).resolves.toBe(failed);
+    expect(fixture.exchange.establish).toHaveBeenCalledOnce();
+
+    fixture.oauth.signedInAccount();
+    await expect(fixture.sessions.recoverUnauthorized(fixture.attachment)).resolves.toBe(
+      "recovered",
+    );
+    expect(fixture.exchange.establish).toHaveBeenCalledTimes(2);
+  });
+
   it("redeems a Connect grant only after a 401 and keeps network failure unavailable", async () => {
     const connection = remotePersonalConnection("connect", 7);
     const fixture = hostSessionFixture(connection);
@@ -333,6 +351,7 @@ function hostSessionFixture(
     recoverOwnerSession: vi.fn(async () => false),
   };
   const listeners = new Set<(state: never) => void>();
+  const accountListeners = new Set<() => void>();
   const oauthStatus = {
     current: "signed-out" as "authorizing" | "error" | "signed-in" | "signed-out",
   };
@@ -368,6 +387,13 @@ function hostSessionFixture(
       key: keyOf(connection),
       status: "signed-out" as const,
     })),
+    signedInAccount() {
+      for (const listener of accountListeners) listener();
+    },
+    subscribe: vi.fn((listener: () => void) => {
+      accountListeners.add(listener);
+      return () => accountListeners.delete(listener);
+    }),
     subscribeHostCredentials: vi.fn((listener: (state: never) => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

@@ -21,6 +21,9 @@ const metadata = journeyMetadata.parse(JSON.parse(process.argv[4]!));
 const githubChannel = z.enum(["stable", "beta"]).parse(process.argv[3]);
 const product = "Opensteer";
 const bundleId = "com.opensteer.opensteer";
+// Process and menu names follow the installed track, which a journey changes; the bundle ID doesn't.
+const appScript = `application id "${bundleId}"`;
+const processScript = `first process whose bundle identifier is "${bundleId}"`;
 process.env.OPENSTEER_JOURNEY_BUNDLE_ID = bundleId;
 const scenario = z.enum(["eu-menu", "eu-tray", "eu-quit"]).parse(process.argv[2]);
 const inputBytes = JSON.parse(readFileSync(path.join(share, "input.json"), "utf8"));
@@ -153,16 +156,16 @@ const verify = async (version: string, target = app) => {
   about(version);
 };
 const about = (version: string) => {
-  script(`tell application "${product}" to activate`);
+  script(`tell ${appScript} to activate`);
   script(
-    `tell application "System Events" to tell process "${product}" to click menu item "About ${product}" of menu 1 of menu bar item "${product}" of menu bar 1`,
+    `tell application "System Events" to tell ${processScript} to click menu item 1 of menu 1 of menu bar item 2 of menu bar 1`,
   );
   const content = run(path.join(out, "ax-driver"), ["dump"]).output;
-  // Both channels install the same build, so About shows the same version.
+  // Both tracks keep the numeric native version that About shows.
   assert(content.includes(version), content);
   screenshot(`about-${version}`);
   script(
-    `tell application "System Events" to tell process "${product}" to keystroke "w" using command down`,
+    `tell application "System Events" to tell ${processScript} to keystroke "w" using command down`,
   );
 };
 let mirror: ReturnType<typeof spawn> | undefined;
@@ -292,7 +295,8 @@ try {
     app,
     data,
     bundleId,
-    product,
+    appScript,
+    processScript,
     run,
     wait,
     verify,
@@ -325,7 +329,7 @@ try {
       updateObserver.kill("SIGTERM");
       await done;
     }
-    if (running()) run("osascript", ["-e", `tell application "${product}" to quit`], true);
+    if (running()) run("osascript", ["-e", `tell ${appScript} to quit`], true);
     if (mirror?.pid) {
       run("sudo", ["pkill", "-TERM", "-P", String(mirror.pid)], true);
       mirror.kill("SIGTERM");

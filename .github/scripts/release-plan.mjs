@@ -62,13 +62,24 @@ export function preflight(
   } else if (channel === "stable" && insiderPattern.test(insiderTag)) {
     const releases = pages("releases");
     const release = releases.find((item) => item.tag_name === insiderTag);
-    if (!release || release.draft !== false || release.prerelease !== true)
+    if (
+      !release ||
+      release.draft !== false ||
+      release.prerelease !== true ||
+      release.immutable !== true
+    )
       throw Error("Stable requires a published insider prerelease");
-    sha = git("rev-parse", "--verify", `refs/tags/${insiderTag}^{commit}`);
+    const provenance = manifest(insiderTag);
+    sha = provenance.sourceSha;
+    if (
+      !exactSha.test(sha) ||
+      git("rev-parse", "--verify", `refs/tags/${insiderTag}^{commit}`) !== sha
+    )
+      throw Error("Immutable insider provenance differs from tag");
     version = deriveReleaseVersion({ repositoryRoot: root, revision: sha });
     if (insiderPattern.exec(insiderTag)[1] !== version || release.target_commitish !== sha)
       throw Error("Insider tag/source/version disagree");
-    sameManifest(manifest(insiderTag), { sha, version, channel: "beta", tag: insiderTag });
+    sameManifest(provenance, { sha, version, channel: "beta", tag: insiderTag });
   } else throw Error("Choose insider, or stable with a published insider_tag");
   if (!exactSha.test(sha)) throw Error("Expected an exact source SHA");
   git("merge-base", "--is-ancestor", sha, "refs/remotes/origin/main");

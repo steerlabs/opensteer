@@ -29,6 +29,7 @@ const deploymentChangedCloseCode = 4_001;
 export interface HostTransportRequest {
   /** The initiating client identity must survive a newer main-process selection. */
   readonly expectedDeploymentId?: DeploymentId | undefined;
+  readonly expectedAttachmentKey?: string;
   readonly body?: string | Blob | ReadableStream<Uint8Array> | undefined;
   readonly credentials?: "omit";
   readonly redirect?: "manual";
@@ -173,6 +174,11 @@ export class HostTransport {
       if (
         request.expectedDeploymentId !== undefined &&
         request.expectedDeploymentId !== resolved.deploymentId
+      )
+        throw new HostTransportError("deployment-changed");
+      if (
+        request.expectedAttachmentKey !== undefined &&
+        request.expectedAttachmentKey !== resolved.key
       )
         throw new HostTransportError("deployment-changed");
       const selectionGeneration = this.#fence.generation;
@@ -380,7 +386,10 @@ export class HostTransport {
       if (abortRecovery) signal.removeEventListener("abort", abortRecovery);
     }
     deadline.reset(request.timeoutMs ?? hostResponseHeadersTimeoutMs);
-    const response = await deadline.wait(this.#send(selected.resolved, request, signal));
+    const recovered = await deadline.wait(this.current());
+    if (recovered.resolved.key !== selected.resolved.key)
+      throw new HostTransportError("deployment-changed");
+    const response = await deadline.wait(this.#send(recovered.resolved, request, signal));
     deadline.reset(hostResponseStallTimeoutMs);
     return response;
   }

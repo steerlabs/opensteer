@@ -1,0 +1,28 @@
+import { afterEach, expect, it, vi } from "vitest";
+import type { PersonalDesktopUpdateStore } from "@opensteer/database";
+import { desktopUpdateLongPollMs } from "@opensteer/protocol/maintenance";
+import { PersonalDesktopUpdate } from "./personal-desktop-update.js";
+afterEach(() => vi.useRealTimers());
+it("bounds waits, wakes on changes and restarts, and cancels abandoned waits", async () => {
+  vi.useFakeTimers();
+  const updates = new PersonalDesktopUpdate({} as PersonalDesktopUpdateStore);
+  const controller = new AbortController();
+  const bounded = vi.fn();
+  const wait = updates.wait(updates.revision, controller.signal).then(bounded);
+  await vi.advanceTimersByTimeAsync(desktopUpdateLongPollMs - 1);
+  expect(bounded).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  await wait;
+  expect(bounded).toHaveBeenCalledOnce();
+  const changed = updates.wait(updates.revision, controller.signal);
+  updates.changed();
+  await changed;
+  const restarted = new PersonalDesktopUpdate({} as PersonalDesktopUpdateStore);
+  expect(restarted.revision).not.toBe(updates.revision);
+  await restarted.wait(updates.revision, controller.signal);
+  const abandoned = updates.wait(updates.revision, controller.signal);
+  const refusal = expect(abandoned).rejects.toThrow("Closed");
+  controller.abort(new Error("Closed"));
+  await refusal;
+  expect(vi.getTimerCount()).toBe(0);
+});

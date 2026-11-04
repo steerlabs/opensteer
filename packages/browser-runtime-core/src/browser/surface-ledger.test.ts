@@ -1,3 +1,4 @@
+import { browserWorkspaceTabUrlMaxLength } from "@opensteer/protocol/browser";
 import { describe, expect, it, vi } from "vitest";
 import {
   FakeContext,
@@ -5,6 +6,7 @@ import {
   flushMicrotasks,
   withoutTitleSamples,
 } from "../test-support/fakes.js";
+import { PageFavicon } from "./favicon.js";
 import { SurfaceLedger, type SurfaceLedgerEvent } from "./surface-ledger.js";
 
 /** The agent-cursor observer an announced page installs, after its events and size. */
@@ -265,11 +267,93 @@ describe("SurfaceLedger", () => {
           unreachableUrl: "https://offline.test/",
         },
       });
-      expect(ledger.snapshot()[0]).toMatchObject({ navigationFailed: true });
+      expect(ledger.snapshot()[0]).toMatchObject({
+        navigationFailed: true,
+        url: "https://offline.test/",
+      });
+      const favicon = vi.spyOn(PageFavicon.prototype, "refresh");
+      await ledger.refresh(id);
+      expect(ledger.snapshot()[0]).toMatchObject({ url: "https://offline.test/" });
+      expect(ledger.committedUrl(id)).toBe("chrome-error://chromewebdata/");
+      expect(favicon.mock.calls.at(-1)?.[1]).toBe("chrome-error://chromewebdata/");
       page.cdpSession.emit("Page.frameNavigated", {
         frame: { id: "main", loaderId: "reloaded", url: "https://offline.test/" },
       });
       expect(ledger.snapshot()[0]).not.toHaveProperty("navigationFailed");
+    } finally {
+      await ledger.close();
+    }
+  });
+
+  it("restores a failed tab to the address it tried, without credentials it carried", async () => {
+    const page = new FakePage();
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    try {
+      const id = ledger.snapshot()[0]!.id;
+      page.cdpSession.emit("Page.frameNavigated", {
+        frame: {
+          id: "main",
+          loaderId: "error",
+          url: "chrome-error://chromewebdata/",
+          unreachableUrl: "https://person:s3cret@offline.test/page?q=1#part",
+        },
+      });
+      expect(ledger.snapshot()[0]).toMatchObject({ url: "https://offline.test/page?q=1#part" });
+      expect(ledger.durableSnapshot()[0]).toMatchObject({
+        url: "https://offline.test/page?q=1#part",
+      });
+      expect(ledger.committedUrl(id)).toBe("chrome-error://chromewebdata/");
+      page.cdpSession.emit("Page.frameNavigated", {
+        frame: { id: "main", loaderId: "next", url: "https://online.test/" },
+      });
+      expect(ledger.durableSnapshot()[0]).toMatchObject({ url: "https://online.test/" });
+    } finally {
+      await ledger.close();
+    }
+  });
+
+  it("never truncates an overlong address a failed tab tried", async () => {
+    const page = new FakePage();
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    try {
+      page.cdpSession.emit("Page.frameNavigated", {
+        frame: {
+          id: "main",
+          loaderId: "error",
+          url: "chrome-error://chromewebdata/",
+          unreachableUrl: `https://offline.test/${"a".repeat(browserWorkspaceTabUrlMaxLength)}`,
+        },
+      });
+      expect(ledger.durableSnapshot()[0]).toMatchObject({ url: "opensteer:unavailable-url" });
+    } finally {
+      await ledger.close();
+    }
+  });
+
+  it("marks a failed commit no ledger navigation asked for, as an agent's own navigation is", async () => {
+    const page = new FakePage();
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    try {
+      page.cdpSession.emit("Page.frameNavigated", {
+        frame: {
+          id: "main",
+          loaderId: "error",
+          url: "chrome-error://chromewebdata/",
+          unreachableUrl: "https://offline.test/page",
+        },
+      });
+      expect(ledger.snapshot()[0]).toMatchObject({
+        navigationFailed: true,
+        url: "https://offline.test/page",
+      });
+      page.cdpSession.emit("Page.frameNavigated", {
+        frame: { id: "main", loaderId: "next", url: "https://online.test/" },
+      });
+      expect(ledger.snapshot()[0]).not.toHaveProperty("navigationFailed");
+      expect(ledger.snapshot()[0]).toMatchObject({ url: "https://online.test/" });
     } finally {
       await ledger.close();
     }

@@ -21,6 +21,7 @@ export const localHostProxyRoutes = {
   "/.well-known/oauth-protected-resource": { target: localHostProxyTarget },
   "/.well-known/oauth-authorization-server": { target: localHostProxyTarget },
   "/oauth/mcp": { target: localHostProxyTarget },
+  "/maintenance": { target: localHostProxyTarget },
   "/internal/v1/browser-cdp": { target: localHostProxyTarget, ws: true },
   "/internal/v1/browser-sources": { target: localHostProxyTarget, ws: true },
   "/internal/v1/computer-use/display": { target: localHostProxyTarget, ws: true },

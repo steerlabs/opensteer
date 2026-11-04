@@ -202,7 +202,7 @@ export function viewedPage(
   session: Pick<BrowserSessionSummary, "id">,
   tab: BrowserTabSummary,
 ): BrowserPageContentPart | null {
-  if (pageSite(tab.url) === null) return null;
+  if (tab.navigationFailed || pageSite(tab.url) === null) return null;
   try {
     return browserPagePart({
       sessionId: session.id,

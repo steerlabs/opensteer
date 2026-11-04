@@ -9,6 +9,14 @@ import type { DesktopUpdates } from "../config.js";
 import type { ShutdownLog } from "./desktop-shutdown.js";
 import { z } from "zod";
 
+export const desktopUpdateReadinessMs = 5 * 60_000;
+export interface DesktopUpdateAction {
+  check(): Promise<DesktopUpdateState>;
+  setChannel(channel: DesktopUpdateChannel): Promise<DesktopUpdateState>;
+  download(targetVersion: string): Promise<void>;
+  restart(install: () => Promise<void>): Promise<void>;
+}
+
 export const desktopUpdateFirstCheckMs = 15_000;
 export const desktopUpdateCheckIntervalMs = 4 * 60_000;
 
@@ -45,6 +53,8 @@ export class DesktopUpdater {
   #state: DesktopUpdateState;
   #operation: Promise<void> | null = null;
   #stopped = false;
+  #reservation: { owner: "local" | "remote"; done: Promise<void>; release(): void } | null = null;
+  #readiness: Promise<void> | null = null;
   #staged = false;
   readonly #preference: {
     channel: DesktopUpdateChannel;
@@ -122,7 +132,7 @@ export class DesktopUpdater {
   start(signal: AbortSignal): void {
     if (!this.#enabled || signal.aborted) return;
     const tick = () => {
-      if (this.#operation || !this.#checkable()) return;
+      if (this.#reservation || this.#operation || !this.#checkable()) return;
       void this.#check(false);
     };
     const first = setTimeout(tick, desktopUpdateFirstCheckMs);
@@ -139,14 +149,14 @@ export class DesktopUpdater {
   }
 
   /** The person's check: always a fresh one, after any background check finishes. */
-  async check(): Promise<DesktopUpdateState> {
+  async #requestedCheck(): Promise<DesktopUpdateState> {
     while (this.#operation) await this.#operation;
     if (this.#enabled && this.#checkable()) await this.#check(true);
     return this.#state;
   }
 
   /** Downloads the version on offer, or retries its failed download. */
-  async download(): Promise<void> {
+  async #download(): Promise<void> {
     // A check in flight may replace the offer.
     while (this.#operation) await this.#operation;
     const { status, failed } = this.#state;
@@ -164,7 +174,7 @@ export class DesktopUpdater {
   }
 
   /** Wait out an active check before changing the provider or its saved offer. */
-  async setChannel(value: DesktopUpdateChannel): Promise<DesktopUpdateState> {
+  async #setChannel(value: DesktopUpdateChannel): Promise<DesktopUpdateState> {
     const channel = DesktopUpdateChannelSchema.parse(value);
     const assertSwitchable = () => {
       if (this.#state.status === "downloading" || this.#staged)
@@ -192,6 +202,133 @@ export class DesktopUpdater {
       if (this.#enabled) await this.#performCheck(true);
     });
     return this.#state;
+  }
+
+  check(): Promise<DesktopUpdateState> {
+    return this.#reserve("local", () => this.#requestedCheck());
+  }
+
+  setChannel(channel: DesktopUpdateChannel): Promise<DesktopUpdateState> {
+    if (this.#state.status === "downloading" || this.#staged)
+      return Promise.reject(new Error("Restart before changing update channel."));
+    return this.#reserve("local", () => this.#setChannel(channel));
+  }
+
+  async download(): Promise<void> {
+    await this.#reserve(
+      "local",
+      async () => {
+        if (!this.#state.availableVersion) return;
+        const ready = this.#nativeReadiness();
+        this.#readiness = ready.settled;
+        // Local Download returns after transfer; keep its reservation through native verification.
+        void ready.settled.catch(() => {});
+        await this.#download();
+        ready.startDeadline();
+      },
+      true,
+    );
+  }
+
+  restart(install: () => Promise<void>): Promise<void> {
+    return this.#reserve("local", () => this.#restart(install));
+  }
+
+  remoteAction<T>(run: (action: DesktopUpdateAction) => Promise<T>): Promise<T> {
+    return this.#reserve("remote", () =>
+      run({
+        check: () => this.#requestedCheck(),
+        setChannel: (channel) => this.#setChannel(channel),
+        download: async (target) => {
+          if (this.#state.availableVersion !== target)
+            throw new Error("The desktop update offer changed.");
+          if (this.#state.status === "downloaded") return;
+          const ready = this.#nativeReadiness();
+          void ready.settled.catch(() => {});
+          await this.#download();
+          ready.startDeadline();
+          await ready.settled;
+        },
+        restart: (install) => this.#restart(install),
+      }),
+    );
+  }
+
+  async #restart(install: () => Promise<void>): Promise<void> {
+    if (this.#state.status !== "downloaded")
+      throw new Error("The desktop update is no longer ready.");
+    await install();
+  }
+
+  #reservedRemotely(): boolean {
+    return this.#reservation?.owner === "remote";
+  }
+
+  async #reserve<T>(
+    owner: "local" | "remote",
+    run: () => Promise<T>,
+    holdReadiness = false,
+  ): Promise<T> {
+    if (this.#reservedRemotely()) throw new Error("A remote desktop update is in progress.");
+    while (this.#reservation) {
+      if (owner === "remote") throw new Error("A local desktop update action is in progress.");
+      await this.#reservation.done;
+      if (this.#reservedRemotely()) throw new Error("A remote desktop update is in progress.");
+    }
+    let release!: () => void;
+    const reservation = {
+      owner,
+      done: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      release: () => release(),
+    };
+    this.#reservation = reservation;
+    // Local checks retain their existing progress notifications.
+    if (owner === "remote") this.#set({ reservedBy: owner });
+    try {
+      return await run();
+    } finally {
+      const finish = () => {
+        if (this.#reservation !== reservation) return;
+        this.#reservation = null;
+        if (owner === "remote") this.#set({ reservedBy: null });
+        reservation.release();
+      };
+      if (holdReadiness && this.#readiness) {
+        void this.#readiness.then(finish, finish);
+        this.#readiness = null;
+      } else finish();
+    }
+  }
+
+  /** The deadline covers Squirrel's verification only: transfer time depends on the link. */
+  #nativeReadiness(): { settled: Promise<void>; startDeadline(): void } {
+    if (this.#state.status === "downloaded")
+      return { settled: Promise.resolve(), startDeadline: () => {} };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let done = false;
+    const settled = new Promise<void>((resolve, reject) => {
+      const finish = (failed: boolean) => {
+        done = true;
+        clearTimeout(timer);
+        unsubscribe();
+        if (failed) reject(new Error("The desktop update could not be staged."));
+        else resolve();
+      };
+      const unsubscribe = this.subscribe((state) => {
+        if (state.status === "downloaded") finish(false);
+        else if (state.status === "error") finish(true);
+      });
+    });
+    return {
+      settled,
+      startDeadline: () => {
+        if (done) return;
+        timer = setTimeout(() => this.#failDownload(), desktopUpdateReadinessMs);
+        timer.unref?.();
+      },
+    };
   }
 
   #applyChannel(): void {

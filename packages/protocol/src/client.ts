@@ -28,7 +28,7 @@ import {
   PlaceActivityNoticeViewSchema,
 } from "./places.js";
 import { BrowserTabsChangedSchema, BrowserPresenceSchema } from "./browser.js";
-import { ProtocolErrorSchema } from "./common.js";
+import { ProtocolErrorSchema, type RealtimeFrameDiagnostic } from "./common.js";
 import { ComputerUseSessionIdSchema, computerUseMaxSessionApps } from "./computer-use.js";
 import { ShellCloseReasonSchema, ShellSessionSummarySchema } from "./shell.js";
 
@@ -468,3 +468,51 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export type HostToClientMessage = z.infer<typeof HostToClientMessageSchema>;
+
+export const realtimeEnvelopeTypes: ReadonlySet<string> = new Set(
+  HostToClientMessageSchema.options.map((schema) => schema.shape.type.value),
+);
+
+function collectFieldNames(value: unknown, names: Set<string>, seen: Set<unknown>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectFieldNames(item, names, seen);
+    return;
+  }
+  if (!(value instanceof z.core.$ZodType) || seen.has(value)) return;
+  seen.add(value);
+  const def = (value as z.core.$ZodTypes)._zod.def;
+  if (def.type === "object") {
+    for (const [name, field] of Object.entries(def.shape)) {
+      names.add(name);
+      collectFieldNames(field, names, seen);
+    }
+  }
+  if (def.type === "lazy") collectFieldNames(def.getter(), names, seen);
+  for (const child of Object.values(def)) collectFieldNames(child, names, seen);
+}
+
+let realtimeWireFields: ReadonlySet<string> | undefined;
+
+/** Walked on first use: a healthy client never pays for it. */
+export function isRealtimeWireField(part: string): boolean {
+  if (!realtimeWireFields) {
+    const names = new Set<string>();
+    collectFieldNames(HostToClientMessageSchema, names, new Set());
+    realtimeWireFields = names;
+  }
+  return realtimeWireFields.has(part);
+}
+
+/** Whether a diagnostic says only what the wire schemas declare, so it is safe to keep. */
+export function isRealtimeFrameMetadata(
+  record: Pick<RealtimeFrameDiagnostic, "envelopeType" | "issuePaths">,
+): boolean {
+  return (
+    (record.envelopeType === "unknown" || realtimeEnvelopeTypes.has(record.envelopeType)) &&
+    record.issuePaths.every(
+      (path) =>
+        path === "$" ||
+        path.split(".").every((part) => part === "[]" || part === "*" || isRealtimeWireField(part)),
+    )
+  );
+}

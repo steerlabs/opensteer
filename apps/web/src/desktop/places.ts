@@ -1,4 +1,4 @@
-import { placeStatus } from "@opensteer/protocol/deployment-status";
+import { hostNeedsUpdateLabel, placeStatus } from "@opensteer/protocol/deployment-status";
 import type {
   DeploymentAccessDeployment,
   DeploymentAccessSnapshot,
@@ -27,6 +27,8 @@ export interface PlaceRow {
   /** A listing this person may drop from their list: one shared with them. */
   readonly removable: boolean;
   readonly status: DeploymentStatusInfo;
+  /** Too old for this app, and listed here with a route to reach it for an update. */
+  readonly updatable: boolean;
 }
 
 export interface PlaceRowContext {
@@ -71,6 +73,12 @@ function placeRow(
   context: PlaceRowContext,
 ): PlaceRow {
   const current = deployment.id === selectedDeploymentId;
+  // An Account place kept on screen through an ended sign-in says what it
+  // needs — the sign-in — not the failed attempt that sign-in explains.
+  const status =
+    deployment.source === "account" && !signedIn
+      ? deployment.statusInfo
+      : deploymentConnectionStatusInfo(deployment);
   return {
     current,
     detail: placeDetail(deployment, context),
@@ -88,12 +96,8 @@ function placeRow(
       deployment.accountAccess === "member" &&
       !deployment.onThisComputer &&
       !current,
-    // An Account place kept on screen through an ended sign-in says what it
-    // needs — the sign-in — not the failed attempt that sign-in explains.
-    status:
-      deployment.source === "account" && !signedIn
-        ? deployment.statusInfo
-        : deploymentConnectionStatusInfo(deployment),
+    status,
+    updatable: status.label === hostNeedsUpdateLabel,
   };
 }
 
@@ -123,6 +127,7 @@ function unavailableRow(entry: DeploymentAccessUnavailable): PlaceRow {
     opens: false,
     removable: entry.accountAccess === "member",
     status: placeStatus.unavailable(entry.reason, entry.name),
+    updatable: false,
   };
 }
 

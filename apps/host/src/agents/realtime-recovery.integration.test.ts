@@ -75,7 +75,6 @@ interface ViewerClient {
     >;
   };
   load(): Promise<void>;
-  refresh(options?: { readonly retryConnection?: boolean }): Promise<void>;
 }
 
 interface DesktopTransport {
@@ -175,15 +174,10 @@ integration("Realtime Workspace channel through the Desktop bridge", () => {
     });
   }, 90_000);
 
-  it("delivers the next reply after explicit repair of a refused protocol frame", async () => {
+  it("replays a reply committed after a frame the app could not read", async () => {
     await journey(stack!, apps, {
       closes: ["Invalid Host protocol frame"],
       fault: async (app) => app.injectUnreadableFrame(),
-      repair: async (app) => {
-        expect(app.client.getSnapshot().connection).toBe("offline");
-        expect(app.realtimeOpens()).toBe(1);
-        await app.client.refresh({ retryConnection: true });
-      },
       name: "unreadable-frame",
     });
   }, 90_000);

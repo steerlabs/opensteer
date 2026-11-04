@@ -1,6 +1,7 @@
 import type { editAutomaticRole } from "@opensteer/client/host";
 import type { AutomaticModelConfig, AutomaticModelRole, HarnessInstanceId } from "@opensteer/core";
 import type { AutomaticModelsView } from "@opensteer/protocol";
+import type { DeploymentUpdateModel } from "./use-deployment-update.js";
 import type {
   AccountSettingsModel,
   ComputerSettingsDestination,
@@ -97,6 +98,8 @@ export interface SettingsFormProps extends SettingsFormActionHandlers {
   /** Where the open Opensteer runs and its computers; empty while none is open. */
   readonly computers: readonly ComputerSettingsRow[];
   readonly deployment: DeploymentSettingsModel;
+  /** Null when there is no open Deployment, or its Host refuses this person. */
+  readonly desktopUpdate: DeploymentUpdateModel | null;
   readonly engineUpdates?: readonly EngineUpdateRow[] | undefined;
   /** Null while no Deployment is open. */
   readonly automatic?: AutomaticModelsForm | null | undefined;

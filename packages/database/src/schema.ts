@@ -2056,6 +2056,20 @@ export interface DatabaseSchema {
     expiresAt: Timestamp;
   };
   personalRemotePairingCodes: PersonalRemotePairingCodeTable;
+  personalDesktopUpdate: {
+    position: Generated<string>;
+    id: string;
+    requestedBy: UserId;
+    idempotencyKey: string;
+    intent: JsonColumn<import("@opensteer/protocol/maintenance").DesktopUpdateIntent>;
+    state: import("@opensteer/protocol/maintenance").DesktopUpdatePhase;
+    fromVersion: string | null;
+    targetVersion: string | null;
+    incarnationId: string | null;
+    detail: import("@opensteer/protocol/maintenance").DesktopUpdateOperation["detail"];
+    createdAt: Timestamp;
+    updatedAt: Timestamp;
+  };
   personalRemoteAdministration: {
     position: Generated<string>;
     executionId: string;

@@ -35,6 +35,7 @@ import {
   type DeploymentCatalog,
   type DeploymentConnection,
   type DeploymentConnectionInput,
+  type DesktopUpdates,
   type PrivateFilesystem,
 } from "@opensteer/client/connections";
 import {
@@ -209,6 +210,7 @@ export class MobileClient {
   readonly #authStore: ProtectedAuthStore;
   readonly #fence: HostAttachmentFence;
   readonly #host: MobileHostPort;
+  readonly #desktopUpdates = new Map<DeploymentId, DesktopUpdates>();
   readonly #iphoneApps: IphoneAppsOwner | null;
   readonly #integrationAttempts: IntegrationAuthorizationAttempts;
   readonly #openIntegrationAuthorization: (url: string) => Promise<string>;
@@ -418,7 +420,11 @@ export class MobileClient {
         this.accountDirectory.accountOrigin !== null &&
         (await this.oauth.state()).account.status === "signed-in",
     });
-    this.#host = options.hostPort({ oauth: this.oauth, sessions: this.sessions });
+    this.#host = options.hostPort({
+      oauth: this.oauth,
+      sessions: this.sessions,
+      sessionExchange: this.sessionExchange,
+    });
     this.#fence = new HostAttachmentFence({
       catalog: this.catalog,
       // Resolve identity and routing before credential refresh can contact a
@@ -2149,6 +2155,15 @@ export class MobileClient {
     } finally {
       if (client !== attached) client.dispose();
     }
+  }
+
+  /** Works on a Host this phone can't attach to, which is when it's needed most. */
+  desktopUpdates(deploymentId: DeploymentId): DesktopUpdates {
+    const existing = this.#desktopUpdates.get(deploymentId);
+    if (existing) return existing;
+    const created = this.#host.desktopUpdates({ catalog: this.catalog, deploymentId });
+    this.#desktopUpdates.set(deploymentId, created);
+    return created;
   }
 
   #requireConnection(deploymentId: DeploymentId): DeploymentConnection {

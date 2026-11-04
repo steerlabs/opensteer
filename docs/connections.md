@@ -36,8 +36,8 @@ a `host.connections-changed` notice rereads current Host authority.
 ## Remote administration
 
 The Host persists owner intent and progress; the desktop app executes it through its Connect and
-Account coordinators, and every owner device uses the same Host commands. A missing executor leaves
-a visible pending operation. A request persists before it is acknowledged, and execution that can
+Account coordinators, and every owner device uses the same Host commands for remote access. A missing
+executor leaves a visible pending operation. A request persists before it is acknowledged, and execution that can
 remove the current route starts only after that response, under the supervisor's process capability.
 Unlink never needs another request from the session it revokes. Revoked credentials stop
 authenticating before success; their live connections close after the response.
@@ -56,6 +56,15 @@ Expired and cancelled keys are erased. Connector credentials stay on the Host co
 only the supervisor's private executor channel; owner sessions request intents and read status,
 which clients read only while Settings or first-run setup is open.
 
+Desktop updates reach only the installation supervising its own Personal Host, never a borrowed
+Runner or a server Deployment. The epoch-independent [maintenance v1 contract](../packages/protocol/src/maintenance.ts)
+is its sole browser API. A page its Host served calls it same-origin. Phones and the desktop's main
+process verify identity and reuse session authentication below ordinary attachment, so they can
+update a Host they can't attach to. All of them long-poll only while Updates is visible. An
+already-shipped desktop without this contract needs one local update first. The target is journaled before native staging, since any
+quit can apply it; only a new desktop process incarnation reconciles the installed version.
+Failed install handoff relaunches the desktop to restore the Personal stack and reconcile the journal.
+
 First-run setup's Phone row composes these steps and adds no authority. Its QR code is
 `<portal>/open#d=<DeploymentId>`: a destination, never a pairing code, Host origin or grant. The
 phone signs in to its own Account and opens that ID only from its authenticated directory.
@@ -67,10 +76,42 @@ discard the lower events it overtook; the [hub](../packages/orchestration/src/re
 publication holes from the store. Readers skip unknown kinds and Thread statuses, validate every
 event's Workspace before changing batch state, and advance cursors in order.
 
-A malformed known frame stops that Workspace channel with no automatic retry, because replay cannot
-repair it; only explicit Retry or a new client retries. A failed acknowledgement send reconnects
-instead, keeping applied state. Diagnostics never log payloads, discriminator values or validator
-messages, only allowlisted envelope metadata and bounded issue paths.
+A frame a client cannot read costs what [losing it costs](../packages/client/src/host/realtime-frames.ts),
+and never strands the channel. A notice is dropped with the socket up and repaired by the read that
+answers for it, which is not always a bootstrap: a cache the bootstrap does not touch is invalidated
+directly. A replay or sync frame is never applied or acknowledged: the channel reconnects from the
+same cursor, and only `host.synchronized` forgets the failures, so a frame that fails on every
+connect keeps backing off. Not everything a subscribe sends follows the cursor, though: read states
+come only with replayed events and a resync only with a live condition, so losing one starts over
+from a snapshot at once. Replay also cannot get past an event this build will never read, so a
+position that keeps failing starts over from a snapshot too. If the snapshot is unreadable too, the
+connection reads Unavailable with Retry while it keeps trying on a long cap: each try can cost a
+whole snapshot over cellular, and a later Host or app update must recover it unattended. Network and
+foreground signals wait for that retry's time as well; only Retry skips it.
+
+A snapshot may skip a Thread this build cannot read, because a snapshot is state at a position. An
+event may not: acknowledging past a malformed Thread event would leave what the client holds stale
+with nothing to repair it, so only an unknown status is skipped there. Only a Host's `host.error`
+refusal stops a channel until Retry.
+
+A browser viewer's snapshot and subscription are the whole of its state, so a viewer that cannot read
+a frame reconnects on the same backoff, keeping its last picture and taking no input. Failures are
+forgotten only once a socket has stayed up a while: every connect brings a snapshot, a dialog reply
+and often a picture, so a frame read fine proves nothing about the next one.
+Everything else stays final: a Host refusal, a Host's 4002 for what the client sent, ended access and
+a frame for the wrong target.
+
+Wire schemas must answer the same in Node, Chromium and Hermes, and `URL` does not: Chromium treats
+`chrome-error:`, `chrome:` and `devtools:` as standard schemes and refuses them bare, which Node and
+Hermes accept. So a Host-side parse proves nothing about a client's, and a check on a value a client
+receives reads the text instead. A client view does not repeat a rule the Host enforces before
+sending; rejecting a frame after it arrives protects nothing.
+
+A failed acknowledgement send reconnects, keeping applied state. Diagnostics never log payloads,
+discriminator values or validator messages, only envelope metadata and issue paths, which name
+fields the wire schemas declare and mask a peer's record keys. The renderer reports its own failures
+to the desktop log; the main process does not read realtime frames, but it does check that what it
+is told to log names only that vocabulary, because the bridge can be called directly.
 
 Thread and Run state are absolute and sequenced: only newer state replaces event-owned fields, and
 an ended Run never returns active. Request counts come from the Host's projection, not client
@@ -117,7 +158,7 @@ failures never trigger blind restart, and classification uses typed failures, ne
 Child logs are bounded, private and credential-redacted. Socket diagnostics never persist endpoint
 queries, frame contents, IPC connection IDs or raw surfaces.
 
-Quit is irreversible: stop new work, cancel recovery, continue cleanup after errors, and never
+Ordinary quit is irreversible: stop new work, cancel recovery, continue cleanup after errors, and never
 reopen the app or a modal. Native browsers close without clearing their stores, then Runner, Host
 and database stop in order. A lost parent control pipe must still contain process trees, including
 tunnel and detached engine helpers. See

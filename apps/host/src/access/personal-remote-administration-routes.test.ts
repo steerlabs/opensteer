@@ -70,7 +70,7 @@ it("orders executor delivery so a delayed older intent cannot overtake Off", asy
   try {
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
     socket = new WebSocket(
-      `${address.replace("http:", "ws:")}/v1/personal-remote-access/executor?apiVersion=${hostApiVersion}`,
+      `${address.replace("http:", "ws:")}/v1/desktop-supervisor?apiVersion=${hostApiVersion}`,
       { headers: { authorization: `Bearer ${capability}` } },
     );
     await withTimeout(once(socket, "open"), 1000, {
@@ -78,13 +78,36 @@ it("orders executor delivery so a delayed older intent cannot overtake Off", asy
     });
     const received: string[] = [];
     socket.on("message", (data) => {
-      received.push((JSON.parse(data.toString()) as { id: string }).id);
+      const frame = JSON.parse(data.toString()) as { operation?: { id: string } };
+      if (frame.operation) received.push(frame.operation.id);
     });
+    socket.send(
+      JSON.stringify({
+        type: "hello",
+        messageId: crypto.randomUUID(),
+        incarnationId: crypto.randomUUID(),
+        state: {
+          status: "idle",
+          currentVersion: "1.0.0",
+          channel: "stable",
+          availableVersion: null,
+          latestVersion: null,
+          failed: null,
+          downloadPercent: null,
+        },
+      }),
+    );
     await vi.waitFor(() => expect(next).toHaveBeenCalledOnce(), { timeout: 1000 });
     publish();
     await vi.waitFor(() => expect(next).toHaveBeenCalledTimes(2), { timeout: 1000 });
     publish();
-    socket.send(JSON.stringify({ operationId: oldId, state: "running", detail: null }));
+    socket.send(
+      JSON.stringify({
+        type: "remote-access.progress",
+        messageId: crypto.randomUUID(),
+        progress: { operationId: oldId, state: "running", detail: null },
+      }),
+    );
     await withTimeout(probed, 1000, {
       timeoutError: () => new Error("Executor progress probe never arrived"),
     });
@@ -115,7 +138,7 @@ it.each(["PersonalRemote stolen-owner-session", `Bearer ${"owner-session".padEnd
     try {
       const address = await app.listen({ host: "127.0.0.1", port: 0 });
       socket = new WebSocket(
-        `${address.replace("http:", "ws:")}/v1/personal-remote-access/executor?apiVersion=${hostApiVersion}`,
+        `${address.replace("http:", "ws:")}/v1/desktop-supervisor?apiVersion=${hostApiVersion}`,
         { headers: { authorization } },
       );
       const closed = withTimeout(once(socket, "close"), 1000, {

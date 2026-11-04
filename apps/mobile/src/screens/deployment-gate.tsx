@@ -1,4 +1,5 @@
 import type { HostClient } from "@opensteer/client/host";
+import type { DeploymentId } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
 import { useState, type ReactNode } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
@@ -7,10 +8,19 @@ import { deploymentStatusDetail, deploymentStatusLabel } from "../client/deploym
 import { resetToDeployments } from "../navigation-ref.js";
 import { color, space } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
-import { AppText, Notice, PrimaryButton, SecondaryButton, StatusDot } from "../ui/primitives.js";
+import {
+  AppText,
+  Notice,
+  PrimaryButton,
+  RowGroup,
+  SecondaryButton,
+  StatusDot,
+} from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { statusTone } from "./deployment-row.js";
 import { deploymentRecoveryLabel, runDeploymentRecovery } from "./deployment-recovery.js";
+import { deploymentUpdateRows } from "./deployment-update.js";
+import { useDeploymentUpdate } from "./use-deployment-update.js";
 
 /**
  * The Host a Deployment-bound screen may use, or null.
@@ -123,6 +133,9 @@ export function DeploymentGate(props: {
         <AppText role="secondary" tone="muted">
           {deploymentStatusDetail(row) ?? "Opening this deployment…"}
         </AppText>
+        {row.verification === "host-too-old" ? (
+          <DeploymentUpdate deploymentId={row.deploymentId} name={row.name} />
+        ) : null}
         {/* The one thing that would fix it leads; switching is the way out. */}
         {row.status === "connecting" || row.status === "reconnecting" ? null : (
           <PrimaryButton
@@ -144,6 +157,15 @@ export function DeploymentGate(props: {
       </View>
     </Screen>
   );
+}
+
+/** The way out of a Host too old for this phone: it can't open, but it can update. */
+function DeploymentUpdate(props: {
+  readonly deploymentId: DeploymentId;
+  readonly name: string;
+}): ReactNode {
+  const update = useDeploymentUpdate(props.deploymentId, props.name);
+  return update === null ? null : <RowGroup>{deploymentUpdateRows(update)}</RowGroup>;
 }
 
 const styles = StyleSheet.create({

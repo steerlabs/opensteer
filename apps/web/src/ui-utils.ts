@@ -51,7 +51,7 @@ export function useWindowInForeground(): boolean {
  * once the tab or window is hidden.
  */
 export function usePageVisible(): boolean {
-  return useSyncExternalStore(observePageVisibility, pageVisible);
+  return useSyncExternalStore(observePageVisibility, pageVisible, () => true);
 }
 
 export function useMediaQuery(query: string): boolean {

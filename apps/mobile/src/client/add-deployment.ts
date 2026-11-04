@@ -76,6 +76,7 @@ export async function verifyPersonalDeployment(options: {
   return verifyPersonalAccessEndpoint({
     fetch: options.fetch,
     origin: options.origin,
+    protocol: "maintenance-v1",
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
 }

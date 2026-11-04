@@ -12,8 +12,10 @@ connection. Restoring makes a new binding and never restarts a finished Run. A s
 restores only on its saved computer and profile, waiting rather than substitute another computer or
 Guest. Guest website state never persists, and trigger and watch browsers write no tabs. Only a
 lineage's latest session can close its tabs, late updates never resurrect a closed row, and reopen
-makes a new row. Only committed navigation becomes a restore URL, and an overlong one is never
-truncated.
+makes a new row. Only committed navigation becomes a restore URL, except that a failed navigation
+restores to the address it tried, as browsers do, without any credentials typed into it. An overlong
+address is never truncated. A row saved before that still holds Chromium's error URL: it names no
+site, and reopening it is refused like any other address that cannot be reopened.
 
 The Host's 20-second open budget sits inside the client's 25-second deadline, which covers first
 paint. An uncertain open retries with its original key and replays the recorded outcome, so it never
@@ -29,6 +31,12 @@ Input, navigation and geometry share a per-surface ordered lane; observations st
 agent script waiting for a person's click cannot block that click. A lost answer after a key press
 or insertion is never replayed. Person activity is an observation, not an input gate, and never
 records keys or text.
+
+A failed navigation leaves Chromium's error document committed, and a surface's address stays the
+one it tried to reach, so a person sees where they meant to go and the catalog names a real origin.
+That address was never visited: `navigationFailed` is what says so, and anything that treats a page
+as seen, such as a place's site, retained icons or a sign-in offer, checks it first. History and
+context reads use the committed URL, which never changes for this.
 
 History belongs to the profile and only its owner reads it; only a person's own navigations record
 visits, never agents or Guest. Search words reach Google only under the person's suggestion

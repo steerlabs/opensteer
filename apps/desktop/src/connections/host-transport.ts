@@ -7,8 +7,6 @@ import { createHmac, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostSessionRecovery } from "@opensteer/client/auth";
-import { describeRealtimeFrameFailure } from "@opensteer/client/host";
-import { HostToClientMessageSchema } from "@opensteer/protocol";
 import {
   HostTransport,
   HostTransportError,
@@ -650,18 +648,6 @@ export class DesktopHostTransport extends HostTransport {
         },
         message: (data) => {
           if (closed) return;
-          if (diagnostic.kind === "realtime") {
-            try {
-              if (typeof data !== "string") throw new Error("Realtime requires JSON text.");
-              HostToClientMessageSchema.parse(JSON.parse(data));
-            } catch (error) {
-              const { issuePaths, ...metadata } = describeRealtimeFrameFailure(data, error);
-              diagnose("desktop.host-socket.frame-unrecognized", {
-                ...metadata,
-                issuePaths: issuePaths.join(";"),
-              });
-            }
-          }
           if (browser && !admitted && typeof data === "string") {
             let message: unknown;
             try {

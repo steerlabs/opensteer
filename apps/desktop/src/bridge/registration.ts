@@ -12,15 +12,18 @@ import { dictationHandlers } from "./methods/dictation.js";
 import { passkeyHandlers } from "./methods/passkeys.js";
 import { viewerClipboardHandlers } from "./methods/viewer-clipboard.js";
 import { downloadsHandlers } from "./methods/downloads.js";
+import { deploymentUpdatesHandlers } from "./methods/deployment-updates.js";
 import { updatesHandlers } from "./methods/updates.js";
 import { browserPresentationHandlers } from "./methods/browser-presentation.js";
 import { z } from "zod";
+import { isRealtimeFrameMetadata } from "@opensteer/protocol";
 import { assertAuthorizedRenderer, trackRenderer } from "./context.js";
 import type { WebContents } from "electron";
 import {
   DesktopDownloadsSnapshotSchema,
   DesktopUpdateStateSchema,
   DisplayClientDiagnosticSchema,
+  RealtimeFrameDiagnosticSchema,
   DeploymentAccessSnapshotSchema,
   DesktopLocalExecutionStatusSchema,
   DesktopPasswordsStatusSchema,
@@ -96,6 +99,27 @@ import {
 } from "./methods/local-execution.js";
 import { handleGetPasswordsStatus, handleOpenPasswords } from "./methods/passwords.js";
 import { handleOpenExternalUrl, handlePickFolder } from "./methods/window.js";
+
+/** Admits 120 records per ten seconds, answering how many it held back since the last. */
+function diagnosticBudget(): () => number | null {
+  let windowAt = 0;
+  let admitted = 0;
+  let suppressed = 0;
+  return () => {
+    const now = Date.now();
+    if (now - windowAt >= 10_000) {
+      windowAt = now;
+      admitted = 0;
+    }
+    if (admitted++ >= 120) {
+      suppressed++;
+      return null;
+    }
+    const heldBack = suppressed;
+    suppressed = 0;
+    return heldBack;
+  };
+}
 
 export function registerDesktopBridge(options: DesktopBridgeOptions): () => void {
   const context: DesktopBridgeContext = {
@@ -180,33 +204,36 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
         .parse(envelope.input),
     );
   });
-  let diagnosticWindow = 0;
-  let diagnosticCount = 0;
-  let diagnosticSuppressed = 0;
+  const admitDisplayDiagnostic = diagnosticBudget();
   register(desktopBridgeChannels.reportDisplayDiagnostic, (event, envelope) => {
     assertAuthorizedRenderer(context, event, envelope);
     const record = DisplayClientDiagnosticSchema.parse(envelope.input);
-    const now = Date.now();
-    if (now - diagnosticWindow >= 10_000) {
-      diagnosticWindow = now;
-      diagnosticCount = 0;
-    }
-    if (diagnosticCount++ >= 120) {
-      diagnosticSuppressed++;
-      return;
-    }
+    const suppressed = admitDisplayDiagnostic();
+    if (suppressed === null) return;
     try {
-      const fields: Record<string, string | number | boolean> = {
-        suppressed: diagnosticSuppressed,
-      };
+      const fields: Record<string, string | number | boolean> = {};
       for (const [key, value] of Object.entries(record)) {
         if (value !== undefined) fields[key] = value;
       }
-      fields.suppressed = (record.suppressed ?? 0) + diagnosticSuppressed;
+      fields.suppressed = (record.suppressed ?? 0) + suppressed;
       options.log?.("computer.display.client", fields);
-      diagnosticSuppressed = 0;
     } catch {
       /* Diagnostics must not affect viewing. */
+    }
+  });
+  const admitRealtimeDiagnostic = diagnosticBudget();
+  register(desktopBridgeChannels.reportRealtimeDiagnostic, (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    const record = RealtimeFrameDiagnosticSchema.parse(envelope.input);
+    if (!isRealtimeFrameMetadata(record))
+      throw new Error("A realtime diagnostic may only name what the wire schemas declare.");
+    const { event: name, issuePaths, ...fields } = record;
+    const suppressed = admitRealtimeDiagnostic();
+    if (suppressed === null) return;
+    try {
+      options.log?.(name, { ...fields, issuePaths: issuePaths.join(";"), suppressed });
+    } catch {
+      /* Diagnostics must not affect the channel they describe. */
     }
   });
   register(desktopBridgeChannels.getLocalVisibility, (event, envelope) => {
@@ -220,6 +247,7 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   for (const [channel, handler] of viewerClipboardHandlers(context)) register(channel, handler);
   for (const [channel, handler] of downloadsHandlers(context)) register(channel, handler);
   for (const [channel, handler] of updatesHandlers(context)) register(channel, handler);
+  for (const [channel, handler] of deploymentUpdatesHandlers(context)) register(channel, handler);
   for (const [channel, handler] of browserPresentationHandlers(context)) register(channel, handler);
 
   register(desktopBridgeChannels.useComputerViewOnThisMac, handleUseComputerViewOnThisMac(context));

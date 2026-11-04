@@ -27,11 +27,16 @@ import {
   DesktopDownloadsSnapshotSchema,
   DesktopUpdateStateSchema,
   DesktopUpdateChannelSchema,
+  DesktopDeploymentUpdateRequestInputSchema,
+  DesktopDeploymentUpdateRequestResultSchema,
+  DesktopDeploymentUpdateStatusInputSchema,
+  DesktopDeploymentUpdateStatusResultSchema,
   AgentConnectionAuthorizationTargetSchema,
   type AgentConnectionAuthorizationTarget,
   DesktopDownloadActionResultSchema,
   DesktopDownloadTargetSchema,
   type DesktopDownloadsBridge,
+  type DesktopDeploymentUpdatesBridge,
   type DesktopUpdatesBridge,
 } from "@opensteer/protocol/desktop";
 import { BrowserPresentationResultSchema } from "./bridge/browser-presentation-result.js";
@@ -100,6 +105,7 @@ import type {
 } from "@opensteer/protocol/desktop";
 import {
   DisplayClientDiagnosticSchema,
+  RealtimeFrameDiagnosticSchema,
   DesktopWorkspaceTabCommandSchema,
   DeploymentAccessSnapshotSchema,
   DesktopChooseUsbDeviceInputSchema,
@@ -340,6 +346,12 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       DisplayClientDiagnosticSchema.parse(record),
     );
   },
+  reportRealtimeDiagnostic: async (record: z.input<typeof RealtimeFrameDiagnosticSchema>) => {
+    await invoke(
+      desktopBridgeChannels.reportRealtimeDiagnostic,
+      RealtimeFrameDiagnosticSchema.parse(record),
+    );
+  },
   getLocalVisibility: async () =>
     z.boolean().parse(await invoke<boolean>(desktopBridgeChannels.getLocalVisibility)),
   onLocalVisibilityChanged: (listener: (visible: boolean) => void) => {
@@ -413,6 +425,23 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     download: () => invoke<void>(desktopBridgeChannels.downloadUpdate),
     restart: () => invoke<void>(desktopBridgeChannels.restartToUpdate),
   } satisfies DesktopUpdatesBridge,
+  deploymentUpdates: {
+    status: async (input) =>
+      DesktopDeploymentUpdateStatusResultSchema.parse(
+        await invoke(
+          desktopBridgeChannels.deploymentUpdateStatus,
+          DesktopDeploymentUpdateStatusInputSchema.parse(input),
+        ),
+      ),
+    request: async (input) =>
+      DesktopDeploymentUpdateRequestResultSchema.parse(
+        await invoke(
+          desktopBridgeChannels.deploymentUpdateRequest,
+          DesktopDeploymentUpdateRequestInputSchema.parse(input),
+        ),
+      ),
+    cancel: (waitId) => invoke<void>(desktopBridgeChannels.deploymentUpdateCancel, waitId),
+  } satisfies DesktopDeploymentUpdatesBridge,
   downloads: {
     get: async () =>
       DesktopDownloadsSnapshotSchema.parse(await invoke(desktopBridgeChannels.getDownloads)),

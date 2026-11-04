@@ -24,6 +24,17 @@ export const ProtocolErrorSchema = z.strictObject({
 });
 export type ProtocolError = z.infer<typeof ProtocolErrorSchema>;
 
+/** All a client may record of a realtime frame it could not read: never its contents. */
+export const RealtimeFrameDiagnosticSchema = z.strictObject({
+  apiEpoch: z.number().int().positive(),
+  bytes: z.number().int().nonnegative(),
+  category: z.enum(["frame", "json", "schema"]),
+  envelopeType: z.string().min(1).max(120),
+  event: z.enum(["host.realtime.frame-ignored", "host.realtime.frame-rejected"]),
+  issuePaths: z.array(z.string().min(1).max(1_024)).max(8),
+});
+export type RealtimeFrameDiagnostic = z.infer<typeof RealtimeFrameDiagnosticSchema>;
+
 export function parseJsonFrame(schema: z.ZodType, frame: string | Uint8Array): unknown {
   let value: unknown;
   try {

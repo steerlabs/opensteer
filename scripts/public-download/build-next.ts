@@ -153,6 +153,7 @@ try {
     timeoutMs: 45 * 60_000,
     outputFile: path.join(directory, "ci-build.log"),
     env: {
+      OPENSTEER_RELEASE_TRACK: channel,
       OPENSTEER_RELEASE_VERSION: version,
       OPENSTEER_SOURCE_REVISION: revision,
     },
