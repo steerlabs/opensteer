@@ -194,17 +194,29 @@ describe("agent plugin replacement", () => {
       expect(owned.activations).toEqual([]);
       expect((await service.installAgentPlugin(input)).installation).toEqual(first.installation);
       expect(install).toHaveBeenCalledTimes(1);
+      // An administration command records its result in the install, so it never skips it.
+      await service.installAgentPlugin({
+        ...input,
+        administration: {
+          authoritySource: {},
+          idempotencyKey: "same",
+          request: {},
+          requestedBy: actorUserId,
+          type: "plugin.update",
+        },
+      });
+      expect(install).toHaveBeenCalledTimes(2);
       await mkdir(join(directory, "extra"));
       await writeFile(join(directory, "extra/code.js"), "new code");
       await service.installAgentPlugin(input);
-      expect(install).toHaveBeenCalledTimes(2);
+      expect(install).toHaveBeenCalledTimes(3);
       const elsewhere = createId("workspace");
       await service.installAgentPlugin({ ...input, workspaceId: elsewhere });
       expect(installNew).toHaveBeenCalledWith(
         expect.objectContaining({ workspaceId: elsewhere, name: "mine" }),
         expect.anything(),
       );
-      expect(update).toHaveBeenCalledTimes(2);
+      expect(update).toHaveBeenCalledTimes(3);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

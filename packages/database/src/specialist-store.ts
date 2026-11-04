@@ -73,6 +73,14 @@ export class SpecialistStore {
         input.workspaceId,
         input.actorUserId,
       );
+    // FOR SHARE: waits for an update moving registrations to its new version,
+    // whose version the next statement then sees.
+    await tx
+      .selectFrom("plugins")
+      .select("id")
+      .where("id", "=", input.pluginId)
+      .forShare()
+      .executeTakeFirstOrThrow();
     const plugin = await tx
       .selectFrom("plugins")
       .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
@@ -216,12 +224,10 @@ export class SpecialistStore {
       ])
       .where("specialists.id", "=", id)
       .executeTakeFirstOrThrow();
-    const manifest = row.specialistManifest
-      ? SpecialistManifestSchema.parse(row.specialistManifest)
-      : null;
+    const manifest = SpecialistManifestSchema.parse(row.specialistManifest);
     const bindings: SpecialistBinding[] = [];
     const states = [];
-    for (const [index, requirement] of (manifest?.access ?? []).entries()) {
+    for (const [index, requirement] of (manifest.access ?? []).entries()) {
       const previous = row.bindings.find((binding) => binding.requirement === index);
       const candidates = await this.candidates(row.workspaceId, row.ownerUserId, requirement);
       const resourceId =
@@ -252,7 +258,7 @@ export class SpecialistStore {
       ? row.status === "removal-failed"
         ? ("removal-failed" as const)
         : ("removing" as const)
-      : manifest && states.every((s) => s.state === "bound")
+      : states.every((s) => s.state === "bound")
         ? ("ready" as const)
         : ("pending" as const);
     const update = await this.database
@@ -279,8 +285,8 @@ export class SpecialistStore {
       plugin: row.name,
       version: row.digest,
       status,
-      models: manifest?.models ?? [],
-      fallback: manifest?.fallback ?? "none",
+      models: manifest.models,
+      fallback: manifest.fallback,
       access: states,
     };
   }
@@ -452,13 +458,10 @@ export class SpecialistStore {
     if (registration.status !== "ready")
       throw new OpensteerError({
         code: "conflict",
-        message:
-          registration.models.length === 0
-            ? "This plugin no longer provides a specialist"
-            : `Specialist is ${registration.status}: ${registration.access
-                .filter((a) => a.state !== "bound")
-                .map((a) => `${a.type}: ${a.state} (${a.reason})`)
-                .join("; ")}`,
+        message: `Specialist is ${registration.status}: ${registration.access
+          .filter((a) => a.state !== "bound")
+          .map((a) => `${a.type}: ${a.state} (${a.reason})`)
+          .join("; ")}`,
       });
     return registration;
   }

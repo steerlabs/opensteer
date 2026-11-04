@@ -1222,7 +1222,10 @@ export async function installIntegrationInTransaction(
             transport: jsonValue(discovered.transport),
             updatedAt: now,
             // Consent belongs to the computer that gave it; another one is asked.
-            ...(runnerOf(existing.transport) === runnerOf(discovered.transport)
+            // A declined or retired server that returns is asked again too, even
+            // as a launch it once approved.
+            ...(runnerOf(existing.transport) === runnerOf(discovered.transport) &&
+            existing.status !== "disabled"
               ? {}
               : { approvedLaunchDigest: null }),
           })

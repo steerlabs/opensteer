@@ -160,7 +160,7 @@ export async function resolveResourceAccess(
           { kind: "plugin", pluginId: registration.pluginId },
           main,
         ));
-    const manifest = registration?.specialistManifest
+    const manifest = registration
       ? SpecialistManifestSchema.parse(registration.specialistManifest)
       : null;
     const binding =

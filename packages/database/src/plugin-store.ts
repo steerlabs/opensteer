@@ -276,27 +276,33 @@ export class PluginStore {
       .select(["pluginVersions.id", "pluginVersions.specialistManifest"])
       .where("plugins.id", "=", pluginId)
       .executeTakeFirstOrThrow();
+    // Registrations being removed keep the version they were removed from.
     const registrations = await tx
       .selectFrom("specialists")
       .innerJoin("pluginVersions", "pluginVersions.id", "specialists.pluginVersionId")
-      .select(["specialists.id", "specialists.removedAt", "pluginVersions.specialistManifest"])
+      .select(["specialists.id", "pluginVersions.specialistManifest"])
       .where("specialists.pluginId", "=", pluginId)
+      .where("specialists.removedAt", "is", null)
       .orderBy("specialists.id")
       .forNoKeyUpdate("specialists")
       .execute();
+    if (registrations.length === 0) return;
+    const next = current.specialistManifest;
+    if (!next)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Remove this plugin's specialist registrations before installing it without one",
+      });
     for (const row of registrations) {
+      // Changed access needs its owner's choices again; unchanged keeps them.
       const changed =
-        !current.specialistManifest ||
-        canonicalJson(row.specialistManifest?.access ?? []) !==
-          canonicalJson(current.specialistManifest.access ?? []);
+        canonicalJson(row.specialistManifest?.access ?? []) !== canonicalJson(next.access ?? []);
       await tx
         .updateTable("specialists")
         .set({
           pluginVersionId: current.id,
           updatedAt: new Date(),
-          ...(changed
-            ? { bindings: jsonValue([]), ...(row.removedAt ? {} : { status: "pending" as const }) }
-            : {}),
+          ...(changed ? { bindings: jsonValue([]), status: "pending" as const } : {}),
         })
         .where("id", "=", row.id)
         .execute();

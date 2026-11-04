@@ -1037,6 +1037,7 @@ export class IntegrationPlatformService {
       const owned = plugins.find(
         (p) => p.name === name && p.scope === "workspace" && p.workspaceId === input.workspaceId,
       );
+      // An update stays on the plugin's computer, not the computer of the Run that updated it.
       if (owned) input = { ...input, pluginId: owned.id, runnerId: undefined };
     }
     const pluginId = input.pluginId ?? createIntegrationId("installation");
@@ -1076,7 +1077,9 @@ export class IntegrationPlatformService {
         code: "bad_request",
         message: "The plugin name opensteer is reserved",
       });
+    // Not for administration commands, whose result their ledger records in the install.
     if (
+      !input.administration &&
       previous &&
       currentPlugin?.versions.find((v) => v.id === currentPlugin.currentVersionId)?.digest ===
         basename(plugin.root) &&
