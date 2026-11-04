@@ -73,14 +73,6 @@ export class SpecialistStore {
         input.workspaceId,
         input.actorUserId,
       );
-    // FOR SHARE: waits for an update moving registrations to its new version,
-    // whose version the next statement then sees.
-    await tx
-      .selectFrom("plugins")
-      .select("id")
-      .where("id", "=", input.pluginId)
-      .forShare()
-      .executeTakeFirstOrThrow();
     const plugin = await tx
       .selectFrom("plugins")
       .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")

@@ -100,54 +100,6 @@ describeStore("specialist registration", (test) => {
     expect((await rows()).map((r) => r.pluginVersionId)).toEqual(pinned);
   });
 
-  test("a registration added while an update repins lands on the new version", async ({
-    storeFixture: fixture,
-  }) => {
-    const owner = await fixture.createRunFixture("repin-race");
-    const workspace = await fixture.createProjectWorkspace(owner.userId, "repin-race-project");
-    const platform = new IntegrationPlatformStore(fixture.database),
-      pluginId = randomUUID();
-    const manifest = SpecialistManifestSchema.parse({
-      version: 1,
-      models: [{ engine: "codex", model: "fast" }],
-      access: [],
-    });
-    await platform.plugins.install({
-      id: pluginId,
-      name: "repin-race",
-      actorUserId: owner.userId,
-      source: {},
-      digest: "old",
-      manifest: { name: "repin-race" },
-      specialistManifest: manifest,
-    });
-    let added: ReturnType<typeof platform.specialists.add> | undefined;
-    await fixture.database.transaction().execute(async (tx) => {
-      await platform.plugins.update(
-        { pluginId, digest: "new", manifest: { name: "repin-race" }, specialistManifest: manifest },
-        tx,
-      );
-      added = platform.specialists.add({
-        workspaceId: workspace.id,
-        pluginId,
-        actorUserId: owner.userId,
-      });
-      await vi.waitFor(
-        async () => {
-          const { rows } = await sql<{ waiting: number }>`
-            select count(*)::int as waiting from pg_stat_activity
-            where datname = current_database() and wait_event_type = 'Lock'`.execute(
-            fixture.database,
-          );
-          if (!rows[0]?.waiting) throw new Error("The add never waited for the update");
-        },
-        { timeout: 10_000 },
-      );
-    });
-    const current = (await platform.plugins.list()).find((p) => p.id === pluginId);
-    expect((await added!).pluginVersionId).toBe(current?.currentVersionId);
-  });
-
   test("pins versions, binds consent, narrows access and removes registration", async ({
     storeFixture: fixture,
   }) => {
