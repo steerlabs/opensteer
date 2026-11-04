@@ -66,7 +66,8 @@ export async function specialistPlacement(
 
 function wantLabel(want: ModelWant | null) {
   if (!want) return "caller's model";
-  if (!("kind" in want)) return `${want.engine}/${want.model}`;
+  if ("model" in want) return `${want.engine}/${want.model}`;
+  if (!("kind" in want)) return `${want.engine} small model`;
   return want.kind === "model"
     ? `${want.driverKind}/${want.providerId}/${want.modelId}`
     : `${want.driverKind} small model`;

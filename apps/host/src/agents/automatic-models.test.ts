@@ -43,6 +43,8 @@ interface AccountSpec {
   readonly sourceId?: string;
   readonly models: readonly (readonly [providerId: string, modelId: string])[];
   readonly connections?: readonly HarnessObservedConnection[];
+  /** The catalog's own small model. */
+  readonly light?: readonly [providerId: string, modelId: string];
 }
 function world(
   specs: readonly AccountSpec[],
@@ -79,6 +81,15 @@ function world(
         continuationKey: "runner:v1:" + "a".repeat(43),
       },
       connections: specs[index]!.connections ?? [],
+      ...(specs[index]!.light
+        ? {
+            lightModel: {
+              providerId: specs[index]!.light[0],
+              modelId: specs[index]!.light[1],
+              options: {},
+            },
+          }
+        : {}),
       models: specs[index]!.models.map(([providerId, modelId]) => ({
         providerId,
         modelId,
@@ -281,6 +292,18 @@ describe("specialist placement", () => {
     await expect(place(missing.dependencies, { models, fallback: "none" })).resolves.toMatchObject({
       modelSelection: { modelId: "claude-sonnet-5-5" },
     });
+  });
+
+  it("expands an engine-only preference to that account's own small model", async () => {
+    const { dependencies } = world([{ models: [haiku, sonnet], light: sonnet }], {
+      config: {
+        roles: { light: [{ engine: HarnessIdSchema.parse("claude") }] },
+        excludedAccounts: [],
+      },
+    });
+    await expect(
+      place(dependencies, { models: [{ role: "light" }], fallback: "none" }),
+    ).resolves.toMatchObject({ modelSelection: { modelId: "claude-sonnet-5-5" } });
   });
 
   it("never appends the maintained ranking to an exact-only list", async () => {

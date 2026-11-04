@@ -305,11 +305,14 @@ export async function readAutomaticModelPreview(
       return {
         ...skip,
         ...display,
-        ...(want === null || ("kind" in want && want.kind === "catalog-light")
+        // A catalog-light rank or an engine-only want names no model of its own.
+        ...(want === null
           ? {}
-          : "kind" in want
-            ? modelNames(account, want.modelId, want.providerId)
-            : modelNames(account, want.model)),
+          : "model" in want
+            ? modelNames(account, want.model)
+            : "kind" in want && want.kind === "model"
+              ? modelNames(account, want.modelId, want.providerId)
+              : {}),
       };
     }),
   });
