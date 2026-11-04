@@ -49,6 +49,20 @@ it("edits ordered defaults, resets to absent, and binds arbitrary endpoints", as
     host.dispose();
   }
 });
+it("keeps a default engine small model when the light list is edited", async () => {
+  const host = new MockHostClient({ latencyMs: 0 });
+  try {
+    const view = (await getAutomaticModels(host))!;
+    const config = editAutomaticRole(view, "light", { type: "remove", index: 0 });
+    expect(config.roles.light).toEqual(expect.arrayContaining([{ engine: "opencode" }]));
+    await setAutomaticModels(host, config);
+    expect(automaticRoleEntries((await getAutomaticModels(host))!, "light")).toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: "opencode · its small model" })]),
+    );
+  } finally {
+    host.dispose();
+  }
+});
 it("renders specialist roles and keeps unknown siblings inert", () => {
   expect(
     specialistModels({

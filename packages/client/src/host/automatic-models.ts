@@ -63,7 +63,7 @@ export function automaticRoleEntries(
       "unknown" in want
         ? { label: "Unknown model entry", want: null }
         : {
-            label: `${want.engine} · ${want.model}${want.harnessInstanceId ? ` · ${view.accounts.find((a) => a.harnessInstanceId === want.harnessInstanceId)?.accountDisplayName ?? want.harnessInstanceId}` : ""}`,
+            label: `${want.engine} · ${"model" in want && want.model ? want.model : "its small model"}${want.harnessInstanceId ? ` · ${view.accounts.find((a) => a.harnessInstanceId === want.harnessInstanceId)?.accountDisplayName ?? want.harnessInstanceId}` : ""}`,
             want,
           },
     );
@@ -71,23 +71,7 @@ export function automaticRoleEntries(
     "unknown" in entry
       ? { label: "Unknown model entry", want: null }
       : entry.kind === "catalog-light"
-        ? {
-            label: `${entry.driverKind} · catalog quick model`,
-            want: (() => {
-              const account = view.accounts.find(
-                (a) =>
-                  a.driverKind === entry.driverKind &&
-                  a.sourceId !== "openai-compatible" &&
-                  a.catalog?.status === "ready" &&
-                  a.catalog.lightModel,
-              );
-              const light =
-                account?.catalog?.status === "ready" ? account.catalog.lightModel : null;
-              return light
-                ? { engine: entry.driverKind, model: light.modelId, options: light.options }
-                : null;
-            })(),
-          }
+        ? { label: `${entry.driverKind} · its small model`, want: { engine: entry.driverKind } }
         : {
             label: `${entry.driverKind} · ${entry.modelId}`,
             want: { engine: entry.driverKind, model: entry.modelId, options: entry.options },
@@ -126,10 +110,6 @@ export function editAutomaticRole(
 
   const edited = [...entries];
   if (action.type === "remove") edited.splice(action.index, 1);
-  if (edited.some((e) => !e.want))
-    throw new Error(
-      "A catalog quick model is unavailable. Connect its account before editing this default list, or replace the list in Advanced.",
-    );
   const wants = edited.flatMap((e) => (e.want ? [e.want] : []));
   if (action.type === "add") wants.push(action.want);
   if (action.type === "move") {
