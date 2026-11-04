@@ -6,7 +6,9 @@ import {
   type HarnessInstanceId,
   type ModelSelection,
   type Thread,
+  type ThreadId,
   type TriggerId,
+  type TriggerOccurrenceId,
   type WorkspaceId,
   type UserId,
 } from "@opensteer/core";
@@ -182,6 +184,7 @@ export async function createMemoryPass(
 
 export interface MemoryPassExecution {
   readonly harnessInstanceId: HarnessInstanceId;
+  readonly harnessRevision: number;
   readonly modelSelection: ModelSelection;
 }
 
@@ -196,14 +199,26 @@ export async function startMemoryPassInTransaction(
   worker: ThreadRow,
   execution: MemoryPassExecution,
 ): Promise<{ readonly worker: ThreadRow; readonly event: AgentEvent }> {
-  // Read without a lock: harness_instances precede threads in lock-order.ts.
+  // The input's preconditions already hold this row: harness_instances precede threads.
   const harness = await transaction
     .selectFrom("harnessInstances")
-    .select(["enabled", "environmentId", "removedAt"])
+    .select(["enabled", "environmentId", "removedAt", "runtimeRevision"])
     .where("id", "=", execution.harnessInstanceId)
     .executeTakeFirst();
-  if (!harness?.enabled || harness.removedAt || harness.environmentId !== worker.environmentId)
+  if (
+    !harness?.enabled ||
+    harness.removedAt ||
+    harness.environmentId !== worker.environmentId ||
+    harness.runtimeRevision !== execution.harnessRevision
+  )
     throw new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED });
+  await transaction
+    .updateTable("triggers")
+    .set({ waitingReason: null, updatedAt: new Date() })
+    .where("anchorThreadId", "=", worker.id)
+    .where("systemRole", "is not", null)
+    .where("waitingReason", "is not", null)
+    .execute();
   await transaction
     .updateTable("providerSessions")
     .set({ active: false, updatedAt: new Date() })
@@ -257,20 +272,43 @@ export async function startMemoryPassInTransaction(
   return { worker: updated, event };
 }
 
-/** Waiting is not a pause: the schedule keeps waking and each wake resolves again. */
-export async function setMemoryPassWaiting(
+/**
+ * Waiting is not a pause: the schedule keeps waking and each wake resolves again.
+ * Admission holds this occurrence's row until its receipt commits, so a pass that
+ * was accepted, or is being accepted, always wins over a retry's waiting decision.
+ */
+export async function recordMemoryPassWake(
   database: Kysely<DatabaseSchema>,
-  triggerId: TriggerId,
-  waitingReason: string | null,
-): Promise<boolean> {
-  const result = await database
-    .updateTable("triggers")
-    .set({ waitingReason, updatedAt: new Date() })
-    .where("id", "=", triggerId)
-    .where("systemRole", "is not", null)
-    .where(sql<boolean>`waiting_reason is distinct from ${waitingReason}`)
-    .executeTakeFirst();
-  return result.numUpdatedRows > 0n;
+  input: {
+    readonly occurrenceId: TriggerOccurrenceId;
+    readonly triggerId: TriggerId;
+    readonly workerId: ThreadId;
+    readonly waitingReason: string | null;
+  },
+): Promise<{ readonly accepted: boolean; readonly changed: boolean }> {
+  return withDatabaseTransaction(database, async (transaction) => {
+    await transaction
+      .selectFrom("triggerOccurrences")
+      .select("id")
+      .where("id", "=", input.occurrenceId)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    const receipt = await transaction
+      .selectFrom("threadInputs")
+      .select("messageId")
+      .where("threadId", "=", input.workerId)
+      .where(sql<string>`authority_source->>'occurrenceId'`, "=", input.occurrenceId)
+      .executeTakeFirst();
+    if (receipt) return { accepted: true, changed: false };
+    const result = await transaction
+      .updateTable("triggers")
+      .set({ waitingReason: input.waitingReason, updatedAt: new Date() })
+      .where("id", "=", input.triggerId)
+      .where("systemRole", "is not", null)
+      .where(sql<boolean>`waiting_reason is distinct from ${input.waitingReason}`)
+      .executeTakeFirst();
+    return { accepted: false, changed: result.numUpdatedRows > 0n };
+  });
 }
 
 function snapshotChanged() {

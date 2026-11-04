@@ -203,6 +203,84 @@ async function tick(f: StoreFixture, base: Awaited<ReturnType<typeof fixture>>, 
   });
   return { occurrence, runnerBootId, ...started };
 }
+/** A real engine's account: the maintained light ranking reaches its small model. */
+async function claudeAccount(f: StoreFixture, base: Awaited<ReturnType<typeof fixture>>) {
+  const account = await f.store.createHarnessInstance({
+    config: {},
+    driverKind: HarnessIdSchema.parse("claude"),
+    environmentId: base.environmentId,
+    name: "Claude",
+    stateKind: "isolated",
+  });
+  const catalog = HarnessInstanceCatalogSchema.parse({
+    driverKind: "claude",
+    harnessInstanceId: account.id,
+    status: "ready",
+    continuationIdentity: {
+      driverKind: "claude",
+      continuationKey: "runner:v1:" + "a".repeat(43),
+    },
+    models: [
+      {
+        displayName: "Claude Haiku 5.5",
+        isDefault: true,
+        providerId: "anthropic",
+        modelId: "claude-haiku-5-5",
+        nativeModelId: "claude-haiku-5-5",
+        options: [
+          {
+            id: "effort",
+            label: "Effort",
+            type: "select",
+            values: [{ value: "low", label: "Low" }],
+          },
+        ],
+      },
+    ],
+  });
+  await f.store.recordHarnessCatalogs({
+    environmentId: base.environmentId,
+    expectedRevisions: new Map([[account.id, account.runtimeRevision]]),
+    catalogs: [catalog],
+  });
+  return { account, catalog };
+}
+/** Holds a row so `work` can stop an admission at a known lock, then releases it. */
+async function holdingRow(
+  f: StoreFixture,
+  table: "threads" | "workspaces",
+  id: string,
+  work: (release: () => void) => Promise<void>,
+) {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  let held!: () => void;
+  const holding = new Promise<void>((resolve) => (held = resolve));
+  const blocker = f.database.transaction().execute(async (transaction) => {
+    await sql`select id from ${sql.table(table)} where id = ${id} for no key update`.execute(
+      transaction,
+    );
+    held();
+    await released;
+  });
+  try {
+    await holding;
+    await work(release);
+  } finally {
+    release();
+    await blocker;
+  }
+}
+function lockWaiters(f: StoreFixture, count: number) {
+  return vi.waitFor(
+    async () => {
+      const { rows } = await sql<{ count: string }>`select count(*) from pg_stat_activity
+        where datname = current_database() and wait_event_type = 'Lock'`.execute(f.database);
+      expect(Number(rows[0]!.count)).toBe(count);
+    },
+    { timeout: 5_000 },
+  );
+}
 /** The Host resolves each pass's model; by default this one keeps the worker's. */
 async function wake(
   f: StoreFixture,
@@ -213,8 +291,13 @@ async function wake(
 ) {
   const worker = await f.database
     .selectFrom("threads")
-    .select(["harnessInstanceId", "modelSelection"])
-    .where("id", "=", trigger.anchorThreadId)
+    .innerJoin("harnessInstances", "harnessInstances.id", "threads.harnessInstanceId")
+    .select([
+      "threads.harnessInstanceId",
+      "threads.modelSelection",
+      "harnessInstances.runtimeRevision as harnessRevision",
+    ])
+    .where("threads.id", "=", trigger.anchorThreadId)
     .executeTakeFirstOrThrow();
   return f.store.enqueueThreadInput({
     content: [{ type: "text", text: "Memory pass due" }],
@@ -844,6 +927,7 @@ describeStore("managed memory passes", (it) => {
     });
     const admitted = await wake(f, light, first.occurrence.id, "first-pass", {
       harnessInstanceId: base.harnessInstance.id,
+      harnessRevision: base.harnessInstance.runtimeRevision,
       modelSelection: lightModel,
     });
     expect(admitted.events.map(({ type }) => type)).toContain("thread.execution-updated");
@@ -871,6 +955,7 @@ describeStore("managed memory passes", (it) => {
     await expect(
       wake(f, light, second.occurrence.id, "while-active-other-model", {
         harnessInstanceId: base.harnessInstance.id,
+        harnessRevision: base.harnessInstance.runtimeRevision,
         modelSelection: base.chat!.modelSelection,
       }),
     ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
@@ -890,6 +975,7 @@ describeStore("managed memory passes", (it) => {
     const third = await tick(f, base, light);
     await wake(f, light, third.occurrence.id, "next-pass", {
       harnessInstanceId: base.harnessInstance.id,
+      harnessRevision: base.harnessInstance.runtimeRevision,
       modelSelection: base.chat!.modelSelection,
     });
     const [frozen, next] = await runs();
@@ -913,63 +999,172 @@ describeStore("managed memory passes", (it) => {
     const s = service(f);
     await s.instance.ensureForMain(base.workspace.id);
     const light = await role(f, base.userId);
+    const worker = light.anchorThread!;
     const { occurrence } = await tick(f, base, light.trigger);
-    await wake(f, light.trigger, occurrence.id, "accepted");
+    const { account: claude } = await claudeAccount(f, base);
+    const durable = async () => ({
+      inputs: await f.database
+        .selectFrom("threadInputs")
+        .select("messageId")
+        .where("threadId", "=", worker.id)
+        .execute(),
+      runs: await f.database
+        .selectFrom("runs")
+        .select("id")
+        .where("threadId", "=", worker.id)
+        .execute(),
+      sessions: await f.database
+        .selectFrom("providerSessions")
+        .selectAll()
+        .where("threadId", "=", worker.id)
+        .orderBy("id")
+        .execute(),
+    });
+
+    // This retry reads the person's config only after the other retry's pass commits.
+    const read = f.store.getAutomaticModelConfig.bind(f.store);
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const held = vi
+      .spyOn(f.store, "getAutomaticModelConfig")
+      .mockImplementationOnce(async (userId) => {
+        await released;
+        return read(userId);
+      });
+    const retry = s.instance.admissionSelection(occurrence.id, worker);
+    await vi.waitFor(() => expect(held).toHaveBeenCalled(), { timeout: 5_000 });
+    const accepted = await wake(f, light.trigger, occurrence.id, "accepted");
+    const committed = await durable();
+    expect(committed.runs).toEqual([{ id: accepted.run!.id }]);
     // Nothing is usable any more, but this occurrence's pass is already decided.
+    await f.store.setAutomaticModelConfig(base.userId, {
+      roles: {},
+      excludedAccounts: [claude.id],
+    });
+    release();
+    await expect(retry).resolves.toBeUndefined();
+    held.mockRestore();
+
+    const assertReplays = async () => {
+      expect((await role(f, base.userId)).trigger.waitingReason).toBeNull();
+      await expect(s.instance.admissionSelection(occurrence.id, worker)).resolves.toBeUndefined();
+      const replayed = await wake(f, light.trigger, occurrence.id, "accepted", null);
+      expect(replayed).toMatchObject({ wasDuplicate: true, message: { id: accepted.message.id } });
+      expect(await durable()).toEqual(committed);
+    };
+    await assertReplays();
+
+    // A failed pass stays that occurrence's pass: its wake never starts another.
+    await f.database
+      .updateTable("runs")
+      .set({ status: "failed", completedAt: new Date() })
+      .where("id", "=", accepted.run!.id)
+      .execute();
+    await assertReplays();
+  });
+
+  it("settles a retry's waiting decision behind an admission still in flight", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "in-flight");
+    const s = service(f);
+    await s.instance.ensureForMain(base.workspace.id);
+    const light = await role(f, base.userId);
+    const { occurrence } = await tick(f, base, light.trigger);
     await f.store.setAutomaticModelConfig(base.userId, {
       roles: {},
       excludedAccounts: [base.harnessInstance.id],
     });
-    await expect(
-      s.instance.admissionSelection(occurrence.id, light.anchorThread!),
-    ).resolves.toBeUndefined();
+    // Admission holds the occurrence, then stops here until the Workspace row frees.
+    await holdingRow(f, "workspaces", base.workspace.id, async (release) => {
+      const admission = wake(f, light.trigger, occurrence.id, "in-flight");
+      await lockWaiters(f, 1);
+      const retry = s.instance.admissionSelection(occurrence.id, light.anchorThread!);
+      await lockWaiters(f, 2);
+      release();
+      await expect(retry).resolves.toBeUndefined();
+      expect((await admission).wasDuplicate).toBe(false);
+    });
     expect((await role(f, base.userId)).trigger.waitingReason).toBeNull();
-    expect((await wake(f, light.trigger, occurrence.id, "accepted", null)).wasDuplicate).toBe(true);
+  });
+
+  it("clears a waiting decision that reached the occurrence before admission", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "waiting-first");
+    const s = service(f);
+    await s.instance.ensureForMain(base.workspace.id);
+    const light = await role(f, base.userId);
+    const { occurrence } = await tick(f, base, light.trigger);
+    await f.store.setAutomaticModelConfig(base.userId, {
+      roles: {},
+      excludedAccounts: [base.harnessInstance.id],
+    });
+    await expect(s.instance.admissionSelection(occurrence.id, light.anchorThread!)).rejects.toThrow(
+      MANAGED_MEMORY_WAKE_SKIPPED,
+    );
+    expect((await role(f, base.userId)).trigger.waitingReason).toBe(memoryPassWaitingReason);
+    await wake(f, light.trigger, occurrence.id, "waiting-first");
+    expect((await role(f, base.userId)).trigger.waitingReason).toBeNull();
+  });
+
+  it("holds a pass to the endpoint it resolved until its Run binds", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "endpoint-fence");
+    const s = service(f);
+    await s.instance.ensureForMain(base.workspace.id);
+    const light = await role(f, base.userId);
+    const worker = light.anchorThread!;
+    const { occurrence } = await tick(f, base, light.trigger);
+    const { account: claude, catalog } = await claudeAccount(f, base);
+    const moveEndpoint = async (baseUrl: string) => {
+      const moved = await f.store.updateHarnessInstance({ id: claude.id, config: { baseUrl } });
+      await f.store.recordHarnessCatalogs({
+        environmentId: base.environmentId,
+        expectedRevisions: new Map([[moved.id, moved.runtimeRevision]]),
+        catalogs: [catalog],
+      });
+    };
+
+    const chosen = (await s.instance.admissionSelection(occurrence.id, worker))!;
+    await moveEndpoint("https://b.example/v1");
+    await expect(wake(f, light.trigger, occurrence.id, "changed", chosen)).rejects.toThrow(
+      MANAGED_MEMORY_WAKE_SKIPPED,
+    );
+    expect(
+      await f.database
+        .selectFrom("threadInputs")
+        .select("messageId")
+        .where("threadId", "=", worker.id)
+        .execute(),
+    ).toEqual([]);
+
+    // The next resolution sees the endpoint as it is now, and that one can admit.
+    const current = (await s.instance.admissionSelection(occurrence.id, worker))!;
+    expect(current.harnessRevision).toBe(chosen.harnessRevision + 1);
+    // Admission holds the account, then stops here until the worker's row frees. The
+    // change waits behind it, and finds a queued Run that holds the endpoint from then on.
+    await holdingRow(f, "threads", worker.id, async (release) => {
+      const admission = wake(f, light.trigger, occurrence.id, "current", current);
+      await lockWaiters(f, 1);
+      const change = moveEndpoint("https://c.example/v1");
+      const refused = expect(change).rejects.toMatchObject({ code: "conflict", retryable: true });
+      await lockWaiters(f, 2);
+      release();
+      await refused;
+      expect((await admission).run).toMatchObject({
+        harnessInstanceId: claude.id,
+        status: "queued",
+      });
+    });
   });
 
   it("resolves each pass's role when admitted, waits without pausing, and never resumes a pause", async ({
     storeFixture: f,
   }) => {
     const base = await fixture(f, "resolution", { light: false });
-    const claude = await f.store.createHarnessInstance({
-      config: {},
-      driverKind: HarnessIdSchema.parse("claude"),
-      environmentId: base.environmentId,
-      name: "Claude",
-      stateKind: "isolated",
-    });
-    await f.store.recordHarnessCatalogs({
-      environmentId: base.environmentId,
-      expectedRevisions: new Map([[claude.id, claude.runtimeRevision]]),
-      catalogs: [
-        HarnessInstanceCatalogSchema.parse({
-          driverKind: "claude",
-          harnessInstanceId: claude.id,
-          status: "ready",
-          continuationIdentity: {
-            driverKind: "claude",
-            continuationKey: "runner:v1:" + "a".repeat(43),
-          },
-          models: [
-            {
-              displayName: "Claude Haiku 5.5",
-              isDefault: true,
-              providerId: "anthropic",
-              modelId: "claude-haiku-5-5",
-              nativeModelId: "claude-haiku-5-5",
-              options: [
-                {
-                  id: "effort",
-                  label: "Effort",
-                  type: "select",
-                  values: [{ value: "low", label: "Low" }],
-                },
-              ],
-            },
-          ],
-        }),
-      ],
-    });
+    const { account: claude } = await claudeAccount(f, base);
     // Chat's model as its account's catalog lists it, options included.
     const chatModel = ModelSelectionSchema.parse({
       providerId: "openai",
@@ -1031,6 +1226,7 @@ describeStore("managed memory passes", (it) => {
     expect(await instance.admissionSelection(lightTick.occurrence.id, light.anchorThread!)).toEqual(
       {
         harnessInstanceId: claude.id,
+        harnessRevision: claude.runtimeRevision,
         modelSelection: expect.objectContaining({
           providerId: "anthropic",
           modelId: "claude-haiku-5-5",
@@ -1046,6 +1242,7 @@ describeStore("managed memory passes", (it) => {
     await expect(
       wake(f, light.trigger, lightTick.occurrence.id, "paused-wake", {
         harnessInstanceId: claude.id,
+        harnessRevision: claude.runtimeRevision,
         modelSelection: light.anchorThread!.modelSelection,
       }),
     ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
@@ -1054,7 +1251,11 @@ describeStore("managed memory passes", (it) => {
     const nightlyTick = await tick(f, base, nightly.trigger);
     expect(
       await instance.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!),
-    ).toEqual({ harnessInstanceId: base.chat!.harnessInstanceId, modelSelection: chatModel });
+    ).toEqual({
+      harnessInstanceId: base.chat!.harnessInstanceId,
+      harnessRevision: base.harnessInstance.runtimeRevision,
+      modelSelection: chatModel,
+    });
     expect((await role(f, base.userId, "memory-nightly")).trigger.waitingReason).toBeNull();
     // Chat's model is an original, never an override: excluding its account drops it.
     await exclude(base.chat!.harnessInstanceId);
@@ -1081,6 +1282,7 @@ describeStore("managed memory passes", (it) => {
       await instance.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!),
     ).toEqual({
       harnessInstanceId: claude.id,
+      harnessRevision: claude.runtimeRevision,
       // Options left out stay out, so the engine's default applies at dispatch.
       modelSelection: {
         providerId: "anthropic",

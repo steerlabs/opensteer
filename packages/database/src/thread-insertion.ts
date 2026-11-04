@@ -22,6 +22,14 @@ type ThreadValues = Omit<
   readonly titleSource: ThreadTitleSource;
 };
 
+export function harnessRevisionChanged() {
+  return new OpensteerError({
+    code: "conflict",
+    reason: "harness-revision-changed",
+    message: "This AI account changed after it was chosen, so nothing was sent to it. Try again.",
+  });
+}
+
 /**
  * Acquire the parent prefix in ./lock-order.ts. Returning the inserter lets
  * callers check lineage under
@@ -31,6 +39,7 @@ type ThreadValues = Omit<
 export async function prepareThreadInsertion(
   transaction: Transaction<DatabaseSchema>,
   parents: ThreadParents,
+  expectedHarnessRevision?: number,
 ): Promise<(values: ThreadValues) => Promise<ThreadRow>> {
   await transaction
     .selectFrom("executionEnvironments")
@@ -46,7 +55,7 @@ export async function prepareThreadInsertion(
   );
   const profile = await transaction
     .selectFrom("harnessInstances")
-    .select(["enabled", "environmentId", "removedAt"])
+    .select(["enabled", "environmentId", "removedAt", "runtimeRevision"])
     .where("id", "=", parents.harnessInstanceId)
     .forShare()
     .executeTakeFirst();
@@ -60,6 +69,8 @@ export async function prepareThreadInsertion(
   if (!profile.enabled || profile.removedAt !== null) {
     throw new OpensteerError({ code: "conflict", message: "AI engine is unavailable" });
   }
+  if (expectedHarnessRevision !== undefined && profile.runtimeRevision !== expectedHarnessRevision)
+    throw harnessRevisionChanged();
   return async (values) => {
     const recent = await transaction
       .selectFrom("threads")

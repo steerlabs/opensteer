@@ -32,6 +32,8 @@ import {
 
 export interface DelegationPlacement {
   readonly harnessInstanceId: HarnessInstanceId;
+  /** Present on an automatic choice, whose account must not change before it binds. */
+  readonly harnessRevision?: number;
   readonly modelSelection: ModelSelection;
 }
 

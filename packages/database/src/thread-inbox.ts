@@ -8,7 +8,7 @@ import { lockRunProjectionRows, lockThreadProjectionParents } from "./run-projec
 import { recordIncludedBrowserPages } from "./browser-session-store.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { executionEnvironmentIsAvailableToUser } from "./execution-authority.js";
-import { prepareThreadInsertion } from "./thread-insertion.js";
+import { harnessRevisionChanged, prepareThreadInsertion } from "./thread-insertion.js";
 import { projectThreadState } from "./thread-status.js";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -1836,6 +1836,8 @@ async function lockThreadInputPreconditions(
     readonly source: ThreadInputSource;
     readonly threadId: ThreadId;
     readonly policy: "report" | "queue" | "steer";
+    readonly memoryPass?: { readonly harnessInstanceId: HarnessInstanceId };
+    readonly expectedHarnessRevision?: number;
   },
 ): Promise<{
   readonly executionValid: boolean;
@@ -1845,7 +1847,7 @@ async function lockThreadInputPreconditions(
 }> {
   const observedThread = await transaction
     .selectFrom("threads")
-    .select("workspaceId")
+    .select(["harnessInstanceId", "workspaceId"])
     .where("id", "=", input.threadId)
     .executeTakeFirst();
   if (!observedThread) {
@@ -1918,6 +1920,23 @@ async function lockThreadInputPreconditions(
     .where("userId", "=", input.requestedBy)
     .forNoKeyUpdate()
     .executeTakeFirst();
+  // Held until the Run commits, after which updateHarnessInstance refuses to move the endpoint.
+  const placedHarnessId =
+    input.memoryPass?.harnessInstanceId ??
+    (input.expectedHarnessRevision === undefined ? undefined : observedThread.harnessInstanceId);
+  const placedHarness = placedHarnessId
+    ? await transaction
+        .selectFrom("harnessInstances")
+        .select("runtimeRevision")
+        .where("id", "=", placedHarnessId)
+        .forShare()
+        .executeTakeFirst()
+    : undefined;
+  if (
+    input.expectedHarnessRevision !== undefined &&
+    placedHarness?.runtimeRevision !== input.expectedHarnessRevision
+  )
+    throw harnessRevisionChanged();
   await lockThreadChannelAuthorities(transaction, [input.threadId]);
   const thread = await transaction
     .selectFrom("threads")
@@ -4315,11 +4334,15 @@ export async function delegateThreadInTransaction(
       message: "Delegated Thread creator must be an active Workspace member",
     });
   }
-  const insertThread = await prepareThreadInsertion(transaction, {
-    createdBy: input.createdBy,
-    environmentId: input.environmentId,
-    harnessInstanceId: input.harnessInstanceId,
-  });
+  const insertThread = await prepareThreadInsertion(
+    transaction,
+    {
+      createdBy: input.createdBy,
+      environmentId: input.environmentId,
+      harnessInstanceId: input.harnessInstanceId,
+    },
+    input.expectedHarnessRevision,
+  );
   await lockThreadChannelAuthorities(transaction, [
     input.origin.parentThreadId,
     ...(input.threadId ? [input.threadId] : []),

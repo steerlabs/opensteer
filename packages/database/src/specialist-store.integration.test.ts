@@ -3,11 +3,11 @@ import { createIntegrationId } from "@opensteer/integration-core";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import { expect, vi } from "vitest";
-import { createId, SpecialistManifestSchema } from "@opensteer/core";
+import { createId, SpecialistManifestSchema, type HarnessInstanceId } from "@opensteer/core";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { assertLineageCompatibleReuse, resolveResourceAccess } from "./resource-access.js";
-import { describeStore } from "./store.integration.test-support.js";
+import { describeStore, testReadyHarnessCatalog } from "./store.integration.test-support.js";
 
 describeStore("specialist registration", (test) => {
   test("repins every owner's bindings and refuses a version that drops the specialist", async ({
@@ -297,7 +297,13 @@ describeStore("specialist registration", (test) => {
       ready.id,
     );
 
-    const delegate = (threadId?: import("@opensteer/core").ThreadId) =>
+    const delegate = (
+      threadId?: import("@opensteer/core").ThreadId,
+      placed: {
+        harnessInstanceId: HarnessInstanceId;
+        expectedHarnessRevision: number;
+      } | null = null,
+    ) =>
       fixture.store.delegateThread({
         accessMode: run.thread.accessMode,
         createdBy: run.userId,
@@ -311,7 +317,78 @@ describeStore("specialist registration", (test) => {
         title: "Invoices",
         workspaceId: workspace.id,
         ...(threadId ? { threadId } : {}),
+        ...placed,
       });
+    const account = await fixture.store.createHarnessInstance({
+      config: {},
+      driverKind: run.harnessInstance.driverKind,
+      environmentId: run.environmentId,
+      name: "Endpoint",
+      stateKind: "isolated",
+    });
+    const placedAt = account.runtimeRevision;
+    const moved = await fixture.store.updateHarnessInstance({
+      id: account.id,
+      config: { baseUrl: "https://b.example/v1" },
+    });
+    await expect(
+      delegate(undefined, { harnessInstanceId: moved.id, expectedHarnessRevision: placedAt }),
+    ).rejects.toMatchObject({ code: "conflict", reason: "harness-revision-changed" });
+    // A connected agent's task is created, then sent to, in separate transactions.
+    await expect(
+      fixture.store.createThread({
+        createdBy: run.userId,
+        environmentId: run.environmentId,
+        expectedHarnessRevision: placedAt,
+        harnessInstanceId: moved.id,
+        idempotencyKey: "stale-specialist-create",
+        modelSelection: run.thread.modelSelection,
+        title: "Invoices",
+        workspaceId: workspace.id,
+      }),
+    ).rejects.toMatchObject({ reason: "harness-revision-changed" });
+    const created = await fixture.store.createThread({
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      expectedHarnessRevision: moved.runtimeRevision,
+      harnessInstanceId: moved.id,
+      idempotencyKey: "connection-specialist-create",
+      modelSelection: run.thread.modelSelection,
+      title: "Invoices",
+      workspaceId: workspace.id,
+    });
+    await expect(
+      fixture.store.enqueueThreadInput({
+        content: [{ type: "text", text: "Read invoices" }],
+        expectedHarnessRevision: placedAt,
+        idempotencyKey: "stale-specialist-input",
+        policy: "queue",
+        requestedBy: run.userId,
+        source: { kind: "human" },
+        threadId: created.thread.id,
+      }),
+    ).rejects.toMatchObject({ reason: "harness-revision-changed" });
+    await fixture.store.recordHarnessCatalogs({
+      environmentId: run.environmentId,
+      expectedRevisions: new Map([[moved.id, moved.runtimeRevision]]),
+      catalogs: [testReadyHarnessCatalog(moved.id)],
+    });
+    const fenced = await delegate(undefined, {
+      harnessInstanceId: moved.id,
+      expectedHarnessRevision: moved.runtimeRevision,
+    });
+    const moveAgain = () =>
+      fixture.store.updateHarnessInstance({
+        id: moved.id,
+        config: { baseUrl: "https://c.example/v1" },
+      });
+    await expect(moveAgain()).rejects.toMatchObject({ code: "conflict", retryable: true });
+    await fixture.database
+      .updateTable("runs")
+      .set({ status: "failed", completedAt: new Date() })
+      .where("id", "=", fenced.run.id)
+      .execute();
+    expect((await moveAgain()).runtimeRevision).toBe(moved.runtimeRevision + 1);
     const child = await delegate();
     expect(child.thread).toMatchObject({
       specialistId: ready.id,
