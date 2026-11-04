@@ -314,6 +314,17 @@ export type WorkspaceLocalRequest = DistributiveOmit<HostWorkspaceLocalRequest, 
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
+type BackgroundTextResult = Extract<
+  RunnerOperationalMessage,
+  { readonly type: "runner.background-text-result" }
+>["result"];
+
+interface PendingBackgroundText {
+  readonly expiresAt: number;
+  readonly reject: (error: unknown) => void;
+  readonly resolve: (result: BackgroundTextResult) => void;
+}
+
 interface PendingModelServers {
   readonly reject: (error: unknown) => void;
   readonly resolve: (servers: readonly ModelServer[]) => void;
@@ -361,6 +372,7 @@ interface RunnerConnection {
     string,
     { resolve: (result: RunnerVoiceResult) => void; reject: (error: unknown) => void }
   >;
+  readonly pendingBackgroundText: Map<string, PendingBackgroundText>;
   readonly pendingModelServers: Map<string, PendingModelServers>;
   readonly pendingTriggerPrograms: Map<TriggerOccurrenceId, PendingTriggerProgram>;
   readonly pendingWorkspaceLocal: Map<string, PendingWorkspaceLocal>;
@@ -479,20 +491,6 @@ export class RunnerRegistry {
   readonly #now: () => number;
   readonly #byRunner = new Map<RunnerId, RunnerConnection>();
   readonly #auxiliaryByPeer = new Map<string, AuxiliaryStream>();
-  readonly #backgroundText = new Map<
-    string,
-    {
-      identity: RunnerIdentity;
-      expiresAt: number;
-      resolve: (
-        result: Extract<
-          RunnerOperationalMessage,
-          { type: "runner.background-text-result" }
-        >["result"],
-      ) => void;
-    }
-  >();
-
   readonly #byEnvironment = new Map<EnvironmentId, RunnerConnection>();
   readonly #byPeer = new Map<string, RunnerConnection>();
   // A cancellation fence exists only while its interrupt dispatch is in flight,
@@ -596,6 +594,7 @@ export class RunnerRegistry {
       pendingHarnessAuthentications: new Map(),
       pendingModelServers: new Map(),
       pendingVoice: new Map(),
+      pendingBackgroundText: new Map(),
       pendingTriggerPrograms: new Map(),
       pendingWorkspaceLocal: new Map(),
       pendingApps: new Map(),
@@ -1605,15 +1604,8 @@ export class RunnerRegistry {
       throw new OpensteerError({ code: "runner_offline", message: "Background Runner is offline" });
     }
     const expiresAt = Date.parse(request.deadline);
-    const pending =
-      deferred<
-        Extract<RunnerOperationalMessage, { type: "runner.background-text-result" }>["result"]
-      >();
-    this.#backgroundText.set(request.attemptId, {
-      identity: connection.identity,
-      expiresAt,
-      resolve: pending.resolve,
-    });
+    const pending = deferred<BackgroundTextResult>();
+    connection.pendingBackgroundText.set(request.attemptId, { ...pending, expiresAt });
     try {
       await connection.peer.send({ ...request, ...connection.identity.fence });
       const result = await withDeadline(
@@ -1630,7 +1622,7 @@ export class RunnerRegistry {
       }
       return result;
     } finally {
-      this.#backgroundText.delete(request.attemptId);
+      connection.pendingBackgroundText.delete(request.attemptId);
     }
   }
 
@@ -2094,9 +2086,9 @@ export class RunnerRegistry {
         break;
       }
       case "runner.background-text-result": {
-        const pending = this.#backgroundText.get(message.attemptId);
-        if (pending?.identity === connection.identity && Date.now() < pending.expiresAt) {
-          this.#backgroundText.delete(message.attemptId);
+        const pending = connection.pendingBackgroundText.get(message.attemptId);
+        if (pending && Date.now() < pending.expiresAt) {
+          connection.pendingBackgroundText.delete(message.attemptId);
           pending.resolve(message.result);
         }
         break;
@@ -2508,6 +2500,7 @@ export class RunnerRegistry {
     for (const pending of connection.pendingHarnessAuthentications.values()) pending.reject(error);
     for (const pending of connection.pendingModelServers.values()) pending.reject(error);
     for (const pending of connection.pendingVoice.values()) pending.reject(error);
+    for (const pending of connection.pendingBackgroundText.values()) pending.reject(error);
     for (const pending of connection.pendingTriggerPrograms.values()) pending.reject(error);
     for (const pending of connection.pendingWorkspaceLocal.values()) pending.reject(error);
     for (const pending of connection.pendingApps.values()) pending.reject(error);
@@ -2516,6 +2509,7 @@ export class RunnerRegistry {
     connection.pendingHarnessAuthentications.clear();
     connection.pendingModelServers.clear();
     connection.pendingVoice.clear();
+    connection.pendingBackgroundText.clear();
     connection.pendingTriggerPrograms.clear();
     connection.pendingWorkspaceLocal.clear();
     connection.pendingApps.clear();

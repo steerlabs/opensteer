@@ -85,10 +85,15 @@ describe("Runner connection registry", () => {
       );
       await registry.handle(peer, { ...fenceOf(peer), ...report, attemptId: "expired" });
       await expect(expired).rejects.toThrow();
-      const controller = new AbortController();
+      // A superseded connection ends its attempts at once, not at their deadline,
+      // so naming moves to its next candidate while the Runner reconnects.
       const stale = registry.backgroundText(
-        { ...request, attemptId: "old-boot" },
-        controller.signal,
+        {
+          ...request,
+          attemptId: "old-boot",
+          deadline: new Date(Date.now() + 60_000).toISOString(),
+        },
+        new AbortController().signal,
       );
       const rejected = expect(stale).rejects.toThrow();
       const replacement = new MemoryRunnerPeer("replacement");
@@ -105,7 +110,6 @@ describe("Runner connection registry", () => {
         ...report,
         attemptId: "old-boot",
       });
-      controller.abort();
       await rejected;
     } finally {
       await registry.close();
