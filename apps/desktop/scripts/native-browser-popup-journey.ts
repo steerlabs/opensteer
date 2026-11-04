@@ -29,6 +29,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   });
   assert(opened.ok && opened.data.type === "browser.tab.open");
   const surfaceId = opened.data.tabId;
+  await kit.clickApp('button[aria-label="Hide the conversation"]');
   await kit.selectNativePage(context.sessionId, surfaceId);
   const producer = [...kit.pages.values()].find((p) => p.surfaceId === surfaceId);
   assert(producer, "Popup fixture has a production runtime page");
@@ -58,7 +59,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       .cookies.get({ url: context.hostOrigin });
     const viewers = await Promise.all(
       [0, 1].map(async (index) => {
-        const viewer = await browser.newContext({ viewport: { width: 1280, height: 1000 } });
+        const viewer = await browser.newContext({ viewport: { width: 1200, height: 700 } });
         await viewer.addCookies(
           cookies.map((c) => ({
             name: c.name,
@@ -209,6 +210,18 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     };
     await a.bringToFront();
     assert(sessionMatches.every(Boolean), "Viewers must attach to the original fixture session");
+    const dimensions = (await contents.executeJavaScript(
+      "({width:innerWidth,height:innerHeight})",
+      false,
+    )) as { width: number; height: number };
+    const bounds = (await import("../src/browser/electron-browser-launcher.js"))
+      .electronPagePresentation(producer.page)!
+      .view.getBounds();
+    kit.artifacts.json("cases/popups/producer-geometry.json", { dimensions, bounds });
+    assert(
+      dimensions.width <= bounds.width && dimensions.height <= bounds.height,
+      "Positive popup qualification requires an uncropped, unemulated producer",
+    );
     const before = await kit.popupInventory();
     await tap(a, "single");
     await a.getByRole("dialog", { name: "Choose an option" }).waitFor();

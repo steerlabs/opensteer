@@ -6,7 +6,7 @@ export function serveBrowserPopupFixture(
   if (request.url !== "/popups") return false;
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
     .end(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Browser popup fixture</title>
-<style>body{font:18px system-ui;margin:24px}label{display:block;margin:20px}input,select,button{font:inherit;min-height:40px}</style>
+<style>body{font:16px system-ui;margin:16px;display:grid;grid-template-columns:1fr 1fr;gap:10px}label{display:flex;flex-direction:column;gap:3px;min-width:0}input,select,button{font:inherit;min-height:36px;min-width:0}datalist{display:none}</style>
 <label>Single <select id="single"><optgroup label="Group"><option value="private-a">Alpha</option><option disabled value="private-disabled">Disabled</option><option value="private-b">Beta</option></optgroup></select></label>
 <label>Multiple <select id="multiple" multiple size="1"><option value="private-a" selected>Alpha</option><option value="private-b">Beta</option><option value="private-disabled" disabled selected>Disabled</option></select></label>
 <label>Date <input id="date" type="date" value="2024-03-10"></label>
