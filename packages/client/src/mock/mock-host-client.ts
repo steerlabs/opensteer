@@ -2897,6 +2897,11 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         ...(await client.cancelIntegrationAuthorization(command.attemptId)),
         type: command.type,
       });
+    case "integration.authorization.return":
+      return rpcSuccess({
+        ...(await client.getIntegrationAuthorization(command.attemptId)),
+        type: command.type,
+      });
     case "integration.providerApplication.save":
       return rpcSuccess({
         application: await client.saveIntegrationProviderApplication(command.input),

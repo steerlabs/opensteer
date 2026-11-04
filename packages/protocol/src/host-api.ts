@@ -118,6 +118,7 @@ import {
   InstallCatalogIntegrationSchema,
   InstallRemoteMcpSchema,
   IntegrationAuthorizationAttemptIdSchema,
+  IntegrationAuthorizationReturnProofSchema,
   IntegrationAuthorizationStartViewSchema,
   IntegrationAuthorizationStatusViewSchema,
   IntegrationConnectionIdSchema,
@@ -826,6 +827,17 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("integration.authorization.cancel"),
   }),
+  /**
+   * The app that started an app-finished consent hands back the browser's
+   * one-use return proof; until then the Account service keeps the result
+   * sealed. Sent only to a Host advertising `integration-app-finish-v1`.
+   */
+  z.strictObject({
+    attemptId: IntegrationAuthorizationAttemptIdSchema,
+    idempotencyKey: idempotencyKeySchema,
+    returnProof: IntegrationAuthorizationReturnProofSchema,
+    type: z.literal("integration.authorization.return"),
+  }),
   z.strictObject({
     connectionId: IntegrationConnectionIdSchema,
     idempotencyKey: idempotencyKeySchema,
@@ -1351,6 +1363,9 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("integration.computer.app.block") }),
   IntegrationAuthorizationStatusViewSchema.extend({
     type: z.literal("integration.authorization.cancel"),
+  }),
+  IntegrationAuthorizationStatusViewSchema.extend({
+    type: z.literal("integration.authorization.return"),
   }),
   z.object({ type: z.literal("integration.mcp.disconnect") }),
   z.object({ type: z.literal("plugin.update") }),
