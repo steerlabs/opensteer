@@ -175,6 +175,29 @@ describe("Codex app-server harness", () => {
         );
         expect(lifetime.signal.aborted).toBe(false);
         expect(events.filter((e) => e.type === "run.interrupted")).toHaveLength(0);
+        // The failed turn's open streams are settled, so nothing it began still looks live.
+        await vi.waitFor(
+          () =>
+            expect(events).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  type: "assistant.message",
+                  data: expect.objectContaining({
+                    content: [{ text: "Let me che", type: "text" }],
+                  }),
+                }),
+                expect.objectContaining({
+                  type: "reasoning.completed",
+                  data: { blockId: "thought-v3", text: "Looking" },
+                }),
+                expect.objectContaining({
+                  type: "tool.completed",
+                  data: expect.objectContaining({ callId: "tool-v3", isError: true }),
+                }),
+              ]),
+            ),
+          { timeout: 2000 },
+        );
         const captured = await fixture.capture();
         expect(captured.some((r) => r.method === "turn/start")).toBe(false);
         const start = captured.find((r) => r.method === "thread/start")!.params as JsonRecord;

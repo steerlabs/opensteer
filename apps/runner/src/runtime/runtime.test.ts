@@ -463,7 +463,18 @@ describe("RunnerRuntime", () => {
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
     const environmentId = createId("environment");
-    const runtime = configuredRuntime({ environmentId, registry });
+    const plans: HarnessSandboxRunPlan[] = [];
+    const runtime = configuredRuntime({
+      environmentId,
+      harnessSandbox: {
+        plan: async (plan) => {
+          plans.push(plan);
+          return (launch) => launch;
+        },
+        planProgram: async () => (launch) => launch,
+      },
+      registry,
+    });
     const base = executeCommand(environmentId);
     const sessionId = randomUUID();
     const execute = {
@@ -485,6 +496,11 @@ describe("RunnerRuntime", () => {
       expect(await call.offer).toBe("private-offer");
       expect(driver.context?.agentTools.token).not.toBe(execute.context.agentTools.token);
       expect(driver.context?.threadStateDirectory).toContain(`call-${execute.context.runId}`);
+      // The call's own directory is writable in the sandbox: its engine logs there.
+      expect(plans[0]).toMatchObject({
+        threadStateDirectory: driver.context?.threadStateDirectory,
+        threadStateWritable: true,
+      });
       call.answer("private-answer");
       expect(await relay).toEqual({ ok: true, answer: "private-answer" });
       await runtime.handleCommand(
@@ -540,6 +556,7 @@ describe("RunnerRuntime", () => {
         join(testPrivateStateRoot, "threads", execute.context.threadId),
       );
       expect(plans).toHaveLength(1);
+      expect(plans[0]?.threadStateWritable).toBeUndefined();
       expect(plans[0]).toMatchObject({
         launchDirectory: undefined,
         threadStateDirectory: context?.threadStateDirectory,

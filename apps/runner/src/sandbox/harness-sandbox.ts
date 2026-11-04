@@ -75,6 +75,11 @@ export interface HarnessSandboxRunPlan {
   readonly pluginCacheDirectories: readonly string[];
   readonly providerState: HarnessProviderState;
   readonly threadStateDirectory: string;
+  /**
+   * A voice call's directory is the call's own, removed when it ends, and its
+   * engine keeps its logs there; a Thread's state stays read-only.
+   */
+  readonly threadStateWritable?: true;
   readonly workspacePath: string;
   readonly writableRoots: readonly string[];
 }
@@ -139,7 +144,7 @@ export async function harnessSandboxMounts(
     privateDirectories: [
       { mode: "--bind", path: providerHome },
       { mode: "--bind", path: run.providerState.store.directory },
-      { mode: "--ro-bind", path: run.threadStateDirectory },
+      { mode: run.threadStateWritable ? "--bind" : "--ro-bind", path: run.threadStateDirectory },
       ...run.pluginCacheDirectories.map((path) => ({ mode: "--ro-bind" as const, path })),
     ],
     workspaceRoots: [run.workspacePath, ...run.writableRoots],

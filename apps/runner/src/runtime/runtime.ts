@@ -2510,6 +2510,7 @@ export class RunnerRuntime {
         pluginCacheDirectories: runSkills.directories,
         providerState,
         threadStateDirectory,
+        ...(context.voiceCall ? { threadStateWritable: true as const } : {}),
         workspacePath: workspace.path,
         writableRoots,
       } satisfies Omit<HarnessSandboxRunPlan, "launchDirectory">;

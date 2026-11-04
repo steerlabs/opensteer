@@ -673,6 +673,30 @@ function handleClientMethod(message) {
             ["v3", null, "failed"],
           ]) {
             send({ method: "turn/started", params: { threadId, turn: { id } } });
+            if (status === "failed") {
+              // A turn that fails part way: streamed words, a thought and a tool never finished.
+              send({
+                method: "item/agentMessage/delta",
+                params: { threadId, turnId: id, itemId: `partial-${id}`, delta: "Let me che" },
+              });
+              send({
+                method: "item/reasoning/textDelta",
+                params: { threadId, turnId: id, itemId: `thought-${id}`, delta: "Looking" },
+              });
+              send({
+                method: "item/started",
+                params: {
+                  threadId,
+                  turnId: id,
+                  item: {
+                    type: "commandExecution",
+                    id: `tool-${id}`,
+                    command: "ls",
+                    status: "inProgress",
+                  },
+                },
+              });
+            }
             if (text)
               send({
                 method: "item/completed",

@@ -94,6 +94,13 @@ describe("harness sandbox mounts", () => {
     expect(args).not.toContain(fixture.identityFile);
   });
 
+  it("lets only a voice call write its own directory, where its engine keeps its log", async () => {
+    const fixture = await createFixture();
+    const args = await mounts(fixture, { threadStateWritable: true });
+    expect(segmentIndex(args, bind(fixture.threadState))).toBeGreaterThanOrEqual(0);
+    expect(segmentIndex(args, readOnlyBind(fixture.threadState))).toBe(-1);
+  });
+
   it("gives a program its Workspace and its private files read-only, and nothing of the Run's", async () => {
     const fixture = await createFixture();
     const programRoot = join(fixture.privateRoot, "watches", "executions", "boot", "twa_1", "1");

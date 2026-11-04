@@ -1209,6 +1209,55 @@ class CodexHarnessSession implements HarnessSession {
 
   #voiceFinal = "";
   readonly #voiceSdp = new Deferred<void>();
+  /**
+   * What a voice turn has streamed and not yet completed. A call's turns end
+   * without ending its Run, which is what normally clears open streams, so
+   * each turn settles its own.
+   */
+  readonly #voiceOpen = {
+    text: "",
+    reasoning: new Map<string, string>(),
+    tools: new Set<string>(),
+  };
+
+  #trackVoiceStream(event: HarnessEvent): void {
+    const open = this.#voiceOpen;
+    if (event.type === "assistant.delta") open.text += event.data.text;
+    else if (event.type === "assistant.message") open.text = "";
+    else if (event.type === "reasoning.delta")
+      open.reasoning.set(
+        event.data.blockId,
+        (open.reasoning.get(event.data.blockId) ?? "") + event.data.text,
+      );
+    else if (event.type === "reasoning.completed") open.reasoning.delete(event.data.blockId);
+    else if (event.type === "tool.started") open.tools.add(event.data.callId);
+    else if (event.type === "tool.completed") open.tools.delete(event.data.callId);
+  }
+
+  /** Completes what a voice turn left open, so the next turn starts clean and nothing looks running. */
+  #settleVoiceTurn(): void {
+    const { text, reasoning, tools } = this.#voiceOpen;
+    if (text.trim())
+      this.#publish({
+        data: { content: [{ text, type: "text" }], messageId: createId("message") },
+        type: "assistant.message",
+      });
+    for (const [blockId, partial] of [...reasoning])
+      if (partial.trim())
+        this.#publish({ data: { blockId, text: partial }, type: "reasoning.completed" });
+    for (const callId of [...tools])
+      this.#publish({
+        data: {
+          callId,
+          isError: true,
+          output: normalizeToolOutput("The turn ended before this finished."),
+        },
+        type: "tool.completed",
+      });
+    this.#voiceOpen.text = "";
+    reasoning.clear();
+    tools.clear();
+  }
 
   async #executeVoice(active: ActiveTurn, signal: AbortSignal): Promise<void> {
     const call = this.#context.voiceCall!;
@@ -2066,6 +2115,7 @@ class CodexHarnessSession implements HarnessSession {
     const status = requireString(turn.status, "turn/completed params.turn.status");
     if (this.#context.voiceCall) {
       // A failed turn is one request that didn't go through, not the end of the call.
+      this.#settleVoiceTurn();
       const spoken =
         status === "completed"
           ? this.#voiceFinal
@@ -2335,6 +2385,7 @@ class CodexHarnessSession implements HarnessSession {
 
   #publish(event: HarnessEvent): void {
     if (this.#publisher.streamClosed) return;
+    if (this.#context.voiceCall) this.#trackVoiceStream(event);
     try {
       this.#publisher.publish(event);
     } catch (error) {
