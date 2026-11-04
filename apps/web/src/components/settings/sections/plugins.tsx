@@ -16,6 +16,7 @@ import { useDeferredValue, useRef, useState, useLayoutEffect, useEffect } from "
 import { Link, useLocation, useNavigate } from "react-router";
 import type { PluginRow, PluginDetailView } from "@opensteer/protocol";
 import {
+  settingsMutationRejected,
   pluginGroups,
   pluginState,
   pluginPath,
@@ -248,6 +249,7 @@ function EnableSwitch({ row, reload }: { row: PluginRow; reload: () => void }) {
                 reload();
               })
               .catch(async (reason: unknown) => {
+                if (settingsMutationRejected(reason)) attempt.current = null;
                 // A lost response may have committed. Reconcile before offering the same operation again.
                 try {
                   unwrapRpcResult(
@@ -479,6 +481,7 @@ function Placement({
         reload();
       })
       .catch(async (reason: unknown) => {
+                if (settingsMutationRejected(reason)) attempt.current = null;
         try {
           unwrapRpcResult(
             await hostClient.rpc["plugins.detail.get"]({ target: detail.row.target }),

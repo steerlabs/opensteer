@@ -1,3 +1,4 @@
+import { settingsMutationRejected } from "./index.js";
 import { z } from "zod";
 import { PluginTargetSchema, SettingsPluginPlacementCommandSchema } from "@opensteer/protocol";
 import { unwrapRpcResult, type HostClient } from "../host/index.js";
@@ -53,6 +54,7 @@ export async function completePluginConsent(
   try {
     await client.dispatch(command);
   } catch (reason) {
+    if (settingsMutationRejected(reason)) remember({ ...consent, command: null, connectionId });
     try {
       await client.rpc["plugins.detail.get"]({ target: consent.target }).then(unwrapRpcResult);
     } catch {

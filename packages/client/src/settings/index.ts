@@ -1,3 +1,4 @@
+import { HostClientRequestError } from "../host/client.js";
 export * from "./plugin-add-consent.js";
 import {
   PluginTargetSchema,
@@ -191,4 +192,10 @@ export function settingsSessionRows<
   return [...sessions]
     .sort((a, b) => Number(b.current) - Number(a.current))
     .map((session) => ({ ...session, label: session.deviceLabel, thisDevice: session.current }));
+}
+
+/** Only a definite Host refusal releases the original idempotent attempt. */
+export function settingsMutationRejected(reason: unknown): boolean {
+  return reason instanceof HostClientRequestError &&
+    ["conflict", "bad_request", "forbidden", "not_found", "unauthorized"].includes(reason.code);
 }

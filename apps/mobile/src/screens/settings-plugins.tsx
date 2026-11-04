@@ -8,6 +8,7 @@ import { PluginAccounts } from "./settings-plugin-accounts.js";
 import {
   completePluginConsent,
   type PluginAddConsent,
+  settingsMutationRejected,
   pluginGroups,
   pluginState,
   pluginTargetKey,
@@ -167,7 +168,12 @@ function Plugins({
       }
       const submitted = prior ?? value;
       attempts.current.set(intent, submitted);
-      await host.dispatch(submitted);
+      try {
+        await host.dispatch(submitted);
+      } catch (reason) {
+        if (settingsMutationRejected(reason)) attempts.current.delete(intent);
+        throw reason;
+      }
       attempts.current.delete(intent);
       if (detail) {
         const result = unwrapRpcResult(
