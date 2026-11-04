@@ -1,6 +1,10 @@
 import { expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import { AutomaticModelConfigSchema } from "@opensteer/core";
+import {
+  AutomaticModelConfigSchema,
+  HarnessInstanceIdSchema,
+  resolveModelCandidates,
+} from "@opensteer/core";
 import {
   automaticModelChoices,
   automaticRoleEntries,
@@ -45,6 +49,41 @@ it("edits ordered defaults, resets to absent, and binds arbitrary endpoints", as
     expect(
       AutomaticModelConfigSchema.safeParse({ roles: { light: [] }, excludedAccounts: [] }).success,
     ).toBe(false);
+  } finally {
+    host.dispose();
+  }
+});
+it("binds the account a person picks, so a non-default account is the one that runs", async () => {
+  const host = new MockHostClient({ latencyMs: 0 });
+  try {
+    const view = (await getAutomaticModels(host))!;
+    const personal = view.accounts.find(
+      (a) => a.sourceId !== "openai-compatible" && a.catalog?.status === "ready",
+    )!;
+    const work = {
+      ...personal,
+      harnessInstanceId: HarnessInstanceIdSchema.parse("hin_00000000-0000-4000-8000-0000000000f1"),
+      accountDisplayName: "Work",
+      isDefault: false,
+    };
+    const accounts = [{ ...personal, isDefault: true }, work];
+    const model = personal.catalog!.models.find((m) => !m.unavailableReason)!;
+    const choice = automaticModelChoices({ ...view, accounts }).find(
+      (c) => c.label === `${model.displayName} · Work`,
+    );
+    expect(choice?.want).toEqual({
+      engine: personal.driverKind,
+      model: `${model.providerId}/${model.modelId}`,
+      harnessInstanceId: work.harnessInstanceId,
+    });
+    const { candidates } = resolveModelCandidates({
+      wants: [choice!.want],
+      accounts: accounts.map((a) => ({ ...a, sourceBoundary: a.sourceId, usage: [] })),
+      excludedAccounts: [],
+      canRun: () => ({ ok: true }),
+      now: Date.now(),
+    });
+    expect(candidates.map((c) => c.harnessInstanceId)).toEqual([work.harnessInstanceId]);
   } finally {
     host.dispose();
   }

@@ -275,12 +275,19 @@ export function resolveModelCandidates(input: ResolveModelCandidatesInput): {
         if (!("kind" in want) || want.kind !== "model") continue;
         selection = { providerId: want.providerId, modelId: want.modelId, options: want.options };
       } else {
-        const reference = canonicalModelReference(exact.model, account.driverKind);
-        const matches = (account.catalog?.models ?? []).filter(
-          (model) =>
-            model.modelId === exact.model ||
-            (model.providerId === reference.providerId && model.modelId === reference.modelId),
+        const models = account.catalog?.models ?? [];
+        // The catalog's own provider/model pair is exact for any lab, listed or not.
+        const pair = models.filter(
+          (model) => `${model.providerId}/${model.modelId}` === exact.model,
         );
+        const reference = canonicalModelReference(exact.model, account.sourceId);
+        const matches = pair.length
+          ? pair
+          : models.filter(
+              (model) =>
+                model.modelId === exact.model ||
+                (model.providerId === reference.providerId && model.modelId === reference.modelId),
+            );
         // A bare canonical ID is portable only when this catalog identifies one lab for it.
         const model = matches.length === 1 ? matches[0] : undefined;
         selection = {

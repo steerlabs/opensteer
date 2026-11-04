@@ -17,6 +17,7 @@ import {
   type OpensteerStore,
 } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
+import { sql } from "kysely";
 import { MANAGED_MEMORY_WAKE_SKIPPED, type TriggerSystemRole } from "@opensteer/triggers";
 import type { WorkspaceFilesService } from "../workspace/files/workspace-files-service.js";
 import { resolveAutomaticModels, workspaceExecution } from "./automatic-models.js";
@@ -149,6 +150,14 @@ export class MemoryPassService {
       .where("triggerOccurrences.id", "=", occurrenceId)
       .executeTakeFirst();
     if (!trigger?.systemRole || trigger.anchorThreadId !== worker.id) return undefined;
+    // An occurrence admits one pass: once accepted, its retry replays that receipt as is.
+    const accepted = await store.database
+      .selectFrom("threadInputs")
+      .select("messageId")
+      .where("threadId", "=", worker.id)
+      .where(sql<string>`authority_source->>'occurrenceId'`, "=", occurrenceId)
+      .executeTakeFirst();
+    if (accepted) return undefined;
     const chosen = await this.#resolve(
       trigger.createdBy,
       worker,

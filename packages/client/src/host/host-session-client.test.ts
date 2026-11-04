@@ -8,6 +8,7 @@ import {
   ThreadIdSchema,
   WorkspaceIdSchema,
   createId,
+  defaultTaskSymbol,
   emptyExecutionPreferences,
   type AgentEventView as AgentEvent,
   type Message,
@@ -14284,8 +14285,9 @@ describe("task marks through the production client and mock transport", () => {
         );
         const assignment = Object.values(client.getSnapshot().assignments)[0]!;
         const sourceAssignment = source.assignments[assignment.id]!;
+        // The stored icon stays absent; only the drawn mark falls back to the default symbol.
         expect(assignmentMark(assignment, { threads: [] })).toMatchObject({
-          icon: mode === "legacy" ? null : sourceAssignment.workerThread.icon,
+          icon: mode === "legacy" ? defaultTaskSymbol : sourceAssignment.workerThread.icon,
           color: mode === "marks" ? sourceAssignment.workerThread.color : null,
         });
         if (mode !== "legacy") {

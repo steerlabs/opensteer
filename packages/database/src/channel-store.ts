@@ -2805,6 +2805,8 @@ async function channelPlacement(
       });
     return { environmentId: harness.environmentId, harnessInstanceId: harness.id, modelSelection };
   }
+  if (authorized.size === 0)
+    throw new ChannelIngressDeferredError("No work location is available with an AI engine");
   const { excludedAccounts } = await getAutomaticModelConfig(transaction, input.userId);
   // Snapshot order follows the connected work locations' preference order.
   const snapshot = input.availableEngines.flatMap(({ environmentId }) =>

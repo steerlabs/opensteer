@@ -183,6 +183,59 @@ describeStore("plugin activation", (test) => {
     });
   });
 
+  test("a Project Chat with no history skips accounts its owner excluded, and waits while none is left", async ({
+    storeFixture: fixture,
+  }) => {
+    const f = await fixture.createRunFixture("project-chat-excluded");
+    const environmentId = await fixture.store.createEnvironment({
+      kind: "local",
+      name: "Excluding computer",
+      runnerId: f.runnerId,
+    });
+    const account = (name: string) =>
+      fixture.store.createHarnessInstance({
+        config: {},
+        driverKind: HarnessIdSchema.parse("native"),
+        environmentId,
+        name,
+        sourceId: "native",
+        stateKind: "isolated",
+      });
+    const first = await account("Default");
+    const second = await account("Second");
+    await fixture.store.recordHarnessCatalogs({
+      catalogs: [testReadyHarnessCatalog(first.id), testReadyHarnessCatalog(second.id)],
+      environmentId,
+      expectedRevisions: new Map([
+        [first.id, first.runtimeRevision],
+        [second.id, second.runtimeRevision],
+      ]),
+    });
+    const exclude = (...excludedAccounts: (typeof first.id)[]) =>
+      fixture.store.setAutomaticModelConfig(f.userId, { roles: {}, excludedAccounts });
+    await exclude(first.id, second.id);
+    const project = await createTestWorkspace(fixture.store, {
+      backing: {
+        ...f.workspace.backing,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: environmentId,
+      },
+      createdBy: f.userId,
+      idempotencyKey: "chat-project-excluded",
+      kind: "project",
+      name: "Excluded Project",
+      status: "ready",
+    });
+    expect(first.isDefault).toBe(true);
+    expect(project.homeThreadId).toBeNull();
+    await exclude(first.id);
+    const reconciled = (await fixture.store.listWorkspaces()).find((w) => w.id === project.id);
+    expect(reconciled?.homeThreadId).toBeTruthy();
+    expect(
+      await fixture.store.getThreadForOwner(reconciled!.homeThreadId!, f.userId),
+    ).toMatchObject({ harnessInstanceId: second.id });
+  });
+
   test("members list only available plugins without installation paths and only owners change activation", async ({
     storeFixture: fixture,
   }) => {

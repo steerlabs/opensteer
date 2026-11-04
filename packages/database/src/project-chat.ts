@@ -1,10 +1,12 @@
 import {
-  automaticAccountOrder,
-  catalogDefaultModelSelection,
+  catalogDefaultCandidate,
   DEFAULT_THREAD_ACCESS_MODE,
+  type EnvironmentId,
+  type UserId,
   type Workspace,
 } from "@opensteer/core";
 import type { Kysely } from "kysely";
+import { getAutomaticModelConfig } from "./background-model-store.js";
 import type { DatabaseSchema } from "./schema.js";
 import { createThread } from "./thread-store.js";
 
@@ -32,32 +34,10 @@ export async function ensureProjectChat(
     .orderBy("threads.updatedAt", "desc")
     .limit(1)
     .executeTakeFirst();
-  // No history: the account a person means when they name none, then their
-  // other accounts here, on that account's catalog default.
   const fresh = previous
     ? null
-    : automaticAccountOrder(
-        await database
-          .selectFrom("harnessCatalogs")
-          .innerJoin("harnessInstances", "harnessInstances.id", "harnessCatalogs.harnessInstanceId")
-          .select([
-            "harnessCatalogs.catalog",
-            "harnessInstances.id",
-            "harnessInstances.isDefault",
-            "harnessInstances.sourceId",
-          ])
-          .where("harnessInstances.environmentId", "=", environmentId)
-          .where("harnessInstances.enabled", "=", true)
-          .where("harnessInstances.removedAt", "is", null)
-          .orderBy("harnessInstances.id")
-          .execute(),
-      ).flatMap((account) => {
-        // An arbitrary endpoint runs only when it is the account the person made default.
-        if (account.sourceId === "openai-compatible" && !account.isDefault) return [];
-        const modelSelection = catalogDefaultModelSelection(account.catalog);
-        return modelSelection ? [{ harnessInstanceId: account.id, modelSelection }] : [];
-      })[0];
-  // With no engine yet, reconciliation will create the chat once one is connected.
+    : await automaticChoice(database, workspace.createdBy, environmentId);
+  // With no usable account yet, reconciliation creates the chat once there is one.
   const choice = previous ?? fresh;
   if (!choice) return workspace;
   const result = await createThread(database, {
@@ -72,4 +52,40 @@ export async function ensureProjectChat(
     workspaceId: workspace.id,
   });
   return { ...workspace, homeThreadId: result.thread.id };
+}
+
+/** No history: the owner's automatic default among the accounts on that computer they left on. */
+async function automaticChoice(
+  database: Kysely<DatabaseSchema>,
+  ownerId: UserId,
+  environmentId: EnvironmentId,
+) {
+  const { excludedAccounts } = await getAutomaticModelConfig(database, ownerId);
+  const accounts = await database
+    .selectFrom("harnessCatalogs")
+    .innerJoin("harnessInstances", "harnessInstances.id", "harnessCatalogs.harnessInstanceId")
+    .select([
+      "harnessCatalogs.catalog",
+      "harnessInstances.id as harnessInstanceId",
+      "harnessInstances.isDefault",
+      "harnessInstances.sourceId",
+    ])
+    .where("harnessInstances.environmentId", "=", environmentId)
+    .where("harnessInstances.enabled", "=", true)
+    .where("harnessInstances.removedAt", "is", null)
+    .orderBy("harnessInstances.id")
+    .execute();
+  const chosen = catalogDefaultCandidate({
+    accounts: accounts.map((account) => ({
+      ...account,
+      enabled: true,
+      removed: false,
+      available: true,
+    })),
+    excludedAccounts,
+    canRun: () => ({ ok: true }),
+  });
+  return chosen
+    ? { harnessInstanceId: chosen.account.harnessInstanceId, modelSelection: chosen.modelSelection }
+    : null;
 }

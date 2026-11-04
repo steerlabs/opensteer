@@ -69,7 +69,7 @@ function button(node: HTMLElement, name: string) {
 }
 it("inspects managed passes, links the worker, and retains Pause/Resume without destructive controls", async () => {
   const { node, trigger } = await mount("waiting-for-model");
-  expect(node.textContent).toContain("Waiting for a model it can use");
+  expect(node.textContent).toContain("Waiting for an AI account it can use");
   expect(node.textContent).toContain("findings reach you through Chat");
   expect(node.querySelector(`a[href="/threads/${trigger.anchorThreadId}"]`)).not.toBeNull();
   for (const label of ["Delete", "Run now", "Edit code"])
@@ -77,7 +77,7 @@ it("inspects managed passes, links the worker, and retains Pause/Resume without 
   await act(async () => button(node, "Pause").click());
   await vi.waitFor(() => expect(button(node, "Resume")).toBeDefined(), { timeout: 2000 });
   // Paused by the person, it no longer says it is waiting.
-  expect(node.textContent).not.toContain("Waiting for a model it can use");
+  expect(node.textContent).not.toContain("Waiting for an AI account it can use");
   await act(async () => button(node, "Resume").click());
   await vi.waitFor(() => expect(button(node, "Pause")).toBeDefined(), { timeout: 2000 });
 });

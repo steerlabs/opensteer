@@ -53,10 +53,14 @@ interface ChannelServiceOptions {
   readonly onExecutionQueued: (environmentId: EnvironmentId) => void;
   readonly onWorkspaceEvent: (event: AgentEvent) => void;
   readonly relay: MessagingRelayHub;
-  readonly runners: RunnerRegistry;
+  readonly runners: ChannelRunners;
   readonly store: OpensteerStore;
   readonly channels: ChannelStore;
 }
+type ChannelRunners = Pick<
+  RunnerRegistry,
+  "canRunHarness" | "identityForEnvironment" | "isAvailable"
+>;
 
 export class ChannelService {
   readonly #onChanged: () => void;
@@ -66,7 +70,7 @@ export class ChannelService {
   readonly #onExecutionQueued: (environmentId: EnvironmentId) => void;
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
   readonly #relay: MessagingRelayHub;
-  readonly #runners: RunnerRegistry;
+  readonly #runners: ChannelRunners;
   readonly #store: OpensteerStore;
   #closed = false;
   #draining: Promise<void> | null = null;

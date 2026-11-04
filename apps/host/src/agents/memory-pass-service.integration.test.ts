@@ -906,6 +906,27 @@ describeStore("managed memory passes", (it) => {
     expect(nextSession!.id).not.toBe(firstSession!.id);
   });
 
+  it("replays an accepted pass's wake without choosing its model again", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "accepted-replay");
+    const s = service(f);
+    await s.instance.ensureForMain(base.workspace.id);
+    const light = await role(f, base.userId);
+    const { occurrence } = await tick(f, base, light.trigger);
+    await wake(f, light.trigger, occurrence.id, "accepted");
+    // Nothing is usable any more, but this occurrence's pass is already decided.
+    await f.store.setAutomaticModelConfig(base.userId, {
+      roles: {},
+      excludedAccounts: [base.harnessInstance.id],
+    });
+    await expect(
+      s.instance.admissionSelection(occurrence.id, light.anchorThread!),
+    ).resolves.toBeUndefined();
+    expect((await role(f, base.userId)).trigger.waitingReason).toBeNull();
+    expect((await wake(f, light.trigger, occurrence.id, "accepted", null)).wasDuplicate).toBe(true);
+  });
+
   it("resolves each pass's role when admitted, waits without pausing, and never resumes a pause", async ({
     storeFixture: f,
   }) => {
