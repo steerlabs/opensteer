@@ -667,7 +667,9 @@ describe("IntegrationService OAuth refresh", () => {
 
     if (marked === null) {
       expect(harness.markConnectionNeedsAttention).not.toHaveBeenCalled();
+      expect(harness.onConnectionChanged).not.toHaveBeenCalled();
     } else {
+      expect(harness.onConnectionChanged).toHaveBeenCalledExactlyOnceWith(harness.ownerUserId);
       expect(harness.markConnectionNeedsAttention).toHaveBeenCalledExactlyOnceWith({
         connectionId: harness.connectionId,
         expectedGeneration: 1,
@@ -2009,6 +2011,7 @@ describe("IntegrationService disconnect", () => {
       expect.objectContaining({ method: "POST" }),
     );
     expect(fixture.revokeConnection).toHaveBeenCalledOnce();
+    expect(fixture.changed).toHaveBeenCalledExactlyOnceWith(fixture.request.ownerUserId);
   });
 
   /**
@@ -2026,6 +2029,7 @@ describe("IntegrationService disconnect", () => {
     });
     expect(fetch).not.toHaveBeenCalled();
     expect(fixture.revokeConnection).toHaveBeenCalledOnce();
+    expect(fixture.changed).toHaveBeenCalledExactlyOnceWith(fixture.request.ownerUserId);
   });
 
   it("does not claim a hosted broker revoked a token it cannot authenticate for", async () => {
@@ -2038,6 +2042,7 @@ describe("IntegrationService disconnect", () => {
     expect(outcome.notice).toContain("did not accept its revocation request");
     expect(fetch).not.toHaveBeenCalled();
     expect(fixture.revokeConnection).toHaveBeenCalledOnce();
+    expect(fixture.changed).toHaveBeenCalledExactlyOnceWith(fixture.request.ownerUserId);
   });
 
   it("seals hosted revocation to the exact account, app and deployment", async () => {
@@ -2079,6 +2084,7 @@ describe("IntegrationService disconnect", () => {
     expect(revoke).toHaveBeenCalledOnce();
     expect(fetch).not.toHaveBeenCalled();
     expect(fixture.revokeConnection).toHaveBeenCalledOnce();
+    expect(fixture.changed).toHaveBeenCalledExactlyOnceWith(fixture.request.ownerUserId);
   });
 
   it("does not send a token to a replacement hosted app", async () => {
@@ -2099,6 +2105,7 @@ describe("IntegrationService disconnect", () => {
     expect((await fixture.service.disconnect(fixture.request)).revokedUpstream).toBe(false);
     expect(revoke).not.toHaveBeenCalled();
     expect(fixture.revokeConnection).toHaveBeenCalledOnce();
+    expect(fixture.changed).toHaveBeenCalledExactlyOnceWith(fixture.request.ownerUserId);
   });
 
   it("removes the local credential when the provider rejects revocation", async () => {
@@ -2112,6 +2119,7 @@ describe("IntegrationService disconnect", () => {
     });
     expect(fetch).toHaveBeenCalledOnce();
     expect(fixture.revokeConnection).toHaveBeenCalledOnce();
+    expect(fixture.changed).toHaveBeenCalledExactlyOnceWith(fixture.request.ownerUserId);
   });
 });
 
@@ -2160,7 +2168,9 @@ function disconnectFixture(input: {
     ],
   });
   const revokeConnection = vi.fn(async () => undefined);
+  const changed = vi.fn();
   const service = new IntegrationService({
+    onConnectionChanged: changed,
     onConnectionConnected: vi.fn(async () => undefined),
     attempts: {} as never,
     definitions: [definition],
@@ -2220,6 +2230,7 @@ function disconnectFixture(input: {
   return {
     request: { connectionId, ownerUserId, requestId: "disconnect" } as const,
     revokeConnection,
+    changed,
     service,
   };
 }
@@ -2467,7 +2478,9 @@ function refreshHarness(input: {
   const connectionId = input.connection.id;
   const markConnectionNeedsAttention = vi.fn(async () => undefined);
   const replaceConnectionCredential = vi.fn(async () => true);
+  const onConnectionChanged = vi.fn();
   const service = new IntegrationService({
+    onConnectionChanged,
     onConnectionConnected: vi.fn(async () => undefined),
     attempts: {} as never,
     definitions: [input.definition],
@@ -2509,6 +2522,7 @@ function refreshHarness(input: {
   });
   return {
     connectionId,
+    onConnectionChanged,
     markConnectionNeedsAttention,
     ownerUserId,
     replaceConnectionCredential,

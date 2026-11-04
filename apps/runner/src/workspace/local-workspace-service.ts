@@ -1,3 +1,9 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import {
+  discoverWorkspaceSkills,
+  type DiscoveredWorkspaceSkills,
+} from "../skills/workspace-skills.js";
+import type { RunnerSkillMetadataReport, LocalWorkspaceBindingRef } from "@opensteer/protocol";
 import { lstat, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -68,6 +74,34 @@ export class LocalWorkspaceService {
     this.#removeSpecialist = options.removeSpecialist;
     this.#authority = options.authority;
     this.#filesystem = options.filesystem;
+  }
+
+  async scanSkills(
+    binding: LocalWorkspaceBindingRef,
+    signal: AbortSignal,
+  ): Promise<RunnerSkillMetadataReport["result"]> {
+    const lifetime = new AbortController();
+    const scanSignal = AbortSignal.any([signal, lifetime.signal]);
+    try {
+      return await withTimeout(
+        (async () => {
+          const read = await this.#authority.resolveReadAuthority(binding, scanSignal);
+          scanSignal.throwIfAborted();
+          return this.skillMetadata(await discoverWorkspaceSkills(read.root, scanSignal));
+        })(),
+        30_000,
+        { signal, timeoutError: () => new Error("Workspace skill scan timed out") },
+      );
+    } catch {
+      return { status: "failed", reason: "unreadable" };
+    } finally {
+      lifetime.abort();
+    }
+  }
+
+  skillMetadata(scan: DiscoveredWorkspaceSkills | undefined): RunnerSkillMetadataReport["result"] {
+    if (!scan) return { status: "failed", reason: "unreadable" };
+    return { status: "complete", skills: [...scan.metadata], warnings: [...scan.warningCodes] };
   }
 
   async handle(

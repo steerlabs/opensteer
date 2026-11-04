@@ -346,6 +346,7 @@ export function seedMockPlaces(
         ...mac,
         id: "rnr_88888888-8888-4888-8888-888888888888",
         name: "Studio Mac",
+        ownership: "mine",
         computerUse: {
           ...mac.computerUse,
           sessions: [

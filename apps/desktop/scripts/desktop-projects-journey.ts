@@ -58,7 +58,12 @@ try {
     results.push(name);
   };
   try {
-    await page.getByRole("button", { name: /^Start on / }).click();
+    await page.getByRole("button", { name: /^Set up / }).click();
+    await page
+      .locator(".setup__actions button:not(:disabled)")
+      .filter({ hasText: /^(Start|Done|Set up later)$/ })
+      .first()
+      .click({ timeout: 90_000 });
     await page.getByRole("textbox", { name: "Message" }).waitFor({ timeout: 90_000 });
     await page.getByRole("button", { name: /Places and menu|:.*Menu$/ }).click();
     await page.getByRole("menuitem", { name: "Projects", exact: true }).click();
@@ -95,9 +100,11 @@ try {
     await page.getByRole("button", { name: /Places and menu|:.*Menu$/ }).click();
     await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
     await page.getByRole("link", { name: "Plugins", exact: true }).click();
+    await page.getByRole("link", { name: "Add plugins", exact: true }).click();
     await page.getByPlaceholder("/Users/you/plugins/tinycrm").fill(plugin);
     await page.getByRole("button", { name: "Install plugin", exact: true }).click();
-    const row = page.locator(".plugin-row").filter({ hasText: "journey-plugin" });
+    await page.getByRole("link", { name: "Your plugins", exact: true }).click();
+    const row = page.getByRole("link").filter({ hasText: "journey-plugin" });
     await row.waitFor();
     await capture("05-installed-plugin");
     await page.getByRole("button", { name: "Back to conversations", exact: true }).click();
@@ -120,9 +127,9 @@ try {
     await capture("07-plugin-disabled");
     await page.getByRole("button", { name: /Places and menu|:.*Menu$/ }).click();
     await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-    await page.getByRole("link", { name: "Connections", exact: true }).click();
-    await page.getByRole("heading", { name: "Connections", exact: true }).waitFor();
-    await capture("08-connections");
+    await page.getByRole("link", { name: "Account", exact: true }).click();
+    await page.getByRole("heading", { name: "Account", exact: true }).waitFor();
+    await capture("08-account");
     await page.getByRole("button", { name: "Back to conversations", exact: true }).click();
     await project.click();
     await page.getByRole("link", { name: "Desktop journey settings", exact: true }).click();

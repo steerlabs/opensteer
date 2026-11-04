@@ -550,6 +550,10 @@ describe("runnerWebSocketUrl", () => {
     } as const;
     const otherHarness = { ...harness, id: createId("harnessInstance"), name: "Other" } as const;
     const abort = new AbortController();
+    let finishSkillScan!: () => void;
+    const skillScan = new Promise<void>((resolve) => {
+      finishSkillScan = resolve;
+    });
     let finishInspection!: () => void;
     const inspection = new Promise<readonly []>((resolve) => {
       finishInspection = () => resolve([]);
@@ -633,6 +637,7 @@ describe("runnerWebSocketUrl", () => {
             }),
           );
         } else if (message.type === "runner.command-rejected") {
+          finishSkillScan();
           finishInspection();
         } else if (message.type === "runner.harness-catalog") {
           if (message.requestId === "overtaking-catalog") return;
@@ -729,7 +734,16 @@ describe("runnerWebSocketUrl", () => {
     };
     const connection = new ReconnectingHostConnection({
       agents: {
-        localWorkspaces: localStorageFixture(),
+        localWorkspaces: (() => {
+          const local = localStorageFixture(environmentId);
+          local.service.scanSkills = async () => {
+            await withTimeout(skillScan, 1_000, {
+              timeoutError: () => new Error("Command waited behind the initial skill scan"),
+            });
+            return { status: "complete", skills: [], warnings: [] };
+          };
+          return local;
+        })(),
         runtime,
         workspaceBackings: ["local-directory"],
       },
@@ -749,6 +763,22 @@ describe("runnerWebSocketUrl", () => {
     try {
       await connection.run(abort.signal);
       expect(authorization).toBeUndefined();
+      expect(received).toContainEqual(
+        expect.objectContaining({
+          type: "runner.skills.report",
+          environmentId,
+          scanSequence: 1,
+          result: { status: "complete", skills: [], warnings: [] },
+        }),
+      );
+      const reportIndex = received.findIndex(
+        (message) => (message as { type: string }).type === "runner.skills.report",
+      );
+      const commandIndex = received.findIndex(
+        (message) => (message as { type: string }).type === "runner.command-rejected",
+      );
+      expect(reportIndex).toBeGreaterThan(commandIndex);
+
       expect(received[0]).toMatchObject({
         descriptor: {
           // An agent-executing computer carries its work location, harnesses
@@ -758,7 +788,10 @@ describe("runnerWebSocketUrl", () => {
               environmentIds: [environmentId],
               computerTool: 1,
               harnessDrivers: [],
-              localStorage: expect.objectContaining({ bindings: [], truncated: false }),
+              localStorage: expect.objectContaining({
+                bindings: [expect.objectContaining({ state: "ready" })],
+                truncated: false,
+              }),
               workspaceBackings: ["local-directory"],
             },
           },
@@ -1815,10 +1848,27 @@ function terminalEvent(ids: {
   };
 }
 
-function localStorageFixture(): NonNullable<RunnerAgentsConnection["localWorkspaces"]> {
+function localStorageFixture(
+  environmentId?: EnvironmentId,
+): NonNullable<RunnerAgentsConnection["localWorkspaces"]> {
   const storageAuthorityId = createId("storageAuthority");
   return {
-    inventory: async () => ({ bindings: [], storageAuthorityId, truncated: false }),
-    service: {} as NonNullable<RunnerAgentsConnection["localWorkspaces"]>["service"],
+    inventory: async () => ({
+      bindings: environmentId
+        ? [
+            {
+              bindingId: createId("workspaceBinding"),
+              generation: 1,
+              workspaceId: createId("workspace"),
+              state: "ready" as const,
+            },
+          ]
+        : [],
+      storageAuthorityId,
+      truncated: false,
+    }),
+    service: {
+      scanSkills: async () => ({ status: "complete", skills: [], warnings: [] }),
+    } as unknown as NonNullable<RunnerAgentsConnection["localWorkspaces"]>["service"],
   };
 }

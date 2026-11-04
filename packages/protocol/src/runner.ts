@@ -1,3 +1,4 @@
+import { RunnerSkillMetadataReportSchema } from "./runner-skill-metadata.js";
 import { HostAppRequestSchema, RunnerAppResultSchema } from "./apps.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import {
@@ -1750,6 +1751,7 @@ export const RunnerVoiceResultSchema = z.discriminatedUnion("ok", [
 export type RunnerVoiceResult = z.infer<typeof RunnerVoiceResultSchema>;
 
 export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
+  RunnerSkillMetadataReportSchema,
   RunnerAppResultSchema,
   ...RunnerWorkspaceLocalResultSchema.options,
   z.strictObject({

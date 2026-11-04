@@ -150,7 +150,7 @@ describe("workspaceHealth", () => {
     expect(health?.heading).toBe("Connect an AI service");
     expect(health?.body).toContain("Connect an account");
     expect(renderToStaticMarkup(<MemoryRouter>{health?.action}</MemoryRouter>)).toContain(
-      'href="/settings/ai-engines"',
+      'href="/settings/ai"',
     );
   });
 

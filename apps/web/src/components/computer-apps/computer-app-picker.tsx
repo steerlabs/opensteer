@@ -67,13 +67,13 @@ export function ComputerAppPicker({
         {computerAppRunsOnPhone(presentation) ? (
           <p className="card__empty">
             No phone is offering {definition.name} yet. Plug an Android phone into a computer and
-            choose Add a phone under <Link to="/settings/computers">Computers</Link>.
+            choose Add a phone under <Link to="/settings/devices/computers">Computers</Link>.
           </p>
         ) : (
           <p className="card__empty">
             No computer is offering {definition.name} yet. Open Opensteer on{" "}
             {computerAppPlatformTargetLabel(presentation?.platforms ?? [])} and add it under{" "}
-            <Link to="/settings/computers">Computers</Link>.
+            <Link to="/settings/devices/computers">Computers</Link>.
           </p>
         )}
       </div>
@@ -138,7 +138,7 @@ export function ComputerAppPicker({
         // own page, not on this picker.
         <p className="computer-apps__summary">
           {definition.name} is on for every computer that offers it. Manage each under{" "}
-          <Link to="/settings/computers">Computers</Link>.
+          <Link to="/settings/devices/computers">Computers</Link>.
         </p>
       ) : null}
       {chosen && presentation ? (

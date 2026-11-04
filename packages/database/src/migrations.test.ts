@@ -156,6 +156,9 @@ const releasedMigrationNames = [
   "0146_every_turn_shows",
   "0147_quiet_assignment_results",
   "0148_local_mcp_server_secrets",
+  "0149_plugin_owner_settings",
+  "0150_workspace_skill_inventory",
+  "0151_plugin_settings_revisions",
 ];
 
 describe("migration names", () => {

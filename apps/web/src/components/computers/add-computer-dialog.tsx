@@ -110,7 +110,7 @@ export function AddComputerDialog({
           {personal && reachable === false ? (
             <li>
               Turn on remote access for {homeName}, so other computers can reach it.{" "}
-              <Link to="/settings/devices">Open Remote access</Link>
+              <Link to="/settings/account/remote-access">Open Remote access</Link>
             </li>
           ) : null}
           <li>
@@ -120,7 +120,8 @@ export function AddComputerDialog({
               : `. Then open ${deploymentName}.`}
           </li>
           <li>
-            On its Computers page, choose <strong>Add</strong>. It shows up here right away.
+            In Settings → Devices, choose <strong>Add device</strong>, then{" "}
+            <strong>Computer</strong>. It shows up here right away.
           </li>
         </ol>
         {personal ? (

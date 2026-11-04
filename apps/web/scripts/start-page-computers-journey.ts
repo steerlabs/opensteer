@@ -190,7 +190,7 @@ try {
       const second = await focused();
       await page.keyboard.press("ArrowUp");
       await page.keyboard.press("Enter");
-      await page.waitForURL((url) => url.pathname.startsWith("/settings/computers/"));
+      await page.waitForURL((url) => url.pathname.startsWith("/settings/devices/computers/"));
       const observed = { lines, first, second, path: new URL(page.url()).pathname };
       expectThat(
         observed,
@@ -214,7 +214,7 @@ try {
       );
       expectThat(
         observed,
-        observed.path === `/settings/computers/${encodeURIComponent(miniId)}`,
+        observed.path === `/settings/devices/computers/${encodeURIComponent(miniId)}`,
         "the line did not open its computer's page",
       );
       return observed;

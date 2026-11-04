@@ -5,7 +5,7 @@ description: Enroll a computer or resolve its SSH and app access setup when lend
 
 # Set up computer access
 
-Read [Computers](../../../docs/computers.md). In the desktop app, open Settings → Computers
+Read [Computers](../../../docs/computers.md). In the desktop app, open Settings → Devices
 and add the named local computer. Let the owner-session Host choose the grant/target.
 Personal remote access must be on before a remote computer connects; Personal computers
 other than Main cannot execute agents. Do not remove/readd to change execution or reach:

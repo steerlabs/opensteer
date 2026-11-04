@@ -584,6 +584,21 @@ async function functionLocks(client: Client, fingerprint: string): Promise<Funct
         if (!/order\s+by\s+owner_user_id\s+loop/iu.test(byName.get(procedure) ?? ""))
           throw new Error("Authority generation flush no longer orders owner rows");
         orderedDeferredTables.add("integration_authority_generations");
+        if (byName.has("opensteer_flush_plugin_settings_revisions")) {
+          if (
+            !/perform\s+opensteer_flush_plugin_settings_revisions\s*\(\)/iu.test(
+              byName.get(procedure) ?? "",
+            )
+          )
+            throw new Error("Authority flush no longer flushes plugin revisions first");
+          if (
+            !/order\s+by\s+owner_user_id,\s*target_key\s+loop/iu.test(
+              byName.get("opensteer_flush_plugin_settings_revisions") ?? "",
+            )
+          )
+            throw new Error("Plugin revision flush no longer orders owner targets");
+          orderedDeferredTables.add("plugin_owner_settings");
+        }
       }
     }
     triggers.set(table, [
@@ -960,7 +975,14 @@ async function checked(
     const statement = topLevelSql(sql);
     const ordered =
       (!/^\s*(?:update|delete|insert)\b/iu.test(statement) && /\border\s+by\b/iu.test(statement)) ||
-      (flushingDeferred && state.orderedDeferredTables.has(table));
+      (flushingDeferred && state.orderedDeferredTables.has(table)) ||
+      (table === "plugin_owner_settings" &&
+        state.orderedDeferredTables.has(table) &&
+        classification.ts.some(
+          (token, index) =>
+            token.text === "opensteer_flush_plugin_settings_revisions" &&
+            classification.ts[index + 1]?.text === "(",
+        ));
     const existing = [...acquired].filter(([key, mode]) => {
       const held = state.held.get(table + ":" + key);
       return (

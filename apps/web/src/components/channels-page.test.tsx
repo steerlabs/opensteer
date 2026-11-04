@@ -1,3 +1,7 @@
+import { MemoryRouter } from "react-router";
+import { MockHostClient } from "@opensteer/client/mock";
+import { unwrapRpcResult } from "@opensteer/client/host";
+import { ToastProvider } from "./toast.js";
 // @vitest-environment happy-dom
 
 import {
@@ -12,8 +16,9 @@ import {
 import type { WorkspaceSummary } from "@opensteer/client/host";
 import { act, type ComponentProps, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ChannelsPage,
   AccessRequests,
   AccessPolicyEditor,
   AccountRoutes,
@@ -513,3 +518,58 @@ function submitButton(container: HTMLElement): HTMLButtonElement {
   if (!match) throw new Error("Missing submit button.");
   return match;
 }
+
+const shell = vi.hoisted(() => ({ value: null as unknown }));
+vi.mock("./app-shell.js", () => ({ useShell: () => shell.value }));
+it("selects only the Messaging connection named by the child route", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  const loaded = unwrapRpcResult(await client.rpc["channels.get"]({}));
+  const dashboard = ChannelDashboardSchema.parse({
+    ...loaded,
+    connections: ["Support channel", "Team channel"].map((displayName) => ({
+      capabilities: [],
+      connectionMethod: "api-key",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      displayName,
+      externalIdentityId: null,
+      externalTenantId: null,
+      id: createChannelId("connection"),
+      ownerUserId: client.getSnapshot().user!.id,
+      provider: "slack",
+      status: "connected",
+      statusDetail: null,
+      statusReason: null,
+      transportKind: "socket",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    })),
+  });
+  const rpc = client.rpc;
+  Object.defineProperty(client, "rpc", {
+    value: new Proxy(rpc, {
+      get: (target, key) =>
+        key === "channels.get"
+          ? async () => ({ ok: true, data: dashboard })
+          : Reflect.get(target, key),
+    }),
+  });
+  expect(dashboard.connections.length).toBeGreaterThan(1);
+  const selected = dashboard.connections[0]!;
+  const other = dashboard.connections.find((connection) => connection.id !== selected.id)!;
+  shell.value = { hostClient: client, snapshot: client.getSnapshot() };
+  try {
+    const { container } = await mount(
+      <MemoryRouter initialEntries={[`/settings/messaging/${selected.id}`]}>
+        <ToastProvider>
+          <ChannelsPage embedded />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      await vi.waitFor(() => expect(container.textContent).toContain(selected.displayName));
+    });
+    expect(container.textContent).not.toContain(other.displayName);
+    expect(container.querySelector('a[href="/settings/messaging"]')).not.toBeNull();
+  } finally {
+    client.dispose();
+  }
+});

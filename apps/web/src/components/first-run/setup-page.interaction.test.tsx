@@ -133,7 +133,7 @@ async function mount() {
         <Routes>
           <Route element={<SetupPage />} path="/get-started" />
           <Route element={<p>Chat home</p>} path="/" />
-          <Route element={<p>AI settings</p>} path="/settings/ai-engines" />
+          <Route element={<p>AI settings</p>} path="/settings/ai" />
         </Routes>
       </MemoryRouter>,
     ),
