@@ -1,4 +1,3 @@
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import { app, autoUpdater as nativeUpdater } from "electron";
 import { autoUpdater } from "electron-updater";
 import {
@@ -167,9 +166,7 @@ export class DesktopUpdater {
     this.#set({ status: "downloading", downloadPercent: 0, failed: null });
     await this.#exclusive(async () => {
       try {
-        await withTimeout(autoUpdater.downloadUpdate(), desktopUpdateReadinessMs, {
-          timeoutError: () => new Error("Desktop update download deadline exceeded"),
-        });
+        await autoUpdater.downloadUpdate();
       } catch {
         if (this.#state.status === "downloading") this.#failDownload();
       }
@@ -222,11 +219,12 @@ export class DesktopUpdater {
       "local",
       async () => {
         if (!this.#state.availableVersion) return;
-        const ready = this.#waitForReadiness();
-        this.#readiness = ready;
+        const ready = this.#nativeReadiness();
+        this.#readiness = ready.settled;
         // Local Download returns after transfer; keep its reservation through native verification.
-        void ready.catch(() => {});
+        void ready.settled.catch(() => {});
         await this.#download();
+        ready.startDeadline();
       },
       true,
     );
@@ -245,10 +243,11 @@ export class DesktopUpdater {
           if (this.#state.availableVersion !== target)
             throw new Error("The desktop update offer changed.");
           if (this.#state.status === "downloaded") return;
-          const ready = this.#waitForReadiness();
-          void ready.catch(() => {});
+          const ready = this.#nativeReadiness();
+          void ready.settled.catch(() => {});
           await this.#download();
-          await ready;
+          ready.startDeadline();
+          await ready.settled;
         },
         restart: (install) => this.#restart(install),
       }),
@@ -303,10 +302,15 @@ export class DesktopUpdater {
     }
   }
 
-  #waitForReadiness(): Promise<void> {
-    if (this.#state.status === "downloaded") return Promise.resolve();
-    return new Promise<void>((resolve, reject) => {
+  /** The deadline covers Squirrel's verification only: transfer time depends on the link. */
+  #nativeReadiness(): { settled: Promise<void>; startDeadline(): void } {
+    if (this.#state.status === "downloaded")
+      return { settled: Promise.resolve(), startDeadline: () => {} };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let done = false;
+    const settled = new Promise<void>((resolve, reject) => {
       const finish = (failed: boolean) => {
+        done = true;
         clearTimeout(timer);
         unsubscribe();
         if (failed) reject(new Error("The desktop update could not be staged."));
@@ -316,11 +320,15 @@ export class DesktopUpdater {
         if (state.status === "downloaded") finish(false);
         else if (state.status === "error") finish(true);
       });
-      const timer = setTimeout(() => {
-        this.#failDownload();
-      }, desktopUpdateReadinessMs);
-      timer.unref?.();
     });
+    return {
+      settled,
+      startDeadline: () => {
+        if (done) return;
+        timer = setTimeout(() => this.#failDownload(), desktopUpdateReadinessMs);
+        timer.unref?.();
+      },
+    };
   }
 
   #applyChannel(): void {

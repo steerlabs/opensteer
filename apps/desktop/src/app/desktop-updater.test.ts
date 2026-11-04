@@ -531,16 +531,14 @@ it("reserves the full remote action and waits for journal acknowledgements befor
   }
 });
 
-it.each(["native-error", "native-deadline", "download-deadline"])(
+it.each(["native-error", "native-deadline"])(
   "settles a reserved remote update after %s",
   async (failure) => {
     vi.useFakeTimers();
     const { desktopUpdateReadinessMs } = await import("./desktop-updater.js");
     const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
     mocks.updater.checkForUpdates.mockResolvedValue(offer("0.1.450"));
-    mocks.updater.downloadUpdate.mockImplementation(() =>
-      failure === "download-deadline" ? new Promise(() => {}) : Promise.resolve([]),
-    );
+    mocks.updater.downloadUpdate.mockResolvedValue([]);
     const action = updater.remoteAction(async (reserved) => {
       await reserved.check();
       await reserved.download("0.1.450");
@@ -558,6 +556,26 @@ it.each(["native-error", "native-deadline", "download-deadline"])(
     expect(vi.getTimerCount()).toBe(0);
   },
 );
+
+it("gives a slow transfer as long as it needs before the verification deadline starts", async () => {
+  vi.useFakeTimers();
+  const { desktopUpdateReadinessMs } = await import("./desktop-updater.js");
+  const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
+  mocks.updater.checkForUpdates.mockResolvedValue(offer("0.1.450"));
+  const transfer = Promise.withResolvers<string[]>();
+  mocks.updater.downloadUpdate.mockReturnValue(transfer.promise);
+  const action = updater.remoteAction(async (reserved) => {
+    await reserved.check();
+    await reserved.download("0.1.450");
+  });
+  const failed = expect(action).rejects.toThrow("staged");
+  await vi.advanceTimersByTimeAsync(desktopUpdateReadinessMs * 3);
+  expect(updater.state()).toMatchObject({ status: "downloading", reservedBy: "remote" });
+  transfer.resolve([]);
+  await vi.advanceTimersByTimeAsync(desktopUpdateReadinessMs);
+  await failed;
+  expect(updater.state()).toMatchObject({ status: "error", failed: "download" });
+});
 
 it("finishes a remote channel selection without staging when the selected track is behind", async () => {
   const { DesktopUpdateExecutor } = await import("../connections/desktop-update-executor.js");

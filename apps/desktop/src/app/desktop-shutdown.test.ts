@@ -155,6 +155,8 @@ it.each([false, true])(
 it("installs a ready update on ordinary quit only after cleanup", async () => {
   const { shutdown, application } = fixture();
   const calls: string[] = [];
+  const recover = vi.fn();
+  shutdown.setUpdateRecovery(recover);
   shutdown.add({
     component: "child",
     step: "stop",
@@ -173,6 +175,7 @@ it("installs a ready update on ordinary quit only after cleanup", async () => {
   expect(application.exit).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(desktopShutdownTimeoutMs);
   expect(application.exit).toHaveBeenCalledWith(1);
+  expect(recover).not.toHaveBeenCalled();
 });
 
 it.each(["throw", "watchdog"])(

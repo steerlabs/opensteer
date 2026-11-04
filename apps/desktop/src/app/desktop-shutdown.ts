@@ -101,10 +101,14 @@ export class DesktopShutdown {
       }
       this.#application.exit(1);
     };
+    // Only a requested update relaunches; someone quitting the app expects it to stay closed.
+    const exitFailed = () => {
+      if (this.#updateRejected) recoverUpdate();
+      else this.#application.exit(1);
+    };
     const watchdog = setTimeout(() => {
       this.#log("desktop.shutdown.deadline", { elapsedMs: performance.now() - started });
-      if (install) recoverUpdate();
-      else this.#application.exit(1);
+      exitFailed();
     }, desktopShutdownTimeoutMs);
     this.#startup.abort(new Error("The desktop is quitting."));
     void (async () => {
@@ -130,7 +134,7 @@ export class DesktopShutdown {
         } catch {
           this.#log("desktop.shutdown.update-handoff-failed", {});
           clearTimeout(watchdog);
-          recoverUpdate();
+          exitFailed();
           return;
         }
       }
