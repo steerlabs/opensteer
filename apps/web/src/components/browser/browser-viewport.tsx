@@ -1115,7 +1115,13 @@ export function BrowserViewport({
         onBlur={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget)) {
             cancelVideoGesture();
-            cancelInput(activeSurfaceId);
+            const popup =
+              popupTarget?.get().popup &&
+              event.currentTarget
+                .closest(".browser-stage")
+                ?.querySelector(".browser-popup, .browser-popup-suggestions");
+            if (!(event.relatedTarget instanceof Node && popup?.contains(event.relatedTarget)))
+              cancelInput(activeSurfaceId);
           }
         }}
         onFocusCapture={(event) => {

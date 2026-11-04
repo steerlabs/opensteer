@@ -11,6 +11,7 @@ import { browserVideoFrameView } from "@opensteer/client/host/browser-video";
 import { browserVideoTestHeader } from "@opensteer/protocol/test-support/browser-video";
 import { BrowserSurfaceIdSchema, TargetedBrowserClientMessageSchema } from "@opensteer/protocol";
 import { BrowserViewport } from "./browser-viewport.js";
+import { BrowserPopup } from "./browser-popup.js";
 
 vi.mock("../remote-editing/remote-editing-proxy.js", () => ({ RemoteEditingProxy: () => null }));
 vi.mock("./browser-presenter.js", async () => {
@@ -92,19 +93,22 @@ it("keeps wheel, touch scroll, hover, right/middle buttons and drag on ordered i
   try {
     await act(async () =>
       root.render(
-        <BrowserViewport
-          activeSurfaceId={surface}
-          canInput
-          frames={frames}
-          live
-          visible
-          occluded={false}
-          targeted
-          sessionId="session"
-          pageFollowsView={false}
-          onCommand={send}
-          onOpenLink={() => {}}
-        />,
+        <div className="browser-stage">
+          <BrowserViewport
+            activeSurfaceId={surface}
+            canInput
+            frames={frames}
+            live
+            visible
+            occluded={false}
+            targeted
+            sessionId="session"
+            pageFollowsView={false}
+            onCommand={send}
+            onOpenLink={() => {}}
+          />
+          <BrowserPopup store={popups} sessionId="session" surfaceId={surface} visible />
+        </div>,
       ),
     );
     const viewport = element.querySelector<HTMLElement>("[data-live-page]")!;
@@ -177,6 +181,10 @@ it("keeps wheel, touch scroll, hover, right/middle buttons and drag on ordered i
           expect.objectContaining({ type: "input.pointer", button, action, geometryRevision: 1 }),
         );
     await pointer("pointermove", { buttons: 0 });
+    const input = document.createElement("input");
+    viewport.append(input);
+    act(() => input.focus());
+    const beforePopup = commands.filter((command) => command.type === "input.cancel").length;
     act(() => {
       popups.negotiate("session", surface, true);
       popups.receive("session", {
@@ -203,6 +211,17 @@ it("keeps wheel, touch scroll, hover, right/middle buttons and drag on ordered i
       });
     });
     expect(popups.target("session", surface).get().popup).not.toBeNull();
+    expect(document.activeElement).toBe(element.querySelector(".browser-popup select"));
+    expect(commands.filter((command) => command.type === "input.cancel")).toHaveLength(beforePopup);
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    act(() => {
+      input.focus();
+      outside.focus();
+    });
+    expect(commands.filter((command) => command.type === "input.cancel")).toHaveLength(
+      beforePopup + 1,
+    );
     const beforeLeave = commands.length;
     await pointer("pointerout", { buttons: 0, relatedTarget: document.body });
     expect(commands).toHaveLength(beforeLeave);
