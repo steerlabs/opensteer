@@ -1,3 +1,4 @@
+import type { AdministrationCommandIdentity } from "./administration-command.js";
 import { createId, OpensteerError, type BrowserProfileId, type UserId } from "@opensteer/core";
 import {
   BrowserFaviconSchema,
@@ -321,6 +322,7 @@ export class BrowserHistoryStore {
   async remove(input: {
     profileId: BrowserProfileId;
     ownerId: UserId;
+    administration?: AdministrationCommandIdentity | undefined;
     idempotencyKey: string;
     authoritySource?: Readonly<Record<string, unknown>>;
     url: string;
@@ -331,6 +333,7 @@ export class BrowserHistoryStore {
   async clear(input: {
     profileId: BrowserProfileId;
     ownerId: UserId;
+    administration?: AdministrationCommandIdentity | undefined;
     idempotencyKey: string;
     authoritySource?: Readonly<Record<string, unknown>>;
   }): Promise<boolean> {
@@ -340,6 +343,7 @@ export class BrowserHistoryStore {
   async #forget(input: {
     profileId: BrowserProfileId;
     ownerId: UserId;
+    administration?: AdministrationCommandIdentity | undefined;
     idempotencyKey: string;
     authoritySource?: Readonly<Record<string, unknown>>;
     url?: string;
@@ -387,7 +391,16 @@ export class BrowserHistoryStore {
           id: createId("command"),
           idempotencyKey: input.idempotencyKey,
           lastError: null,
-          payload: jsonValue(payload),
+          payload: jsonValue({
+            ...payload,
+            ...(input.administration
+              ? {
+                  request: input.administration.request,
+                  result: null,
+                  output: await input.administration.output?.(null),
+                }
+              : {}),
+          }),
           requestedBy: input.ownerId,
           runId: null,
           status: "succeeded",

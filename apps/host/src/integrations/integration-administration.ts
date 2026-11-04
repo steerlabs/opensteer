@@ -1,3 +1,4 @@
+import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import type { HostApiCommand, HostApiCommandOutput } from "@opensteer/protocol";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
@@ -42,21 +43,28 @@ export async function executeIntegrationAdministration(
   actor: AdministrationActor,
   command: IntegrationAdministrationCommand,
   requestId: string,
+  administration?: AdministrationCommandIdentity | undefined,
 ): Promise<HostApiCommandOutput> {
   switch (command.type) {
     case "integration.mcp.disconnect":
       await options.platform.store.revokeMcpOAuthConnection({
+        administration,
         connectionId: command.connectionId,
         ownerUserId: actor.userId,
         requestId,
       });
       return { type: command.type };
     case "specialist.remove":
-      await options.platform.store.specialists.remove({ ...command, actorUserId: actor.userId });
+      await options.platform.store.specialists.remove({
+        ...command,
+        administration,
+        actorUserId: actor.userId,
+      });
       return { type: command.type };
     case "plugin.activation.set":
       await options.platform.store.plugins.setActivation({
         ...command,
+        administration,
         actorUserId: actor.userId,
       });
       return { type: command.type };
@@ -71,12 +79,13 @@ export async function executeIntegrationAdministration(
             requestId,
           });
       }
-      await options.platform.store.plugins.remove(command.pluginId);
+      await options.platform.store.plugins.remove(command.pluginId, administration);
       return { type: command.type };
     }
     case "plugin.update":
       assertAdministrator(actor);
       await options.platform.installAgentPlugin({
+        administration,
         actorUserId: actor.userId,
         directory: command.input.directory,
         pluginId: command.pluginId,
@@ -87,6 +96,7 @@ export async function executeIntegrationAdministration(
     case "integration.uninstall": {
       assertAdministrator(actor);
       const outcome = await options.platform.uninstallIntegration({
+        administration,
         actorUserId: actor.userId,
         installationId: command.installationId,
         requestId,
@@ -95,6 +105,7 @@ export async function executeIntegrationAdministration(
     }
     case "integration.grant.revoke":
       await options.platform.revokeGrant({
+        administration,
         grantId: command.grantId,
         ownerUserId: actor.userId,
         requestId,
@@ -107,6 +118,7 @@ export async function executeIntegrationAdministration(
         actor,
         command.connectionId,
         requestId,
+        administration,
       );
   }
 }
@@ -119,8 +131,10 @@ export async function disconnectIntegration(
   actor: AdministrationActor,
   connectionId: Extract<HostApiCommand, { type: "integration.disconnect" }>["connectionId"],
   requestId: string,
+  administration?: AdministrationCommandIdentity | undefined,
 ) {
   const input = {
+    administration,
     connectionId: connectionId,
     ownerUserId: actor.userId,
     requestId,

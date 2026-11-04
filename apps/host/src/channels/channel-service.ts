@@ -1,3 +1,4 @@
+import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { sha256Base64Url } from "@opensteer/core/crypto";
 import {
@@ -445,8 +446,13 @@ export class ChannelService {
     return inspection;
   }
 
-  async revokeBinding(bindingId: string, ownerUserId: UserId): Promise<void> {
+  async revokeBinding(
+    bindingId: string,
+    ownerUserId: UserId,
+    administration?: AdministrationCommandIdentity | undefined,
+  ): Promise<void> {
     const changed = await this.#channels.revokeBinding({
+      administration,
       bindingId: ChannelBindingIdSchema.parse(bindingId),
       ownerUserId,
     });
@@ -500,11 +506,13 @@ export class ChannelService {
     connectionId: string,
     ownerUserId: UserId,
     status: "connected" | "paused" | "revoked",
+    administration?: AdministrationCommandIdentity | undefined,
   ): Promise<void> {
     await this.#channels.setConnectionStatus(
       IntegrationConnectionIdSchema.parse(connectionId),
       ownerUserId,
       status,
+      administration,
     );
     await this.syncRuntimes();
     this.#onChanged();

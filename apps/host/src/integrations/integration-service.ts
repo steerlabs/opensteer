@@ -1,3 +1,4 @@
+import type { AdministrationCommandIdentity } from "@opensteer/database";
 import {
   IntegrationAccountBindingSchema,
   validateIntegrationAccountBinding,
@@ -1663,6 +1664,7 @@ export class IntegrationService {
    * reporting success would claim a revocation that never happened.
    */
   async disconnect(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly connectionId: IntegrationConnectionId;
     readonly ownerUserId: UserId;
     readonly requestId: string;
@@ -1758,7 +1760,18 @@ export class IntegrationService {
       { status: "revoked" },
       connectionSecretContext(record.connection.id, input.ownerUserId, record.connection.provider),
     );
-    await this.#repository.revokeConnection({ ...input, credential });
+    await this.#repository.revokeConnection({
+      ...input,
+      credential,
+      ...(input.administration
+        ? {
+            administration: {
+              ...input.administration,
+              output: () => ({ type: "integration.disconnect", ...outcome }),
+            },
+          }
+        : {}),
+    });
     return outcome;
   }
 

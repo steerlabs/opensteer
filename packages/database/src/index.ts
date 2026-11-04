@@ -41,3 +41,5 @@ export * from "./agent-connection-store.js";
 export * from "./thread-caller.js";
 
 export { readThreadWaitSnapshot } from "./thread-wait.js";
+
+export * from "./administration-command.js";

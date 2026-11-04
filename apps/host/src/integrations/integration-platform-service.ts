@@ -1,3 +1,4 @@
+import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { z } from "zod";
 import {
   ComputerReplService,
@@ -727,6 +728,7 @@ export class IntegrationPlatformService {
   }
 
   async revokeGrant(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly grantId: IntegrationGrant["id"];
     readonly ownerUserId: UserId;
     readonly requestId: string;
@@ -955,6 +957,7 @@ export class IntegrationPlatformService {
   }
 
   async installAgentPlugin(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly actorUserId: UserId;
     readonly directory: string;
     readonly workspaceId?: import("@opensteer/core").WorkspaceId;
@@ -1010,6 +1013,7 @@ export class IntegrationPlatformService {
       },
     };
     const mutation = await this.#store.install({
+      administration: input.administration,
       beforeInstall: async (transaction) => {
         if (input.pluginId) await this.#store.plugins.update({ pluginId, ...version }, transaction);
         else
@@ -1430,6 +1434,7 @@ export class IntegrationPlatformService {
    * command, which an administrator runs deliberately.
    */
   async uninstallIntegration(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly actorUserId: UserId;
     readonly installationId: IntegrationInstallationId;
     readonly requestId: string;
