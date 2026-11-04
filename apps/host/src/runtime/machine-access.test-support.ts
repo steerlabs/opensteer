@@ -343,6 +343,9 @@ export function startMachineAccessHost(
   databaseUrl: string,
   options: {
     readonly logger?: Record<string, unknown>;
+    readonly phoneUpdateRelease?: NonNullable<
+      Parameters<typeof createHostRuntime>[1]
+    >["phoneUpdateRelease"];
     readonly browserActivityClock?: import("@opensteer/shared/clock").Clock;
     /** The name its administrator gave the Deployment; unnamed otherwise. */
     readonly deploymentName?: string;
@@ -396,6 +399,7 @@ async function createMachineAccessHost(
   };
   try {
     runtime = await createHostRuntime(config, {
+      ...(options.phoneUpdateRelease ? { phoneUpdateRelease: options.phoneUpdateRelease } : {}),
       ...(options.browserActivityClock
         ? { browserActivityClock: options.browserActivityClock }
         : {}),
