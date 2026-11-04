@@ -117,6 +117,12 @@ integration("workspace epoch and producer negotiation", () => {
         { agentReady: true, workspaceTabs: true },
       );
       cleanup.push(() => producer.close());
+      // The Host admits sessions only after it reconciles the producer's profile inventory.
+      await until(async () =>
+        (await host.runtime.browser.bootstrap(host.ownerId)).placements.some(
+          (placement) => placement.runnerId === producer.runnerId && placement.available,
+        ),
+      );
       const started = await host.runtime.browser.start({
         ownerId: host.ownerId,
         workspaceId: run.workspaceId,
@@ -182,9 +188,9 @@ integration("workspace epoch and producer negotiation", () => {
   );
 });
 
-async function until(condition: () => boolean): Promise<void> {
+async function until(condition: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 10_000;
-  while (!condition()) {
+  while (!(await condition())) {
     if (Date.now() >= deadline) throw new Error("Negotiation state did not settle");
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
