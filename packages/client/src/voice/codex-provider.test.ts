@@ -1,7 +1,8 @@
+import { createId } from "@opensteer/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostApiClient } from "@opensteer/protocol";
 import { voiceRenewIntervalMs } from "@opensteer/protocol/voice";
-import type { VoiceCallEvent, VoiceMediaPort } from "./contract.js";
+import { VoiceStartError, type VoiceCallEvent, type VoiceMediaPort } from "./contract.js";
 import { createCodexVoiceProvider } from "./codex-provider.js";
 import { settle, voiceTestId } from "./voice.test-support.js";
 
@@ -50,7 +51,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function setup(agent = false, find = false) {
+const started = {
+  answer: "answer",
+  threadId: createId("thread"),
+  runId: createId("run"),
+  workspaceId: createId("workspace"),
+};
+
+function setup() {
   const peer = new FakePeer();
   const track = { enabled: true, stop: vi.fn() };
   const stream = {
@@ -70,10 +78,11 @@ function setup(agent = false, find = false) {
   const rpc = {
     "voice.start": vi.fn<HostApiClient["voice.start"]>(async () => ({
       ok: true,
-      data: { answer: "answer" },
+      data: started,
     })),
     "voice.renew": vi.fn<HostApiClient["voice.renew"]>(async () => ({ ok: true, data: {} })),
     "voice.say": vi.fn<HostApiClient["voice.say"]>(async () => ({ ok: true, data: {} })),
+    "voice.context": vi.fn<HostApiClient["voice.context"]>(async () => ({ ok: true, data: {} })),
     "voice.stop": vi.fn<HostApiClient["voice.stop"]>(async () => ({ ok: true, data: {} })),
   };
   const events: VoiceCallEvent[] = [];
@@ -81,8 +90,6 @@ function setup(agent = false, find = false) {
   const provider = createCodexVoiceProvider({
     media,
     rpc,
-    agent,
-    find,
     environmentId: "environment",
     harnessInstanceId: "account",
     createId: () => voiceTestId,
@@ -94,7 +101,6 @@ function setup(agent = false, find = false) {
     stopPlayback,
     media,
     rpc,
-    agent,
     events,
     abort,
     open: () => provider.open({ signal: abort.signal, onEvent: (event) => events.push(event) }),
@@ -109,27 +115,6 @@ function refusal(reason: string) {
 }
 
 describe("Codex voice provider", () => {
-  it.each([false, true].flatMap((host) => [false, true].map((runner) => ({ host, runner }))))(
-    "negotiates find with Host=$host Runner=$runner",
-    async ({ host, runner }) => {
-      const f = setup(true, host);
-      f.rpc["voice.start"].mockResolvedValue({
-        ok: true,
-        data: { answer: "answer", agent: true, ...(host ? { find: runner } : {}) },
-      });
-      const call = await f.open();
-      expect(f.rpc["voice.start"].mock.calls[0]![0]).toEqual({
-        environmentId: "environment",
-        harnessInstanceId: "account",
-        sessionId: voiceTestId,
-        offer: "offer",
-        agent: true,
-        ...(host ? { find: true } : {}),
-      });
-      expect(call.find).toBe(host && runner);
-      await call.close();
-    },
-  );
   it("negotiates sendrecv audio, plays remote audio, receives V3, meters, mutes, renews and closes without any channel writes", async () => {
     const f = setup();
     const call = await f.open();
@@ -189,15 +174,20 @@ describe("Codex voice provider", () => {
     expect(f.track.enabled).toBe(false);
     call.setMuted(false);
     expect(f.track.enabled).toBe(true);
-    await call.say("Hello");
+    // After start, the Host knows the call by its session alone.
+    const { answer: _answer, ...identity } = started;
+    expect(call.identity).toEqual(identity);
+    await call.say("message:one", "Hello");
     expect(f.rpc["voice.say"]).toHaveBeenCalledWith({
-      environmentId: "environment",
-      harnessInstanceId: "account",
       sessionId: voiceTestId,
+      id: "message:one",
       text: "Hello",
     });
+    const view = { threadId: started.threadId, tabId: null };
+    await call.view(view);
+    expect(f.rpc["voice.context"]).toHaveBeenCalledWith({ sessionId: voiceTestId, view });
     await vi.advanceTimersByTimeAsync(voiceRenewIntervalMs - 100);
-    expect(f.rpc["voice.renew"]).toHaveBeenCalledTimes(1);
+    expect(f.rpc["voice.renew"]).toHaveBeenCalledExactlyOnceWith({ sessionId: voiceTestId });
     await call.close();
     await call.close();
     expect(f.peer.close).toHaveBeenCalledTimes(1);
@@ -237,6 +227,7 @@ describe("Codex voice provider", () => {
     ["voice-runner-unsupported", "update-computer"],
     ["voice-engine-unsupported", "update-codex"],
     ["voice-account-unavailable", "no-account"],
+    ["voice-chat-required", "chat-required"],
     ["voice-refused", "refused"],
     ["other", "connection-failed"],
   ])("maps %s to %s and releases the microphone", async (reason, failure) => {
@@ -282,12 +273,8 @@ describe("Codex voice provider", () => {
     f.abort.abort();
     await rejected;
     expect(f.track.stop).toHaveBeenCalledTimes(1);
-    expect(f.rpc["voice.stop"]).toHaveBeenCalledWith({
-      sessionId: voiceTestId,
-      environmentId: "environment",
-      harnessInstanceId: "account",
-    });
-    admit({ ok: true, data: { answer: "late" } });
+    expect(f.rpc["voice.stop"]).toHaveBeenCalledWith({ sessionId: voiceTestId });
+    admit({ ok: true, data: { ...started, answer: "late" } });
     await opening.catch(() => {});
     expect(f.peer.setRemoteDescription).not.toHaveBeenCalled();
     expect(f.rpc["voice.stop"]).toHaveBeenCalledTimes(2);
@@ -357,15 +344,23 @@ describe("Codex voice provider", () => {
 
   it("closes on renewal refusal and ignores any later speech or meter callback", async () => {
     const f = setup();
-    f.rpc["voice.renew"].mockResolvedValue(refusal("voice-ended"));
+    const busy = { ok: false as const, error: { ...refusal("other").error, retryable: true } };
+    // A Host that is restarting answers retryably: the call and its controls carry on.
+    f.rpc["voice.renew"].mockResolvedValueOnce(busy).mockResolvedValue(refusal("voice-ended"));
+    f.rpc["voice.say"].mockResolvedValueOnce(busy);
     const call = await f.open();
     await vi.advanceTimersByTimeAsync(voiceRenewIntervalMs);
+    expect(f.events.some((event) => event.type === "closed")).toBe(false);
+    await expect(call.say("message:one", "Hi")).rejects.not.toBeInstanceOf(VoiceStartError);
+    expect(f.events.some((event) => event.type === "closed")).toBe(false);
+    await vi.advanceTimersByTimeAsync(voiceRenewIntervalMs);
+    expect(f.rpc["voice.renew"]).toHaveBeenCalledTimes(2);
     expect(f.events.at(-1)).toEqual({ type: "closed", reason: "replaced" });
     const count = f.events.length;
     f.peer.receive({ type: "turn.done", turn: { role: "user", transcript: "late" } });
     await vi.advanceTimersByTimeAsync(1_000);
     expect(f.events).toHaveLength(count);
-    await expect(call.say("late")).rejects.toMatchObject({ failure: "connection-failed" });
+    await expect(call.say("late", "late")).rejects.toMatchObject({ failure: "connection-failed" });
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -391,11 +386,7 @@ describe("Codex voice provider", () => {
     expect(f.peer.setLocalDescription, "offer was never set").toHaveBeenCalled();
     f.abort.abort();
     await rejected;
-    expect(f.rpc["voice.stop"]).toHaveBeenCalledWith({
-      sessionId: voiceTestId,
-      environmentId: "environment",
-      harnessInstanceId: "account",
-    });
+    expect(f.rpc["voice.stop"]).toHaveBeenCalledWith({ sessionId: voiceTestId });
     expect(f.rpc["voice.start"]).not.toHaveBeenCalled();
     expect(f.track.stop).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
@@ -409,7 +400,9 @@ describe("Codex voice provider", () => {
       throw new Error("native close failed");
     });
     f.rpc["voice.say"].mockResolvedValue(refusal("voice-ended"));
-    await expect(call.say("hello")).rejects.toMatchObject({ failure: "connection-failed" });
+    await expect(call.say("hello", "hello")).rejects.toMatchObject({
+      failure: "connection-failed",
+    });
     expect(f.track.stop).toHaveBeenCalledTimes(1);
     expect(f.stopPlayback).toHaveBeenCalledTimes(1);
     expect(f.events.at(-1)).toEqual({ type: "closed", reason: "replaced" });
@@ -417,23 +410,4 @@ describe("Codex voice provider", () => {
     expect(f.rpc["voice.stop"]).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });
-});
-
-it.each([false, true])("negotiates agent support only when advertised (%s)", async (advertised) => {
-  const f = setup(advertised);
-  f.rpc["voice.start"].mockResolvedValue({
-    ok: true,
-    data: { answer: "answer", agent: advertised },
-  });
-  const call = await f.open();
-  const sent = f.rpc["voice.start"].mock.calls[0]![0];
-  expect("agent" in sent).toBe(advertised);
-  expect(call.agent).toBe(advertised);
-  await call.close();
-});
-it("falls back when the Runner does not accept agent mode", async () => {
-  const f = setup(true);
-  const call = await f.open();
-  expect(call.agent).toBe(false);
-  await call.close();
 });

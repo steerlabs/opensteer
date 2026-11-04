@@ -893,10 +893,8 @@ export interface HostSnapshot {
   searchSuggestionsAvailable?: boolean;
   iphoneAppsAvailable: boolean;
   ownerViewWindowsAvailable?: boolean;
-  /** The Host advertises voice-v1; absent on older Hosts. */
+  /** The Host advertises voice-run-v1: a call's agent runs as a Run with Opensteer's tools. */
   voiceAvailable?: boolean;
-  voiceAgentAvailable?: boolean;
-  voiceFindAvailable?: boolean;
   threads: ThreadSummary[];
   transcriptWindows: Record<string, TranscriptWindow>;
   transcripts: Record<string, TranscriptEntry[]>;
