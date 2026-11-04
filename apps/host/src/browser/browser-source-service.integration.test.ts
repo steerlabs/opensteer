@@ -2287,7 +2287,8 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const asked = await service.agentSignIn({ ...agent, callId, site });
     if (asked.status !== "pending") throw new Error("Expected a pending Request");
 
-    const chrome = await connectChrome(await pairChrome(ownerId, "Chrome"), "no-state");
+    const paired = await pairChrome(ownerId, "Chrome");
+    const chrome = await connectChrome(paired, "no-state");
     await waitFor(async () => (await store.requests.get(asked.requestId))?.status === "fulfilled");
     expect(await store.requests.get(asked.requestId)).toMatchObject({
       response: { kind: "external", value: { outcome: "not-signed-in" } },
@@ -2301,8 +2302,36 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     });
     expect(chrome.exports).toBe(0);
     expect(connection.imports()).toHaveLength(0);
-    expect(serviceErrors).toEqual([]);
+
+    // Chrome reconnects and finishes its check while the next Request is still being stored.
     await chrome.close();
+    const opening = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const create = store.requests.create.bind(store.requests);
+    const creating = vi.spyOn(store.requests, "create").mockImplementationOnce(async (input) => {
+      opening.resolve();
+      await release.promise;
+      return create(input);
+    });
+    const checked = vi.spyOn(store.requests, "listUngrantedBrowserSignIns");
+    try {
+      const late = service.agentSignIn({ ...agent, callId: randomUUID(), site });
+      await opening.promise;
+      const again = await connectChrome(paired, "no-state");
+      await vi.waitFor(() => expect(checked).toHaveBeenCalled(), { timeout: 5_000 });
+      await checked.mock.results[0]!.value;
+      release.resolve();
+      const lateAsk = await late;
+      if (lateAsk.status !== "pending") throw new Error("Expected a pending Request");
+      await waitFor(
+        async () => (await store.requests.get(lateAsk.requestId))?.status === "fulfilled",
+      );
+      await again.close();
+    } finally {
+      creating.mockRestore();
+      checked.mockRestore();
+    }
+    expect(serviceErrors).toEqual([]);
   });
 
   it("answers without a Request when it can, and refuses what Chrome or the runtime cannot do", async () => {

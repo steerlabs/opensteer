@@ -697,7 +697,21 @@ export class BrowserSourceService {
     if (candidates.length > 0 && candidates.every((candidate) => candidate.status === "no-state")) {
       return { site, status: "not-signed-in" };
     }
-    return ask();
+    const asked = await ask();
+    // A Chrome that connected after `candidates` may have run its check before
+    // this Request was stored; check again for it.
+    const connectedSince = (await this.#store.list(input.ownerId)).some(
+      (source) =>
+        this.#isConnected(source.id) &&
+        !candidates.some(
+          (candidate) => candidate.source.id === source.id && candidate.status !== "offline",
+        ),
+    );
+    if (asked.status === "pending" && !asked.replayed && connectedSince) {
+      const request = await this.#requests.get(asked.requestId);
+      if (request) await this.#endIfUnservable(input.ownerId, request, new Map());
+    }
+    return asked;
   }
 
   passwordSignInGet(input: Parameters<PasswordSignInService["get"]>[0]) {
@@ -869,39 +883,10 @@ export class BrowserSourceService {
         ownerId,
       });
       if (page.length === 0) return;
-      const sources = await this.#store.list(ownerId);
       for (const request of page) {
         if (this.#closed || !this.#isConnected(sourceId)) return;
-        if (request.payload.kind !== "browser.sign-in") continue;
-        const { site } = request.payload;
-        let check = unservable.get(site);
-        if (!check) {
-          check = this.#candidates(sources, site).then(
-            (candidates) =>
-              candidates.length > 0 &&
-              candidates.every((candidate) => candidate.status === "no-state"),
-          );
-          unservable.set(site, check);
-        }
-        if (!(await check)) continue;
         try {
-          // In the Request's turn, after an Allow already delivering.
-          await this.#inTurn(`request\0${request.id}`, async () => {
-            const grant = await this.#store.getGrant({
-              ownerId,
-              site,
-              workspaceId: request.targetWorkspaceId,
-            });
-            if (grant) return;
-            const settled = await this.#requests.fulfilBrowserSignInRequest({
-              ownerId,
-              requestId: request.id,
-              response: { outcome: "not-signed-in" },
-            });
-            if (!settled) return;
-            for (const event of settled.events) this.#onWorkspaceEvent(event);
-            this.#onRequestResolved();
-          });
+          await this.#endIfUnservable(ownerId, request, unservable);
         } catch (error) {
           this.#onError(error);
         }
@@ -909,6 +894,46 @@ export class BrowserSourceService {
       if (page.length < drainPageSize) return;
       after = page.at(-1)!.id;
     }
+  }
+
+  /** `unservable` memoizes each site's check across one pass. */
+  async #endIfUnservable(
+    ownerId: UserId,
+    request: Request,
+    unservable: Map<string, Promise<boolean>>,
+  ): Promise<void> {
+    if (request.payload.kind !== "browser.sign-in") return;
+    const { site } = request.payload;
+    let check = unservable.get(site);
+    if (!check) {
+      check = this.#store
+        .list(ownerId)
+        .then((sources) => this.#candidates(sources, site))
+        .then(
+          (candidates) =>
+            candidates.length > 0 &&
+            candidates.every((candidate) => candidate.status === "no-state"),
+        );
+      unservable.set(site, check);
+    }
+    if (!(await check)) return;
+    // In the Request's turn, after an Allow already delivering.
+    await this.#inTurn(`request\0${request.id}`, async () => {
+      const grant = await this.#store.getGrant({
+        ownerId,
+        site,
+        workspaceId: request.targetWorkspaceId,
+      });
+      if (grant) return;
+      const settled = await this.#requests.fulfilBrowserSignInRequest({
+        ownerId,
+        requestId: request.id,
+        response: { outcome: "not-signed-in" },
+      });
+      if (!settled) return;
+      for (const event of settled.events) this.#onWorkspaceEvent(event);
+      this.#onRequestResolved();
+    });
   }
 
   /**
