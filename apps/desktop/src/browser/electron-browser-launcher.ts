@@ -1,4 +1,4 @@
-import { electronPopupVersion } from "./electron-popup-support.js";
+import { opensteerOwnerAvailable } from "./opensteer-owner-contract.js";
 import { electronBrowserPresentation } from "./electron-browser-presentation.js";
 import {
   agentCdpAllowlist,
@@ -135,9 +135,8 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   #preparation: Promise<void> | undefined;
   #nativeProfilesAvailable = false;
 
-  #popupVersion: 1 | undefined;
   get popupVersion(): 1 | undefined {
-    return this.#popupVersion;
+    return opensteerOwnerAvailable ? 1 : undefined;
   }
 
   get nativeProfilesAvailable(): boolean {
@@ -162,7 +161,6 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       await app.whenReady();
       // Engine support is stable. Keychain availability is checked on each explicit acquisition.
       this.#nativeProfilesAvailable = true;
-      this.#popupVersion = await electronPopupVersion();
     })();
     return this.#preparation;
   }
@@ -967,11 +965,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     timing?: PageOpenTiming,
   ) {
     this.view = view;
-    if (
-      "_createOpensteerInputOwner" in view.webContents &&
-      typeof view.webContents._createOpensteerInputOwner === "function"
-    )
-      this.presentation = electronBrowserPresentation(view.webContents);
+    if (opensteerOwnerAvailable) this.presentation = electronBrowserPresentation(view.webContents);
     this.initialLoad = initialLoad;
     this.#restingHost = host;
     this.#webContents = view.webContents;

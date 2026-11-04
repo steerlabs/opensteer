@@ -149,14 +149,14 @@ This mode uses committed text with viewer-local preedit. Suggestions follow
 committed characters and IME commits. Live composition, verified replacements and
 unrepresented editing commands refuse visibly until a separately qualified native
 contract supplies them. Private keyboard input, including stock Space and Enter,
-never falls through to ordinary CDP. The supplied native guard also refuses pages
-containing child frames and native views using device emulation. A native pane
+never falls through to ordinary CDP. The supplied native guard also refuses input
+into out-of-process child frames and native views using device emulation. A native pane
 smaller than the retained page uses emulation: it can stream, but private input
 requires an uncropped pane. Refused and uncertain input is never automatically retried.
-Only the qualified desktop framework advertises popup support; stock Electron and
-unqualified headless producers cannot enable it. Shipping another framework needs
-new native qualification and the matching admission in
-[the desktop adapter](../apps/desktop/src/browser/electron-popup-support.ts).
+Only an Electron reporting the exact private owner contract version advertises
+presentation and popups; stock Electron and headless producers cannot enable them.
+An incompatible owner change bumps that version on both sides
+([the desktop adapter](../apps/desktop/src/browser/opensteer-owner-contract.ts)).
 
 Editing is an optional, three-way negotiation. A Runtime advertises
 `modules.browser.editing: 2` with an explicit `clipboard` boolean; the Host copies
