@@ -68,7 +68,10 @@ phone contract. Runtime encoder availability is authenticated status, not a sign
 presentation field. Phones have no Mac approval key. See
 [Runner wire](../apps/agent-phone/app/src/main/kotlin/com/opensteer/agentphone/wire/RunnerWire.kt).
 
-An outdated phone is refused before registration or enrollment consumption. Only a fresh
+The Host refuses protocol-incompatible phones before registration or enrollment consumption,
+regardless of release age. The Android integrations protocol MUST be bumped for new baseline
+operations, newly required observation fields, changed authority semantics, or unnegotiated
+frame changes; optional extensions use negotiated capabilities instead. Only a fresh
 signature from an enrolled identity may mark that machine as needing an update; generation
 fencing prevents a delayed refusal overwriting a newer connection. A compatible connection
 clears the refusal. The independent authenticated update channel must remain usable when
@@ -248,8 +251,8 @@ Debug artifacts must never be offered through the release update channel.
 Proof format 2 signs the complete serialized descriptor before capability interpretation;
 it is independent of integrations protocol and Host API epoch. Pre-v2 phones need one
 same-signer USB update: they cannot authenticate to the v2 update channel. Preserve their
-pairing and keys, including identity-v1 migration. Later enrolled phones can update even
-when integrations refuses them; enrollment tokens cannot download releases.
+pairing and keys, including identity-v1 migration. Later enrolled phones self-update only when the Host refuses them as incompatible;
+there are no optional updates, and enrollment tokens cannot download releases.
 
 The paired Host serves only its immutable startup-verified distribution, with no selectable
 origin or redirect. The phone independently verifies receipt/manifest/APK agreement,
@@ -257,8 +260,10 @@ package, SDK, newer version, nondebuggability and actual permanent signer; Andro
 replacement signatures. Journal attempts before install and bound retries across restarts.
 Equal versions remain installed; downgrades refuse. A committed Android install session
 outlives a network attempt; waiting for the person's confirmation is not an install failure.
-Pending consent keeps the phone retrying its update status without admitting the old app.
-An Android result wakes that loop; declining consent does not consume a failed-install attempt. See
+Consent blocks only the required update while the phone retries its update status.
+The phone abandons pending consent that became obsolete: after compatible admission, or when
+the Host offers a different release.
+An Android result wakes the update loop; declining consent does not consume a failed-install attempt. See
 [update](../apps/agent-phone/app/src/main/kotlin/com/opensteer/agentphone/update).
 
 USB setup grants install permission and records self as installer, including retained
