@@ -1026,7 +1026,6 @@ class CodexHarnessSession implements HarnessSession {
 
   async generateTitle({ prompt, signal }: HarnessTitleInput): Promise<string> {
     const context = this.#context;
-    if (this.#source.sourceId !== codexOpenAiSourceId) return "";
     return withTitleDirectory(context, async (directory) => {
       const environment = {
         ...(await codexProcessEnvironment(
@@ -1120,10 +1119,14 @@ class CodexHarnessSession implements HarnessSession {
           features,
           this.#config.startupTimeoutMs,
         );
-        const light = resolveLightModel(
-          codexCatalogModels(await listCodexModels(client), this.#source.sourceId),
-          codexLightModels,
-        );
+        // Light models are OpenAI's; a compatible endpoint names with the Run's model.
+        const light =
+          this.#source.sourceId === codexOpenAiSourceId
+            ? resolveLightModel(
+                codexCatalogModels(await listCodexModels(client), this.#source.sourceId),
+                codexLightModels,
+              )
+            : undefined;
         const selection = light ?? this.#context.modelSelection;
         const modelId = light?.modelId ?? harnessModelId(this.#context.modelSelection);
         const started = requireObject(

@@ -2719,6 +2719,7 @@ function modelListResponse(ids: readonly string[]): () => Promise<Response> {
 }
 
 interface SetupOptions {
+  readonly sourceId?: "openai" | "openai-compatible";
   readonly accessMode?: HarnessSessionContext["accessMode"];
   readonly additionalWritableRoot?: string;
   readonly environmentOverrides?: Readonly<Record<string, string>>;
@@ -2767,9 +2768,11 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     },
   });
   const harnessInstanceId = createId("harnessInstance") as HarnessInstanceId;
+  const compatible = compatibleContext(directory, "isolated");
   const adapter = await driver.create({
-    sourceId: "openai",
+    sourceId: options.sourceId ?? "openai",
     config: {
+      ...(options.sourceId === "openai-compatible" ? compatible.config : {}),
       ...(options.maxEventItems ? { maxEventItems: options.maxEventItems } : {}),
       ...(options.maxProtocolLineBytes
         ? { maxProtocolLineBytes: options.maxProtocolLineBytes }
@@ -3099,6 +3102,33 @@ function processExists(pid: number): boolean {
 type JsonRecord = Record<string, unknown>;
 
 describe("Codex Thread naming", () => {
+  it("names compatible-account tasks with the Run's model even when a light model is listed", async () => {
+    const fixture = await setup("thread-name", {
+      sourceId: "openai-compatible",
+      providerStateKind: "isolated",
+    });
+    const context = {
+      ...fixture.context,
+      modelSelection: ModelSelectionSchema.parse({
+        providerId: "openai-compatible",
+        modelId: "compatible-run-model",
+        options: {},
+      }),
+    };
+    const session = await fixture.adapter.startSession(context);
+    try {
+      expect(
+        await session.generateTitle!({ prompt: "Name it", signal: AbortSignal.timeout(2_000) }),
+      ).toBe("Support migration\nheadphones");
+      expect(
+        (await fixture.capture()).findLast((entry) => entry.method === "thread/start")?.params,
+      ).toMatchObject({ model: "compatible-run-model" });
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
   it("names with the task model when no light model is listed", async () => {
     const fixture = await setup("vertical");
     const session = await fixture.adapter.startSession(fixture.context);
