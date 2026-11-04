@@ -774,6 +774,16 @@ export async function steerThreadInputInTransaction(
   transaction: Transaction<DatabaseSchema>,
   request: SteerThreadInputRequest,
 ): Promise<EnqueuedThreadInput> {
+  const voice = await transaction
+    .selectFrom("threads")
+    .select("voiceSessionId")
+    .where("id", "=", request.threadId)
+    .executeTakeFirst();
+  if (voice?.voiceSessionId)
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Voice Threads do not accept steering.",
+    });
   requireBoundedIdentity(request.idempotencyKey, "Steer idempotency key", 255);
   await lockCommandIdempotency(transaction, request.requestedBy, request.idempotencyKey);
   const run = await transaction
@@ -2114,6 +2124,17 @@ export async function enqueueThreadInputInTransaction(
   transaction: Transaction<DatabaseSchema>,
   request: EnqueueThreadInputRequest,
 ): Promise<EnqueuedThreadInput> {
+  const voice = await transaction
+    .selectFrom("threads")
+    .select("voiceSessionId")
+    .where("id", "=", request.threadId)
+    .executeTakeFirst();
+  if (voice?.voiceSessionId)
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "voice-ended",
+      message: "Voice Threads do not accept input.",
+    });
   const content = ContentPartSchema.array().min(1).parse(request.content);
   if (
     (request.source.kind === "agent" || request.source.kind === "connection") &&
@@ -3070,7 +3091,17 @@ export async function ensureQueuedRun(
   readonly run: RunRow | null;
 }> {
   const events: AgentEvent[] = [];
-  if (thread.inputQueuePaused || thread.doneAt) return { command: null, events, run: null };
+  if (
+    thread.voiceSessionId &&
+    (await transaction
+      .selectFrom("runs")
+      .select("id")
+      .where("threadId", "=", thread.id)
+      .executeTakeFirst())
+  )
+    return { command: null, events, run: null };
+  if (thread.status === "archived" || thread.inputQueuePaused || thread.doneAt)
+    return { command: null, events, run: null };
   const existing = await transaction
     .selectFrom("runs")
     .selectAll()
@@ -4617,5 +4648,18 @@ async function delegationListsThread(
     .select("messages.author")
     .where("runs.id", "=", origin.parentRunId)
     .executeTakeFirstOrThrow();
-  return MessageAuthorSchema.parse(seed.author).kind === "human";
+  const author = MessageAuthorSchema.parse(seed.author);
+  if (author.kind === "human") return true;
+  if (author.kind !== "agent") return false;
+  const parent = await transaction
+    .selectFrom("runs")
+    .select("requestedBy")
+    .where("id", "=", origin.parentRunId)
+    .executeTakeFirstOrThrow();
+  const voice = await transaction
+    .selectFrom("threads")
+    .select(["voiceSessionId", "createdBy"])
+    .where("id", "=", author.threadId)
+    .executeTakeFirst();
+  return Boolean(voice?.voiceSessionId && voice.createdBy === parent.requestedBy);
 }

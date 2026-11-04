@@ -1,9 +1,11 @@
+import type { VoiceView } from "@opensteer/protocol/voice";
+import type { ActivityIcon } from "../host/agent-activity-model.js";
 import type { WorkspaceSurfaceDestination } from "../host/surfaces.js";
 
 /**
- * Voice is an input and output mode of the person's client, like dictation.
- * A call can only do what this client already does: send the person's words
- * to Chat, change what the screen shows, and tell the person things. The
+ * A voice call is the person's microphone and speaker for an agent that runs
+ * on their computer. The client carries audio, says which screen is showing,
+ * and forwards what Chat says; the agent acts through its own tools. The
  * vendor sits behind `VoiceProvider`; the platform behind `VoiceMediaPort`.
  */
 
@@ -43,11 +45,22 @@ export type VoiceCallEvent =
 export type VoiceEndReason =
   "stopped" | "connection-lost" | "replaced" | "expired" | "refused" | "failed";
 
+/** The call's hidden Thread and Run, as the Host admitted them. */
+export interface VoiceCallIdentity {
+  readonly threadId: string;
+  readonly runId: string;
+  readonly workspaceId: string;
+}
+
 export interface VoiceCall {
-  readonly agent?: boolean;
-  readonly find?: boolean;
-  /** Has the voice tell the person this. Resolves when accepted, not when spoken. */
-  say(text: string): Promise<void>;
+  readonly identity: VoiceCallIdentity;
+  /**
+   * Has the voice tell the person this once, by `id`. Resolves when accepted,
+   * not when spoken; rejects with `VoiceStartError` when the call refused it.
+   */
+  say(id: string, text: string): Promise<void>;
+  /** Replaces what the call's agent knows the person is looking at. */
+  view(view: VoiceView): Promise<void>;
   setMuted(muted: boolean): void;
   /** Ends the call and releases the microphone. Idempotent. */
   close(): Promise<void>;
@@ -67,6 +80,7 @@ export type VoiceStartFailure =
   | "microphone-unavailable"
   | "insecure-context"
   | "no-account"
+  | "chat-required"
   | "update-computer"
   | "update-codex"
   | "refused"
@@ -81,10 +95,9 @@ export class VoiceStartError extends Error {
   }
 }
 
-/** Where a spoken "show me …" takes the person. The app maps it to its own navigation. */
+/** Where an agent's `person_show` takes the person. The app maps it to its own navigation. */
 export type VoiceTarget =
   | { readonly kind: "chat" }
-  | { readonly kind: "back" }
   | { readonly kind: "thread"; readonly threadId: string }
   | { readonly kind: "place"; readonly destination: WorkspaceSurfaceDestination };
 
@@ -95,7 +108,7 @@ export type VoicePhase =
   | "listening"
   /** The person is talking. */
   | "hearing"
-  /** Chat is working on what the person asked. */
+  /** The call's agent is working on what the person asked. */
   | "thinking"
   /** The voice is talking. */
   | "speaking";
@@ -120,6 +133,8 @@ export interface VoiceSnapshot {
   readonly spoken: string | null;
   /** When the current call started, for its timer; null when idle. */
   readonly since: number | null;
+  /** What the agent's running tool is, drawn as a glyph; null while none runs. */
+  readonly activity: ActivityIcon | null;
   readonly notice: VoiceNotice | null;
 }
 

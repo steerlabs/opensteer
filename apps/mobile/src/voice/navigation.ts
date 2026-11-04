@@ -6,11 +6,6 @@ import { workspaceRoute } from "../browser/surface-route.js";
 export function show(deploymentId: string | null, target: VoiceTarget): boolean {
   if (!deploymentId || !navigationRef.isReady()) return false;
   const route = navigationRef.getCurrentRoute();
-  if (target.kind === "back") {
-    if (!navigationRef.canGoBack()) return false;
-    navigationRef.goBack();
-    return true;
-  }
   if (target.kind === "chat") {
     if (
       route?.name === "Home" &&

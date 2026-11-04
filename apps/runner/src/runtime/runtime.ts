@@ -1,12 +1,12 @@
 import { AppServerManager } from "../apps/app-server-manager.js";
 import { VoiceCalls } from "../voice/voice-calls.js";
-import { isCodexVoiceAdapter } from "@opensteer/harness-codex";
+
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, lstat } from "node:fs/promises";
+import { mkdir, readFile, lstat, rm } from "node:fs/promises";
 import { platform } from "node:os";
 import { join, resolve } from "node:path";
 import { defaultRunnerMaxConcurrentTriggerPrograms, type RunnerConfig } from "@opensteer/config";
@@ -283,6 +283,7 @@ interface ActiveRun {
   readonly credentialLifetime: AbortController;
   /** The containment scope of the Run's processes: its own, or its warm engine's. */
   containmentScope: string;
+  voiceCall?: import("@opensteer/harness").HarnessVoiceCall;
   session?: HarnessSession;
   settling?: boolean;
   readonly steerTasks: Set<Promise<CommandDecision>>;
@@ -488,37 +489,7 @@ export class RunnerRuntime {
     this.#machineAccess = options.machineAccess;
     this.#mode = options.mode ?? "development";
     this.#privateStateDirectory = resolve(options.privateStateDirectory);
-    this.#voice = new VoiceCalls(
-      join(this.#privateStateDirectory, "voice"),
-      async ({ harnessInstanceId, offer, agent, find, signal, directory }) => {
-        const definition = this.#harnesses.state(harnessInstanceId)?.definition;
-        if (!definition || definition.driverKind !== "codex")
-          throw new OpensteerError({
-            code: "conflict",
-            reason: "voice-account-unavailable",
-            message: "Voice requires a Codex account.",
-          });
-        const adapter = await this.#harnesses.adapter(harnessInstanceId);
-        if (!isCodexVoiceAdapter(adapter))
-          throw new OpensteerError({
-            code: "conflict",
-            reason: "voice-engine-unsupported",
-            message: "This Codex driver does not support voice.",
-          });
-        const options = await this.#providerStateOptions(definition.driverKind);
-        const { providerState } = await prepareHarnessProviderState(definition, options);
-        return adapter.startVoiceCall({
-          agent,
-          find,
-          offer,
-          signal,
-          environment: options.environment,
-          providerState,
-          runtimeBoundary: this.#harnessRuntimeBoundary,
-          workingDirectory: directory,
-        });
-      },
-    );
+    this.#voice = new VoiceCalls(join(this.#privateStateDirectory, "voice"));
     this.#modelServerHome = options.modelServerHome;
     this.#projectContinuationIdentity = options.projectContinuationIdentity;
     this.#programExecutor =
@@ -927,7 +898,13 @@ export class RunnerRuntime {
     ) {
       throw new OpensteerError({
         code: "conflict",
-        message: `This AI engine is busy; wait before ${action}`,
+        message: [...this.#runs.values()].some(
+          (run) =>
+            run.command.context.harnessInstanceId === harnessInstanceId &&
+            run.command.context.voiceCall,
+        )
+          ? `This account has an active voice call; end it before ${action}`
+          : `This AI engine is busy; wait before ${action}`,
         retryable: true,
       });
     }
@@ -2104,6 +2081,16 @@ export class RunnerRuntime {
     if (settled && settled.command.context.bindingGeneration < command.context.bindingGeneration) {
       this.#settledRuns.delete(command.context.runId);
     }
+    if (context.voiceCall) {
+      active.voiceCall = this.#voice.admit({
+        owner: context.requestedBy,
+        runId: context.runId,
+        sessionId: context.voiceCall.sessionId,
+        admittedAt: Date.parse(context.voiceCall.admittedAt),
+        signal: active.abort.signal,
+        end: () => active.abort.abort(new Error("Voice call ended")),
+      });
+    }
     this.#runs.set(command.context.runId, active);
     this.#threads.set(command.context.threadId, command.context.runId);
     active.task = new Promise<void>((resolvePromise) => {
@@ -2304,8 +2291,10 @@ export class RunnerRuntime {
           message: "Host did not provide a valid provider session state layout",
         });
       }
-      const threadStateDirectory =
-        context.providerSessionStateLayout === "thread"
+      if (context.voiceCall) await this.#voice.ready();
+      const threadStateDirectory = context.voiceCall
+        ? join(this.#voice.directory, `call-${context.runId}`)
+        : context.providerSessionStateLayout === "thread"
           ? join(this.#privateStateDirectory, "threads", context.threadId)
           : join(this.#privateStateDirectory, "sessions", context.providerSessionId);
       await mkdir(threadStateDirectory, { mode: 0o700, recursive: true });
@@ -2331,7 +2320,7 @@ export class RunnerRuntime {
         workspacePath: workspace.path,
       });
       // Once taken, the idle engine remains this Run’s to reuse or retire.
-      warmEngine = await this.#warm.take(context.threadId);
+      warmEngine = context.voiceCall ? undefined : await this.#warm.take(context.threadId);
       if (
         warmEngine &&
         command.inputs.some(
@@ -2430,7 +2419,7 @@ export class RunnerRuntime {
           writableRoots,
         });
       const warmKey =
-        adapter.capabilities.warmReuse === true
+        !context.voiceCall && adapter.capabilities.warmReuse === true
           ? warmKeyFor(
               context.providerSessionReference ?? null,
               machineAccessLaunchIdentity(machineAccessPlan),
@@ -2521,6 +2510,7 @@ export class RunnerRuntime {
         pluginCacheDirectories: runSkills.directories,
         providerState,
         threadStateDirectory,
+        ...(context.voiceCall ? { threadStateWritable: true as const } : {}),
         workspacePath: workspace.path,
         writableRoots,
       } satisfies Omit<HarnessSandboxRunPlan, "launchDirectory">;
@@ -2594,7 +2584,17 @@ export class RunnerRuntime {
         OPENSTEER_BROWSER_HARNESS: this.#browserHarnessExecutable,
       });
       const machineAccessContext = context.machineAccess;
+      if (
+        context.voiceCall &&
+        (!adapter.capabilities.voiceCalls || context.providerSessionReference)
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "voice-engine-unsupported",
+          message: "Voice calls require a fresh Codex session.",
+        });
       const sessionContext = {
+        ...(active.voiceCall ? { voiceCall: active.voiceCall } : {}),
         ...attachmentContext,
         accessMode: context.accessMode,
         agentTools: {
@@ -2834,6 +2834,12 @@ export class RunnerRuntime {
         terminal = { data: { status: "interrupted" }, type: "run.interrupted" };
       await this.#emit(active, terminal).catch(() => undefined);
       if (active.shutdown) await this.#pumpJournal(active).catch(() => undefined);
+      active.voiceCall?.end();
+      if (context.voiceCall)
+        await rm(join(this.#voice.directory, `call-${context.runId}`), {
+          recursive: true,
+          force: true,
+        });
       this.#runs.delete(context.runId);
       if (termination === "unknown") {
         this.#holdUncontainedThread(context.threadId, context.runId, active.containmentScope);

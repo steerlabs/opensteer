@@ -773,7 +773,7 @@ export async function createHostServer(
     }
     throw new OpensteerError({
       code: "conflict",
-      message: `This AI engine is still running work; wait for it to finish before ${action}`,
+      message: `This AI engine is still running work (including any voice call); stop it or wait for it to finish before ${action}`,
       retryable: true,
     });
   };
@@ -1081,7 +1081,7 @@ export async function createHostServer(
   ) => projectMachines({ ...(await machineRegistryRows(session)), deploymentKind });
 
   const coreRpcHandlers = {
-    ...createVoiceHandlers(dependencies),
+    ...createVoiceHandlers({ ...dependencies, publishWorkspaceEvent }),
     "agentPhone.target.get": async (_input, context) => {
       requireRpcSession(context);
       return rpcSuccess(
@@ -1565,8 +1565,6 @@ export async function createHostServer(
     | "harness.modelServers.discover"
     | "voice.start"
     | "voice.renew"
-    | "voice.next"
-    | "voice.answer"
     | "voice.context"
     | "voice.say"
     | "voice.stop"
@@ -2848,9 +2846,7 @@ export function advertisedCapabilities(
   return [
     "chat-attachments",
     ...(dependencies.notificationPreviews ? ["notification-preview-v1" as const] : []),
-    "voice-v1",
-    "voice-agent-v1",
-    "voice-find-v1",
+    "voice-run-v1",
     "thread-titles-v1",
     "task-marks-v1",
     "task-family-v1",

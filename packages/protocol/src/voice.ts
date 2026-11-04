@@ -1,11 +1,20 @@
 import { z } from "zod";
-import { EnvironmentIdSchema, HarnessInstanceIdSchema } from "@opensteer/core";
+import {
+  BrowserSurfaceIdSchema,
+  EnvironmentIdSchema,
+  HarnessInstanceIdSchema,
+  RunIdSchema,
+  ThreadIdSchema,
+  WorkspaceIdSchema,
+} from "@opensteer/core";
 
 /**
  * Voice: the person's client holds a realtime call whose audio goes straight
- * to the voice vendor. Nothing here is durable. A Runner creates the call
- * with an account it holds, so the vendor credential never leaves that
- * computer; these shapes only carry the call's setup and its spoken text.
+ * to the voice vendor. The call's agent is one Run on a hidden voice Thread, a
+ * child of Chat, executed by the Runner that holds the voice account; that
+ * Runner creates the call, so the vendor credential never leaves its computer.
+ * Session descriptions travel only on these synchronous calls, never on a
+ * durable path.
  */
 
 /** Client-chosen, so a client can stop a call whose start answer it lost. */
@@ -14,95 +23,71 @@ export const VoiceSessionIdSchema = z
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
 export type VoiceSessionId = z.infer<typeof VoiceSessionIdSchema>;
 
-/** A WebRTC session description. Never logged: it carries local addresses. */
+/** A WebRTC session description. Never logged or stored: it carries local addresses. */
 export const VoiceSdpSchema = z.string().min(1).max(64_000);
 
 /** What the voice is asked to say; long replies are shortened before this. */
 export const voiceSayMaxLength = 4_000;
 export const VoiceSayTextSchema = z.string().trim().min(1).max(voiceSayMaxLength);
+/**
+ * Names what is spoken, such as a Chat message or a Request, so the call says
+ * each thing once however often a client sends it.
+ */
+export const VoiceSayIdSchema = z.string().min(1).max(128);
 
 /** A call ends unless its client renews it within this long. */
 export const voiceLeaseMs = 60_000;
 export const voiceRenewIntervalMs = 20_000;
-/** No call lives longer than this, whatever its client does. */
+/** No call lives longer than this after its Run was admitted, whatever its client does. */
 export const voiceMaxCallMs = 2 * 60 * 60_000;
 
-const voiceCall = {
-  harnessInstanceId: HarnessInstanceIdSchema,
-  environmentId: EnvironmentIdSchema,
-  sessionId: VoiceSessionIdSchema,
-};
+/**
+ * What the person is looking at, in ids the call's agent can act on with its
+ * tools. Titles are left out: the agent reads them through tools, where page
+ * text is ordinary untrusted data.
+ */
+export const VoiceViewSchema = z.strictObject({
+  threadId: ThreadIdSchema.nullable(),
+  tabId: BrowserSurfaceIdSchema.nullable(),
+});
+export type VoiceView = z.infer<typeof VoiceViewSchema>;
+
+/** Every call after start is addressed by its session id alone; the Host knows the rest. */
+const voiceSession = { sessionId: VoiceSessionIdSchema };
 
 export const VoiceStartInputSchema = z.strictObject({
-  ...voiceCall,
+  ...voiceSession,
+  /** The computer and Codex account that carry the call and run its agent. */
+  environmentId: EnvironmentIdSchema,
+  harnessInstanceId: HarnessInstanceIdSchema,
   offer: VoiceSdpSchema,
-  /**
-   * Asks for the call's own agent, which acts through `voice.next`. Sent only
-   * to a Host advertising `voice-agent-v1`; without it the call is legacy and
-   * the client sends every finished utterance to Chat itself.
-   */
-  agent: z.literal(true).optional(),
-  /** Sent only to a Host advertising `voice-find-v1`, together with `agent`. */
-  find: z.literal(true).optional(),
 });
 export const VoiceStartResultSchema = z.object({
   answer: VoiceSdpSchema,
-  /** True when the call's agent runs; absent or false means a legacy call. */
-  agent: z.boolean().optional(),
-  /** Included only when find was requested; true when the Runner installed it. */
-  find: z.boolean().optional(),
+  /** The call's hidden Thread and Run: `host.show` from this Run is meant for this device. */
+  threadId: ThreadIdSchema,
+  runId: RunIdSchema,
+  workspaceId: WorkspaceIdSchema,
 });
-export const VoiceRenewInputSchema = z.strictObject(voiceCall);
-
-/** How long a Runner holds `voice.next` open, inside the Host's relay deadline. */
-export const voiceNextHoldMs = 6_000;
-/** A tool call the device has not answered by then fails with an unknown outcome. */
-export const voiceToolCallTimeoutMs = 15_000;
-export const voiceToolCallIdSchema = z.string().min(1).max(128);
-export const voiceAnswerMaxLength = 4_000;
-export const voiceContextMaxLength = 16_000;
-
-/**
- * Something the call's agent asks this device to do. `tool` stays an open
- * name so an older client can refuse a tool it does not know.
- */
-export const VoiceToolCallSchema = z.object({
-  id: voiceToolCallIdSchema,
-  tool: z.string().min(1).max(64),
-  input: z.record(z.string(), z.unknown()),
-  /**
-   * What the person said in the turn that made this call, as the agent
-   * received it. Set by the Runner, never by the model, so the device can
-   * find those utterances in its own transcript whatever order they arrive in.
-   */
-  heard: z.array(z.string().max(voiceSayMaxLength)).max(5),
+export const VoiceRenewInputSchema = z.strictObject(voiceSession);
+export const VoiceSayInputSchema = z.strictObject({
+  ...voiceSession,
+  id: VoiceSayIdSchema,
+  text: VoiceSayTextSchema,
 });
-export const VoiceNextInputSchema = z.strictObject(voiceCall);
-export const VoiceNextResultSchema = z.object({ call: VoiceToolCallSchema.nullable() });
-export const VoiceAnswerInputSchema = z.strictObject({
-  ...voiceCall,
-  callId: voiceToolCallIdSchema,
-  ok: z.boolean(),
-  text: z.string().trim().min(1).max(voiceAnswerMaxLength),
-});
-/** What the person sees and can open now, as the agent reads it. Replaces the last one. */
+/** Replaces what the call's agent knows the person is looking at. */
 export const VoiceContextInputSchema = z.strictObject({
-  ...voiceCall,
-  text: z.string().trim().min(1).max(voiceContextMaxLength),
+  ...voiceSession,
+  view: VoiceViewSchema,
 });
-export const VoiceSayInputSchema = z.strictObject({ ...voiceCall, text: VoiceSayTextSchema });
-export const VoiceStopInputSchema = z.strictObject(voiceCall);
+export const VoiceStopInputSchema = z.strictObject(voiceSession);
 export const VoiceEmptyResultSchema = z.object({});
 
 export type VoiceStartInput = z.infer<typeof VoiceStartInputSchema>;
 export type VoiceStartResult = z.infer<typeof VoiceStartResultSchema>;
 export type VoiceRenewInput = z.infer<typeof VoiceRenewInputSchema>;
-export type VoiceToolCall = z.infer<typeof VoiceToolCallSchema>;
-export type VoiceNextInput = z.infer<typeof VoiceNextInputSchema>;
-export type VoiceNextResult = z.infer<typeof VoiceNextResultSchema>;
-export type VoiceAnswerInput = z.infer<typeof VoiceAnswerInputSchema>;
-export type VoiceContextInput = z.infer<typeof VoiceContextInputSchema>;
 export type VoiceSayInput = z.infer<typeof VoiceSayInputSchema>;
+export type VoiceContextInput = z.infer<typeof VoiceContextInputSchema>;
 export type VoiceStopInput = z.infer<typeof VoiceStopInputSchema>;
 
 /**
@@ -110,21 +95,17 @@ export type VoiceStopInput = z.infer<typeof VoiceStopInputSchema>;
  * `reason` so a client says which side to fix without matching prose.
  */
 export const VoiceRefusalReasonSchema = z.enum([
-  /** The computer's Opensteer predates voice. */
+  /** The computer's Opensteer predates voice calls with an agent. */
   "voice-runner-unsupported",
   /** The account's Codex lacks the realtime voice this release drives. */
   "voice-engine-unsupported",
   /** Not this person's usable, signed-in ChatGPT account on that computer. */
   "voice-account-unavailable",
+  /** Voice starts from Chat, which this person has not set up yet. */
+  "voice-chat-required",
   /** The vendor refused the call, e.g. the plan has no voice. */
   "voice-refused",
   /** The call is over: stopped, expired, replaced by a newer call, or failed. */
   "voice-ended",
 ]);
 export type VoiceRefusalReason = z.infer<typeof VoiceRefusalReasonSchema>;
-
-/** A page size bounds answers, never the inventory the voice can search. */
-export const VoiceFindInputSchema = z.strictObject({
-  query: z.string().trim().max(500),
-  offset: z.number().int().nonnegative().safe().default(0),
-});

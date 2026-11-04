@@ -6,7 +6,7 @@ import {
 import { createId } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import { handlePersonShow } from "./person-show.js";
+import { handlePersonShow, personShowFromCall } from "./person-show.js";
 import { placeList } from "./places.js";
 
 describe("person show navigation", () => {
@@ -135,6 +135,49 @@ describe("person show navigation", () => {
           ),
         ).toBe(false);
       expect(navigate).not.toHaveBeenCalled();
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("acts for the live voice call on any screen, never for a call it replaced", () => {
+    const client = new MockHostClient();
+    try {
+      const snapshot = client.getSnapshot();
+      const home = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+      const target = snapshot.threads.find((thread) => thread.id !== home.id)!;
+      // The call's Thread is hidden: no loaded list or snapshot holds it.
+      const call = {
+        threadId: createId("thread"),
+        runId: createId("run"),
+        workspaceId: home.workspaceId,
+      };
+      expect(snapshot.threads.some((thread) => thread.id === call.threadId)).toBe(false);
+      const message = PersonShowMessageSchema.parse({
+        type: "host.show",
+        ...call,
+        target: { threadId: target.id },
+      });
+      const navigate = vi.fn();
+      for (const threadId of [null, home.id, target.id])
+        expect(
+          handlePersonShow(snapshot, message, { foreground: true, threadId, call }, navigate),
+        ).toBe(true);
+      expect(navigate).toHaveBeenCalledTimes(3);
+      expect(navigate).toHaveBeenLastCalledWith({ kind: "thread", threadId: target.id });
+      navigate.mockClear();
+      const replaced = { ...call, runId: createId("run") };
+      for (const view of [
+        { foreground: false, threadId: null, call },
+        { foreground: true, threadId: null, call: replaced },
+        { foreground: true, threadId: null, call: { ...call, threadId: createId("thread") } },
+        { foreground: true, threadId: null, call: { ...call, workspaceId: createId("workspace") } },
+        { foreground: true, threadId: null, call: null },
+      ])
+        expect(handlePersonShow(snapshot, message, view, navigate)).toBe(false);
+      expect(navigate).not.toHaveBeenCalled();
+      expect(personShowFromCall(message, call)).toBe(true);
+      expect(personShowFromCall(message, replaced)).toBe(false);
     } finally {
       client.dispose();
     }

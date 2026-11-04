@@ -894,10 +894,8 @@ export interface HostSnapshot {
   searchSuggestionsAvailable?: boolean;
   iphoneAppsAvailable: boolean;
   ownerViewWindowsAvailable?: boolean;
-  /** The Host advertises voice-v1; absent on older Hosts. */
+  /** The Host advertises voice-run-v1: a call's agent runs as a Run with Opensteer's tools. */
   voiceAvailable?: boolean;
-  voiceAgentAvailable?: boolean;
-  voiceFindAvailable?: boolean;
   threads: ThreadSummary[];
   transcriptWindows: Record<string, TranscriptWindow>;
   transcripts: Record<string, TranscriptEntry[]>;
@@ -1121,6 +1119,12 @@ export interface HostClient {
    * Returns the release; holds are counted.
    */
   observeThread(threadId: string): () => void;
+  /**
+   * How far this client has applied the Workspace's durable events, in the
+   * Host's own sequence; null until its channel has caught up. Later durable
+   * messages carry a greater `sequence`.
+   */
+  workspacePosition(workspaceId: string): import("@opensteer/core").Sequence | null;
   activateWorkspace(workspaceId: string): void;
   /** Starts a Thread and remembers its selection and access mode as the person's latest choice. */
   createThread(input: CreateThreadInput): Promise<ThreadSummary>;

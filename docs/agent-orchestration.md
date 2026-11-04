@@ -535,3 +535,5 @@ Resume cannot replay Host messages or publish provider history as new Run
 events. Provider compaction does not bound serialized history, so transport
 limits remain necessary. All deployment shapes share the
 [Runner runtime](../apps/runner/src/runtime/runtime.ts).
+
+A voice call is one non-recoverable Run on a hidden child Thread of Chat. Its Thread accepts only the call seed and is archived atomically when the Run ends. Durable work goes through Chat, so tasks and their results survive the call.
