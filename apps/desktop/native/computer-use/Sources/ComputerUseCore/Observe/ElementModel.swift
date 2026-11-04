@@ -63,7 +63,7 @@ extension ElementNode {
 public struct ObservedElement {
   public let node: any ElementNode
   public let attributes: ElementAttributes
-  /// Points relative to the key window's top-left (§2 "Observation").
+  /// Points relative to the key window's top-left.
   public let frame: CGRect
   /// Indentation depth in emitted elements, so a skipped wrapper does not
   /// indent what is inside it.

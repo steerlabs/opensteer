@@ -5,7 +5,7 @@ import XCTest
 
 /// Review finding 3: a route chosen for an action is the route that action
 /// gets. A failure never becomes a second attempt down the other one, because
-/// the first one may already have done the thing (§1 invariant 4).
+/// the first one may already have done the thing.
 final class KeyRouteTests: XCTestCase {
   /// Text goes in through Accessibility when the focused element takes
   /// `AXSelectedText`, which is what typing does to it. Line breaks and tabs

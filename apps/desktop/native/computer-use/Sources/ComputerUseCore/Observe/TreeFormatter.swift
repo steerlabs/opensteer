@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-/// The tree text of §2 "Observation": one element per line, indented by depth —
+/// The observation tree text: one element per line, indented by depth —
 /// `[12] button "Save" (412,88 96×28)`.
 public enum TreeFormatter {
   /// `computerUseTreeMaxBytes`: the smallest tool-output limit of the engines
@@ -106,7 +106,7 @@ public enum TreeFormatter {
     return trimmed.isEmpty ? "element" : trimmed.lowercased()
   }
 
-  /// The title, or the value when there is no title (§2), else the
+  /// The title, or the value when there is no title, else the
   /// description. Each is flattened to one line and cut at 200 characters,
   /// because a tree is for aiming, not for reading a document out of.
   static func label(_ attributes: ElementAttributes) -> String? {

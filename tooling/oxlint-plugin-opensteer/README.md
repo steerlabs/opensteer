@@ -1,56 +1,35 @@
-# Test rules
+# Opensteer test lint rules
 
-This repository-owned JS plugin loads directly from `.oxlintrc.json`, using oxlint's
-ESLint-compatible AST and scope API. It needs no build or workspace package. Its
-parser/loader tests run through Vitest in `tests/test-lint-rules.test.ts`.
+An oxlint JS plugin loaded directly from `.oxlintrc.json`; it needs no build. Its tests are
+[tests/test-lint-rules.test.ts](../../tests/test-lint-rules.test.ts). The rules cover
+`*.test.ts(x)`, `*.test-support.ts` and code under `tests/`; the retry check also covers
+`vitest*.config.*`, and suppression reasons are required in every file. Together they enforce
+the waiting rules in [AGENTS.md](../../AGENTS.md#verifying). Each rule is prefixed `opensteer/`.
 
-The test rules cover `*.test.ts(x)`, `*.test-support.ts` and JavaScript/TypeScript
-helpers under `tests/`. Suppression reasons apply in every source file. Retry
-checks also cover `vitest*.config.*`.
+- `no-real-time-wait-in-tests`: no real sleeps, including through local wrappers and aliased
+  timer imports. Await the event, use a `vi.waitFor`/`vi.waitUntil` condition, or fake timers.
+- `no-polling-loop-in-tests`: no loops around awaited sleeps.
+- `no-unreasoned-skip-or-retry`: `skip`, `todo` and `fails` need a reason on the line before;
+  conditional `skipIf`/`runIf` are fine. Test and suite retries are forbidden, and configs may
+  set only `retry: 0`.
+- `require-suppression-reason`: disabling one of these rules needs ` -- <reason>`.
+- `no-unit-test-timeout`: default-lane tests keep the default timeout. Real PostgreSQL, GUI,
+  engine, device, soak and VM suites keep their own budgets, from 30 seconds to hours, so a
+  universal ceiling would be wrong.
+- `no-unbounded-created-promise`: a locally created promise whose resolver escapes its executor
+  must be bounded, with `@opensteer/shared/withTimeout` and a useful `timeoutError`, before it is
+  awaited in the same test. It is a narrow heuristic, not a detector of every unbounded wait.
 
-- `opensteer/no-real-time-wait-in-tests`: replace real sleeps with the actual
-  event, `vi.waitFor`/`vi.waitUntil` conditions or fake timers. Resolves local
-  single-expression wrappers and named/aliased timer imports through lexical scope.
-- `opensteer/no-polling-loop-in-tests`: disallow loops containing awaited sleeps.
-- `opensteer/no-unreasoned-skip-or-retry`: document skip/todo/fails on the preceding
-  line; conditional skipIf/runIf are allowed. Test/suite retries are forbidden;
-  configs may specify only `retry: 0`. The integration startup guard already
-  enforces zero retries, with regression coverage in `tests/file-poison.test.ts`.
-- `opensteer/require-suppression-reason`: end disable comments naming these rules
-  with ` -- <reason>`.
-- `opensteer/no-unit-test-timeout`: use the default timeout in the default Vitest
-  lane. Its lane exclusions come from the same list as Vitest. Real PostgreSQL,
-  GUI, engine, device, soak and VM journeys retain their existing budgets.
-- `opensteer/no-unbounded-created-promise`: bound directly awaited local promises
-  whose resolver escapes their executor, in the same test callback. Use the
-  existing `@opensteer/shared/withTimeout` with a useful `timeoutError`. Worker
-  callback gates, arbitrary async APIs and cross-function dataflow are outside
-  this narrow heuristic. A direct timer in the executor is recognized only when its callback settles that
-  promise through the resolver or rejecter binding; passing
-  the promise to `withTimeout` or `Promise.race` is not a direct unbounded await.
+## Baseline
 
-## Migrating the baseline
-
-`baseline.json` records per-file occurrence budgets keyed by rule and exact source
-hash. Editing a violation, adding another occurrence, or moving it to another file
-requires a fix. There is no command to accept new debt. `pnpm lint` compares the
-baseline against the merge base with `origin/main` and rejects growth. The initial
-introducing PR is the only case with no prior baseline. Fetch origin before lint.
-
-After migrating files, run:
+[baseline.json](baseline.json) holds existing violations, keyed by rule and exact source hash.
+It may only shrink: `pnpm lint` compares it with the merge base on `origin/main` (fetch first),
+and editing, adding or moving a violation needs a fix. There is no way to accept new debt.
+After fixing violations, remove their allowances with:
 
 ```sh
 node tooling/oxlint-plugin-opensteer/baseline.mjs --prune
 ```
 
-This measures with an empty baseline and only removes allowances; it refuses to
-add new ones. Run each touched test and the changed-file checks before pushing.
-The final migration deletes the JSON, baseline loader/filter, prune script and
-lint prefix. Keep the rules and parser tests.
-
-The initial scan found 109 default-lane per-test timeout overrides. Forbidding new
-unit overrides is smaller than imposing a universal ceiling across real stacks,
-whose existing config budgets range from 30 seconds to hours. No config timeout
-was raised. The narrow promise rule catches both Home viewer capture waits while
-excluding gates awaited by nested worker callbacks; it is intentionally not a
-claim to detect every possible unbounded wait.
+The baseline is temporary. Once it is empty, delete it with its loader, filter and prune script,
+and keep the rules.

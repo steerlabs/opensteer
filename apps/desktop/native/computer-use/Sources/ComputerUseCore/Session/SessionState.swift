@@ -6,7 +6,7 @@ import Foundation
 ///
 /// A point target lands in whichever of these is frontmost under it — a
 /// popover, a child window, a menu, an open panel — and the synthetic event is
-/// stamped with that window and given a point inside it (§2 "Actions").
+/// stamped with that window and given a point inside it.
 public struct ObservedWindow: Sendable, Equatable {
   public let windowID: CGWindowID
   /// Screen points, top-left origin (CoreGraphics space).
@@ -19,7 +19,7 @@ public struct ObservedWindow: Sendable, Equatable {
 }
 
 /// The observation an action may cite. Nothing about it is durable: after any
-/// loss the agent observes again (§1 "Model").
+/// loss the agent observes again.
 public struct LatestObservation {
   public let observationId: String
   public let processIdentifier: pid_t

@@ -1,303 +1,149 @@
 # Builds and releases
 
-Release builders consume a green main SHA; there is no local release
-requalification. The source contracts are [release.yml](../.github/workflows/release.yml),
-[release-plan.mjs](../.github/scripts/release-plan.mjs),
-[release-version.cjs](../scripts/release-version.cjs) and
-[desktop-public-release.ts](../scripts/desktop-public-release.ts).
-
-## Release evidence
-
-Use the CI run for the exact main SHA. Record commands, results and artifact
-digests for the build distributed. Real desktop journeys run in a VM after merge
-or on maintainer request. Use [prepare-release](../.agents/skills/prepare-release/SKILL.md)
-for dispatch and evidence collection.
+Release builders consume a green main SHA; there is no local release requalification. See
+[release.yml](../.github/workflows/release.yml) and the [desktop-builds skill](../.agents/skills/desktop-builds/SKILL.md).
+Tim performs every credential operation; agents never read or operate on key material.
 
 ## Build inputs and local proof
 
-Contributor builds need no Developer ID or notarization credentials and claim no
-distribution readiness. See [the desktop README](../apps/desktop/README.md) and
-[install-desktop](../.agents/skills/install-desktop/SKILL.md). Signed local installs
-reuse Personal data and permission identity; never run two copies against it.
-Downgrading the app does not undo migrations. Receipt drift fails closed.
+Contributor builds ([desktop README](../apps/desktop/README.md)) need no Developer ID or
+notarization credentials and claim no distribution readiness. Signed local installs reuse
+Personal data and permission identity: never run two copies against it. An older app does not
+undo migrations, and receipt drift fails closed.
+
+## Signing
+
+Without a signing input, builds use development trust and ad-hoc signatures: helpers compile the
+Swift condition `OPENSTEER_DEV_TRUST`, which no runtime variable can enable, and Passwords uses a
+separate development store. Any [signing input](../apps/desktop/scripts/signing-input.cjs) selects
+its identity even outside a release; keep signing JSON outside the checkout.
+`OPENSTEER_DESKTOP_RELEASE=1`, set by `package:mac` and the release scripts, requires a valid
+input and never selects development trust. A named keychain is used with no default fallback.
+
+Release trust comes from immutable build inputs and each helper's own Security.framework
+signature, never the environment; Apple Development cannot replace Developer ID Application.
+Distribution needs hardened runtime, secure timestamps, reviewed entitlements, accepted
+notarization and a validated staple and Gatekeeper check; a signature alone proves none of them.
+The app and its inherited helpers claim only JIT and audio input (Voice records in Chromium's
+helper); the computer-use helper claims Apple events, Contacts and Calendars; the separately
+signed Dictation helper claims exactly audio input. Nothing requests speech recognition.
+
+Passwords' keychain group needs a Developer ID provisioning profile for
+`<teamId>.com.opensteer.passwords` in `OPENSTEER_PASSWORDS_PROVISIONING_PROFILE`; a certificate
+alone grants no keychain access, and creating either needs an [Apple Developer Program
+account](https://developer.apple.com/help/account/certificates/create-developer-id-certificates).
+Release passkeys would need `OPENSTEER_PASSKEYS_PROFILE` and `OPENSTEER_PASSKEYS_ENTITLEMENTS`;
+the workflow supplies neither, so the released app embeds no profile. A fork changes the builder
+`appId`, [macos-release-identity.cjs](../apps/desktop/scripts/macos-release-identity.cjs), helper
+bundle IDs and peer requirements, Passwords' worker ID and keychain group, and OAuth callbacks
+together.
 
 ## Public desktop releases
 
-Eligible main pushes resolve main HEAD and wait for that exact SHA's newest main
-CI and Check. Main CI runs coalesce, so if that run was cancelled, main has moved
-past the SHA and a newer main push run exists, the release skips as superseded;
-any other CI failure still blocks it. Insiders are signed, notarized Beta
-prereleases, never Latest. See the workflow's exact path exclusions: shipped
-notices and agent skills are build inputs, so a blanket Markdown exclusion is
-wrong. There are no schedule, tag-push or PR triggers. GITHUB_TOKEN-created tags
-do not retrigger releases.
+Main pushes outside the workflow's path exclusions build an insider: a signed, notarized Beta
+prerelease, never Latest. Shipped notices and agent skills are build inputs, so never exclude all
+Markdown. Tags made with `GITHUB_TOKEN` do not retrigger. Preflight waits for the exact SHA's
+newest main push CI and `Check`; if a newer main push superseded a cancelled run, the release
+skips, and any other failure blocks. A push publishes its insider; a dispatch stops at the draft
+unless `publish=true`. Concurrency never cancels a build mid-notarization, so a coalesced stable
+dispatch may need redispatch. Never publish an older insider after a newer one: the updater takes
+the first eligible feed entry.
 
-Per-channel concurrency coalesces pending runs but never cancels a running build
-mid-notarization. A coalesced stable dispatch may need redispatch. Never publish
-an older insider after a newer one: the updater selects the first eligible feed entry.
+Key files and the ephemeral keychain are private and always deleted; release caches never hold
+signing material, and CI needs no private checkout or signing JSON. A [launch
+check](../scripts/smoke-desktop-release.ts) runs the final app from a disposable Applications copy
+with fresh data, refuses any machine but an ephemeral CI runner or the test VM guest, and changes
+no shipped behavior.
 
-Each final signed and notarized build is launched as an ordinary child process
-in the ephemeral release VM, from a disposable copy in Applications. The normal
-HOME is retained only on these disposable runners, so macOS can
-use its existing Keychain. The checker refuses other machines unless they have
-`CI=true` and `RUNNER_TEMP` or the repository test-VM guest marker. A fresh data
-directory contains only Personal setup intent; the app creates its own database
-and credentials. Packaged builds reject Workspace overrides and symlinks. The
-checker therefore uses a fresh default Workspace on the disposable machine, refuses
-to reuse an existing one, and removes it after the check. The external check observes the
-supervisor's published Personal selection, loopback health and visible loaded window, then sends the app's normal
-SIGTERM quit and waits for its captured children to exit. The three-minute check
-retains logs and an optional VM screenshot on failure. It changes no shipped-app
-behavior, launch policy, debugger fuses, Keychain use or environment resolution.
-Database upgrade coverage belongs to the migration compatibility tests. VM update
-journeys remain optional on-demand tools.
+Publication re-verifies the draft's assets, hashes, `SHA256SUMS`, source and signer with the
+workflow commit's publisher; no certification receipt is needed. Versions are numeric `X.Y.Z`,
+the manifest base plus first-parent commits since it changed ([release-version.cjs](../scripts/release-version.cjs)).
+A new base must exceed the last derived version, and a release checkout may differ from its
+source only by the exact version stamp.
 
-A dispatch of either channel stops at the draft unless `publish=true`. Publication
-re-downloads and verifies draft assets, manifest hashes, SHA256SUMS, source identity
-and signer. No agent certification receipt is required. Publish jobs run the
-workflow commit's publisher, rather than the release source's publisher.
-
-### Derived versions
-
-Both channels use numeric X.Y.Z derived from the base manifest version plus
-first-parent commits since its last version-value change. A new base must exceed
-the preceding derived version; shallow/nonlinear history fails closed. Only the
-byte-exact generated root version stamp is allowed by the source identity guard.
-Desktop and Personal runtime use that guard; infra must use it before the
-container release-record stage, which retains Git-free manifest validation.
-APK receipts and release.json bind version to exact source.
-
-### Stable promotion
-
-Promotion verifies every insider asset, launch evidence, signature, team, staple
-and Gatekeeper. It refuses versions at or below the published Stable head and
-binds publication to the independently verified insider ZIP hash. Matching drafts
-are reused; incomplete or mismatched drafts fail closed. Promotion has no signing
-environment or secrets.
-
-Stable promotes an already published insider by copying the byte-identical ZIP
-and blockmap without rebuilding, signing or notarizing again. The one app identity
-is `Opensteer.app` / `com.opensteer.opensteer` on both update channels. Tag, target and release.json
-must agree; exact-source push CI and the latest completed full main CI must be
-green and include the source on first-parent main. Tim approves only publication
-of the verified draft via the `publish` environment. Matching drafts are reused;
-mismatches and already published stable versions fail closed.
-
-### Personal Account linking release order
-
-Deploy the Account service with sealed Personal link completions before shipping
-the corresponding Host and clients. Linking requires the Host-signed completion
-public key and returns only ciphertext; there is no plaintext compatibility path.
-Older Account services are refused with an update instruction. Old-format desktop
-pending journals require Recover from any attached device. Recover verifies Host
-state before discarding the incompatible journal, then resumes any Host-owned
-activation; if the Host has no link, start linking again.
-
-### Hosted build and keyless proof
-
-`desktop:build-release --out <outside-checkout-directory>` provisions pinned
-public Node, PostgreSQL source and cloudflared, relocates PostgreSQL libraries,
-and invokes the product's runtime, native helpers, supervisor and packagers.
-Production provenance, signer, profile, resource and APK receipt checks remain
-enforced. Debugger maps are omitted to retain the 2,048-file runtime manifest
-bound. Each command retains its 15-minute limit; configure, make and install
-are separate commands. A cold local PostgreSQL build measured 27/79/6 seconds;
-hosted timing still needs the first practice run. The release workflow also caches
-unsigned PostgreSQL, SwiftPM objects and Gradle dependencies under release-only
-keys bound to their source inputs and toolchains. It never restores a partial key
-or caches signing material. PR native proofs build cold on the release runner and
-Xcode.
-No private checkout, login keychain item or signing JSON is required by CI.
-
-Signing uses strict `OPENSTEER_RELEASE_SIGNING_IDENTITY`,
-`OPENSTEER_APPLE_TEAM_ID` and `CSC_KEYCHAIN` inputs, compatible with the existing
-signing-file contract. API-key notarization uses `APPLE_API_KEY`,
-`APPLE_API_KEY_ID` and `APPLE_API_ISSUER` independently. Packaging notarizes and
-staples, and the workflow explicitly validates the staple and Gatekeeper before
-preparing its ZIP. `build:agent-phone --release` produces the trusted receipt;
-staging and after-pack reverify it. Android builds disable persistent daemons.
+Stable copies a published insider's byte-identical ZIP and blockmap, with no rebuild, signing or
+secrets. It re-verifies every asset, launch evidence, signature, team, staple and Gatekeeper,
+refuses versions at or below published Stable, and needs the source on first-parent main with
+green push CI and a green full main run at or after it. Tim approves only publication, through the
+`publish` environment.
 
 ## Tim's one-time setup and rotation
 
-The `release` environment holds signing secrets and has **no required reviewer**
-for automatic insider builds. Deployment refs remain branch `main`, tags
-`desktop-v*`, and tags `v*-insider`. Only the stable publication job uses the
-separate `publish` environment, with required reviewer `timjang3` and **no secrets**.
-Tim/maintainers configure these environments before enabling main-push releases; agents
-do not change settings. Keep signing secrets scoped to `release`. Tim performs all
-credential operations himself; agents never read or operate on key material.
+The `release` environment holds the signing secrets with **no required reviewer**, so insiders
+build automatically; its deployment refs are `main`, `desktop-v*` and `v*-insider`. Stable
+publication alone uses `publish`, with required reviewer `timjang3` and **no secrets**. Tim
+configures both; agents change no settings.
 
-| Environment secret                            | Contents and rotation source                                                                                                                                                                                                                                                                                                                  |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CSC_LINK`                                    | Base64 Developer ID Application .p12, containing only that identity and private key. Export a replacement from Keychain Access → My Certificates → Developer ID Application → File → Export Items, Personal Information Exchange (.p12). Rotate with `CSC_KEY_PASSWORD`.                                                                      |
-| `CSC_KEY_PASSWORD`                            | The .p12 export password, without a trailing newline.                                                                                                                                                                                                                                                                                         |
-| `APPLE_API_KEY_P8`                            | Raw App Store Connect .p8 contents, **not base64**. Create a replacement Team Key under Users and Access → Integrations → App Store Connect API, with Developer access; download once. Rotate its ID and Issuer together, verify a practice build, then revoke the old key.                                                                   |
-| `APPLE_API_KEY_ID`                            | The new App Store Connect key's Key ID, without a trailing newline.                                                                                                                                                                                                                                                                           |
-| `APPLE_API_ISSUER`                            | Its Issuer ID, without a trailing newline.                                                                                                                                                                                                                                                                                                    |
-| `OPENSTEER_AGENT_PHONE_KEYSTORE_BASE64`       | Base64 permanent PKCS#12 Agent Phone keystore. Back up securely; do not replace its signer during routine credential rotation. Re-export/re-encrypt the same key and update its password together. A different signer strands installed phones and fails the product's pinned signer check.                                                   |
-| `OPENSTEER_AGENT_PHONE_KEYSTORE_PASSWORD`     | Both store password and key password for the current release keystore. Keep both passwords equal when re-encrypting it.                                                                                                                                                                                                                       |
-| `MACOS_PASSWORDS_PROVISIONING_PROFILE_BASE64` | Base64 Developer ID profile for `B47U2LLKHW.com.opensteer.passwords` (currently Opensteer Passwords Developer ID v1). Download from Apple Developer → Certificates, Identifiers & Profiles → Profiles, or use Tim's existing copy. Regenerate for certificate/profile renewal; validation checks its team, App ID, keychain group and expiry. |
-| `MACOS_APP_PROVISIONING_PROFILE_BASE64`       | Existing main-app profile, Opensteer Developer ID v1, `B47U2LLKHW.com.opensteer.opensteer`. Retained in the environment but **unused** by this workflow: the main app claims only allow-jit and embeds no provisioning profile. Renew through the Developer portal if needed elsewhere.                                                       |
+| Secret                                        | Contents and rotation                                                                                                                                                                                                                           |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CSC_LINK`, `CSC_KEY_PASSWORD`                | Base64 Developer ID Application .p12 holding only that identity and key (Keychain Access → My Certificates → Developer ID Application → File → Export Items, .p12), and its export password. Rotate together.                                   |
+| `APPLE_API_KEY_P8`                            | Raw App Store Connect .p8, **not base64**: a Team Key with Developer access (Users and Access → Integrations → App Store Connect API), downloadable once.                                                                                       |
+| `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`        | That key's Key ID and Issuer ID. Rotate with the key, practice-build, then revoke the old key.                                                                                                                                                  |
+| `OPENSTEER_AGENT_PHONE_KEYSTORE_BASE64`       | Base64 permanent PKCS#12 Agent Phone keystore. Never change its signer: that strands installed phones and fails the pinned signer check. Only re-export or re-encrypt the key.                                                                  |
+| `OPENSTEER_AGENT_PHONE_KEYSTORE_PASSWORD`     | Both store and key password, kept equal.                                                                                                                                                                                                        |
+| `MACOS_PASSWORDS_PROVISIONING_PROFILE_BASE64` | Base64 Developer ID profile "Opensteer Passwords Developer ID v1" for `B47U2LLKHW.com.opensteer.passwords`, from Apple Developer → Certificates, Identifiers & Profiles → Profiles or Tim's copy. Regenerate on certificate or profile renewal. |
+| `MACOS_APP_PROVISIONING_PROFILE_BASE64`       | Main-app profile "Opensteer Developer ID v1" for `B47U2LLKHW.com.opensteer.opensteer`, kept but **unused**: the app embeds no profile. Renew in the Developer portal only if needed elsewhere.                                                  |
 
-The environment variables are `APPLE_TEAM_ID=B47U2LLKHW` and
-`OPENSTEER_AGENT_PHONE_KEY_ALIAS=opensteer-agent-phone`. Update the alias only
-when re-exporting the same permanent signing key under a new alias. Passwords
-uses `com.opensteer.passwords` on both channels; the main app does not require a channel-specific provisioning profile under the current
-entitlement contract.
-
-Tim prepares private files locally, then replaces secrets using stdin. These
-commands contain names and paths only; never paste values into logs or chat:
+Variables: `APPLE_TEAM_ID=B47U2LLKHW`, and `OPENSTEER_AGENT_PHONE_KEY_ALIAS=opensteer-agent-phone`,
+changed only when re-exporting the same key under a new alias. Values carry no trailing newline. Tim sets each from a local file on stdin, so no value reaches a
+log or chat, keeps originals in his secure backup and practice-builds before revoking old ones:
 
 ```sh
-umask 077
-base64 < DeveloperID.p12 > CSC_LINK.txt
-base64 < agent-phone.p12 > OPENSTEER_AGENT_PHONE_KEYSTORE_BASE64.txt
-base64 < passwords.provisionprofile > MACOS_PASSWORDS_PROVISIONING_PROFILE_BASE64.txt
-# Only when rotating the stored, currently unused main-app profile:
-base64 < app.provisionprofile > MACOS_APP_PROVISIONING_PROFILE_BASE64.txt
-# Passwords and IDs are local files without trailing newlines.
+umask 077; base64 < DeveloperID.p12 > CSC_LINK.txt   # delete the encoded copy afterwards
 gh secret set CSC_LINK --env release --repo steerlabs/opensteer < CSC_LINK.txt
-gh secret set CSC_KEY_PASSWORD --env release --repo steerlabs/opensteer < CSC_KEY_PASSWORD.txt
-gh secret set APPLE_API_KEY_P8 --env release --repo steerlabs/opensteer < AuthKey.p8
-gh secret set APPLE_API_KEY_ID --env release --repo steerlabs/opensteer < APPLE_API_KEY_ID.txt
-gh secret set APPLE_API_ISSUER --env release --repo steerlabs/opensteer < APPLE_API_ISSUER.txt
-gh secret set OPENSTEER_AGENT_PHONE_KEYSTORE_BASE64 --env release --repo steerlabs/opensteer < OPENSTEER_AGENT_PHONE_KEYSTORE_BASE64.txt
-gh secret set OPENSTEER_AGENT_PHONE_KEYSTORE_PASSWORD --env release --repo steerlabs/opensteer < OPENSTEER_AGENT_PHONE_KEYSTORE_PASSWORD.txt
-gh secret set MACOS_PASSWORDS_PROVISIONING_PROFILE_BASE64 --env release --repo steerlabs/opensteer < MACOS_PASSWORDS_PROVISIONING_PROFILE_BASE64.txt
-gh secret set MACOS_APP_PROVISIONING_PROFILE_BASE64 --env release --repo steerlabs/opensteer < MACOS_APP_PROVISIONING_PROFILE_BASE64.txt
 gh variable set APPLE_TEAM_ID --env release --repo steerlabs/opensteer --body B47U2LLKHW
-gh variable set OPENSTEER_AGENT_PHONE_KEY_ALIAS --env release --repo steerlabs/opensteer --body opensteer-agent-phone
 ```
-
-Remove temporary encoded/password files after uploading; retain originals in
-Tim's secure backup. Run a practice build after rotation before revoking old
-credentials. The workflow writes raw .p8, decoded keystore/profile/certificate
-and temporary PEM files with mode 0600, masks the derived signing identity before
-printing it, and always deletes those files and its temporary keychain.
 
 ## Public Mac download
 
-Prepare verifies the channel-neutral bundle identity, source, numeric version, arm64 executable,
-Developer ID team/signature, notarization, Gatekeeper and embedded updater policy.
-Draft tags target the built source, never current main. Identical draft bytes may
-be reused; differing bytes fail. Publication verifies every asset before changing
-visibility/Latest and checks anonymous downloads. Published reruns only verify.
-
-Install the public stable app with:
-
-```sh
-curl -fsSL https://github.com/steerlabs/opensteer/releases/latest/download/install.sh | sh
-```
-
-The installer requires Apple silicon and macOS 13+, pins Latest once and checks
-checksum, identity, version, executable, signer and Gatekeeper. It serializes
-installation, rejects symlinks/conflicting identities and waits for app/ShipIt
-shutdown before rename/restore replacement without touching data. An intact equal
-or newer signed copy opens without replacement; recheck after quit because ShipIt
-may have installed an update. See [install.sh](../scripts/install.sh).
-
-Mirror overrides require HTTPS except loopback HTTP. Private-feed assets cannot
-be published to the public repository. YAML asset URLs remain filenames because
-the GitHub provider derives paths from its embedded host.
+People install Stable with
+`curl -fsSL https://github.com/steerlabs/opensteer/releases/latest/download/install.sh | sh`.
+[install.sh](../scripts/install.sh) needs Apple silicon and macOS 13+ and replaces the app only
+after it and ShipIt quit, never touching data. Draft tags target the built source, never current
+main. Publication verifies every asset before changing visibility or Latest. YAML asset URLs stay
+bare filenames because the GitHub provider derives paths from its embedded host. Mirror overrides
+need HTTPS except on loopback; private-feed assets never reach the public repository.
+[Draft certification](../scripts/public-download/eu-run.ts) optionally installs a draft's actual
+ZIP in disposable VMs and never publishes, pushes or changes host firewall or trust settings.
 
 ## Automatic updates
 
-Stable and Beta are settings in the same app, with the same Account and Connect
-capabilities at `accounts.opensteer.com` and portal `app.opensteer.com`. Fresh
-installs default to Stable, including insider downloads. Choose Beta in Settings
-to follow insiders. Switching back never downgrades: an installed newer version
-waits for Stable to pass it. With no Stable release the app says so explicitly.
-Channel selection is refused during download or staging and checks immediately
-after selection.
-
-Packaged Mac arm64 releases use electron-updater 6.8.11 with the GitHub
-provider. Stable uses channel `latest`, tag `desktop-vX.Y.Z`, and GitHub Latest;
-Beta uses custom channel `insider`, tag `vX.Y.Z-insider`, and a prerelease
-that is never Latest. Beta cannot use channel `beta`: that channel also accepts
-legacy semver stable releases. Beta cannot use `desktop-v` tags either, because
-prerelease discovery skips non-semver tags. Both app versions remain numeric
-`X.Y.Z`, with one Beta per version, to satisfy Squirrel's downgrade guard.
-
-For Beta, the provider selects the first eligible Atom entry, rather than the
-highest version. Publish in version order, with all channel assets ready and the tag
-visible in Atom. A missing channel file falls back to `latest-mac.yml` on the
-same tag; publish `latest-mac.yml` for stable and `insider-mac.yml` for Beta.
-
-Updates run only from Applications; the move prompt precedes supervised children.
-The app checks on its own, but downloads and restarts only when the person asks,
-from the sidebar or the app menu's Check for Updates…; the update journey clicks
-Download Update… for the same reason. Readiness requires native `update-downloaded`, proving Squirrel staged
-and validated the bundle, and ends checking until the restart: a second staging
-in one run is untested. Never log native errors carrying URLs/paths; log only
-the fixed reason. Stop children and destroy windows before handing off installation.
-Both channels refuse downgrades. Bundle entries must remain owner-writable for
-ShipIt. See [updater](../apps/desktop/src/app/desktop-updater.ts),
-[shutdown](../apps/desktop/src/app/desktop-shutdown.ts) and
-[policy](../apps/desktop/src/releases/desktop-update-policy.ts).
-Development omits updates. Mirror overrides are release-only and forbidden in CI;
-the embedded feed records them for verification.
+Stable and Beta are settings of the one app, `com.opensteer.opensteer`; fresh installs default
+to Stable, and switching never downgrades. Stable uses channel `latest`, `desktop-vX.Y.Z` tags
+and GitHub Latest; Beta uses channel `insider` and `vX.Y.Z-insider` prereleases, because
+channel `beta` accepts legacy semver stable releases and prerelease discovery skips
+`desktop-v` tags. One Beta per numeric version satisfies Squirrel's downgrade guard. Beta takes
+the first eligible Atom entry, not the highest version, so publish in order with every asset
+ready. Updates run only from Applications and download only when the person asks. Log only the
+fixed failure reason, since native errors carry URLs and paths, and stop children and destroy
+windows before handing off installation ([updater](../apps/desktop/src/app/desktop-updater.ts)).
+Development builds never update; the update-host override works only in release builds
+outside CI.
 
 ## Personal database snapshots
 
-Before migrating on a new app version, snapshot the stopped PostgreSQL cluster.
-This is a migration safety net, not a disk backup or a startup gate: failures
-must not prevent launch. APFS clones share disk failure risk. A completed snapshot
-has `snapshot.json`; retain the newest three. See
-[snapshot implementation](../apps/desktop/src/supervisor/personal-database-snapshot.ts).
-
-Restore with Opensteer and PostgreSQL stopped, preserving the current data for
-recovery. Installing an older binary alone is not a restore. A database snapshot
-does not include native browser storage, and restoring a preconversion DB must
-never recreate or replace its established native directory.
-
-Recovery requires a Host that understands native profiles, with named-profile
-execution unavailable until every profile-owning runtime storage root reconciles
-its inventory, including deletion tombstones. Personal reconciles Main before
-named-profile ticket issuance. On Account-attached Deployments, reopening profiles
-elsewhere before their owners reconcile is unsupported. An unavailable owner
-leaves recovery incomplete and never authorizes importing an old seed elsewhere.
-Runtime claims advance existing ownership; they do not recreate missing ownership
-or grants. Restoring both the DB and runtime storage backwards is outside this
-guarantee. See [profile authority](browser-sessions.md#profile-state) and
-[runtime admission](host-boundaries.md#compatibility).
-
-## Release gates
-
-Signing alone proves no notarization. Distribution requires hardened runtime,
-secure timestamps, reviewed entitlements, accepted notarization and a validated
-staple/Gatekeeper assessment. Passwords also requires its matching provisioning
-profile; see [SIGNING.md](../apps/desktop/SIGNING.md#passwords-provisioning-and-distribution).
+Before migrating on a new version, the app [snapshots](../apps/desktop/src/supervisor/personal-database-snapshot.ts)
+the stopped PostgreSQL cluster: a guard against a bad migration, not a failing disk, that never blocks launch. Restore by
+hand with Opensteer and PostgreSQL stopped, setting the current data aside; an older binary alone
+is not a restore. Snapshots exclude native browser storage: a restored pre-conversion database
+must never recreate or replace an established native directory, and named profiles stay
+unavailable until every owning storage root reconciles its inventory ([profile
+authority](browser-sessions.md#profile-state)). Restoring runtime storage backwards too is outside
+this guarantee.
 
 ## Account service
 
-The Account service (`accounts.opensteer.com`), shared by both desktop channels, ships from the `account`
-job in [release.yml](../.github/workflows/release.yml) on every eligible main push,
-after the insider preflight and before that insider publishes, so a Beta never
-reaches people ahead of the Account it may depend on. A failed rollout blocks the
-insider. Nobody deploys it by hand, and
-[deploy-account.sh](../.github/scripts/deploy-account.sh) never replaces a newer
-live source with an older one.
+The `account` job ships the Account service on every eligible main push, before that insider
+publishes; a failed rollout blocks the insider, and
+[deploy-account.sh](../.github/scripts/deploy-account.sh) never rolls live source back. Nobody
+deploys it by hand. A Host refuses, with an update instruction, an Account lacking a capability
+it needs, never falling back to a weaker path. A reasonless refusal stays retryable: an HTTP
+status alone never proves an external effect did not happen. New pods migrate at startup while the previous release serves, so add
+first and drop or rename only once no running release reads the old shape. Secrets stay in
+Secret Manager; [deploy/account](../deploy/account) holds only their names and versions.
 
-Deploy Account's additive browser-binding migration, custom/MCP callback-relay reader, browser-bound callback claim and static MCP client-metadata document on every replica before distributing Hosts that require Account callbacks for all new consent. An older or unavailable Account causes an update/unavailable refusal; Hosts never switch linked consent back to loopback. Existing connections continue using and refreshing their grants. In-flight callbacks launched before the browser-binding rollout must restart consent.
-
-Deploy Account's app-finish support (`appFinish` metadata, held results and `/return`) on every replica before distributing Hosts that advertise `integration-app-finish-v1`. A Host refuses an app finish when the Account lacks it rather than switching that consent to an Account browser sign-in; clients and Hosts without the capability keep the sign-in path.
-
-Deploy Account's additive operation-refusal reasons and completed-operation results
-on every replica before distributing Hosts that use them to settle their Account
-journals. A reasonless response from an older Account remains retryable and keeps
-the journal; an HTTP status alone never proves that an external effect did not occur.
-
-The workload lives in [deploy/account](../deploy/account); secrets stay in Secret
-Manager and only their names and versions are here. New pods migrate the database
-at startup while the previous release keeps serving, so every migration must work
-with the previous release: add first, and drop or rename only once no running
-release reads the old shape. Cloud operation tables and their historical migrations
-remain for this overlap; the Account no longer reads or writes them. Drop them
-only after every serving replica has stopped using the old cloud runtime.
-
-Outside this repo, the GitHub environment `account` (main only) is the only caller
-the Workload Identity provider `github-account-deployer` in `opensteer-admin`'s
-`github` pool admits. Its service account, `gha-account-deployer@opensteer-admin`,
-may push to the `staging` Artifact Registry repository, connect to `cell-1` and
-change only the Account's objects in `opensteer-system`. The cluster, database,
-edge, secrets and that Role stay in `opensteer-infra`.
+Outside this repo, the GitHub environment `account` (main only) is the sole caller the Workload
+Identity provider `github-account-deployer` in `opensteer-admin`'s `github` pool admits. Its
+service account, `gha-account-deployer@opensteer-admin`, may push to the `staging` Artifact
+Registry, connect to `cell-1` and change only the Account's objects in `opensteer-system`; the
+cluster, database, edge, secrets and that Role stay in `opensteer-infra`.

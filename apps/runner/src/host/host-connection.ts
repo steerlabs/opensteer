@@ -201,7 +201,7 @@ export interface RunnerLogger {
  *
  * These parts travel as one value because they exist together or not at all: a
  * reach-only computer has no Runtime to hand a command to, no Workspace storage
- * to advertise, and no browser of its own to relay (`docs/computers.md` §2).
+ * to advertise, and no browser of its own to relay (`docs/computers.md#runner-and-desktop`).
  */
 export interface RunnerAgentsConnection {
   readonly earlierBootsContained?: boolean;

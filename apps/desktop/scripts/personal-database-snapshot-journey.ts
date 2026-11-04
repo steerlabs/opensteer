@@ -152,7 +152,7 @@ try {
   await database.destroy();
   step("release-b-migrated", { applied: appliedB.length, pendingApplied: pendingInB });
 
-  // The manual restore, exactly as docs/releases.md describes it.
+  // The manual restore a person performs.
   await stopPostgres(postgres); // 1. Quit Opensteer.
   postgres = undefined;
   await rename(paths.postgresDataDirectory, `${paths.postgresDataDirectory}.before-restore`); // 2.

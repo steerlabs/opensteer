@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 /// One accepted client. A session belongs to the connection that opened it and
-/// ends when that connection drops (§1 invariant 3, §2 "IPC").
+/// ends when that connection drops.
 public final class IPCConnection: @unchecked Sendable {
   public let id: Int
 
@@ -98,7 +98,7 @@ public final class IPCConnection: @unchecked Sendable {
         if let receiver = mediaReceiver.current { receiver(frame) } else { onFrame(self, frame) }
       } catch {
         // A frame over 4 MiB cannot be resynchronised from, so the connection
-        // goes rather than the frame (§2 "IPC").
+        // goes rather than the frame.
         Log.ipc.error("Closing connection \(self.id, privacy: .public): frame too large.")
         close()
         return
