@@ -1,4 +1,5 @@
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
+import { startMemoryPassInTransaction } from "./memory-pass-store.js";
 import { assertLineageCompatibleReuse } from "./resource-access.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { z } from "zod";
@@ -7,7 +8,7 @@ import { lockRunProjectionRows, lockThreadProjectionParents } from "./run-projec
 import { recordIncludedBrowserPages } from "./browser-session-store.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { executionEnvironmentIsAvailableToUser } from "./execution-authority.js";
-import { prepareThreadInsertion } from "./thread-insertion.js";
+import { harnessRevisionChanged, prepareThreadInsertion } from "./thread-insertion.js";
 import { projectThreadState } from "./thread-status.js";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -1835,6 +1836,8 @@ async function lockThreadInputPreconditions(
     readonly source: ThreadInputSource;
     readonly threadId: ThreadId;
     readonly policy: "report" | "queue" | "steer";
+    readonly memoryPass?: { readonly harnessInstanceId: HarnessInstanceId };
+    readonly expectedHarnessRevision?: number;
   },
 ): Promise<{
   readonly executionValid: boolean;
@@ -1844,7 +1847,7 @@ async function lockThreadInputPreconditions(
 }> {
   const observedThread = await transaction
     .selectFrom("threads")
-    .select("workspaceId")
+    .select(["harnessInstanceId", "workspaceId"])
     .where("id", "=", input.threadId)
     .executeTakeFirst();
   if (!observedThread) {
@@ -1917,6 +1920,23 @@ async function lockThreadInputPreconditions(
     .where("userId", "=", input.requestedBy)
     .forNoKeyUpdate()
     .executeTakeFirst();
+  // Held until the Run commits, after which updateHarnessInstance refuses to move the endpoint.
+  const placedHarnessId =
+    input.memoryPass?.harnessInstanceId ??
+    (input.expectedHarnessRevision === undefined ? undefined : observedThread.harnessInstanceId);
+  const placedHarness = placedHarnessId
+    ? await transaction
+        .selectFrom("harnessInstances")
+        .select("runtimeRevision")
+        .where("id", "=", placedHarnessId)
+        .forShare()
+        .executeTakeFirst()
+    : undefined;
+  if (
+    input.expectedHarnessRevision !== undefined &&
+    placedHarness?.runtimeRevision !== input.expectedHarnessRevision
+  )
+    throw harnessRevisionChanged();
   await lockThreadChannelAuthorities(transaction, [input.threadId]);
   const thread = await transaction
     .selectFrom("threads")
@@ -2003,6 +2023,8 @@ interface ResolvedThreadInputFacts {
   readonly causalChainId: CausalChainId | null;
   readonly kind: MessageKind;
   readonly replyTarget: ReplyTarget | null;
+  /** A managed memory pass's own wake, admitted onto its idle worker. */
+  readonly memoryPass?: true;
 }
 
 /** Caller holds the prefix in ./lock-order.ts, serializing admission and membership changes. */
@@ -2176,8 +2198,9 @@ export async function enqueueThreadInputInTransaction(
     return replayThreadInput(transaction, existing);
   }
 
-  const { executionValid, membershipGeneration, prelockedActiveRunId, thread } =
-    await lockThreadInputPreconditions(transaction, request);
+  const preconditions = await lockThreadInputPreconditions(transaction, request);
+  const { executionValid, membershipGeneration, prelockedActiveRunId } = preconditions;
+  let thread = preconditions.thread;
   if (request.source.kind === "connection" && policy !== "report" && thread.inheritsMain) {
     const connection = await transaction
       .selectFrom("agentConnections")
@@ -2201,6 +2224,14 @@ export async function enqueueThreadInputInTransaction(
   });
   if (thread.doneAt && request.policy !== "report") {
     throw new OpensteerError({ code: "conflict", message: "This task is Done. Reopen it first." });
+  }
+  const passEvents: AgentEvent[] = [];
+  if (facts.memoryPass) {
+    if (policy !== "queue" || !request.memoryPass)
+      throw new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED });
+    const started = await startMemoryPassInTransaction(transaction, thread, request.memoryPass);
+    thread = started.worker;
+    passEvents.push(started.event);
   }
   await lockThreadProjectionParents(transaction, {
     threadIds: [thread.id],
@@ -2497,7 +2528,7 @@ export async function enqueueThreadInputInTransaction(
     return credited({
       command: steerCommand,
       disposition: "steering",
-      events: [...retiredReportEvents, messageEvent],
+      events: [...retiredReportEvents, ...passEvents, messageEvent],
       input: durableInput,
       message,
       revokedGrants,
@@ -2529,7 +2560,7 @@ export async function enqueueThreadInputInTransaction(
           .where("id", "=", joined.steerCommandId)
           .executeTakeFirstOrThrow(),
         disposition: "steering",
-        events: [...retiredReportEvents, messageEvent, ...handed.events],
+        events: [...retiredReportEvents, ...passEvents, messageEvent, ...handed.events],
         input: threadInputFromRow(joined),
         message: messageFromRow(
           await transaction
@@ -2546,6 +2577,13 @@ export async function enqueueThreadInputInTransaction(
   }
   const queued =
     executionValid && policy === "queue" ? await ensureQueuedRun(transaction, thread) : null;
+  // Only a live Run stops the account's endpoint moving, so a waiting input can't keep this fence.
+  if (request.expectedHarnessRevision !== undefined && !queued?.run)
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "thread-not-accepting-work",
+      message: "This task isn't taking new work right now, so nothing was sent.",
+    });
   const finalInputRow =
     queued?.run || inputRow.state === "cancelled"
       ? inputRow
@@ -2563,7 +2601,13 @@ export async function enqueueThreadInputInTransaction(
         : finalInput.state === "cancelled"
           ? "cancelled"
           : "pending",
-    events: [...retiredReportEvents, messageEvent, ...handed.events, ...(queued?.events ?? [])],
+    events: [
+      ...retiredReportEvents,
+      ...passEvents,
+      messageEvent,
+      ...handed.events,
+      ...(queued?.events ?? []),
+    ],
     input: finalInput,
     message,
     revokedGrants: handed.revokedGrants,
@@ -2909,6 +2953,9 @@ async function resolveThreadInputFacts(
       causalChainId,
       kind: "input",
       replyTarget: null,
+      ...(origin.systemRole && origin.anchorThreadId === input.targetThread.id
+        ? { memoryPass: true as const }
+        : {}),
     };
   }
 
@@ -4294,11 +4341,15 @@ export async function delegateThreadInTransaction(
       message: "Delegated Thread creator must be an active Workspace member",
     });
   }
-  const insertThread = await prepareThreadInsertion(transaction, {
-    createdBy: input.createdBy,
-    environmentId: input.environmentId,
-    harnessInstanceId: input.harnessInstanceId,
-  });
+  const insertThread = await prepareThreadInsertion(
+    transaction,
+    {
+      createdBy: input.createdBy,
+      environmentId: input.environmentId,
+      harnessInstanceId: input.harnessInstanceId,
+    },
+    input.expectedHarnessRevision,
+  );
   await lockThreadChannelAuthorities(transaction, [
     input.origin.parentThreadId,
     ...(input.threadId ? [input.threadId] : []),

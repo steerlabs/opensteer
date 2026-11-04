@@ -19,6 +19,7 @@ import {
   ModelSelectionSchema,
   ThreadIdSchema,
   type ThreadAccessMode,
+  ThreadAccessModeSchema,
 } from "@opensteer/core";
 import { AgentConnectionStore, type OpensteerStore } from "@opensteer/database";
 import {
@@ -123,6 +124,7 @@ async function serveMcp(
     commands,
     isEnvironmentConnected: options.connected ?? (() => true),
     canRunHarness: () => true,
+    harnessAccessModes: () => ThreadAccessModeSchema.options,
     environmentWorkspaceBackings: () => ["local-directory"],
   } as unknown as ConstructorParameters<typeof ProductToolHandlers>[0]);
   let service!: OpensteerMcpService;
@@ -591,6 +593,57 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(retry.isError, JSON.stringify(retry.content)).not.toBe(true);
     expect(retry.structuredContent).toEqual(first.structuredContent);
     expect(errorText(await call("Renamed work"))).toMatch(/idempotency|different input/i);
+  });
+
+  it("starts a task named by no account or history only on an account the person left on", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("connection-delegate-excluded");
+    const url = await serveMcp(storeFixture.store);
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "approval-required",
+      reach: { kind: "workspace", workspaceId: f.workspace.id },
+    });
+    const second = await storeFixture.store.createHarnessInstance({
+      config: {},
+      driverKind: f.harnessInstance.driverKind,
+      environmentId: f.environmentId,
+      name: "Second account",
+      stateKind: "isolated",
+    });
+    await storeFixture.store.recordHarnessCatalogs({
+      catalogs: [testReadyHarnessCatalog(f.harnessInstance.id), testReadyHarnessCatalog(second.id)],
+      environmentId: f.environmentId,
+      expectedRevisions: new Map([
+        [f.harnessInstance.id, f.harnessInstance.runtimeRevision],
+        [second.id, second.runtimeRevision],
+      ]),
+    });
+    const exclude = (...excludedAccounts: (typeof second.id)[]) =>
+      storeFixture.store.setAutomaticModelConfig(f.userId, { roles: {}, excludedAccounts });
+    const call = (operationKey: string) =>
+      agent.client.callTool({
+        name: "thread_delegate",
+        arguments: {
+          workspaceId: f.workspace.id,
+          environmentId: f.environmentId,
+          title: "Automatic work",
+          task: "Inspect the project",
+          operationKey,
+        },
+      });
+    expect(f.harnessInstance.isDefault).toBe(true);
+    await exclude(f.harnessInstance.id, second.id);
+    expect(errorText(await call("all-excluded"))).toContain(
+      "Choose harnessInstanceId for the new task",
+    );
+    await exclude(f.harnessInstance.id);
+    const started = await call("default-excluded");
+    expect(started.isError, JSON.stringify(started.content)).not.toBe(true);
+    expect(started.structuredContent).toMatchObject({
+      thread: { harnessInstanceId: second.id },
+    });
   });
 
   it("refuses Workspace connection activation of Main queues inside the transaction", async ({
@@ -1128,7 +1181,12 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     await vi.waitFor(() => expect(subscribed).toHaveBeenCalledOnce(), { timeout: 2000 });
     await new AgentConnectionStore(storeFixture.database).revoke(createId("user"), agent.id);
     expect(unsubscribed).not.toHaveBeenCalled();
-    const ended = expect(waiting).rejects.toThrow();
+    // Revocation closes the session, unless a Thread change wakes the wait first:
+    // its recheck then answers with an error. Either way the wait fails.
+    const ended = waiting.then(
+      (result) => expect(result.isError).toBe(true),
+      (error: unknown) => expect(error).toBeInstanceOf(Error),
+    );
     await agent.revoke();
     notify.current?.();
     await ended;

@@ -1487,21 +1487,29 @@ describe("cursor Thread naming", () => {
           : {}),
       });
       let namingLaunch: import("@opensteer/harness").HarnessProcessLaunch | undefined;
+      let launches = 0;
       const prompt = threadTitlePrompt("Migrate support", { icon: true });
-      const session = await fixture.adapter.startSession({
+      const namingContext = {
         ...fixture.context,
-        wrapProcessLaunch: (launch) => {
-          if (!launch.cwd.includes("title-")) return launch;
+        wrapProcessLaunch: (launch: import("@opensteer/harness").HarnessProcessLaunch) => {
+          if (!launch.cwd.includes("text-")) return launch;
           namingLaunch = launch;
+          launches++;
           return launch;
         },
-      });
+      };
       try {
-        expect(await session.generateTitle!({ prompt, signal: AbortSignal.timeout(2_000) })).toBe(
-          "Support migration\nheadphones",
-        );
+        expect(
+          await fixture.adapter.generateText!({
+            context: { ...namingContext, scratchDirectory: namingContext.threadStateDirectory },
+            modelSelection: namingContext.modelSelection,
+            prompt,
+            signal: AbortSignal.timeout(2_000),
+          }),
+        ).toEqual({ ok: true, text: "Support migration\nheadphones" });
+        expect(launches).toBe(1);
         const launch = namingLaunch!;
-        expect(launch.cwd).toContain("title-");
+        expect(launch.cwd).toContain("text-");
 
         expect(launch.args).toEqual(
           expect.arrayContaining([
@@ -1509,23 +1517,49 @@ describe("cursor Thread naming", () => {
             "text",
             "--plugin-dir",
             "--model",
-            scenario === "no-light-model" ? "claude-opus-4-6" : "composer-2.5",
+            fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId,
           ]),
         );
-        expect(launch.environment.CURSOR_DATA_DIR).toContain("title-");
-        expect(launch.environment.HOME).toContain("title-");
+        expect(launch.environment.CURSOR_DATA_DIR).toContain("text-");
+        expect(launch.environment.HOME).toContain("text-");
 
         expect(
           (await readdir(fixture.context.threadStateDirectory)).filter((name) =>
-            name.startsWith("title-"),
+            name.startsWith("text-"),
           ),
         ).toEqual([]);
       } finally {
-        await session.stop();
         await fixture.adapter.close();
       }
     },
   );
+});
+
+it("runs the chosen Cursor variant for background text", async () => {
+  const fixture = await setup({ scenario: "happy" });
+  let namingLaunch: import("@opensteer/harness").HarnessProcessLaunch | undefined;
+  const context = {
+    ...fixture.context,
+    wrapProcessLaunch: (launch: import("@opensteer/harness").HarnessProcessLaunch) => {
+      if (launch.cwd.includes("text-")) namingLaunch = launch;
+      return launch;
+    },
+  };
+  try {
+    await fixture.adapter.generateText!({
+      context: { ...context, scratchDirectory: context.threadStateDirectory },
+      modelSelection: {
+        ...context.modelSelection,
+        options: { variant: "composer-2.5-fast" },
+      },
+      prompt: threadTitlePrompt("Migrate support", { icon: true }),
+      signal: AbortSignal.timeout(2_000),
+    });
+    const args = namingLaunch!.args;
+    expect(args[args.indexOf("--model") + 1]).toBe("composer-2.5-fast");
+  } finally {
+    await fixture.adapter.close();
+  }
 });
 
 it("delivers distinct full names for two plugins and a loose review skill", async () => {

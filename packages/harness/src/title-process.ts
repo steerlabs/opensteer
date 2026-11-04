@@ -2,19 +2,62 @@ import { OpensteerError } from "@opensteer/core";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { collectStreamText, spawnSupervised } from "./process-supervisor.js";
-import type { HarnessProcessLaunch, HarnessSessionContext } from "./types.js";
+import type {
+  HarnessGenerateTextContext,
+  HarnessGenerateTextResult,
+  HarnessProcessLaunch,
+  HarnessSessionContext,
+} from "./types.js";
 
-/** Keep scratch files inside the Thread paths exposed by the Runner's sandbox. */
-export async function withTitleDirectory<T>(
-  context: Pick<HarnessSessionContext, "threadStateDirectory">,
+export async function withBackgroundTextDirectory<T>(
+  context: HarnessGenerateTextContext,
+  signal: AbortSignal,
   operation: (directory: string) => Promise<T>,
 ): Promise<T> {
-  await mkdir(context.threadStateDirectory, { recursive: true, mode: 0o700 });
-  const directory = await mkdtemp(join(context.threadStateDirectory, "title-"));
+  signal.throwIfAborted();
+  await mkdir(context.scratchDirectory, { recursive: true, mode: 0o700 });
+  const directory = await mkdtemp(join(context.scratchDirectory, "text-"));
   try {
     return await operation(directory);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+}
+
+export function backgroundTextFailure(
+  text: string,
+): Extract<HarnessGenerateTextResult, { ok: false }> {
+  const failure =
+    /signed-out|not logged|logged out|auth|sign.?in|log.?in|credential|unauthorized|401/iu.test(
+      text,
+    )
+      ? "signed-out"
+      : /usage-limit|rate.?limit|usage.?limit|quota|capacity|RESOURCE_EXHAUSTED|credits.*depleted|429/iu.test(
+            text,
+          )
+        ? "usage-limit"
+        : /refus|denied|not allowed|permission/iu.test(text)
+          ? "refused"
+          : /unavailable|model.*(?:not found|unsupported|invalid)|ENOENT/iu.test(text)
+            ? "unavailable"
+            : "failed";
+  return { ok: false, failure };
+}
+
+export async function backgroundTextResult(
+  signal: AbortSignal,
+  operation: () => Promise<string>,
+): Promise<HarnessGenerateTextResult> {
+  try {
+    signal.throwIfAborted();
+    const text = await operation();
+    if (signal.aborted) return { ok: false, failure: "timeout" };
+    return text.trim() && text.length <= 20_000
+      ? { ok: true, text }
+      : { ok: false, failure: "failed" };
+  } catch (error) {
+    if (signal.aborted) return { ok: false, failure: "timeout" };
+    return backgroundTextFailure(error instanceof Error ? error.message : "");
   }
 }
 
@@ -29,7 +72,7 @@ export async function runTitleProcess(
   launch: HarnessProcessLaunch,
   signal: AbortSignal,
   stdin?: string,
-  failure?: RegExp,
+  failure: RegExp = /authentication required|not authenticated|unauthorized|signed.out|rate.?limit|usage.?limit|quota|model.*(?:unavailable|not found|access denied)/iu,
 ): Promise<string> {
   signal.throwIfAborted();
   const child = spawnSupervised({
@@ -59,17 +102,17 @@ export async function runTitleProcess(
   try {
     if (signal.aborted) abort();
     const exit = await child.exited;
-    const [reply] = await drains;
+    const [reply, diagnostic] = await drains;
     signal.throwIfAborted();
     if (refused)
       throw new OpensteerError({
         code: "harness_error",
-        message: "Thread title engine could not answer",
+        message: backgroundTextFailure(diagnostic).failure,
       });
     if (exit.code !== 0)
       throw new OpensteerError({
         code: "harness_error",
-        message: "Thread title process failed",
+        message: backgroundTextFailure(diagnostic).failure,
         details: { exitCode: exit.code },
       });
     return reply;

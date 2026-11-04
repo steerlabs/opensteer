@@ -111,6 +111,8 @@ export const TriggerSchema = z.strictObject({
   name: z.string().trim().min(1).max(160),
   nextFireAt: IsoDateTimeSchema.nullable(),
   pauseReason: z.string().min(1).nullable(),
+  /** A managed memory pass that is active but has no usable model; it is not paused. */
+  waitingReason: z.string().min(1).nullable().optional(),
   status: TriggerStatusSchema,
   updatedAt: IsoDateTimeSchema,
   webhookRouteKey: z.string().min(32).max(255).nullable(),

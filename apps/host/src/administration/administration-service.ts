@@ -67,6 +67,7 @@ const coreTypes = [
   "workspace.delete",
   "workspace.deletion.recover",
   "execution.preferences.remember",
+  "automaticModels.set",
   "harness.model.configure",
   "harness.rename",
   "harness.enabled.set",
@@ -134,6 +135,11 @@ export class AdministrationService {
   }
   async authorize(caller: AdministrationCaller, command: AdministrationCommand) {
     if (caller.kind === "person") return;
+    if (command.type.startsWith("automaticModels."))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Automatic model preferences require the person",
+      });
     settings(caller, []);
     if ("workspaceId" in command) {
       assertWorkspaceReach(caller, command.workspaceId);
@@ -232,6 +238,7 @@ export class AdministrationService {
     if (
       command.type.startsWith("workspace.") ||
       command.type.startsWith("harness.") ||
+      command.type.startsWith("automaticModels.") ||
       command.type === "execution.preferences.remember" ||
       command.type === "viewer.timeZone.update" ||
       command.type === "browser.site.remove"
@@ -465,6 +472,12 @@ export class AdministrationService {
         return {
           type: command.type,
           workspace: await workspaceView(dependencies.workspaces, workspace),
+        };
+      }
+      case "automaticModels.set": {
+        return {
+          type: command.type,
+          config: await dependencies.store.setAutomaticModelConfig(userId, command.config),
         };
       }
       case "execution.preferences.remember": {

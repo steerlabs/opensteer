@@ -32,6 +32,90 @@ import {
 } from "./index.js";
 
 describe("Runner connection registry", () => {
+  it("accepts background text only once from its live issuing connection and rejects foreign attempts", async () => {
+    const registry = new RunnerRegistry({
+      hooks: { authorize: async () => undefined, onEvent: async () => undefined },
+    });
+    const environmentId = createId("environment");
+    const identity = {
+      ...hello(createId("runner"), environmentId, "boot-1"),
+      capabilities: ["background-text-v1" as const],
+    };
+    const peer = new MemoryRunnerPeer("background");
+    const foreign = new MemoryRunnerPeer("foreign");
+    try {
+      await registerAttached(registry, identity, peer);
+      await registerAttached(
+        registry,
+        hello(createId("runner"), createId("environment"), "boot-1"),
+        foreign,
+      );
+      const request = {
+        type: "host.background-text" as const,
+        attemptId: "opaque",
+        environmentId,
+        harnessInstanceId: createId("harnessInstance"),
+        harnessRevision: 1,
+        modelSelection: ModelSelectionSchema.parse({
+          providerId: "openai",
+          modelId: "test",
+          options: {},
+        }),
+        prompt: "Name this",
+        deadline: new Date(Date.now() + 1000).toISOString(),
+      };
+      const pending = registry.backgroundText(request, AbortSignal.timeout(2000));
+      const report = {
+        type: "runner.background-text-result" as const,
+        attemptId: "opaque",
+        result: { ok: true as const, text: "Valid" },
+      };
+      await registry.handle(foreign, {
+        ...fenceOf(foreign),
+        ...report,
+        result: { ok: true, text: "Foreign" },
+      });
+      await registry.handle(peer, { ...fenceOf(peer), ...report, attemptId: "superseded" });
+      await registry.handle(peer, { ...fenceOf(peer), ...report });
+      await expect(pending).resolves.toEqual({ ok: true, text: "Valid" });
+      await registry.handle(peer, { ...fenceOf(peer), ...report });
+      const expired = registry.backgroundText(
+        { ...request, attemptId: "expired", deadline: new Date(Date.now() - 1).toISOString() },
+        AbortSignal.timeout(1000),
+      );
+      await registry.handle(peer, { ...fenceOf(peer), ...report, attemptId: "expired" });
+      await expect(expired).rejects.toThrow();
+      // A superseded connection ends its attempts at once, not at their deadline,
+      // so naming moves to its next candidate while the Runner reconnects.
+      const stale = registry.backgroundText(
+        {
+          ...request,
+          attemptId: "old-boot",
+          deadline: new Date(Date.now() + 60_000).toISOString(),
+        },
+        new AbortController().signal,
+      );
+      const rejected = expect(stale).rejects.toThrow();
+      const replacement = new MemoryRunnerPeer("replacement");
+      await registerAttached(
+        registry,
+        {
+          ...hello(identity.runnerId, environmentId, "boot-2"),
+          capabilities: ["background-text-v1"],
+        },
+        replacement,
+      );
+      await registry.handle(replacement, {
+        ...fenceOf(replacement),
+        ...report,
+        attemptId: "old-boot",
+      });
+      await rejected;
+    } finally {
+      await registry.close();
+    }
+  });
+
   it("settles specialist folder removal when its owning Runner replies", async () => {
     const registry = new RunnerRegistry({
       hooks: { authorize: async () => undefined, onEvent: async () => undefined },

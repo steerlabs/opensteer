@@ -2777,9 +2777,9 @@ describeStore("PostgreSQL store", (it) => {
       claimToken: claimed!.claimToken,
       ingressId: claimed!.id,
       notices: testChannelNotices,
-      placementCandidates: [
-        { environmentId: fixture.aliceEnvironmentId, harnessInstanceId: fixture.harness.id },
-        { environmentId: fixture.mainEnvironmentId, harnessInstanceId: fixture.mainHarness.id },
+      availableEngines: [
+        { environmentId: fixture.aliceEnvironmentId, driverKinds: [fixture.harness.driverKind] },
+        { environmentId: fixture.mainEnvironmentId, driverKinds: [fixture.mainHarness.driverKind] },
       ],
     });
     expect(adopted).toMatchObject({
@@ -2813,8 +2813,8 @@ describeStore("PostgreSQL store", (it) => {
         claimToken: nextClaim!.claimToken,
         ingressId: nextClaim!.id,
         notices: testChannelNotices,
-        placementCandidates: [
-          { environmentId: fixture.aliceEnvironmentId, harnessInstanceId: fixture.harness.id },
+        availableEngines: [
+          { environmentId: fixture.aliceEnvironmentId, driverKinds: [fixture.harness.driverKind] },
         ],
       }),
     ).rejects.toBeInstanceOf(ChannelIngressDeferredError);

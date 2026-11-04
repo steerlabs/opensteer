@@ -292,60 +292,6 @@ integration("Run tool authority", () => {
     return status;
   }
 
-  it("keeps a held Run's engine token visible after its token-less title process starts", async () => {
-    const { active, captureFile, release } = await start();
-    const workspace = await active.createWorkspace("Named work");
-    const threadId = await active.createThread({
-      modelSelection,
-      title: "Held",
-      workspaceId: workspace.id,
-    });
-    const marker = `held-run-${randomUUID()}`;
-    const queued = await active.queueMessage({ text: `Keep working ${marker}`, threadId });
-    if (!queued.runId) throw new Error("Expected the message to start a Run");
-    // The Run's title and icon are named by a second app-server started once the
-    // engine is bound; its token-less capture lands after the engine's token.
-    let captured = "";
-    await expect
-      .poll(
-        async () => {
-          captured = (await readCodexCaptures(captureFile))
-            .map((row) => JSON.stringify(row))
-            .join("\n");
-          const rows = captured
-            .split("\n")
-            .filter(Boolean)
-            .map(
-              (line) =>
-                JSON.parse(line) as {
-                  captureProcessId?: number;
-                  fakeOpensteerTokens?: { agentTools?: string };
-                },
-            );
-          const engineAt = rows.findIndex((row) => row.fakeOpensteerTokens?.agentTools);
-          return (
-            engineAt >= 0 &&
-            rows
-              .slice(engineAt + 1)
-              .some(
-                (row) =>
-                  row.fakeOpensteerTokens &&
-                  !row.fakeOpensteerTokens.agentTools &&
-                  row.captureProcessId !== rows[engineAt]!.captureProcessId,
-              )
-          );
-        },
-        { timeout: 30_000 },
-      )
-      .toBe(true);
-    const engine = heldRunCapture(captured, marker);
-    expect(engine).toBeDefined();
-    expect(await toolsStatus(active, engine!.token)).toBe(401);
-    expect(await engineToolCall(engine!)).toBe(200);
-    await release();
-    expect(["completed", "interrupted"]).toContain(await runEnds(active, queued.runId));
-  });
-
   it("stops an engine's tools at Stop while its Runner records how the Run ended", async () => {
     const { active, captureFile, release } = await start();
     const workspace = await active.createWorkspace("Stopped work");

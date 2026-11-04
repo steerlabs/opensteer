@@ -1,3 +1,4 @@
+import { defaultTaskSymbol } from "@opensteer/core";
 import { markColorPaint, type TaskMark as TaskMarkValue } from "@opensteer/client/host";
 import type { ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
@@ -6,8 +7,8 @@ import { WorkspaceIconGlyph } from "./workspace-mark.js";
 
 /**
  * A task's subject, independent of its state, unread status or project: a
- * tile tinted with the task's colour under its symbol, and a neutral tile,
- * empty until the task has a symbol, where either is missing. The web's
+ * tile tinted with the task's colour under its symbol, and a neutral tile when
+ * colour is missing. Unnamed tasks show the default symbol. The web's
  * `.task-mark` draws the same tile at the same sizes.
  */
 export function TaskMark(props: {
@@ -17,8 +18,7 @@ export function TaskMark(props: {
 }): ReactNode {
   const size = props.size ?? 20;
   const { icon } = props.mark;
-  const paint =
-    icon === null || props.mark.color === null ? null : markColorPaint[props.mark.color];
+  const paint = props.mark.color === null ? null : markColorPaint[props.mark.color];
   const tile = tiles[size];
   return (
     <View
@@ -35,14 +35,12 @@ export function TaskMark(props: {
         props.quiet ? styles.quiet : null,
       ]}
     >
-      {icon === null ? null : (
-        <WorkspaceIconGlyph
-          color={paint?.glyph ?? color.muted}
-          icon={icon}
-          size={tile.glyph}
-          strokeWidth={tile.stroke}
-        />
-      )}
+      <WorkspaceIconGlyph
+        color={paint?.glyph ?? color.muted}
+        icon={icon ?? defaultTaskSymbol}
+        size={tile.glyph}
+        strokeWidth={tile.stroke}
+      />
     </View>
   );
 }

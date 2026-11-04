@@ -4,9 +4,12 @@ import { createIntegrationId } from "@opensteer/integration-core";
 import { pluginsMigration } from "./migrations.js";
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
-import { createId } from "@opensteer/core";
+import { createId, HarnessIdSchema } from "@opensteer/core";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
-import { testContinuationIdentity } from "./store.integration.test-support.js";
+import {
+  testContinuationIdentity,
+  testReadyHarnessCatalog,
+} from "./store.integration.test-support.js";
 import { describeStore } from "./store.integration.test-support.js";
 
 describeStore("plugin activation", (test) => {
@@ -144,6 +147,125 @@ describeStore("plugin activation", (test) => {
       role: "conversation",
       inheritsMain: false,
     });
+  });
+
+  test("a Project Chat with no history starts on the first account with a catalog default", async ({
+    storeFixture: fixture,
+  }) => {
+    const f = await fixture.createRunFixture("project-chat-default");
+    const environmentId = await fixture.store.createEnvironment({
+      kind: "local",
+      name: "Fresh computer",
+      runnerId: f.runnerId,
+    });
+    const account = (name: string) =>
+      fixture.store.createHarnessInstance({
+        config: {},
+        driverKind: HarnessIdSchema.parse("native"),
+        environmentId,
+        name,
+        sourceId: "native",
+        stateKind: "isolated",
+      });
+    // The default account has not signed in; the next account is ready.
+    const signedOut = await account("Default, signed out");
+    const ready = await account("Ready");
+    const catalog = testReadyHarnessCatalog(ready.id);
+    await fixture.store.recordHarnessCatalogs({
+      catalogs: [
+        {
+          ...testReadyHarnessCatalog(signedOut.id),
+          status: "authentication-required",
+          detail: "Sign in to continue",
+          models: [],
+        },
+        {
+          ...catalog,
+          models: catalog.models.map((model) => ({ ...model, nativeModelId: "gateway/default" })),
+        },
+      ],
+      environmentId,
+      expectedRevisions: new Map([
+        [signedOut.id, signedOut.runtimeRevision],
+        [ready.id, ready.runtimeRevision],
+      ]),
+    });
+    const project = await createTestWorkspace(fixture.store, {
+      backing: {
+        ...f.workspace.backing,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: environmentId,
+      },
+      createdBy: f.userId,
+      idempotencyKey: "chat-project-default",
+      kind: "project",
+      name: "Fresh Project",
+      status: "ready",
+    });
+    expect(signedOut.isDefault).toBe(true);
+    expect(project.homeThreadId).toBeTruthy();
+    expect(await fixture.store.getThreadForOwner(project.homeThreadId!, f.userId)).toMatchObject({
+      harnessInstanceId: ready.id,
+      modelSelection: {
+        modelId: catalog.models[0]!.modelId,
+        nativeModelId: "gateway/default",
+        options: {},
+        providerId: catalog.models[0]!.providerId,
+      },
+    });
+  });
+
+  test("a Project Chat with no history skips accounts its owner excluded, and waits while none is left", async ({
+    storeFixture: fixture,
+  }) => {
+    const f = await fixture.createRunFixture("project-chat-excluded");
+    const environmentId = await fixture.store.createEnvironment({
+      kind: "local",
+      name: "Excluding computer",
+      runnerId: f.runnerId,
+    });
+    const account = (name: string) =>
+      fixture.store.createHarnessInstance({
+        config: {},
+        driverKind: HarnessIdSchema.parse("native"),
+        environmentId,
+        name,
+        sourceId: "native",
+        stateKind: "isolated",
+      });
+    const first = await account("Default");
+    const second = await account("Second");
+    await fixture.store.recordHarnessCatalogs({
+      catalogs: [testReadyHarnessCatalog(first.id), testReadyHarnessCatalog(second.id)],
+      environmentId,
+      expectedRevisions: new Map([
+        [first.id, first.runtimeRevision],
+        [second.id, second.runtimeRevision],
+      ]),
+    });
+    const exclude = (...excludedAccounts: (typeof first.id)[]) =>
+      fixture.store.setAutomaticModelConfig(f.userId, { roles: {}, excludedAccounts });
+    await exclude(first.id, second.id);
+    const project = await createTestWorkspace(fixture.store, {
+      backing: {
+        ...f.workspace.backing,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: environmentId,
+      },
+      createdBy: f.userId,
+      idempotencyKey: "chat-project-excluded",
+      kind: "project",
+      name: "Excluded Project",
+      status: "ready",
+    });
+    expect(first.isDefault).toBe(true);
+    expect(project.homeThreadId).toBeNull();
+    await exclude(first.id);
+    const reconciled = (await fixture.store.listWorkspaces()).find((w) => w.id === project.id);
+    expect(reconciled?.homeThreadId).toBeTruthy();
+    expect(
+      await fixture.store.getThreadForOwner(reconciled!.homeThreadId!, f.userId),
+    ).toMatchObject({ harnessInstanceId: second.id });
   });
 
   test("members list only available plugins without installation paths and only owners change activation", async ({

@@ -37,6 +37,8 @@ export interface ScheduleItem {
   readonly systemRole: TriggerSummary["systemRole"];
   readonly status: TriggerSummary["status"];
   readonly pauseReason: string | null;
+  /** Why an active memory pass is not running: it has no usable model. */
+  readonly waitingReason: string | null;
   readonly statusWord: string;
   readonly nextFireAt: string | null;
   readonly latestOccurrence: TriggerSummary["latestOccurrence"];
@@ -83,6 +85,7 @@ function scheduleItem(
     systemRole: summary.systemRole,
     status: summary.status,
     pauseReason: summary.pauseReason,
+    waitingReason: summary.status === "active" ? (summary.waitingReason ?? null) : null,
     statusWord: scheduleStatusWord(summary.status, summary.pauseReason),
     nextFireAt:
       summary.status === "active" && summary.kind === "schedule" ? summary.nextFireAt : null,

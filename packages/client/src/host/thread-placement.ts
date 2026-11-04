@@ -1,11 +1,10 @@
 import type { EnvironmentSummary, HarnessSummary, ThreadSummary } from "./client.js";
 import {
+  catalogDefaultModelSelection,
   harnessDisplayRank,
   harnessDriverLabel,
-  modelEffortTiers,
   ModelSelectionSchema,
   sameProviderContinuationIdentity,
-  type ModelEffortTier,
   type ModelSelection,
   type ProviderContinuationIdentity,
   type ThreadAccessMode,
@@ -46,6 +45,8 @@ export interface ThreadPlacementOption {
   readonly available: boolean;
   readonly availability: ThreadPlacementAvailability;
   readonly continuationIdentity: ProviderContinuationIdentity | null;
+  /** Whether nothing-chosen defaults may use it; only an explicit `false` says no. */
+  readonly automaticEligible?: boolean;
   /** The account new Threads and freshly picked models use for this engine here. */
   readonly defaultAccount: boolean;
   readonly detail: string;
@@ -128,8 +129,17 @@ export function defaultThreadPlacement(
   );
   return threadPlacementOptions(environments, harnesses, localRunner).find(
     (option) =>
-      option.available && option.defaultAccount && mainEnvironmentIds.has(option.environmentId),
+      automaticallyRunnable(option) &&
+      option.defaultAccount &&
+      mainEnvironmentIds.has(option.environmentId),
   );
+}
+
+/** Whether a default may land here when nobody chose: explicit choices don't consult this. */
+export function automaticallyRunnable(
+  placement: Pick<ThreadPlacementOption, "automaticEligible" | "available">,
+): boolean {
+  return placement.available && placement.automaticEligible !== false;
 }
 
 /**
@@ -234,6 +244,9 @@ function placementOption(
     accessModes:
       advertised && advertised.readiness !== "unavailable" ? advertised.accessModes : null,
     accountName: harness.name,
+    ...(harness.automaticEligible === undefined
+      ? {}
+      : { automaticEligible: harness.automaticEligible }),
     continuationIdentity: null,
     defaultAccount: harness.isDefault,
     driverKind: harness.driverKind,
@@ -330,8 +343,11 @@ function placementOption(
     };
   }
   const runnableModels = catalog.models.filter((model) => !model.unavailableReason);
-  const defaultModel = runnableModels.find((model) => model.isDefault) ?? runnableModels[0];
-  if (!defaultModel) {
+  const defaultSelection = catalogDefaultModelSelection({
+    status: catalog.status,
+    models: catalog.models,
+  });
+  if (runnableModels.length === 0) {
     return {
       ...base,
       availability: "unavailable",
@@ -356,7 +372,7 @@ function placementOption(
       advertised?.note ??
       (advertised?.readiness === "runtime-check" ? "Checked when work starts" : "Ready"),
     models: runnableModels,
-    modelSelection: selectionForModel(defaultModel),
+    modelSelection: defaultSelection ?? unavailableSelection,
     observedConnections: catalog.connections,
     setupAvailable: catalog.setupMethods.length > 0,
     setupMethods: catalog.setupMethods,
@@ -400,40 +416,7 @@ export function selectionForModel(
   });
 }
 
-/**
- * Applies a product reasoning preference through the model's own select.
- * Engines use `effort`; Pi uses `thinking`. Unknown words are not guessed at,
- * and an unavailable requested tier leaves the engine at its declared default.
- */
-export function selectionForModelEffort(
-  model: HarnessModelDescriptor,
-  effort: ModelEffortTier | "default" | "highest",
-): ModelSelection {
-  if (effort === "default") return selectionForModel(model);
-  const option = model.options.find(
-    (
-      candidate,
-    ): candidate is Extract<HarnessModelDescriptor["options"][number], { type: "select" }> =>
-      candidate.type === "select" && (candidate.id === "effort" || candidate.id === "thinking"),
-  );
-  if (!option) return selectionForModel(model);
-  const offered: Array<{ readonly tier: ModelEffortTier; readonly value: string }> = [];
-  for (const { value } of option.values) {
-    if (value === "auto" || value === "default") continue;
-    const tier =
-      value === "off" ? "none" : modelEffortTiers.find((candidate) => candidate === value);
-    if (tier === undefined) return selectionForModel(model);
-    offered.push({ tier, value });
-  }
-  const tierRank = (tier: ModelEffortTier) => modelEffortTiers.indexOf(tier);
-  const value =
-    effort === "highest"
-      ? [...offered].sort((left, right) => tierRank(right.tier) - tierRank(left.tier))[0]?.value
-      : offered.find(({ tier }) => tier === effort)?.value;
-  return value === undefined
-    ? selectionForModel(model)
-    : selectionForModel(model, { [option.id]: value });
-}
+export { selectionForModelEffort } from "@opensteer/core";
 
 function environmentRank(environment: EnvironmentSummary): number {
   if (environment.kind === "main") return 0;

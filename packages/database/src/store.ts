@@ -1,3 +1,4 @@
+import * as backgroundModelStore from "./background-model-store.js";
 import * as voiceStore from "./voice-store.js";
 import * as workspaceSkillInventoryStore from "./workspace-skill-inventory-store.js";
 import {
@@ -1176,6 +1177,16 @@ export class OpensteerStore {
     return harnessStore.getHarnessCatalog(this.#database, environmentId, harnessInstanceId);
   }
 
+  async getAutomaticModelConfig(userId: UserId) {
+    return backgroundModelStore.getAutomaticModelConfig(this.#database, userId);
+  }
+  /** Person-only: agents and filesystem JSON never change automatic-model eligibility. */
+  async setAutomaticModelConfig(
+    userId: UserId,
+    config: import("@opensteer/core").AutomaticModelConfig,
+  ) {
+    return backgroundModelStore.setAutomaticModelConfig(this.#database, userId, config);
+  }
   async getExecutionPreferences(userId: UserId): Promise<ExecutionPreferences> {
     return harnessStore.getExecutionPreferences(this.#database, userId);
   }
@@ -1573,6 +1584,14 @@ export class OpensteerStore {
     input: Parameters<typeof threadStore.setThreadIcon>[1],
   ): Promise<ThreadUpdateResult> {
     return threadStore.setThreadIcon(this.#database, input);
+  }
+
+  getThreadNamingInput(threadId: ThreadId) {
+    return executionStore.getThreadNamingInput(this.#database, threadId);
+  }
+
+  listThreadNamingCandidates(limit = 100, after?: ThreadId) {
+    return executionStore.listThreadNamingCandidates(this.#database, limit, after);
   }
 
   applyGeneratedThreadName(

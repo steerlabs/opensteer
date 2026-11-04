@@ -9,6 +9,8 @@ import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import { SpecialistStore } from "@opensteer/database";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import {
+  catalogDefaultCandidate,
+  catalogDefaultModelSelection,
   isPlaceContentPart,
   zeroSequence,
   OpensteerError,
@@ -18,9 +20,11 @@ import {
   WorkspaceIdSchema,
   type AgentEvent,
   type EnvironmentId,
+  type UserId,
   type HarnessId,
   type Message,
   type Thread,
+  type ThreadAccessMode,
   type Workspace,
   type WorkspaceBackingKind,
 } from "@opensteer/core";
@@ -44,6 +48,7 @@ import { environmentDiscovery } from "../../agents/environment-discovery.js";
 
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import type { AgentWorkspaceMountService } from "../../agents/agent-workspace-mount-service.js";
+import type { MemoryPassService } from "../../agents/memory-pass-service.js";
 import { callerThread, type AgentCaller } from "../agent-caller.js";
 import type { ToolCall } from "./index.js";
 import {
@@ -72,6 +77,11 @@ interface AgentWorkspaceCreator {
   }): Promise<Workspace>;
 }
 
+interface ConnectionTask {
+  readonly thread: Thread;
+  readonly expectedHarnessRevision?: number;
+}
+
 export class ProductToolHandlers {
   readonly #threads: ThreadService;
   readonly #realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
@@ -95,6 +105,10 @@ export class ProductToolHandlers {
   >;
   readonly #browserTabs: BrowserTabGroupService | undefined;
   readonly #canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
+  readonly #harnessAccessModes: (
+    environmentId: EnvironmentId,
+    driverKind: HarnessId,
+  ) => readonly ThreadAccessMode[] | undefined;
   readonly #commands: CommandService;
   readonly #environmentWorkspaceBackings: (
     environmentId: EnvironmentId,
@@ -105,7 +119,7 @@ export class ProductToolHandlers {
   readonly #onBrowserUsage: ((credits: readonly BrowserUsageCredit[]) => void) | undefined;
   readonly #placeContext: Pick<PlaceContextService, "assertDelegated"> | undefined;
   readonly #workspaceMounts: AgentWorkspaceMountService;
-
+  readonly #memoryPasses: Pick<MemoryPassService, "admissionSelection"> | undefined;
   readonly #workspaces: AgentWorkspaceCreator;
 
   constructor(options: {
@@ -131,12 +145,18 @@ export class ProductToolHandlers {
     >;
     readonly browserTabs?: BrowserTabGroupService;
     readonly canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
+    /** The access modes an engine enforces on a computer; undefined when it cannot run there. */
+    readonly harnessAccessModes: (
+      environmentId: EnvironmentId,
+      driverKind: HarnessId,
+    ) => readonly ThreadAccessMode[] | undefined;
     readonly commands: CommandService;
     readonly defaultWorkspaceBacking: WorkspaceBackingKind;
     readonly environmentWorkspaceBackings: (
       environmentId: EnvironmentId,
     ) => readonly WorkspaceBackingKind[];
     readonly isEnvironmentConnected: (environmentId: EnvironmentId) => boolean;
+    readonly memoryPasses?: Pick<MemoryPassService, "admissionSelection">;
     readonly onWorkspaceEvent: (event: AgentEvent) => void;
     readonly store: OpensteerStore;
     readonly onBrowserUsage?: (credits: readonly BrowserUsageCredit[]) => void;
@@ -145,6 +165,7 @@ export class ProductToolHandlers {
     readonly workspaces: AgentWorkspaceCreator;
   }) {
     this.#threads = options.threads;
+    this.#memoryPasses = options.memoryPasses;
     this.#realtime = options.realtime;
     this.#computerUse = options.computerUse;
     this.#personShow = options.personShow;
@@ -154,6 +175,7 @@ export class ProductToolHandlers {
     this.#browser = options.browser;
     this.#browserTabs = options.browserTabs;
     this.#canRunHarness = options.canRunHarness;
+    this.#harnessAccessModes = options.harnessAccessModes;
     this.#commands = options.commands;
     this.#environmentWorkspaceBackings = options.environmentWorkspaceBackings;
     this.#isEnvironmentConnected = options.isEnvironmentConnected;
@@ -700,11 +722,12 @@ export class ProductToolHandlers {
     }
     const placement =
       specialist && !existingThread
-        ? await specialistPlacement(this.#store, {
-            environment,
-            parent: currentThread,
+        ? await this.#specialistPlacement({
+            userId: claims.requestedBy,
+            environmentId: environment.id,
+            accessMode: caller.accessMode,
             specialist,
-            canRun: (engine) => this.#canRunHarness(environment.id, engine),
+            caller: currentThread,
           })
         : await delegationPlacement(this.#store, {
             environment,
@@ -732,7 +755,7 @@ export class ProductToolHandlers {
     caller: Extract<AgentCaller, { kind: "connection" }>,
     input: ToolCall<"thread_delegate">["input"],
     operationKey: string,
-  ): Promise<Thread | null> {
+  ): Promise<ConnectionTask | null> {
     if (input.threadId) return null;
     const requestId = operationId(caller, operationKey, "thread_delegate");
     const key = idempotencyKey(caller, requestId, "create");
@@ -773,16 +796,29 @@ export class ProductToolHandlers {
         code: "conflict",
         message: "The idempotency key was already used for a different command",
       });
-    return this.#threads.assertTarget(caller, prior.threadId);
+    const { expectedHarnessRevision } = requested;
+    return {
+      thread: await this.#threads.assertTarget(caller, prior.threadId),
+      ...(typeof expectedHarnessRevision === "number" ? { expectedHarnessRevision } : {}),
+    };
   }
   async #createConnectionTask(
     caller: Extract<AgentCaller, { kind: "connection" }>,
     input: ToolCall<"thread_delegate">["input"],
     requestId: string,
-  ): Promise<Thread> {
-    const { existing, workspace, environmentId, harnessInstanceId, modelSelection, specialist } =
-      await this.#prepareConnectionDelegation(caller, input);
-    if (existing) return existing;
+  ): Promise<ConnectionTask> {
+    const {
+      existing,
+      workspace,
+      environmentId,
+      harnessInstanceId,
+      harnessRevision,
+      modelSelection,
+      specialist,
+    } = await this.#prepareConnectionDelegation(caller, input);
+    if (existing) return { thread: existing };
+    const expected =
+      harnessRevision === undefined ? {} : { expectedHarnessRevision: harnessRevision };
     const { thread } = await this.#threads.create(
       caller,
       {
@@ -798,18 +834,20 @@ export class ProductToolHandlers {
       },
       {
         ...(specialist ? { specialistId: specialist.id } : {}),
+        ...expected,
         ...(input.icon ? { icon: input.icon } : {}),
       },
     );
-    return thread;
+    return { thread, ...expected };
   }
   async thread_delegate({ caller, input, operationKey }: ToolCall<"thread_delegate">) {
     if (caller.kind === "connection") {
       const requestId = operationId(caller, operationKey, "thread_delegate");
-      const created =
+      const { thread: created, expectedHarnessRevision } =
         (await this.#priorConnectionTask(caller, input, operationKey)) ??
         (await this.#createConnectionTask(caller, input, requestId));
       const delivered = await this.#threads.sendInput(caller, {
+        ...(expectedHarnessRevision === undefined ? {} : { expectedHarnessRevision }),
         threadId: created.id,
         requestedBy: caller.userId,
         content: [{ type: "text", text: input.task }],
@@ -856,6 +894,9 @@ export class ProductToolHandlers {
         } = await this.prepareDelegation({ caller, input, operationKey });
         const delegateInput = {
           ...(specialist ? { specialistId: specialist.id } : {}),
+          ...(placement.harnessRevision === undefined
+            ? {}
+            : { expectedHarnessRevision: placement.harnessRevision }),
           callerIntent: {
             requestId: requestId,
             requestFingerprint: fingerprint(input),
@@ -1124,6 +1165,10 @@ export class ProductToolHandlers {
         thread.workspaceId,
         caller.userId,
       );
+    const memoryPass =
+      caller.kind === "program" && caller.program.kind === "trigger"
+        ? await this.#memoryPasses?.admissionSelection(caller.program.occurrenceId, thread)
+        : undefined;
     const delivered = await this.#threads.sendInput(
       caller,
       {
@@ -1133,6 +1178,7 @@ export class ProductToolHandlers {
         requestedBy: caller.userId,
         source: messageSource(caller, observationId),
         threadId: thread.id,
+        ...(memoryPass ? { memoryPass } : {}),
       },
       caller.kind === "connection"
         ? undefined
@@ -1195,34 +1241,79 @@ export class ProductToolHandlers {
     if (specialist && !existing) {
       const environment = await this.#store.getEnvironment(environmentId);
       if (!environment) throw badRequest("Selected execution environment does not exist");
-      const placement = await specialistPlacement(this.#store, {
-        environment,
+      const placement = await this.#specialistPlacement({
+        userId: caller.userId,
+        environmentId: environment.id,
+        accessMode: caller.accessMode,
         specialist,
-        canRun: (engine) => this.#canRunHarness(environmentId, engine),
       });
       return { existing, workspace, environmentId, ...placement, specialist };
     }
     const preferred = preferences.history.find((entry) => entry.environmentId === environmentId);
-    const harnessInstanceId =
-      existing?.harnessInstanceId ??
-      input.harnessInstanceId ??
-      preferred?.harnessInstanceId ??
-      (await this.#store.listHarnessInstances({ environmentIds: [environmentId] })).find(
-        (h) => h.enabled && h.isDefault,
-      )?.id;
+    const named =
+      existing?.harnessInstanceId ?? input.harnessInstanceId ?? preferred?.harnessInstanceId;
+    const automatic = named ? null : await this.#automaticDefault(caller.userId, environmentId);
+    const harnessInstanceId = named ?? automatic?.harnessInstanceId;
     if (!harnessInstanceId) throw badRequest("Choose harnessInstanceId for the new task");
-    const catalog = await this.#store.getHarnessCatalog(environmentId, harnessInstanceId);
-    const defaultModel =
-      catalog?.status === "ready" ? catalog.models.find((model) => model.isDefault) : undefined;
     const modelSelection =
       existing?.modelSelection ??
       input.model ??
       (preferred?.harnessInstanceId === harnessInstanceId ? preferred.modelSelection : undefined) ??
-      (defaultModel
-        ? { modelId: defaultModel.modelId, providerId: defaultModel.providerId, options: {} }
-        : undefined);
+      automatic?.modelSelection ??
+      catalogDefaultModelSelection(
+        await this.#store.getHarnessCatalog(environmentId, harnessInstanceId),
+      );
     if (!modelSelection) throw badRequest("Choose a model for the new task");
-    return { existing, workspace, environmentId, harnessInstanceId, modelSelection, specialist };
+    return {
+      existing,
+      workspace,
+      environmentId,
+      harnessInstanceId,
+      harnessRevision: undefined,
+      modelSelection,
+      specialist,
+    };
+  }
+  async #automaticDefault(userId: UserId, environmentId: EnvironmentId) {
+    const [{ excludedAccounts }, harnesses, catalogs] = await Promise.all([
+      this.#store.getAutomaticModelConfig(userId),
+      this.#store.listHarnessInstances({ environmentIds: [environmentId] }),
+      this.#store.listHarnessCatalogs([environmentId]),
+    ]);
+    const chosen = catalogDefaultCandidate({
+      accounts: harnesses.map((harness) => ({
+        harnessInstanceId: harness.id,
+        isDefault: harness.isDefault,
+        sourceId: harness.sourceId,
+        enabled: harness.enabled,
+        removed: harness.removedAt !== null,
+        // A new task waits for its computer like any other.
+        available: true,
+        catalog:
+          catalogs.find((record) => record.harnessInstanceId === harness.id)?.catalog ?? null,
+      })),
+      excludedAccounts,
+      canRun: () => ({ ok: true }),
+    });
+    return chosen
+      ? {
+          harnessInstanceId: chosen.account.harnessInstanceId,
+          modelSelection: chosen.modelSelection,
+        }
+      : null;
+  }
+  #specialistPlacement(request: Parameters<typeof specialistPlacement>[1]) {
+    return specialistPlacement(
+      {
+        store: this.#store,
+        runners: {
+          isAvailable: this.#isEnvironmentConnected,
+          canRunHarness: this.#canRunHarness,
+          harnessAccessModes: this.#harnessAccessModes,
+        },
+      },
+      request,
+    );
   }
   async thread_configure({ caller, input, operationKey }: ToolCall<"thread_configure">) {
     const target = await this.#threads.assertTarget(caller, input.threadId);

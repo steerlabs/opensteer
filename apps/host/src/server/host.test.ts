@@ -19,6 +19,7 @@ import { hostInternalRoutePaths } from "./internal-routes.js";
 import { injectRpcRequest } from "./test-host-api-request.js";
 import {
   createId,
+  emptyAutomaticModelConfig,
   emptyExecutionPreferences,
   OpensteerError,
   personalRemoteAuthorizationScheme,
@@ -344,6 +345,7 @@ describe("Host signing keys", () => {
         authority: testDiscovery,
         bootstrapMethods: ["password"],
         capabilities: [
+          "automatic-models-v1",
           "chat-attachments",
           "voice-run-v1",
           "thread-titles-v1",
@@ -482,6 +484,7 @@ describe("Host signing keys", () => {
       expect(discovery.json()).toMatchObject({
         apiVersion: hostApiVersion,
         capabilities: [
+          "automatic-models-v1",
           "chat-attachments",
           "voice-run-v1",
           "thread-titles-v1",
@@ -2156,6 +2159,7 @@ describe("Personal sharing boundary", () => {
       securityEffects: {} as never,
       store: {
         getExecutionPreferences: async () => emptyExecutionPreferences,
+        getAutomaticModelConfig: async () => emptyAutomaticModelConfig,
         notificationState: {
           listWorkspacePreferences: async () => [
             { workspaceId: workspace.id, muted: false, revision: "0" },
@@ -2977,6 +2981,7 @@ describe("durable harness catalogs", () => {
       findThreadCreationByIdempotency: async () => null,
       getEnvironment: async () => environment,
       getExecutionPreferences: async () => executionPreferences,
+      getAutomaticModelConfig: async () => emptyAutomaticModelConfig,
       hasActiveRunForHarness: async () => options.activeRun ?? false,
       getHarnessCatalog: async () => options.catalog ?? null,
       getHarnessInstance: async () => harness,

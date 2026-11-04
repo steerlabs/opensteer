@@ -2333,6 +2333,7 @@ function triggerFromRow(row: TriggerRow): Trigger {
     name: row.name,
     nextFireAt: row.nextFireAt?.toISOString() ?? null,
     pauseReason: row.pauseReason,
+    waitingReason: row.waitingReason,
     status: row.status,
     updatedAt: row.updatedAt.toISOString(),
     webhookRouteKey: row.webhookRouteKey,

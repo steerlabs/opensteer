@@ -1213,8 +1213,8 @@ export async function createStoreFixture() {
       providerMessageId: input.eventId,
       trigger: input.trigger ?? ("mention" as const),
     });
-    const placementCandidates = [
-      { environmentId: fixture.environmentId, harnessInstanceId: fixture.harnessInstance.id },
+    const availableEngines = [
+      { environmentId: fixture.environmentId, driverKinds: [fixture.harnessInstance.driverKind] },
     ];
     const claimFor = async (
       ingressId: ChannelIngressId,
@@ -1236,7 +1236,7 @@ export async function createStoreFixture() {
           claimToken: claimed.claimToken,
           ingressId: claimed.id,
           notices: testChannelNotices,
-          placementCandidates,
+          availableEngines,
         });
         return { ingressId: committed.ingressId, result };
       } catch (error) {
@@ -1258,7 +1258,7 @@ export async function createStoreFixture() {
         .select(["audience", "content", "kind", "status"])
         .where("ingressId", "=", ingressId)
         .execute();
-    return { adopt, channels, claimFor, configured, event, fixture, notices, placementCandidates };
+    return { adopt, channels, claimFor, configured, event, fixture, notices, availableEngines };
   }
   return Object.freeze({
     databaseUrl: clone.url,

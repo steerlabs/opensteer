@@ -1,3 +1,24 @@
+import {
+  matchModelSelection,
+  storedModelSelection as coreStoredModelSelection,
+} from "@opensteer/core";
+import {
+  HarnessIdSchema,
+  HarnessInstanceIdSchema,
+  ModelIdSchema,
+  AutomaticModelConfigSchema,
+  automaticModelDefaults,
+  automaticModelWants,
+  emptyAutomaticModelConfig,
+  resolveModelCandidates,
+  type AutomaticModelConfig,
+  type AutomaticModelRole,
+} from "@opensteer/core";
+import {
+  automaticModelCatalogView,
+  AutomaticModelsViewSchema,
+  type AutomaticModelsView,
+} from "@opensteer/protocol";
 import { MockDesktopUpdates, type MockDesktopUpdateScenario } from "./mock-desktop-updates.js";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
@@ -1786,7 +1807,10 @@ export interface MockHostClientOptions {
   readonly lifecycle?: ClientLifecycle;
   /** Automations covering every state the Automations page shows; seeded by default. */
   automations?: "seeded" | "absent";
-  memoryPasses?: "active" | "off" | "no-light-model";
+  memoryPasses?: "active" | "off" | "waiting-for-model";
+  /** `none`: no account could run background work, for Settings' empty state. */
+  automaticModels?: "seeded" | "edited" | "excluded" | "none";
+  automaticModelsAvailable?: boolean;
   places?: "seeded" | "absent";
   /** Development fixture for the first message before a Chat exists. */
   initialHome?: "seeded" | "absent";
@@ -2124,6 +2148,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         })
         .catch(mockRefusal),
     "harness.authentication.get": async () => rpcSuccess(await client.getHarnessAuthentication()),
+    "automaticModels.get": async () => rpcSuccess(mockAutomaticModelsView(client)),
     "harness.catalog.refresh": async () => rpcSuccess({}),
     "harness.modelServers.discover": async (input) =>
       rpcSuccess({ servers: mockModelServers(input.address) }),
@@ -2728,6 +2753,13 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "thread.input.move":
       client.moveThreadInput(command.threadId, command.messageId, command.beforeMessageId);
       return rpcSuccess({ type: command.type });
+    case "automaticModels.set":
+      client.automaticModelConfig = AutomaticModelConfigSchema.parse(command.config);
+      client.applyAutomaticEligibility();
+      return rpcSuccess({
+        type: command.type,
+        config: structuredClone(client.automaticModelConfig),
+      });
     case "execution.preferences.remember":
       return rpcSuccess(
         hostApi["commands.dispatch"].success.parse({
@@ -3635,6 +3667,7 @@ export class MockHostClient implements HostClient {
       return;
     for (const listener of this.#personShowListeners) listener(message);
   }
+  readonly automaticModelsAvailable: () => boolean;
   readonly browserPasskeys = new BrowserPasskeys();
   readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
@@ -3673,6 +3706,7 @@ export class MockHostClient implements HostClient {
     this.desktopUpdates = new MockDesktopUpdates(options.desktopUpdates);
     this.#lifecycle = options.lifecycle ?? null;
     this.#state = new MockHostState(options);
+    this.automaticModelsAvailable = () => options.automaticModelsAvailable !== false;
     this.browserPreferences = new BrowserPreferences(options.browserPreferencesStorage);
     this.browserHistory = new BrowserHistoryClient({
       get: async (profileId) =>
@@ -4866,6 +4900,74 @@ export class MockHostClient implements HostClient {
   }
 }
 
+function mockAutomaticModelsView(state: MockHostState): AutomaticModelsView {
+  const snapshot = state.getSnapshot();
+  const accounts = snapshot.harnesses.map((h) => {
+    const env = snapshot.environments.find((e) => e.id === h.environmentId);
+    return {
+      harnessInstanceId: h.id,
+      environmentId: h.environmentId,
+      harnessRevision: h.runtimeRevision,
+      driverKind: h.driverKind,
+      sourceId: h.sourceId,
+      isDefault: h.isDefault,
+      enabled: h.enabled,
+      removed: false,
+      available: state.automaticModels !== "none" && !!env?.connected,
+      catalog: env?.harnessCatalogs.find((c) => c.harnessInstanceId === h.id) ?? null,
+      eligible: !state.automaticModelConfig.excludedAccounts.includes(
+        h.id as AutomaticModelConfig["excludedAccounts"][number],
+      ),
+      reason: state.automaticModelConfig.excludedAccounts.includes(
+        h.id as AutomaticModelConfig["excludedAccounts"][number],
+      )
+        ? "excluded"
+        : null,
+      accountDisplayName: h.name,
+      computerDisplayName: env?.name ?? "Computer",
+    };
+  });
+  const parsed = AutomaticModelsViewSchema.parse({
+    config: state.automaticModelConfig,
+    maintainedDefaults: automaticModelDefaults,
+    accounts: accounts.map((a) => ({ ...a, catalog: automaticModelCatalogView(a.catalog) })),
+    light: { label: "General preference", candidates: [], skipped: [] },
+    deep: { candidates: [], skipped: [] },
+  });
+  const preview = (role: AutomaticModelRole) => {
+    const result = resolveModelCandidates({
+      wants: automaticModelWants(state.automaticModelConfig, role),
+      accounts: parsed.accounts.map((a, index) => ({
+        ...a,
+        catalog: accounts[index]!.catalog,
+        usage: [],
+      })),
+      excludedAccounts: state.automaticModelConfig.excludedAccounts,
+      canRun: () => ({ ok: true }),
+      now: Date.now(),
+    });
+    return {
+      candidates: result.candidates.map((c) => ({
+        ...c,
+        modelSelection: c.storedModelSelection,
+        accountDisplayName:
+          accounts.find((a) => a.harnessInstanceId === c.harnessInstanceId)?.accountDisplayName ??
+          "Account",
+        computerDisplayName: "Main runner",
+        providerDisplayName: c.storedModelSelection.providerId,
+        modelDisplayName:
+          c.account.catalog?.models.find((m) => m.modelId === c.storedModelSelection.modelId)
+            ?.displayName ?? c.storedModelSelection.modelId,
+      })),
+      skipped: result.skipped,
+    };
+  };
+  return AutomaticModelsViewSchema.parse({
+    ...parsed,
+    light: { ...preview("light"), label: "General preference" },
+    deep: preview("deep"),
+  });
+}
 interface MockPlugin {
   id: string;
   name: string;
@@ -4884,6 +4986,8 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  automaticModelConfig: AutomaticModelConfig = structuredClone(emptyAutomaticModelConfig);
+  readonly automaticModels: "seeded" | "edited" | "excluded" | "none";
   private connections: import("@opensteer/protocol").AgentConnection[];
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
   private connectionDecision: { requestId: string; fingerprint: string } | null = null;
@@ -5905,6 +6009,15 @@ class MockHostState {
   }
 
   constructor(options: MockHostClientOptions = {}) {
+    this.automaticModels = options.automaticModels ?? "seeded";
+    if (this.automaticModels === "edited")
+      this.automaticModelConfig.roles.deep = [
+        { engine: HarnessIdSchema.parse("codex"), model: ModelIdSchema.parse("gpt-6.1-sol") },
+      ];
+    if (this.automaticModels === "excluded")
+      this.automaticModelConfig.excludedAccounts = [
+        HarnessInstanceIdSchema.parse(mockClaudeHarnessInstanceId),
+      ];
     this.connections = [...(options.connections ?? [])];
     this.pendingConnectionConsent = options.connectionConsent ?? null;
     for (const p of options.specialistPlugins ?? []) {
@@ -5974,6 +6087,7 @@ class MockHostState {
       : options.initialHome === "absent"
         ? withoutInitialHome(initial)
         : initial;
+    this.applyAutomaticEligibility();
     if (options.initialHome !== "absent" && !firstRun) this.seedHomeTask();
     for (const thread of this.snapshot.threads) {
       if (thread.icon === null && thread.id !== this.snapshot.homeThreadId)
@@ -6024,18 +6138,24 @@ class MockHostState {
           },
         });
         const record = this.getTrigger(created.trigger.id);
-        const pauseReason =
-          options.memoryPasses === "off"
-            ? "Memory is off at your request."
-            : options.memoryPasses === "no-light-model" && systemRole === "memory-light"
-              ? "This engine has no light model. Choose a model for the light pass, then resume."
-              : null;
         this.triggers.set(created.trigger.id, {
           ...record,
           trigger: {
             ...record.trigger,
             systemRole,
-            ...(pauseReason ? { status: "paused", pauseReason, nextFireAt: null } : {}),
+            ...(options.memoryPasses === "off"
+              ? {
+                  status: "paused",
+                  pauseReason: "Memory is off at your request.",
+                  nextFireAt: null,
+                }
+              : {}),
+            ...(options.memoryPasses === "waiting-for-model" && systemRole === "memory-light"
+              ? {
+                  waitingReason:
+                    "Waiting for an AI account it can use on Main's computer. Connect one there, or turn one on for automatic work in AI settings; it resumes by itself.",
+                }
+              : {}),
           },
         });
       }
@@ -6991,6 +7111,7 @@ class MockHostState {
         harness.isDefault ? harness.id : undefined,
       ),
     });
+    this.applyAutomaticEligibility();
     // A model server answers its first read the way a local one usually does:
     // one model loaded, one the server won't say the size of, one it can't run.
     if (source.modelSettings) {
@@ -11555,6 +11676,20 @@ class MockHostState {
     });
   }
 
+  /** What a bootstrap tells this viewer about each account, as the Host computes it. */
+  applyAutomaticEligibility(): void {
+    const { excludedAccounts } = this.automaticModelConfig;
+    this.snapshot = {
+      ...this.snapshot,
+      harnesses: this.snapshot.harnesses.map(({ automaticEligible: _stale, ...harness }) =>
+        harness.sourceId === "openai-compatible" ||
+        excludedAccounts.includes(harness.id as (typeof excludedAccounts)[number])
+          ? { ...harness, automaticEligible: false }
+          : harness,
+      ),
+    };
+  }
+
   private update(snapshot: HostSnapshot): void {
     if (
       snapshot.deploymentId !== this.snapshot.deploymentId ||
@@ -11903,22 +12038,9 @@ function storedModelSelection(
   selection: ModelSelection,
   model: HarnessModelDescriptor,
 ): ModelSelection {
-  for (const [optionId, value] of Object.entries(selection.options)) {
-    const option = model.options.find((candidate) => candidate.id === optionId);
-    const listed =
-      option?.type === "toggle"
-        ? typeof value === "boolean"
-        : option?.type === "select" &&
-          typeof value === "string" &&
-          option.values.some((candidate) => candidate.value === value);
-    if (!listed)
-      throw new Error(`Model option ${optionId} is not available for ${model.displayName}`);
-  }
-  const { nativeModelId: _clientSupplied, ...requested } = selection;
-  return {
-    ...requested,
-    ...(model.nativeModelId === undefined ? {} : { nativeModelId: model.nativeModelId }),
-  };
+  if (matchModelSelection([model], selection, "refuse").kind !== "offered")
+    throw new Error(`Model options are not available for ${model.displayName}`);
+  return coreStoredModelSelection(selection, model);
 }
 
 function buildAssistantReply(prompt: string, steered: readonly string[] = []): string {

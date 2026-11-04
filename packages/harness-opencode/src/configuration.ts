@@ -230,18 +230,22 @@ function opencodeProviderDeclaration(input: {
         name: compatibleEndpointHost(input.baseUrl),
         npm: "@ai-sdk/openai-compatible",
         options: { baseURL: input.baseUrl },
-        ...(input.modelId && input.modelContextWindow
+        ...(input.modelId
           ? {
               models: {
                 [input.modelId]: {
                   id: input.modelId,
                   name: input.modelId,
-                  limit: {
-                    context: input.modelContextWindow,
-                    output:
-                      input.modelMaxOutputTokens ??
-                      Math.max(1, Math.floor(input.modelContextWindow / 4)),
-                  },
+                  ...(input.modelContextWindow
+                    ? {
+                        limit: {
+                          context: input.modelContextWindow,
+                          output:
+                            input.modelMaxOutputTokens ??
+                            Math.max(1, Math.floor(input.modelContextWindow / 4)),
+                        },
+                      }
+                    : {}),
                   modalities: {
                     input: input.modelAcceptsImages ? ["text", "image"] : ["text"],
                     output: ["text"],

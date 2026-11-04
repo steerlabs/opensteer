@@ -142,7 +142,13 @@ export function specialistAccessLevel(requirement: SpecialistAccessRequirement):
 
 /** The models a specialist runs on, in its order of preference: "Claude Code · opus". */
 export function specialistModels(registration: Pick<SpecialistRegistration, "models">): string[] {
-  return registration.models.map(({ engine, model }) => `${harnessDriverLabel(engine)} · ${model}`);
+  return registration.models.map((entry) =>
+    "unknown" in entry
+      ? "Unknown model entry"
+      : "role" in entry
+        ? `${entry.role === "light" ? "Quick model" : "Strong model"} · per your settings`
+        : `${harnessDriverLabel(entry.engine)} · ${entry.model}`,
+  );
 }
 
 /** One line on what still stands between a pending specialist and its first task. */

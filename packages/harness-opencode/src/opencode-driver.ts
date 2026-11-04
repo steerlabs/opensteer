@@ -1,3 +1,4 @@
+import { opencodeLightModelFamilies } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -31,8 +32,10 @@ import { maxHarnessModelsPerCatalog } from "@opensteer/protocol";
 import {
   Deferred,
   runTitleProcess,
-  withTitleDirectory,
-  type HarnessTitleInput,
+  withBackgroundTextDirectory,
+  backgroundTextResult,
+  type HarnessGenerateTextInput,
+  type HarnessGenerateTextResult,
   HarnessSessionRegistry,
   TurnPublisher,
   assertFreshProviderSessionContext,
@@ -85,7 +88,7 @@ import {
   SubagentNodes,
 } from "@opensteer/harness";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
-import { mkdir, readdir, rm, symlink, writeFile, readFile, copyFile } from "node:fs/promises";
+import { mkdir, readdir, rm, symlink, writeFile, copyFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
@@ -561,6 +564,145 @@ class OpencodeHarnessAdapter implements HarnessAdapter {
     this.#dependencies = dependencies;
   }
 
+  async generateText({
+    context,
+    modelSelection,
+    prompt,
+    signal,
+  }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
+    if (context.runtimeBoundary.kind !== "native-user")
+      return { ok: false, failure: "unavailable" };
+    return backgroundTextResult(signal, async () => {
+      const launch = this.#dependencies;
+      if (!launch) throw new Error("OpenCode title launch is unavailable");
+      return withBackgroundTextDirectory(context, signal, async (directory) => {
+        const data = join(directory, "data");
+        await mkdir(join(data, "opencode"), { recursive: true, mode: 0o700 });
+        // Only the account's credentials cross into the disposable store. Its
+        // Run database, permissions, instructions and MCP configuration do not.
+        await copyFile(
+          join(opencodeDataHome(context.providerState), "opencode", "auth.json"),
+          join(data, "opencode", "auth.json"),
+        ).catch((error: unknown) => {
+          if (nodeErrorCode(error) !== "ENOENT") throw error;
+        });
+        const providerId = opencodeProviderId(this.#sourceId);
+        const selection = modelSelection;
+        const model = `${providerId}/${modelSelection.nativeModelId ?? modelSelection.modelId}`;
+        const nativeModelId = modelSelection.nativeModelId ?? modelSelection.modelId;
+        const modelSettings = this.#config.models[nativeModelId];
+        const runConfig = opencodeInspectionConfiguration({
+          providerId,
+          modelId: nativeModelId,
+          ...(modelSettings
+            ? {
+                modelContextWindow: modelSettings.contextWindow,
+                ...(modelSettings.maxOutputTokens
+                  ? { modelMaxOutputTokens: modelSettings.maxOutputTokens }
+                  : {}),
+              }
+            : {}),
+          baseUrl: this.#config.baseUrl,
+          sourceId: this.#sourceId,
+        });
+        const configuration = {
+          provider: runConfig.provider,
+          enabled_providers: [opencodeProviderId(this.#sourceId)],
+          model,
+          small_model: model,
+          instructions: [],
+          skills: { paths: [], urls: [] },
+          mcp: {},
+          plugin: [],
+          tools: { "*": false },
+          permission: { "*": "deny" },
+          agent: {
+            title: { disable: true },
+            "opensteer-title": {
+              mode: "primary",
+              prompt: "Follow the prompt. Never use tools.",
+              tools: { "*": false },
+              permission: { "*": "deny" },
+            },
+            compaction: { disable: true },
+            explore: { disable: true },
+            general: { disable: true },
+          },
+          autoupdate: false,
+          share: "disabled",
+          snapshot: false,
+          formatter: false,
+          lsp: false,
+        };
+        const configFile = join(directory, "opencode.json");
+        await writeFile(configFile, JSON.stringify(configuration), { mode: 0o600 });
+        const environment = {
+          ...context.environment,
+          ...opencodeDisableEnvironment,
+          OPENCODE_CONFIG: configFile,
+          OPENCODE_CONFIG_DIR: join(directory, "config"),
+          OPENCODE_CONFIG_CONTENT: "",
+          OPENCODE_TEST_HOME: directory,
+          OPENCODE_EXPERIMENTAL: "0",
+          OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "0",
+          XDG_CONFIG_HOME: join(directory, "config"),
+          XDG_DATA_HOME: data,
+          XDG_STATE_HOME: join(directory, "state"),
+          // The account's model catalogue and provider packages; without them
+          // a cold start downloads both before it can name anything.
+          XDG_CACHE_HOME: opencodeCacheHome(context.providerState),
+          ...(this.#sourceId === opencodeCompatibleSourceId
+            ? { OPENCODE_DISABLE_MODELS_FETCH: "1" }
+            : {}),
+        };
+        const output = await runTitleProcess(
+          context,
+          {
+            executable: launch.executable,
+            args: [
+              ...(launch.arguments ?? []),
+              "run",
+              "--agent",
+              "opensteer-title",
+              "--format",
+              "json",
+              "--model",
+              model,
+              ...(typeof selection.options.effort === "string"
+                ? ["--variant", selection.options.effort]
+                : []),
+              "--title",
+              "Thread title",
+              "--print-logs",
+              "--log-level",
+              "ERROR",
+            ],
+            cwd: directory,
+            environment,
+          },
+          signal,
+          prompt,
+          // OpenCode retries a refused model call without end, a free account
+          // past its usage limit included, and says so only in its log.
+          /level=ERROR .*message="stream error"/u,
+        );
+        return output
+          .split(/\r?\n/u)
+          .flatMap((line) => {
+            if (!line.trim()) return [];
+            const value: unknown = JSON.parse(line);
+            return isRecord(value) &&
+              value.type === "text" &&
+              isRecord(value.part) &&
+              typeof value.part.text === "string"
+              ? [value.part.text]
+              : [];
+          })
+          .join("");
+      });
+    });
+  }
+
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     assertFreshProviderSessionContext(context);
@@ -676,7 +818,6 @@ class OpencodeHarnessSession implements HarnessSession {
   readonly #streamLifetime = new AbortController();
   readonly #abortListener: () => void;
   #server: OpencodeServer | undefined;
-  #titleLaunch: Pick<OpencodeHarnessDependencies, "executable" | "arguments"> | undefined;
   #sessionId: string | undefined;
   #activeTurn: OpencodeActiveTurn | undefined;
   #closed = false;
@@ -734,145 +875,6 @@ class OpencodeHarnessSession implements HarnessSession {
       });
     }
     return this.#sessionId;
-  }
-
-  async generateTitle({ prompt, signal }: HarnessTitleInput): Promise<string> {
-    const context = this.#context;
-    const launch = this.#titleLaunch;
-    if (!launch) throw new Error("OpenCode title launch is unavailable");
-    return withTitleDirectory(context, async (directory) => {
-      const data = join(directory, "data");
-      await mkdir(join(data, "opencode"), { recursive: true, mode: 0o700 });
-      // Only the account's credentials cross into the disposable store. Its
-      // Run database, permissions, instructions and MCP configuration do not.
-      await copyFile(
-        join(opencodeDataHome(context.providerState), "opencode", "auth.json"),
-        join(data, "opencode", "auth.json"),
-      ).catch((error: unknown) => {
-        if (nodeErrorCode(error) !== "ENOENT") throw error;
-      });
-      const runConfig: unknown = JSON.parse(
-        await readFile(
-          join(opencodeSessionConfigHome(context), "opencode", "opencode.json"),
-          "utf8",
-        ),
-      );
-      if (!isRecord(runConfig)) throw new Error("OpenCode Run config is invalid");
-      const providerId = opencodeProviderId(this.#sourceId);
-      const providers = parseOpencode(
-        OpencodeProvidersSchema,
-        await this.#requireServer().request("GET", "/provider", {
-          directory: context.workspacePath,
-          signal,
-        }),
-        "provider list",
-      );
-      const provider = providers.all.find((candidate) => candidate.id === providerId);
-      const light = provider && opencodeLightModel(provider, this.#sourceId);
-      const selection = light ?? context.modelSelection;
-      const descriptor =
-        provider &&
-        opencodeCatalogModels(provider, undefined, this.#sourceId).find(
-          (model) =>
-            model.modelId === selection.modelId && model.providerId === selection.providerId,
-        );
-      const model = `${providerId}/${descriptor?.nativeModelId ?? light?.modelId ?? harnessModelId(context.modelSelection)}`;
-      const configuration = {
-        provider: runConfig.provider,
-        enabled_providers: [opencodeProviderId(this.#sourceId)],
-        model,
-        small_model: model,
-        instructions: [],
-        skills: { paths: [], urls: [] },
-        mcp: {},
-        plugin: [],
-        tools: { "*": false },
-        permission: { "*": "deny" },
-        agent: {
-          title: { disable: true },
-          "opensteer-title": {
-            mode: "primary",
-            prompt:
-              "You name tasks. Reply exactly in the format the request asks for. Never use tools.",
-            tools: { "*": false },
-            permission: { "*": "deny" },
-          },
-          compaction: { disable: true },
-          explore: { disable: true },
-          general: { disable: true },
-        },
-        autoupdate: false,
-        share: "disabled",
-        snapshot: false,
-        formatter: false,
-        lsp: false,
-      };
-      const configFile = join(directory, "opencode.json");
-      await writeFile(configFile, JSON.stringify(configuration), { mode: 0o600 });
-      const environment = {
-        ...context.environment,
-        ...opencodeDisableEnvironment,
-        OPENCODE_CONFIG: configFile,
-        OPENCODE_CONFIG_DIR: join(directory, "config"),
-        OPENCODE_CONFIG_CONTENT: "",
-        OPENCODE_TEST_HOME: directory,
-        OPENCODE_EXPERIMENTAL: "0",
-        OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "0",
-        XDG_CONFIG_HOME: join(directory, "config"),
-        XDG_DATA_HOME: data,
-        XDG_STATE_HOME: join(directory, "state"),
-        // The account's model catalogue and provider packages; without them
-        // a cold start downloads both before it can name anything.
-        XDG_CACHE_HOME: opencodeCacheHome(context.providerState),
-        ...(this.#sourceId === opencodeCompatibleSourceId
-          ? { OPENCODE_DISABLE_MODELS_FETCH: "1" }
-          : {}),
-      };
-      const output = await runTitleProcess(
-        context,
-        {
-          executable: launch.executable,
-          args: [
-            ...(launch.arguments ?? []),
-            "run",
-            "--agent",
-            "opensteer-title",
-            "--format",
-            "json",
-            "--model",
-            model,
-            ...(typeof selection.options.effort === "string"
-              ? ["--variant", selection.options.effort]
-              : []),
-            "--title",
-            "Thread title",
-            "--print-logs",
-            "--log-level",
-            "ERROR",
-          ],
-          cwd: directory,
-          environment,
-        },
-        signal,
-        prompt,
-        // OpenCode retries a refused model call without end, a free account
-        // past its usage limit included, and says so only in its log.
-        /level=ERROR .*message="stream error"/u,
-      );
-      return output
-        .split(/\r?\n/u)
-        .flatMap((line) => {
-          if (!line.trim()) return [];
-          const value: unknown = JSON.parse(line);
-          return isRecord(value) &&
-            value.type === "text" &&
-            isRecord(value.part) &&
-            typeof value.part.text === "string"
-            ? [value.part.text]
-            : [];
-        })
-        .join("");
-    });
   }
 
   async execute(run: HarnessRunInput): Promise<void> {
@@ -1059,7 +1061,6 @@ class OpencodeHarnessSession implements HarnessSession {
     mode: OpencodeSessionMode,
   ): Promise<void> {
     const context = this.#context;
-    this.#titleLaunch = dependencies;
     if (context.runtimeBoundary.kind !== "native-user") {
       throw new OpensteerError({ code: "forbidden", message: opencodeNativeUserOnlyDetail });
     }
@@ -2186,7 +2187,6 @@ const OpencodeTitleCandidateSchema = z.looseObject({
 });
 
 /** 1.18.32 `Provider.getSmallModel`'s families, which OpenCode's own titles prefer. */
-const opencodeSmallModelFamilies = ["gemini-flash", "gpt-nano", "claude-haiku"];
 
 function opencodeLightModel(provider: z.infer<typeof OpencodeProviderSchema>, sourceId: string) {
   const models = opencodeCatalogModels(provider, undefined, sourceId);
@@ -2194,7 +2194,7 @@ function opencodeLightModel(provider: z.infer<typeof OpencodeProviderSchema>, so
     const parsed = OpencodeTitleCandidateSchema.safeParse(model);
     return parsed.success ? [parsed.data] : [];
   });
-  const families = provider.id.startsWith("opencode") ? ["gpt-nano"] : opencodeSmallModelFamilies;
+  const families = opencodeLightModelFamilies(provider.id);
   const ranking = families.flatMap((family) =>
     candidates
       .filter((model) => model.family === family)

@@ -1,3 +1,4 @@
+import type { AutomaticModelConfig } from "@opensteer/core";
 import type { BrowserProfileAccess } from "@opensteer/browser-profile/grant";
 import type {
   ChannelAccountId,
@@ -1143,6 +1144,7 @@ interface TriggerTable {
   nextFireAt: NullableTimestamp;
   consecutiveFailures: number;
   pauseReason: string | null;
+  waitingReason: Generated<string | null>;
   webhookRouteKey: string | null;
   webhookSecretHash: string | null;
   createdAt: Timestamp;
@@ -2106,6 +2108,11 @@ export interface DatabaseSchema {
   executionEnvironments: ExecutionEnvironmentTable;
   harnessInstances: HarnessInstanceTable;
   harnessCatalogs: HarnessCatalogTable;
+  userBackgroundModelPreferences: {
+    userId: UserId;
+    preferences: JsonColumn<AutomaticModelConfig>;
+    updatedAt: Timestamp;
+  };
   userExecutionPreferences: UserExecutionPreferenceTable;
   workspaces: WorkspaceTable;
   workspaceMemberships: WorkspaceMembershipTable;

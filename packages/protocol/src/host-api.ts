@@ -1,3 +1,5 @@
+import { AutomaticModelsViewSchema } from "./automatic-models.js";
+import { AutomaticModelConfigSchema, AutomaticModelConfigViewSchema } from "@opensteer/core";
 import {
   AgentConnectionSchema,
   AgentConnectionIdSchema,
@@ -462,7 +464,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     home: z.literal(true).optional(),
     /**
      * `title` is the first line of the message that will start the Thread, for
-     * its engine to replace with a name of its own. Absent, `title` is a name
+     * background naming to replace with a generated name. Absent, `title` is a name
      * someone chose and nothing replaces it. Sent only to a Host that
      * advertises `thread-titles-v1`.
      */
@@ -592,6 +594,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
     type: z.literal("thread.access.update"),
+  }),
+  z.strictObject({
+    type: z.literal("automaticModels.set"),
+    idempotencyKey: idempotencyKeySchema,
+    config: AutomaticModelConfigSchema,
   }),
   // A choice a person just made, to start their next Thread from. The Host
   // folds it into the one record it keeps per person, so a phone and a desktop
@@ -1297,6 +1304,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     preferences: ExecutionPreferencesViewSchema,
     type: z.literal("execution.preferences.remember"),
   }),
+  z.object({ type: z.literal("automaticModels.set"), config: AutomaticModelConfigViewSchema }),
   z.object({ type: z.literal("run.interrupt"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("request.respond") }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.create") }),
@@ -1719,6 +1727,8 @@ export const hostApi = defineRpc({
     }),
     harnessAuthenticationEnvelopeSchema,
   ),
+  /** Requires automatic-models-v1; automaticModels.set is a person-only commands.dispatch mutation. */
+  "automaticModels.get": declaration("GET", z.strictObject({}), AutomaticModelsViewSchema),
   "harness.catalog.refresh": declaration(
     "POST",
     z.strictObject({

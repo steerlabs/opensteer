@@ -1276,6 +1276,18 @@ class AgentsWorkSession implements RunnerWorkSession {
 
   async handle(message: RunnerWorkMessage): Promise<void> {
     switch (message.type) {
+      case "host.background-text":
+        void this.#options.agents.runtime
+          .generateBackgroundText(message)
+          .then((result) =>
+            this.#options.sink.send({
+              type: "runner.background-text-result",
+              attemptId: message.attemptId,
+              result,
+            }),
+          )
+          .catch(() => undefined);
+        return;
       case "host.reconcile-harnesses":
       case "host.inspect-harnesses":
         this.#answerCatalogRequest(message);
@@ -2091,7 +2103,6 @@ function operationalMessageEffectScope(message: RunnerOperationalReport): string
     case "runner.live":
       return `run:${message.progress.runId}`;
     case "runner.session-bound":
-    case "runner.thread-title":
       return `run:${message.runId}`;
     case "runner.trigger-result":
       return `trigger:${message.output.occurrenceId}`;
@@ -2147,8 +2158,7 @@ function runnerCapabilities(): RunnerCapability[] {
     "agent-tools-plan-v1",
     "steer-answer-v1",
     "thread-state-v1",
-    "thread-title-v1",
-    "thread-icon-v1",
+    "background-text-v1",
     "task-done-v1",
     "person-show-v1",
   ];

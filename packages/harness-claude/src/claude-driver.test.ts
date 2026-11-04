@@ -628,7 +628,7 @@ describe("Claude Agent SDK harness", () => {
       context: sessionContext,
       session,
     } = await openSession(sdk, {
-      wrapProcessLaunch: (launch) => {
+      wrapProcessLaunch: (launch: import("@opensteer/harness").HarnessProcessLaunch) => {
         launches.push(launch);
         return {
           ...launch,
@@ -3673,45 +3673,19 @@ async function waitForSdkCall(sdk: FakeSdk): Promise<void> {
 }
 
 describe("Claude Thread naming", () => {
-  it("retries a refused light model with the Run model", async () => {
-    const sdk = new FakeSdk(
-      (parameters) => {
-        if (parameters.options.model === "claude-haiku-5-5") throw new Error("Model access denied");
-        return scriptedQuery([successMessage("naming", "Title")]);
-      },
-      [
-        {
-          value: "haiku",
-          resolvedModel: "claude-haiku-5-5",
-          description: "Fast",
-          displayName: "Haiku",
-        },
-      ],
-    );
-    const fixture = await openSession(sdk);
-    try {
-      await expect(
-        fixture.session.generateTitle!({ prompt: "Name it", signal: AbortSignal.timeout(2_000) }),
-      ).resolves.toBe("Title");
-      expect(sdk.calls.map((call) => call.options.model)).toEqual([
-        "claude-haiku-5-5",
-        fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId,
-      ]);
-    } finally {
-      await fixture.session.stop();
-      await fixture.adapter.close();
-    }
-  });
-  it("uses the Run model when the live catalog has no light model", async () => {
+  it("uses the explicit model and effort without catalog discovery", async () => {
     const sdk = new FakeSdk(() => scriptedQuery([successMessage("naming", "Title")]));
     const fixture = await openSession(sdk);
     try {
       expect(
-        await fixture.session.generateTitle!({
+        await fixture.adapter.generateText!({
+          context: { ...fixture.context, scratchDirectory: fixture.context.threadStateDirectory },
+          modelSelection: { ...fixture.context.modelSelection, options: { effort: "high" } },
           prompt: "Name it",
           signal: AbortSignal.timeout(2_000),
         }),
-      ).toBe("Title");
+      ).toEqual({ ok: true, text: "Title" });
+      expect(sdk.calls[0]?.options.effort).toBe("high");
       expect(sdk.calls[0]?.options.model).toBe(
         fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId,
       );
@@ -3744,8 +3718,15 @@ describe("Claude Thread naming", () => {
     try {
       const prompt = threadTitlePrompt("Migrate support", { icon: true });
       expect(
-        await fixture.session.generateTitle!({ prompt, signal: new AbortController().signal }),
-      ).toBe("Support migration\nheadphones");
+        await fixture.adapter.generateText!({
+          context: { ...fixture.context, scratchDirectory: fixture.context.threadStateDirectory },
+          modelSelection: fixture.context.modelSelection,
+          prompt,
+          signal: new AbortController().signal,
+        }),
+      ).toEqual({ ok: true, text: "Support migration\nheadphones" });
+      expect(sdk.inspections).toEqual([]);
+      expect(sdk.calls).toHaveLength(1);
       const call = sdk.calls.find((entry) => typeof entry.prompt === "string")!;
       expect(call).toMatchObject({
         prompt,
@@ -3758,15 +3739,15 @@ describe("Claude Thread naming", () => {
           settingSources: [],
           persistSession: false,
           maxTurns: 1,
-          model: "claude-haiku-5-5",
-          effort: "low",
+          model:
+            fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId,
         },
       });
       expect(call.options).not.toHaveProperty("maxTokens");
       expect(call.options).not.toHaveProperty("outputFormat");
       expect(
         (await readdir(fixture.context.threadStateDirectory)).filter((name) =>
-          name.startsWith("title-"),
+          name.startsWith("text-"),
         ),
       ).toEqual([]);
     } finally {

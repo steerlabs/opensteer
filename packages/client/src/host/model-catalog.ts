@@ -1,7 +1,6 @@
+import { catalogDefaultModelSelection, rankedChatModelSelection } from "@opensteer/core";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
-  canonicalModelReference,
-  chatModelPreferences,
   harnessDisplayRank,
   modelLabLabels,
   type ModelSelection,
@@ -15,8 +14,8 @@ import {
 } from "./connection-usage.js";
 import type { ExecutionSelection } from "./execution-preferences.js";
 import {
+  automaticallyRunnable,
   selectionForModel,
-  selectionForModelEffort,
   type ThreadPlacementOption,
 } from "./thread-placement.js";
 
@@ -384,31 +383,33 @@ export function composerExecutionSelection(options: {
 }): ExecutionSelection | null {
   const decision = options.chosen ?? options.remembered ?? null;
   if (decision) return resolveExecutionSelection(decision, options.placements);
-  return options.defaultPlacement ? executionSelectionForPlacement(options.defaultPlacement) : null;
+  const placement = options.defaultPlacement;
+  if (!placement) return null;
+  const modelSelection = catalogDefaultModelSelection({
+    status: "ready",
+    models: placement.models,
+  });
+  return modelSelection
+    ? {
+        environmentId: placement.environmentId,
+        harnessInstanceId: placement.harnessInstanceId,
+        modelSelection,
+      }
+    : null;
 }
 
 /** The highest-ranked Chat model that any currently runnable placement serves. */
 export function rankedChatExecutionSelection(
   placements: readonly ThreadPlacementOption[],
 ): ExecutionSelection | null {
-  for (const preferred of chatModelPreferences) {
-    for (const placement of placements) {
-      if (!placement.available) continue;
-      const model = placement.models.find((candidate) => {
-        const reference = canonicalModelReference(candidate.modelId, candidate.providerId);
-        return (
-          reference.providerId === preferred.providerId && reference.modelId === preferred.modelId
-        );
-      });
-      if (!model) continue;
-      return {
-        environmentId: placement.environmentId,
-        harnessInstanceId: placement.harnessInstanceId,
-        modelSelection: selectionForModelEffort(model, preferred.effort),
-      };
-    }
-  }
-  return null;
+  const ranked = rankedChatModelSelection(placements.filter(automaticallyRunnable));
+  return ranked
+    ? {
+        environmentId: ranked.placement.environmentId,
+        harnessInstanceId: ranked.placement.harnessInstanceId,
+        modelSelection: ranked.modelSelection,
+      }
+    : null;
 }
 
 /**
@@ -427,8 +428,18 @@ export function chatExecutionSelection(options: {
   if (decision) return resolveExecutionSelection(decision, options.placements);
   const ranked = rankedChatExecutionSelection(options.placements);
   if (ranked) return ranked;
-  const runnable = options.placements.filter(({ available }) => available);
-  return runnable.length === 1 ? executionSelectionForPlacement(runnable[0]!) : null;
+  const runnable = options.placements.filter(automaticallyRunnable);
+  const placement = runnable.length === 1 ? runnable[0] : null;
+  const modelSelection = placement
+    ? catalogDefaultModelSelection({ status: "ready", models: placement.models })
+    : null;
+  return placement && modelSelection
+    ? {
+        environmentId: placement.environmentId,
+        harnessInstanceId: placement.harnessInstanceId,
+        modelSelection,
+      }
+    : null;
 }
 
 /**

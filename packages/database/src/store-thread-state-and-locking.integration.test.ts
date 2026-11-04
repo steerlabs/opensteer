@@ -1601,10 +1601,7 @@ describeStore("PostgreSQL store", (it) => {
         tokenSuffix: "parent-fence-other",
       });
       if (channel)
-        channel.placementCandidates.splice(0, 1, {
-          environmentId,
-          harnessInstanceId: harness.id,
-        });
+        channel.availableEngines.splice(0, 1, { environmentId, driverKinds: [harness.driverKind] });
       const held = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       await sql`create function phase3l_thread_barrier() returns trigger language plpgsql as $$
@@ -1765,10 +1762,7 @@ describeStore("PostgreSQL store", (it) => {
         tokenSuffix: "parent-fence-other",
       });
       if (channel)
-        channel.placementCandidates.splice(0, 1, {
-          environmentId,
-          harnessInstanceId: harness.id,
-        });
+        channel.availableEngines.splice(0, 1, { environmentId, driverKinds: [harness.driverKind] });
       const held = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       const blocker = database.transaction().execute(async (transaction) => {

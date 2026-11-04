@@ -1,12 +1,13 @@
+import { ExactModelWantSchema } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import { expect, vi } from "vitest";
-import { createId, SpecialistManifestSchema } from "@opensteer/core";
+import { createId, SpecialistManifestSchema, type HarnessInstanceId } from "@opensteer/core";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { assertLineageCompatibleReuse, resolveResourceAccess } from "./resource-access.js";
-import { describeStore } from "./store.integration.test-support.js";
+import { describeStore, testReadyHarnessCatalog } from "./store.integration.test-support.js";
 
 describeStore("specialist registration", (test) => {
   test("repins every owner's bindings and refuses a version that drops the specialist", async ({
@@ -77,7 +78,10 @@ describeStore("specialist registration", (test) => {
         );
         await platform.plugins.repinSpecialists(tx, pluginId);
       });
-    await update("same-access", { ...manifest, models: [{ engine: "claude", model: "haiku" }] });
+    await update("same-access", {
+      ...manifest,
+      models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
+    });
     const rows = () =>
       fixture.database
         .selectFrom("specialists")
@@ -109,7 +113,7 @@ describeStore("specialist registration", (test) => {
     const pluginId = randomUUID();
     const manifest = SpecialistManifestSchema.parse({
       version: 1,
-      models: [{ engine: "claude", model: "haiku" }],
+      models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
       access: [{ type: "browser-profile", level: "read", reason: "Research invoices" }],
     });
     await platform.plugins.install({
@@ -293,7 +297,13 @@ describeStore("specialist registration", (test) => {
       ready.id,
     );
 
-    const delegate = (threadId?: import("@opensteer/core").ThreadId) =>
+    const delegate = (
+      threadId?: import("@opensteer/core").ThreadId,
+      placed: {
+        harnessInstanceId: HarnessInstanceId;
+        expectedHarnessRevision: number;
+      } | null = null,
+    ) =>
       fixture.store.delegateThread({
         accessMode: run.thread.accessMode,
         createdBy: run.userId,
@@ -307,7 +317,104 @@ describeStore("specialist registration", (test) => {
         title: "Invoices",
         workspaceId: workspace.id,
         ...(threadId ? { threadId } : {}),
+        ...placed,
       });
+    const account = await fixture.store.createHarnessInstance({
+      config: {},
+      driverKind: run.harnessInstance.driverKind,
+      environmentId: run.environmentId,
+      name: "Endpoint",
+      stateKind: "isolated",
+    });
+    const placedAt = account.runtimeRevision;
+    const moved = await fixture.store.updateHarnessInstance({
+      id: account.id,
+      config: { baseUrl: "https://b.example/v1" },
+    });
+    await expect(
+      delegate(undefined, { harnessInstanceId: moved.id, expectedHarnessRevision: placedAt }),
+    ).rejects.toMatchObject({ code: "conflict", reason: "harness-revision-changed" });
+    // A connected agent's task is created, then sent to, in separate transactions.
+    await expect(
+      fixture.store.createThread({
+        createdBy: run.userId,
+        environmentId: run.environmentId,
+        expectedHarnessRevision: placedAt,
+        harnessInstanceId: moved.id,
+        idempotencyKey: "stale-specialist-create",
+        modelSelection: run.thread.modelSelection,
+        title: "Invoices",
+        workspaceId: workspace.id,
+      }),
+    ).rejects.toMatchObject({ reason: "harness-revision-changed" });
+    const created = await fixture.store.createThread({
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      expectedHarnessRevision: moved.runtimeRevision,
+      harnessInstanceId: moved.id,
+      idempotencyKey: "connection-specialist-create",
+      modelSelection: run.thread.modelSelection,
+      title: "Invoices",
+      workspaceId: workspace.id,
+    });
+    await expect(
+      fixture.store.enqueueThreadInput({
+        content: [{ type: "text", text: "Read invoices" }],
+        expectedHarnessRevision: placedAt,
+        idempotencyKey: "stale-specialist-input",
+        policy: "queue",
+        requestedBy: run.userId,
+        source: { kind: "human" },
+        threadId: created.thread.id,
+      }),
+    ).rejects.toMatchObject({ reason: "harness-revision-changed" });
+    const setPaused = (inputQueuePaused: boolean) =>
+      fixture.database
+        .updateTable("threads")
+        .set({ inputQueuePaused, inputQueuePausedBy: inputQueuePaused ? run.userId : null })
+        .where("id", "=", created.thread.id)
+        .execute();
+    await setPaused(true);
+    await expect(
+      fixture.store.enqueueThreadInput({
+        content: [{ type: "text", text: "Read invoices" }],
+        expectedHarnessRevision: moved.runtimeRevision,
+        idempotencyKey: "paused-specialist-input",
+        policy: "queue",
+        requestedBy: run.userId,
+        source: { kind: "human" },
+        threadId: created.thread.id,
+      }),
+    ).rejects.toMatchObject({ reason: "thread-not-accepting-work" });
+    await setPaused(false);
+    expect(
+      await fixture.database
+        .selectFrom("threadInputs")
+        .select("messageId")
+        .where("threadId", "=", created.thread.id)
+        .execute(),
+    ).toEqual([]);
+    await fixture.store.recordHarnessCatalogs({
+      environmentId: run.environmentId,
+      expectedRevisions: new Map([[moved.id, moved.runtimeRevision]]),
+      catalogs: [testReadyHarnessCatalog(moved.id)],
+    });
+    const fenced = await delegate(undefined, {
+      harnessInstanceId: moved.id,
+      expectedHarnessRevision: moved.runtimeRevision,
+    });
+    const moveAgain = () =>
+      fixture.store.updateHarnessInstance({
+        id: moved.id,
+        config: { baseUrl: "https://c.example/v1" },
+      });
+    await expect(moveAgain()).rejects.toMatchObject({ code: "conflict", retryable: true });
+    await fixture.database
+      .updateTable("runs")
+      .set({ status: "failed", completedAt: new Date() })
+      .where("id", "=", fenced.run.id)
+      .execute();
+    expect((await moveAgain()).runtimeRevision).toBe(moved.runtimeRevision + 1);
     const child = await delegate();
     expect(child.thread).toMatchObject({
       specialistId: ready.id,
@@ -455,7 +562,10 @@ describeStore("specialist registration", (test) => {
       pluginId,
       digest: "b".repeat(64),
       manifest: { name: "researcher" },
-      specialistManifest: { ...manifest, models: [{ engine: "codex", model: "fast" }] },
+      specialistManifest: {
+        ...manifest,
+        models: [ExactModelWantSchema.parse({ engine: "codex", model: "fast" })],
+      },
     });
     expect((await platform.specialists.list(workspace.id, run.userId))[0]?.pluginVersionId).toBe(
       version.id,
@@ -463,7 +573,9 @@ describeStore("specialist registration", (test) => {
     const updated = await add();
     expect(updated.id).toBe(pending.id);
     expect(updated.pluginVersionId).not.toBe(version.id);
-    expect(updated.models[0]?.engine).toBe("codex");
+    expect(
+      updated.models[0] && "engine" in updated.models[0] ? updated.models[0].engine : undefined,
+    ).toBe("codex");
     await fixture.database
       .updateTable("browserProfileGrants")
       .set({ revokedAt: new Date() })
@@ -518,7 +630,7 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "retire" },
       specialistManifest: SpecialistManifestSchema.parse({
         version: 1,
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
       }),
     });
     const registration = await platform.specialists.add({
@@ -584,7 +696,7 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "purge" },
       specialistManifest: SpecialistManifestSchema.parse({
         version: 1,
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
       }),
     });
     for (const workspace of [a, b]) {
@@ -649,7 +761,7 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "agent-installed" },
       specialistManifest: SpecialistManifestSchema.parse({
         version: 1,
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
         access: [{ type: "browser-profile", level: "read", reason: "Browse" }],
       }),
     });
@@ -708,7 +820,7 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "chooser" },
       specialistManifest: SpecialistManifestSchema.parse({
         version: 1,
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
         access: [{ type: "browser-profile", level: "read-write", reason: "Browse" }],
       }),
     });
@@ -898,7 +1010,7 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "owner-only" },
       specialistManifest: SpecialistManifestSchema.parse({
         version: 1,
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
         access: [
           { type: "browser-profile", level: "read", reason: "Read" },
           { type: "integration", service: "gmail", level: "read", reason: "Read mail" },

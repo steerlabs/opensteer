@@ -73,6 +73,17 @@ let initialized = false;
 let modelListRequests = 0;
 let threadId = "codex-thread-1";
 const ephemeralThreads = new Set();
+/** The model each naming thread was started with. */
+const ephemeralModels = new Map();
+// Opt-in: the account also lists the light models background work ranks, and
+// a model from another lab that Codex can serve.
+const backgroundModels = process.argv.includes("--background-models");
+// Opt-in: a JSON file, read at each naming turn, that scripts that turn by its
+// model: `{ "<model>": { "reply"?: string, "error"?: string, "hold"?: path } }`.
+// A held turn answers once the `hold` file exists.
+const titleScriptPath = process.argv
+  .find((argument) => argument.startsWith("--title-script="))
+  ?.slice("--title-script=".length);
 let threadConfig = {};
 /** The MCP client an `mcp-session` engine keeps across its turns. */
 let sessionTools;
@@ -494,6 +505,17 @@ function handleClientMethod(message) {
                 { description: "Exhaustive", reasoningEffort: "xhigh" },
               ],
             },
+            ...(backgroundModels
+              ? ["gpt-6-luna", "gpt-5.6-luna", "llama-4-scout"].map((id) => ({
+                  defaultReasoningEffort: "low",
+                  displayName: id,
+                  hidden: false,
+                  id,
+                  inputModalities: ["text"],
+                  isDefault: false,
+                  supportedReasoningEfforts: [{ reasoningEffort: "low" }],
+                }))
+              : []),
             ...(scenario === "model-modalities"
               ? [
                   // Codex offers text-only models too, and an older build
@@ -523,6 +545,7 @@ function handleClientMethod(message) {
       if (message.params.ephemeral) {
         threadId = `codex-title-${randomUUID()}`;
         ephemeralThreads.add(threadId);
+        ephemeralModels.set(threadId, message.params.model);
       } else if (process.argv.includes("--unique-threads"))
         threadId = `codex-thread-${randomUUID()}`;
       captureRunId = threadId;
@@ -765,17 +788,36 @@ function discoveredSkills() {
 /** Ephemeral, read-only naming has no tools, children or persisted conversation. */
 function handleTitleTurn(message) {
   const id = `codex-title-turn-${randomUUID()}`;
-  capture({ fakeTitleTurn: { pid: process.pid, threadId } });
+  const model = ephemeralModels.get(threadId);
+  const script =
+    titleScriptPath && existsSync(titleScriptPath)
+      ? (JSON.parse(readFileSync(titleScriptPath, "utf8"))[model] ?? {})
+      : {};
+  capture({ fakeTitleTurn: { pid: process.pid, threadId, model } });
   send({ id: message.id, result: { turn: { id, items: [], status: "inProgress" } } });
   send({ method: "turn/started", params: { threadId, turn: { id, status: "inProgress" } } });
-  if (process.argv.includes("--title-error")) {
-    sendTurnCompleted("failed", { message: "Naming unavailable" }, id);
+  if (script.hold && !existsSync(script.hold)) {
+    const held = setInterval(() => {
+      if (!existsSync(script.hold)) return;
+      clearInterval(held);
+      answerTitleTurn(id, script);
+    }, 20);
+    return;
+  }
+  answerTitleTurn(id, script);
+}
+
+function answerTitleTurn(id, script) {
+  if (script.error || process.argv.includes("--title-error")) {
+    sendTurnCompleted("failed", { message: script.error ?? "Naming unavailable" }, id);
     return;
   }
   const reply =
+    script.reply ??
     process.argv
       .find((argument) => argument.startsWith("--title-reply="))
-      ?.slice("--title-reply=".length) ?? "Support migration\nheadphones";
+      ?.slice("--title-reply=".length) ??
+    "Support migration\nheadphones";
   sendResponseUsage("naming", threadId, id, tokens(1_000, 0, 0, 20, 0));
   if (reply)
     send({

@@ -24,7 +24,9 @@ the JSON artifacts under `OPENSTEER_ENGINE_E2E_OUTPUT` or the printed directory.
 - **New models**: check the account's real engine catalog first and update the engine if required;
   never hardcode a model the engine cannot describe. Check native ID routing, context and output
   limits and options in the driver tests, and review protocol and sandbox changes, including Codex's
-  approved features. Reconnect the Runner after release to refresh accounts.
+  approved features. Reconnect the Runner after release to refresh accounts. Review the role
+  rankings in `packages/core/src/background-models.ts` too: drivers derive their small model from
+  them, and one account missing a ranked model doesn't mean it's retired.
 
 ## Local model servers
 

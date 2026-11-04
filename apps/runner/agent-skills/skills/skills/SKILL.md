@@ -69,7 +69,10 @@ variable. The owner changes values in Settings, Plugins.
 ## Turn repeated work into a specialist
 
 For repeated, well-understood work, add `specialist.json` and `INSTRUCTIONS.md` to the plugin.
-List cheaper models in preference order (`engine`, `model`, optional `options`), declare the
+List models in preference order: an exact `{"engine", "model", "options"?}`, or
+`{"role": "light"}` (fast, cheap) or `{"role": "deep"}` (strongest), which stand for the person's
+own automatic model choices in AI settings. Prefer a role unless the work needs a particular
+model. A list never names an account; it runs on the person's eligible accounts. Declare the
 access needs and reasons, and use `fallback: "caller"` only when that cost is intended (the
 default is `"none"`). Test representative inputs and check the outputs before `plugin_install`.
 Ask the person to resolve missing resource grants or specialist bindings; never grant them yourself. Then call `thread_delegate` with

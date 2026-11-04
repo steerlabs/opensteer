@@ -1,3 +1,6 @@
+import type { MemoryPassExecution } from "./memory-pass-store.js";
+import { getThreadNamingInput } from "./execution-store.js";
+import { environmentIsAvailableToUser } from "./environment-store.js";
 import {
   assertThreadCaller,
   lockThreadCaller,
@@ -139,6 +142,7 @@ import { projectThreadState } from "./thread-status.js";
 
 export interface CreateThreadInput {
   readonly specialistId?: string;
+  readonly expectedHarnessRevision?: number;
   readonly icon?: WorkspaceIconName;
   readonly authority?: ThreadCallerAuthority;
   readonly accessMode?: ThreadAccessMode;
@@ -221,6 +225,9 @@ export interface EnqueueThreadInputRequest {
   readonly source: ThreadInputSource;
   readonly threadId: ThreadId;
   readonly forwardedPlaces?: true;
+  /** Host-resolved model for a managed memory pass's own wake; without it the wake is skipped. */
+  readonly memoryPass?: MemoryPassExecution;
+  readonly expectedHarnessRevision?: number;
   /** Host-only live route check, called after durable replay and before a new claim. */
   readonly validateNewAttachmentInput?: (selection: {
     readonly driverKind: HarnessId;
@@ -289,6 +296,7 @@ export interface MovedThreadInput {
 
 export interface DelegateThreadRequest {
   readonly specialistId?: string;
+  readonly expectedHarnessRevision?: number;
   readonly callerIntent?: Pick<RunToolAdmissionInput, "requestId" | "requestFingerprint">;
   readonly accessMode: ThreadAccessMode;
   readonly createdBy: UserId;
@@ -433,6 +441,9 @@ function canonicalCreateThreadInput(input: CreateThreadInput): Readonly<Record<s
   const { nativeModelId: _nativeModelId, ...modelSelection } = input.modelSelection;
   return {
     ...(input.specialistId ? { specialistId: input.specialistId } : {}),
+    ...(input.expectedHarnessRevision === undefined
+      ? {}
+      : { expectedHarnessRevision: input.expectedHarnessRevision }),
     ...(input.icon ? { icon: input.icon } : {}),
     accessMode: input.accessMode ?? DEFAULT_THREAD_ACCESS_MODE,
     createdBy: input.createdBy,
@@ -1072,11 +1083,15 @@ export async function createThreadInTransaction(
   }
   const insertThread =
     prepared?.insertThread ??
-    (await prepareThreadInsertion(transaction, {
-      createdBy: input.createdBy,
-      environmentId: input.environmentId,
-      harnessInstanceId: input.harnessInstanceId,
-    }));
+    (await prepareThreadInsertion(
+      transaction,
+      {
+        createdBy: input.createdBy,
+        environmentId: input.environmentId,
+        harnessInstanceId: input.harnessInstanceId,
+      },
+      input.expectedHarnessRevision,
+    ));
   if (workspace.status !== "ready") {
     throw new OpensteerError({
       code: "conflict",
@@ -1961,6 +1976,10 @@ export async function applyGeneratedThreadName(
     readonly threadId: ThreadId;
     readonly title?: string | undefined;
     readonly icon?: WorkspaceIconName | undefined;
+    readonly namingAuthority?: NonNullable<Awaited<ReturnType<typeof getThreadNamingInput>>> & {
+      readonly harnessRevision: number;
+      readonly expiresAt: number;
+    };
   },
 ): Promise<{ readonly event: AgentEvent; readonly events: readonly AgentEvent[] } | null> {
   const title =
@@ -1971,6 +1990,34 @@ export async function applyGeneratedThreadName(
     database,
     async (transaction) => {
       if (!(await lockThreadNameWorkspaces(transaction, input.threadId))) return null;
+      if (input.namingAuthority) {
+        const authority = input.namingAuthority;
+        const current = await getThreadNamingInput(transaction, input.threadId);
+        const account = await transaction
+          .selectFrom("harnessInstances")
+          .selectAll()
+          .where("id", "=", authority.harnessInstanceId)
+          .executeTakeFirst();
+        if (
+          !current ||
+          current.sourceMessageId !== authority.sourceMessageId ||
+          current.principalId !== authority.principalId ||
+          current.requestedBy !== authority.requestedBy ||
+          current.membershipGeneration !== authority.membershipGeneration ||
+          Date.now() >= authority.expiresAt ||
+          !account?.enabled ||
+          account.removedAt ||
+          account.runtimeRevision !== authority.harnessRevision ||
+          account.environmentId !== authority.environmentId ||
+          !(await environmentIsAvailableToUser(
+            transaction,
+            authority.environmentId,
+            authority.requestedBy,
+          ))
+        )
+          return null;
+      }
+
       const renamed =
         title === undefined
           ? undefined

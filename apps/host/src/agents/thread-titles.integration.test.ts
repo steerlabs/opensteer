@@ -25,19 +25,8 @@ import {
   threadTitleSourceMigration,
   TriggerStore,
 } from "@opensteer/database";
-import {
-  CommandService,
-  KeyedAdmissionQueue,
-  RunnerRegistry,
-  type RunnerPeer,
-} from "@opensteer/orchestration";
-import {
-  hostApi,
-  PendingAgentEventSchema,
-  RunnerConnectionFenceSchema,
-  type HostToRunnerMessage,
-  type RunnerDescriptor,
-} from "@opensteer/protocol";
+import { CommandService, KeyedAdmissionQueue } from "@opensteer/orchestration";
+import { hostApi, PendingAgentEventSchema, type RunnerDescriptor } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -477,145 +466,101 @@ integration.sequential("Thread title lifecycle", () => {
     ).toBeNull();
   });
 
-  it("drops foreign, old and revoked binding reports before the transactional title hook", async () => {
+  it("paginates provisional naming work with an immutable id cursor", async () => {
+    const f = await fixture();
+    const ids: ThreadId[] = [];
+    for (let index = 0; index < 3; index++) {
+      const { thread } = await f.create({ generateTitle: true });
+      await send(f, thread.id, [{ type: "text", text: `Work ${index}` }]);
+      ids.push(thread.id);
+    }
+    ids.sort();
+    const first = await store.listThreadNamingCandidates(2);
+    expect(first.map((row) => row.id)).toEqual(ids.slice(0, 2));
+    const next = await store.listThreadNamingCandidates(2, first.at(-1)!.id);
+    expect(next.map((row) => row.id)).toEqual(ids.slice(2));
+  });
+
+  it("fences naming apply by source, expiry, account revision and live membership", async () => {
     const f = await fixture();
     const { thread } = await f.create({ generateTitle: true });
-    const first = await send(f, thread.id, [{ type: "text", text: "Name this work" }]);
-    if (!first.command || !first.run) throw new Error("No Run");
-    await store.claimCommand(first.command.id, "title-dispatcher");
-    const binding = await store.acquireExecutionBinding({
-      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
-      continuationIdentity,
-      harnessInstanceId: f.harness.id,
-      leaseTokenHash: randomUUID(),
-      membershipGeneration: 1,
-      runnerBootId: f.descriptor.bootId,
-      runnerId: f.runnerId,
-      runId: first.run.id,
-      threadId: thread.id,
-    });
-    const received: (string | undefined)[] = [];
-    const registry = new RunnerRegistry({
-      hooks: {
-        authorize: async () => undefined,
-        onEvent: async () => undefined,
-        onAttach: async (identity, executions) =>
-          (
-            await store.attachRunnerExecutions({
-              dispatchingRunIds: [],
-              executions,
-              leaseExpiresAt: new Date(Date.now() + 60_000),
-              runnerBootId: identity.bootId,
-              runnerId: identity.runnerId,
-            })
-          ).results,
-        onThreadTitle: async (_identity, report) => {
-          received.push(report.title);
-          const result = await store.applyGeneratedThreadName(report);
-          if (result) published.push(...result.events);
-        },
-      },
-    });
-    const register = async (descriptor: RunnerDescriptor) => {
-      const fence = RunnerConnectionFenceSchema.parse({
-        bootId: descriptor.bootId,
-        runnerId: descriptor.runnerId,
-        connectionGeneration: 1,
-        connectionId: `rcn_${randomUUID()}`,
-        connectionLeaseId: `rls_${randomUUID()}`,
-      });
-      const messages: HostToRunnerMessage[] = [];
-      const peer: RunnerPeer = {
-        id: randomUUID(),
-        send: async (message) => {
-          messages.push(message);
-        },
-        close: () => undefined,
-      };
-      await registry.register(
-        {
-          ...descriptor,
-          ...fence,
-          environmentIds: descriptor.modules.agents!.environmentIds,
-          allowedModules: ["agents"],
-          personalRemoteAccessGeneration: null,
-          fence,
-        },
-        peer,
-      );
-      return { peer, fence, messages };
+    await send(f, thread.id, [{ type: "text", text: "Name this work" }]);
+    const input = await store.getThreadNamingInput(thread.id);
+    if (!input) throw new Error("Expected naming input");
+    const account = await store.getHarnessInstance(input.harnessInstanceId);
+    if (!account) throw new Error("Expected account");
+    const authority = {
+      ...input,
+      harnessRevision: account.runtimeRevision,
+      expiresAt: Date.now() + 60_000,
     };
-    try {
-      const owner = await register(f.descriptor);
-      await registry.handle(owner.peer, {
-        ...owner.fence,
-        type: "runner.executions.attach",
-        complete: true,
-        executions: [
-          {
-            bindingGeneration: binding.bindingGeneration,
-            environmentId: f.environmentId,
-            nextOrdinal: 0,
-            runId: first.run.id,
-            terminal: false,
-            threadId: thread.id,
-            workspaceId: f.workspace.id,
-          },
-        ],
-      });
-      expect(
-        owner.messages.find((message) => message.type === "host.executions.attached"),
-      ).toMatchObject({ results: [{ runId: first.run.id, status: "attached" }] });
-      const foreignEnvironment = createId("environment");
-      const foreign = await register({
-        ...f.descriptor,
-        runnerId: createId("runner"),
-        modules: {
-          agents: { ...f.descriptor.modules.agents!, environmentIds: [foreignEnvironment] },
-        },
-      });
-      const report = {
-        ...owner.fence,
-        type: "runner.thread-title" as const,
-        bindingGeneration: binding.bindingGeneration,
-        environmentId: f.environmentId,
-        runId: first.run.id,
+    const apply = (namingAuthority = authority) =>
+      store.applyGeneratedThreadName({
         threadId: thread.id,
-        workspaceId: f.workspace.id,
-        title: "Accepted candidate",
-      };
-      await registry.handle(foreign.peer, {
-        ...report,
-        ...foreign.fence,
-        environmentId: foreignEnvironment,
-        title: "Foreign",
+        title: "Generated title",
+        icon: "plane",
+        namingAuthority,
       });
-      for (const override of [
-        { bindingGeneration: binding.bindingGeneration + 1 },
-        { threadId: createId("thread") },
-        { workspaceId: createId("workspace") },
-        { environmentId: foreignEnvironment },
-        { runId: createId("run") },
-      ]) {
-        await registry.handle(owner.peer, { ...report, ...override, title: "Old binding" });
-      }
-      expect(received).toEqual([]);
-      expect(await row(thread.id)).toMatchObject({
-        title: "Seed title",
-        titleSource: "provisional",
-      });
-      await registry.handle(owner.peer, report);
-      expect(received).toEqual(["Accepted candidate"]);
-      expect(await row(thread.id)).toMatchObject({
-        title: "Accepted candidate",
-        titleSource: "generated",
-      });
-      await registry.revokeRuns(f.runnerId, [{ runId: first.run.id, reason: "Test revocation" }]);
-      await registry.handle(owner.peer, { ...report, title: "Revoked" });
-      expect(received).toEqual(["Accepted candidate"]);
-    } finally {
-      await registry.close();
-    }
+    expect(await apply({ ...authority, expiresAt: Date.now() - 1 })).toBeNull();
+    expect(await apply({ ...authority, sourceMessageId: createId("message") })).toBeNull();
+    expect(await apply({ ...authority, harnessRevision: account.runtimeRevision + 1 })).toBeNull();
+    await database
+      .updateTable("harnessInstances")
+      .set({ enabled: false, isDefault: false })
+      .where("id", "=", account.id)
+      .execute();
+    expect(await apply()).toBeNull();
+    await database
+      .updateTable("harnessInstances")
+      .set({ enabled: true })
+      .where("id", "=", account.id)
+      .execute();
+    const otherOwner = await store.createUser("Other owner");
+    const membership = await database
+      .selectFrom("workspaceMemberships")
+      .selectAll()
+      .where("workspaceId", "=", thread.workspaceId)
+      .where("userId", "=", input.requestedBy)
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto("workspaceMemberships")
+      .values({ ...membership, id: createId("workspaceMembership"), userId: otherOwner })
+      .execute();
+    await database
+      .updateTable("workspaceMemberships")
+      .set({ state: "revoked", revokedAt: new Date(), revokedBy: otherOwner })
+      .where("workspaceId", "=", thread.workspaceId)
+      .where("userId", "=", input.requestedBy)
+      .execute();
+    expect(await apply()).toBeNull();
+    await database
+      .updateTable("workspaceMemberships")
+      .set({ state: "active", revokedAt: null, revokedBy: null })
+      .where("workspaceId", "=", thread.workspaceId)
+      .where("userId", "=", input.requestedBy)
+      .execute();
+    await rename(f, thread.id, "Person's title");
+    const result = await apply();
+    expect(result?.event.type).toBe("thread.state-changed");
+    expect(await row(thread.id)).toMatchObject({
+      title: "Person's title",
+      titleSource: "chosen",
+      icon: "plane",
+      iconSource: "generated",
+    });
+    expect(await apply()).toBeNull();
+  });
+
+  it("excludes actual homeThreadId even if its fields are provisional", async () => {
+    const f = await fixture();
+    const { thread } = await f.create({ home: true });
+    await send(f, thread.id, [{ type: "text", text: "Do not name Chat" }]);
+    await database
+      .updateTable("threads")
+      .set({ titleSource: "provisional", iconSource: "provisional" })
+      .where("id", "=", thread.id)
+      .execute();
+    expect(await store.getThreadNamingInput(thread.id)).toBeNull();
   });
 
   it("a concurrent rename always survives generation", async () => {
@@ -629,7 +574,7 @@ integration.sequential("Thread title lifecycle", () => {
   });
 
   it.each(["run.failed", "run.interrupted"] as const)(
-    "retries the original request after %s, independent of the next Run's history",
+    "excludes withdrawn input after %s, independent of the next Run's history",
     async (type) => {
       const f = await fixture();
       const { thread } = await f.create({ generateTitle: true });
@@ -637,7 +582,7 @@ integration.sequential("Thread title lifecycle", () => {
       const first = await send(f, thread.id, [{ type: "text", text }]);
       if (!first.command || !first.run) throw new Error("No queued Run");
       await store.claimCommand(first.command.id, "title-dispatcher");
-      expect((await store.loadRunDispatchContext(first.command.id)).titleRequest).toEqual({
+      expect(await store.getThreadNamingInput(thread.id)).toMatchObject({
         request: "a".repeat(threadTitleRequestMaxLength - 1),
         icon: true,
       });
@@ -680,8 +625,8 @@ integration.sequential("Thread title lifecycle", () => {
       });
       expect(context.inputs[0]?.content).toEqual([{ type: "text", text: "Retry this work" }]);
       expect(context.history).toEqual([]);
-      expect(context.titleRequest).toEqual({
-        request: "a".repeat(threadTitleRequestMaxLength - 1),
+      expect(await store.getThreadNamingInput(thread.id)).toMatchObject({
+        request: "Retry this work",
         icon: true,
       });
       await store.applyGeneratedThreadName({
@@ -689,9 +634,9 @@ integration.sequential("Thread title lifecycle", () => {
         title: "Generated",
         icon: "plane",
       });
-      expect((await store.loadRunDispatchContext(next.command.id)).titleRequest).toBeUndefined();
+      expect(await store.getThreadNamingInput(thread.id)).toBeNull();
       await rename(f, thread.id, "Renamed");
-      expect((await store.loadRunDispatchContext(next.command.id)).titleRequest).toBeUndefined();
+      expect(await store.getThreadNamingInput(thread.id)).toBeNull();
     },
   );
 
@@ -726,7 +671,7 @@ integration.sequential("Thread title lifecycle", () => {
     if (!first.command) throw new Error("No attachment Run");
     await send(f, thread.id, [{ type: "text", text: "Later text is not the first message" }]);
     await store.claimCommand(first.command.id, "title-dispatcher");
-    expect((await store.loadRunDispatchContext(first.command.id)).titleRequest).toBeUndefined();
+    expect(await store.getThreadNamingInput(thread.id)).toBeNull();
   });
 
   it.each(["trigger", "watch"] as const)(
@@ -915,9 +860,7 @@ integration.sequential("Thread title lifecycle", () => {
           .executeTakeFirstOrThrow();
         await store.claimCommand(command.id, "title-dispatcher");
         expect(
-          (await store.loadRunDispatchContext(command.id)).titleRequest?.request.includes(
-            "Check   inventory",
-          ),
+          (await store.getThreadNamingInput(worker.id))?.request.includes("Check   inventory"),
         ).toBe(icon ? undefined : true);
         expect(
           (await store.applyGeneratedThreadName({
@@ -977,7 +920,7 @@ integration.sequential("Thread title lifecycle", () => {
       })
       .execute();
     await store.claimCommand(first.command.id, "title-dispatcher");
-    expect((await store.loadRunDispatchContext(first.command.id)).titleRequest).toEqual({
+    expect(await store.getThreadNamingInput(thread.id)).toMatchObject({
       request: "Research\nthe site  \nreport.pdf\nTest phone",
       icon: true,
     });

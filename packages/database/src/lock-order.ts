@@ -128,6 +128,8 @@ export const databaseLockOrder = [
   "channel_accounts",
   "channel_bindings",
   "channel_identities",
+  // A sender's new display name reaches its Principal before adoption locks the conversation.
+  "principals",
   "channel_access_grants",
   "channel_conversations",
   "channel_conversation_contexts",
@@ -184,7 +186,6 @@ export const databaseLockOrder = [
   "personal_account_link_keys",
   "personal_remote_account_link",
   "personal_remote_sessions",
-  "principals",
   "security_audit",
   "security_effects",
   "thread_read_markers",
@@ -192,6 +193,7 @@ export const databaseLockOrder = [
   "user_execution_preferences",
   // Host User fences precede auth sessions, adoption proofs and account reconciliation.
   "users",
+  "user_background_model_preferences",
   "account_directory_projections",
   "auth_sessions",
   "agent_connections",

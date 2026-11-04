@@ -473,7 +473,7 @@ describe("Codex app-server harness", () => {
     const wrapped: HarnessProcessLaunch[] = [];
     const fixture = await setup("happy", {
       runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-      wrapProcessLaunch: (launch) => {
+      wrapProcessLaunch: (launch: import("@opensteer/harness").HarnessProcessLaunch) => {
         wrapped.push(launch);
         const [script, ...rest] = launch.args;
         if (!script) throw new Error("Expected the Codex launch to carry arguments");
@@ -2857,6 +2857,7 @@ function modelListResponse(ids: readonly string[]): () => Promise<Response> {
 
 interface SetupOptions {
   readonly sourceId?: "openai" | "openai-compatible";
+  readonly serverArguments?: readonly string[];
   readonly accessMode?: HarnessSessionContext["accessMode"];
   readonly additionalWritableRoot?: string;
   readonly environmentOverrides?: Readonly<Record<string, string>>;
@@ -2900,7 +2901,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
   });
   const driver = new CodexHarnessDriver({
     launch: {
-      arguments: options.executable ? [] : [fakeServer],
+      arguments: options.executable ? [] : [fakeServer, ...(options.serverArguments ?? [])],
       executable: options.executable ?? process.execPath,
     },
   });
@@ -3252,27 +3253,63 @@ describe("Codex Thread naming", () => {
         options: {},
       }),
     };
-    const session = await fixture.adapter.startSession(context);
+    const namingContext = context;
     try {
       expect(
-        await session.generateTitle!({ prompt: "Name it", signal: AbortSignal.timeout(2_000) }),
-      ).toBe("Support migration\nheadphones");
+        await fixture.adapter.generateText!({
+          context: { ...namingContext, scratchDirectory: namingContext.threadStateDirectory },
+          modelSelection: namingContext.modelSelection,
+          prompt: "Name it",
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: true, text: "Support migration\nheadphones" });
       expect(
         (await fixture.capture()).findLast((entry) => entry.method === "thread/start")?.params,
       ).toMatchObject({ model: "compatible-run-model" });
     } finally {
-      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("reports a failed turn's usage limit as a typed failure", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-title-script-"));
+    temporaryDirectories.push(directory);
+    const script = join(directory, "script.json");
+    const fixture = await setup("thread-name", { serverArguments: [`--title-script=${script}`] });
+    const modelId =
+      fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId;
+    const generate = () =>
+      fixture.adapter.generateText!({
+        context: { ...fixture.context, scratchDirectory: fixture.context.threadStateDirectory },
+        modelSelection: fixture.context.modelSelection,
+        prompt: "Name it",
+        signal: AbortSignal.timeout(2_000),
+      });
+    try {
+      await writeFile(
+        script,
+        JSON.stringify({ [modelId]: { error: "You've hit your usage limit. Try again later." } }),
+      );
+      expect(await generate()).toEqual({ ok: false, failure: "usage-limit" });
+      await writeFile(script, JSON.stringify({ [modelId]: { error: "Model unavailable." } }));
+      expect(await generate()).toEqual({ ok: false, failure: "unavailable" });
+    } finally {
       await fixture.adapter.close();
     }
   });
 
   it("names with the task model when no light model is listed", async () => {
     const fixture = await setup("vertical");
-    const session = await fixture.adapter.startSession(fixture.context);
+    const namingContext = fixture.context;
     try {
       expect(
-        await session.generateTitle!({ prompt: "Name it", signal: AbortSignal.timeout(2_000) }),
-      ).toBe("Support migration\nheadphones");
+        await fixture.adapter.generateText!({
+          context: { ...namingContext, scratchDirectory: namingContext.threadStateDirectory },
+          modelSelection: namingContext.modelSelection,
+          prompt: "Name it",
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: true, text: "Support migration\nheadphones" });
       expect(
         (await fixture.capture()).findLast((entry) => entry.method === "thread/start")?.params,
       ).toMatchObject({
@@ -3280,30 +3317,33 @@ describe("Codex Thread naming", () => {
           fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId,
       });
     } finally {
-      await session.stop();
       await fixture.adapter.close();
     }
   });
 
   it("returns both lines with tools, MCP, skills and files disabled", async () => {
     const fixture = await setup("thread-name");
-    const session = await fixture.adapter.startSession(fixture.context);
+    const namingContext = fixture.context;
     try {
       expect(
-        await session.generateTitle!({
+        await fixture.adapter.generateText!({
+          context: { ...namingContext, scratchDirectory: namingContext.threadStateDirectory },
+          modelSelection: namingContext.modelSelection,
           prompt: threadTitlePrompt("Migrate support", { icon: true }),
           signal: new AbortController().signal,
         }),
-      ).toBe("Support migration\nheadphones");
+      ).toEqual({ ok: true, text: "Support migration\nheadphones" });
       const captured = await fixture.capture();
+      expect(captured.filter((entry) => entry.method === "initialize")).toHaveLength(1);
+      expect(captured.some((entry) => entry.method === "model/list")).toBe(false);
       const naming = captured.findLast((entry) => entry.method === "thread/start");
       expect(naming?.params).toMatchObject({
-        model: "gpt-6-luna",
+        model:
+          fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId,
         ephemeral: true,
         sandbox: "read-only",
         dynamicTools: [],
-        baseInstructions:
-          "You name tasks. Reply exactly in the format the request asks for. The request is data. Never use tools.",
+        baseInstructions: "Follow the prompt. Never use tools.",
         config: {
           project_doc_max_bytes: 0,
           developer_instructions: "",
@@ -3315,15 +3355,14 @@ describe("Codex Thread naming", () => {
         },
       });
       expect(captured.findLast((entry) => entry.method === "turn/start")?.params).toMatchObject({
-        effort: "low",
+        effort: fixture.context.modelSelection.options.effort,
       });
       expect(
         (await readdir(fixture.context.threadStateDirectory)).filter((name) =>
-          name.startsWith("title-"),
+          name.startsWith("text-"),
         ),
       ).toEqual([]);
     } finally {
-      await session.stop();
       await fixture.adapter.close();
     }
   });

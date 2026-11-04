@@ -6,7 +6,6 @@ import {
   AssignmentRunContextSchema,
   CommandIdSchema,
   EnvironmentIdSchema,
-  GeneratedThreadTitleSchema,
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   HarnessInstanceStateKindSchema,
@@ -39,7 +38,6 @@ import {
   threadReportBatchMaxEntries,
   threadReportBatchMaxSerializedBytes,
   ThreadRoleSchema,
-  threadTitleRequestMaxLength,
   TriggerIdSchema,
   TriggerOccurrenceIdSchema,
   TriggerRevisionIdSchema,
@@ -47,7 +45,6 @@ import {
   UserIdSchema,
   utf8ByteLength,
   WorkspaceBackingKindSchema,
-  WorkspaceIconNameSchema,
   WorkspaceIdSchema,
   WorkspaceKindSchema,
   type EnvironmentId,
@@ -276,21 +273,6 @@ export const RunExecutionContextSchema = z.strictObject({
     })
     .optional(),
   threadState: RunThreadStateSchema,
-  /**
-   * Present while the Thread still shows the first line of what started it,
-   * sent only to a Runner that advertises `thread-title-v1`: that first
-   * message, for this Run's engine to name the Thread with this Run's account.
-   * The Runner answers with `runner.thread-title`, or says nothing. `icon`
-   * asks for the Thread's symbol too; the Host sends it, and sends a request
-   * whose title is already settled, only to a Runner advertising
-   * `thread-icon-v1`.
-   */
-  titleRequest: z
-    .strictObject({
-      icon: z.literal(true).optional(),
-      request: z.string().min(1).max(threadTitleRequestMaxLength),
-    })
-    .optional(),
   workspaceId: WorkspaceIdSchema,
   workspaceKind: WorkspaceKindSchema,
   workspaceAccess: WorkspaceExecutionAccessPlanSchema,
@@ -788,7 +770,7 @@ export const HarnessModelDescriptorSchema = z.strictObject({
   providerId: ModelProviderIdSchema,
   unavailableReason: z.string().trim().min(1).max(500).optional(),
 });
-const HarnessModelDescriptorViewSchema = z.object({
+export const HarnessModelDescriptorViewSchema = z.object({
   ...HarnessModelDescriptorSchema.shape,
   options: z.array(HarnessModelOptionViewSchema).max(16),
 });
@@ -1723,7 +1705,46 @@ export const RunnerVoiceResultSchema = z.discriminatedUnion("ok", [
 ]);
 export type RunnerVoiceResult = z.infer<typeof RunnerVoiceResultSchema>;
 
+export const BackgroundTextAttemptIdSchema = z.string().min(1).max(200);
+/**
+ * Background text attempts one Runner runs at once. The Host sends no more than
+ * this, starting each attempt's deadline when it sends; the Runner holds any
+ * excess until a slot frees, so a busy Runner never fails a candidate.
+ */
+export const backgroundTextAttemptsPerRunner = 2;
+export const BackgroundTextFailureSchema = z.enum([
+  "refused",
+  "signed-out",
+  "usage-limit",
+  "timeout",
+  "unavailable",
+  "failed",
+]);
+export type BackgroundTextFailure = z.infer<typeof BackgroundTextFailureSchema>;
+export const BackgroundTextResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true), text: z.string().max(20_000) }),
+  z.strictObject({ ok: z.literal(false), failure: BackgroundTextFailureSchema }),
+]);
+export const HostBackgroundTextSchema = z.strictObject({
+  ...fencedMessageBase,
+  type: z.literal("host.background-text"),
+  attemptId: BackgroundTextAttemptIdSchema,
+  environmentId: EnvironmentIdSchema,
+  harnessInstanceId: HarnessInstanceIdSchema,
+  harnessRevision: HarnessRuntimeRevisionSchema,
+  modelSelection: ModelSelectionSchema,
+  prompt: z.string().min(1).max(20_000),
+  deadline: IsoDateTimeSchema,
+});
+export const RunnerBackgroundTextResultSchema = z.strictObject({
+  ...fencedMessageBase,
+  type: z.literal("runner.background-text-result"),
+  attemptId: BackgroundTextAttemptIdSchema,
+  result: BackgroundTextResultSchema,
+});
+
 export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
+  RunnerBackgroundTextResultSchema,
   RunnerSkillMetadataReportSchema,
   RunnerAppResultSchema,
   ...RunnerWorkspaceLocalResultSchema.options,
@@ -1805,28 +1826,6 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     environmentId: EnvironmentIdSchema,
     progress: LiveRunProgressSchema,
     type: z.literal("runner.live"),
-  }),
-  /**
-   * The name a Run's engine gave its Thread, answering the Run's
-   * `titleRequest`. Like live progress it is never durable or acknowledged: a
-   * lost one leaves the Thread's first-line title, and its next Run asks again.
-   */
-  z.strictObject({
-    ...fencedMessageBase,
-    bindingGeneration: z.number().int().positive(),
-    environmentId: EnvironmentIdSchema,
-    runId: RunIdSchema,
-    threadId: ThreadIdSchema,
-    /**
-     * The symbol, only when the request asked with `icon`: one of
-     * `taskSymbolNames`, or `defaultTaskSymbol` when nothing fits. The Runner
-     * sends at least one of `title` and `icon`; a request whose title was
-     * already settled may be answered with `icon` alone.
-     */
-    icon: WorkspaceIconNameSchema.optional(),
-    title: GeneratedThreadTitleSchema.optional(),
-    type: z.literal("runner.thread-title"),
-    workspaceId: WorkspaceIdSchema,
   }),
   z.strictObject({
     ...fencedMessageBase,
@@ -1952,6 +1951,7 @@ export const RunnerToHostMessageSchema = z.discriminatedUnion("type", [
 export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
 
 export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
+  HostBackgroundTextSchema,
   RunnerChallengeSchema,
   ...HostWorkspaceLocalRequestSchema.options,
   ...HostAppRequestSchema.options,

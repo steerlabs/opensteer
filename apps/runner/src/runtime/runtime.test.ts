@@ -32,13 +32,12 @@ import {
 } from "@opensteer/core";
 import {
   BoundedEventStream,
+  backgroundTextResult,
+  runTitleProcess,
   HarnessSteerDeliveryUnknownError,
   HarnessRegistry,
   nativeUserHarnessRuntimeBoundary,
   SubagentNodes,
-  threadTitlePrompt,
-  threadTitleBudgetMs,
-  threadTitleCleanupMs,
   type HarnessAdapter,
   type HarnessAuthenticationStart,
   type HarnessCapabilities,
@@ -54,6 +53,7 @@ import {
 } from "@opensteer/harness";
 import {
   CorrelationIdSchema,
+  HostBackgroundTextSchema,
   pendingAgentEventMaxSerializedBytes,
   PendingAgentEventSchema,
   RunnerCommandSchema,
@@ -120,255 +120,161 @@ afterAll(async () => {
 });
 
 describe("RunnerRuntime", () => {
-  describe("Thread naming", () => {
-    it.each([
-      [false, "Support migration\nplane", { title: "Support migration" }],
-      [false, "Title: ** **\nplane", null],
-      [true, "Support migration\nplane", { title: "Support migration", icon: "plane" }],
-      [true, "Support migration\ninvalid", { title: "Support migration", icon: "document" }],
-      [true, "Title: ** **\nplane", { icon: "plane" }],
-      [true, "Support migration\nnone", { title: "Support migration", icon: "document" }],
-      [true, "Title: ** **\ninvalid", { icon: "document" }],
-      [true, "Support migration", { title: "Support migration", icon: "document" }],
-      [true, "", null],
-      [true, " \r\n ", null],
-    ] as const)("negotiates icon=%s for %j", async (icon, reply, expected) => {
-      const naming = vi.fn(async () => reply);
-      const session = Object.assign(new ScriptedHarnessSession([]), { generateTitle: naming });
-      const registry = new HarnessRegistry();
-      registry.registerDriver(new FakeHarnessDriver("test-driver", () => session));
-      const environmentId = createId("environment");
-      const runtime = configuredRuntime({ environmentId, registry });
-      const command = executeCommand(environmentId);
-      command.context = {
-        ...command.context,
-        titleRequest: { request: "Migrate support", ...(icon ? { icon: true as const } : {}) },
-      };
-      const messages: RunnerOperationalReport[] = [];
-      try {
-        await reconcile(registry, command);
-        await runtime.handleCommand(command, {
-          send: async (message) => void messages.push(message),
-        });
-        await waitUntil(() => runtime.activeRunIds().length === 0);
-        expect(naming).toHaveBeenCalledTimes(1);
-        expect(naming).toHaveBeenCalledWith({
-          prompt: threadTitlePrompt("Migrate support", { icon }),
-          signal: expect.any(AbortSignal),
-        });
-        const reports = messages.filter((message) => message.type === "runner.thread-title");
-        expect(reports).toEqual(
-          expected
-            ? [
-                {
-                  type: "runner.thread-title",
-                  workspaceId: command.context.workspaceId,
-                  runId: command.context.runId,
-                  threadId: command.context.threadId,
-                  bindingGeneration: command.context.bindingGeneration,
-                  environmentId,
-                  ...expected,
-                },
-              ]
-            : [],
-        );
-        expect(hasEvent(messages, "run.completed")).toBe(true);
-        expect(eventCount(messages, "run.usage")).toBe(0);
-        expect(
-          JSON.stringify(messages.filter((message) => message.type === "runner.event")),
-        ).not.toContain("Support migration");
-      } finally {
-        await runtime.close();
-      }
-    });
-
-    it.each([false, true])(
-      "keeps Stop final when the engine completes after interruption (naming=%s)",
-      async (naming) => {
-        const session = new ScriptedHarnessSession([], "complete-on-interrupt");
-        if (naming)
-          Object.assign(session, { generateTitle: async () => "Support migration\nplane" });
-        const registry = new HarnessRegistry();
-        registry.registerDriver(new FakeHarnessDriver("test-driver", () => session));
-        const environmentId = createId("environment");
-        const runtime = configuredRuntime({ environmentId, registry });
-        const command = executeCommand(environmentId);
-        if (naming)
-          command.context = {
-            ...command.context,
-            titleRequest: { request: "Migrate support", icon: true },
-          };
-        const messages: RunnerOperationalReport[] = [];
-        const sink = {
-          send: async (message: RunnerOperationalReport) => void messages.push(message),
-        };
-        try {
-          await reconcile(registry, command);
-          await runtime.handleCommand(command, sink);
-          await waitUntil(() => hasEvent(messages, "run.started"));
-          await runtime.handleCommand(
+  it.each(["timeout", "shutdown"] as const)("reaps background processes on %s", async (mode) => {
+    const registry = new HarnessRegistry();
+    const driver = new FakeHarnessDriver();
+    const create = driver.create.bind(driver);
+    const pidFile = join(testPrivateStateRoot, `background-${randomUUID()}.pid`);
+    vi.spyOn(driver, "create").mockImplementation(async (input) => ({
+      ...(await create(input)),
+      generateText: async ({ context, signal }) =>
+        backgroundTextResult(signal, () =>
+          runTitleProcess(
+            context,
             {
-              type: "run.interrupt",
-              commandId: createId("command"),
-              correlationId: command.correlationId,
-              environmentId,
-              runId: command.context.runId,
-              threadId: command.context.threadId,
+              executable: process.execPath,
+              args: [
+                "-e",
+                "require('node:fs').writeFileSync(process.argv[1], String(process.pid));setInterval(()=>{},1000)",
+                pidFile,
+              ],
+              cwd: context.scratchDirectory,
+              environment: context.environment,
             },
-            sink,
-          );
-          await waitUntil(() => runtime.activeRunIds().length === 0);
-          expect(hasEvent(messages, "run.interrupted")).toBe(true);
-          expect(hasEvent(messages, "run.completed")).toBe(false);
-        } finally {
-          await runtime.close();
-        }
-      },
-    );
-
-    it("stops a completed turn while its naming call is still settling", async () => {
-      const session = new ScriptedHarnessSession([]);
-      let namingSignal: AbortSignal | undefined;
-      Object.assign(session, {
-        generateTitle: async ({ signal }: { signal: AbortSignal }) => {
-          namingSignal = signal;
-          await new Promise<void>((resolve) =>
-            signal.addEventListener("abort", () => resolve(), { once: true }),
-          );
-          return "Late name\nplane";
-        },
-      });
-      const registry = new HarnessRegistry();
-      registry.registerDriver(new FakeHarnessDriver("test-driver", () => session));
-      const environmentId = createId("environment");
-      const runtime = configuredRuntime({ environmentId, registry });
-      const command = executeCommand(environmentId);
-      command.context = {
-        ...command.context,
-        titleRequest: { request: "Migrate support", icon: true },
-      };
-      const messages: RunnerOperationalReport[] = [];
-      const sink = {
-        send: async (message: RunnerOperationalReport) => void messages.push(message),
-      };
-      try {
-        await reconcile(registry, command);
-        await runtime.handleCommand(command, sink);
-        await waitUntil(() => !!namingSignal && hasEvent(messages, "run.started"));
-        // Let the already-published terminal be consumed while naming stays held.
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(runtime.activeRunIds()).toContain(command.context.runId);
-        await expect(
-          runtime.relocateWorkspace(command.context.workspaceId, async () => undefined),
-        ).rejects.toThrow(/active Runs/);
-        await runtime.handleCommand(
-          {
-            type: "run.interrupt",
-            commandId: createId("command"),
-            correlationId: command.correlationId,
-            environmentId,
-            runId: command.context.runId,
-            threadId: command.context.threadId,
-          },
-          sink,
-        );
-        await waitUntil(() => runtime.activeRunIds().length === 0);
-        expect(namingSignal?.aborted).toBe(true);
-        expect(hasEvent(messages, "run.interrupted")).toBe(true);
-        expect(hasEvent(messages, "run.completed")).toBe(false);
-        expect(messages.filter((message) => message.type === "runner.thread-title")).toEqual([]);
-      } finally {
-        await runtime.close();
-      }
+            signal,
+          ),
+        ),
+    }));
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const command = executeCommand(environmentId);
+    const runtime = configuredRuntime({ environmentId, registry });
+    await reconcile(registry, command);
+    const request = HostBackgroundTextSchema.parse({
+      ...testConnectionFence,
+      type: "host.background-text",
+      attemptId: randomUUID(),
+      environmentId,
+      harnessInstanceId: command.context.harnessInstanceId,
+      harnessRevision: command.context.harness.runtimeRevision,
+      modelSelection: command.context.modelSelection,
+      prompt: "hello",
+      deadline: new Date(Date.now() + (mode === "timeout" ? 1000 : 30_000)).toISOString(),
     });
+    try {
+      const generation = runtime.generateBackgroundText(request);
+      let pid = 0;
+      await vi.waitFor(
+        async () => {
+          pid = Number(await readFile(pidFile, "utf8"));
+          expect(pid).toBeGreaterThan(0);
+        },
+        { timeout: 2_000 },
+      );
+      if (mode === "shutdown") {
+        const second = runtime.generateBackgroundText({ ...request, attemptId: randomUUID() });
+        // A third attempt waits for a slot rather than failing its candidate.
+        const third = runtime.generateBackgroundText({ ...request, attemptId: randomUUID() });
+        await runtime.close();
+        await expect(second).resolves.toEqual({ ok: false, failure: "timeout" });
+        await expect(third).resolves.toEqual({ ok: false, failure: "unavailable" });
+      }
+      await expect(generation).resolves.toEqual({ ok: false, failure: "timeout" });
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      await runtime.close();
+      await rm(pidFile, { force: true });
+    }
+  });
 
-    it.each(["absent", "failure", "abort", "revoked", "budget"] as const)(
-      "settles naming without failing the Run (%s)",
-      async (mode) => {
-        let namingSignal: AbortSignal | undefined;
-        let settled = false;
-        let eventsAtRevocation: RunnerOperationalReport[] = [];
-        const naming = vi.fn(async ({ signal }: { signal: AbortSignal }) => {
-          namingSignal = signal;
-          if (mode === "failure") throw new Error("Naming unavailable");
-          await new Promise<void>((resolve) =>
-            signal.addEventListener(
-              "abort",
-              () => {
-                settled = true;
-                resolve();
-              },
-              { once: true },
-            ),
-          );
-          return "Late title\nplane";
-        });
-        const session = new ScriptedHarnessSession(
-          [],
-          mode === "abort" || mode === "revoked" ? "await-interrupt" : "complete",
-        );
-        if (mode !== "absent") Object.assign(session, { generateTitle: naming });
-        const registry = new HarnessRegistry();
-        registry.registerDriver(new FakeHarnessDriver("test-driver", () => session));
-        const environmentId = createId("environment");
-        const runtime = configuredRuntime({ environmentId, registry });
-        const command = executeCommand(environmentId);
-        command.context = {
-          ...command.context,
-          titleRequest: { request: "Migrate support", icon: true },
-        };
-        const messages: RunnerOperationalReport[] = [];
-        try {
-          await reconcile(registry, command);
-          if (mode === "budget") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-          await runtime.handleCommand(command, {
-            send: async (message) => void messages.push(message),
-          });
-          if (mode === "budget" || mode === "abort" || mode === "revoked") {
-            // setImmediate does not advance the naming timer.
-            while (!namingSignal) await new Promise<void>((resolve) => setImmediate(resolve));
-            expect(runtime.activeRunIds()).toContain(command.context.runId);
-            if (mode === "budget") {
-              await vi.advanceTimersByTimeAsync(threadTitleBudgetMs - threadTitleCleanupMs);
-              vi.useRealTimers();
-            } else if (mode === "revoked") {
-              eventsAtRevocation = messages.filter((message) => message.type === "runner.event");
-              runtime.revokeRuns([{ runId: command.context.runId, reason: "Binding replaced" }]);
-            } else {
-              await runtime.handleCommand(
-                {
-                  type: "run.interrupt",
-                  commandId: createId("command"),
-                  correlationId: command.correlationId,
-                  environmentId,
-                  runId: command.context.runId,
-                  threadId: command.context.threadId,
-                },
-                { send: async (message) => void messages.push(message) },
-              );
-            }
-          }
-          await waitUntil(() => runtime.activeRunIds().length === 0);
-          expect(messages.filter((message) => message.type === "runner.thread-title")).toEqual([]);
-          if (mode === "revoked")
-            expect(messages.filter((message) => message.type === "runner.event")).toEqual(
-              eventsAtRevocation,
-            );
-          else
-            expect(hasEvent(messages, mode === "abort" ? "run.interrupted" : "run.completed")).toBe(
-              true,
-            );
-          if (mode === "absent") expect(naming).not.toHaveBeenCalled();
-          if (mode === "abort" || mode === "revoked" || mode === "budget") {
-            expect(namingSignal?.aborted).toBe(true);
-            expect(settled).toBe(true);
-          }
-        } finally {
-          vi.useRealTimers();
-          await runtime.close();
-        }
+  it("runs two background attempts at once and starts a third when a slot frees", async () => {
+    const registry = new HarnessRegistry();
+    const driver = new FakeHarnessDriver();
+    const create = driver.create.bind(driver);
+    const releases: (() => void)[] = [];
+    vi.spyOn(driver, "create").mockImplementation(async (input) => ({
+      ...(await create(input)),
+      generateText: async ({ prompt }) => {
+        await new Promise<void>((resolve) => releases.push(resolve));
+        return { ok: true, text: prompt };
       },
+    }));
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const command = executeCommand(environmentId);
+    const runtime = configuredRuntime({ environmentId, registry });
+    await reconcile(registry, command);
+    const attempt = (prompt: string) =>
+      runtime.generateBackgroundText(
+        HostBackgroundTextSchema.parse({
+          ...testConnectionFence,
+          type: "host.background-text",
+          attemptId: randomUUID(),
+          environmentId,
+          harnessInstanceId: command.context.harnessInstanceId,
+          harnessRevision: command.context.harness.runtimeRevision,
+          modelSelection: command.context.modelSelection,
+          prompt,
+          deadline: new Date(Date.now() + 30_000).toISOString(),
+        }),
+      );
+    try {
+      const attempts = [attempt("first"), attempt("second"), attempt("third")];
+      await vi.waitFor(() => expect(releases).toHaveLength(2), { timeout: 2_000 });
+      releases[0]!();
+      await vi.waitFor(() => expect(releases).toHaveLength(3), { timeout: 2_000 });
+      releases[1]!();
+      releases[2]!();
+      await expect(Promise.all(attempts)).resolves.toEqual(
+        ["first", "second", "third"].map((text) => ({ ok: true, text })),
+      );
+    } finally {
+      for (const release of releases) release();
+      await runtime.close();
+    }
+  });
+
+  it("tears down a Run while independent background text is pending", async () => {
+    const registry = new HarnessRegistry();
+    const driver = new FakeHarnessDriver("test-driver", () => new ScriptedHarnessSession([]));
+    const create = driver.create.bind(driver);
+    let started = false;
+    vi.spyOn(driver, "create").mockImplementation(async (input) => ({
+      ...(await create(input)),
+      generateText: async ({ signal }) => {
+        started = true;
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        return { ok: false, failure: "timeout" };
+      },
+    }));
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const command = executeCommand(environmentId);
+    const runtime = configuredRuntime({ environmentId, registry });
+    await reconcile(registry, command);
+    const generation = runtime.generateBackgroundText(
+      HostBackgroundTextSchema.parse({
+        ...testConnectionFence,
+        type: "host.background-text",
+        attemptId: randomUUID(),
+        environmentId,
+        harnessInstanceId: command.context.harnessInstanceId,
+        harnessRevision: command.context.harness.runtimeRevision,
+        modelSelection: command.context.modelSelection,
+        prompt: "hello",
+        deadline: new Date(Date.now() + 30_000).toISOString(),
+      }),
     );
+    try {
+      await vi.waitFor(() => expect(started).toBe(true), { timeout: 2_000 });
+      await runtime.handleCommand(command, { send: async () => undefined });
+      await vi.waitFor(() => expect(runtime.activeRunIds()).toEqual([]), { timeout: 2_000 });
+    } finally {
+      await runtime.close();
+      await generation;
+    }
   });
 
   it.each(["missing", "expired", "heartbeat", "attach", "interrupted"] as const)(

@@ -1,3 +1,4 @@
+import { ThreadNaming } from "../agents/thread-naming.js";
 import { AdministrationService } from "../administration/administration-service.js";
 import { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
 import { HarnessCatalogReconciliationOwner } from "../agents/harness-catalogs.js";
@@ -1477,6 +1478,7 @@ export async function createHostRuntime(
       messaging: (runnerId, reason) => messagingRelay.detachRunner(runnerId, reason),
       shell: (runnerId, reason) => shellHub?.detachRunner(runnerId, reason),
     };
+    let naming: ThreadNaming | undefined;
     const runners: RunnerRegistry = new RunnerRegistry({
       ...(options.executionClock ? { now: executionNow } : {}),
       executionLeaseMs: config.executionLeaseMs,
@@ -1600,10 +1602,6 @@ export async function createHostRuntime(
             report,
           );
           if (changed) notices.notify({ workspaceId: report.binding.workspaceId });
-        },
-        onThreadTitle: async (_identity, report) => {
-          const result = await store.applyGeneratedThreadName(report);
-          for (const event of result?.events ?? []) publishWorkspaceEvent(event);
         },
         onLive: (_identity, live) => {
           const frame = liveRuns.apply(live.progress);
@@ -1772,6 +1770,7 @@ export async function createHostRuntime(
                 });
                 observeRunnerCatalogs(identity, environmentId, captured);
               }
+              void naming?.reconcile().catch(reportThreadNamingError);
             } finally {
               watchService?.runnerRegistered(identity);
             }
@@ -1906,7 +1905,18 @@ export async function createHostRuntime(
       watchBrowserTokens,
       workspaceAccess,
     });
+    const reportThreadNamingError = (error: unknown) =>
+      console.error("Thread naming failed", error);
+    naming = new ThreadNaming({
+      store,
+      runners,
+      publish: publishWorkspaceEvent,
+      onError: reportThreadNamingError,
+    });
     const dispatcher = new HostCommandDispatcher({
+      onRunAdmitted: (threadId) => {
+        void naming?.request(threadId);
+      },
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
       requestResponseVault: integrationVault,
       runToolTokens,
@@ -2074,8 +2084,21 @@ export async function createHostRuntime(
         realtime.publishBrowserSessionsChanged(workspaceId, ownerIds, "browser.groups"),
     });
     const threadService = new ThreadService({ store, commands, runners, placeContext, browser });
+    const memoryPasses = new MemoryPassService({
+      store,
+      runners,
+      files,
+      onEvent: publishWorkspaceEvent,
+      onChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
+      onError: (workspaceId, error) =>
+        app.log.warn(
+          { workspaceId, code: error instanceof OpensteerError ? error.code : "internal" },
+          "Memory pass provisioning failed",
+        ),
+    });
     const productHandlers = new ProductToolHandlers({
       threads: threadService,
+      memoryPasses,
       realtime,
       computerUse,
       personShow: (userId, message) => realtime.showToPerson(userId, message),
@@ -2095,6 +2118,8 @@ export async function createHostRuntime(
       browser,
       canRunHarness: (environmentId, driverKind) =>
         runners.canRunHarness(environmentId, driverKind),
+      harnessAccessModes: (environmentId, driverKind) =>
+        runners.harnessAccessModes(environmentId, driverKind),
       commands,
       defaultWorkspaceBacking: config.workspace.shape.defaultWorkspaceBacking,
       environmentWorkspaceBackings: (environmentId) =>
@@ -2508,19 +2533,8 @@ export async function createHostRuntime(
       }
     };
     reportWorkspaceStorageHealth(await workspaces.reconcile());
-    const memoryPasses = new MemoryPassService({
-      store,
-      runners,
-      files,
-      onEvent: publishWorkspaceEvent,
-      onChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
-      onError: (workspaceId, error) =>
-        app.log.warn(
-          { workspaceId, code: error instanceof OpensteerError ? error.code : "internal" },
-          "Memory pass provisioning failed",
-        ),
-    });
     await memoryPasses.reconcileMissing();
+    void naming.reconcile().catch(reportThreadNamingError);
     coordinator.start();
     continuations.start();
     automationFailures.start();
@@ -2684,6 +2698,7 @@ export async function createHostRuntime(
         browserRelay.close();
         await step("shell hub", () => shellHub?.close());
         await step("runners", () => runners.close());
+        await step("thread naming", () => naming!.stop());
         await step("coordinator", () => coordinator.stop());
         await step("security effects", () => securityEffects.close());
         files.close();

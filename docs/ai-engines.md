@@ -12,6 +12,26 @@ validate against the executing account without substituting a model or option
 driver. An unavailable remembered selection stays visible with its reason, later preferences never
 rewrite an existing Thread, and accounts never invent model defaults.
 
+## Automatic model selection
+
+Work a person didn't place by hand (naming, memory passes, specialists, empty-choice defaults) goes
+through one [resolver](../packages/core/src/model-candidates.ts). It preserves declared preferences,
+considers authorized configured accounts, and treats usage exhaustion as advisory ordering, because
+cached readings can be wrong. An eligible original stays once, last. Eligibility and endpoint checks
+always prevail, so a switched-off account stays off even for a task's own model. Selection never
+replays accepted or uncertain work: naming may advance after a contained generation failure, while
+memory and specialists choose before admission and freeze that choice. Admission checks the account
+revision it resolved under the account's row lock, and refuses a changed endpoint rather than adopt
+it: a specialist reports the error, and a memory pass resolves again at its next wake. From then on
+the account's queued Run holds the endpoint, because its config can't change under one. The person's
+list and excluded accounts are the only consent; an unbound entry never reaches an
+`openai-compatible` account, and a manifest can't bind one. Runs record no account revision, so
+naming's fallback to a task's own model skips such an account: it may no longer be the endpoint that
+saw the request. Client empty-choice defaults use only accounts bootstrap reports as
+`automaticEligible`, which the Host computes per viewer. This differs from T3, which reaches other
+accounts only after a known exhaustion: here declared order holds, default account first within each
+entry.
+
 ## What a driver declares
 
 Declarations live in [harness-catalog.ts](../packages/core/src/harness-catalog.ts), contracts in
@@ -119,6 +139,8 @@ cancellation, so each driver declares its own rather than inferring it from the 
 
 Names and symbols have independent provenance: a late generated candidate never replaces a person's
 choice, even an identical one. Chat is identified by `homeThreadId` and cannot be renamed through
-ordinary Thread commands. Naming runs in a separate contained process with no tools, ambient
-instructions, hooks, plugins or history, and exits before teardown or engine reuse
-([thread-title.ts](../packages/harness/src/thread-title.ts)).
+ordinary Thread commands. Naming is Host-owned background work, so a Run's teardown and engine reuse
+never wait on it ([thread-naming.ts](../apps/host/src/agents/thread-naming.ts)). Generation runs
+contained with no tools, ambient instructions, hooks, plugins or history, using the exact model it's
+given with no discovery. A result counts only for its live attempt on that Runner connection, and
+the Host finds the Thread itself.

@@ -1418,6 +1418,7 @@ export class HttpHostClient {
           );
         }
         break;
+      case "automaticModels.set":
       case "harness.model.configure":
       case "harness.create":
         // The Host reports a new harness only through bootstrap, so without
@@ -2865,6 +2866,8 @@ export class HttpHostClient {
   #capabilities: readonly HostCapability[] | null;
   readonly #readCapabilities: HostCapabilityReader | null;
   #capabilityReadGeneration = 0;
+  readonly automaticModelsAvailable = () =>
+    this.#capabilities?.includes("automatic-models-v1") === true;
   readonly browserTargetControlAvailable = (): Promise<boolean | null> =>
     Promise.resolve(this.#capabilities?.includes("browser-target-control-v1") ?? null);
 
@@ -3934,6 +3937,7 @@ export class HttpHostClient {
     }));
     const harnesses = payload.harnesses.map(
       ({
+        automaticEligible,
         config,
         driverKind,
         enabled,
@@ -3946,6 +3950,7 @@ export class HttpHostClient {
         sourceId,
         stateKind,
       }) => ({
+        automaticEligible,
         driverKind,
         enabled,
         environmentId,

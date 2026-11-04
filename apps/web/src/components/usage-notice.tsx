@@ -11,23 +11,28 @@ import {
 import { useShell } from "./app-shell.js";
 import { Icon } from "./icon.js";
 
-const dismissedKey = "opensteer.usage-notices.dismissed";
 const DismissedSchema = z.array(z.string().max(512)).max(64);
 
-let dismissals: UsageNoticeDismissals | null = null;
+const dismissals = new Map<string, UsageNoticeDismissals>();
 
-/** This browser profile's dismissals, shared by every composer on screen. */
-function usageNoticeDismissals(): UsageNoticeDismissals {
-  dismissals ??= createUsageNoticeDismissals({
-    read: () => {
-      const parsed = DismissedSchema.safeParse(
-        JSON.parse(localStorage.getItem(dismissedKey) ?? "[]"),
-      );
-      return parsed.success ? parsed.data : [];
-    },
-    write: (keys) => localStorage.setItem(dismissedKey, JSON.stringify(keys)),
-  });
-  return dismissals;
+/** This browser profile's dismissals kept under one key, shared by everything on screen. */
+export function browserNoticeDismissals(
+  storageKey: "opensteer.usage-notices.dismissed",
+): UsageNoticeDismissals {
+  let store = dismissals.get(storageKey);
+  if (!store) {
+    store = createUsageNoticeDismissals({
+      read: () => {
+        const parsed = DismissedSchema.safeParse(
+          JSON.parse(localStorage.getItem(storageKey) ?? "[]"),
+        );
+        return parsed.success ? parsed.data : [];
+      },
+      write: (keys) => localStorage.setItem(storageKey, JSON.stringify(keys)),
+    });
+    dismissals.set(storageKey, store);
+  }
+  return store;
 }
 
 /**
@@ -74,7 +79,7 @@ export function UsageNoticeLine({
   readonly action?: ReactNode;
   readonly returnFocusTo: RefObject<HTMLTextAreaElement | null>;
 }) {
-  const store = usageNoticeDismissals();
+  const store = browserNoticeDismissals("opensteer.usage-notices.dismissed");
   const dismissed = useSyncExternalStore(store.subscribe, store.getSnapshot);
   if (notice === null || dismissed === null || dismissed.has(notice.key)) return null;
   return (

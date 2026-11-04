@@ -1,3 +1,4 @@
+import { readAutomaticModelPreview } from "./agents/automatic-models.js";
 import { registerDesktopUpdateMaintenance } from "./access/personal-desktop-update-routes.js";
 import { ThreadService, assertAccessModeEnforceable } from "./threads/thread-service.js";
 import {
@@ -1140,16 +1141,23 @@ export async function createHostServer(
           return null;
         });
       const environments = await dependencies.store.listEnvironmentsForUser(ownerId);
-      const [workspacePage, visibleHarnesses, browser, identityConfig, executionPreferences] =
-        await Promise.all([
-          dependencies.store.workspacePageForOwner({ ownerId }),
-          dependencies.store.listHarnessInstances({
-            environmentIds: environments.map(({ id }) => id),
-          }),
-          dependencies.browser.bootstrap(ownerId),
-          dependencies.authenticator.identity.configuration(),
-          dependencies.store.getExecutionPreferences(ownerId),
-        ]);
+      const [
+        workspacePage,
+        visibleHarnesses,
+        browser,
+        identityConfig,
+        executionPreferences,
+        automaticModels,
+      ] = await Promise.all([
+        dependencies.store.workspacePageForOwner({ ownerId }),
+        dependencies.store.listHarnessInstances({
+          environmentIds: environments.map(({ id }) => id),
+        }),
+        dependencies.browser.bootstrap(ownerId),
+        dependencies.authenticator.identity.configuration(),
+        dependencies.store.getExecutionPreferences(ownerId),
+        dependencies.store.getAutomaticModelConfig(ownerId),
+      ]);
       const storedCatalogs = await dependencies.store.listHarnessCatalogs(
         environments.map((environment) => environment.id),
       );
@@ -1197,7 +1205,12 @@ export async function createHostServer(
           deploymentShape: dependencies.discovery.document.deploymentShape,
           environments: environmentSummaries,
           executionPreferences,
-          harnesses: visibleHarnesses.map(harnessView),
+          harnesses: visibleHarnesses.map((harness) => ({
+            ...harnessView(harness),
+            automaticEligible:
+              harness.sourceId !== "openai-compatible" &&
+              !automaticModels.excludedAccounts.includes(harness.id),
+          })),
           homeWorkspace: homeWorkspace
             ? await workspaceView(dependencies.workspaces, homeWorkspace)
             : null,
@@ -1217,6 +1230,8 @@ export async function createHostServer(
         }),
       );
     },
+    "automaticModels.get": async (_input, context) =>
+      rpcSuccess(await readAutomaticModelPreview(dependencies, requireRpcSession(context).user.id)),
     "harness.authentication.get": async (input, context) => {
       const target = await admitHarnessAuthentication(requireRpcSession(context), input);
       const envelope = await harnessAuthenticationCoordinator.read(
@@ -1572,6 +1587,7 @@ export async function createHostServer(
     | "attachment.content"
     | "bootstrap.get"
     | "harness.authentication.get"
+    | "automaticModels.get"
     | "harness.catalog.refresh"
     | "harness.modelServers.discover"
     | "voice.start"
@@ -2855,6 +2871,7 @@ export function advertisedCapabilities(
   >,
 ): readonly HostCapability[] {
   return [
+    "automatic-models-v1",
     "chat-attachments",
     ...(dependencies.notificationPreviews ? ["notification-preview-v1" as const] : []),
     "voice-run-v1",
@@ -3250,7 +3267,6 @@ function runnerMessageLane(message: Parameters<RunnerRegistry["handle"]>[1]): st
       return `run:${message.event.runId}`;
     case "runner.live":
       return `run:${message.progress.runId}`;
-    case "runner.thread-title":
     case "runner.session-bound":
       return `run:${message.runId}`;
     case "runner.command-accepted":
