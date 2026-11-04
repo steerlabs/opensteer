@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
-import { AppState, Pressable, ScrollView, Text, View } from "react-native";
+import { AppState, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { BrowserPopupAnswerSchema, samePopup, type BrowserPopupRef } from "@opensteer/protocol";
 import { browserPopupValueError, type BrowserPopupStore } from "@opensteer/client/host";
 import { browserPopupNative } from "../../modules/browser-popup/index.js";
@@ -19,6 +19,8 @@ export function BrowserPopup({
   const target = useMemo(() => store.target(sessionId, surfaceId), [store, sessionId, surfaceId]);
   const view = useSyncExternalStore(target.subscribe, target.get);
   const native = browserPopupNative();
+  const { fontScale } = useWindowDimensions();
+  const stripHeight = Math.ceil(72 * fontScale);
   const presentation = useRef<{
     id: string;
     popupId: string;
@@ -126,7 +128,8 @@ export function BrowserPopup({
   }, [native, target, active, view.popup, view.pending, view.notice]);
   if (!active || !view.negotiated) return null;
   return (
-    <View>
+    // Keep keyboard suggestions and control changes from resizing the certified picture.
+    <View style={{ height: stripHeight }}>
       {view.control === "other" ? (
         <Pressable
           accessibilityRole="button"
@@ -145,7 +148,7 @@ export function BrowserPopup({
           horizontal
           keyboardShouldPersistTaps="always"
           accessibilityRole="list"
-          style={{ maxHeight: 120 }}
+          style={{ flex: 1 }}
           contentContainerStyle={{ gap: 8, padding: 8 }}
         >
           {view.popup.state.items.map((item) => (

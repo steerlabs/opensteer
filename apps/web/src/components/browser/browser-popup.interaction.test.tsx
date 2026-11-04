@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { BrowserPopupStore } from "@opensteer/client/host";
 import {
   BrowserSurfaceIdSchema,
@@ -41,6 +42,25 @@ function fixture(state: BrowserPopupState) {
   );
   return { send, store, root, div };
 }
+it("keeps control status and suggestions out of the certified picture layout", () => {
+  const style = document.createElement("style");
+  style.textContent = readFileSync("apps/web/src/styles/browser.css", "utf8");
+  document.body.append(style);
+  const f = fixture({ kind: "datalist", rtl: false, items: [] });
+  expect(getComputedStyle(f.div.querySelector(".browser-popup-suggestions")!).position).toBe(
+    "absolute",
+  );
+  act(() =>
+    f.store.receive("s", {
+      type: "browser.input.control",
+      surfaceId,
+      streamId,
+      state: "other",
+    }),
+  );
+  expect(getComputedStyle(f.div.querySelector(".browser-popup-status")!).position).toBe("absolute");
+  act(() => f.root.unmount());
+});
 it("shows groups and disabled rows and commits an empty editable multiple selection", () => {
   const f = fixture({
     kind: "select",

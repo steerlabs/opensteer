@@ -1442,6 +1442,9 @@ button.browser-download__file:hover {
   gap: 12px;
 }
 .browser-popup-suggestions {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 25;
   flex: none;
   display: flex;
   gap: 8px;
@@ -1460,6 +1463,13 @@ button.browser-download__file:hover {
   display: block;
 }
 .browser-popup-status {
+  /* Controller changes must not resize the certified producer picture. */
+  position: absolute;
+  inset: 8px 12px auto auto;
+  z-index: 25;
+  max-width: calc(100% - 24px);
+  background: Canvas;
+  color: CanvasText;
   padding: 6px 12px;
   font-size: 13px;
 }

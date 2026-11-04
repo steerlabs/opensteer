@@ -30,17 +30,15 @@ export function BrowserPopup({
   if (!visible || !view.negotiated || (!overlayReady && !!view.popup)) return null;
   return (
     <>
-      {view.control === "other" ? (
-        <div className="browser-popup-status">
-          <button type="button" onClick={() => target.acquire()}>
-            Take control
-          </button>
-        </div>
-      ) : view.control === "changing" ? (
-        <div role="status">Control changed. Tap the page to continue.</div>
-      ) : null}
-      {view.notice ? (
+      {view.control === "other" || view.control === "changing" || view.notice ? (
         <div className="browser-popup-status" role="status">
+          {view.control === "other" ? (
+            <button type="button" onClick={() => target.acquire()}>
+              Take control
+            </button>
+          ) : view.control === "changing" ? (
+            <span>Control changed. Tap the page to continue.</span>
+          ) : null}
           {view.notice}
         </div>
       ) : null}

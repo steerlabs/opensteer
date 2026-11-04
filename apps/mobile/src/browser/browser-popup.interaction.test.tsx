@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, type ReactNode } from "react";
+import { act, type CSSProperties, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { BrowserPopupStore } from "@opensteer/client/host";
@@ -37,7 +37,10 @@ vi.mock("../../modules/browser-popup/index.js", () => {
   return { browserPopupNative: () => (native.supported ? module : null) };
 });
 vi.mock("react-native", () => ({
-  View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  View: ({ children, style }: { children: ReactNode; style?: CSSProperties }) => (
+    <div style={style}>{children}</div>
+  ),
+  useWindowDimensions: () => ({ fontScale: 1.5 }),
   Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
   Pressable: ({
     children,
@@ -97,9 +100,33 @@ function fixture(state: BrowserPopupState) {
   document.body.append(div);
   const root = createRoot(div);
   act(() => root.render(<BrowserPopup store={store} sessionId="s" surfaceId={surfaceId} active />));
-  return { send, store, root };
+  return { send, store, root, div };
 }
 const select: BrowserPopupState = { kind: "select", multiple: true, rtl: false, items: [] };
+it("reserves the same typing strip through picker, control and suggestion changes", () => {
+  const f = fixture(select);
+  const strip = f.div.firstElementChild as HTMLElement;
+  expect(strip.style.height).toBe("108px");
+  act(() =>
+    f.store.receive("s", {
+      type: "browser.popup.updated",
+      ...ref,
+      revision: "2",
+      state: { kind: "datalist", rtl: false, items: [] },
+    }),
+  );
+  expect(strip.style.height).toBe("108px");
+  act(() =>
+    f.store.receive("s", {
+      type: "browser.input.control",
+      surfaceId,
+      streamId,
+      state: "other",
+    }),
+  );
+  expect(strip.style.height).toBe("108px");
+  act(() => f.root.unmount());
+});
 it("keeps Cancel alive during a pending native commit and fences Done after background", () => {
   const f = fixture(select);
   const id = native.present.mock.calls[0]?.[0] as string;
