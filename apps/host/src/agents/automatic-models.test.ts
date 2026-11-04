@@ -251,6 +251,8 @@ describe("automatic model resolution on the Host", () => {
       }),
     );
     expect(view.accounts.map((account) => account.eligible)).toEqual([true, true]);
+    // Each account row carries its catalog once; no internal snapshot rides along.
+    for (const account of view.accounts) expect(account).not.toHaveProperty("account");
   });
 });
 

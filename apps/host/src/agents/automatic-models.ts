@@ -324,10 +324,15 @@ export async function readAutomaticModelPreview(
     },
     accounts: accounts.map((account) => {
       const reason = accountReason(account, config);
+      const { accountDisplayName, computerDisplayName } = names(
+        account.environmentId,
+        account.harnessInstanceId,
+      )!;
       return {
         harnessInstanceId: account.harnessInstanceId,
         environmentId: account.environmentId,
-        ...names(account.environmentId, account.harnessInstanceId)!,
+        accountDisplayName,
+        computerDisplayName,
         driverKind: account.driverKind,
         harnessRevision: account.harnessRevision,
         sourceId: account.sourceId,
