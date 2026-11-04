@@ -1,5 +1,6 @@
 import type { EnvironmentSummary, HarnessSummary, ThreadSummary } from "./client.js";
 import {
+  catalogDefaultModelSelection,
   harnessDisplayRank,
   harnessDriverLabel,
   ModelSelectionSchema,
@@ -328,8 +329,11 @@ function placementOption(
     };
   }
   const runnableModels = catalog.models.filter((model) => !model.unavailableReason);
-  const defaultModel = runnableModels.find((model) => model.isDefault) ?? runnableModels[0];
-  if (!defaultModel) {
+  const defaultSelection = catalogDefaultModelSelection({
+    status: catalog.status,
+    models: catalog.models,
+  });
+  if (runnableModels.length === 0) {
     return {
       ...base,
       availability: "unavailable",
@@ -354,7 +358,7 @@ function placementOption(
       advertised?.note ??
       (advertised?.readiness === "runtime-check" ? "Checked when work starts" : "Ready"),
     models: runnableModels,
-    modelSelection: selectionForModel(defaultModel),
+    modelSelection: defaultSelection ?? unavailableSelection,
     observedConnections: catalog.connections,
     setupAvailable: catalog.setupMethods.length > 0,
     setupMethods: catalog.setupMethods,

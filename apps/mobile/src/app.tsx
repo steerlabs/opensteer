@@ -223,7 +223,6 @@ function mobileClient(): MobileRoot {
     doneShelfFilePath: `${root}${storeName}/done-shelf.json`,
     draftsFilePath: `${root}${storeName}/drafts-v3.json`,
     usageNoticesFilePath: `${root}${storeName}/usage-notices.json`,
-    backgroundNoticesFilePath: `${root}${storeName}/background-notices.json`,
     fetch: (input, init) => globalThis.fetch(input as RequestInfo, init),
     hostPort: configuration.mock
       ? createMockHostPort({

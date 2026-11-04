@@ -1,16 +1,10 @@
 // @vitest-environment happy-dom
-import {
-  backgroundModelsSettings,
-  getBackgroundModels,
-  setBackgroundProviderConsent,
-  unwrapRpcResult,
-} from "@opensteer/client/host";
+import { getAutomaticModels } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { ModelSelectionSchema } from "@opensteer/core";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
-import type { BackgroundModelsForm } from "./settings-form.types.js";
+import type { AutomaticModelsForm } from "./settings-form.types.js";
 
 vi.mock("@expo/ui/swift-ui", () => {
   const view =
@@ -24,6 +18,12 @@ vi.mock("@expo/ui/swift-ui", () => {
   return {
     Button: ({ label, onPress }: { label: string; onPress: () => void }) => (
       <button onClick={onPress}>{label}</button>
+    ),
+    DisclosureGroup: view(),
+    useNativeState: () => ({ set: () => {} }),
+    TextField: () => null,
+    Toggle: (p: { label: string; isOn: boolean; onIsOnChange: () => void }) => (
+      <input aria-label={p.label} type="checkbox" checked={p.isOn} onChange={p.onIsOnChange} />
     ),
     HStack: view(),
     Image: () => null,
@@ -62,6 +62,7 @@ vi.mock("@expo/ui/swift-ui/modifiers", () => ({
   contentShape: () => ({}),
   disabled: () => ({}),
   font: () => ({}),
+  lineLimit: () => ({}),
   foregroundStyle: () => ({}),
   frame: () => ({}),
   pickerStyle: () => ({}),
@@ -73,49 +74,41 @@ vi.mock("../theme.js", () => ({ color: {}, deploymentPaint: {} }));
 const { AiSettingsForm } = await import("./settings-ai-form.ios.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-it("pins from the iPhone's role picker and answers the consent notice", async () => {
+it("shows native ordered roles, account switches, advanced editor and dismissal", async () => {
   const host = new MockHostClient({ latencyMs: 0 });
   const container = document.createElement("div");
   const root = createRoot(container);
   try {
-    const view = async () => unwrapRpcResult(await getBackgroundModels(host));
-    const form: BackgroundModelsForm = {
-      settings: backgroundModelsSettings(await view(), new Set()),
+    const form: AutomaticModelsForm = {
+      supported: true,
+      view: await getAutomaticModels(host),
       error: null,
       pending: false,
-      onRole: vi.fn(),
-      onConsent: vi.fn(),
-      onNotNow: vi.fn(),
+      explanation: true,
+      dismiss: vi.fn(),
+      save: vi.fn(),
+      edit: vi.fn(),
+      toggle: vi.fn(),
     };
-    await act(async () => root.render(<AiSettingsForm background={form} page="ai" />));
-    expect(container.textContent).toContain("Let Anthropic name your tasks");
+    await act(async () => root.render(<AiSettingsForm automatic={form} page="ai" />));
+    expect(container.textContent).toContain("General preference");
+    expect(container.textContent).toContain("haiku");
     const press = (label: string) =>
-      [...container.querySelectorAll("button")].find((button) => button.textContent === label);
-    await act(async () => press("Not now")?.click());
-    expect(form.onNotNow).toHaveBeenCalledWith("anthropic");
-    await act(async () => press("Allow")?.click());
-    expect(form.onConsent).toHaveBeenCalledWith("anthropic", true);
-
-    await setBackgroundProviderConsent(
-      host,
-      ModelSelectionSchema.shape.providerId.parse("anthropic"),
-      true,
+      [...container.querySelectorAll("button")].find((b) => b.textContent === label)!;
+    await act(async () => press("Move deep 1 down").click());
+    expect(form.edit).toHaveBeenCalledWith("deep", { type: "move", index: 0, offset: 1 });
+    await act(async () => press("Remove deep 1").click());
+    expect(form.edit).toHaveBeenCalledWith("deep", { type: "remove", index: 0 });
+    await act(async () => press("Reset deep to default").click());
+    expect(form.edit).toHaveBeenCalledWith("deep", { type: "reset" });
+    await act(async () => container.querySelector<HTMLInputElement>("input")!.click());
+    expect(form.toggle).toHaveBeenCalled();
+    await act(async () => press("Dismiss").click());
+    expect(form.dismiss).toHaveBeenCalled();
+    await act(async () =>
+      root.render(<AiSettingsForm automatic={{ ...form, supported: false }} page="ai" />),
     );
-    const allowed = { ...form, settings: backgroundModelsSettings(await view(), new Set()) };
-    await act(async () => root.render(<AiSettingsForm background={allowed} page="ai" />));
-    expect(container.textContent).toContain(
-      "Automatic (currently Claude Opus 5.5 via Claude Code)",
-    );
-    const picker = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="Nightly memory"]',
-    )!;
-    const opus = [...picker.options].find((option) => option.textContent?.startsWith("Claude"))!;
-    await act(async () => {
-      picker.value = opus.value;
-      picker.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    expect(form.onRole).toHaveBeenCalledWith("deep", opus.value);
-    expect(press("Revoke")).toBeDefined();
+    expect(container.textContent).not.toContain("Automatic models");
   } finally {
     act(() => root.unmount());
     host.dispose();

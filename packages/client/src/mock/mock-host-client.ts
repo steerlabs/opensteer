@@ -3,11 +3,18 @@ import {
   storedModelSelection as coreStoredModelSelection,
 } from "@opensteer/core";
 import {
-  emptyBackgroundModelPreferences,
-  modelLabLabels,
-  type BackgroundModelRole,
+  HarnessIdSchema,
+  HarnessInstanceIdSchema,
+  ModelIdSchema,
+  AutomaticModelConfigSchema,
+  automaticModelDefaults,
+  automaticModelWants,
+  emptyAutomaticModelConfig,
+  resolveModelCandidates,
+  type AutomaticModelConfig,
+  type AutomaticModelRole,
 } from "@opensteer/core";
-import { BackgroundCandidateViewSchema, type BackgroundModelsView } from "@opensteer/protocol";
+import { AutomaticModelsViewSchema, type AutomaticModelsView } from "@opensteer/protocol";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
@@ -1794,7 +1801,8 @@ export interface MockHostClientOptions {
   automations?: "seeded" | "absent";
   memoryPasses?: "active" | "off" | "waiting-for-model";
   /** `none`: no account could run background work, for Settings' empty state. */
-  backgroundModels?: "seeded" | "none";
+  automaticModels?: "seeded" | "edited" | "excluded" | "none";
+  automaticModelsAvailable?: boolean;
   places?: "seeded" | "absent";
   /** Development fixture for the first message before a Chat exists. */
   initialHome?: "seeded" | "absent";
@@ -2132,7 +2140,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         })
         .catch(mockRefusal),
     "harness.authentication.get": async () => rpcSuccess(await client.getHarnessAuthentication()),
-    "backgroundModels.get": async () => rpcSuccess(mockBackgroundModelsView(client)),
+    "automaticModels.get": async () => rpcSuccess(mockAutomaticModelsView(client)),
     "harness.catalog.refresh": async () => rpcSuccess({}),
     "harness.modelServers.discover": async (input) =>
       rpcSuccess({ servers: mockModelServers(input.address) }),
@@ -2737,26 +2745,11 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "thread.input.move":
       client.moveThreadInput(command.threadId, command.messageId, command.beforeMessageId);
       return rpcSuccess({ type: command.type });
-    case "backgroundModels.role.set":
-      client.backgroundModelPreferences.backgroundModels[command.role] = command.mode;
+    case "automaticModels.set":
+      client.automaticModelConfig = AutomaticModelConfigSchema.parse(command.config);
       return rpcSuccess({
         type: command.type,
-        preferences: structuredClone(client.backgroundModelPreferences),
-      });
-    case "backgroundModels.consent.set":
-      client.backgroundModelPreferences.backgroundProviderConsent = command.acknowledged
-        ? [
-            ...new Set([
-              ...client.backgroundModelPreferences.backgroundProviderConsent,
-              command.providerId,
-            ]),
-          ]
-        : client.backgroundModelPreferences.backgroundProviderConsent.filter(
-            (id) => id !== command.providerId,
-          );
-      return rpcSuccess({
-        type: command.type,
-        preferences: structuredClone(client.backgroundModelPreferences),
+        config: structuredClone(client.automaticModelConfig),
       });
     case "execution.preferences.remember":
       return rpcSuccess(
@@ -3664,6 +3657,7 @@ export class MockHostClient implements HostClient {
       return;
     for (const listener of this.#personShowListeners) listener(message);
   }
+  readonly automaticModelsAvailable: () => boolean;
   readonly browserPasskeys = new BrowserPasskeys();
   readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
@@ -3701,6 +3695,7 @@ export class MockHostClient implements HostClient {
   constructor(options: MockHostClientOptions = {}) {
     this.#lifecycle = options.lifecycle ?? null;
     this.#state = new MockHostState(options);
+    this.automaticModelsAvailable = () => options.automaticModelsAvailable !== false;
     this.browserPreferences = new BrowserPreferences(options.browserPreferencesStorage);
     this.browserHistory = new BrowserHistoryClient({
       get: async (profileId) =>
@@ -4894,87 +4889,81 @@ export class MockHostClient implements HostClient {
   }
 }
 
-const mockBackgroundCandidates = (
-  [
-    [
-      "light",
-      mockClaudeHarnessInstanceId,
-      "Claude Code",
-      "anthropic",
-      "claude-haiku-5-5",
-      "Claude Haiku 5.5",
-      "low",
-    ],
-    ["light", mockCodexHarnessInstanceId, "Codex", "openai", "gpt-6-luna", "GPT-6 Luna", "low"],
-    [
-      "deep",
-      mockClaudeHarnessInstanceId,
-      "Claude Code",
-      "anthropic",
-      "claude-opus-5-5",
-      "Claude Opus 5.5",
-      "high",
-    ],
-    ["deep", mockCodexHarnessInstanceId, "Codex", "openai", "gpt-6.1-sol", "GPT-6.1 Sol", "high"],
-  ] as const
-).map(([role, harnessInstanceId, account, providerId, modelId, model, effort]) => ({
-  role,
-  candidate: BackgroundCandidateViewSchema.parse({
-    environmentId: "env_00000000-0000-4000-8000-000000000001",
-    harnessInstanceId,
-    harnessRevision: 1,
-    modelSelection: { providerId, modelId, options: { effort } },
-    reason: "ranked",
-    providerDisplayName: modelLabLabels[providerId],
-    modelDisplayName: model,
-    accountDisplayName: account,
-    computerDisplayName: "Main runner",
-    skipReason: null,
-    usageLimited: false,
-  }),
-}));
-/** The Host's ranking in miniature: a pin first, then providers the person allowed. */
-function mockBackgroundModelsView(state: MockHostState): BackgroundModelsView {
-  const preferences = state.backgroundModelPreferences;
-  const role = (role: BackgroundModelRole) => {
-    const mode = preferences.backgroundModels[role];
-    const ranked =
-      state.backgroundModels === "none"
-        ? []
-        : mockBackgroundCandidates
-            .filter((entry) => entry.role === role)
-            .map((entry) => entry.candidate);
-    const pin =
-      mode.kind === "pinned"
-        ? ranked.find(
-            (candidate) =>
-              candidate.harnessInstanceId === mode.selection.harnessInstanceId &&
-              candidate.modelSelection.modelId === mode.selection.modelSelection.modelId,
-          )
-        : undefined;
-    const candidates = [
-      ...(pin ? [{ ...pin, reason: "pinned" as const }] : []),
-      ...ranked.filter((candidate) => candidate !== pin),
-    ].map((candidate) => ({
-      ...candidate,
-      skipReason: preferences.backgroundProviderConsent.includes(
-        candidate.modelSelection.providerId,
-      )
-        ? null
-        : ("consent-required" as const),
-    }));
+function mockAutomaticModelsView(state: MockHostState): AutomaticModelsView {
+  const snapshot = state.getSnapshot();
+  const accounts = snapshot.harnesses.map((h) => {
+    const env = snapshot.environments.find((e) => e.id === h.environmentId);
     return {
-      mode,
-      effectivePick: candidates.find((candidate) => candidate.skipReason === null) ?? null,
-      candidates,
+      harnessInstanceId: h.id,
+      environmentId: h.environmentId,
+      harnessRevision: h.runtimeRevision,
+      driverKind: h.driverKind,
+      sourceId: h.sourceId,
+      isDefault: h.isDefault,
+      enabled: h.enabled,
+      removed: false,
+      available: state.automaticModels !== "none" && !!env?.connected,
+      catalog: env?.harnessCatalogs.find((c) => c.harnessInstanceId === h.id) ?? null,
+      eligible: !state.automaticModelConfig.excludedAccounts.includes(
+        h.id as AutomaticModelConfig["excludedAccounts"][number],
+      ),
+      reason: state.automaticModelConfig.excludedAccounts.includes(
+        h.id as AutomaticModelConfig["excludedAccounts"][number],
+      )
+        ? "excluded"
+        : null,
+      accountDisplayName: h.name,
+      computerDisplayName: env?.name ?? "Computer",
+    };
+  });
+  const parsed = AutomaticModelsViewSchema.parse({
+    config: state.automaticModelConfig,
+    maintainedDefaults: automaticModelDefaults,
+    accounts,
+    light: { label: "General preference", candidates: [], skipped: [] },
+    deep: { candidates: [], skipped: [] },
+  });
+  const preview = (role: AutomaticModelRole) => {
+    const result = resolveModelCandidates({
+      wants: automaticModelWants(state.automaticModelConfig, role),
+      accounts: parsed.accounts.map((a) => ({
+        ...a,
+        catalog: a.catalog
+          ? {
+              status: a.catalog.status,
+              models: a.catalog.models,
+              ...(a.catalog.status === "ready" && a.catalog.lightModel
+                ? { lightModel: a.catalog.lightModel }
+                : {}),
+            }
+          : null,
+        sourceBoundary: a.sourceId,
+        usage: [],
+      })),
+      excludedAccounts: state.automaticModelConfig.excludedAccounts,
+      canRun: () => ({ ok: true }),
+      now: Date.now(),
+    });
+    return {
+      candidates: result.candidates.map((c) => ({
+        ...c,
+        accountDisplayName:
+          accounts.find((a) => a.harnessInstanceId === c.harnessInstanceId)?.accountDisplayName ??
+          "Account",
+        computerDisplayName: "Main runner",
+        providerDisplayName: c.storedModelSelection.providerId,
+        modelDisplayName:
+          c.account.catalog?.models.find((m) => m.modelId === c.storedModelSelection.modelId)
+            ?.displayName ?? c.storedModelSelection.modelId,
+      })),
+      skipped: result.skipped,
     };
   };
-  return {
-    pinnableModels: [...role("light").candidates, ...role("deep").candidates],
-    backgroundProviderConsent: preferences.backgroundProviderConsent,
-    light: role("light"),
-    deep: role("deep"),
-  };
+  return AutomaticModelsViewSchema.parse({
+    ...parsed,
+    light: { ...preview("light"), label: "General preference" },
+    deep: preview("deep"),
+  });
 }
 interface MockPlugin {
   id: string;
@@ -4994,8 +4983,8 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
-  backgroundModelPreferences = structuredClone(emptyBackgroundModelPreferences);
-  readonly backgroundModels: "seeded" | "none";
+  automaticModelConfig: AutomaticModelConfig = structuredClone(emptyAutomaticModelConfig);
+  readonly automaticModels: "seeded" | "edited" | "excluded" | "none";
   private connections: import("@opensteer/protocol").AgentConnection[];
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
   private connectionDecision: { requestId: string; fingerprint: string } | null = null;
@@ -6011,7 +6000,15 @@ class MockHostState {
   }
 
   constructor(options: MockHostClientOptions = {}) {
-    this.backgroundModels = options.backgroundModels ?? "seeded";
+    this.automaticModels = options.automaticModels ?? "seeded";
+    if (this.automaticModels === "edited")
+      this.automaticModelConfig.roles.deep = [
+        { engine: HarnessIdSchema.parse("codex"), model: ModelIdSchema.parse("gpt-6.1-sol") },
+      ];
+    if (this.automaticModels === "excluded")
+      this.automaticModelConfig.excludedAccounts = [
+        HarnessInstanceIdSchema.parse(mockClaudeHarnessInstanceId),
+      ];
     this.connections = [...(options.connections ?? [])];
     this.pendingConnectionConsent = options.connectionConsent ?? null;
     for (const p of options.specialistPlugins ?? []) {

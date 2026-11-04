@@ -2965,6 +2965,8 @@ export class HttpHostClient {
   #capabilities: readonly HostCapability[] | null;
   readonly #readCapabilities: HostCapabilityReader | null;
   #capabilityReadGeneration = 0;
+  readonly automaticModelsAvailable = () =>
+    this.#capabilities?.includes("automatic-models-v1") === true;
   readonly browserTargetControlAvailable = (): Promise<boolean | null> =>
     Promise.resolve(this.#capabilities?.includes("browser-target-control-v1") ?? null);
 

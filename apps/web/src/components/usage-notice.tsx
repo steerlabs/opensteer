@@ -17,7 +17,7 @@ const dismissals = new Map<string, UsageNoticeDismissals>();
 
 /** This browser profile's dismissals kept under one key, shared by everything on screen. */
 export function browserNoticeDismissals(
-  storageKey: "opensteer.usage-notices.dismissed" | "opensteer.background-notices.dismissed",
+  storageKey: "opensteer.usage-notices.dismissed",
 ): UsageNoticeDismissals {
   let store = dismissals.get(storageKey);
   if (!store) {

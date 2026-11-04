@@ -72,4 +72,4 @@ export * from "./plugins.js";
 export * from "./project-folders.js";
 export * from "./connected-agents.js";
 
-export * from "./background-models.js";
+export * from "./automatic-models.js";
