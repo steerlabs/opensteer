@@ -1434,15 +1434,25 @@ class CodexHarnessSession implements HarnessSession {
       [agentToolsTokenEnvironmentVariable]: this.#context.agentTools.token,
     };
     const features = await codexFeatureBoundary(this.#launch);
+    // A call's text log can hold its session descriptions, so it lives in the
+    // call's private directory, removed when the call ends. Codex also keeps a
+    // TRACE SQLite log in the account's state home that nothing disables.
+    const callLog = this.#context.voiceCall
+      ? join(this.#context.threadStateDirectory, "codex-log")
+      : undefined;
+    if (callLog) await mkdir(callLog, { recursive: true, mode: 0o700 });
     this.#client = await CodexStdioClient.start({
-      appServerArgs: codexProcessBoundaryArgs(
-        features,
-        this.#context.runtimeBoundary,
-        this.#context.providerState,
-        processEnvironment,
-        this.#context.writableRoots,
-        this.#context,
-      ),
+      appServerArgs: [
+        ...codexProcessBoundaryArgs(
+          features,
+          this.#context.runtimeBoundary,
+          this.#context.providerState,
+          processEnvironment,
+          this.#context.writableRoots,
+          this.#context,
+        ),
+        ...(callLog ? ["-c", `log_dir=${JSON.stringify(callLog)}`] : []),
+      ],
       config: this.#config,
       cwd: this.#context.workspacePath,
       environment: processEnvironment,
@@ -1469,6 +1479,22 @@ class CodexHarnessSession implements HarnessSession {
     );
     assertSupportedVersion(requireString(initialize.userAgent, "initialize result.userAgent"));
     await this.#client.notify("initialized", {});
+    if (callLog) {
+      // Refuse a managed override that would move the call's text log elsewhere.
+      const effective = requireObject(
+        requireObject(
+          await this.#client.request(
+            "config/read",
+            { cwd: this.#context.workspacePath, includeLayers: false },
+            this.#config.startupTimeoutMs,
+          ),
+          "voice config",
+        ).config,
+        "effective voice config",
+      );
+      if (effective.log_dir !== callLog)
+        throw protocolError("Codex would keep this voice call's log outside its private directory");
+    }
     const skills = this.#context.skills?.skills ?? [];
     assertUniqueSkillNames(skills);
     await this.#client.request(

@@ -377,6 +377,50 @@ integration.sequential("thread input queue promotion", () => {
     },
   });
 
+  it("replaces or stops a call whose Run ended after it was read", async ({ storeFixture }) => {
+    const { fixture, store, database } = storeFixture;
+    const f = await fixture("voice-ended-race");
+    await store.createThread({
+      createdBy: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      idempotencyKey: "voice-race-home",
+      modelSelection,
+      title: "Chat",
+      workspaceId: f.workspace.id,
+      home: true,
+    });
+    const input = {
+      ownerId: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      sessionId: randomUUID(),
+    };
+    // The window a concurrent terminalization leaves: the Run is over, its Thread not yet closed.
+    const endRunOnly = (runId: string) =>
+      database
+        .updateTable("runs")
+        .set({ status: "interrupted" })
+        .where("id", "=", runId as never)
+        .execute();
+    const threadStatus = async (threadId: string) =>
+      (
+        await database
+          .selectFrom("threads")
+          .select("status")
+          .where("id", "=", threadId as never)
+          .executeTakeFirstOrThrow()
+      ).status;
+    const first = await store.startVoiceCall(input);
+    await endRunOnly(first.runId);
+    const second = await store.startVoiceCall({ ...input, sessionId: randomUUID() });
+    expect(second.runId).not.toBe(first.runId);
+    expect(await threadStatus(first.threadId)).toBe("archived");
+    await endRunOnly(second.runId);
+    await store.stopVoiceCall(f.ownerId, second.sessionId!);
+    expect(await threadStatus(second.threadId)).toBe("archived");
+  });
+
   it("admits one fenced voice Run, replays, replaces, and never recovers it", async ({
     storeFixture,
   }) => {

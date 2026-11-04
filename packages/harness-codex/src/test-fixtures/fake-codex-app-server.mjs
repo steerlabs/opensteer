@@ -206,7 +206,10 @@ function handleClientMethod(message) {
         id: message.id,
         result: {
           config: {
-            log_dir: JSON.parse(overrideValue("log_dir") ?? "null"),
+            log_dir:
+              scenario === "voice-log-elsewhere"
+                ? "/outside"
+                : JSON.parse(overrideValue("log_dir") ?? "null"),
             sqlite_home: JSON.parse(overrideValue("sqlite_home") ?? "null"),
             // A local policy that keeps the login shell despite the session flag.
             allow_login_shell: scenario === "managed-login-shell" ? true : allowLoginShell,

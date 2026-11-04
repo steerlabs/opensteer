@@ -4,6 +4,7 @@ import {
   type EnvironmentId,
   type HarnessInstanceId,
   type RunId,
+  type ThreadId,
   type AgentEvent,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
@@ -55,16 +56,34 @@ export async function stopVoiceCall(
   return withDatabaseTransaction(database, async (tx) => {
     await sql`select pg_advisory_xact_lock(hashtextextended(${`voice:${ownerId}`}, 0))`.execute(tx);
     const call = await resolveVoiceCall(tx, ownerId, sessionId);
-    if (!call || !["queued", "starting", "running", "waiting"].includes(call.status)) return;
+    if (!call || call.threadStatus === "archived") return;
+    await lockCommandIdempotency(tx, ownerId, `voice-stop:${call.runId}`);
     return stop(tx, links, ownerId, call);
   });
 }
+const liveRunStatuses: readonly string[] = ["queued", "starting", "running", "waiting"];
+
+/**
+ * Ends a call. Its Run can terminalize on its own (lease expiry, a lost Runner)
+ * after the call was read, so the status is read again under the Run's lock:
+ * a Run already over needs only its Thread closed.
+ */
 async function stop(
   tx: Transaction<DatabaseSchema>,
   links: ChannelLinks,
   ownerId: UserId,
   call: NonNullable<Awaited<ReturnType<typeof resolveVoiceCall>>>,
 ) {
+  const run = await tx
+    .selectFrom("runs")
+    .select("status")
+    .where("id", "=", call.runId)
+    .forNoKeyUpdate()
+    .executeTakeFirstOrThrow();
+  if (!liveRunStatuses.includes(run.status)) {
+    await archive(tx, call.threadId);
+    return { revokedGrants: [], events: [] };
+  }
   const control = await enqueueRunnerControlInTransaction(tx, links, {
     type: "run.interrupt",
     runId: call.runId,
@@ -72,12 +91,16 @@ async function stop(
     requestedBy: ownerId,
     idempotencyKey: `voice-stop:${call.runId}`,
   });
+  await archive(tx, call.threadId);
+  return control;
+}
+async function archive(tx: Transaction<DatabaseSchema>, threadId: ThreadId) {
   await tx
     .updateTable("threads")
     .set({ status: "archived", updatedAt: new Date() })
-    .where("id", "=", call.threadId)
+    .where("id", "=", threadId)
+    .where("status", "!=", "archived")
     .execute();
-  return control;
 }
 export async function startVoiceCall(
   database: Kysely<DatabaseSchema>,

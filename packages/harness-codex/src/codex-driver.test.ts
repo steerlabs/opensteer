@@ -72,6 +72,28 @@ afterEach(async () => {
 });
 
 describe("Codex app-server harness", () => {
+  it("refuses a voice call whose text log Codex would keep outside the call", async () => {
+    const fixture = await setup("voice-log-elsewhere");
+    const lifetime = new AbortController();
+    try {
+      await expect(
+        fixture.adapter.startSession({
+          ...fixture.context,
+          voiceCall: {
+            offer: Promise.resolve("offer"),
+            signal: lifetime.signal,
+            answer: () => undefined,
+            connect: () => undefined,
+            speak: async () => undefined,
+            end: () => lifetime.abort(),
+          },
+        }),
+      ).rejects.toThrow("outside its private directory");
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
   it("ends the call when Codex never returns an SDP answer", async () => {
     const fixture = await setup("voice-no-answer", { startupTimeoutMs: 500 });
     const lifetime = new AbortController();

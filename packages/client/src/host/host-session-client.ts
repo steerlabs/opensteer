@@ -1867,6 +1867,11 @@ export class HttpHostClient {
    * Workspace channel it opened stays open like any other the reader visited,
    * so observing it again, or reconnecting, resumes its stream.
    */
+  workspacePosition(workspaceId: string): Sequence | null {
+    const channel = this.#channels.get(workspaceId);
+    return channel?.synchronized ? channel.cursor : null;
+  }
+
   observeThread(threadId: string): () => void {
     const opened = !this.#showsThread(threadId);
     this.#observedThreads.set(threadId, (this.#observedThreads.get(threadId) ?? 0) + 1);

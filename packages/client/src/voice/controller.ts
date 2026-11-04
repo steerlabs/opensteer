@@ -118,6 +118,8 @@ interface VoiceSession {
   readonly id: string;
   readonly abort: AbortController;
   readonly baseline: HostSnapshot;
+  /** Main's Workspace position as the baseline was taken, so late Chat history can't hide news. */
+  readonly position: import("@opensteer/core").Sequence | null;
   call: VoiceCall | null;
   speaker: VoiceSpeaker | null;
   releaseThread: (() => void) | null;
@@ -216,6 +218,9 @@ export class VoiceController {
       id: VoiceSessionIdSchema.parse(this.#input.createId()),
       abort: new AbortController(),
       baseline,
+      position: baseline.homeWorkspaceId
+        ? this.#input.hostClient.workspacePosition(baseline.homeWorkspaceId)
+        : null,
       call: null,
       speaker: null,
       releaseThread: null,
@@ -268,6 +273,7 @@ export class VoiceController {
       session.speaker = new VoiceSpeaker({
         ...this.#input,
         baseline,
+        position: session.position,
         callThreadId: call.identity.threadId,
         say: (id, text) => call.say(id, text),
         onError: () => {

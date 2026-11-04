@@ -4317,6 +4317,10 @@ export class MockHostClient implements HostClient {
   }
 
   /** The preview projects every Thread it holds, so there is nothing to hold open. */
+  workspacePosition(_workspaceId: string): null {
+    return null;
+  }
+
   observeThread(_threadId: string): () => void {
     return () => undefined;
   }

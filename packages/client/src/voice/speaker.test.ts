@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { voiceSayMaxLength } from "@opensteer/protocol/voice";
 import type { RunEntry, ToolEntry } from "../host/client.js";
 import type { WaitingRequest } from "@opensteer/core";
+import { SequenceSchema } from "@opensteer/core";
 import { VoiceStartError } from "./contract.js";
 import { VoiceSpeaker, voiceSpeakableText } from "./speaker.js";
 import { settle, voiceHost, voiceReply, voiceTestNow } from "./voice.test-support.js";
@@ -23,10 +24,11 @@ function setup() {
     say,
     /** What reached the call, as `[id, text]`. */
     said: () => say.mock.calls,
-    make: () =>
+    make: (position: string | null = null) =>
       new VoiceSpeaker({
         hostClient: fixture.host,
         baseline: fixture.host.getSnapshot(),
+        position: position === null ? null : SequenceSchema.parse(position),
         callThreadId,
         say,
       }),
@@ -103,6 +105,7 @@ describe("VoiceSpeaker", () => {
     const speaker = new VoiceSpeaker({
       hostClient: f.host,
       baseline: f.host.getSnapshot(),
+      position: null,
       callThreadId,
       say: f.say,
       onError,
@@ -247,12 +250,35 @@ describe("VoiceSpeaker", () => {
     f.host.dispose();
   });
 
+  it("speaks a reply Chat finished after the start even when it first arrives with late history", () => {
+    const f = setup();
+    const { [f.id]: _loaded, ...unloaded } = f.host.getSnapshot().transcriptWindows;
+    f.publish({ transcriptWindows: unloaded, transcripts: {} });
+    // Main's channel had applied sequence 10 when the person started the call.
+    const speaker = f.make("10");
+    const window = { threadId: f.id, byteCount: 0, hasMore: false, itemCount: 2, nextBefore: null };
+    const at = (id: string, body: string, sequence: string) => ({
+      ...voiceReply(id, body),
+      sequence,
+    });
+    f.publish({
+      transcriptWindows: { ...unloaded, [f.id]: { ...window, totalItems: 2 } },
+      transcripts: {
+        [f.id]: [at("before", "Already said", "9"), at("during", "Finished while starting", "11")],
+      },
+    });
+    expect(f.said()).toEqual([["message:during", "Finished while starting"]]);
+    speaker.dispose();
+    f.host.dispose();
+  });
+
   it("speaks every reply in a Chat that voice creates during the call", () => {
     const f = voiceHost("absent");
     const say = vi.fn(async (_id: string, _text: string) => {});
     const speaker = new VoiceSpeaker({
       hostClient: f.host,
       baseline: f.host.getSnapshot(),
+      position: null,
       callThreadId,
       say,
     });

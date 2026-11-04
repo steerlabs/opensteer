@@ -1,3 +1,4 @@
+import { compareSequence, SequenceSchema, type Sequence } from "@opensteer/core";
 import { voiceSayMaxLength } from "@opensteer/protocol/voice";
 import type { HostClient, HostSnapshot, MessageEntry, TranscriptEntry } from "../host/client.js";
 import { requesterLink } from "../host/task-list.js";
@@ -46,6 +47,12 @@ export interface VoiceSpeakerInput extends VoiceTimers {
   readonly say: (id: string, text: string) => Promise<void>;
   /** Taken before opening the microphone, so start-up replies are still new. */
   readonly baseline: HostSnapshot;
+  /**
+   * Main's Workspace position when the baseline was taken: a Chat reply with a
+   * greater sequence is new even when Chat's history loads after the call began.
+   * Null when the channel had not caught up, and then load time decides.
+   */
+  readonly position: Sequence | null;
   /** The call's own Thread: its Requests are the agent asking, not a task. */
   readonly callThreadId: string;
   readonly onError?: () => void;
@@ -117,7 +124,7 @@ export class VoiceSpeaker {
     for (const entry of replies) {
       if (!durableReply(entry) || this.#messages.has(entry.id)) continue;
       this.#messages.add(entry.id);
-      if (since !== null && since !== undefined && !(Date.parse(entry.createdAt) > since)) continue;
+      if (!this.#isNew(entry, since)) continue;
       const text = voiceSpeakableText(entry.body);
       if (text) this.#queue.push({ id: `message:${entry.id}`, text: () => text });
     }
@@ -141,10 +148,27 @@ export class VoiceSpeaker {
     return `${title.slice(0, voiceSayMaxLength - 12)} needs you.`;
   }
 
+  /** Whether the Host placed a reply after the baseline's position; null when either is unknown. */
+  #afterPosition(entry: MessageEntry): boolean | null {
+    const position = this.#input.position;
+    const sequence = SequenceSchema.safeParse(entry.sequence);
+    if (position === null || !sequence.success) return null;
+    return compareSequence(sequence.data, position) > 0;
+  }
+
+  /** Whether a reply came after the baseline: by the Host's sequence when known, else by time. */
+  #isNew(entry: MessageEntry, since: number | null | undefined): boolean {
+    return (
+      this.#afterPosition(entry) ??
+      (since === null || since === undefined || Date.parse(entry.createdAt) > since)
+    );
+  }
+
   #takeHistory(snapshot: HostSnapshot, threadId: string): void {
     let since: number | null = null;
     for (const entry of snapshot.transcripts[threadId] ?? []) {
-      if (durableReply(entry)) this.#messages.add(entry.id);
+      // A reply after the baseline's position is news, even when it first arrives with history.
+      if (durableReply(entry) && this.#afterPosition(entry) !== true) this.#messages.add(entry.id);
       const at = Date.parse(hostTime(entry) ?? "");
       if (Number.isFinite(at)) since = Math.max(since ?? at, at);
     }
