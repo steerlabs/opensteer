@@ -36,6 +36,8 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   const surfaceId = opened.data.tabId;
   await kit.clickApp('button[aria-label="Hide the conversation"]');
   await kit.selectNativePage(context.sessionId, surfaceId);
+  // Remove the fixture's initial agent-sized emulation through the person's Fit action.
+  await kit.clickApp('button[aria-label="Fit page to view"]');
   const producer = [...kit.pages.values()].find((p) => p.surfaceId === surfaceId);
   assert(producer, "Popup fixture has a production runtime page");
   const contents = (
