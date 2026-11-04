@@ -27,7 +27,7 @@ import {
   type WorkspaceId,
 } from "@opensteer/core";
 import { ChannelStore, OpensteerStore, createDatabase, migrateToLatest } from "@opensteer/database";
-import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
+import type { RunnerAuxiliaryStream, RunnerIdentity } from "@opensteer/orchestration";
 import {
   HarnessInstanceCatalogSchema,
   RunnerAuxiliaryFrameFenceSchema,
@@ -49,6 +49,10 @@ const integration = databaseUrl ? describe : describe.skip;
 
 const messagingRunnerId = RunnerIdSchema.parse("rnr_00000000-0000-4000-8000-0000000000a1");
 const canonicalOrigin = "https://pipeline-host.invalid";
+/** The agents Runner advertises the one engine the fixture's account uses. */
+const nativeRunnerIdentity = {
+  modules: { agents: { harnessDrivers: [{ driverKind: "native" }] } },
+} as unknown as RunnerIdentity;
 const threadUrl = (threadId: ThreadId) => `${canonicalOrigin}/threads/${threadId}`;
 
 integration("messaging pipeline", () => {
@@ -1292,9 +1296,11 @@ integration("messaging pipeline", () => {
       onWorkspaceEvent: () => undefined,
       relay: hub,
       runners: {
-        canRunHarness: (candidate: string) => candidate === onlineEnvironmentId,
-        isAvailable: (candidate: string) => computer.online && candidate === onlineEnvironmentId,
-      } as never,
+        canRunHarness: (candidate) => candidate === onlineEnvironmentId,
+        isAvailable: (candidate) => computer.online && candidate === onlineEnvironmentId,
+        identityForEnvironment: (candidate) =>
+          candidate === onlineEnvironmentId ? nativeRunnerIdentity : undefined,
+      },
       store,
     });
     const created = await service.createConnection({
