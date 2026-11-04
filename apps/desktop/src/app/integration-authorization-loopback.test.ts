@@ -1,6 +1,7 @@
 import { connect, createServer as createTcpServer, type Server, type Socket } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { integrationAuthorizationAppReturnBase } from "@opensteer/integration-core";
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import {
   IntegrationAuthorizationLoopback,
   integrationAuthorizationLoopbackBodyLimit,
@@ -18,15 +19,6 @@ const squatters: Server[] = [];
 const sockets: Socket[] = [];
 /** Other checkouts run this suite on the same computer, so tests use ports the system hands out. */
 let free: readonly [number, number] = [0, 0];
-
-async function freePort(): Promise<number> {
-  const probe = createTcpServer();
-  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", () => resolve()));
-  const address = probe.address();
-  await new Promise<void>((resolve) => probe.close(() => resolve()));
-  if (address === null || typeof address === "string") throw new Error("No port was assigned.");
-  return address.port;
-}
 
 beforeEach(async () => {
   free = [await freePort(), await freePort()];
