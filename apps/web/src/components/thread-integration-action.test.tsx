@@ -9,6 +9,7 @@ import {
   accessServerChoices,
   accountConnectable,
   effectiveIntegrationAccess,
+  mainAccessDetail,
   matchingInstallationForManifest,
   resolveIntegrationAccess,
   type LoadedAccessRequest,
@@ -164,10 +165,10 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
           } as unknown as Request)
         : record;
       const container = await mountThreadAction(shown, "Connect Provider integration");
-      expect(container.querySelector("button")?.textContent).toBe("Connect Provider integration");
+      expect(container.querySelector("button")?.textContent).toBe("Connect");
       expect(container.querySelector("select")).toBeNull();
       expect(container.textContent).not.toMatch(/OAuth|redirect URI|Install and continue/u);
-      await act(async () => buttonWithText(container, "Connect Provider integration")!.click());
+      await act(async () => buttonWithText(container, "Connect")!.click());
       expect(dispatch).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "integration.authorization.begin",
@@ -176,15 +177,13 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
           }),
         }),
       );
-      expect(container.textContent).toContain("Connecting…");
+      expect(container.textContent).toContain("Finish signing in in your browser");
       expect(container.textContent).not.toContain("connected ·");
       await act(async () => complete());
       await vi.waitFor(() =>
-        expect(container.textContent).toContain(
-          "✓ Provider integration connected · you@example.com",
-        ),
+        expect(container.textContent).toContain("Provider integration connected · you@example.com"),
       );
-      expect(buttonWithText(container, "Use you@example.com")).toBeNull();
+      expect(buttonWithText(container, "Allow")).toBeNull();
       const grants = dispatch.mock.calls.filter(([command]) => command.type === "request.respond");
       expect(grants).toHaveLength((kind === "main" ? 0 : 1) + (autoInstall ? 1 : 0));
       if (autoInstall)
@@ -271,8 +270,8 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
     expect(accounts.map(({ id }) => id)).toEqual(["connection-b", "connection-a"]);
     if (!returnsConnectionId) {
       expect(dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([]);
-      expect(container.textContent).not.toContain("✓ Provider integration connected");
-      await act(async () => buttonWithText(container, "Use Account B")!.click());
+      expect(container.textContent).not.toContain("Provider integration connected");
+      await act(async () => buttonWithText(container, "Allow")!.click());
     }
     expect(dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([
       [
@@ -292,9 +291,107 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
       ],
     ]);
     expect(container.textContent).toContain(
-      `✓ Provider integration connected · Account ${returnsConnectionId ? "A" : "B"}`,
+      `Provider integration connected · Account ${returnsConnectionId ? "A" : "B"}`,
     );
     expect(dashboard).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers a project's access beside the key form, and the key answers with it", async () => {
+    const loaded = apiKeyRequest();
+    loaded.platform.installations[0]!.tools = [
+      { annotations: { readOnlyHint: false }, connectionId: null, serverId: "server-provider" },
+    ] as never;
+    const record = requestRecord(loaded, "Connect integration");
+    const account = {
+      accountIdentifier: null,
+      computer: null,
+      createdAt: "2026-01-01T00:00:00Z",
+      definitionId: "provider-integration",
+      displayName: "Account A",
+      id: "connection-a",
+      provider: "linear",
+      status: "connected",
+    };
+    let accounts = loaded.dashboard.connections;
+    let requestPending = true;
+    const dispatch = vi.fn(async (command: { type: string }) => {
+      if (command.type === "integration.apiKey.connect") {
+        accounts = [account] as never;
+        return { connectionId: account.id, type: command.type };
+      }
+      if (command.type === "request.respond") requestPending = false;
+      return { type: command.type };
+    });
+    shellState.current = {
+      snapshot: shellSnapshot(),
+      hostClient: {
+        dispatch,
+        getSnapshot: () => shellSnapshot(),
+        rpc: {
+          "integrations.get": async () => ({
+            ok: true,
+            data: { ...loaded.dashboard, connections: accounts },
+          }),
+          "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+          "thread.requests.list": async () => ({
+            ok: true,
+            data: {
+              requests: requestPending ? [record] : [],
+              window: { hasMore: false, nextBefore: null },
+            },
+          }),
+        },
+      },
+    };
+    const container = await mountThreadAction(record);
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]');
+    if (!key) throw new Error("The Connect card never showed the API key field.");
+    const readWrite = container.querySelector<HTMLButtonElement>(
+      '.connect-card__access [data-value="read-write"]',
+    );
+    if (!readWrite) throw new Error("The key form hid the project's access choice.");
+    await act(async () => readWrite.click());
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        key,
+        "test-api-key",
+      );
+      key.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => key.form?.requestSubmit());
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          response: expect.objectContaining({
+            value: expect.objectContaining({ access: "read-write" }),
+          }),
+          type: "request.respond",
+        }),
+      ),
+    );
+  });
+
+  it("still names the request when its account details cannot load", async () => {
+    const loaded = oauthRequest();
+    shellState.current = {
+      snapshot: shellSnapshot(),
+      hostClient: {
+        dispatch: vi.fn(),
+        getSnapshot: () => shellSnapshot(),
+        rpc: {
+          "integrations.get": async () => {
+            throw new Error("The Host could not be reached.");
+          },
+          "integration.platform.get": async () => ({ ok: true, data: loaded.platform }),
+        },
+      },
+    };
+    const container = await mountThreadAction(
+      requestRecord(loaded, "Gmail access"),
+      "The Host could not be reached.",
+    );
+    expect(container.textContent).toContain("Gmail access");
+    expect(container.textContent).toContain(loaded.request.reason);
   });
 
   it.each(["denied", "cancelled", "failed"] as const)(
@@ -329,10 +426,12 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
       };
       const container = await mountThreadAction(
         requestRecord(loaded, "Connect"),
-        "Use alex@example.com",
+        "alex@example.com",
       );
-      await act(async () => container.querySelector<HTMLButtonElement>('[role="radio"]')!.click());
-      await act(async () => buttonWithText(container, "Connect another account")!.click());
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>(".connect-card__account")!.click(),
+      );
+      await act(async () => buttonWithText(container, "Add another account")!.click());
       expect(container.textContent).not.toContain("connected ·");
       expect(dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toHaveLength(0);
       // Try again repeats the sign-in for another account, never approval of the old one.
@@ -389,11 +488,11 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
     };
     const container = await mountThreadAction(
       record,
-      "Use alex@example.com",
+      "alex@example.com",
       `/threads/thr_test?integrationAttempt=${attemptId}`,
     );
     expect(dispatch).not.toHaveBeenCalled();
-    await act(async () => buttonWithText(container, "Use alex@example.com")!.click());
+    await act(async () => buttonWithText(container, "Allow")!.click());
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "request.respond" }));
   });
 
@@ -425,7 +524,7 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
       },
     };
     const container = await mountThreadAction(shown, "Connect Provider integration");
-    expect(container.textContent).toContain("requires read-write access");
+    expect(notes(container)).toEqual(["Read and write"]);
   });
 
   it("adds a credential-free catalog integration and grants access in the same tap", async () => {
@@ -468,7 +567,7 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
       },
     } as unknown as Request;
     const container = await mountThreadAction(shown, "Connect Test integration");
-    await act(async () => buttonWithText(container, "Connect Test integration")!.click());
+    await act(async () => buttonWithText(container, "Connect")!.click());
     await vi.waitFor(() => expect(container.textContent).toContain("Request answered"));
     expect(dispatch).toHaveBeenCalledTimes(2);
     expect(dispatch.mock.calls[0]?.[0]).toMatchObject({
@@ -516,15 +615,17 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
     };
     const container = await mountThreadAction(
       requestRecord(loaded, "Use account"),
-      "Use alex@example.com",
+      "alex@example.com",
     );
-    await act(async () => buttonWithText(container, "Connect another account")!.click());
-    expect(buttonWithText(container, "Connecting…")?.disabled).toBe(true);
-    expect(buttonWithText(container, "Connect another account")?.disabled).toBe(true);
+    await act(async () => buttonWithText(container, "Add another account")!.click());
+    expect(buttonWithText(container, "Allow")?.disabled).toBe(true);
+    expect(buttonWithText(container, "Add another account")?.disabled).toBe(true);
     expect(buttonWithText(container, "Not now")?.disabled).toBe(true);
-    expect(container.querySelector<HTMLButtonElement>('[role="radio"]')?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>(".connect-card__account")?.disabled).toBe(
+      true,
+    );
     await act(async () => open());
-    expect(buttonWithText(container, "Use alex@example.com")).toBeNull();
+    expect(buttonWithText(container, "Allow")).toBeNull();
     expect(buttonWithText(container, "Cancel")).not.toBeNull();
     expect(dispatch).toHaveBeenCalledTimes(1);
   });
@@ -553,16 +654,16 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
     };
     const container = await mountThreadAction(
       requestRecord(loaded, "Use account"),
-      "Use alex@example.com",
+      "alex@example.com",
     );
-    expect(container.querySelector("button")?.textContent).toBe("Use alex@example.com");
-    const rows = container.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+    expect(container.querySelector("button")?.textContent).toBe("Allow");
+    const rows = container.querySelectorAll<HTMLButtonElement>(".connect-card__account");
     await act(async () =>
       rows[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })),
     );
     expect(rows[1]!.getAttribute("aria-checked")).toBe("true");
     expect(document.activeElement).toBe(rows[1]);
-    expect(buttonWithText(container, "Use second@example.com")).not.toBeNull();
+    expect(rows[1]!.textContent).toBe("Ssecond@example.com");
   });
 });
 
@@ -597,20 +698,21 @@ describe("ThreadIntegrationAction computer access", () => {
     };
     const container = await mountThreadAction(computerRequestRecord());
 
-    expect(container.textContent).toContain("Read and send");
-    expect(container.textContent).toContain(
+    await openDetails(container);
+    expect(notes(container)).toContain(
       "Agents can search and read your conversations, and send messages as you.",
     );
-    expect(buttonWithText(container, "Use Mac mini")).not.toBeNull();
+    expect(buttonWithText(container, "Allow")).not.toBeNull();
 
-    const optionalWrite = container.querySelector<HTMLInputElement>(
-      '.check-item input[type="checkbox"]',
+    const optionalWrite = container.querySelector<HTMLButtonElement>(
+      '.connect-card__access [data-value="read-write"]',
     );
-    if (!optionalWrite) throw new Error("Missing computer app write-access choice");
+    if (optionalWrite?.textContent !== "Read and send")
+      throw new Error("Missing computer app write-access choice");
     await act(async () => optionalWrite.click());
 
     expect(buttonWithText(container, "Request sending access on Mac mini")).not.toBeNull();
-    expect(buttonWithText(container, "Use Mac mini")).toBeNull();
+    expect(buttonWithText(container, "Allow")).toBeNull();
 
     await act(async () => buttonWithText(container, "Request sending access on Mac mini")?.click());
 
@@ -778,11 +880,11 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
       }
 
       await act(async () => buttonWithText(document.body, "Finish later")?.click());
-      await act(async () => buttonWithText(container, "Connect Provider integration")?.click());
-      expect(document.body.textContent).toContain("Connecting…");
+      await act(async () => buttonWithText(container, "Connect")?.click());
+      expect(document.body.textContent).toContain("Finish signing in in your browser");
       await act(async () => (late === "check" ? refuse() : answerReload()));
 
-      expect(document.body.textContent).toContain("Connecting…");
+      expect(document.body.textContent).toContain("Finish signing in in your browser");
       expect(document.body.textContent).not.toContain(rejected);
       expect(check).toHaveBeenCalledTimes(1);
     },
@@ -808,7 +910,7 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
       await act(async () => answer());
 
       expect(document.body.textContent).not.toContain("Choose GitHub repositories");
-      expect(buttonWithText(container, "Connect Provider integration")?.disabled).toBe(false);
+      expect(buttonWithText(container, "Connect")?.disabled).toBe(false);
       expect(check).toHaveBeenCalledTimes(late === "recheck" ? 2 : 1);
     },
   );
@@ -897,10 +999,10 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
     await act(async () => refuse());
     await act(async () => answerRecheck());
 
-    await vi.waitFor(() => expect(container.textContent).toContain("Use steerlabs"));
-    await act(async () => buttonWithText(container, "Use steerlabs")!.click());
+    await vi.waitFor(() => expect(container.textContent).toContain("steerlabs"));
+    await act(async () => buttonWithText(container, "Allow")!.click());
     await vi.waitFor(() =>
-      expect(container.textContent).toContain("✓ Provider integration connected · steerlabs"),
+      expect(container.textContent).toContain("Provider integration connected · steerlabs"),
     );
     expect(document.body.textContent).not.toContain(refused);
     expect(buttonWithText(container, "Try again")).toBeNull();
@@ -915,8 +1017,8 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
     const { check, container } = await returnFromGitHubSignIn("Recheck repository access", 0);
 
     await act(async () => buttonWithText(document.body, "Finish later")?.click());
-    await act(async () => buttonWithText(container, "Connect Provider integration")?.click());
-    expect(document.body.textContent).toContain("Connecting…");
+    await act(async () => buttonWithText(container, "Connect")?.click());
+    expect(document.body.textContent).toContain("Finish signing in in your browser");
     await act(async () => buttonWithText(container, "Cancel")?.click());
 
     expect(document.body.textContent).not.toContain("Choose GitHub repositories");
@@ -978,14 +1080,12 @@ describe("ThreadIntegrationAction finding its target Workspace", () => {
 
     shellState.current = { hostClient, reportActionError: vi.fn(), snapshot: shellSnapshot() };
     await act(async () => root.render(card()));
-    await vi.waitFor(() =>
-      expect(buttonWithText(container, "Connect Provider integration")).not.toBeNull(),
-    );
-    await act(async () => buttonWithText(container, "Connect Provider integration")?.click());
-    expect(document.body.textContent).toContain("Connecting…");
+    await vi.waitFor(() => expect(buttonWithText(container, "Connect")).not.toBeNull());
+    await act(async () => buttonWithText(container, "Connect")?.click());
+    expect(document.body.textContent).toContain("Finish signing in in your browser");
     await act(async () => failPage(new Error(failed)));
 
-    expect(document.body.textContent).toContain("Connecting…");
+    expect(document.body.textContent).toContain("Finish signing in in your browser");
     expect(document.body.textContent).not.toContain(failed);
   });
 });
@@ -1066,14 +1166,14 @@ describe("ThreadIntegrationAction cancelling a sign-in", () => {
         requestRecord(loaded, "Connect Test integration"),
         "Connect Test integration",
       );
-      const waiting = "Connecting…";
-      await act(async () => buttonWithText(container, "Connect Test integration")?.click());
+      const waiting = "Finish signing in in your browser";
+      await act(async () => buttonWithText(container, "Connect")?.click());
       expect(container.textContent).toContain(waiting);
       await act(async () => buttonWithText(container, "Cancel")?.click());
       await act(async () => finishFirst());
       await vi.waitFor(() => expect(buttonWithText(container, "Try again")).not.toBeNull());
       await act(async () => buttonWithText(container, "Try again")?.click());
-      await act(async () => buttonWithText(container, "Connect Test integration")?.click());
+      await act(async () => buttonWithText(container, "Connect")?.click());
       expect(container.textContent).toContain(waiting);
 
       await act(async () => (late === "answers" ? settleCancel.answer() : settleCancel.fail()));
@@ -1111,11 +1211,12 @@ describe("ThreadIntegrationAction reconnecting the account a request names", () 
     // Both accounts are named Vapi API and were added the same morning.
     expect(container.textContent).toMatch(/Added Aug 9, \d{1,2}:\d{2}\s?[AP]M/u);
     expect(container.textContent).not.toContain("exact account");
-    // The title names the integration and the row the account; this line is the access.
+    // The title names the integration and the row the account; the foot says
+    // where access lands even beside the key form, and opens what it means.
+    await openDetails(container);
+    expect(notes(container)).toContain("All tasks in Main");
     expect(notes(container)).toContain("Read and write · 1 operation");
-    expect(notes(container)).toContain(
-      "Your tasks in Main can read and make changes with every account you connect, so connecting also allows this request.",
-    );
+    expect(notes(container)).toContain(mainAccessDetail("Main", "Vapi API"));
     expect(container.textContent).not.toContain("Vapi API · Vapi API");
     const key = container.querySelector<HTMLInputElement>('input[type="password"]');
     if (!key) throw new Error("The key field is shown at once.");
@@ -1181,24 +1282,23 @@ describe("ThreadIntegrationAction adding another key beside a usable account", (
       reportActionError: vi.fn(),
       snapshot: client.getSnapshot(),
     };
-    const container = await mountThreadAction(request, "Read and write · 1 operation");
+    const container = await mountThreadAction(request, "Vapi API");
 
-    expect(actionRowLabels(container)).toEqual([["Use Vapi API", "Not now"]]);
-    await act(async () => buttonWithText(container, "Connect another account")?.click());
+    expect(actionRowLabels(container)).toEqual([["Allow", "Not now"]]);
+    await act(async () => buttonWithText(container, "Add another account")?.click());
 
     expect(container.querySelector('input[type="password"]')).not.toBeNull();
     expect(actionRowLabels(container)).toEqual([["Cancel", "Connect Vapi API"]]);
     await act(async () => buttonWithText(container, "Cancel")?.click());
 
     expect(container.querySelector('input[type="password"]')).toBeNull();
-    expect(actionRowLabels(container)).toEqual([["Use Vapi API", "Not now"]]);
+    expect(actionRowLabels(container)).toEqual([["Allow", "Not now"]]);
     expect(dispatch).not.toHaveBeenCalled();
   });
 });
 
 describe("ThreadIntegrationAction says what connecting does before it is done", () => {
-  const allows =
-    "Your tasks in Main can read and make changes with every account you connect, so connecting also allows this request.";
+  const allows = mainAccessDetail("Main", "TMDB");
   // The ways it could fail: on a request for Main, a key that connects also
   // answers the request and resumes the agent with nothing said beforehand;
   // the note promised where it is false, for a project Workspace, whose
@@ -1215,11 +1315,17 @@ describe("ThreadIntegrationAction says what connecting does before it is done", 
     expect(notes(container)).not.toContain(allows);
 
     await act(async () => buttonWithText(container, "Install and continue")?.click());
-    await vi.waitFor(() => expect(notes(container)).toContain("Read and write · 4 operations"));
+    await vi.waitFor(() =>
+      expect(container.querySelector("button.connect-card__scope")).not.toBeNull(),
+    );
+    await openDetails(container);
 
     // What Main gets, not the read the agent asked for: its tasks use every operation.
-    expect(notes(container)).toEqual([
+    expect(container.querySelector(".chip")?.getAttribute("title")).toBe(
       requestAgentProposedDetail,
+    );
+    expect(notes(container)).toEqual([
+      "All tasks in Main",
       allows,
       "Read and write · 4 operations",
     ]);
@@ -1266,13 +1372,17 @@ describe("ThreadIntegrationAction says what connecting does before it is done", 
       snapshot: client.getSnapshot(),
     };
     const container = await mountThreadAction(request);
+    await openDetails(container);
 
-    expect(notes(container)).toEqual([
-      "Only Customer launch gets access",
+    expect(container.querySelector(".chip")?.getAttribute("title")).toBe(
       requestAgentProposedDetail,
+    );
+    expect(notes(container)).toEqual([
+      "Read only",
+      "Only Customer launch gets access.",
       "Read only · 1 operation",
     ]);
-    expect(actionRowLabels(container)).toEqual([["Use Vapi API", "Not now"]]);
+    expect(actionRowLabels(container)).toEqual([["Allow", "Not now"]]);
   });
 });
 
@@ -1357,16 +1467,19 @@ describe("ThreadIntegrationAction installing an agent's proposal", () => {
       "Opensteer checks the key with TMDB before saving it.",
     ]);
     expect(notes(container)).toEqual([
+      "All tasks in Main",
       "After it’s installed, you’ll finish setting it up and review its access here.",
     ]);
     expect(container.textContent).not.toMatch(/tmdb-api|operation|Agent proposal|https:/u);
     expect(actionRowLabels(container)).toEqual([["Install and continue", "Not now"]]);
 
     await act(async () => buttonWithText(container, "Install and continue")?.click());
-    await vi.waitFor(() => expect(notes(container)).toContain("Read and write · 4 operations"));
-    expect(notes(container)).toContain(
-      "Your tasks in Main can read and make changes with every account you connect, so connecting also allows this request.",
+    await vi.waitFor(() =>
+      expect(container.querySelector("button.connect-card__scope")).not.toBeNull(),
     );
+    await openDetails(container);
+    expect(notes(container)).toContain("Read and write · 4 operations");
+    expect(notes(container)).toContain(mainAccessDetail("Main", "TMDB"));
 
     // The access step, not the review, says what is granted; the key form
     // repeats where the key goes in the review's own words.
@@ -1536,16 +1649,20 @@ describe("ThreadIntegrationAction reviewing what a request would install", () =>
 
     // Not installed, so no snapshot has said where its key would go yet.
     const resend = await mountThreadAction(preset("resend"), "Connect Resend REST");
+    await openDetails(resend);
     expect(["Resend REST", ...notes(resend)]).toEqual([
       "Resend REST",
-      "Your tasks in Main can read and make changes with every account you connect, so connecting also allows this request.",
+      "All tasks in Main",
+      mainAccessDetail("Main", "Resend REST"),
       "Send transactional email and inspect sending domains through Resend.",
     ]);
 
     const linear = await mountThreadAction(preset("linear"), "Connect Linear GraphQL");
+    await openDetails(linear);
     expect(["Linear GraphQL", ...notes(linear)]).toEqual([
       "Linear GraphQL",
-      "Your tasks in Main can read and make changes with every account you connect, so connecting also allows this request.",
+      "All tasks in Main",
+      mainAccessDetail("Main", "Linear GraphQL"),
       "Read and update Linear issues, projects, teams, and comments.",
       "Your key is stored encrypted by your Opensteer and sent to api.linear.app when used.",
       "Opensteer checks the key with Linear GraphQL before saving it.",
@@ -1596,19 +1713,26 @@ async function mockConnections(client: MockHostClient) {
   return result.data.connections;
 }
 
+/** The card's own lines: where access lands, what it means once opened, and its notes. */
 function notes(container: HTMLElement): readonly string[] {
   return [
-    ...container.querySelectorAll(
-      ".connect-card__disclosure .field__hint, .action-note, .connect-card > p.field__hint",
-    ),
+    ...container.querySelectorAll(".connect-card__scope, .connect-card__details p, .action-note"),
   ].map((note) => note.textContent ?? "");
+}
+
+/** Opens what the scope line stands for, as a person would before deciding. */
+async function openDetails(container: HTMLElement): Promise<void> {
+  const toggle = container.querySelector<HTMLButtonElement>(
+    'button.connect-card__scope[aria-expanded="false"]',
+  );
+  if (toggle) await act(async () => toggle.click());
 }
 
 /** Each row of answers on the card, as the labels of its buttons in order. */
 function actionRowLabels(container: HTMLElement): readonly (readonly string[])[] {
-  return [...container.querySelectorAll(".action-buttons, .form-actions")].map((row) =>
-    [...row.querySelectorAll("button")].map((button) => button.textContent ?? ""),
-  );
+  return [
+    ...container.querySelectorAll(".connect-card__actions, .action-buttons, .form-actions"),
+  ].map((row) => [...row.querySelectorAll("button")].map((button) => button.textContent ?? ""));
 }
 
 describe("resolveIntegrationAccess", () => {
@@ -2161,7 +2285,7 @@ async function returnFromGitHubSignIn(ready: string, answered: number) {
 
 async function mountThreadAction(
   request: Parameters<typeof ThreadIntegrationAction>[0]["request"],
-  ready = "Read only · 1 operation",
+  ready: string | null = null,
   path = "/threads/thr_test",
 ) {
   const shell = shellState.current as {
@@ -2207,7 +2331,12 @@ async function mountThreadAction(
       </MemoryRouter>,
     );
   });
-  await vi.waitFor(() => expect(container.textContent).toContain(ready));
+  // Without a text to wait for, the loaded card is the one with an answer row.
+  await vi.waitFor(() =>
+    ready === null
+      ? expect(container.querySelector(".connect-card__foot")).not.toBeNull()
+      : expect(container.textContent).toContain(ready),
+  );
   return container;
 }
 
