@@ -125,8 +125,10 @@ export class HostTransport {
    * canonical origin is another computer's loopback, and the Host begins only
    * sign-ins there that return to the Account service.
    */
-  async integrationAuthorizationOrigin(): Promise<string> {
-    const { resolved } = await this.current();
+  async integrationAuthorizationOrigin(deploymentId?: string): Promise<string> {
+    const { connection, resolved } = await this.current();
+    if (deploymentId !== undefined && connection.authority.document.deploymentId !== deploymentId)
+      throw new Error("The integration attempt belongs to a different Deployment.");
     return resolved.access === "connect" || resolved.access === "private"
       ? resolved.origin
       : resolved.canonicalOrigin;

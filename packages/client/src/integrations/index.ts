@@ -38,3 +38,8 @@ export * from "./display-editing.js";
 export * from "./display-input.js";
 
 export * from "./computer-app-approval.js";
+
+export type {
+  IntegrationAuthorizationAttempt,
+  IntegrationAuthorizationAttemptStore,
+} from "./authorization-attempts.js";

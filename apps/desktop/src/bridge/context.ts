@@ -35,6 +35,7 @@ export interface DesktopBridgeOptions {
     "issuePersonalHostAccountLinkChallenge" | "completePersonalHostAccountLink"
   >;
   readonly webLinks?: DesktopWebLinks;
+  readonly integrationAuthorizations?: import("../app/integration-authorizations.js").DesktopIntegrationAuthorizations;
   readonly isWorkspaceContents?: (
     sender: Pick<WebContents, "send" | "once" | "removeListener" | "isDestroyed">,
   ) => boolean;

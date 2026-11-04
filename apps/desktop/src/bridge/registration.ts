@@ -1,4 +1,8 @@
 import {
+  DesktopIntegrationAuthorizationSubscriptionSchema,
+  DesktopFinishIntegrationAuthorizationInputSchema,
+} from "@opensteer/protocol/desktop";
+import {
   handleIssuePersonalAccountLinkChallenge,
   handleCompletePersonalAccountLink,
 } from "./methods/account-link-courier.js";
@@ -295,6 +299,61 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     desktopBridgeChannels.openIntegrationAuthorization,
     handleOpenIntegrationAuthorization(context),
   );
+  let integrationSubscription: {
+    sender: Electron.WebContents;
+    generation: string;
+    detach: () => void;
+  } | null = null;
+  const detachIntegrationSubscription = () => {
+    integrationSubscription?.detach();
+    integrationSubscription = null;
+  };
+  register(desktopBridgeChannels.integrationAuthorizationSubscription, (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    if (options.isWorkspaceContents?.(event.sender) !== true)
+      throw new Error("Only the workspace window may receive integration returns.");
+    const input = DesktopIntegrationAuthorizationSubscriptionSchema.parse(envelope.input);
+    if (!input.ready) {
+      if (
+        integrationSubscription?.sender === event.sender &&
+        integrationSubscription.generation === input.generation
+      )
+        detachIntegrationSubscription();
+      return;
+    }
+    detachIntegrationSubscription();
+    const detach =
+      options.integrationAuthorizations?.attach(input, (callback) => {
+        if (!event.sender.isDestroyed())
+          event.sender.send(desktopBridgeChannels.integrationAuthorizationReturn, callback);
+      }) ?? (() => {});
+    const cleanup = () => {
+      if (integrationSubscription?.generation === input.generation) detachIntegrationSubscription();
+    };
+    event.sender.once("destroyed", cleanup);
+    event.sender.once("did-start-loading", cleanup);
+    integrationSubscription = {
+      sender: event.sender,
+      generation: input.generation,
+      detach: () => {
+        detach();
+        event.sender.removeListener("destroyed", cleanup);
+        event.sender.removeListener("did-start-loading", cleanup);
+      },
+    };
+  });
+  register(desktopBridgeChannels.finishIntegrationAuthorization, async (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    if (options.isWorkspaceContents?.(event.sender) !== true)
+      throw new Error("Only the workspace window may finish integration returns.");
+    const input = DesktopFinishIntegrationAuthorizationInputSchema.parse(envelope.input);
+    if (input.attemptId)
+      await options.integrationAuthorizations?.attempts.forget({
+        ...input,
+        attemptId: input.attemptId,
+      });
+    else await options.integrationAuthorizations?.attempts.clear(input.deploymentId);
+  });
   register(desktopBridgeChannels.pickFolder, handlePickFolder(context));
   register(desktopBridgeChannels.readAgentPhoneArtifact, handleReadAgentPhoneArtifact(context));
   register(desktopBridgeChannels.reauthorize, handleReauthorize(context));
@@ -312,6 +371,7 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.unlinkPersonal, handleUnlinkPersonal(context));
 
   return () => {
+    detachIntegrationSubscription();
     webLinkOwner?.dispose();
     unsubscribeDownloads();
     context.downloadsSenders.clear();

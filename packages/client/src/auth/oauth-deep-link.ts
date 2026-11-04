@@ -5,22 +5,27 @@ const maximumQueuedCallbacks = 8;
 /**
  * Captures callbacks that arrive before the application is ready to consume
  * them, then serializes delivery to the OAuth manager. It never accepts
- * general custom-scheme URLs: only this build's two registered callbacks.
+ * general custom-scheme URLs: only registered callbacks explicitly admitted by the app.
  */
 export class OAuthDeepLinkBroker {
   readonly #oauth: NativeOAuthIdentity;
+  readonly #acceptAdditional: (url: string) => boolean;
   readonly #queued: string[] = [];
   #consumer: ((url: string) => Promise<boolean>) | null = null;
   #deliveryTail: Promise<void> = Promise.resolve();
 
-  constructor(oauth: NativeOAuthIdentity) {
+  constructor(
+    oauth: NativeOAuthIdentity,
+    acceptAdditional: (url: string) => boolean = () => false,
+  ) {
     this.#oauth = oauth;
+    this.#acceptAdditional = acceptAdditional;
   }
 
   accept(url: string): boolean {
-    if (!isOpensteerOAuthCallback(url, this.#oauth)) return false;
+    if (!isOpensteerOAuthCallback(url, this.#oauth) && !this.#acceptAdditional(url)) return false;
     if (this.#consumer) this.#enqueueDelivery(url);
-    else if (this.#queued.length < maximumQueuedCallbacks) this.#queued.push(url);
+    else this.#queue(url);
     return true;
   }
 
@@ -46,9 +51,15 @@ export class OAuthDeepLinkBroker {
   #enqueueDelivery(url: string): void {
     this.#deliveryTail = this.#deliveryTail
       .then(async () => {
-        await this.#consumer?.(url);
+        const consumer = this.#consumer;
+        if (!consumer || !(await consumer(url))) this.#queue(url);
       })
       .catch(() => undefined);
+  }
+
+  #queue(url: string): void {
+    if (this.#queued.length < maximumQueuedCallbacks && !this.#queued.includes(url))
+      this.#queued.push(url);
   }
 }
 
