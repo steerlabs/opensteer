@@ -166,10 +166,15 @@ class RunnerConnectionTest {
             log = {},
         ),
     )
-    @Volatile private var updateResult: PhoneUpdateResult = PhoneUpdateResult.Current
+    private val updateChecks = CopyOnWriteArrayList<PhoneIdentity>()
+    private val admissions = CopyOnWriteArrayList<PhoneIdentity>()
     @Volatile private var requiredUpdateResult: PhoneUpdateResult = PhoneUpdateResult.Current
     private val updater = object : PhoneUpdater {
-        override fun check(identity: PhoneIdentity, required: Boolean) = if (required) requiredUpdateResult else updateResult
+        override fun check(identity: PhoneIdentity): PhoneUpdateResult {
+            updateChecks += identity
+            return requiredUpdateResult
+        }
+        override fun admitted(identity: PhoneIdentity) { admissions += identity }
         override fun cancel() = Unit
     }
     private val connection = RunnerConnection(
@@ -211,20 +216,19 @@ class RunnerConnectionTest {
         val (_, issue) = owner.awaitLink { _, issue -> issue?.detail?.startsWith("Tap Update") == true }
         assertEquals(IssueCode.NEEDS_UPDATE, issue?.code)
         assertTrue(owner.awake)
+        assertEquals(listOf(identity), updateChecks)
         requiredUpdateResult = PhoneUpdateResult.Current
         nextSocket(PRIMARY)
         stoppedCleanly()
     }
 
     @Test
-    fun existingAndroidConsentDoesNotOpenAnotherPrimaryConnectionAndCanResumeWhenItEnds() {
-        updateResult = PhoneUpdateResult.Pending("Tap Update to finish updating Agent Phone.")
+    fun compatibleConnectionProceedsWithoutCheckingForUpdatesAndClearsObsoleteConsent() {
+        requiredUpdateResult = PhoneUpdateResult.Pending("Tap Update to finish updating Agent Phone.")
         connection.start()
-        owner.awaitLink { _, issue -> issue?.detail?.startsWith("Tap Update") == true }
-        assertTrue(opened.isEmpty())
-        updateResult = PhoneUpdateResult.Current
-        connection.identityChanged()
-        nextSocket(PRIMARY)
+        online(nextSocket(PRIMARY))
+        assertTrue(updateChecks.isEmpty())
+        assertEquals(listOf(identity), admissions)
         stoppedCleanly()
     }
 

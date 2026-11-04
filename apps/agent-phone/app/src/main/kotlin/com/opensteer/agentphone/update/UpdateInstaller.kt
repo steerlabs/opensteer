@@ -26,28 +26,17 @@ class UpdateInstaller(private val context: Context) {
     fun state(): String = journal.getString("state", "idle") ?: "idle"
     fun digest(): String? = journal.getString("sha256", null)
 
-    fun pendingState(identity: PhoneIdentity): String? = state().takeIf {
-        journal.getString("scope", null)?.startsWith("${identity.runnerId} ${identity.hostUrl} ") == true &&
-            it in setOf("installing", "awaiting-user") && installer.getSessionInfo(journal.getInt("sessionId", -1)) != null
-    }
+    private val lifecycle = UpdateJournal(journal) { installer.getSessionInfo(it) != null }
 
-    fun pending(identity: PhoneIdentity, offer: UpdateOffer): Boolean =
-        journal.getString("scope", null) == "${identity.runnerId} ${identity.hostUrl} ${offer.sha256}" && pendingState(identity) != null
+    fun pendingState(identity: PhoneIdentity) = lifecycle.pendingState(identity)
+    fun takeCancelled(identity: PhoneIdentity) = lifecycle.takeCancelled(identity)
+    fun begin(identity: PhoneIdentity, offer: UpdateOffer) = lifecycle.begin(identity, offer)
 
-    fun takeCancelled(identity: PhoneIdentity): Boolean {
-        if (state() != "cancelled" || journal.getString("scope", null)?.startsWith("${identity.runnerId} ${identity.hostUrl} ") != true) return false
-        check(journal.edit().putString("state", "idle").remove("sessionId").commit()) { "Could not record the cancelled update" }
-        return true
-    }
-
-    fun begin(identity: PhoneIdentity, offer: UpdateOffer) {
-        val scope = "${identity.runnerId} ${identity.hostUrl} ${offer.sha256}"
-        val attempts = if (journal.getString("scope", null) == scope) journal.getInt("attempts", 0) else 0
-        check(attempts < 3) { "This release already failed three update attempts. Update over USB to try again." }
-        check(journal.edit().putString("scope", scope).putInt("attempts", attempts + 1)
-            .putString("sha256", offer.sha256).putLong("version", offer.versionCode)
-            .putString("state", "downloading").remove("sessionId").commit()) { "Could not save the update attempt" }
-    }
+    fun clearObsoleteConsent(identity: PhoneIdentity) = lifecycle.clearObsoleteConsent(
+        identity,
+        abandon = { session -> runCatching { installer.abandonSession(session) } },
+        cancelNotification = { context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION) },
+    )
 
     fun verify(file: File, offer: UpdateOffer) {
         check(offer.signer == BuildConfig.AGENT_PHONE_UPDATE_SIGNER) { "The update has a foreign signer" }
@@ -110,15 +99,14 @@ class UpdateInstaller(private val context: Context) {
         }
     }
 
-    fun result(intent: Intent) {
+    fun result(intent: Intent) = lifecycle.result(intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -2)) {
         val identity = context.phone.load()
-        if (identity == null || journal.getString("scope", "")?.startsWith("${identity.runnerId} ${identity.hostUrl} ") != true) return abandon()
-        if (intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -2) != journal.getInt("sessionId", -1)) return
+        if (identity == null || journal.getString("scope", "")?.startsWith("${identity.runnerId} ${identity.hostUrl} ") != true) return@result abandon()
         when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
             PackageInstaller.STATUS_SUCCESS -> finishIfInstalled()
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 @Suppress("DEPRECATION")
-                val pending = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT) ?: return failed()
+                val pending = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT) ?: return@result failed()
                 journal.edit().putString("state", "awaiting-user").commit()
                 pending.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 val manager = context.getSystemService(NotificationManager::class.java)
@@ -131,8 +119,7 @@ class UpdateInstaller(private val context: Context) {
                 try { context.startActivity(pending) } catch (error: Exception) { Log.w("AgentPhone", "Open the update notification to continue", error) }
             }
             PackageInstaller.STATUS_FAILURE_ABORTED -> {
-                if (state() == "cancelled") return
-                journal.edit().putString("state", "cancelled").putInt("attempts", (journal.getInt("attempts", 1) - 1).coerceAtLeast(0)).commit()
+                lifecycle.cancelled()
                 context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION)
             }
             else -> failed()
