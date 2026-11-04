@@ -336,35 +336,59 @@ it("changes only entered server secrets from unified plugin detail", async () =>
         }),
       );
       const rpc = client.rpc;
+      const platform = unwrapRpcResult(await rpc["integration.platform.get"]({}));
+      const mcp = platform.installations.find((entry) => entry.servers.length > 0);
+      if (!mcp) throw new Error("Missing MCP fixture");
       serverId = "isv_00000000-0000-4000-8000-000000000009";
       Object.defineProperty(client, "rpc", {
         value: new Proxy(rpc, {
           get: (target, key) =>
-            key === "plugins.detail.get"
+            key === "integration.platform.get"
               ? async () => ({
                   ok: true,
-                  data: { ...detail, installationIds: ["iin_secret_fixture"] },
+                  data: {
+                    ...platform,
+                    installations: [
+                      {
+                        ...mcp,
+                        installation: {
+                          ...mcp.installation,
+                          id: "iin_secret_fixture",
+                          sourceKind: "plugin",
+                        },
+                        servers: mcp.servers.map((server) => ({
+                          ...server,
+                          name: "Plugin mail server",
+                        })),
+                      },
+                    ],
+                  },
                 })
-              : key === "integration.server.secrets.list"
+              : key === "plugins.detail.get"
                 ? async () => ({
                     ok: true,
-                    data: {
-                      servers: [
-                        {
-                          id: serverId,
-                          installationId: "iin_secret_fixture",
-                          plugin: "Gmail",
-                          computer: "Studio Mac",
-                          name: "mail",
-                          secrets: [
-                            { name: "PASSWORD", title: "Mail password" },
-                            { name: "TOKEN", title: "Token" },
-                          ],
-                        },
-                      ],
-                    },
+                    data: { ...detail, installationIds: ["iin_secret_fixture"] },
                   })
-                : Reflect.get(target, key),
+                : key === "integration.server.secrets.list"
+                  ? async () => ({
+                      ok: true,
+                      data: {
+                        servers: [
+                          {
+                            id: serverId,
+                            installationId: "iin_secret_fixture",
+                            plugin: "Gmail",
+                            computer: "Studio Mac",
+                            name: "mail",
+                            secrets: [
+                              { name: "PASSWORD", title: "Mail password" },
+                              { name: "TOKEN", title: "Token" },
+                            ],
+                          },
+                        ],
+                      },
+                    })
+                  : Reflect.get(target, key),
         }),
       });
     },
@@ -375,6 +399,13 @@ it("changes only entered server secrets from unified plugin detail", async () =>
   await act(async () => {
     await vi.waitFor(() => expect(node.textContent).toContain("Secrets on your computers"));
   });
+  await act(async () => {
+    await vi.waitFor(() => expect(node.textContent).toContain("Plugin mail server"));
+  });
+  expect(node.textContent).toContain("MCP servers");
+  expect(
+    [...node.querySelectorAll("button")].some((button) => button.textContent === "Uninstall"),
+  ).toBe(false);
   await act(async () =>
     [...node.querySelectorAll("button")].find((button) => button.textContent === "Change")!.click(),
   );

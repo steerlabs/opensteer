@@ -553,31 +553,62 @@ it.each(["ios", "android"])(
     Object.defineProperty(host, "rpc", {
       value: new Proxy(rpc, {
         get: (target, key) =>
-          key === "integration.server.secrets.list"
-            ? async () => ({
-                ok: true,
-                data: {
-                  servers: [
-                    {
-                      id: serverId,
-                      installationId: "iin_00000000-0000-4000-8000-000000000009",
-                      plugin: "Camera",
-                      computer: "Studio Mac",
-                      name: "camera",
-                      secrets: [
-                        { name: "PASSWORD", title: "Camera password" },
-                        { name: "TOKEN", title: "Token" },
-                      ],
-                    },
-                  ],
-                },
-              })
-            : Reflect.get(target, key),
+          key === "plugins.detail.get"
+            ? async (input: Parameters<(typeof rpc)["plugins.detail.get"]>[0]) => {
+                const result = await rpc["plugins.detail.get"](input);
+                return result.ok
+                  ? {
+                      ...result,
+                      data: {
+                        ...result.data,
+                        installationIds: ["iin_00000000-0000-4000-8000-000000000009"],
+                      },
+                    }
+                  : result;
+              }
+            : key === "integration.server.secrets.list"
+              ? async () => ({
+                  ok: true,
+                  data: {
+                    servers: [
+                      {
+                        id: serverId,
+                        installationId: "iin_00000000-0000-4000-8000-000000000009",
+                        plugin: "Camera",
+                        computer: "Studio Mac",
+                        name: "camera",
+                        secrets: [
+                          { name: "PASSWORD", title: "Camera password" },
+                          { name: "TOKEN", title: "Token" },
+                        ],
+                      },
+                    ],
+                  },
+                })
+              : Reflect.get(target, key),
       }),
     });
     await act(async () =>
       root!.render(
         <SettingsPluginsScreen key="secrets" route={{ params: { deploymentId: "deployment" } }} />,
+      ),
+    );
+    await act(async () => {
+      await vi.waitFor(() =>
+        expect(rows().some((row) => row.label === "Change secrets")).toBe(true),
+      );
+    });
+    await act(async () =>
+      root!.render(
+        <SettingsPluginsScreen
+          key="detail-secrets"
+          route={{
+            params: {
+              deploymentId: "deployment",
+              target: { kind: "service", definitionId: "google-gmail" },
+            },
+          }}
+        />,
       ),
     );
     await act(async () => {
