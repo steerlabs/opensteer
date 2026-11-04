@@ -3,7 +3,7 @@
 import { act, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import {
   accessPlan,
   accessServerChoices,
@@ -1934,7 +1934,7 @@ async function mountThreadAction(
 ) {
   const shell = shellState.current as {
     hostClient: {
-      dispatch: ReturnType<typeof vi.fn>;
+      dispatch: Mock<(command: { type: string }) => Promise<unknown>>;
       rpc: Record<string, (input: { attemptId?: string }) => Promise<unknown>>;
     };
   };
@@ -1942,15 +1942,17 @@ async function mountThreadAction(
     vi.isMockFunction(shell.hostClient.dispatch) &&
     shell.hostClient.dispatch.getMockImplementation() === undefined
   ) {
-    shell.hostClient.dispatch.mockImplementation(async (command: { type: string }) => ({
-      status: command.type === "integration.authorization.cancel" ? "cancelled" : undefined,
-      failureCode: null,
-      connectionId: null,
-      type: command.type,
-      attemptId: createIntegrationId("oauthAttempt"),
-      launchTicket: "t".repeat(43),
-      expiresAt: "2099-01-01T00:00:00Z",
-    }));
+    shell.hostClient.dispatch.mockImplementation((command: { type: string }) =>
+      Promise.resolve({
+        status: command.type === "integration.authorization.cancel" ? "cancelled" : undefined,
+        failureCode: null,
+        connectionId: null,
+        type: command.type,
+        attemptId: createIntegrationId("oauthAttempt"),
+        launchTicket: "t".repeat(43),
+        expiresAt: "2099-01-01T00:00:00Z",
+      }),
+    );
     const get = shell.hostClient.rpc["integration.authorization.get"];
     if (get) {
       const returned = new URL(path, "https://test").searchParams.get("integrationAttempt");
