@@ -173,17 +173,64 @@ describe("RunnerRuntime", () => {
       );
       if (mode === "shutdown") {
         const second = runtime.generateBackgroundText({ ...request, attemptId: randomUUID() });
-        await expect(
-          runtime.generateBackgroundText({ ...request, attemptId: randomUUID() }),
-        ).resolves.toEqual({ ok: false, failure: "unavailable" });
+        // A third attempt waits for a slot rather than failing its candidate.
+        const third = runtime.generateBackgroundText({ ...request, attemptId: randomUUID() });
         await runtime.close();
         await expect(second).resolves.toEqual({ ok: false, failure: "timeout" });
+        await expect(third).resolves.toEqual({ ok: false, failure: "unavailable" });
       }
       await expect(generation).resolves.toEqual({ ok: false, failure: "timeout" });
       expect(() => process.kill(pid, 0)).toThrow();
     } finally {
       await runtime.close();
       await rm(pidFile, { force: true });
+    }
+  });
+
+  it("runs two background attempts at once and starts a third when a slot frees", async () => {
+    const registry = new HarnessRegistry();
+    const driver = new FakeHarnessDriver();
+    const create = driver.create.bind(driver);
+    const releases: (() => void)[] = [];
+    vi.spyOn(driver, "create").mockImplementation(async (input) => ({
+      ...(await create(input)),
+      generateText: async ({ prompt }) => {
+        await new Promise<void>((resolve) => releases.push(resolve));
+        return { ok: true, text: prompt };
+      },
+    }));
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const command = executeCommand(environmentId);
+    const runtime = configuredRuntime({ environmentId, registry });
+    await reconcile(registry, command);
+    const attempt = (prompt: string) =>
+      runtime.generateBackgroundText(
+        HostBackgroundTextSchema.parse({
+          ...testConnectionFence,
+          type: "host.background-text",
+          attemptId: randomUUID(),
+          environmentId,
+          harnessInstanceId: command.context.harnessInstanceId,
+          harnessRevision: command.context.harness.runtimeRevision,
+          modelSelection: command.context.modelSelection,
+          prompt,
+          deadline: new Date(Date.now() + 30_000).toISOString(),
+        }),
+      );
+    try {
+      const attempts = [attempt("first"), attempt("second"), attempt("third")];
+      await vi.waitFor(() => expect(releases).toHaveLength(2), { timeout: 2_000 });
+      releases[0]!();
+      await vi.waitFor(() => expect(releases).toHaveLength(3), { timeout: 2_000 });
+      releases[1]!();
+      releases[2]!();
+      await expect(Promise.all(attempts)).resolves.toEqual(
+        ["first", "second", "third"].map((text) => ({ ok: true, text })),
+      );
+    } finally {
+      for (const release of releases) release();
+      await runtime.close();
     }
   });
 

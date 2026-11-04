@@ -8,6 +8,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, readFile, lstat } from "node:fs/promises";
 import { platform } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import { join, resolve } from "node:path";
 import { defaultRunnerMaxConcurrentTriggerPrograms, type RunnerConfig } from "@opensteer/config";
 import {
@@ -895,6 +896,18 @@ export class RunnerRuntime {
   async generateBackgroundText(
     request: Extract<HostToRunnerMessage, { type: "host.background-text" }>,
   ): Promise<HarnessGenerateTextResult> {
+    if (this.#backgroundText.has(request.attemptId)) return { ok: false, failure: "unavailable" };
+    // Two at a time. A busy Runner is not a failed model, so a third attempt
+    // waits for a slot within its own deadline.
+    while (this.#backgroundText.size >= 2 && !this.#draining) {
+      const waited = Date.parse(request.deadline) - Date.now();
+      if (waited <= 0) return { ok: false, failure: "timeout" };
+      const slot = new AbortController();
+      await Promise.race([
+        ...[...this.#backgroundText.values()].map((attempt) => attempt.task),
+        sleep(waited, undefined, { signal: slot.signal }).catch(() => undefined),
+      ]).finally(() => slot.abort());
+    }
     const definition = this.#harnesses.state(request.harnessInstanceId)?.definition;
     if (
       this.#draining ||
@@ -903,7 +916,6 @@ export class RunnerRuntime {
       definition.runtimeRevision !== request.harnessRevision ||
       this.#harnessMaintenance.has(definition.id) ||
       this.#driverMaintenance.has(definition.driverKind) ||
-      this.#backgroundText.size >= 2 ||
       this.#backgroundText.has(request.attemptId)
     )
       return { ok: false, failure: "unavailable" };

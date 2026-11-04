@@ -343,14 +343,30 @@ integration("Warm engines", () => {
         "--restate-usage",
         ...arguments_,
       ]);
+      const stored = () =>
+        active.host.store.database
+          .selectFrom("threads")
+          .select(["title", "icon", "iconSource"])
+          .where("id", "=", threadId)
+          .executeTakeFirstOrThrow();
+      // Naming runs beside each Run, not in it: it settles when its symbol is
+      // stored or, failing, once its account's catalog has been asked afresh.
+      const namingSettled = (turns: number) =>
+        waitFor(async () => {
+          const lines = await captured(captureFile);
+          const named = lines.filter((line) => line.fakeTitleTurn);
+          const last = lines.findLastIndex((line) => line.fakeTitleTurn);
+          return (
+            named.length >= turns &&
+            ((await stored()).iconSource === "generated" ||
+              lines.slice(last).some((line) => line.method === "model/list"))
+          );
+        }, `naming turn ${turns} to settle`);
       const first = await run(active, threadId, "First question");
+      await namingSettled(1);
       const second = await run(active, threadId, "Second question");
-      const stored = await active.host.store.database
-        .selectFrom("threads")
-        .select(["title", "icon", "iconSource"])
-        .where("id", "=", threadId)
-        .executeTakeFirstOrThrow();
-      expect(stored).toEqual({ title: "Warm journey", icon, iconSource });
+      await namingSettled(calls);
+      expect(await stored()).toEqual({ title: "Warm journey", icon, iconSource });
       const capture = await captured(captureFile);
       const naming = capture.flatMap((line) => (line.fakeTitleTurn ? [line.fakeTitleTurn] : []));
       expect(naming).toHaveLength(calls);
@@ -389,7 +405,7 @@ integration("Warm engines", () => {
       journeys.push({
         engines: 1,
         name: `naming: ${name}`,
-        notes: { naming, stored, engineStarts: starts, usage },
+        notes: { naming, stored: await stored(), engineStarts: starts, usage },
         runMs: [first.ms, second.ms],
       });
     },

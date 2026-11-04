@@ -123,6 +123,17 @@ it("limits only the relevant provider and model windows until reset", () => {
   expect(resolveBackgroundCandidates("light", value).map((c) => c.modelSelection.modelId)).toEqual([
     "claude-haiku-4-5",
   ]);
+  // Usage is an observation: the task's own model runs its work regardless,
+  // so it still closes the list.
+  expect(
+    resolveBackgroundCandidates("light", {
+      ...value,
+      taskModelFallback: { ...current, modelSelection: selection, reason: "task-model" },
+    }).map((c) => [c.modelSelection.modelId, c.reason]),
+  ).toEqual([
+    ["claude-haiku-4-5", "ranked"],
+    ["claude-haiku-5-5", "task-model"],
+  ]);
   expect(
     resolveBackgroundCandidates(
       "light",
@@ -159,7 +170,7 @@ it("tries a pin first then continues through automatic ranking", () => {
 
   expect(resolveBackgroundCandidates("light", value)).toHaveLength(2);
 });
-it("orders by rank, default account, origin and stable identity; deduplicates final fallback", () => {
+it("orders by rank, default account, origin and stable identity; always closes with the task model", () => {
   const a = account(1),
     b = account(2),
     c = { ...account(3), isDefault: false };
@@ -174,7 +185,13 @@ it("orders by rank, default account, origin and stable identity; deduplicates fi
     a.environmentId,
     c.environmentId,
   ]);
-  expect(candidates).toHaveLength(6);
+  // Six ranked; the task model repeats a's first and still closes the list.
+  expect(candidates).toHaveLength(7);
+  expect(candidates.at(-1)).toMatchObject({
+    environmentId: a.environmentId,
+    reason: "task-model",
+    modelSelection: { modelId: selection.modelId },
+  });
 });
 
 it("honors a usable pin before ranking, then deduplicates it", () => {

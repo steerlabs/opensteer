@@ -4,7 +4,7 @@ import type { OpensteerStore } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import { BackgroundTextAttemptIdSchema } from "@opensteer/protocol";
 import { parseGeneratedThreadName, threadTitlePrompt } from "@opensteer/harness";
-import { resolveBackgroundCandidates } from "./background-models.js";
+import { backgroundCandidateKey, resolveBackgroundCandidates } from "./background-models.js";
 import { readBackgroundResolutionInput } from "./background-model-settings.js";
 import {
   harnessInspectionDefinition,
@@ -16,16 +16,9 @@ export function namingCandidates(
   candidates: readonly ResolvedBackgroundCandidate[],
   fallback: ResolvedBackgroundCandidate | undefined,
 ) {
-  const key = (candidate: ResolvedBackgroundCandidate) =>
-    JSON.stringify([
-      candidate.environmentId,
-      candidate.harnessInstanceId,
-      candidate.modelSelection.providerId,
-      candidate.modelSelection.modelId,
-      Object.entries(candidate.modelSelection.options).sort(),
-    ]);
   const ranked = candidates.filter((candidate) => candidate.reason !== "task-model").slice(0, 3);
-  if (fallback && !ranked.some((candidate) => key(candidate) === key(fallback)))
+  const key = fallback && backgroundCandidateKey(fallback);
+  if (fallback && !ranked.some((candidate) => backgroundCandidateKey(candidate) === key))
     ranked.push(fallback);
   return ranked;
 }
@@ -95,20 +88,9 @@ export class ThreadNaming {
       originatingEnvironmentId: input.environmentId,
       ...(taskModelFallback ? { taskModelFallback } : {}),
     });
-    // Resolve the fallback alone too: if ranking already deduplicated it, retain its native selection.
-    const fallback =
-      taskModelFallback &&
-      resolved.find(
-        (candidate) =>
-          candidate.environmentId === taskModelFallback.environmentId &&
-          candidate.harnessInstanceId === taskModelFallback.harnessInstanceId &&
-          candidate.modelSelection.providerId === taskModelFallback.modelSelection.providerId &&
-          candidate.modelSelection.modelId === taskModelFallback.modelSelection.modelId &&
-          JSON.stringify(Object.entries(candidate.modelSelection.options).sort()) ===
-            JSON.stringify(Object.entries(taskModelFallback.modelSelection.options).sort()),
-      );
+    const fallback = resolved.find((candidate) => candidate.reason === "task-model");
     const deadline = Date.now() + 120_000;
-    for (const candidate of namingCandidates(resolved, fallback || undefined)) {
+    for (const candidate of namingCandidates(resolved, fallback)) {
       if (Date.now() >= deadline || this.#shutdown.signal.aborted) return;
       const identity = runners.identityForEnvironment(candidate.environmentId);
       if (!identity) continue;
