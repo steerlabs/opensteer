@@ -89,6 +89,7 @@ describeStore("MCP administration", (it) => {
         workspaces: { setIcon: f.store.setWorkspaceIcon.bind(f.store) },
         workspaceDeletion: deletion,
         apps: { stopWorkspace: vi.fn() },
+        integrations: { platform: { store: new IntegrationPlatformStore(f.database) } },
       } as unknown as AdministrationDependencies,
       run.userId,
     );
@@ -139,6 +140,10 @@ describeStore("MCP administration", (it) => {
           ).toHaveLength(4),
         { timeout: 2000 },
       );
+      expect(
+        rt.messages.filter((message) => message.type === "host.plugins-changed"),
+        "Settings on another device was never told the Project's plugin places changed",
+      ).toHaveLength(1);
       agent.scope(project.id);
       await expect(
         agent.call("project_write", { action: "delete", workspaceId: other.id }),

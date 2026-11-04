@@ -689,6 +689,7 @@ describe("HostCommandDispatcher model selection", () => {
       ...input,
       capabilities: [
         "settings-plugin-policy-v1",
+        "agent-tools-plan-v1",
         "native-session-continuation-v1",
         "assignments-v1",
         "thread-state-v1",

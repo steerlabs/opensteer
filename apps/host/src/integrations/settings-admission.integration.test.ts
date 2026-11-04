@@ -132,7 +132,7 @@ describeStore("Settings invocation admission", (test) => {
       enabled: false,
       idempotencyKey: "off",
     });
-    await expect(call()).rejects.toThrow();
+    await expect(call()).rejects.toThrow("Integration operation is no longer available");
     expect(callTool).toHaveBeenCalledTimes(1);
     await store.settings.setEnabled(run.userId, {
       type: "settings.plugin.enabled.set",
@@ -155,7 +155,7 @@ describeStore("Settings invocation admission", (test) => {
       },
       {},
     );
-    await expect(call()).rejects.toThrow();
+    await expect(call()).rejects.toThrow("Integration operation is no longer available");
     expect(callTool).toHaveBeenCalledTimes(2);
   });
 });
