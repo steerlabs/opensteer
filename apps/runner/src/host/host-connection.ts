@@ -1226,12 +1226,33 @@ class AgentsWorkSession implements RunnerWorkSession {
    * of the connection itself.
    */
   readonly #voiceResponses = new Set<Promise<void>>();
+  readonly #initialSkills: Promise<void>;
   #ordered: Promise<void> = Promise.resolve();
   #orderedPending = 0;
 
   constructor(options: AgentsWorkSessionOptions) {
     this.#options = options;
+    options.agents.runtime.observeWorkspaceSkills(async (workspaceId, scan) => {
+      const local = options.agents.localWorkspaces;
+      if (!local || this.#signal.aborted) return;
+      const inventory = await local.inventory();
+      const entry = inventory.bindings.find(
+        (binding) => binding.workspaceId === workspaceId && binding.state === "ready",
+      );
+      if (!entry) return;
+      await this.#reportSkills(
+        {
+          ...entry,
+          ownerEnvironmentId: options.environmentId(),
+          storageAuthorityId: inventory.storageAuthorityId,
+        },
+        local.service.skillMetadata(scan),
+      );
+    });
     this.#signal = AbortSignal.any([options.signal, this.#lifetime.signal]);
+    this.#initialSkills = this.#reportInitialSkills().catch(() =>
+      options.fail("Workspace skill inventory reporting failed"),
+    );
     this.#unsubscribePreparation = options.agents.runtime.subscribeHarnessPreparation(
       (harnessInstanceId) => {
         this.#invalidatedHarnesses.add(harnessInstanceId);
@@ -1334,10 +1355,12 @@ class AgentsWorkSession implements RunnerWorkSession {
 
   async close(): Promise<void> {
     this.#unsubscribePreparation();
+    this.#options.agents.runtime.observeWorkspaceSkills(undefined);
     this.#lifetime.abort(new Error("Host connection stopped"));
     await withTimeout(
       Promise.allSettled([
         this.#ordered,
+        this.#initialSkills,
         ...this.#catalogResponses,
         ...this.#authenticationResponses,
         ...this.#modelServerResponses,
@@ -1572,6 +1595,59 @@ class AgentsWorkSession implements RunnerWorkSession {
     }
   }
 
+  async #reportInitialSkills(): Promise<void> {
+    const local = this.#options.agents.localWorkspaces;
+    if (!local) return;
+    const inventory = await local.inventory();
+    for (const entry of inventory.bindings) {
+      if (this.#signal.aborted) return;
+      if (entry.state !== "ready") continue;
+      const binding = {
+        bindingId: entry.bindingId,
+        generation: entry.generation,
+        workspaceId: entry.workspaceId,
+        ownerEnvironmentId: this.#options.environmentId(),
+        storageAuthorityId: inventory.storageAuthorityId,
+      };
+      const sequence = ++this.#skillSequence;
+      await this.#reportSkills(
+        binding,
+        await local.service.scanSkills(
+          binding,
+          AbortSignal.any([this.#signal, AbortSignal.timeout(30_000)]),
+        ),
+        sequence,
+      );
+    }
+  }
+
+  #skillSequence = 0;
+
+  async #reportSkills(
+    binding: import("@opensteer/protocol").LocalWorkspaceBindingRef,
+    result: import("@opensteer/protocol").RunnerSkillMetadataReport["result"],
+    sequence = ++this.#skillSequence,
+  ): Promise<void> {
+    if (this.#signal.aborted) return;
+    // Construct the wire object explicitly: the local inventory also contains paths.
+    await this.#options.sink.send({
+      ...this.#options.fence.fence,
+      environmentId: this.#options.environmentId(),
+      storageAuthorityId: binding.storageAuthorityId,
+      type: "runner.skills.report",
+      binding: {
+        bindingId: binding.bindingId,
+        generation: binding.generation,
+        ownerEnvironmentId: binding.ownerEnvironmentId,
+        storageAuthorityId: binding.storageAuthorityId,
+        workspaceId: binding.workspaceId,
+      },
+      scanSequence: sequence,
+      scannedAt: new Date().toISOString(),
+      result,
+    });
+  }
+
   async #answerWorkspaceRequest(request: HostWorkspaceLocalRequest): Promise<void> {
     const local = this.#options.agents.localWorkspaces;
     if (!local) {
@@ -1588,6 +1664,20 @@ class AgentsWorkSession implements RunnerWorkSession {
       AbortSignal.timeout(30_000),
     );
     await this.#options.sink.send(result);
+    if (
+      result.type === "runner.workspace.local.provisioned" ||
+      (result.type === "runner.workspace.local.inspected" && result.health.status === "ready")
+    ) {
+      const sequence = ++this.#skillSequence;
+      await this.#reportSkills(
+        request.binding,
+        await local.service.scanSkills(
+          request.binding,
+          AbortSignal.any([this.#signal, AbortSignal.timeout(30_000)]),
+        ),
+        sequence,
+      );
+    }
   }
 
   #flushPreparationNotifications(): void {
@@ -2040,6 +2130,7 @@ function hostMessageFence(message: PostAuthenticationHostMessage): RunnerConnect
 
 function runnerCapabilities(): RunnerCapability[] {
   return [
+    "settings-plugin-policy-v1",
     "assignments-v1",
     "attempts-v1",
     "browser-page-input-v1",

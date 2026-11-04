@@ -356,7 +356,7 @@ integration("messaging end to end", () => {
     expect(slack.ephemeral).toHaveLength(0);
     expect(invitation.threadTs).toBeNull();
     expect(invitation.deliveryId).not.toBeNull();
-    expect(invitation.text).toContain(`${canonicalOrigin}/settings/apps/messaging`);
+    expect(invitation.text).toContain(`${canonicalOrigin}/settings/messaging`);
     const code = /\*([A-HJ-NP-Z2-9]{8})\*/u.exec(invitation.text)?.[1];
     expect(code).toBeDefined();
     linkCode = code ?? "";
@@ -771,7 +771,7 @@ integration("messaging end to end", () => {
     // sent to a direct message instead.
     expect(slackChannelProviderManifest.actorDelivery).toBe("in-conversation");
     expect(ephemeral.channel).toBe(roomChannelId);
-    expect(ephemeral.text).toContain(`${canonicalOrigin}/settings/apps/messaging`);
+    expect(ephemeral.text).toContain(`${canonicalOrigin}/settings/messaging`);
     expect(/\*[A-HJ-NP-Z2-9]{8}\*/u.test(ephemeral.text)).toBe(true);
     expect(slack.posted.filter(({ channel }) => channel === roomChannelId)).toEqual(
       slack.posted.filter(

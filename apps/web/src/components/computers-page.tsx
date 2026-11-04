@@ -103,7 +103,7 @@ export function machineRemovalStakes(machine: MachineSummary): string | null {
 /** The stakes, asked as the question the browser puts before the command. */
 export function machineRemovalPrompt(machine: MachineSummary): string {
   const stakes = machineRemovalStakes(machine);
-  return `Remove ${machine.name}? Agents will no longer be able to use it.${stakes ? ` ${stakes}` : ""}`;
+  return `Remove ${machine.name}? Agents will no longer be able to use it.${stakes ? ` ${stakes}` : ""}\n\nAgent access: apps, Terminal, screen control and shared folders stop being available here.\nFiles and saved browser profiles: stay on the computer.\nSigned-in sessions: remain signed in. Manage those in Account.`;
 }
 
 /**
@@ -966,7 +966,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
     } finally {
       setRemoving(false);
     }
-    void navigate("/settings/computers");
+    void navigate("/settings/devices/computers");
   }
 
   return (
@@ -1109,6 +1109,14 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
               ) : null}
             </div>
           </section>
+        ) : null}
+
+        {machine.allowedModules.includes("browser") ? (
+          <Link className="card card__row" to="/settings/sign-ins/browsers">
+            <Icon name="browser" />
+            <span className="card__row-body">Opensteer browsers</span>
+            <Icon name="chevron-right" />
+          </Link>
         ) : null}
 
         {apps.data && phone ? (
@@ -1332,7 +1340,7 @@ function phoneStatus(machine: MachineSummary): ComputerStatus {
 }
 
 function computerRoute(machineId: string): string {
-  return `/settings/computers/${encodeURIComponent(machineId)}`;
+  return `/settings/devices/computers/${encodeURIComponent(machineId)}`;
 }
 
 /**
@@ -1359,7 +1367,7 @@ export function computerAppIdFromHash(hash: string): string | null {
 
 function ComputersBackLink() {
   return (
-    <Link className="page__back" to="/settings/computers">
+    <Link className="page__back" to="/settings/devices/computers">
       <Icon name="arrow-left" />
       Computers
     </Link>

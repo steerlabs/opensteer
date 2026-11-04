@@ -87,7 +87,10 @@ import { planAgentSkills, type AgentSkillBundle } from "../skills/agent-skills.j
 import type { RunnerLogger } from "../host/host-connection.js";
 import { cacheRunPlugins } from "../skills/plugin-cache.js";
 import { resolveSkillPlan } from "../skills/skill-plan.js";
-import { discoverWorkspaceSkills } from "../skills/workspace-skills.js";
+import {
+  type DiscoveredWorkspaceSkills,
+  discoverWorkspaceSkills,
+} from "../skills/workspace-skills.js";
 import { BrowserCdpRelay } from "../browser/browser-cdp-relay.js";
 import { CredentialProxy } from "../credentials/credential-proxy.js";
 import { RunCredentials } from "../credentials/run-credentials.js";
@@ -404,6 +407,33 @@ export class RunnerRuntime {
   readonly #threads = new Map<ThreadId, RunId>();
   readonly #triggerPrograms = new Map<TriggerOccurrenceId, ActiveTriggerProgram>();
   readonly #workspaceManager: WorkspaceAccessManager;
+  #skillObserver:
+    | ((workspaceId: WorkspaceId, scan: DiscoveredWorkspaceSkills | undefined) => Promise<void>)
+    | undefined;
+
+  observeWorkspaceSkills(
+    observer:
+      | ((workspaceId: WorkspaceId, scan: DiscoveredWorkspaceSkills | undefined) => Promise<void>)
+      | undefined,
+  ): void {
+    this.#skillObserver = observer;
+  }
+
+  async #scanWorkspaceSkills(
+    workspaceId: WorkspaceId,
+    path: string,
+  ): Promise<DiscoveredWorkspaceSkills> {
+    let scan: DiscoveredWorkspaceSkills;
+    try {
+      scan = await discoverWorkspaceSkills(path);
+    } catch (error) {
+      await this.#skillObserver?.(workspaceId, undefined).catch(() => undefined);
+      throw error;
+    }
+    await this.#skillObserver?.(workspaceId, scan).catch(() => undefined);
+    return scan;
+  }
+
   readonly #watchSupervisor: Pick<
     WatchSupervisor,
     "activeActivationIds" | "close" | "connectionLost" | "reconcile"
@@ -2347,7 +2377,9 @@ export class RunnerRuntime {
         };
         writableRoots = [cwd];
       }
-      const workspaceSkills = await discoverWorkspaceSkills(workspace.path);
+      const workspaceSkills = context.specialistId
+        ? await discoverWorkspaceSkills(workspace.path)
+        : await this.#scanWorkspaceSkills(context.workspaceId, workspace.path);
       for (const warning of workspaceSkills.warnings) {
         this.#logger?.info(warning, {
           runId: context.runId,
@@ -2357,7 +2389,12 @@ export class RunnerRuntime {
       const skills = resolveSkillPlan({
         bundled: planAgentSkills(this.#agentSkills, context.agentTools.skills),
         integration: runSkills.skills,
-        workspace: context.specialistId ? [] : workspaceSkills.skills,
+        workspace: context.specialistId
+          ? []
+          : workspaceSkills.skills.filter(
+              (skill) =>
+                !context.plugins.workspaceSkillPolicy?.disabledFullNames.includes(skill.fullName),
+            ),
       });
       // An engine that outlives its Run serves the Thread's next one only when
       // everything it was started with is the same, the launch directory it
@@ -2744,6 +2781,9 @@ export class RunnerRuntime {
           ? { data: { status: "interrupted" }, type: "run.interrupted" }
           : failureEvent(safeMessage(error, safeMessageOptions), "runner_execution_error");
     } finally {
+      if (workspace && !context.specialistId && this.#skillObserver) {
+        await this.#scanWorkspaceSkills(context.workspaceId, workspace.path).catch(() => undefined);
+      }
       // Naming owns another process in this containment scope. It must exit
       // before stop, the single-tree warm check, or credential teardown.
       await titleTask;
@@ -3499,6 +3539,7 @@ export function warmEngineKey(input: {
         [...context.plugins.versions].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
         input.skills,
         input.workspaceSkillsDigest,
+        context.plugins.workspaceSkillPolicy ?? null,
         context.agentTools.url,
         context.browserCdp.url,
         input.attachmentRoot,

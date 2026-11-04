@@ -41,3 +41,6 @@ export * from "./agent-connection-store.js";
 export * from "./thread-caller.js";
 
 export { readThreadWaitSnapshot } from "./thread-wait.js";
+
+export * from "./plugin-settings-store.js";
+export type { WorkspaceSkillInventory } from "./workspace-skill-inventory-store.js";

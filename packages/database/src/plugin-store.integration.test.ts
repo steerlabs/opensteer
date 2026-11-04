@@ -1,5 +1,5 @@
 import { createTestWorkspace } from "./workspace-fixture.test-support.js";
-import { sql } from "kysely";
+import { sql, type KyselyPlugin } from "kysely";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { pluginsMigration } from "./migrations.js";
 import { randomUUID } from "node:crypto";
@@ -10,6 +10,49 @@ import { testContinuationIdentity } from "./store.integration.test-support.js";
 import { describeStore } from "./store.integration.test-support.js";
 
 describeStore("plugin activation", (test) => {
+  test("lists growing inventories with four queries and keeps Workspace filtering", async ({
+    storeFixture: fixture,
+  }) => {
+    const run = await fixture.createRunFixture("plugin-query-count");
+    let queries = 0;
+    const counter: KyselyPlugin = {
+      transformQuery({ node }) {
+        queries += 1;
+        return node;
+      },
+      async transformResult({ result }) {
+        return result;
+      },
+    };
+    const platform = new IntegrationPlatformStore(fixture.database.withPlugin(counter));
+    const install = async (name: string, workspaceId?: typeof run.workspace.id) => {
+      await platform.plugins.install({
+        id: randomUUID(),
+        name,
+        actorUserId: run.userId,
+        ...(workspaceId ? { workspaceId } : {}),
+        source: {},
+        digest: name,
+        manifest: { name },
+      });
+    };
+    await install("first");
+    queries = 0;
+    expect(await platform.plugins.list()).toHaveLength(1);
+    expect(queries).toBe(4);
+    for (let index = 0; index < 12; index += 1) await install(`package-${index}`);
+    await install("local", run.workspace.id);
+    queries = 0;
+    const rows = await platform.plugins.list(run.workspace.id);
+    expect(rows).toHaveLength(14);
+    expect(queries).toBe(4);
+    expect(rows.every((row) => row.versions.length === 1)).toBe(true);
+    expect(rows.find((row) => row.name === "local")?.activations).toHaveLength(1);
+    const elsewhere = createId("workspace");
+    queries = 0;
+    expect(await platform.plugins.list(elsewhere)).toHaveLength(13);
+    expect(queries).toBe(4);
+  });
   test("Project creation and reconciliation preserve one conversation with Workspace authority", async ({
     storeFixture: fixture,
   }) => {

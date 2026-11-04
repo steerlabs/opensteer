@@ -40,6 +40,7 @@ export interface SignInsSettingsActions {
 }
 
 export interface SettingsFormActionHandlers {
+  readonly onChooseModel?: (() => void) | undefined;
   readonly onAccountAction: () => void;
   readonly onComputerAction: (destination: ComputerSettingsDestination) => void;
   readonly onDeploymentAction: () => void;
@@ -57,22 +58,17 @@ export interface RemoteAdministrationSettings {
   readonly error: string | null;
   readonly busy: boolean;
   readonly onAction: (
-    action: "off" | "connect" | "private" | "rotate" | "unlink" | "recover" | "pair" | "link",
+    action:
+      "off" | "connect" | "private" | "rotate" | "unlink" | "recover" | "pair" | "link" | "mode",
   ) => void;
   readonly onRemove: (session: import("@opensteer/core").AuthSessionSummary) => void;
   readonly onRefresh: () => void;
 }
 
-export interface ConnectedAgentsSettings {
-  readonly workspaces: readonly { id: string; name: string }[];
-  readonly connections: readonly import("@opensteer/protocol").AgentConnection[] | null;
-  readonly error: string | null;
-  readonly pending: string | null;
-  readonly onRefresh: () => void;
-  readonly onRevoke: (id: string) => void;
-}
+export type SettingsPage = "general" | "account" | "devices" | "ai" | "sign-ins";
+
 export interface SettingsFormProps extends SettingsFormActionHandlers {
-  readonly connectedAgents?: ConnectedAgentsSettings | undefined;
+  readonly page?: SettingsPage;
   readonly administration?: RemoteAdministrationSettings | undefined;
   /** Null in a build without an Account service. */
   readonly account: AccountSettingsModel | null;

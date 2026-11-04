@@ -1085,6 +1085,9 @@ export class HttpHostClient {
   #viewerGeneration = 0;
   #savedViewReadiness = emptySavedViewReadiness();
   readonly #notificationListeners = new Set<(notification: NotificationView) => void>();
+  readonly #pluginsChangedListeners = new Set<
+    (message: { type: "host.plugins-changed" }) => void
+  >();
   readonly #personalRemoteAccessListeners = new Set<() => void>();
   readonly #connectionsListeners = new Set<() => void>();
   readonly #personShowListeners = new Set<(message: PersonShowMessage) => void>();
@@ -2535,6 +2538,12 @@ export class HttpHostClient {
     return () => this.#notificationListeners.delete(listener);
   }
 
+  subscribePluginsChanged(
+    listener: (message: { type: "host.plugins-changed" }) => void,
+  ): () => void {
+    this.#pluginsChangedListeners.add(listener);
+    return () => this.#pluginsChangedListeners.delete(listener);
+  }
   subscribePersonalRemoteAccess(listener: () => void): () => void {
     this.#personalRemoteAccessListeners.add(listener);
     return () => this.#personalRemoteAccessListeners.delete(listener);
@@ -4955,6 +4964,10 @@ export class HttpHostClient {
     }
     if (message.type === "host.connections-changed") {
       for (const listener of this.#connectionsListeners) listener();
+      return;
+    }
+    if (message.type === "host.plugins-changed") {
+      for (const listener of this.#pluginsChangedListeners) listener(message);
       return;
     }
     if (message.type === "host.requests-changed") {

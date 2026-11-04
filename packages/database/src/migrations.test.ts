@@ -156,10 +156,13 @@ const releasedMigrationNames = [
   "0146_every_turn_shows",
   "0147_quiet_assignment_results",
   "0148_local_mcp_server_secrets",
-  "0149_consent_scope",
-  "0150_agent_connections",
-  "0151_connection_message_authors",
-  "0152_specialist_auto_bind",
+  "0149_plugin_owner_settings",
+  "0150_workspace_skill_inventory",
+  "0151_plugin_settings_revisions",
+  "0152_consent_scope",
+  "0153_agent_connections",
+  "0154_connection_message_authors",
+  "0155_specialist_auto_bind",
 ];
 
 describe("migration names", () => {

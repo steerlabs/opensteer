@@ -51,6 +51,7 @@ export const databaseLockOrder = [
   "channel_ingress_events",
   "advisory:lane",
   "advisory:command-idempotency",
+  "advisory:plugin-owner-consent",
   // Run admission and control precede Occurrences and browser execution state.
   "agent_connections",
   "runs",
@@ -87,6 +88,7 @@ export const databaseLockOrder = [
   // Environment and profile fences prevent rebinding or catalog adoption across Thread work.
   "execution_environments",
   "harness_instances",
+  "workspace_skill_inventory",
   // Independent lifecycle rows retain their position when no observed edge constrains them.
   "request_continuations",
   "advisory:grant",
@@ -210,6 +212,9 @@ export const databaseLockOrder = [
   // A message's included pages are credited after everything that kept the message.
   "advisory:browser-session-use",
   "browser_session_uses",
+  // Consent revisions follow placement mutations, before their authority invalidation.
+  "plugin_settings_revision_pending",
+  "plugin_owner_settings",
   // Deferred invalidations and sorted generation updates follow all source mutations.
   "integration_authority_pending",
   "integration_authority_generations",
@@ -271,6 +276,7 @@ export function advisoryLockResource(key: string, seed: number): string {
   for (const [prefix, domain] of Object.entries(namespaced))
     if (key.startsWith(prefix)) return `advisory:${domain}`;
   const prefixes = [
+    "plugin-owner-consent",
     "workspace-tab-reopen",
     "browser-source-pairing",
     "browser-sources-owner",

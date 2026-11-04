@@ -1569,6 +1569,16 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     );
   }
 
+  async installedCatalogDefinitionIds(): Promise<readonly string[]> {
+    const rows = await this.database
+      .selectFrom("integrationInstallations")
+      .select("provenance")
+      .execute();
+    return rows.flatMap(({ provenance }) =>
+      typeof provenance.definitionId === "string" ? [provenance.definitionId] : [],
+    );
+  }
+
   async listInstallations(): Promise<readonly IntegrationInstallation[]> {
     const rows = await this.database
       .selectFrom("integrationInstallations")
@@ -1686,6 +1696,29 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       this.activeGrants({ ownerUserId: input.ownerUserId, workspaceId: input.workspaceId }),
       this.mainAccess(input),
     ]);
+    const policySettings = await this.database
+      .selectFrom("pluginOwnerSettings")
+      .selectAll()
+      .where("ownerUserId", "=", input.ownerUserId)
+      .execute();
+    const policyWorkspace = await this.database
+      .selectFrom("workspaces")
+      .select("kind")
+      .where("id", "=", input.workspaceId)
+      .executeTakeFirst();
+    const deniedSettings = policySettings.filter(
+      (s) => !s.enabled || (policyWorkspace?.kind === "main" && !s.mainIncluded),
+    );
+    const deniedDefinitions = new Set(
+      deniedSettings.flatMap((s) =>
+        s.target.kind === "service" || s.target.kind === "device-app"
+          ? [s.target.definitionId]
+          : [],
+      ),
+    );
+    const deniedPlugins = new Set(
+      deniedSettings.flatMap((s) => (s.target.kind === "plugin" ? [s.target.pluginId] : [])),
+    );
     const inheritedMainAccess = mainAccess === "inherited";
     const activeGrants = grants.filter(({ status }) => status === "active");
     // A lineage below its owner's Main sees only what this Workspace was
@@ -1697,6 +1730,9 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
             activeGrants.some(({ connectionId }) => connectionId === id),
           )
         : authority.connections;
+    connections = connections.filter(
+      (c) => !c.definitionId || !deniedDefinitions.has(c.definitionId),
+    );
     const specialistThread = input.threadId
       ? await this.database
           .selectFrom("threads")
@@ -1728,136 +1764,143 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       connections = connections.filter((connection) => ceilings.get(connection.id));
     }
     return Promise.all(
-      installations.map(async (row) => {
-        const installation = installationFromRow(row);
-        const [servers, tools] = await Promise.all([
-          this.listServers(row.id),
-          this.listTools(row.id, input.ownerUserId),
-        ]);
-        const serverById = new Map(servers.map((server) => [server.id, server]));
-        const installationConnections = connections.filter((connection) =>
-          servers.some((server) => {
-            const requirement = server.connectionRequirement;
-            if (requirement.kind === "provider") {
+      installations
+        .filter(
+          (row) =>
+            (!row.pluginId || !deniedPlugins.has(row.pluginId)) &&
+            !deniedDefinitions.has(installationDefinitionId(row)),
+        )
+        .map(async (row) => {
+          const installation = installationFromRow(row);
+          const [servers, tools] = await Promise.all([
+            this.listServers(row.id),
+            this.listTools(row.id, input.ownerUserId),
+          ]);
+          const serverById = new Map(servers.map((server) => [server.id, server]));
+          const installationConnections = connections.filter((connection) =>
+            servers.some((server) => {
+              const requirement = server.connectionRequirement;
+              if (requirement.kind === "provider") {
+                return (
+                  connection.connectionKind === "provider-account" &&
+                  connection.definitionId === requirement.definitionId &&
+                  connection.provider === requirement.provider
+                );
+              }
+              if (requirement.kind === "computer") {
+                return (
+                  connection.connectionKind === "computer" &&
+                  connection.definitionId === requirement.definitionId &&
+                  connection.integrationServerId === server.id
+                );
+              }
               return (
-                connection.connectionKind === "provider-account" &&
-                connection.definitionId === requirement.definitionId &&
-                connection.provider === requirement.provider
-              );
-            }
-            if (requirement.kind === "computer") {
-              return (
-                connection.connectionKind === "computer" &&
-                connection.definitionId === requirement.definitionId &&
+                requirement.kind === "mcp-oauth" &&
+                connection.connectionKind === "mcp-oauth" &&
                 connection.integrationServerId === server.id
               );
-            }
-            return (
-              requirement.kind === "mcp-oauth" &&
-              connection.connectionKind === "mcp-oauth" &&
-              connection.integrationServerId === server.id
-            );
-          }),
-        );
-        const hasInstallationAccess = (
-          connectionId: IntegrationConnectionId | null,
-          requiredAccess: IntegrationAccess,
-        ) => {
-          if (
-            specialistThread?.specialistId &&
-            (!connectionId ||
-              !ceilings.get(connectionId) ||
-              (requiredAccess === "read-write" && ceilings.get(connectionId) !== "read-write"))
-          )
-            return false;
-          const connection =
-            connectionId === null
-              ? null
-              : (installationConnections.find(({ id }) => id === connectionId) ?? null);
-          return (
-            (inheritedMainAccess &&
-              (requiredAccess === "read" ||
-                effectiveIntegrationAccess("read-write", connection) === "read-write")) ||
-            activeGrants.some(
-              (grant) =>
-                grant.installationId === installation.id &&
-                grant.connectionId === connectionId &&
-                (requiredAccess === "read" ||
-                  effectiveIntegrationAccess(grant.access, connection) === "read-write"),
-            )
-          );
-        };
-        const readinessFor = (
-          server: IntegrationServer,
-          tool: IntegrationTool | null,
-        ): IntegrationReadiness =>
-          resolveIntegrationReadiness({
-            connectionRequirement: server.connectionRequirement,
-            connections,
-            hasAccess: hasInstallationAccess,
-            installationStatus: installation.status,
-            providerAuthorization:
-              server.connectionRequirement.kind === "provider"
-                ? (input.providerAuthorizations[server.connectionRequirement.provider] ?? null)
-                : null,
-            requiredAccess:
-              input.target?.access ??
-              (tool === null || integrationToolEffect(tool.annotations) === "read"
-                ? "read"
-                : "read-write"),
-            requiredConnectionId: tool?.connectionId ?? input.target?.connectionId ?? null,
-            serverId: server.id,
-            serverStatus: server.status,
-            statusDetail: server.statusDetail,
-          });
-        return {
-          accounts: installationConnections.map((connection) => {
-            const grant = activeGrants.find(
-              (candidate) =>
-                candidate.installationId === installation.id &&
-                candidate.connectionId === connection.id,
-            );
-            return {
-              access: specialistThread?.specialistId
-                ? (ceilings.get(connection.id) ?? null)
-                : inheritedMainAccess
-                  ? effectiveIntegrationAccess("read-write", connection)
-                  : grant
-                    ? effectiveIntegrationAccess(grant.access, connection)
-                    : null,
-              account: connection.displayName,
-              connectionId: connection.id,
-              isDefault: grant?.isDefault ?? false,
-            };
-          }),
-          installation,
-          readiness: {
-            servers: servers.map((server) =>
-              resolveIntegrationReadiness({
-                connectionRequirement: server.connectionRequirement,
-                connections,
-                hasAccess: hasInstallationAccess,
-                installationStatus: installation.status,
-                providerAuthorization:
-                  server.connectionRequirement.kind === "provider"
-                    ? (input.providerAuthorizations[server.connectionRequirement.provider] ?? null)
-                    : null,
-                requiredAccess: input.target?.access ?? "read",
-                requiredConnectionId: input.target?.connectionId ?? null,
-                serverId: server.id,
-                serverStatus: server.status,
-                statusDetail: server.statusDetail,
-              }),
-            ),
-            tools: tools.flatMap((tool) => {
-              const server = serverById.get(tool.serverId);
-              return server ? [{ readiness: readinessFor(server, tool), toolId: tool.id }] : [];
             }),
-          },
-          servers,
-          tools,
-        };
-      }),
+          );
+          const hasInstallationAccess = (
+            connectionId: IntegrationConnectionId | null,
+            requiredAccess: IntegrationAccess,
+          ) => {
+            if (
+              specialistThread?.specialistId &&
+              (!connectionId ||
+                !ceilings.get(connectionId) ||
+                (requiredAccess === "read-write" && ceilings.get(connectionId) !== "read-write"))
+            )
+              return false;
+            const connection =
+              connectionId === null
+                ? null
+                : (installationConnections.find(({ id }) => id === connectionId) ?? null);
+            return (
+              (inheritedMainAccess &&
+                (requiredAccess === "read" ||
+                  effectiveIntegrationAccess("read-write", connection) === "read-write")) ||
+              activeGrants.some(
+                (grant) =>
+                  grant.installationId === installation.id &&
+                  grant.connectionId === connectionId &&
+                  (requiredAccess === "read" ||
+                    effectiveIntegrationAccess(grant.access, connection) === "read-write"),
+              )
+            );
+          };
+          const readinessFor = (
+            server: IntegrationServer,
+            tool: IntegrationTool | null,
+          ): IntegrationReadiness =>
+            resolveIntegrationReadiness({
+              connectionRequirement: server.connectionRequirement,
+              connections,
+              hasAccess: hasInstallationAccess,
+              installationStatus: installation.status,
+              providerAuthorization:
+                server.connectionRequirement.kind === "provider"
+                  ? (input.providerAuthorizations[server.connectionRequirement.provider] ?? null)
+                  : null,
+              requiredAccess:
+                input.target?.access ??
+                (tool === null || integrationToolEffect(tool.annotations) === "read"
+                  ? "read"
+                  : "read-write"),
+              requiredConnectionId: tool?.connectionId ?? input.target?.connectionId ?? null,
+              serverId: server.id,
+              serverStatus: server.status,
+              statusDetail: server.statusDetail,
+            });
+          return {
+            accounts: installationConnections.map((connection) => {
+              const grant = activeGrants.find(
+                (candidate) =>
+                  candidate.installationId === installation.id &&
+                  candidate.connectionId === connection.id,
+              );
+              return {
+                access: specialistThread?.specialistId
+                  ? (ceilings.get(connection.id) ?? null)
+                  : inheritedMainAccess
+                    ? effectiveIntegrationAccess("read-write", connection)
+                    : grant
+                      ? effectiveIntegrationAccess(grant.access, connection)
+                      : null,
+                account: connection.displayName,
+                connectionId: connection.id,
+                isDefault: grant?.isDefault ?? false,
+              };
+            }),
+            installation,
+            readiness: {
+              servers: servers.map((server) =>
+                resolveIntegrationReadiness({
+                  connectionRequirement: server.connectionRequirement,
+                  connections,
+                  hasAccess: hasInstallationAccess,
+                  installationStatus: installation.status,
+                  providerAuthorization:
+                    server.connectionRequirement.kind === "provider"
+                      ? (input.providerAuthorizations[server.connectionRequirement.provider] ??
+                        null)
+                      : null,
+                  requiredAccess: input.target?.access ?? "read",
+                  requiredConnectionId: input.target?.connectionId ?? null,
+                  serverId: server.id,
+                  serverStatus: server.status,
+                  statusDetail: server.statusDetail,
+                }),
+              ),
+              tools: tools.flatMap((tool) => {
+                const server = serverById.get(tool.serverId);
+                return server ? [{ readiness: readinessFor(server, tool), toolId: tool.id }] : [];
+              }),
+            },
+            servers,
+            tools,
+          };
+        }),
     );
   }
 
@@ -3377,12 +3420,53 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
       input.ownerUserId,
       input.providerAuthorizations,
     );
+    const settings = await this.database
+      .selectFrom("pluginOwnerSettings")
+      .selectAll()
+      .where("ownerUserId", "=", input.ownerUserId)
+      .execute();
+    const workspace = await this.database
+      .selectFrom("workspaces")
+      .select("kind")
+      .where("id", "=", input.workspaceId)
+      .executeTakeFirst();
+    const denied = settings.filter(
+      (s) => !s.enabled || (workspace?.kind === "main" && !s.mainIncluded),
+    );
+    const blockedDefinitions = new Set(
+      denied.flatMap((s) =>
+        s.target.kind === "service" || s.target.kind === "device-app"
+          ? [s.target.definitionId]
+          : [],
+      ),
+    );
+    const blockedConnections = blockedDefinitions.size
+      ? await this.database
+          .selectFrom("integrationConnections")
+          .select("id")
+          .where("ownerUserId", "=", input.ownerUserId)
+          .where("integrationDefinitionId", "in", [...blockedDefinitions])
+          .execute()
+      : [];
+    const blockedConnectionIds = new Set(blockedConnections.map((c) => c.id));
+    const blockedPackages = new Set(
+      denied.flatMap((s) => (s.target.kind === "plugin" ? [s.target.pluginId] : [])),
+    );
+    const blockedInstallations = blockedPackages.size
+      ? await this.database
+          .selectFrom("integrationInstallations")
+          .select("id")
+          .where("pluginId", "in", [...blockedPackages])
+          .execute()
+      : [];
+    const blockedIds = new Set(blockedInstallations.map((i) => i.id));
+
     const byId = new Map(rows.map((row) => [row.id, row]));
     const installationById = new Map(
       rows.map((row) => [row.joinedInstallationId, installationFromCallableToolRow(row)]),
     );
     const resolved = resolveEffectiveGrants({
-      connections,
+      connections: connections.filter((c) => !blockedConnectionIds.has(c.id)),
       inheritedMainAccess,
       installations: [...installationById.values()],
       ownerUserId: input.ownerUserId,
@@ -3397,7 +3481,16 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
       })),
       workspaceId: input.workspaceId,
     });
-    return resolved.tools.map(({ grant, tool }) => callableToolFromRow(byId.get(tool.id)!, grant));
+    return resolved.tools
+      .filter(({ tool }) => {
+        const installationId = byId.get(tool.id)!.joinedInstallationId;
+        const installation = installationById.get(installationId)!;
+        return (
+          !blockedIds.has(installationId) &&
+          !blockedDefinitions.has(installationDefinitionId(installation))
+        );
+      })
+      .map(({ grant, tool }) => callableToolFromRow(byId.get(tool.id)!, grant));
   }
 }
 
@@ -4712,4 +4805,17 @@ export async function replaceServerToolsInTransaction(
     now: input.now,
     serverId: input.serverId,
   });
+}
+
+function installationDefinitionId(installation: {
+  name: string;
+  manifest: Record<string, unknown>;
+}): string {
+  const definition = installation.manifest.definition;
+  return typeof definition === "object" &&
+    definition !== null &&
+    "id" in definition &&
+    typeof definition.id === "string"
+    ? definition.id
+    : installation.name;
 }

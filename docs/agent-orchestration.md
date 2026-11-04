@@ -277,8 +277,25 @@ with the [resource guard](../packages/database/src/resource-access.ts). Main
 inheritance requires the lineage root to act as the requester in their own Main;
 shared or external channel conversations withhold it even there. Projects need
 explicit grants belonging to the requester; browser consent also requires the
-grant creator's active membership. Connection ceilings and specialist bindings
-can only narrow access.
+grant creator's active membership. Personal Everywhere consent names exact
+accounts and access ceilings, and creates those grants atomically with future
+Projects. Project creation and consent edits serialize on the owner; unavailable
+consent rolls back creation. Server Projects always require explicit selection.
+Reads never create grants. Connection ceilings, owner Off/Main exclusions and
+specialist bindings can only narrow access. Off retains credentials, grants,
+activations and specialist bindings; Main exclusion also blocks direct grants.
+Owner management and repair remain available while Off. These ceilings govern
+managed discovery and new admission; they cannot erase instructions already in
+an engine's history or revoke files it can read. Loose-skill changes participate
+in Run planning and warm-engine reuse, and require a Runner advertising the
+Settings policy capability. Settings reads use membership-authorized cached skill
+metadata; refreshing Settings does not scan a computer's disk. Offline and failed
+scans retain the last complete inventory. Detail identifies that inventory’s
+source Workspace and metadata-owning computer; a failed replacement scan does not
+relabel old metadata as coming from the new owner. Offline inventory reports
+Waiting for device; failed scans report setup attention. These are freshness
+hints, never evidence of execution authority. Plugin owner settings are the
+person's consent and are never agent-reachable.
 
 A caller cannot reuse, queue work to, or steer a Thread with Main lineage unless
 its own lineage has Main authority; start a new task instead. A specialist may

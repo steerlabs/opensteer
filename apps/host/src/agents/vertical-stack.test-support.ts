@@ -39,6 +39,7 @@ import {
 } from "@opensteer/protocol";
 import {
   AttachmentCache,
+  LocalWorkspaceService,
   ExecutionContainment,
   FileRunnerIdentityStore,
   ReconnectingHostConnection,
@@ -783,6 +784,13 @@ async function startWithin(
       runnerId: executionRunnerId,
     });
     const identity = await identityStore.loadOrCreate();
+    const skillService = localAuthority
+      ? new LocalWorkspaceService({
+          authority: localAuthority,
+          appServers: runner.appServers,
+          filesystem: {} as never,
+        })
+      : undefined;
     const readinessAbort = new AbortController();
     const runnerConnection = new ReconnectingHostConnection({
       onDisconnected: () =>
@@ -816,6 +824,8 @@ async function startWithin(
                 // Only the lifecycle subset this journey uses is scripted. The
                 // authority still provisions and inspects its real native disk.
                 service: {
+                  scanSkills: (binding, signal) => skillService!.scanSkills(binding, signal),
+                  skillMetadata: (scan) => skillService!.skillMetadata(scan),
                   async handle(request) {
                     const echo = {
                       binding: request.binding,
@@ -861,7 +871,7 @@ async function startWithin(
                   },
                 } satisfies Pick<
                   NonNullable<RunnerAgentsConnection["localWorkspaces"]>["service"],
-                  "handle"
+                  "handle" | "scanSkills" | "skillMetadata"
                 > as unknown as NonNullable<RunnerAgentsConnection["localWorkspaces"]>["service"],
               },
             }

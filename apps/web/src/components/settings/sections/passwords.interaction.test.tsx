@@ -47,15 +47,15 @@ afterEach(() => {
 });
 
 describe("Settings → Passwords on the Mac that keeps them", () => {
-  it("sits right after Chrome in what agents can use", async () => {
+  it("keeps vault management under Sign-ins", async () => {
     const page = await mount({ bridge: fakeBridge(available("not-set-up")).bridge });
     const links = [
       ...page.querySelectorAll<HTMLAnchorElement>(
         ".settings-navigation__group .settings-navigation__link",
       ),
     ].map((link) => link.getAttribute("href"));
-    expect(links.slice(-2)).toEqual(["/settings/chrome", "/settings/passwords"]);
-    expect(page.querySelector(".settings-section__title")?.textContent).toBe("Passwords");
+    expect(links.slice(-2)).toEqual(["/settings/plugins", "/settings/sign-ins"]);
+    expect(page.querySelector("h2.settings-group__title")?.textContent).toBe("Passwords");
   });
 
   it("explains Passwords before setup and opens setup in the Passwords window", async () => {

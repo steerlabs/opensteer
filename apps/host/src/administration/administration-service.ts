@@ -309,11 +309,15 @@ export class AdministrationService {
         };
       }
       case "workspace.delete": {
+        const affected = await dependencies.integrations.platform.store.settings.affectedViewers({
+          workspaceId: command.workspaceId,
+        });
         const workspace = await dependencies.workspaceDeletion.requestDeletion(
           command.workspaceId,
           userId,
         );
         await dependencies.apps.stopWorkspace(command.workspaceId);
+        dependencies.realtime.sendToUsers(affected, { type: "host.plugins-changed" });
         return {
           type: command.type,
           workspace: await workspaceView(dependencies.workspaces, workspace),

@@ -1147,6 +1147,9 @@ export interface HostClient {
    */
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void;
   /** Invalidates remote administration on Host changes and stream recovery. */
+  subscribePluginsChanged(
+    listener: (message: { type: "host.plugins-changed" }) => void,
+  ): () => void;
   subscribePersonalRemoteAccess(listener: () => void): () => void;
   /** Told when this person approves or revokes a connected agent on any device. */
   subscribeConnectionsChanged(listener: () => void): () => void;

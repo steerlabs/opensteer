@@ -165,6 +165,43 @@ describeStore("specialist registration", (test) => {
         .where("id", "=", rootChild.thread.id)
         .execute(),
     ).rejects.toThrow(/specialist.*immutable/u);
+    const beforeOff = await fixture.database
+      .selectFrom("specialists")
+      .selectAll()
+      .where("id", "=", ready.id)
+      .executeTakeFirstOrThrow();
+    const target = { kind: "specialist" as const, pluginId, ownerUserId: run.userId };
+    await platform.settings.setEnabled(run.userId, {
+      type: "settings.plugin.enabled.set",
+      target,
+      expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement.revision,
+      enabled: false,
+      idempotencyKey: "off-specialist",
+    });
+    await expect(
+      platform.specialists.assertRunnable(ready.id, workspace.id, run.userId),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(
+      (
+        await fixture.database
+          .selectFrom("specialists")
+          .selectAll()
+          .where("id", "=", ready.id)
+          .executeTakeFirstOrThrow()
+      ).bindings,
+    ).toEqual(beforeOff.bindings);
+    expect((await check(profile.id)).access).toBe("read");
+    await platform.settings.setEnabled(run.userId, {
+      type: "settings.plugin.enabled.set",
+      target,
+      expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement.revision,
+      enabled: true,
+      idempotencyKey: "on-specialist",
+    });
+    expect((await platform.specialists.assertRunnable(ready.id, workspace.id, run.userId)).id).toBe(
+      ready.id,
+    );
+
     const delegate = (threadId?: import("@opensteer/core").ThreadId) =>
       fixture.store.delegateThread({
         accessMode: run.thread.accessMode,

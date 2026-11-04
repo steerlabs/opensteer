@@ -673,7 +673,7 @@ export class ProductToolsTestClient {
         placeContext: unavailableDefaults as never,
         browser: unavailableDefaults as never,
       }),
-      realtime: { observe: () => () => {} },
+      realtime: { observe: () => () => {}, sendToUsers: () => {} },
       browser: unavailableDefaults as never,
       browserSources: unavailableDefaults as never,
       machineFullDiskAccess: unavailableDefaults as never,

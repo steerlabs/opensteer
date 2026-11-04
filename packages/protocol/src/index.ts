@@ -41,3 +41,5 @@ export * from "./voice.js";
 export * from "./apps.js";
 
 export * from "./agent-connections.js";
+export * from "./settings.js";
+export * from "./runner-skill-metadata.js";

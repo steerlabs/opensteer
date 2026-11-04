@@ -63,6 +63,56 @@ describe("integration platform OAuth routes", () => {
     expect(order).toEqual(["retire", "uninstall", "remove"]);
   });
 
+  it("addresses invalidation to affected viewers only after a committed shared mutation", async () => {
+    const owner = createId("user"),
+      member = createId("user"),
+      workspaceId = createId("workspace");
+    const changed = vi.fn();
+    const setActivation = vi.fn(async () => {
+      expect(changed).not.toHaveBeenCalled();
+    });
+    const options = {
+      authenticator: {} as HostAuthenticator,
+      dashboard: {} as never,
+      mcpOauth: {} as McpOAuthService,
+      pluginsChanged: changed,
+      platform: {
+        store: {
+          settings: { affectedViewers: vi.fn(async () => [owner, member]) },
+          plugins: { setActivation },
+        },
+      } as never,
+    };
+    await handleIntegrationPlatformCommand(
+      options,
+      {
+        type: "plugin.activation.set",
+        pluginId: "plugin",
+        workspaceId,
+        active: true,
+        idempotencyKey: "activate",
+      },
+      testHostApiContext(owner),
+    );
+    expect(changed).toHaveBeenCalledExactlyOnceWith([owner, member]);
+    changed.mockClear();
+    setActivation.mockRejectedValueOnce(new Error("refused"));
+    await expect(
+      handleIntegrationPlatformCommand(
+        options,
+        {
+          type: "plugin.activation.set",
+          pluginId: "plugin",
+          workspaceId,
+          active: true,
+          idempotencyKey: "refused",
+        },
+        testHostApiContext(owner),
+      ),
+    ).rejects.toThrow("refused");
+    expect(changed).not.toHaveBeenCalled();
+  });
+
   it("routes member plugin reads through the scoped projection on both entry points", async () => {
     const userId = createId("user"),
       workspaceId = createId("workspace");

@@ -394,6 +394,7 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     ...clientMessageBase,
     type: z.literal("host.machines.changed"),
   }),
+  z.object({ ...clientMessageBase, type: z.literal("host.plugins-changed") }),
   // A pending Request opened, changed or ended somewhere on this Host. It names
   // nothing: every client rereads `requests.list`, which is where it is asked
   // whom each Request waits on, including in Workspaces it is not subscribed to.

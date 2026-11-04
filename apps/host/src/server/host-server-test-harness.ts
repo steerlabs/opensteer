@@ -67,7 +67,10 @@ export function hostServerTestDependencies(
     // Not inert: every command that touches a computer tells the connected
     // clients to read the list again, so a hub with nothing on it would fail
     // tests that are about something else entirely.
-    realtime: { broadcast: () => undefined } as unknown as HostServerDependencies["realtime"],
+    realtime: {
+      broadcast: () => undefined,
+      sendToUsers: () => undefined,
+    } as unknown as HostServerDependencies["realtime"],
     requestResponseVault: inert(),
     runnerAuthenticator: inert(),
     runners: inert(),

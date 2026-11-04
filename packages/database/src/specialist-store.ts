@@ -1,3 +1,4 @@
+import { pluginPolicyAllows } from "./plugin-settings-store.js";
 import { randomUUID } from "node:crypto";
 import {
   OpensteerError,
@@ -45,68 +46,78 @@ export class SpecialistStore {
     actorUserId: UserId;
     autoBind?: boolean;
   }) {
+    return this.database.transaction().execute((tx) => this.addIn(tx, input));
+  }
+
+  async addIn(
+    tx: Kysely<DatabaseSchema>,
+    input: { workspaceId: WorkspaceId; pluginId: string; actorUserId: UserId; autoBind?: boolean },
+  ) {
     const autoBind = input.autoBind ?? true;
-    await this.authorize(input.workspaceId, input.actorUserId);
-    return this.database.transaction().execute(async (tx) => {
-      await new PluginStore(tx).activateIn(
-        tx,
-        input.pluginId,
-        input.workspaceId,
-        input.actorUserId,
-      );
-      const plugin = await tx
-        .selectFrom("plugins")
-        .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
-        .select(["pluginVersions.id", "pluginVersions.specialistManifest"])
-        .where("plugins.id", "=", input.pluginId)
-        .executeTakeFirstOrThrow();
-      if (!plugin.specialistManifest)
-        throw new OpensteerError({
-          code: "bad_request",
-          message: "This plugin is not a specialist",
-        });
-      SpecialistManifestSchema.parse(plugin.specialistManifest);
-      const previous = await tx
-        .selectFrom("specialists")
-        .selectAll()
-        .where("workspaceId", "=", input.workspaceId)
-        .where("pluginId", "=", input.pluginId)
-        .where("ownerUserId", "=", input.actorUserId)
-        .executeTakeFirst();
-      if (previous?.removedAt)
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Specialist cleanup is pending; retry removal before adding it again",
-        });
-      const now = new Date();
-      const id = previous?.id ?? randomUUID();
-      await tx
-        .insertInto("specialists")
-        .values({
-          id,
-          workspaceId: input.workspaceId,
-          pluginId: input.pluginId,
+    await new SpecialistStore(tx).authorize(input.workspaceId, input.actorUserId);
+    await new PluginStore(tx).activateIn(tx, input.pluginId, input.workspaceId, input.actorUserId);
+    const plugin = await tx
+      .selectFrom("plugins")
+      .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
+      .select(["pluginVersions.id", "pluginVersions.specialistManifest"])
+      .where("plugins.id", "=", input.pluginId)
+      .executeTakeFirstOrThrow();
+    if (!plugin.specialistManifest)
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "This plugin is not a specialist",
+      });
+    SpecialistManifestSchema.parse(plugin.specialistManifest);
+    const previous = await tx
+      .selectFrom("specialists")
+      .selectAll()
+      .where("workspaceId", "=", input.workspaceId)
+      .where("pluginId", "=", input.pluginId)
+      .where("ownerUserId", "=", input.actorUserId)
+      .executeTakeFirst();
+    if (previous?.removedAt)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Specialist cleanup is pending; retry removal before adding it again",
+      });
+    if (previous?.pluginVersionId === plugin.id) {
+      // Only the owner's own add gives consent; an agent's re-add never withdraws it.
+      if (autoBind && !previous.autoBind)
+        await tx
+          .updateTable("specialists")
+          .set({ autoBind: true, updatedAt: new Date() })
+          .where("id", "=", previous.id)
+          .execute();
+      return new SpecialistStore(tx).refresh(previous.id);
+    }
+    const now = new Date();
+    const id = previous?.id ?? randomUUID();
+    await tx
+      .insertInto("specialists")
+      .values({
+        id,
+        workspaceId: input.workspaceId,
+        pluginId: input.pluginId,
+        pluginVersionId: plugin.id,
+        ownerUserId: input.actorUserId,
+        createdBy: input.actorUserId,
+        status: "pending",
+        bindings: jsonValue([]),
+        autoBind,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflict((c) =>
+        c.columns(["workspaceId", "pluginId", "ownerUserId"]).doUpdateSet({
           pluginVersionId: plugin.id,
-          ownerUserId: input.actorUserId,
-          createdBy: input.actorUserId,
           status: "pending",
           bindings: jsonValue([]),
           autoBind,
-          createdAt: now,
           updatedAt: now,
-        })
-        .onConflict((c) =>
-          c.columns(["workspaceId", "pluginId", "ownerUserId"]).doUpdateSet({
-            pluginVersionId: plugin.id,
-            status: "pending",
-            bindings: jsonValue([]),
-            autoBind,
-            updatedAt: now,
-          }),
-        )
-        .execute();
-      return new SpecialistStore(tx).refresh(id);
-    });
+        }),
+      )
+      .execute();
+    return new SpecialistStore(tx).refresh(id);
   }
 
   async bind(input: {
@@ -375,6 +386,27 @@ export class SpecialistStore {
         message: "Specialist registration was removed",
       });
     const registration = await this.refresh(id);
+    const workspace = await this.database
+      .selectFrom("workspaces")
+      .select("kind")
+      .where("id", "=", workspaceId)
+      .executeTakeFirstOrThrow();
+    const main = workspace.kind === "main";
+    if (
+      !(await pluginPolicyAllows(
+        this.database,
+        requester,
+        { kind: "specialist", pluginId: registration.pluginId, ownerUserId: requester },
+        main,
+      )) ||
+      !(await pluginPolicyAllows(
+        this.database,
+        requester,
+        { kind: "plugin", pluginId: registration.pluginId },
+        main,
+      ))
+    )
+      throw new OpensteerError({ code: "forbidden", message: "Specialist is turned off here" });
     if (registration.ownerUserId !== requester)
       throw new OpensteerError({
         code: "forbidden",
@@ -404,6 +436,22 @@ export class SpecialistStore {
         workspaceId: row.workspaceId,
         specialistId: row.id,
         actorUserId: row.ownerUserId,
+      });
+  }
+
+  async finishPlacementRemovals(pluginId: string, owner: UserId) {
+    const rows = await this.database
+      .selectFrom("specialists")
+      .select(["id", "workspaceId"])
+      .where("pluginId", "=", pluginId)
+      .where("ownerUserId", "=", owner)
+      .where("removedAt", "is not", null)
+      .execute();
+    for (const row of rows)
+      await this.cleanup({
+        workspaceId: row.workspaceId,
+        specialistId: row.id,
+        actorUserId: owner,
       });
   }
 

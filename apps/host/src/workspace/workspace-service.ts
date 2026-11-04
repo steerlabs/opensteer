@@ -1,3 +1,4 @@
+import type { IntegrationProviderAuthorization } from "@opensteer/integration-core";
 import {
   OpensteerError,
   WorkspaceIdSchema,
@@ -61,12 +62,18 @@ export class WorkspaceService {
   readonly #drivers: WorkspaceLifecycleDrivers;
   readonly #resolveOwnerEnvironmentId: ((ownerId: UserId) => Promise<EnvironmentId>) | undefined;
   readonly #store: WorkspaceStore;
+  readonly #providerAuthorizations:
+    | ((owner: UserId) => Promise<Readonly<Record<string, IntegrationProviderAuthorization>>>)
+    | undefined;
 
   constructor(options: {
     readonly drivers: WorkspaceLifecycleDrivers;
     readonly shape: DeploymentShape;
     readonly resolveOwnerEnvironmentId?: (ownerId: UserId) => Promise<EnvironmentId>;
     readonly store: WorkspaceStore;
+    readonly providerAuthorizations?: (
+      owner: UserId,
+    ) => Promise<Readonly<Record<string, IntegrationProviderAuthorization>>>;
   }) {
     if (!options.drivers.local) throw new TypeError("Local Workspace storage requires a driver");
     if (
@@ -78,6 +85,7 @@ export class WorkspaceService {
     this.#drivers = options.drivers;
     this.#resolveOwnerEnvironmentId = options.resolveOwnerEnvironmentId;
     this.#store = options.store;
+    this.#providerAuthorizations = options.providerAuthorizations;
   }
 
   async create(input: {
@@ -152,6 +160,7 @@ export class WorkspaceService {
       ...(input.kind ? { kind: input.kind } : {}),
       name: input.name,
       status: "provisioning",
+      providerAuthorizations: (await this.#providerAuthorizations?.(input.createdBy)) ?? {},
     });
     if (["ready", "deleting", "deleted"].includes(workspace.status)) return workspace;
     return this.provision(workspace);

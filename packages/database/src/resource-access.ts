@@ -1,3 +1,4 @@
+import { pluginPolicyAllows } from "./plugin-settings-store.js";
 import {
   SpecialistManifestSchema,
   BrowserProfileIdSchema,
@@ -120,6 +121,7 @@ export async function resolveResourceAccess(
         : !input.threadId && !input.agentBindingId);
   let specialistAccess = input.specialistAccess;
   const specialistId = root?.specialistId ?? input.specialistId;
+  let specialistPolicyAllowed = true;
   if (specialistId) {
     const registration = await database
       .selectFrom("specialists")
@@ -129,7 +131,12 @@ export async function resolveResourceAccess(
         "workspaceMemberships.workspaceId",
         "specialists.workspaceId",
       )
-      .select(["specialists.status", "specialists.bindings", "pluginVersions.specialistManifest"])
+      .select([
+        "specialists.status",
+        "specialists.bindings",
+        "specialists.pluginId",
+        "pluginVersions.specialistManifest",
+      ])
       .where("specialists.removedAt", "is", null)
       .where("specialists.id", "=", specialistId)
       .where("specialists.workspaceId", "=", input.workspaceId)
@@ -137,6 +144,20 @@ export async function resolveResourceAccess(
       .where("workspaceMemberships.userId", "=", input.ownerUserId)
       .where("workspaceMemberships.state", "=", "active")
       .executeTakeFirst();
+    if (registration && (threadId || input.agentBindingId))
+      specialistPolicyAllowed =
+        (await pluginPolicyAllows(
+          database,
+          input.ownerUserId,
+          { kind: "specialist", pluginId: registration.pluginId, ownerUserId: input.ownerUserId },
+          main,
+        )) &&
+        (await pluginPolicyAllows(
+          database,
+          input.ownerUserId,
+          { kind: "plugin", pluginId: registration.pluginId },
+          main,
+        ));
     const manifest = registration
       ? SpecialistManifestSchema.parse(registration.specialistManifest)
       : null;
@@ -223,13 +244,39 @@ export async function resolveResourceAccess(
       specialistAccess,
     );
   }
-  const access = intersectResourceAccess(
-    intersectResourceAccess(
-      inheritsMain ? "read-write" : (input.explicitAccess ?? null),
-      input.connectionCeiling,
-    ),
-    specialistAccess,
-  );
+  let policyAllowed = true;
+  if (
+    (threadId || input.agentBindingId) &&
+    input.resource &&
+    input.resource.type !== "browser-profile"
+  ) {
+    const connection = await database
+      .selectFrom("integrationConnections")
+      .select(["integrationDefinitionId", "connectionKind"])
+      .where("id", "=", input.resource.id as DatabaseSchema["integrationConnections"]["id"])
+      .where("ownerUserId", "=", input.ownerUserId)
+      .executeTakeFirst();
+    if (connection?.integrationDefinitionId)
+      policyAllowed = await pluginPolicyAllows(
+        database,
+        input.ownerUserId,
+        {
+          kind: connection.connectionKind === "computer" ? "device-app" : "service",
+          definitionId: connection.integrationDefinitionId,
+        },
+        main,
+      );
+  }
+  const access =
+    policyAllowed && specialistPolicyAllowed
+      ? intersectResourceAccess(
+          intersectResourceAccess(
+            inheritsMain ? "read-write" : (input.explicitAccess ?? null),
+            input.connectionCeiling,
+          ),
+          specialistAccess,
+        )
+      : null;
   return {
     access,
     specialistId,

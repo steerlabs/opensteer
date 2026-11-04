@@ -1,3 +1,4 @@
+import { Icon, type IconName } from "../icon.js";
 import { bundledIntegrationIconUrl } from "./bundled-icons.js";
 import { integrationHue } from "./helpers.js";
 
@@ -21,11 +22,38 @@ export function IntegrationIcon({
   const className = `intg-icon ${size === "lg" ? "intg-icon--lg" : ""}`;
   const hue = integrationHue(id);
   const bundled = bundledIntegrationIconUrl(id);
+  const deviceGlyphs: Readonly<Record<string, IconName>> = {
+    "apple-calendar": "clock",
+    "apple-notes": "file",
+    "apple-contacts": "user",
+    "apple-reminders": "check",
+    "apple-photos": "file",
+    "apple-location": "globe",
+    "android-phone": "phone",
+    "computer-use": "desktop",
+    "macos-app": "desktop",
+    "iphone-location": "globe",
+    "iphone-photos": "file",
+  };
+  if (id === "apple-calendar")
+    return (
+      <span aria-hidden className={`${className} intg-icon--calendar`}>
+        <span>31</span>
+      </span>
+    );
+  if (deviceGlyphs[id])
+    return (
+      <span className={`${className} intg-icon--device intg-icon--${id}`}>
+        <Icon name={deviceGlyphs[id]} />
+      </span>
+    );
   if (bundled) {
     // The mark is already a finished tile, so it fills the frame rather than
     // sitting inside the tinted one the fallbacks use.
     return (
-      <span className={`${className} intg-icon--art`}>
+      <span
+        className={`${className} intg-icon--art${id === "apple-messages" ? "" : " intg-icon--brand"}`}
+      >
         <img alt="" decoding="async" src={bundled} />
       </span>
     );

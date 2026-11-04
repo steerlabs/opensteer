@@ -12,7 +12,8 @@ import {
 } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { OpencodeHarnessDriver } from "@opensteer/harness-opencode";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { PluginSettingsStore } from "@opensteer/database";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   codexThreadOf,
@@ -202,6 +203,76 @@ integration("Warm engines", () => {
     await settled(active, runId);
     return { ms: Math.round(performance.now() - started), runId };
   }
+
+  it(
+    "filters a disabled loose skill through Host dispatch and retires the warm engine",
+    { timeout: 120_000 },
+    async () => {
+      const { active, captureFile, threadId } = await start();
+      const skillDirectory = join(active.mountedWorkspacePath, "skills", "a6-private-skill");
+      await mkdir(skillDirectory, { recursive: true });
+      await writeFile(
+        join(skillDirectory, "SKILL.md"),
+        "---\nname: a6-private-skill\ndescription: A6 skill sentinel\n---\nUse the sentinel.\n",
+      );
+      const first = await run(active, threadId, "First question");
+      const second = await run(active, threadId, "Second question");
+      expect(await engineStart(active, first.runId)).toBe("cold");
+      expect(await engineStart(active, second.runId)).toBe("warm");
+      const workspace = await active.host.store.database
+        .selectFrom("workspaces")
+        .select("createdBy")
+        .where("id", "=", active.mainWorkspaceId)
+        .executeTakeFirstOrThrow();
+      const settings = new PluginSettingsStore(active.host.store.database);
+      const target = {
+        kind: "skill" as const,
+        workspaceId: active.mainWorkspaceId,
+        fullName: "a6-private-skill",
+      };
+      await vi.waitFor(
+        async () => {
+          expect((await settings.detail(workspace.createdBy, target)).contents).toContainEqual({
+            name: "a6-private-skill",
+            kind: "skill",
+          });
+        },
+        { timeout: 5000 },
+      );
+      const disableKey = randomUUID();
+      await testRpcData(
+        active.hostOrigin,
+        "commands.dispatch",
+        {
+          type: "settings.plugin.enabled.set",
+          target,
+          expectedRevision: 0,
+          enabled: false,
+          idempotencyKey: disableKey,
+        },
+        {
+          headers: {
+            cookie: active.sessionCookie,
+            origin: active.hostOrigin.origin,
+            "idempotency-key": disableKey,
+          },
+        },
+      );
+      const third = await run(active, threadId, "Third question");
+      expect(await engineStart(active, third.runId)).toBe("cold");
+      const turns = (await captured(captureFile)).filter(
+        (line) =>
+          line.method === "turn/start" &&
+          line.params?.additionalContext?.opensteer_skills !== undefined,
+      );
+      expect(turns).toHaveLength(3);
+      expect(JSON.stringify(turns[0])).toContain("a6-private-skill");
+      expect(JSON.stringify(turns[2])).not.toContain("a6-private-skill");
+      expect(await readFile(join(skillDirectory, "SKILL.md"), "utf8")).toContain(
+        "A6 skill sentinel",
+      );
+    },
+  );
 
   it(
     "serves a Thread's next Run with the engine its last Run left",
@@ -761,6 +832,7 @@ integration("Warm engines", () => {
 
 /** What the fake engines recorded: each turn's process, its token, each cleanup. */
 interface Captured {
+  readonly params?: { readonly additionalContext?: { readonly opensteer_skills?: unknown } };
   readonly backgroundTerminalsCleaned?: string;
   /** A request the driver sent the app server. */
   readonly method?: string;

@@ -388,7 +388,7 @@ export function AddPhoneDialog({
             <Link
               className="btn btn--primary"
               onClick={closeSetup}
-              to={`/settings/computers/${encodeURIComponent(phase.runnerId)}`}
+              to={`/settings/devices/computers/${encodeURIComponent(phase.runnerId)}`}
             >
               Open the phone’s page
             </Link>
@@ -406,7 +406,11 @@ export function AddPhoneDialog({
           actions: (
             <>
               {remoteAccessOff ? (
-                <Link className="btn btn--primary" onClick={closeSetup} to="/settings/devices">
+                <Link
+                  className="btn btn--primary"
+                  onClick={closeSetup}
+                  to="/settings/account/remote-access"
+                >
                   Open Remote access
                 </Link>
               ) : null}
@@ -590,7 +594,7 @@ function readyStage({
         {deploymentKind === "personal" ? (
           <p>
             Needs remote access on for {homeName}.{" "}
-            <Link to="/settings/devices">Open Remote access</Link>
+            <Link to="/settings/account/remote-access">Open Remote access</Link>
           </p>
         ) : null}
       </div>

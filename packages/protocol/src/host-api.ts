@@ -4,6 +4,17 @@ import {
   AgentConnectionReachSchema,
   AgentConnectionConsentSchema,
 } from "./agent-connections.js";
+import {
+  PluginTargetSchema,
+  PluginsOverviewViewSchema,
+  PluginDetailViewSchema,
+  PluginsDirectoryViewSchema,
+  DevicesOverviewViewSchema,
+  SettingsPluginEnableCommandSchema,
+  SettingsPluginPlacementCommandSchema,
+  SettingsPluginEnableResultSchema,
+  SettingsPluginPlacementResultSchema,
+} from "./settings.js";
 import { PasswordSignInCardViewSchema, PasswordSignInApprovalSchema } from "./password-sign-in.js";
 import { ComputerUseResolvedAppSchema } from "./computer-use.js";
 import {
@@ -1163,6 +1174,8 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
 ]);
 
 const commandInputSchema = z.discriminatedUnion("type", [
+  SettingsPluginEnableCommandSchema,
+  SettingsPluginPlacementCommandSchema,
   BrowserTabOpenCommandSchema,
   WorkspaceTabActivateCommandSchema,
   WorkspaceTabCloseCommandSchema,
@@ -1176,6 +1189,8 @@ const commandInputSchema = z.discriminatedUnion("type", [
 ]);
 
 const commandOutputSchema = z.discriminatedUnion("type", [
+  SettingsPluginEnableResultSchema,
+  SettingsPluginPlacementResultSchema,
   WorkspaceTabActivateResultSchema,
   WorkspaceTabCloseResultSchema,
   WorkspaceTabReopenResultSchema,
@@ -1663,6 +1678,14 @@ export const hostApi = defineRpc({
     emptyInputSchema,
     PersonalRemoteAdministrationStatusSchema,
   ),
+  "plugins.overview.get": declaration("GET", z.strictObject({}), PluginsOverviewViewSchema),
+  "plugins.detail.get": declaration(
+    "GET",
+    z.strictObject({ target: PluginTargetSchema }),
+    PluginDetailViewSchema,
+  ),
+  "plugins.directory.get": declaration("GET", z.strictObject({}), PluginsDirectoryViewSchema),
+  "devices.overview.get": declaration("GET", z.strictObject({}), DevicesOverviewViewSchema),
   "commands.dispatch": declaration("POST", commandInputSchema, commandOutputSchema),
   "assignment.get": declaration(
     "GET",
@@ -1761,6 +1784,7 @@ export const hostApi = defineRpc({
         .array(
           z.object({
             computer: z.string().nullable(),
+            installationId: IntegrationInstallationIdSchema,
             id: IntegrationServerIdSchema,
             name: z.string(),
             plugin: z.string(),

@@ -62,7 +62,7 @@ describe("Settings returns to the workspace exactly as it was", () => {
     expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
 
     await openSettingsFromWorkspace();
-    expect(history.at(-1)).toMatchObject({ path: "/settings/ai-engines", type: "REPLACE" });
+    expect(history.at(-1)).toMatchObject({ path: "/settings/general", type: "REPLACE" });
     await click(element<HTMLAnchorElement>('.settings-navigation__link[href="/settings/account"]'));
     expect(history.at(-1)).toMatchObject({ path: "/settings/account", type: "PUSH" });
 
@@ -87,7 +87,7 @@ describe("Settings returns to the workspace exactly as it was", () => {
     await settle();
     expect(history.slice(-2)).toEqual([
       { path: "/computers", search: "", type: "PUSH" },
-      { path: "/settings/computers", search: "", type: "REPLACE" },
+      { path: "/settings/devices/computers", search: "", type: "REPLACE" },
     ]);
     expect(element(".settings-layout")).toBeTruthy();
 

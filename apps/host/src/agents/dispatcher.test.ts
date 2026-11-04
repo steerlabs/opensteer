@@ -673,6 +673,41 @@ describe("HostCommandDispatcher model selection", () => {
     expect(current.dispatch).toHaveBeenCalledOnce();
   });
 
+  it("refuses policy-bearing Runs on an older Runner and sends policy to a capable Runner", async () => {
+    const input = {
+      models: [gpt5],
+      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+      workspaceSkillPolicy: { revision: 3, disabledFullNames: ["release"] },
+    };
+    const older = dispatchRun(input);
+    await expect(older.run()).rejects.toMatchObject({
+      disposition: "failed",
+      message: "Update this Runner to enforce Workspace skill settings.",
+    });
+    expect(older.dispatch).not.toHaveBeenCalled();
+    const current = dispatchRun({
+      ...input,
+      capabilities: [
+        "settings-plugin-policy-v1",
+        "native-session-continuation-v1",
+        "assignments-v1",
+        "thread-state-v1",
+        "requester-time-zone-v1",
+        "execution-plane-v2",
+      ],
+    });
+    await current.run();
+    expect(current.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({
+          plugins: expect.objectContaining({ workspaceSkillPolicy: input.workspaceSkillPolicy }),
+        }),
+      }),
+      expect.any(AbortSignal),
+      expect.any(Object),
+    );
+  });
+
   it("dispatches a specialist through the Runner wire schema", async () => {
     const admit = vi
       .spyOn(SpecialistStore.prototype, "assertRunnable")
@@ -698,6 +733,7 @@ describe("HostCommandDispatcher model selection", () => {
   function dispatchRun(input: {
     readonly specialistId?: string;
     readonly capabilities?: readonly string[];
+    readonly workspaceSkillPolicy?: import("@opensteer/protocol").RunPluginsPlan["workspaceSkillPolicy"];
     readonly role?: "conversation" | "work";
     readonly supportsAttachments?: boolean;
     readonly hasHistoricalAttachments?: boolean;
@@ -731,6 +767,7 @@ describe("HostCommandDispatcher model selection", () => {
       runToolTokens: { issue: () => "agent-token" } as never,
       browser: {} as never,
       egress: { issue: () => "egress-token" } as never,
+      workspaceSkillPolicy: async () => input.workspaceSkillPolicy,
       pluginVersions: async () => [],
       pluginsTokens: { issue: () => "skills-token" } as never,
 

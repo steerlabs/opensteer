@@ -15,8 +15,9 @@ import {
   LocalWorkspaceAuthority,
   type NativeWorkspaceFilesAuthority,
 } from "@opensteer/workspace-local";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppServerManager } from "../apps/app-server-manager.js";
+import * as workspaceSkills from "../skills/workspace-skills.js";
 import { LocalWorkspaceService, type LocalWorkspaceIdentity } from "./local-workspace-service.js";
 
 const temporaryDirectories: string[] = [];
@@ -32,6 +33,33 @@ afterEach(async () => {
 });
 
 describe("LocalWorkspaceService", () => {
+  it.each(["disconnect", "deadline"])(
+    "bounds a stalled metadata scan on %s and retains failed inventory",
+    async (reason) => {
+      const machine = await fixture();
+      const provision = await machine.provisionRequest();
+      await machine.handle(provision);
+      let finish!: (scan: workspaceSkills.DiscoveredWorkspaceSkills) => void;
+      const pending = new Promise<workspaceSkills.DiscoveredWorkspaceSkills>((resolve) => {
+        finish = resolve;
+      });
+      const spy = vi.spyOn(workspaceSkills, "discoverWorkspaceSkills").mockReturnValue(pending);
+      const abort = new AbortController();
+      if (reason === "deadline") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const result = machine.service.scanSkills(provision.binding, abort.signal);
+      try {
+        await vi.waitFor(() => expect(spy).toHaveBeenCalledOnce());
+        if (reason === "disconnect") abort.abort(new Error("Connection closed"));
+        else await vi.advanceTimersByTimeAsync(30_000);
+        await expect(result).resolves.toEqual({ status: "failed", reason: "unreadable" });
+      } finally {
+        finish({ digest: "none", metadata: [], warningCodes: [], skills: [], warnings: [] });
+        spy.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("removes only the named specialist folder on the bound storage", async () => {
     const machine = await fixture();
     const provision = await machine.provisionRequest();
@@ -277,6 +305,7 @@ async function fixture(terminate?: ConstructorParameters<typeof AppServerManager
     appServers,
     authority,
     filesystem,
+    service,
     handle: (request: HostWorkspaceLocalRequest) =>
       service.handle(request, identity, AbortSignal.timeout(10_000)),
     provisionRequest: async (): Promise<

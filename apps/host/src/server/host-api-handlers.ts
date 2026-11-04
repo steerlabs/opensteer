@@ -1,5 +1,6 @@
+import { createSettingsReadHandlers } from "./settings-read-handlers.js";
 import type { ComputerViewService } from "../computer-use/computer-view-service.js";
-import { OpensteerError } from "@opensteer/core";
+import { OpensteerError, RunnerIdSchema } from "@opensteer/core";
 import { requireSession } from "../integrations/integration-rpc-context.js";
 import {
   hostApi,
@@ -126,6 +127,72 @@ export function createHostApiHandlers(
   "personal.remoteAccess.get" | "connections.list" | "connections.authorization.get"
 > {
   return {
+    "plugins.overview.get": async (_input, context) => {
+      const machines = await coreHandlers["machines.list"]({}, context);
+      if (!machines.ok) return machines;
+      return rpcSuccess(
+        await integrationPlatform.platform.store.settings.overview(
+          requireSession(context).user.id,
+          new Set(
+            machines.data.machines
+              .filter((machine) => machine.status === "online")
+              .map((machine) => machine.id),
+          ),
+        ),
+      );
+    },
+    "plugins.detail.get": async (input, context) => {
+      const machines = await coreHandlers["machines.list"]({}, context);
+      if (!machines.ok) return machines;
+      const detail = await integrationPlatform.platform.store.settings.detail(
+        requireSession(context).user.id,
+        input.target,
+        new Set(machines.data.machines.filter((m) => m.status === "online").map((m) => m.id)),
+      );
+      const runnerIds = new Set<string>([
+        ...detail.devices.map((d) => d.runnerId),
+        ...detail.accounts.flatMap((account) => (account.runnerId ? [account.runnerId] : [])),
+      ]);
+      if (runnerIds.size) {
+        for (const machine of machines.data.machines.filter((entry) => runnerIds.has(entry.id))) {
+          const definitionId =
+            input.target.kind === "device-app" ? input.target.definitionId : null;
+          for (const app of machine.apps ?? []) {
+            if (app.definitionId !== definitionId) continue;
+            for (const operation of app.operations)
+              detail.permissions.push({
+                label: `${machine.name}: ${operation.operation}`.slice(0, 120),
+                layer: "os-permission",
+                state:
+                  machine.status !== "online"
+                    ? "unknown"
+                    : operation.state === "ready"
+                      ? "allowed"
+                      : operation.state === "permission-required"
+                        ? "denied"
+                        : "unknown",
+              });
+          }
+        }
+        detail.devices = machines.data.machines
+          .filter((machine) => runnerIds.has(machine.id))
+          .map((machine) => ({
+            runnerId: RunnerIdSchema.parse(machine.id),
+            name: machine.name.slice(0, 120),
+            status: machine.status,
+          }));
+      }
+      return rpcSuccess(hostApi["plugins.detail.get"].success.parse(detail));
+    },
+    ...createSettingsReadHandlers({
+      catalog: () => integrationPlatform.platform.settingsCatalog(),
+      requests: (owner) =>
+        integrationPlatform.platform.store.requests.waitingOnUserPage({
+          userId: owner,
+          limit: 100,
+        }),
+      machines: coreHandlers["machines.list"],
+    }),
     "computer.app.windows": async (input, context) => {
       const owner = requireSession(context).user.id;
       if (!computerViews)

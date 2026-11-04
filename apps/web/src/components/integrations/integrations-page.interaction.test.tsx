@@ -13,9 +13,9 @@ import {
   mockSlackMcp,
   mockVapi,
 } from "@opensteer/client/mock";
-import { ConnectedAppsLayout } from "../settings/connected-apps.js";
+import { Outlet } from "react-router";
 import { installationRowId } from "./catalog-section.js";
-import { IntegrationsPage } from "./integrations-page.js";
+import { IntegrationControllerFixture as IntegrationsPage } from "./integration-controller.test-fixture.js";
 import { ToastProvider } from "../toast.js";
 
 const shellState = vi.hoisted(() => ({ current: null as unknown }));
@@ -289,8 +289,10 @@ describe("Settings manages a proposed MCP server's accounts", () => {
     expect(accountStatus(rows[0])).toBe("Connected");
     expect(container.textContent).not.toContain("List boards");
 
-    await click(buttonWithText(rows[0] ?? container, "Disconnect"));
-    await click(buttonWithText(rows[0] ?? container, "Confirm disconnect"));
+    await click(rows[0]!.querySelector('[aria-label="Account actions"]'));
+    await click(buttonWithText(document.body, "Disconnect"));
+    await click(rows[0]!.querySelector('[aria-label="Account actions"]'));
+    await click(buttonWithText(document.body, "Confirm disconnect"));
 
     await vi.waitFor(() => expect(container.textContent).toContain("No account yet"));
     expect(container.querySelector(".notice--warn")).toBeNull();
@@ -328,7 +330,9 @@ describe("Settings manages a proposed MCP server's accounts", () => {
     const rows = sectionRows(container, "Accounts");
     expect(rows).toHaveLength(1);
     expect(accountStatus(rows[0])).toBe("Needs attention");
-    expect(buttonWithText(rows[0] ?? container, "Disconnect")).not.toBeNull();
+    await click(rows[0]!.querySelector('[aria-label="Account actions"]'));
+    expect(buttonWithText(document.body, "Disconnect")).not.toBeNull();
+    await click(rows[0]!.querySelector('[aria-label="Account actions"]'));
     expect(buttonWithText(container, "Reconnect")).toBeNull();
     expect(container.textContent).not.toContain("No account yet");
     expect(container.textContent).toContain(`Authorize ${trellis} again`);
@@ -506,7 +510,9 @@ describe("Settings reconnects an OAuth account by signing in again", () => {
       expect(row.querySelector(".intg-account__status")?.getAttribute("title")).toBe(
         "Opensteer changed how this service connects. Reconnect this account to keep using it.",
       );
-      expect(buttonWithText(row, "Disconnect")).not.toBeNull();
+      await click(row.querySelector('[aria-label="Account actions"]'));
+      expect(buttonWithText(document.body, "Disconnect")).not.toBeNull();
+      await click(row.querySelector('[aria-label="Account actions"]'));
     }
     const broken = rows.find((row) => row.textContent?.includes("alex@example.com"));
     await click(buttonWithText(broken ?? container, "Reconnect"));
@@ -1493,8 +1499,8 @@ describe("Settings opens each integration's page at its top", () => {
   it("starts the page and the overview it returns to at the top", async () => {
     const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
     const container = await mountSettings(client, { layout: true });
-    const scroller = container.querySelector<HTMLElement>(".connected-apps__inner");
-    if (!scroller) throw new Error("Connected apps has one scroll owner.");
+    const scroller = container.querySelector<HTMLElement>(".settings-content");
+    if (!scroller) throw new Error("Settings has one scroll owner.");
 
     scroller.scrollTop = 1_200;
     await click(card(container, "Vapi API"));
@@ -1533,7 +1539,14 @@ async function mountSettings(
         {options.layout ? (
           <MemoryRouter initialEntries={["/settings/apps/tools"]}>
             <Routes>
-              <Route element={<ConnectedAppsLayout />} path="/settings/apps">
+              <Route
+                element={
+                  <div className="settings-content">
+                    <Outlet />
+                  </div>
+                }
+                path="/settings/apps"
+              >
                 <Route element={<IntegrationsPage embedded />} path="tools" />
               </Route>
             </Routes>

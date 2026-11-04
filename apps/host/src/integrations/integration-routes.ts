@@ -14,7 +14,7 @@ import {
 } from "@opensteer/protocol";
 import { z } from "zod";
 import type { HostAuthenticator } from "../identity/auth.js";
-import type { DeploymentId } from "@opensteer/core";
+import type { DeploymentId, UserId } from "@opensteer/core";
 import type { IntegrationDashboardService } from "./integration-dashboard-service.js";
 import type { IntegrationService } from "./integration-service.js";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
@@ -28,6 +28,7 @@ export interface IntegrationRpcOptions {
   readonly deploymentId?: DeploymentId;
   readonly dashboard: Pick<IntegrationDashboardService, "providerDashboard">;
   readonly integrations: IntegrationService;
+  readonly pluginsChanged?: (viewers: readonly UserId[]) => void;
   readonly platform: Pick<IntegrationPlatformService, "computerAppApprovals" | "store">;
 }
 
@@ -73,6 +74,16 @@ export type IntegrationCommand = Extract<
 >;
 
 export async function handleIntegrationCommand(
+  options: IntegrationRpcOptions,
+  command: IntegrationCommand,
+  context: HostApiServerContext,
+): Promise<HostApiCommandOutput> {
+  const result = await executeIntegrationCommand(options, command, context);
+  options.pluginsChanged?.([requireSession(context).user.id]);
+  return result;
+}
+
+async function executeIntegrationCommand(
   options: IntegrationRpcOptions,
   command: IntegrationCommand,
   context: HostApiServerContext,

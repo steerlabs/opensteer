@@ -72,7 +72,7 @@ interface AgentWorkspaceCreator {
 
 export class ProductToolHandlers {
   readonly #threads: ThreadService;
-  readonly #realtime: Pick<RealtimeHub, "observe">;
+  readonly #realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
   readonly #computerUse:
     Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay"> | undefined;
   readonly #personShow:
@@ -108,7 +108,7 @@ export class ProductToolHandlers {
 
   constructor(options: {
     readonly threads: ThreadService;
-    readonly realtime: Pick<RealtimeHub, "observe">;
+    readonly realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
     readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay">;
     readonly personShow?: (
       userId: RunToolScope["requestedBy"],
@@ -359,6 +359,7 @@ export class ProductToolHandlers {
       kind: "project",
       name: input.name,
     });
+    this.#realtime.sendToUsers([caller.userId], { type: "host.plugins-changed" });
     return {
       id: workspace.id,
       slug: workspace.slug,
