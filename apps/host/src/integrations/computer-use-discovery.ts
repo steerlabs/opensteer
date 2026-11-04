@@ -83,14 +83,14 @@ function approvalOutcome(machine: { appApproval: "ask" | "automatic" }): string 
 
 /** The computer owner may answer on any signed-in device. */
 export function pendingOnComputerNextAction(machine: string): string {
-  return `Approval for ${machine} is pending; the owner can allow or decline from any Opensteer app. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.`;
+  return `Approval for ${machine} is pending; the owner can allow or decline from any Opensteer app. Stop calling tools and end this turn; Opensteer continues this Thread when this Run's Requests settle. Do not poll, repeat the Request or route around it.`;
 }
 
 export const pendingPhoneAccessNextAction =
-  "Approval is pending; the owner can allow or decline from any Opensteer app. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.";
+  "Approval is pending; the owner can allow or decline from any Opensteer app. Stop calling tools and end this turn; Opensteer continues this Thread when this Run's Requests settle. Do not poll, repeat the Request or route around it.";
 
 export const pendingWorkspaceGrantNextAction =
-  "Approval is pending; the person can approve it from anywhere. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.";
+  "Approval is pending; the person can approve it from anywhere. Stop calling tools and end this turn; Opensteer continues this Thread when this Run's Requests settle. Do not poll, repeat the Request or route around it.";
 
 /** What discovery knows about one app on one Mac, gathered by the caller. */
 export interface ComputerAppDiscoveryFacts {

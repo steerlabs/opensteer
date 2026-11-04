@@ -120,6 +120,97 @@ afterAll(async () => {
 });
 
 describe("RunnerRuntime", () => {
+  it.each([false, true])(
+    "ends a parked Run at its deadline, preserving a person's Stop (%s)",
+    async (personStops) => {
+      const host = createServer((request, response) => {
+        if (ignoreForeignTestRequest(request, response, (path) => path === "/internal/v1/mcp"))
+          return;
+        request.resume();
+        response.writeHead(200, {
+          "content-type": "application/json",
+          "x-opensteer-request-pending": "1",
+        });
+        response.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
+      });
+      host.listen(0, "127.0.0.1");
+      await once(host, "listening");
+      const address = host.address();
+      if (!address || typeof address === "string") throw new Error("No fake Host address");
+      const session = new HeldHarnessSession();
+      const steer = vi.fn(async () => undefined);
+      Object.assign(session, { steer });
+      const driver = new FakeHarnessDriver("test-driver", () => session);
+      const registry = new HarnessRegistry();
+      registry.registerDriver(driver);
+      const environmentId = createId("environment");
+      const runtime = configuredRuntime({ environmentId, registry });
+      const command = executeCommand(environmentId);
+      command.context = {
+        ...command.context,
+        agentTools: {
+          ...command.context.agentTools,
+          url: `http://127.0.0.1:${address.port}/internal/v1/mcp`,
+        },
+      };
+      const messages: RunnerOperationalReport[] = [];
+      const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+      try {
+        await probeTestServer(host);
+        await reconcile(registry, command);
+        await runtime.handleCommand(command, sink);
+        await waitUntil(() => hasEvent(messages, "run.started"));
+        const context = driver.context!;
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        await (
+          await fetch(context.agentTools.url, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${context.agentTools.token}`,
+              "content-type": "application/json",
+            },
+            body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integration_request"}}',
+          })
+        ).arrayBuffer();
+        const refused = await runtime.handleCommand(
+          steerCommand(environmentId, {
+            runId: command.context.runId,
+            threadId: command.context.threadId,
+            messageId: createId("message"),
+          }),
+          sink,
+        );
+        expect(refused).toMatchObject({ status: "rejected", error: { code: "conflict" } });
+        expect(steer).not.toHaveBeenCalled();
+        if (personStops)
+          await runtime.handleCommand(
+            {
+              type: "run.interrupt",
+              commandId: createId("command"),
+              correlationId: command.correlationId,
+              environmentId,
+              runId: command.context.runId,
+              threadId: command.context.threadId,
+            },
+            sink,
+          );
+        else {
+          await vi.advanceTimersByTimeAsync(59_999);
+          expect(runtime.activeRunIds()).toContain(command.context.runId);
+          await vi.advanceTimersByTimeAsync(1);
+        }
+        vi.useRealTimers();
+        await waitUntil(() => runtime.activeRunIds().length === 0);
+        expect(hasEvent(messages, personStops ? "run.interrupted" : "run.completed")).toBe(true);
+        expect(hasEvent(messages, personStops ? "run.completed" : "run.interrupted")).toBe(false);
+      } finally {
+        vi.useRealTimers();
+        await runtime.close();
+        host.closeAllConnections();
+        await new Promise<void>((resolve) => host.close(() => resolve()));
+      }
+    },
+  );
   it.each(["timeout", "shutdown"] as const)("reaps background processes on %s", async (mode) => {
     const registry = new HarnessRegistry();
     const driver = new FakeHarnessDriver();

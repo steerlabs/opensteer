@@ -8,6 +8,7 @@ import type { RunnerConfig } from "@opensteer/config";
 import { allowsPlaintextRunnerTransport } from "@opensteer/core";
 import { agentToolPayloadMaxSerializedBytes } from "@opensteer/protocol";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
+import { requestPendingHeader, requestPendingStopText } from "@opensteer/shared/requestParking";
 
 export type CredentialRouteName = "agent-tools";
 
@@ -23,6 +24,13 @@ const allowedMethods = new Set(["DELETE", "GET", "POST"]);
 const defaultMaxBodyBytes = agentToolPayloadMaxSerializedBytes + 32 * 1_024;
 /** A body that has not arrived by then never will. */
 const bodyReadTimeoutMs = 30_000;
+const requestOpeningTools = new Set([
+  "sign_in",
+  "integration_request",
+  "integration_propose",
+  "browser_profile_request",
+  "machine_full_disk_access_request",
+]);
 // MCP's streamable HTTP transport needs these; nothing else crosses, so the
 // engine's secret, cookies and hop-by-hop headers never reach the Host.
 const forwardedRequestHeaders = [
@@ -62,6 +70,8 @@ export class CredentialProxy {
   #revoked = false;
   /** Between the Runs of a warm engine: no Run's authority stands behind it. */
   #suspended = false;
+  #parking = false;
+  #onPark: (() => void) | undefined;
 
   constructor(options: {
     readonly maxBodyBytes?: number;
@@ -71,10 +81,12 @@ export class CredentialProxy {
     readonly maxStreams?: number;
     readonly routes: Readonly<Record<CredentialRouteName, CredentialRoute>>;
     readonly transport: Pick<RunnerConfig, "mode">;
+    readonly onPark?: () => void;
   }) {
     this.#maxBodyBytes = options.maxBodyBytes ?? defaultMaxBodyBytes;
     this.#maxCalls = options.maxCalls ?? 32;
     this.#maxStreams = options.maxStreams ?? 8;
+    this.#onPark = options.onPark;
     this.#routes = new Map(
       Object.entries(options.routes).map(([name, route]) => [
         `${this.#prefix}/${name}`,
@@ -122,6 +134,10 @@ export class CredentialProxy {
     return !this.#revoked && !this.#closed;
   }
 
+  get parking(): boolean {
+    return this.#parking;
+  }
+
   /** A warm engine went idle: nothing it sends reaches the Host until the next Run resumes it. */
   suspend(): void {
     this.#suspended = true;
@@ -129,9 +145,11 @@ export class CredentialProxy {
   }
 
   /** The next Run of a warm engine holds this proxy; its route tokens are that Run's. */
-  resume(): void {
+  resume(onPark?: () => void): void {
     if (this.#revoked || this.#closed) throw new Error("A revoked credential proxy cannot resume");
     this.#suspended = false;
+    this.#parking = false;
+    this.#onPark = onPark;
   }
 
   async close(): Promise<void> {
@@ -168,6 +186,42 @@ export class CredentialProxy {
       const body = await this.#readBody(request, call.signal);
       if (body === "too-large") return reply(response, 413);
       if (body === "timed-out") return reply(response, 408);
+      if (this.#parking && request.method === "POST") {
+        let message: unknown;
+        try {
+          message = JSON.parse(body.toString("utf8"));
+        } catch {
+          /* The Host validates malformed RPC. */
+        }
+        if (
+          typeof message === "object" &&
+          message !== null &&
+          "method" in message &&
+          message.method === "tools/call" &&
+          "id" in message &&
+          (typeof message.id === "string" || typeof message.id === "number")
+        ) {
+          const params = "params" in message ? message.params : undefined;
+          const name =
+            typeof params === "object" && params !== null && "name" in params
+              ? params.name
+              : undefined;
+          if (typeof name === "string" && !requestOpeningTools.has(name)) {
+            response.writeHead(200, { "content-type": "application/json" });
+            response.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: message.id,
+                result: {
+                  isError: true,
+                  content: [{ type: "text", text: requestPendingStopText }],
+                },
+              }),
+            );
+            return;
+          }
+        }
+      }
       const headers = new Headers({ authorization: `Bearer ${route.token()}` });
       for (const name of forwardedRequestHeaders) {
         const value = request.headers[name];
@@ -183,6 +237,10 @@ export class CredentialProxy {
       if (upstream.status >= 300 && upstream.status < 400) {
         await upstream.body?.cancel();
         return reply(response, 502);
+      }
+      if (upstream.headers.get(requestPendingHeader) === "1" && !this.#parking) {
+        this.#parking = true;
+        this.#onPark?.();
       }
       const outgoing: Record<string, string> = {};
       for (const name of forwardedResponseHeaders) {

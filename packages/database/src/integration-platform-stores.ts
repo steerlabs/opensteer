@@ -1,3 +1,4 @@
+import { integrationAccountLabel } from "@opensteer/integration-core";
 import {
   administrationCommand,
   lockAdministrationCommand,
@@ -292,6 +293,7 @@ interface McpOAuthConnectionRecord extends McpOAuthServerContext {
 }
 
 interface StoredIntegrationConnectionAuthority extends IntegrationConnectionAuthority {
+  readonly accountIdentifier: string | null;
   readonly computerAccess: IntegrationAccess | null;
   readonly displayName: string;
   readonly id: IntegrationConnectionId;
@@ -352,6 +354,7 @@ abstract class IntegrationPlatformStoreBase {
       this.database
         .selectFrom("integrationConnections")
         .select([
+          "accountIdentifier",
           "applicationSource",
           "connectionKind",
           "computerAccess",
@@ -393,6 +396,7 @@ abstract class IntegrationPlatformStoreBase {
           connectionKind: connection.connectionKind,
           computerAccess: connection.computerAccess,
           definitionId: connection.integrationDefinitionId,
+          accountIdentifier: connection.accountIdentifier,
           displayName: connection.displayName,
           id: connection.id,
           integrationServerId: connection.integrationServerId,
@@ -1929,7 +1933,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
                     : grant
                       ? effectiveIntegrationAccess(grant.access, connection)
                       : null,
-                account: connection.displayName,
+                account: integrationAccountLabel(connection),
                 connectionId: connection.id,
                 isDefault: grant?.isDefault ?? false,
               };
@@ -3564,7 +3568,13 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
           !blockedDefinitions.has(installationDefinitionId(installation))
         );
       })
-      .map(({ grant, tool }) => callableToolFromRow(byId.get(tool.id)!, grant));
+      .map(({ grant, tool }) => {
+        const account = connections.find(({ id }) => id === grant.connectionId);
+        return callableToolFromRow(byId.get(tool.id)!, {
+          ...grant,
+          alias: account ? integrationAccountLabel(account) : grant.alias,
+        });
+      });
   }
 }
 

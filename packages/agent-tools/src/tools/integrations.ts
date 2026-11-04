@@ -121,7 +121,7 @@ export const integration_search = defineAgentTool({
   name: "integration_search",
   title: "Find integration operations",
   description:
-    "Find service operations/accounts/setup by query, provider or runnerId. Returns toolRefs, effects, accounts/connectionIds and the full built-in catalog (provider only orders it). Choose accounts by connectionId, copy toolRefs unchanged and describe new refs before calling. Writes need read-write access. Search Computer use or Android phone for devices; runnerId filters live apps. Page with limit/offset; phone apps include launch package names.",
+    "Find service operations/accounts/setup by query, provider or runnerId. Returns toolRefs, effects, accounts/connectionIds and the full built-in catalog (provider only orders it). Use the identifying address to distinguish personal and work accounts; a display name alone proves neither. Choose accounts by connectionId, copy toolRefs unchanged and describe new refs before calling. Writes need read-write access. Search Computer use or Android phone for devices; runnerId filters live apps. Page with limit/offset; phone apps include launch package names.",
   input: SearchInputSchema,
   output: IntegrationSearchOutputSchema,
   access: "read",
@@ -167,7 +167,7 @@ export const integration_request = defineAgentTool({
   name: "integration_request",
   title: "Request integration access",
   description:
-    'Ask the person for setup/reconnection/access. Installed: integration + access + reason; catalog item: catalog instead. Omit access only for installation alone. Runs may target reachable workspaceId; programs use their Workspace. Mac app: kind: "computer-app", runnerId, app, access, reason; phone: omit app. Returns requestId/status/replayed. Pending grants no access: end a Run for continuation, never repeat pending/declined asks. Credentials belong in the Request UI.',
+    'Ask the person for setup/reconnection/access. Installed: integration + access + reason; catalog item: catalog instead. Omit access only for installation alone. Runs may target reachable workspaceId; programs use their Workspace. Mac app: kind: "computer-app", runnerId, app, access, reason; phone: omit app. Returns requestId/status/replayed. Pending grants no access and stops a Run: call no more tools, briefly name the ask and end your turn. Opensteer continues when this Run’s Requests settle; do not poll, repeat or route around it. Programs receive no continuation. Never repeat declined asks. Credentials belong in the Request UI.',
   input: RequestInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: IntegrationRequestOutputSchema,
   access: "write",

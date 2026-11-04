@@ -159,6 +159,63 @@ describe("credential proxy", () => {
     expect(rest).toContain("data: last");
   });
 
+  it("parks tool calls with their RPC id, permits setup and protocol traffic, and resets on reuse", async () => {
+    const host = await upstream((_request, response) => {
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "x-opensteer-request-pending": "1",
+      });
+      response.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
+    });
+    const { proxy, secret, urls } = await proxyFor(host.origin, { current: "host-token" });
+    const call = (method: string, name?: string, id: number | string = 1) =>
+      fetch(urls["agent-tools"], {
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method,
+          ...(name ? { params: { name, arguments: {} } } : {}),
+        }),
+        headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+        method: "POST",
+      });
+    const pending = await call("tools/call", "integration_request");
+    expect(pending.headers.get("x-opensteer-request-pending")).toBeNull();
+    await pending.arrayBuffer();
+    const refused = await call("tools/call", "browser_session_open", "next-tool");
+    expect(refused.status).toBe(200);
+    expect(await refused.json()).toMatchObject({
+      jsonrpc: "2.0",
+      id: "next-tool",
+      result: {
+        isError: true,
+        content: [{ type: "text", text: expect.stringContaining("do not call more tools") }],
+      },
+    });
+    expect(host.seen).toHaveLength(1);
+    for (const name of [
+      "sign_in",
+      "integration_request",
+      "integration_propose",
+      "browser_profile_request",
+      "machine_full_disk_access_request",
+    ])
+      await (await call("tools/call", name)).arrayBuffer();
+    for (const method of ["initialize", "tools/list", "notifications/initialized"])
+      await (await call(method)).arrayBuffer();
+    expect(host.seen).toHaveLength(9);
+    for (const method of ["GET", "DELETE"]) {
+      await (
+        await fetch(urls["agent-tools"], { method, headers: { authorization: `Bearer ${secret}` } })
+      ).arrayBuffer();
+    }
+    expect(host.seen).toHaveLength(11);
+    proxy.suspend();
+    proxy.resume();
+    await (await call("tools/call", "browser_session_open")).arrayBuffer();
+    expect(host.seen).toHaveLength(12);
+  });
+
   it("breaks the engine's connection when the Host fails partway through a body", async () => {
     const host = await upstream((_request, response) => {
       response.writeHead(200, { "content-type": "application/json" });

@@ -37,6 +37,26 @@ describe("case boundary failure modes", () => {
   });
 });
 describe("trajectory grading failure modes", () => {
+  it("allows discovery before a pending Request and rejects every subsequent tool", () => {
+    const c = parseCases(line({ expect: { endAfterPendingRequest: true } }))[0]!;
+    const search = { tool: "integration_search", args: {}, valid: true };
+    const pending = {
+      tool: "integration_request",
+      args: {},
+      valid: true,
+      result: { requestId: "req-test", status: "pending" },
+    };
+    expect(
+      grade(c.expect, [search, pending], "Requested access").find(
+        ({ name }) => name === "endAfterPendingRequest",
+      ),
+    ).toEqual({ name: "endAfterPendingRequest", pass: true });
+    expect(
+      grade(c.expect, [search, pending, search], "Requested access").find(
+        ({ name }) => name === "endAfterPendingRequest",
+      ),
+    ).toEqual({ name: "endAfterPendingRequest", pass: false });
+  });
   it("matches recursive partial objects without coercion", () => {
     expect(
       partialMatch({ nested: { x: 1, y: 2 }, a: ["b", "c"] }, { nested: { x: 1 }, a: ["b"] }),

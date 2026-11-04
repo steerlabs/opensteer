@@ -2888,6 +2888,39 @@ export class RequestStore {
         "requestContinuations.status as continuationStatus",
       ])
       .where("requestContinuations.status", "=", "waiting")
+      .where((eb) =>
+        eb.or([
+          eb("requests.originatingRunId", "is", null),
+          eb.exists(
+            eb
+              .selectFrom("runs as originRun")
+              .select("originRun.id")
+              .whereRef("originRun.id", "=", "requests.originatingRunId")
+              .where("originRun.status", "in", ["completed", "failed", "interrupted"])
+              .where((gate) =>
+                gate.or([
+                  gate.not(
+                    gate.exists(
+                      gate
+                        .selectFrom("requests as sibling")
+                        .select("sibling.id")
+                        .whereRef("sibling.originatingRunId", "=", "originRun.id")
+                        .where("sibling.mode", "=", "durable")
+                        .where("sibling.status", "=", "pending"),
+                    ),
+                  ),
+                  gate.exists(
+                    gate
+                      .selectFrom("runs as newerRun")
+                      .select("newerRun.id")
+                      .whereRef("newerRun.threadId", "=", "originRun.threadId")
+                      .whereRef("newerRun.runOrdinal", ">", "originRun.runOrdinal"),
+                  ),
+                ]),
+              ),
+          ),
+        ]),
+      )
       .orderBy(sql`request_continuations.attempted_at asc nulls first`)
       .orderBy("requestContinuations.createdAt", "asc")
       .limit(clampLimit(limit))

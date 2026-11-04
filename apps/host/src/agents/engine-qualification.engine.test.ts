@@ -191,6 +191,132 @@ describe("engine qualification", () => {
       restorePath = undefined;
     }, 60_000);
 
+    it("parks a pending Request and recalls native context after its continuation", async () => {
+      if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
+      stack = await startVerticalStack({
+        catalogTimeoutMs: 180_000,
+        databaseUrl,
+        harnessInstance: qualificationAccount(engine),
+        harnesses: createHarnessRegistry(
+          parseAgentExecutionConfig(process.env).harnessExecutables,
+          {
+            nodeExecutable: process.execPath,
+            runtimeCacheDirectory: runtimeCacheDirectory!,
+          },
+        ),
+        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
+        runTimeoutMs: 180_000,
+      }).catch((error: unknown) => {
+        throw qualificationFailure(engine, error);
+      });
+      const active = stack;
+      const model = active.catalog.models.find((candidate) => candidate.isDefault);
+      if (!model) throw new Error("The engine has no default model");
+      const workspace = await active.createWorkspace(`${engine.label} Request parking`);
+      const threadId = await active.createThread({
+        modelSelection: ModelSelectionSchema.parse({
+          modelId: model.modelId,
+          options: {},
+          providerId: model.providerId,
+        }),
+        title: `${engine.label} Request parking`,
+        workspaceId: workspace.id,
+      });
+      const nonce = randomUUID();
+      const first = await active.sendMessage({
+        text: `Remember ${nonce} for the later continuation. Request a new browser profile named Receipts with browser_profile_request for this expense task. After requesting it, try thread_list to find running tasks, subject to Opensteer's pending-Request rule. Do not open a browser or sign in. When the person chooses the profile in a later continuation, reply with the chosen profile name and the remembered code, without tools.`,
+        threadId,
+        workspaceId: workspace.id,
+      });
+      const database = active.host.store.database;
+      const requests = await database
+        .selectFrom("requests")
+        .select(["id", "status", "mode"])
+        .where("originatingRunId", "=", first.runId)
+        .execute();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ mode: "durable", status: "pending" });
+      expect(
+        await database
+          .selectFrom("runs")
+          .select("status")
+          .where("id", "=", first.runId)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ status: "completed" });
+      const before = await database
+        .selectFrom("providerSessions")
+        .select("providerSessionReference")
+        .where("threadId", "=", threadId)
+        .where("active", "=", true)
+        .executeTakeFirstOrThrow();
+      expect(before.providerSessionReference).toBeTruthy();
+      const opened = await active.host.store.requests.get(requests[0]!.id);
+      if (!opened) throw new Error("The browser profile Request disappeared");
+      const requested = await database
+        .selectFrom("workspaceEvents")
+        .select("sequence")
+        .where("runId", "=", first.runId)
+        .where("type", "=", "request.opened")
+        .executeTakeFirstOrThrow();
+      const threadListCalls = new Set(
+        first.events.flatMap((event) =>
+          event.runId === first.runId &&
+          event.type === "tool.started" &&
+          event.data.tool.name.endsWith("thread_list")
+            ? [event.data.callId]
+            : [],
+        ),
+      );
+      for (const event of first.events) {
+        if (
+          event.type === "tool.completed" &&
+          event.sequence > requested.sequence &&
+          threadListCalls.has(event.data.callId)
+        ) {
+          expect(event.data.isError).toBe(true);
+          expect(event.data.output.text).toContain("This Run is stopping for the person");
+        }
+      }
+      await active.host.store.requests.resolveBrowserRequest({
+        requestId: opened.id,
+        resolvedBy: opened.requestedBy,
+        response: {
+          kind: "external",
+          value: { decision: "fulfilled", createProfile: { name: "Chosen Receipts" } },
+        },
+      });
+      const continued = await vi.waitFor(
+        async () => {
+          const run = await database
+            .selectFrom("runs")
+            .select(["id", "status"])
+            .where("threadId", "=", threadId)
+            .where("id", "!=", first.runId)
+            .orderBy("runOrdinal", "desc")
+            .executeTakeFirst();
+          expect(run, "The Request did not create a continuation Run").toBeDefined();
+          expect(run!.status, "The Request continuation did not complete").toBe("completed");
+          return run!;
+        },
+        { timeout: 180_000, interval: 100 },
+      );
+      const replies = await database
+        .selectFrom("messages")
+        .select("content")
+        .where("runId", "=", continued.id)
+        .where("kind", "=", "assistant")
+        .execute();
+      expect(JSON.stringify(replies)).toContain(nonce);
+      expect(JSON.stringify(replies)).toContain("Chosen Receipts");
+      const after = await database
+        .selectFrom("providerSessions")
+        .select("providerSessionReference")
+        .where("threadId", "=", threadId)
+        .where("active", "=", true)
+        .executeTakeFirstOrThrow();
+      expect(after.providerSessionReference).toBe(before.providerSessionReference);
+    });
+
     it("contributes the person's Chat follow-ups to the reply under way", async () => {
       if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
       const command = installedCommand(engine.driverKind);

@@ -737,8 +737,9 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     storeFixture,
   }) => {
     const { store, platform, database } = storeFixture;
-    const userId = await store.createUser("Catalog owner");
-    const workspace = await createWorkspace(store, userId, "catalog-uninstall");
+    const run = await runningRunFixture(store, "catalog-uninstall");
+    const userId = run.userId;
+    const workspace = { id: run.workspaceId };
     const installationId = createIntegrationId("installation");
     const serverId = createIntegrationId("server");
     const tool = discoveredTool(createIntegrationId("tool"));
@@ -795,6 +796,28 @@ integration.sequential("PostgreSQL integration uninstall", () => {
         workspaceId: workspace.id,
       })
       .executeTakeFirstOrThrow();
+
+    await database
+      .updateTable("integrationConnections")
+      .set({ provider: "records" })
+      .where("id", "=", connectionId)
+      .execute();
+    const callable = await platform.listCallableTools({
+      ownerUserId: userId,
+      workspaceId: workspace.id,
+      threadId: run.threadId,
+      providerAuthorizations: {},
+    });
+    expect(callable[0]?.grant.alias).toBe("Alex (alex@example.com)");
+    const inventory = await platform.listDiscoveryInventory({
+      ownerUserId: userId,
+      workspaceId: workspace.id,
+      threadId: run.threadId,
+      providerAuthorizations: {},
+    });
+    expect(inventory[0]?.accounts).toContainEqual(
+      expect.objectContaining({ connectionId, account: "Alex (alex@example.com)" }),
+    );
 
     const mutation = await platform.uninstall({
       actorUserId: userId,
@@ -5568,13 +5591,14 @@ integration.sequential("PostgreSQL computer app connections", () => {
       sessionId,
       deviceLabel: "iPhone",
     });
-    // The Thread hears about it through the same continuation an
-    // `integration.access` answer produces.
+    await expect(platform.requests.listPendingContinuations()).resolves.toEqual([]);
     await expect(
-      platform.requests
-        .listPendingContinuations()
-        .then((entries) => entries.map(({ request }) => request.id)),
-    ).resolves.toContain(opened.request.id);
+      database
+        .selectFrom("requestContinuations")
+        .select("status")
+        .where("requestId", "=", opened.request.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "waiting" });
     await expect(platform.listComputerAppSetupRequests(run.userId)).resolves.toEqual([]);
   });
 
