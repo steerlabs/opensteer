@@ -94,7 +94,7 @@ target "_common" {
   platforms  = ["linux/amd64"]
   attest     = ["type=provenance,disabled=true"]
   args = {
-    NODE_IMAGE  = "${DOCKERHUB_MIRROR}/library/node:24.13.0-bookworm-slim@sha256:4660b1ca8b28d6d1906fd644abe34b2ed81d15434d26d845ef0aced307cf4b6f"
+    NODE_IMAGE  = "${DOCKERHUB_MIRROR}/library/node:24.22.2-bookworm-slim@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c"
     GO_IMAGE    = "${DOCKERHUB_MIRROR}/library/golang:1.26.2-bookworm@sha256:47ce5636e9936b2c5cbf708925578ef386b4f8872aec74a67bd13a627d242b19"
     CADDY_IMAGE = "${DOCKERHUB_MIRROR}/library/caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d"
     OPENSTEER_IMAGE_REGISTRY = REGISTRY
