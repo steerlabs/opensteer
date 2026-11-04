@@ -50,6 +50,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { lockBrowserHistory } from "./browser-history-store.js";
 import {
+  lockBrowserProfile,
   type NativeProfileDeletionResult,
   profileStorage,
   publicProfileDeletion,
@@ -325,11 +326,13 @@ export async function deleteBrowserProfile(
     readonly profileId: BrowserProfileId;
   },
 ) {
-  return withDatabaseTransaction(database, (transaction) =>
-    administrationCommand(transaction, input.administration, () =>
+  return withDatabaseTransaction(database, async (transaction) => {
+    // The profile lock ranks before the administration ledger's.
+    await lockBrowserProfile(transaction, input.profileId);
+    return administrationCommand(transaction, input.administration, () =>
       deleteBrowserProfileInTransaction(transaction, input),
-    ),
-  );
+    );
+  });
 }
 
 export async function deleteBrowserProfileInTransaction(
