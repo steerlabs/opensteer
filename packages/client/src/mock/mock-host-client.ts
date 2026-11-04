@@ -6127,7 +6127,7 @@ class MockHostState {
             ...(options.memoryPasses === "waiting-for-model" && systemRole === "memory-light"
               ? {
                   waitingReason:
-                    "Waiting for a model it can use. Allow a provider for background work, or choose a model, in AI settings; it resumes by itself.",
+                    "Waiting for an AI account it can use on Main's computer. Connect one there, or turn one on for automatic work in AI settings; it resumes by itself.",
                 }
               : {}),
           },

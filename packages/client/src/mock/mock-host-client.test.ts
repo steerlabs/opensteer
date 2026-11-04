@@ -1425,7 +1425,7 @@ it("models managed role discovery, hidden authorized detail, waiting passes and 
       systemRole: "memory-light",
       status: "active",
       pauseReason: null,
-      waitingReason: expect.stringContaining("Waiting for a model it can use"),
+      waitingReason: expect.stringContaining("Waiting for an AI account it can use"),
     });
     const detail = unwrap(await client.rpc["triggers.get"]({ triggerId: light.id }));
     expect(detail.anchorThread).toMatchObject({

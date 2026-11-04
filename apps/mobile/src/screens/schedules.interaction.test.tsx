@@ -715,7 +715,7 @@ describe("Managed memory passes", () => {
     const f = host("waiting-for-model");
     const light = (await f.summaries()).find((t) => t.systemRole === "memory-light")!;
     const screen = detailScreen(light.id);
-    await shown(screen, "Waiting for a model it can use", "waiting reason missing");
+    await shown(screen, "Waiting for an AI account it can use", "waiting reason missing");
     expect(screen.textContent).not.toContain("Run now");
     expect(screen.textContent).toContain("Findings reach you through Chat");
     press(button(screen, /^Runs in /));
@@ -726,7 +726,7 @@ describe("Managed memory passes", () => {
     await vi.waitFor(() => expect(button(screen, "Resume").disabled).toBe(false), {
       timeout: 2000,
     });
-    expect(screen.textContent).not.toContain("Waiting for a model it can use");
+    expect(screen.textContent).not.toContain("Waiting for an AI account it can use");
     press(button(screen, "Resume"));
     await vi.waitFor(() => expect(button(screen, "Pause").disabled).toBe(false), { timeout: 2000 });
   });
