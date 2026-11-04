@@ -332,8 +332,9 @@ describe("automatic model resolver", () => {
       catalogDefaultCandidate({ accounts, excludedAccounts: [], canRun: () => ({ ok: true }) })
         ?.account.harnessInstanceId;
     expect(pick([endpoint])).toBeUndefined();
-    const chosenEndpoint = { ...endpoint, isDefault: true };
-    expect(pick([chosenEndpoint])).toBe(chosenEndpoint.harnessInstanceId);
+    // `isDefault` is assigned to the first enabled account, so it is no explicit choice.
+    expect(pick([{ ...endpoint, isDefault: true }])).toBeUndefined();
+    expect(pick([{ ...endpoint, isDefault: true }, fallback])).toBe(fallback.harnessInstanceId);
   });
 });
 it("strict executable policies reject mixed/account-bound entries; presentation preserves unknown siblings", () => {
