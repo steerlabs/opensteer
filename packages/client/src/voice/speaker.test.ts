@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { voiceSayMaxLength } from "@opensteer/protocol/voice";
 import type { RunEntry, ToolEntry } from "../host/client.js";
 import type { WaitingRequest } from "@opensteer/core";
+import { VoiceStartError } from "./contract.js";
 import { VoiceSpeaker, voiceSpeakableText } from "./speaker.js";
-import { voiceHost, voiceReply, voiceTestNow } from "./voice.test-support.js";
+import { settle, voiceHost, voiceReply, voiceTestNow } from "./voice.test-support.js";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -15,19 +16,24 @@ afterEach(() => {
 function setup() {
   const fixture = voiceHost();
   const id = fixture.host.getSnapshot().homeThreadId!;
-  const say = vi.fn(async (_text: string) => {});
+  const say = vi.fn(async (_id: string, _text: string) => {});
   return {
     ...fixture,
     id,
     say,
+    /** What reached the call, as `[id, text]`. */
+    said: () => say.mock.calls,
     make: () =>
       new VoiceSpeaker({
         hostClient: fixture.host,
         baseline: fixture.host.getSnapshot(),
+        callThreadId,
         say,
       }),
   };
 }
+
+const callThreadId = "thread_call";
 
 describe("VoiceSpeaker", () => {
   it("speaks only replies newer than Chat's newest message at start, never settled streams, history or input", () => {
@@ -46,8 +52,7 @@ describe("VoiceSpeaker", () => {
       voiceReply("durable", "Hello", voiceTestNow + 2),
     ];
     f.publish({ transcripts: { [f.id]: entries } });
-    expect(f.say).toHaveBeenCalledExactlyOnceWith("Hello");
-    speaker.spoke();
+    expect(f.say).toHaveBeenCalledExactlyOnceWith("message:durable", "Hello");
     f.publish({ connection: "connecting", transcripts: {} });
     f.publish({ connection: "connected", transcripts: { [f.id]: entries } });
     expect(f.say).toHaveBeenCalledTimes(1);
@@ -58,8 +63,10 @@ describe("VoiceSpeaker", () => {
     f.host.dispose();
   });
 
-  it("keeps the latest two waiting speeches and advances only on spoke or its bounded fallback", async () => {
+  it("forwards every new reply once, in order, one at a time, dropping none", async () => {
     const f = setup();
+    const accepted: (() => void)[] = [];
+    f.say.mockImplementation(() => new Promise<void>((resolve) => accepted.push(resolve)));
     const speaker = f.make();
     f.publish({ transcripts: { [f.id]: [voiceReply("one")] } });
     f.publish({
@@ -67,31 +74,56 @@ describe("VoiceSpeaker", () => {
         [f.id]: [voiceReply("one"), voiceReply("two"), voiceReply("three"), voiceReply("four")],
       },
     });
-    expect(f.say.mock.calls).toEqual([["one"]]);
-    speaker.speaking();
-    speaker.spoke();
-    expect(f.say.mock.calls).toEqual([["one"], ["three"]]);
-    await vi.advanceTimersByTimeAsync(15_000 + "three".length * 80);
-    expect(f.say.mock.calls).toEqual([["one"], ["three"], ["four"]]);
+    // The next goes only once the call accepted the one before it.
+    expect(f.said()).toEqual([["message:one", "one"]]);
+    for (const _ of ["two", "three", "four"]) {
+      accepted.shift()!();
+      await settle();
+    }
+    expect(f.said()).toEqual([
+      ["message:one", "one"],
+      ["message:two", "two"],
+      ["message:three", "three"],
+      ["message:four", "four"],
+    ]);
+    accepted.shift()!();
+    // Republishing the same replies, as a reconnect does, forwards nothing again.
+    f.publish({ transcripts: { [f.id]: [voiceReply("one"), voiceReply("four")] } });
+    await settle();
+    expect(f.say).toHaveBeenCalledTimes(4);
     speaker.dispose();
     f.host.dispose();
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("waits out the voice's own acknowledgement and is not finished by it", () => {
+  it("sends an unknown outcome again under the same id, and stops on a refusal", async () => {
     const f = setup();
-    const speaker = f.make();
-    speaker.speaking();
+    const onError = vi.fn();
+    f.say.mockRejectedValueOnce(new TypeError("offline"));
+    const speaker = new VoiceSpeaker({
+      hostClient: f.host,
+      baseline: f.host.getSnapshot(),
+      callThreadId,
+      say: f.say,
+      onError,
+    });
     f.publish({ transcripts: { [f.id]: [voiceReply("one"), voiceReply("two")] } });
-    expect(f.say).not.toHaveBeenCalled();
-    speaker.spoke();
-    expect(f.say.mock.calls).toEqual([["one"]]);
-    // An acknowledgement that began before the relay ends without finishing it.
-    speaker.spoke();
-    expect(f.say.mock.calls).toEqual([["one"]]);
-    speaker.speaking();
-    speaker.spoke();
-    expect(f.say.mock.calls).toEqual([["one"], ["two"]]);
+    await settle();
+    expect(f.said()).toEqual([["message:one", "one"]]);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(f.said()).toEqual([
+      ["message:one", "one"],
+      ["message:one", "one"],
+      ["message:two", "two"],
+    ]);
+    f.say.mockRejectedValueOnce(new VoiceStartError("connection-failed"));
+    f.publish({
+      transcripts: { [f.id]: [voiceReply("one"), voiceReply("two"), voiceReply("three")] },
+    });
+    await settle();
+    expect(onError).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(f.say).toHaveBeenCalledTimes(4);
     speaker.dispose();
     f.host.dispose();
   });
@@ -113,7 +145,7 @@ describe("VoiceSpeaker", () => {
         ],
       },
     });
-    expect(f.say.mock.calls).toEqual([["New reply"]]);
+    expect(f.said()).toEqual([["message:new", "New reply"]]);
     speaker.dispose();
     f.host.dispose();
   });
@@ -154,7 +186,7 @@ describe("VoiceSpeaker", () => {
         [f.id]: [older, ...history, voiceReply("new", "New reply", voiceTestNow + 1)],
       },
     });
-    expect(f.say.mock.calls).toEqual([["New reply"]]);
+    expect(f.said()).toEqual([["message:new", "New reply"]]);
     speaker.dispose();
     f.host.dispose();
   });
@@ -185,7 +217,7 @@ describe("VoiceSpeaker", () => {
     f.publish({
       transcripts: { [f.id]: [older, tool, voiceReply("new", "New reply", voiceTestNow + 1)] },
     });
-    expect(f.say.mock.calls).toEqual([["New reply"]]);
+    expect(f.said()).toEqual([["message:new", "New reply"]]);
     speaker.dispose();
     f.host.dispose();
   });
@@ -210,15 +242,20 @@ describe("VoiceSpeaker", () => {
         ],
       },
     });
-    expect(f.say.mock.calls).toEqual([["New reply"]]);
+    expect(f.said()).toEqual([["message:new", "New reply"]]);
     speaker.dispose();
     f.host.dispose();
   });
 
   it("speaks every reply in a Chat that voice creates during the call", () => {
     const f = voiceHost("absent");
-    const say = vi.fn(async (_text: string) => {});
-    const speaker = new VoiceSpeaker({ hostClient: f.host, baseline: f.host.getSnapshot(), say });
+    const say = vi.fn(async (_id: string, _text: string) => {});
+    const speaker = new VoiceSpeaker({
+      hostClient: f.host,
+      baseline: f.host.getSnapshot(),
+      callThreadId,
+      say,
+    });
     const window = {
       threadId: "chat",
       byteCount: 0,
@@ -231,35 +268,52 @@ describe("VoiceSpeaker", () => {
       transcriptWindows: { chat: { ...window, totalItems: 1 } },
       transcripts: { chat: [voiceReply("first", "Four.", voiceTestNow - 86_400_000)] },
     });
-    expect(say.mock.calls).toEqual([["Four."]]);
+    expect(say.mock.calls).toEqual([["message:first", "Four."]]);
     speaker.dispose();
     f.host.dispose();
   });
 
-  it("baselines Requests and rechecks queued Requests without reading their payload", () => {
+  it("announces new Requests by title only, once each, and skips one answered first", async () => {
     const f = setup();
-    const request = (id: string) =>
+    const request = (id: string, originatingThreadId = f.id) =>
       ({
         request: {
           id,
           status: "pending",
-          originatingThreadId: f.id,
+          originatingThreadId,
           payload: { secret: "never spoken" },
         },
         assignments: [],
       }) as unknown as WaitingRequest;
     f.publish({ waitingRequests: [request("existing")] });
+    const accepted: (() => void)[] = [];
+    f.say.mockImplementation(() => new Promise<void>((resolve) => accepted.push(resolve)));
     const speaker = f.make();
     f.publish({ transcripts: { [f.id]: [voiceReply("one")] } });
-    f.publish({ waitingRequests: [request("existing"), request("resolved"), request("new")] });
-    f.publish({ waitingRequests: [request("existing"), request("new")] });
-    speaker.speaking();
-    speaker.spoke();
-    expect(f.say.mock.calls).toEqual([["one"], ["Chat needs you."]]);
-    speaker.speaking();
-    speaker.spoke();
+    f.publish({
+      waitingRequests: [
+        request("existing"),
+        request("resolved"),
+        request("new"),
+        request("mine", callThreadId),
+      ],
+    });
+    f.publish({
+      waitingRequests: [request("existing"), request("new"), request("mine", callThreadId)],
+    });
+    for (let index = 0; index < 3; index += 1) {
+      accepted.shift()?.();
+      await settle();
+    }
+    expect(f.said()).toEqual([
+      ["message:one", "one"],
+      ["request:new", "Chat needs you."],
+      ["request:mine", "Check your screen, I need your OK."],
+    ]);
     f.publish({ waitingRequests: [request("new")] });
-    expect(f.say).toHaveBeenCalledTimes(2);
+    await settle();
+    expect(f.say).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(f.said())).not.toContain("never spoken");
     speaker.dispose();
     f.host.dispose();
   });

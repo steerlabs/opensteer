@@ -1,77 +1,17 @@
 import { vi } from "vitest";
 import { createId } from "@opensteer/core";
-import { WorkspaceTabLineageSchema } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/index.js";
 import type { HostSnapshot, MessageEntry } from "../host/client.js";
-import type { VoiceCallEvent, VoiceMediaPort, VoiceProvider } from "./contract.js";
+import type { VoiceView } from "@opensteer/protocol/voice";
+import type {
+  VoiceCallEvent,
+  VoiceCallIdentity,
+  VoiceMediaPort,
+  VoiceProvider,
+} from "./contract.js";
 
 export const voiceTestId = "12345678-1234-4123-8123-123456789abc";
 export const voiceTestNow = Date.parse("2026-10-30T12:00:00.000Z");
-
-export function voiceSavedTabs(host: MockHostClient): HostSnapshot {
-  const snapshot = host.getSnapshot();
-  const home = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
-  const runId = createId("run");
-  const sessionId = "bsn_00000000-0000-4000-8000-000000000001";
-  const at = new Date(voiceTestNow).toISOString();
-  const group = WorkspaceTabLineageSchema.parse({
-    id: sessionId,
-    revision: 1,
-    createdAt: at,
-    session: {
-      id: sessionId,
-      createdAt: at,
-      updatedAt: at,
-      origin: "workspace",
-      access: "read-write",
-      placement: { kind: "runner", runnerId: createId("runner") },
-      profileId: null,
-      runtimeId: "test",
-      state: "closed",
-      workspaceId: home.workspaceId,
-    },
-    tabs: Array.from({ length: 36 }, (_, index) => ({
-      kind: "browser",
-      id: index === 0 ? "tab_gmail" : `tab_saved${index}`,
-      sessionId,
-      title: index === 0 ? "Gmail" : "Saved tab",
-      site: "https://mail.google.com",
-      order: index,
-      openerId: null,
-      state: "suspended",
-      createdAt: new Date(voiceTestNow - (36 - index) * 1000).toISOString(),
-    })),
-  });
-  host.enterPlace(runId, home.id, {
-    title: "Gmail",
-    site: "https://mail.google.com",
-    place: { kind: "browser", sessionId: group.id, surfaceId: group.tabs![0]!.id },
-  });
-  return {
-    ...snapshot,
-    workspaceTabRestoreVersion: 1,
-    workspaceTabs: [group],
-    browserSessions: [],
-    threads: snapshot.threads.map((thread) =>
-      thread.id === home.id ? { ...thread, status: "running" } : thread,
-    ),
-    runQueue: [{ id: runId, threadId: home.id, status: "running", runOrdinal: 1, createdAt: at }],
-    transcripts: {
-      ...snapshot.transcripts,
-      [home.id]: [
-        {
-          kind: "place",
-          id: "place-gmail",
-          runId,
-          createdAt: at,
-          title: "Gmail",
-          site: "https://mail.google.com",
-          place: { kind: "browser", sessionId: group.id, surfaceId: group.tabs![0]!.id },
-        },
-      ],
-    },
-  };
-}
 
 /** Mock domain commands stay real; tests can publish snapshots without starting its timed engines. */
 export function voiceHost(initialHome: "seeded" | "absent" = "seeded") {
@@ -123,11 +63,17 @@ export function voiceReply(id: string, body = id, createdAt = voiceTestNow + 1):
   };
 }
 
+export function voiceIdentity(workspaceId: string = createId("workspace")): VoiceCallIdentity {
+  return { threadId: createId("thread"), runId: createId("run"), workspaceId };
+}
+
 export function semanticVoice() {
   let event: (event: VoiceCallEvent) => void = () => {};
   let signal: AbortSignal | null = null;
   const call = {
-    say: vi.fn(async (_text: string) => {}),
+    identity: voiceIdentity(),
+    say: vi.fn(async (_id: string, _text: string) => {}),
+    view: vi.fn(async (_view: VoiceView) => {}),
     setMuted: vi.fn<(muted: boolean) => void>(),
     close: vi.fn(async () => {}),
   };

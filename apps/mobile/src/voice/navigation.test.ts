@@ -12,16 +12,12 @@ vi.mock("../navigation-ref.js", () => ({
     isReady: vi.fn(() => true),
     getCurrentRoute: vi.fn(),
     dispatch: vi.fn(),
-    canGoBack: vi.fn(() => true),
-    goBack: vi.fn(),
   },
 }));
-it("reports failure when navigation is not ready or Back has nowhere to go", () => {
+it("reports failure when navigation is not ready", () => {
   vi.mocked(navigationRef.isReady).mockReturnValueOnce(false);
   expect(show("d", { kind: "chat" })).toBe(false);
   expect(show(null, { kind: "chat" })).toBe(false);
-  vi.mocked(navigationRef.canGoBack).mockReturnValueOnce(false);
-  expect(show("d", { kind: "back" })).toBe(false);
 });
 it("does not push an already visible task or exact tab and pops to the existing Home root", () => {
   vi.mocked(navigationRef.getCurrentRoute).mockReturnValue({
