@@ -3159,7 +3159,8 @@ export class HttpHostClient {
       if (
         command.type === "stream.unsubscribe" ||
         command.type === "viewport.follow" ||
-        command.type === "input.cancel"
+        command.type === "input.cancel" ||
+        command.type.startsWith("cursor.")
       )
         return;
       throw new Error("The browser view is not synchronized.");

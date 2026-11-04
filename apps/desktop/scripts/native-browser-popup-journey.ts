@@ -365,11 +365,10 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       const remove = producer.onEvent(checkGeometry);
       checkGeometry();
       const timer = setTimeout(
-        () => fitted.reject(new Error("Viewer Fit geometry never applied")),
+        () => fitted.reject(new Error("Foreground viewer geometry never applied")),
         4000,
       );
       try {
-        await a.getByRole("button", { name: "Fit page to view", exact: true }).click();
         await fitted.promise;
         await a.waitForFunction(
           ({ width, height }) => {

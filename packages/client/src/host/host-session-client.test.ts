@@ -7196,6 +7196,9 @@ describe("HttpHostClient hosted browser", () => {
     expect(() =>
       client.sendBrowserCommand(sessionId, { type: "stream.unsubscribe" }),
     ).not.toThrow();
+    expect(() =>
+      client.sendBrowserCommand(sessionId, { type: "cursor.reset", surfaceId: "page-1" }),
+    ).not.toThrow();
     expect(() => client.sendBrowserCommand(sessionId, { type: "navigation.reload" })).toThrow(
       "The browser view is not synchronized.",
     );
