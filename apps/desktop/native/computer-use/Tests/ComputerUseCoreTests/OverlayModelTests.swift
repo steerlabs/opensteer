@@ -4,7 +4,7 @@ import XCTest
 
 @testable import ComputerUseCore
 
-/// §2 "What the person sees": every state the pill, the pointers, the steady
+/// What the person sees: every state the pill, the pointers, the steady
 /// outline can be in, and how they move from one to the next.
 final class OverlayModelTests: XCTestCase {
   private let start = Date(timeIntervalSinceReferenceDate: 800_000_000)

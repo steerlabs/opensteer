@@ -16,8 +16,7 @@ export const macosAppDefinitionId = "macos-app";
  *
  * It names the Mac, which an ordinary computer app's sentence may not, for the
  * reason `computerUseDesktopMissingSentence` gives: this is a fact about the
- * computer rather than about one app on it, and `docs/computer-use.md` §3
- * fixes the wording.
+ * computer rather than about one app on it.
  */
 export const computerUseUnsupportedSentence =
   "Computer use needs the Opensteer desktop app on this Mac.";

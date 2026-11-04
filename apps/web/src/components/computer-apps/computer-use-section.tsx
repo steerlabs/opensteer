@@ -472,7 +472,7 @@ function ToneDot({ tone }: { readonly tone: ComputerUseTone }) {
 
 /** Matches the desktop docs: computer use needs a build signed with a Developer ID. */
 const unsignedBuildSentence =
-  "This build isn’t signed with a Developer ID, so it can’t set up computer use. See SIGNING.md.";
+  "This build isn’t signed with a Developer ID, so it can’t set up computer use. See apps/desktop/README.md.";
 
 /**
  * The two macOS grants as steps, each with its state and — on the Mac itself —

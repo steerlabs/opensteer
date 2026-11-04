@@ -1,171 +1,108 @@
-# Computers: membership, roles, and the page
+# Computers: membership, roles, and machine access
 
-## 1. Model
+## Membership
 
-A computer is one Runner identity in one Deployment. Its enrollment grant caps modules
-on every reconnect; advertising fewer does not reduce that grant. Enabling execution or
-changing reach policy must not replace identity. Ordinary grants use
-[computerRunnerGrant](../apps/host/src/agents/runner-enrollment-grant.ts); phones use an
-exact integrations-only grant. Do not confuse requested modules with the expanded grant.
+A computer is one Runner identity in one Deployment. Its enrollment grant caps modules on every
+reconnect, and advertising fewer does not reduce it; ordinary grants use
+[computerRunnerGrant](../apps/host/src/agents/runner-enrollment-grant.ts), phones an exact
+integrations-only grant. Enabling execution or changing reach policy must not replace identity.
+Personal Deployments execute only on Main; other user-owned computers are reach-only (integrations,
+messaging, shell) or phones. The supervised messaging service is Deployment-owned, not a lent
+computer. Personal Main cannot be removed. An iPhone's enrollment profile is fixed and rechecked on
+every authentication, so a phone-shaped descriptor cannot claim Android's authority ([This iPhone's
+apps](mobile.md#this-iphones-apps)).
 
-Personal Deployments execute only on Main. Other user-owned computers are reach-only
-(integrations, messaging, shell) or phones (integrations only). The supervised messaging
-service is Deployment-owned, not a lent computer. Deployment services have no effective
-personal-app owner. See [admission](../packages/database/src) and [Messaging](messaging.md).
+Personal remote access gates route-admitted computers. A route generation change disconnects them
+but keeps identities and enrollments; fence admission against it both before and after registry
+insertion. Main and the colocated messaging service are never swept. Phone enrollment needs a live
+route. Only Personal Main requires a loopback Host URL, and loopback in a model endpoint means the
+Runner's computer, not the viewer's or the Host's.
 
-Personal remote access gates route-admitted computers at redemption and authentication.
-Generation changes disconnect those connections and their sessions, but preserve identities
-and enrollments. Fence admission against generation changes both before and after registry
-insertion. Main and the colocated messaging service use no route generation and are not
-swept. Ordinary enrollment codes may precede a live route; phone issuance needs one.
+Revocation is a bare close 4010 with no preceding `host.error`: the Runner stops reconnecting, and
+the desktop supervisor then forgets that slot's identity. Ordinary route or lease failures keep
+membership and retry, so keep this terminal signal distinct from transient refusals.
 
-External execution remains a server configuration fact: absolute capability URLs must be
-reachable by the Runner. Only Personal Main requires a loopback Host URL. Model endpoint
-loopback likewise means the Runner's computer, not the viewer or Host.
+## Runner and desktop
 
-## 2. Runner
+A reach-only Runner must not initialize execution dependencies or read execution inputs, and a
+browser relay requires agents. Keep the work-location identity while execution is off so enabling it
+reuses that identity; the environment binding is immutable after its first advertisement. Signed
+device shape is presentation, never authority or routing. Android phones offer no shell, and Windows
+shell endpoints are unsupported, so there is no reach-only Personal enrollment there.
 
-A reach-only Runner must not initialize execution dependencies or read execution inputs.
-A browser relay requires agents. Preserve the work-location identity when execution is off
-so enabling it can reuse identity; advertise no environment until then. Environment binding
-is immutable after the first advertisement. See [main.ts](../apps/runner/src/main.ts),
-[host-connection.ts](../apps/runner/src/host/host-connection.ts) and
-[config.ts](../packages/config/src/config.ts).
-
-Signed device shape is presentation, never authority or routing. It is optional for older
-Runners; absent device must not change their proof. Android phones offer no shell and never
-enter SSH inventory. Windows shell endpoints remain unsupported; do not offer reach-only
-Personal enrollment there.
-
-### iPhone app sharing
-
-[iPhone apps](iphone-apps.md) owns native sharing. Its immutable enrollment profile is
-checked before consuming the token and on every authentication; a phone-shaped descriptor
-cannot choose Android authority. The computer owner approves agent access from any signed-in device. iOS permission
-prompts and enrollment still require the data-holding iPhone; automatic approval is Mac-only. Backgrounding makes apps unavailable:
-never queue raw commands, replay a lost write or move it to a Mac.
-
-## 3. Host
-
-Revocation is bare close 4010 with no preceding host.error. It stops reconnecting and clears
-identity; ordinary route/lease failure preserves membership and retries. Keep this terminal
-signal distinct from transient admission refusals. [Host boundaries](host-boundaries.md)
-owns compatibility and authentication.
-
-## 4. Desktop
-
-Persist membership before starting the Runner so exit during join cannot strand a Host row.
-Turning execution off restarts the same identity/data directory/SSH host key. Removal deletes
-the enrollment slot; readding creates a new computer. Browser profile data lives outside
-that disposable slot and survives enrollment removal. Erasure requires explicit profile
-deletion; reenrollment cannot rebind a profile to the new identity. See
-[profile state](browser-sessions.md#profile-state). A slot no longer permitted to execute starts reach-only.
-The owner-session Host chooses the enrollment grant and origin, never the desktop.
-
-## 5. The page
-
-Use [the shared client model](../packages/client/src/computers) for computer presentation.
-A browser cannot claim local computer identity; only the supervising desktop can establish
-that locality. Administrators may remove another member's machine, but cannot inspect or
-change its private app settings. Personal Main cannot be removed.
+Desktop persists membership before starting the Runner so an exit during join cannot strand a Host
+row. Turning execution off restarts the same identity, data directory and SSH host key. Removal
+deletes the enrollment slot; adding again creates a new computer. Browser profiles live outside that
+slot and survive removal, but cannot be rebound to a new identity ([profile
+state](browser-sessions.md#profile-state)). The owner-session Host chooses the enrollment grant and
+origin, never the desktop. Only the supervising desktop can establish that a computer is local; a
+browser cannot claim it. Administrators may remove another member's machine but cannot inspect or
+change its private app settings.
 
 ## Machine access
 
-Commands run as the Runner OS user. Folder restrictions constrain **SFTP only**, through
-per-share os.Root handles; they are not a command sandbox. Forwarding dials from the target's
-network and must be audited and end with the session. Thread access mode decides harness
-confirmation; the target policy decides permission. Do not intersect them or treat running
-agents on the target as SSH permission. See [shell wire](../packages/protocol/src/shell.ts)
-and [native helper](../apps/runner/native-fs-helper).
+Commands run as the Runner's OS user. Folder restrictions constrain **SFTP only**, through per-share
+`os.Root` handles; they are not a command sandbox. Forwarding dials from the target's network, is
+audited and ends with the session. Thread access mode decides harness confirmation and the target
+policy decides permission: never intersect them or treat running agents on the target as SSH
+permission. See the [shell wire](../packages/protocol/src/shell.ts).
 
-Each session uses a dedicated WebSocket: SSH bytes must not block the serial control inbox.
-Policy changes end existing sessions; the next session gets the new snapshot. Sessions live
-under the admitting Run-attempt grant, not the presented token. Token refresh ends nothing;
-committed grant withdrawal ends sessions before the Runner reports completion. A late end
-from an old attempt must not stop replacement sessions.
-
-Relay sockets live outside privateStateRoot for the lifetime of their engine. Warm engines
-carry one Run authority at a time and refuse connections between Runs. Filesystem permissions
-protect Unix sockets, but separate directories do not isolate hostile native-user processes.
-Keep private-state denial intact. Eligibility belongs to
-[machine-access-setup.test.ts](../apps/runner/src/shell/machine-access-setup.test.ts).
-PTYs, remote/agent/X11 forwarding, per-user allowlists, Windows endpoints and peer-to-peer
-transport are outside this contract. Agent-facing SSH procedures remain in the shipped
-[computer skill](../apps/runner/agent-skills/skills/computers/SKILL.md).
+Each SSH session has its own WebSocket so its bytes never block the serial control inbox. Policy
+changes end existing sessions. Sessions live under the admitting Run attempt's grant, not the
+presented token: token refresh ends nothing, withdrawing the grant ends them before the Runner
+reports completion, and a late end from an old attempt cannot stop replacement sessions. Relay
+sockets live outside `privateStateRoot`; warm engines carry one Run's authority at a time and refuse
+connections between Runs. Filesystem permissions protect the sockets, but separate directories do
+not isolate hostile processes of the same user. Agent-facing SSH procedure is the shipped [computer
+skill](../apps/runner/agent-skills/skills/computers/SKILL.md).
 
 ## Computer apps
 
-A connection is pinned to one Runner. Its access caps every Workspace grant, including
-Main inheritance. The Host authorizes calls; Runner operation-contract validation detects
-mismatches and is not owner approval. Offline computers keep connections. Lost write answers
-are unknown outcomes and must never be retried. See
-[ComputerAppHub](../apps/host/src/computer-apps/computer-app-hub.ts).
+A connection is pinned to one Runner, and its access caps every Workspace grant, including Main's
+inheritance. The Host authorizes calls; Runner contract validation detects mismatches and is not
+owner approval. Offline computers keep their connections. A lost write answer is an unknown outcome
+and is never retried ([ComputerAppHub](../apps/host/src/computer-apps/computer-app-hub.ts)).
 
-The computer's current owner approves new/broader access, unblocks apps and enables
-Mac automatic app approval through the Host from any signed-in device. Other Workspace
-members and administrators cannot approve someone else's computer. Review verifies GUI
-identity and the deny list with the target helper; an offline or unavailable helper
-leaves the request pending with a verification failure. OS grants remain on the target.
-Automatic policy covers only new GUI apps, never widening or unblocking. Lowering/off
-also works remotely and invalidates pending approvals. Setup requests never start turns.
-Android access follows [Agent Phone](agent-phone.md#7-access-and-stop).
-
-Revoking a session stops further approval decisions from that session. Previously
-committed app grants and automatic policy remain until the owner explicitly reduces,
-blocks or removes them; signing out does not take those grants back.
-
-Protected personal APIs belong in the Computer Use helper so their macOS grants do not
-reach every agent child process. The Runner relays them. Readiness is per target/operation,
-not the viewer OS; passive inspection must not open permission prompts. An approved app
-missing an OS grant needs local settings, not another approval. See
-[Computer use](computer-use.md#apps-the-helper-serves).
+Only the computer's current owner approves new or broader access, unblocks apps and enables
+automatic app approval, which is Mac-only, from any signed-in device. Review verifies GUI identity
+and the deny list with the target helper; an unavailable helper leaves the request pending.
+Automatic policy covers only new GUI apps, never widening or unblocking, and turning it down works
+remotely. Revoking a session stops its approval decisions, but grants it already committed stay
+until the owner reduces them. An approved app missing an OS grant needs local settings, not another
+approval. Android access follows [Agent Phone](agent-phone.md#access-and-stop); protected Mac APIs
+live in the [Computer Use helper](computer-use.md#apps-the-helper-serves) so their grants never
+reach every agent process.
 
 ## MCP servers on a computer
 
-Program/loopback MCP servers run on the chosen computer, never with Host authority.
-Internet servers run through the Host over HTTPS; Host loopback is refused. On Personal,
-the default is Main. Packages are verified and cached on the selected Runner; a Host-local program path cannot imply those
-files exist on a different computer.
+Program and loopback MCP servers run on the chosen computer, never with Host authority, and default
+to the Deployment's Main computer. Internet servers run through the Host over HTTPS, and Host
+loopback is refused. A Host-local program path never implies the files exist on another computer.
 
-The owner reviews the program, arguments, working directory and environment—or URL
-and headers—verbatim from any signed-in device. Those details are fetched only for the
-owner's open review; shared Request events, agent projections and persisted client
-snapshots do not carry them. The Host binds consent to the exact current launch digest,
-server and target Runner, and rechecks that binding in admission before opening the
-MCP session. The authenticated target Runner trusts that Host decision; there is no
-separate local approval file or desktop signature. Removal/reinstallation closes existing
-sessions; an unchanged launch retains consent, while a changed launch requires review.
-An offline computer can retain consent but starts nothing until it reconnects.
-Protocol-incompatible Runners retain other modules and show an update refusal.
+The owner reviews the program, arguments, working directory and environment, or URL and headers,
+verbatim from any signed-in device. Those details are fetched only for that review and never ride in
+Request events, agent projections or client snapshots. Consent binds the exact launch digest, server
+and target Runner and is rechecked in admission; the Runner trusts that Host decision, with no local
+approval file. A changed launch needs review again, and an offline computer starts nothing.
 
-Agent Plugins forbids credentials in `env`, so a program server declares the environment
-variables its owner must supply in `plugin.json` under `extensions["com.opensteer"].secrets`
-(see [the loader](../packages/agent-plugins/src/loader.ts)). Only names and labels are part
-of the launch and its digest. The computer's owner enters the values when allowing it and
-can change them later without new consent; a new launch keeps values for names it still
-declares. Consent and values belong to one computer: a server moved to another is asked
-there again, with nothing kept. Values are sealed per server in a table of their own, so no server listing,
-Request event or snapshot carries them, and are opened only to start that server: the Host
-adds them to the launch it sends, which leaves the Runner's wire unchanged. Why a session
-ended quotes the server's output and becomes its status and agents' readiness, so the Host
-removes the values from it in [the transport](../apps/host/src/integrations/computer-mcp-transport.ts).
-Settings, Plugins lists them for the computer's owner, whatever their role. This keeps secrets
-out of chat, manifests and agent context, not from the program or a same-user shell.
+A program server declares the secrets its owner must supply under
+`extensions["com.opensteer"].secrets` in `plugin.json`, because Agent Plugins forbids credentials in
+`env`. Only names and labels enter the launch and its digest. The owner enters values when allowing
+it and can change them without new consent; consent and values belong to one computer. Values are
+sealed per server in their own table, never in a listing, Request event or snapshot, and the Host
+adds them only to the launch it sends. Session-end output quotes the server and becomes its status,
+so [the transport](../apps/host/src/integrations/computer-mcp-transport.ts) redacts the values. This
+keeps secrets out of chat, manifests and agent context, not from the program or a same-user shell.
 
-Run servers with the MCP SDK's minimal inherited environment plus the launch's in their own process group. End
-the entire tree when the session, stream or Runner ends, including descendants of launchers
-such as npx. Malformed/oversized/stalled transport ends that session, not the integrations
-stream. A lost write remains unconfirmed; read retries retain ordinary app semantics.
+Servers run with the MCP SDK's minimal inherited environment plus the launch's, in their own process
+group; ending a session, stream or Runner kills the whole tree, including descendants of launchers
+such as `npx`. A malformed or stalled transport ends that session, not the integrations stream.
 
 ## macOS Full Disk Access
 
-macOS attributes filesystem access to the app launching the Runner tree: Desktop or the
-headless launching app. The grant confers neither machine-access nor integration authority.
-It is separate from engine Full access and the Computer Use helper's own grants. Apps can
-open settings but cannot grant themselves permission. See
-[full-disk-access.ts](../apps/runner/src/shell/full-disk-access.ts) and
-[permission presentation](../packages/client/src/host/macos-permissions.ts).
-
-Owner-view control requires effective ownership plus current read-write approval; capture
-alone does not grant control. [Mac owner input](computer-use.md#negotiated-mac-owner-input)
-owns arbitration and release behavior.
+macOS attributes filesystem access to the app that launches the Runner tree: the desktop or the
+headless launching app. That grant confers no machine-access or integration authority, and it is
+separate from engine Full access and the Computer Use helper's own grants. Apps can open the setting
+but never grant themselves. See [full-disk-access.ts](../apps/runner/src/shell/full-disk-access.ts).
+Owner-view control needs effective ownership and current read-write approval; capture alone grants
+no control ([Mac owner input](computer-use.md#negotiated-mac-owner-input)).

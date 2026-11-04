@@ -40,8 +40,8 @@ export const computerUseRunnerGraceMs = 4_000;
  * What a caller is told when nothing answers on loopback.
  *
  * It names the Mac, which no other computer app sentence may do, because this
- * one is about the computer rather than an app on it: `docs/computer-use.md`
- * §3 fixes the wording, and the surfaces that print it — a computer's own page
+ * one is about the computer rather than an app on it, and the surfaces that
+ * print it — a computer's own page
  * and a model's answer — do not append a computer's name to it.
  */
 export const computerUseDesktopMissingSentence =

@@ -104,7 +104,7 @@ export async function sendSlackDelivery(
  * be read back; nothing else about a message is identity. Text, timestamp and
  * bot id would all be guesses, and guessing wrong drops a reply for good — so
  * an unrecognised delivery is `unknown` and is sent again, which is the
- * at-least-once behaviour `docs/messaging.md` §4 documents.
+ * at-least-once behaviour `docs/messaging.md#delivery-guarantees` documents.
  *
  * Reads run at Tier 3 for the customer-built apps this integration expects —
  * every person installs their own app from the manifest in the catalog, so the

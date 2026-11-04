@@ -864,7 +864,7 @@ export interface RunnerConfig {
   /**
    * What this process runs, in `agents, browser, integrations, shell` order.
    * Without `agents` the Runner is reach-only: it holds no Workspace storage
-   * and starts nothing that executes work (`docs/computers.md` §2).
+   * and starts nothing that executes work (`docs/computers.md#runner-and-desktop`).
    */
   readonly modules: readonly RunnerProcessModule[];
   readonly name: string;
@@ -901,7 +901,7 @@ function assertRunnerConfigInvariants(config: RunnerConfig): void {
   // The Main Runner is the one that shares a computer with its Personal Host,
   // so only it must reach that Host over loopback. Every other computer on a
   // Personal Deployment is reachable-only and connects to the signed access
-  // route, which is an HTTPS origin (`docs/computers.md` §1).
+  // route, which is an HTTPS origin (`docs/computers.md#membership`).
   if (
     config.deploymentShape.kind === "personal" &&
     config.runnerKind === "main" &&

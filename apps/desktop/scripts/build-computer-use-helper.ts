@@ -1,14 +1,14 @@
 import { buildSwiftProducts } from "./build-swift-products.js";
 /**
  * Build `Opensteer Computer Use.app` — the only process on a Mac that holds the
- * Accessibility and Screen Recording grants (docs/computer-use.md §1).
+ * Accessibility and Screen Recording grants (docs/computer-use.md#the-helper).
  *
  *   pnpm --filter @opensteer/desktop build:computer-use-helper
  *
  * The validated external input selects signing; Swift derives peer authority
  * from the running helper's own signature. Non-release builds without signing input pass
  * OPENSTEER_DEV_TRUST to Swift. Distributable release builds require valid signing
- * input and never pass that condition. See ../SIGNING.md. --sign, if supplied, must match the input identity.
+ * input and never pass that condition. See docs/releases.md#signing. --sign, if supplied, must match the input identity.
  */
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
@@ -183,7 +183,7 @@ function infoPlist(version: string): string {
     NSSupportsAutomaticTermination: false,
     NSSupportsSuddenTermination: false,
     // What the installer compares before the version: a build between
-    // releases shares the last release's version (§2 "Install").
+    // releases shares the last release's version.
     [signedHelperProtocolVersionKey]: computerUseHelperProtocolVersion,
   };
   const body = Object.entries(entries)
@@ -247,7 +247,7 @@ async function sign(bundle: string, identity: string | undefined): Promise<void>
  * The release version is the one the root manifest declares; the Desktop
  * manifest carries `0.0.0` until packaging rewrites it, and a helper whose
  * `CFBundleVersion` is `0.0.0` would never be replaced by the installer, which
- * only ever upgrades (§2 "Install").
+ * only ever upgrades.
  */
 async function helperVersion(): Promise<string> {
   const pattern = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;

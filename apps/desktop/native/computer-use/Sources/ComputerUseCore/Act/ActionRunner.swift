@@ -28,7 +28,7 @@ struct InputCalls {
   }
 }
 
-/// `session.act` (§2 "Actions").
+/// `session.act`.
 ///
 /// Actions run in order and stop at the first failure. The route for each one
 /// is decided before it delivers anything and never changed after a failure,
@@ -43,7 +43,7 @@ public enum ActionRunner {
 
   public struct RunResult: Sendable, Equatable {
     /// What each fully completed action did, in order; its length is the
-    /// completed count (§2 "Actions").
+    /// completed count.
     public let performed: [String]
     public let error: HelperError?
   }
@@ -1442,7 +1442,7 @@ public enum ActionRunner {
   ///
   /// `kAXErrorCannotComplete` is the app not answering in time, which says
   /// nothing about whether it acted — that is `outcome-unknown`, the batch
-  /// stops, and nothing is ever retried (§1 invariant 6).
+  /// stops, and nothing is ever retried.
   public nonisolated static func pressOutcome(
     _ status: AXError,
     whatMayHaveHappened: String,

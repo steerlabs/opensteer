@@ -1,6 +1,6 @@
 import Foundation
 
-/// How much an approval of this app is worth naming out loud (§2 "Deny list").
+/// How much an approval of this app is worth naming out loud.
 public enum AppRisk: String, Codable, Sendable {
   case standard
   case elevated
@@ -14,7 +14,7 @@ public struct AppVerdict: Sendable, Equatable {
   public let reason: String
 }
 
-/// The deny list and the elevated-risk list of docs/computer-use.md §2.
+/// The deny list and the elevated-risk list (docs/computer-use.md#approval-model).
 ///
 /// This is the helper's own floor, not an approval list: the Host is the
 /// authority for approvals (invariant 3), and nothing a Host says makes a
@@ -180,7 +180,7 @@ public enum AppPolicy {
   ]
 
   /// The bundle identifiers of browsers, which also decide where
-  /// `AXManualAccessibility` is worth setting (§2 "Observation").
+  /// `AXManualAccessibility` is worth setting.
   public static let browserBundleIdentifiers: Set<String> = Set(
     elevated.filter { $0.value == .browser }.keys
   )

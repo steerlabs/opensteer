@@ -19,7 +19,7 @@ protocol FocusGuard: AnyObject, Sendable {
 }
 
 /// One app the agent types into, believing it is the active app with the
-/// observed window key, while the person's app stays in front (§1 invariant 4).
+/// observed window key, while the person's app stays in front.
 ///
 /// The app's belief is kept apart from the truth: `believesActive` and
 /// `believesFocus` follow the activation notices the app itself receives,

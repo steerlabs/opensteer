@@ -506,24 +506,10 @@ test("dictation selects its Swift lane and pins its SDK independently", () => {
   assert.equal(nativeMacMatrix(["iphone"])[0].xcode, "/Applications/Xcode.app/Contents/Developer");
 });
 
-test("only audited script READMEs skip heavy lanes; mixed, consumed and prettier inputs retain coverage", async () => {
-  for (const file of ["scripts/README.md", "scripts/test-vm/README.md"]) {
-    const lone = decide([file], graph);
-    assert.equal(lone.full, false, file);
-    assert.deepEqual(
-      Object.entries(lone.lanes)
-        .filter(([, on]) => on)
-        .map(([lane]) => lane),
-      ["lint"],
-    );
-    for (const other of ["scripts/build.ts", "tests/fixtures/README.md", "unknown"]) {
-      const mixed = decide([file, other], graph);
-      assert.equal(mixed.full, true);
-      assert.ok(mixed.reasons.some((reason) => reason.endsWith(other)));
-    }
-  }
-
+test("script READMEs and SKILL files, consumed and prettier inputs retain coverage", async () => {
   for (const file of [
+    "scripts/README.md",
+    "scripts/test-vm/README.md",
     "scripts/fixtures/README.md",
     "scripts/test-support/README.md",
     "scripts/SKILL.md",
