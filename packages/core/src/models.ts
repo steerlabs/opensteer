@@ -280,12 +280,6 @@ export const RunnerCapabilitySchema = z.enum([
   // Run, as a turn of its own if the engine was already answering.
   "steer-answer-v1",
   "thread-state-v1",
-  // Names a Thread from a Run's `titleRequest` with that Run's engine and
-  // account, and reports it with `runner.thread-title`.
-  "thread-title-v1",
-  // Also picks the Thread's symbol when its `titleRequest` asks with `icon`,
-  // and reports it on `runner.thread-title`.
-  "thread-icon-v1",
   "task-done-v1",
   "person-show-v1",
 ]);

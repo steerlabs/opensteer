@@ -257,11 +257,11 @@ sign-out, and Account sign-out withdraws the push device.
 
 Thread titles use the existing state-change event with optional title; a new kind
 would break previous closed unions. Even tolerant readers acknowledging skipped
-sequences do not permit writers to abandon the previous release. Title/icon
-requests require their independent Host/Runner capabilities. Unknown colors read
-as absent; agent Workspace views omit marks to preserve baseline strict readers.
-Icon requests stay inside the title gate and are never sent to title-only Runners.
-Reports retain the Run binding fence; empty reports do nothing.
+sequences do not permit writers to abandon the previous release. Background
+naming goes only to Runners advertising `background-text-v1`; others are simply
+not candidates, and ordinary work is unaffected. Unknown colors read as absent;
+agent Workspace views omit marks to preserve baseline strict readers. Results
+are fenced to their attempt; empty results do nothing.
 
 The browser catalog creates empty profiles before sign-in. The Guest-save tool
 and its permission are removed; historical Requests remain readable and inert.

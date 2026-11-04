@@ -2103,7 +2103,6 @@ function operationalMessageEffectScope(message: RunnerOperationalReport): string
     case "runner.live":
       return `run:${message.progress.runId}`;
     case "runner.session-bound":
-    case "runner.thread-title":
       return `run:${message.runId}`;
     case "runner.trigger-result":
       return `trigger:${message.output.occurrenceId}`;

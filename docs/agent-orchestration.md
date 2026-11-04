@@ -148,7 +148,7 @@ it never substitutes a text description. See [AI engines](ai-engines.md).
 
 Names and symbols have independent provenance. A late generated candidate must
 never replace a person's choice, including a same-value choice; one chosen field
-does not prevent generating the other. Reports require the current Run binding.
+does not prevent generating the other. Results require their live naming attempt.
 Chat is identified by the Workspace's actual `homeThreadId`, not conversation
 role, and cannot be renamed through ordinary Thread commands. Reusing a worker
 preserves its identity. See [engine naming contract](ai-engines.md#thread-names-and-symbols)
