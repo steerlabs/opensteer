@@ -5463,7 +5463,12 @@ async function openGateway(
       headers: { host: "opensteer.example.test", origin: "https://opensteer.example.test" },
       method: "POST",
     } as never,
-    { end: () => undefined, headersSent: false, setHeader: () => undefined } as never,
+    {
+      end: () => undefined,
+      headersSent: false,
+      once: () => undefined,
+      setHeader: () => undefined,
+    } as never,
     {
       id: 1,
       jsonrpc: "2.0",

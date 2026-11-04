@@ -1964,7 +1964,7 @@ integration("naturally idempotent tab operations", () => {
     expect(throughTools.report.calls.every((c) => c.error === undefined)).toBe(true);
     for (let i = 0; i < 6; i += 2)
       expect(throughTools.report.calls[i + 1]).toEqual(throughTools.report.calls[i]);
-    expect(agentClose).toHaveBeenCalledTimes(1);
+    expect(agentClose).toHaveBeenCalledTimes(2);
     agentClose.mockRestore();
     evidence.push({
       assertions: [
