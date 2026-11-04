@@ -270,8 +270,7 @@ function AiRow({
     <SetupRow icon={<Icon name="sparkles" />} title="Choose an AI" tone="waiting">
       {placements.length === 0 ? (
         <p className="setup-row__detail">
-          No AI was found on this computer.{" "}
-          <Link to="/settings/ai">Add one in Settings</Link>
+          No AI was found on this computer. <Link to="/settings/ai">Add one in Settings</Link>
         </p>
       ) : (
         <ul aria-label="AIs on this computer" className="setup-choices" role="radiogroup">
