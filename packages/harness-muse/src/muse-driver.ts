@@ -532,7 +532,7 @@ class MuseHarnessAdapter implements HarnessAdapter {
             }),
           );
           parseMuseTurnStart(
-            await host.startTurn({
+            await host.command("turn/start", {
               displayText: prompt,
               ifBusy: "reject",
               input: [{ text: prompt, type: "text" }],
