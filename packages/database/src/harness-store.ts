@@ -1,3 +1,7 @@
+import {
+  withAdministrationTransaction,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
 import { withDatabaseTransaction } from "./connection.js";
 import {
   type HarnessId,
@@ -397,6 +401,7 @@ async function lockHarnessSiblings(
 export async function updateHarnessInstance(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly config?: unknown;
     readonly expectedRuntimeRevision?: number;
     readonly enabled?: boolean;
@@ -404,7 +409,7 @@ export async function updateHarnessInstance(
     readonly name?: string;
   },
 ): Promise<HarnessInstanceRecord> {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withAdministrationTransaction(database, input.administration, async (transaction) => {
     // Resolve the immutable parent without taking a profile lock, then take
     // the same parent lock create/default/remove use before locking the
     // profile. Keeping this environment-then-profile order prevents two
@@ -566,11 +571,12 @@ export async function updateHarnessInstance(
 export async function setDefaultHarnessInstance(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly environmentId: EnvironmentId;
     readonly harnessInstanceId: HarnessInstanceId;
   },
 ): Promise<HarnessInstanceRecord> {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withAdministrationTransaction(database, input.administration, async (transaction) => {
     const environment = await transaction
       .selectFrom("executionEnvironments")
       .select("id")
@@ -976,8 +982,9 @@ export async function rememberExecutionChoice(
   database: Kysely<DatabaseSchema>,
   userId: UserId,
   choice: ExecutionChoice,
+  administration?: AdministrationCommandIdentity | undefined,
 ): Promise<ExecutionPreferences> {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withAdministrationTransaction(database, administration, async (transaction) => {
     const existing = await transaction
       .selectFrom("userExecutionPreferences")
       .select("preferences")

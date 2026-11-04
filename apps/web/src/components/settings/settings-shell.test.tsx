@@ -61,11 +61,16 @@ describe("Device settings placement", () => {
     expect(remote).toContain("Connection options");
     expect(remote).not.toContain("Where you’re signed in");
     expect(remote).not.toContain("Your account");
+    expect(remote).not.toContain("connected agents");
     const session = renderSettings(context, "/settings/account/sessions/session-id");
     expect(session).toContain("Where you’re signed in");
     expect(session).not.toContain("Your account");
     expect(session).not.toContain("Connection options");
-    expect(renderSettings(context, "/settings/account")).not.toContain("Connection options");
+    expect(session).not.toContain("connected agents");
+    const landing = renderSettings(context, "/settings/account");
+    expect(landing).not.toContain("Connection options");
+    // Connected agents load with the Account page, after Where you’re signed in.
+    expect(landing).toContain("Loading connected agents…");
   });
   it("shows remote access administration on a remote Personal device", () => {
     const html = renderSettings(placementFixtures()["personal-remote"], "/settings/account");

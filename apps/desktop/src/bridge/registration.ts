@@ -165,6 +165,17 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     }
   });
   const register = options.ipcMain.handle.bind(options.ipcMain);
+  register(desktopBridgeChannels.dismissMcpAuthorization, (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    if (!options.isWorkspaceContents?.(event.sender))
+      throw new Error("Only the workspace may dismiss agent consent.");
+    options.mcpAuthorizationLinks?.clear(
+      z
+        .string()
+        .regex(/^[A-Za-z0-9_-]{43}$/)
+        .parse(envelope.input),
+    );
+  });
   let diagnosticWindow = 0;
   let diagnosticCount = 0;
   let diagnosticSuppressed = 0;

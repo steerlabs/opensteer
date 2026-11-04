@@ -1,3 +1,4 @@
+import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import { AgentEventSchema, BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
 import { createHmac, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -25,6 +26,8 @@ import {
   releasedClientReader,
 } from "./previous-release-reader.test-support.js";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
+import { callMcpTool } from "../mcp/call-tool.test-support.js";
+import { thread_delegate } from "@opensteer/agent-tools/tools";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -50,6 +53,22 @@ integration.sequential("previous public release client journeys", () => {
     stack = undefined;
     for (const close of cleanups.splice(0)) await close();
   }, 60_000);
+
+  it("keeps the released Runner's strict plan boundary visible", async () => {
+    const released = await releasedClientReader(previousPublicRelease);
+    cleanups.push(released.close);
+    const plan = agentToolsPlanForRun({
+      role: "work",
+      accessMode: "full-access",
+      reach: "workspace",
+      token: "run-token",
+      url: "https://host.test/internal/v1/mcp",
+    });
+    expect(released.reader.RunnerCapabilitySchema.safeParse("agent-tools-plan-v1").success).toBe(
+      false,
+    );
+    expect(released.reader.RunAgentToolsPlanSchema.safeParse(plan).success).toBe(false);
+  });
 
   for (const revision of [previousPublicRelease]) {
     it(`serves discovery, subscription, reads and ordinary mutations to ${revision}`, async () => {
@@ -446,59 +465,21 @@ integration.sequential("previous public release client journeys", () => {
           );
         if (execution?.type !== "host.command" || execution.command.type !== "run.execute")
           throw new Error("No execution frame");
-        const control = execution.command.context.agentControl;
-        const callControl = async (body: object) => {
-          const response = await fetch(control.url, {
-            method: "POST",
-            headers: {
-              authorization: `Bearer ${control.token}`,
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({ ...body, requestId: randomUUID() }),
-          });
-          expect(response.status, await response.clone().text()).toBe(200);
-          return response.json();
-        };
-        const runner = await active.host.store.database
-          .selectFrom("runners")
-          .select(["id", "capabilities"])
-          .executeTakeFirstOrThrow();
-        await active.host.store.database
-          .updateTable("runners")
-          .set({
-            capabilities: sql<typeof runner.capabilities>`${JSON.stringify(
-              runner.capabilities.filter((capability) => capability !== "task-done-v1"),
-            )}::jsonb`,
-          })
-          .where("id", "=", runner.id)
-          .execute();
-        const oldRunnerList = await callControl({ type: "thread.list" });
-        released.reader.AgentControlResponseSchema.parse(oldRunnerList);
-        transcript.push({ oldRunnerList });
-        expect(
-          oldRunnerList.threads.every((thread: Record<string, unknown>) => !("doneAt" in thread)),
-        ).toBe(true);
-        await active.host.store.database
-          .updateTable("runners")
-          .set({
-            capabilities: sql<
-              typeof runner.capabilities
-            >`${JSON.stringify(runner.capabilities)}::jsonb`,
-          })
-          .where("id", "=", runner.id)
-          .execute();
-        const newRunnerList = await callControl({ type: "thread.list" });
-        expect(
-          newRunnerList.threads.every((thread: Record<string, unknown>) => "doneAt" in thread),
-        ).toBe(true);
-        const delegated = await callControl({
-          type: "thread.delegate",
-          task: "[[hold]]",
-          title: "Compatibility delegate",
-          workspaceId: active.mainWorkspaceId,
-        });
-        const delegatedThreadId = delegated.result.thread.id;
-        transcript.push({ newRunnerList, delegated });
+        const delegatedResponse = await callMcpTool(
+          active.hostOrigin,
+          execution.command.context.agentTools.token,
+          "thread_delegate",
+          {
+            operationKey: randomUUID(),
+            task: "[[hold]]",
+            title: "Compatibility delegate",
+            workspaceId: active.mainWorkspaceId,
+          },
+        );
+        expect(delegatedResponse.isError, JSON.stringify(delegatedResponse)).not.toBe(true);
+        const delegated = thread_delegate.output.parse(delegatedResponse.structuredContent);
+        const delegatedThreadId = delegated.thread.id;
+        transcript.push({ delegated });
 
         await current.dispatch({
           type: "thread.shared-done.set",

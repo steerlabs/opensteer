@@ -7,10 +7,7 @@ import type WebSocket from "ws";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import { z } from "zod";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
-import type {
-  AgentControlRunScope,
-  AgentControlTokenService,
-} from "../agents/agent-control-service.js";
+import type { RunToolScope, RunToolTokenService } from "../agents/run-tool-tokens.js";
 import { BrowserCdpConnectionEnded, type BrowserService } from "./browser-service.js";
 import type {
   TriggerControlScope,
@@ -67,11 +64,11 @@ interface CdpRouteOptions<Scope> {
 export function registerAgentCdpBridge(
   app: FastifyInstance,
   browser: BrowserService,
-  tokens: AgentControlTokenService,
+  tokens: RunToolTokenService,
 ): void {
   const route = {
     authenticate: (token: string) => tokens.authenticate(token),
-    authority: (scope: AgentControlRunScope) => ({
+    authority: (scope: RunToolScope) => ({
       agentBindingId: `run:${scope.runId}`,
       ownerId: scope.requestedBy,
       workspaceId: scope.workspaceId,
@@ -80,13 +77,13 @@ export function registerAgentCdpBridge(
     ownsSession: false,
     // An agent's browser connection lasts as long as its Run's grant, which a
     // long Run outlives its first token by.
-    reauthorize: (scope: AgentControlRunScope) => tokens.reauthorize(scope),
+    reauthorize: (scope: RunToolScope) => tokens.reauthorize(scope),
   };
-  registerCdpRoute<AgentControlRunScope>(app, {
+  registerCdpRoute<RunToolScope>(app, {
     ...route,
     path: hostInternalRoutePaths.browserSessionCdp,
   });
-  registerCdpRoute<AgentControlRunScope>(app, {
+  registerCdpRoute<RunToolScope>(app, {
     ...route,
     path: hostInternalRoutePaths.browserCdp,
   });

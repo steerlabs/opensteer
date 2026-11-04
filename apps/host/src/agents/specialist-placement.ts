@@ -5,7 +5,7 @@ import {
   type DelegationPlacementRequest,
   type DelegationPlacement,
 } from "./delegation-placement.js";
-import type { OpensteerStore } from "@opensteer/database";
+import { SpecialistStore, type OpensteerStore } from "@opensteer/database";
 
 /** Select the default account before inspecting models; a different account is not consent. */
 export async function specialistPlacement(
@@ -60,4 +60,47 @@ export async function specialistPlacement(
     code: "bad_request",
     message: `No specialist model can run: ${reasons.join("; ")}`,
   });
+}
+
+export async function resolveDelegationSpecialist(
+  store: OpensteerStore,
+  userId: import("@opensteer/core").UserId,
+  workspaceId: import("@opensteer/core").WorkspaceId,
+  selector: string | undefined,
+  existingThread: import("@opensteer/core").Thread | null,
+) {
+  const registrations =
+    selector || existingThread?.specialistId
+      ? await new SpecialistStore(store.database).list(workspaceId, userId)
+      : [];
+  const specialist = existingThread?.specialistId
+    ? registrations.find((r) => r.id === existingThread.specialistId)
+    : (registrations.find((r) => r.id === selector) ??
+      registrations.find((r) => r.plugin === selector && r.ownerUserId === userId) ??
+      registrations.find((r) => r.plugin === selector));
+  if ((selector || existingThread?.specialistId) && !specialist)
+    throw badRequest("Specialist is not registered in this Workspace");
+  if (existingThread && selector && selector !== specialist?.id && selector !== specialist?.plugin)
+    throw badRequest("An existing Thread keeps its specialist binding");
+  if (specialist && specialist.ownerUserId !== userId)
+    throw forbidden(
+      `${specialist.plugin} uses ${specialist.ownerName ?? specialist.ownerUserId}'s accounts; add it for yourself to use your own`,
+    );
+  if (specialist?.status === "pending")
+    throw badRequest(
+      `Specialist is pending: ${specialist.access
+        .filter((a) => a.state !== "bound")
+        .map((a) => `${a.type}: ${a.state} (${a.reason})`)
+        .join("; ")}`,
+    );
+  if (specialist)
+    await new SpecialistStore(store.database).assertRunnable(specialist.id, workspaceId, userId);
+  return specialist;
+}
+
+function badRequest(message: string) {
+  return new OpensteerError({ code: "bad_request", message });
+}
+function forbidden(message: string) {
+  return new OpensteerError({ code: "forbidden", message });
 }

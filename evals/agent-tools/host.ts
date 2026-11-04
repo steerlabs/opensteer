@@ -10,33 +10,24 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { createId } from "@opensteer/core";
-import { AgentControlRequestSchema } from "@opensteer/protocol";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
-import { partialMatch, gradeToolBoundary, type Check } from "./grader.js";
-import { AgentToolsMcpService } from "../../apps/host/src/agents/agent-tools-mcp-service.js";
-import { AgentControlTokenService } from "../../apps/host/src/agents/agent-control-service.js";
-import {
-  IntegrationToolsMcpService,
-  type IntegrationToolsTokenService,
-} from "../../apps/host/src/integrations/integration-tools-mcp-service.js";
+import { createId, ThreadSchema } from "@opensteer/core";
+import { agentTools } from "@opensteer/agent-tools";
+import { OpensteerMcpService } from "../../apps/host/src/mcp/opensteer-mcp-service.js";
+import type { AgentToolHandlers } from "../../apps/host/src/mcp/handlers/index.js";
+import { TriggerToolHandlers } from "../../apps/host/src/mcp/handlers/triggers.js";
+import { RunToolTokenService } from "../../apps/host/src/agents/run-tool-tokens.js";
 import { SignedTokenService } from "../../apps/host/src/identity/host-keys.js";
-import { RunCapabilityTokenService } from "../../apps/host/src/agents/run-capability.js";
-import { TriggerCapabilityTokenService } from "../../apps/host/src/triggers/trigger-control-service.js";
-import type { IntegrationPlatformService } from "../../apps/host/src/integrations/integration-platform-service.js";
-import type { EvalCase } from "./cases.js";
-import type { RecordedCall } from "./grader.js";
+
+import { caseReach, type EvalCase } from "./cases.js";
+import { partialMatch, gradeToolBoundary, type Check, type RecordedCall } from "./grader.js";
 
 // These are test doubles, never a real Host store, grant, credential or integration.
-// Product calls traverse the production action expansion and control request
-// validation before this sentinel allows a fixture to replace the backend.
+// Every tool call traverses the production MCP service's input and access checks
+// before this sentinel allows a fixture to replace the backend.
 const validated = "EVAL_VALIDATED_NO_SIDE_EFFECT";
 function unavailable(): never {
   throw new Error(validated);
 }
-const platform = new Proxy({} as IntegrationPlatformService, {
-  get: (_target, property) => (property === "computerToolEnabled" ? async () => true : unavailable),
-});
 const bodySchema = z.looseObject({
   method: z.string().optional(),
   params: z.unknown().optional(),
@@ -50,7 +41,6 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const scope = {
     bindingGeneration: 1,
     membershipGeneration: 1,
-    capabilityProfileId: testCase.profile,
     environmentId: createId("environment"),
     requestedBy: createId("user"),
     runId: createId("run"),
@@ -68,49 +58,123 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     hostInstanceId: createId("hostInstance"),
   });
   const authorizer = { assertActiveGrant: async () => {} };
-  const agentTokens = new AgentControlTokenService({ tokens: signed, authorizer });
-  const integrationTokens: IntegrationToolsTokenService = new RunCapabilityTokenService({
-    audience: "opensteer-integration-tools",
-    tokens: signed,
-    authorizer,
-  });
-  const triggerTokens = new TriggerCapabilityTokenService({
-    audience: "opensteer-trigger-integration-tools",
-    tokens: signed,
-    store: { assertActiveExecutionBinding: async () => unavailable() },
-  });
+  const agentTokens = new RunToolTokenService({ tokens: signed, authorizer });
   const agentToken = agentTokens.issue(scope);
-  const integrationToken = integrationTokens.issue(scope);
   const http = createServer();
   http.listen(0, "127.0.0.1");
   await once(http, "listening");
   const address = http.address();
   if (!address || typeof address === "string") throw new Error("No eval listener");
   const url = new URL(`http://127.0.0.1:${address.port}`);
-  const agent = new AgentToolsMcpService({
+  const chatThreadId = createId("thread");
+  const thread = ThreadSchema.parse({
+    ...scope,
+    id: scope.threadId,
+    accessMode: "full-access",
+    continuationIdentity: null,
+    createdAt: new Date().toISOString(),
+    createdBy: scope.requestedBy,
+    harnessInstanceId: createId("harnessInstance"),
+    inheritsMain: caseReach(testCase) === "user",
+    lineageRootThreadId: scope.threadId,
+    inputQueuePaused: false,
+    listed: true,
+    modelSelection: { modelId: "eval", providerId: "eval", options: {} },
+    parentThreadId: null,
+    pendingRequests: 0,
+    role: testCase.role,
+    status: "idle",
+    title: "Eval",
+    updatedAt: new Date().toISOString(),
+  });
+  // Trigger actions expand and validate in their production handler before the
+  // fixture replaces the backend.
+  const triggers = new TriggerToolHandlers({ manage: async () => unavailable() });
+  const handlers: AgentToolHandlers = {
+    project_write: async () => unavailable(),
+    settings_read: async () => unavailable(),
+    settings_write: async () => unavailable(),
+    computer_list: async () => unavailable(),
+    computer_write: async () => unavailable(),
+    integration_manage: async () => unavailable(),
+    channel_manage: async () => unavailable(),
+    plugin_manage: async () => unavailable(),
+    browser_profile_write: async () => unavailable(),
+    app_publish: async () => unavailable(),
+    app_list: async () => unavailable(),
+    app_fetch: async () => unavailable(),
+    plugin_install: async () => unavailable(),
+    environment_list: async () => unavailable(),
+    project_list: async () => unavailable(),
+    project_create: async () => unavailable(),
+    thread_read: async () => unavailable(),
+    thread_list: async () => unavailable(),
+    thread_delegate: async () => unavailable(),
+    thread_message: async () => unavailable(),
+    thread_write: async () => unavailable(),
+    thread_wait: async () => unavailable(),
+    thread_configure: async () => unavailable(),
+    thread_queue: async () => unavailable(),
+    assignment_cancel: async () => unavailable(),
+    person_message: async () => unavailable(),
+    person_show: async () => unavailable(),
+    request_list: async () => unavailable(),
+    request_withdraw: async () => unavailable(),
+    browser_profile_create: async () => unavailable(),
+    browser_profile_list: async () => unavailable(),
+    sign_in: async () => unavailable(),
+    browser_access_request: async () => unavailable(),
+    machine_full_disk_access_request: async () => unavailable(),
+    browser_tab_read: async () => unavailable(),
+    browser_tab_write: async () => unavailable(),
+    browser_session_list: async () => unavailable(),
+    browser_session_open: async () => unavailable(),
+    browser_session_close: async () => unavailable(),
+    trigger_read: (call) => triggers.trigger_read(call),
+    trigger_write: (call) => triggers.trigger_write(call),
+    integration_search: async () => unavailable(),
+    integration_describe: async () => unavailable(),
+    integration_call: async () => unavailable(),
+    computer: async () => unavailable(),
+    integration_request: async () => unavailable(),
+    integration_propose: async () => unavailable(),
+  };
+  const agent = new OpensteerMcpService({
     publicUrl: url,
-    agentControl: {
-      handle: async (_token, request) => {
-        AgentControlRequestSchema.parse(request);
-        return unavailable();
+    handlers,
+    callers: {
+      authenticate: async (token: string) => {
+        const claims = await agentTokens.authenticate(token);
+        const common = {
+          userId: scope.requestedBy,
+          accessMode: thread.accessMode,
+          reach:
+            caseReach(testCase) === "user"
+              ? { kind: "user" as const }
+              : caseReach(testCase) === "lineage"
+                ? { kind: "lineage" as const, lineageRootThreadId: thread.id }
+                : { kind: "workspace" as const, workspaceId: thread.workspaceId },
+        };
+        if (testCase.caller === "connection")
+          return {
+            ...common,
+            kind: "connection" as const,
+            key: "connection:eval",
+            connectionId: "eval",
+          };
+        return {
+          ...common,
+          kind: "run" as const,
+          key: `run:${scope.runId}`,
+          thread,
+          claims,
+        };
       },
     },
-    apps: {
-      publish: async () => unavailable(),
-      list: async () => unavailable(),
-      fetch: async () => unavailable(),
+    store: {
+      getThreadForOwner: async (id) => ({ ...thread, id }),
+      findMainWorkspaceForOwner: async () => ({ homeThreadId: chatThreadId }) as never,
     },
-    store: { getThreadForOwner: async () => null },
-    tokens: agentTokens,
-  });
-  const integrations = new IntegrationToolsMcpService({
-    definitions: [],
-    getWorkspaceForOwner: async () => ({ id: scope.workspaceId }),
-    onWorkspaceEvent: () => {},
-    platform,
-    publicUrl: url,
-    runTokens: integrationTokens,
-    triggerTokens,
   });
   const sessions: { server: Server; transport: StreamableHTTPServerTransport }[] = [];
   const clients: Client[] = [];
@@ -130,9 +194,14 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     string,
     (req: IncomingMessage, res: ServerResponse, body: unknown) => Promise<void>
   >();
-  routes.set("/production/agent", (req, res, body) => agent.handle(req, res, body, agentToken));
-  routes.set("/production/integrations", (req, res, body) =>
-    integrations.handle(req, res, body, integrationToken),
+  routes.set("/production/agent", (req, res, body) =>
+    agent.handle(
+      req,
+      res,
+      body,
+      agentToken,
+      testCase.caller === "connection" ? url.origin : undefined,
+    ),
   );
   http.on("request", (req, res) => {
     void (async () => {
@@ -166,7 +235,6 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
       ...clients.map((client) => client.close()),
       ...sessions.map(({ server }) => server.close()),
       agent.close(),
-      integrations.close(),
     ]);
     await closeHttpServerNow(http);
     const failures = closed.filter((result) => result.status === "rejected");
@@ -177,7 +245,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
       );
   }
   try {
-    for (const name of ["agent", "integrations"]) {
+    for (const name of ["agent"]) {
       const client = new Client({ name: "opensteer-eval", version: "1" });
       clients.push(client);
       await client.connect(
@@ -194,7 +262,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
         );
         if (!session) {
           const server = new Server(
-            { name: name === "agent" ? "opensteer" : "opensteer-integrations", version: "1.0.0" },
+            { name: "opensteer", version: "1.0.0" },
             { capabilities: { tools: {} }, instructions },
           );
           const transport = new StreamableHTTPServerTransport({
@@ -208,34 +276,22 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
             const index = activeCalls.get(`${extra.sessionId}:${String(extra.requestId)}`);
             if (index === undefined) throw new Error("MCP call was not recorded at ingress");
             const original = await client.callTool({ name, arguments: args });
-            const text = JSON.stringify(original);
-            const definition = toolsForCapabilityProfile(testCase.profile).find(
-              (tool) => tool.name === name,
-            );
-            const valid = definition
-              ? definition.inputSchema.safeParse(args).success &&
-                (original.isError !== true ||
-                  (Array.isArray(original.content) &&
-                    original.content.some(
-                      (block) =>
-                        isRecord(block) && block.type === "text" && block.text === validated,
-                    )))
-              : !text.includes("invalid_arguments:") &&
-                !text.includes("Unknown tool") &&
-                !text.includes("not available to this execution");
+            const definition = agentTools
+              .filter((tool) => tool.callers.some((kind) => kind === testCase.caller))
+              .find((tool) => tool.name === name);
+            const valid =
+              !!definition &&
+              definition.input.safeParse(args).success &&
+              (original.isError !== true ||
+                (Array.isArray(original.content) &&
+                  original.content.some(
+                    (block) => isRecord(block) && block.type === "text" && block.text === validated,
+                  )));
             calls[index] = { tool: name, args, valid };
             if (!valid) return original;
             let result = Object.hasOwn(testCase.mocks, name)
               ? testCase.mocks[name]
               : defaultResult(name);
-            if (isRecord(result) && Array.isArray(result.$byArgs)) {
-              const entry = result.$byArgs.find(
-                (candidate) => isRecord(candidate) && partialMatch(args, candidate.args),
-              );
-              result = isRecord(entry)
-                ? entry.result
-                : { status: "unavailable", message: "No case mock matches these arguments" };
-            }
             if (
               result !== null &&
               typeof result === "object" &&
@@ -249,6 +305,14 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
                 offset < result.$responses.length
                   ? result.$responses[offset]
                   : { status: "unavailable", message: "Case mock response sequence exhausted" };
+            }
+            if (isRecord(result) && Array.isArray(result.$byArgs)) {
+              const entry = result.$byArgs.find(
+                (candidate) => isRecord(candidate) && partialMatch(args, candidate.args),
+              );
+              result = isRecord(entry)
+                ? entry.result
+                : { status: "unavailable", message: "No case mock matches these arguments" };
             }
             if (isRecord(result) && typeof result.$error === "string") {
               return {
@@ -326,10 +390,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
               ...(await gradeToolBoundary(
                 testCase.expect,
                 calls,
-                {
-                  tool: params.data.name,
-                  args: params.data.arguments ?? {},
-                },
+                { tool: params.data.name, args: params.data.arguments ?? {} },
                 workspace,
               )),
             );

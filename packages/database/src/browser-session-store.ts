@@ -1,3 +1,7 @@
+import {
+  administrationCommand,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
 import { resolveResourceAccess } from "./resource-access.js";
 import { eventDataSchemas, placeIdentityKey, type EventData } from "@opensteer/core";
 import { storableText } from "./runner-event-store.js";
@@ -46,6 +50,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { lockBrowserHistory } from "./browser-history-store.js";
 import {
+  lockBrowserProfile,
   type NativeProfileDeletionResult,
   profileStorage,
   publicProfileDeletion,
@@ -279,21 +284,27 @@ export async function listBrowserProfiles(
 export async function renameBrowserProfile(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly name: string;
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
   },
 ): Promise<BrowserProfileRecord> {
-  const row = await database
-    .updateTable("browserProfiles")
-    .set({ name: input.name, updatedAt: new Date() })
-    .where("id", "=", input.profileId)
-    .where("ownerId", "=", input.ownerId)
-    .where("archivedAt", "is", null)
-    .returning(["id", "name", "ownerId"])
-    .executeTakeFirst(databaseOperationOptions());
-  if (!row) throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
-  return row;
+  return withDatabaseTransaction(database, (transaction) =>
+    administrationCommand(transaction, input.administration, async () => {
+      const row = await transaction
+        .updateTable("browserProfiles")
+        .set({ name: input.name, updatedAt: new Date() })
+        .where("id", "=", input.profileId)
+        .where("ownerId", "=", input.ownerId)
+        .where("archivedAt", "is", null)
+        .returning(["id", "name", "ownerId"])
+        .executeTakeFirst(databaseOperationOptions());
+      if (!row)
+        throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+      return row;
+    }),
+  );
 }
 
 /**
@@ -309,11 +320,19 @@ export async function renameBrowserProfile(
  */
 export async function deleteBrowserProfile(
   database: Kysely<DatabaseSchema>,
-  input: { readonly ownerId: UserId; readonly profileId: BrowserProfileId },
+  input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  },
 ) {
-  return withDatabaseTransaction(database, (transaction) =>
-    deleteBrowserProfileInTransaction(transaction, input),
-  );
+  return withDatabaseTransaction(database, async (transaction) => {
+    // The profile lock ranks before the administration ledger's.
+    await lockBrowserProfile(transaction, input.profileId);
+    return administrationCommand(transaction, input.administration, () =>
+      deleteBrowserProfileInTransaction(transaction, input),
+    );
+  });
 }
 
 export async function deleteBrowserProfileInTransaction(
@@ -1997,23 +2016,28 @@ export async function revokeBrowserProfileGrant(
   database: Kysely<DatabaseSchema>,
   grantId: BrowserProfileGrantId,
   revokedBy: UserId,
+  administration?: AdministrationCommandIdentity | undefined,
 ): Promise<RevokedBrowserProfileGrantRecord> {
-  const row = await database
-    .updateTable("browserProfileGrants")
-    .set({ revokedAt: new Date() })
-    .where("id", "=", grantId)
-    .where("createdBy", "=", revokedBy)
-    .where("revokedAt", "is", null)
-    .returning(["id", "profileId", "workspaceId"])
-    .executeTakeFirst(databaseOperationOptions());
-  if (!row) {
-    throw new OpensteerError({ code: "not_found", message: "Active grant not found" });
-  }
-  return {
-    grantId: row.id,
-    profileId: row.profileId,
-    workspaceId: row.workspaceId,
-  };
+  return withDatabaseTransaction(database, (transaction) =>
+    administrationCommand(transaction, administration, async () => {
+      const row = await transaction
+        .updateTable("browserProfileGrants")
+        .set({ revokedAt: new Date() })
+        .where("id", "=", grantId)
+        .where("createdBy", "=", revokedBy)
+        .where("revokedAt", "is", null)
+        .returning(["id", "profileId", "workspaceId"])
+        .executeTakeFirst(databaseOperationOptions());
+      if (!row) {
+        throw new OpensteerError({ code: "not_found", message: "Active grant not found" });
+      }
+      return {
+        grantId: row.id,
+        profileId: row.profileId,
+        workspaceId: row.workspaceId,
+      };
+    }),
+  );
 }
 
 export async function getBrowserTabOpen(

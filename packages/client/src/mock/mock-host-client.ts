@@ -1796,6 +1796,8 @@ export interface MockHostClientOptions {
   pendingRequests?: readonly Request[];
   /** The sessions `sessions.list` reports; one current session by default. */
   sessions?: readonly AuthSessionSummary[];
+  connections?: readonly import("@opensteer/protocol").AgentConnection[];
+  connectionConsent?: import("@opensteer/protocol").AgentConnectionConsent;
 }
 
 const mockWebhookOrigin = "https://mock.opensteer.invalid";
@@ -1890,6 +1892,9 @@ function mockVoiceEnded(message: string, reason: "voice-ended" | "voice-refused"
  */
 function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
   return {
+    "connections.list": async () => rpcSuccess({ connections: client.listConnections() }),
+    "connections.authorization.get": async ({ requestId }) =>
+      rpcSuccess(client.connectionConsent(requestId)),
     "personal.remoteAccess.get": async () => rpcSuccess(client.remoteAdministration),
     "apps.get": unsupportedMockRpc,
     "apps.view": unsupportedMockRpc,
@@ -2865,6 +2870,15 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "personal.accountLink.approve":
     case "personal.accountLink.complete":
       return unsupportedMockRpc();
+    case "connection.revoke":
+      client.revokeConnection(command.connectionId);
+      for (const listener of client.connectionsListeners) listener();
+      return rpcSuccess({ type: command.type });
+    case "connection.authorize": {
+      const result = client.authorizeConnection(command);
+      for (const listener of client.connectionsListeners) listener();
+      return rpcSuccess(result);
+    }
     case "session.revoke":
       await client.revokeSession(command.sessionId);
       return rpcSuccess({ type: command.type });
@@ -3409,7 +3423,7 @@ function mockThread(thread: ThreadSummary): Thread {
     providerSessionId: thread.providerSessionId,
     doneAt: thread.doneAt,
     accessMode: thread.accessMode,
-    capabilityProfileId: "workspace",
+    inheritsMain: false,
     continuationIdentity: thread.continuationIdentity,
     askedAt: thread.askedAt,
     createdAt: thread.createdAt,
@@ -4492,6 +4506,11 @@ export class MockHostClient implements HostClient {
     return () => this.#state.remoteAdministrationListeners.delete(listener);
   }
 
+  subscribeConnectionsChanged(listener: () => void): () => void {
+    this.#state.connectionsListeners.add(listener);
+    return () => this.#state.connectionsListeners.delete(listener);
+  }
+
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void {
     return this.#state.subscribeNotifications(listener);
   }
@@ -4850,6 +4869,64 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  private connections: import("@opensteer/protocol").AgentConnection[];
+  private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
+  private connectionDecision: { requestId: string; fingerprint: string } | null = null;
+  connectionConsent(requestId: string) {
+    const consent = this.pendingConnectionConsent;
+    if (
+      !this.snapshot.user ||
+      !consent ||
+      consent.requestId !== requestId ||
+      Date.parse(consent.expiresAt) <= this.now().getTime()
+    )
+      throw mockConflict("This agent connection request expired.");
+    return consent;
+  }
+  authorizeConnection(command: Extract<HostApiCommand, { type: "connection.authorize" }>) {
+    const consent = this.connectionConsent(command.requestId);
+    const fingerprint = JSON.stringify(command.decision);
+    if (this.connectionDecision?.requestId === command.requestId) {
+      if (this.connectionDecision.fingerprint !== fingerprint)
+        throw mockConflict("This connection request has already been answered.");
+    } else {
+      if (command.decision.kind === "approve") {
+        const reach = command.decision.reach;
+        if (
+          reach.kind === "workspace" &&
+          !consent.workspaces.some((workspace) => workspace.id === reach.workspaceId)
+        )
+          throw mockConflict("Only a Workspace owner can connect an agent to it.");
+        this.connections.push({
+          id: `mcn_${crypto.randomUUID()}`,
+          userId: this.snapshot.user!.id,
+          label: command.decision.label,
+          clientName: consent.clientName,
+          accessMode: command.decision.accessMode,
+          reach,
+          createdAt: this.now().toISOString(),
+          lastUsedAt: null,
+          expiresAt: new Date(this.now().getTime() + 30 * 24 * 60 * 60_000).toISOString(),
+        });
+      }
+      this.connectionDecision = { requestId: command.requestId, fingerprint };
+    }
+    return {
+      type: "connection.authorize" as const,
+      completionPath: `/oauth/mcp/complete?request=${command.requestId}`,
+    };
+  }
+  listConnections() {
+    return this.connections.filter(
+      (row) =>
+        row.userId === this.snapshot.user?.id && Date.parse(row.expiresAt) > this.now().getTime(),
+    );
+  }
+  revokeConnection(id: string) {
+    this.connections = this.connections.filter(
+      (row) => row.id !== id || row.userId !== this.snapshot.user?.id,
+    );
+  }
   readonly settings = new MockSettingsFixtures(
     () => this.emit(),
     () =>
@@ -5147,6 +5224,7 @@ class MockHostState {
   }
 
   readonly remoteAdministrationListeners = new Set<() => void>();
+  readonly connectionsListeners = new Set<() => void>();
   remoteAdministration: import("@opensteer/protocol").PersonalRemoteAdministrationStatus = {
     access: { accountLink: null, generation: 0, mode: "off", route: null, schemaVersion: 2 },
     accountIssuer: null,
@@ -5806,6 +5884,8 @@ class MockHostState {
   }
 
   constructor(options: MockHostClientOptions = {}) {
+    this.connections = [...(options.connections ?? [])];
+    this.pendingConnectionConsent = options.connectionConsent ?? null;
     for (const p of options.specialistPlugins ?? []) {
       const id = crypto.randomUUID();
       const at = new Date(0).toISOString();
@@ -7091,7 +7171,7 @@ class MockHostState {
         return thread
           ? {
               ...mockThread(thread),
-              ...(record.trigger.systemRole ? { capabilityProfileId: "delegated" as const } : {}),
+              ...(record.trigger.systemRole ? { inheritsMain: true } : {}),
             }
           : null;
       })(),

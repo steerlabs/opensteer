@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { useEffect, useRef, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import {
@@ -52,10 +53,24 @@ import { actionErrorMessage } from "./ui-utils.js";
 import { shouldAutoStartOidc } from "./account/auto-oidc.js";
 import { IntegrationAuthorizationCompletion } from "./components/integration-authorization-completion.js";
 
+const McpAuthorization = lazy(() =>
+  import("./components/mcp-authorization.js").then((module) => ({
+    default: module.McpAuthorization,
+  })),
+);
+
+const McpAuthorizationLaunch = lazy(() =>
+  import("./components/mcp-authorization.js").then((module) => ({
+    default: module.McpAuthorizationLaunch,
+  })),
+);
+
 const autoOidcAttemptKey = "opensteer.oidc.auto-attempt";
 const autoOidcAttemptWindowMs = 2 * 60 * 1_000;
 
 export function App({
+  mcpAuthorizationRequestId = null,
+  onMcpAuthorizationClosed,
   deploymentAccess = null,
   desktopBridge = null,
   desktopDeployment = null,
@@ -65,6 +80,8 @@ export function App({
   onSetupOpened,
   openSetup = false,
 }: {
+  readonly mcpAuthorizationRequestId?: string | null;
+  readonly onMcpAuthorizationClosed?: (() => void) | undefined;
   /** The Desktop's single guarded access snapshot, or null in a browser. */
   readonly deploymentAccess?: DeploymentAccessSnapshot | null;
   readonly desktopBridge?: OpensteerDesktopBridge | null;
@@ -321,6 +338,20 @@ export function App({
     );
   }
 
+  if (
+    snapshot.session === "authentication-required" &&
+    snapshot.identityConfig?.machineOwner &&
+    window.location.pathname === "/mcp-authorization"
+  ) {
+    return (
+      <Suspense fallback={<p>Opening agent connection…</p>}>
+        <McpAuthorizationLaunch
+          requestId={new URLSearchParams(window.location.search).get("request")}
+          deploymentId={new URLSearchParams(window.location.search).get("deploymentId")}
+        />
+      </Suspense>
+    );
+  }
   if (snapshot.session === "authentication-required") {
     if (!snapshot.identityConfig) {
       return <Splash detail="Unable to load this deployment’s sign-in configuration." />;
@@ -426,6 +457,20 @@ export function App({
   // This tab is opened before an attempt exists so the browser sees the open
   // as part of the person's click. The provider return reloads the same route
   // with only the opaque durable-attempt id in its query.
+  if (mcpAuthorizationRequestId || window.location.pathname === "/mcp-authorization")
+    return (
+      <Suspense fallback={<p role="status">Loading connection request…</p>}>
+        <McpAuthorization
+          client={hostClient}
+          requestId={
+            mcpAuthorizationRequestId ?? new URLSearchParams(window.location.search).get("request")
+          }
+          desktopBridge={desktopBridge}
+          onClose={onMcpAuthorizationClosed}
+        />
+      </Suspense>
+    );
+
   if (window.location.pathname === "/integration-authorization") {
     return (
       <IntegrationAuthorizationCompletion

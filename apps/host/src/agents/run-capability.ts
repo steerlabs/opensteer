@@ -1,5 +1,4 @@
 import {
-  AgentCapabilityProfileIdSchema,
   EnvironmentIdSchema,
   GrantIdSchema,
   RunIdSchema,
@@ -27,7 +26,6 @@ const RunCapabilityScopeSchema = z.strictObject({
     .max(128)
     .optional(),
   bindingGeneration: z.number().int().positive(),
-  capabilityProfileId: AgentCapabilityProfileIdSchema,
   environmentId: EnvironmentIdSchema,
   // Tokens issued before grants existed name none; their Run's grant is found
   // by binding generation, so a Run that survived the upgrade keeps its tools.

@@ -421,10 +421,6 @@ export class WatchSupervisor {
           endpoints.browserCdp && capabilities.browserCdp
             ? { ...endpoints.browserCdp, expiresAt: capabilities.browserCdp.expiresAt }
             : null,
-        integrationMcp: {
-          ...endpoints.integrationMcp,
-          expiresAt: capabilities.integrationMcp.expiresAt,
-        },
         mcp: { ...endpoints.mcp, expiresAt: capabilities.mcp.expiresAt },
       }),
     );
@@ -445,7 +441,6 @@ export class WatchSupervisor {
     if (active.leaseTimer) clearTimeout(active.leaseTimer);
     const expirations = [
       active.desired.capabilities.mcp.expiresAt,
-      active.desired.capabilities.integrationMcp.expiresAt,
       active.desired.capabilities.browserCdp?.expiresAt,
     ].filter((value): value is string => value !== undefined);
     const expiresAt = Math.min(...expirations.map((value) => new Date(value).getTime()));

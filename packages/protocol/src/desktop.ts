@@ -1,3 +1,9 @@
+import type { AgentConnectionAuthorizationTarget } from "./agent-connections.js";
+// The sandboxed preload may import only this subpath: the root barrel pulls in Node modules.
+export {
+  AgentConnectionAuthorizationTargetSchema,
+  type AgentConnectionAuthorizationTarget,
+} from "./agent-connections.js";
 import { BrowserOpenIdentitySchema } from "./browser.js";
 import { type DisplayClientDiagnostic } from "./display-stream.js";
 import type { DictationPort } from "./dictation.js";
@@ -361,10 +367,9 @@ export type DesktopOpenIntegrationAuthorizationResult = z.infer<
 >;
 
 /**
- * HTTPS anywhere, or a Personal Deployment's Chrome connect page on this
- * computer's loopback address: the default browser is the only place the
- * Opensteer extension can be reached from. Nothing else on loopback opens, so
- * a link an engine or Runner supplies cannot reach a local service.
+ * HTTPS, the loopback Chrome connect page, or the request-only MCP completion
+ * route. The latter redirects only after owner approval and PKCE binding; no
+ * Host session is carried to the external browser. Other local services stay closed.
  */
 const loopbackExternalHostnames = new Set(["127.0.0.1", "localhost", "[::1]"]);
 /** The web app's `/connect/chrome` route; the fragment carries the one-use link. */
@@ -376,8 +381,11 @@ export function desktopExternalUrlAllowed(value: string): boolean {
   return (
     url.protocol === "http:" &&
     loopbackExternalHostnames.has(url.hostname) &&
-    url.pathname === loopbackChromeConnectPath &&
-    url.search === ""
+    ((url.pathname === loopbackChromeConnectPath && url.search === "") ||
+      (url.pathname === "/oauth/mcp/complete" &&
+        !url.hash &&
+        url.searchParams.size === 1 &&
+        /^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get("request") ?? "")))
   );
 }
 export const DesktopOpenExternalUrlInputSchema = z.strictObject({
@@ -1534,6 +1542,8 @@ export interface OpensteerDesktopBridge {
   /** On-device dictation on this Mac. Present only in the desktop app. */
   dictation?: DictationPort;
   webLinkDelivery?(input: DesktopWebLinkDelivery): Promise<DesktopWebLink | null>;
+  dismissMcpAuthorization?(requestId: string): Promise<void>;
+  onMcpAuthorization?(listener: (target: AgentConnectionAuthorizationTarget) => void): () => void;
   onWorkspaceTabCommand(listener: (command: DesktopWorkspaceTabCommand) => void): () => void;
   reportDisplayDiagnostic?(record: DisplayClientDiagnostic): Promise<void>;
   getLocalVisibility(): Promise<boolean>;

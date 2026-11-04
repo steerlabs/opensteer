@@ -1,15 +1,10 @@
 import { randomBytes } from "node:crypto";
+import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
 import { createServer } from "node:http";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import {
-  IntegrationToolsMcpService,
-  type IntegrationToolsTokenService,
-  type TriggerIntegrationToolsTokenService,
-} from "./integration-tools-mcp-service.js";
-
 import {
   IntegrationDefinitionSchema,
   createIntegrationId,
@@ -83,7 +78,6 @@ const runCaller = (run: RunToolContext): ToolCaller => ({
     ...run,
     aud: "opensteer-integration-tools",
     bindingGeneration: 1,
-    capabilityProfileId: "main",
     environmentId: createId("environment"),
     exp: 2_000_000_000,
     iat: 1_900_000_000,
@@ -4142,7 +4136,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
       };
       expect(validateJsonSchema(f.inputSchema, args)).toEqual([]);
       const who = runCaller(context);
-      let mcp: IntegrationToolsMcpService | undefined;
+      let mcp: ReturnType<typeof createIntegrationMcpFixture> | undefined;
       const server = createServer((request, response) => {
         void (async () => {
           const chunks: Buffer[] = [];
@@ -4165,17 +4159,17 @@ describe("IntegrationPlatformService computer use gateway", () => {
         if (!address || typeof address === "string")
           throw new Error("MCP test server did not bind");
         const url = new URL(`http://127.0.0.1:${address.port}/mcp`);
-        mcp = new IntegrationToolsMcpService({
+        mcp = createIntegrationMcpFixture({
           definitions: [phone ? phoneDefinition : guiDefinition],
           getWorkspaceForOwner: async () => ({ id: who.run!.workspaceId }),
           runTokens: {
             authenticate: async () => who.run!,
-          } as unknown as IntegrationToolsTokenService,
+          },
           triggerTokens: {
             authenticate: async () => {
               throw new Error("Not a trigger token");
             },
-          } as unknown as TriggerIntegrationToolsTokenService,
+          },
           onWorkspaceEvent: () => undefined,
           platform: f.service,
           publicUrl: url,

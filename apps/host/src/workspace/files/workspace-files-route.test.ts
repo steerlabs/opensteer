@@ -55,7 +55,7 @@ describe("Workspace Files route streaming authorization", () => {
       });
       const app = await createHostServer({
         requestResponseVault: {} as never,
-        agentControl: {} as never,
+
         agentTools: {} as never,
         authenticator: { authenticateUser: async () => membership.userId } as never,
         browser: {} as never,

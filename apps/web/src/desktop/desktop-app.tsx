@@ -1,3 +1,4 @@
+import type { AgentConnectionAuthorizationTarget } from "@opensteer/protocol";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type {
   DeploymentAccessDeployment,
@@ -117,6 +118,31 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   // The notification that was clicked. It names one Deployment, which this
   // window may not be showing, so it waits here — through the selection and any
   // sign-in that follows — until the app for that Deployment can open it.
+  const [mcpAuthorization, setMcpAuthorization] =
+    useState<AgentConnectionAuthorizationTarget | null>(null);
+  const requestedMcpSelection = useRef<string | null>(null);
+  useEffect(
+    () =>
+      bridge.onMcpAuthorization?.((target) => {
+        requestedMcpSelection.current = null;
+        setMcpAuthorization(target);
+        setScreen(null);
+      }),
+    [bridge],
+  );
+  useEffect(() => {
+    if (!mcpAuthorization || !snapshot) return;
+    const id = mcpAuthorization.deploymentId;
+    if (!snapshot.deployments.some((deployment) => deployment.id === id)) {
+      setMcpAuthorization(null);
+      return;
+    }
+    if (snapshot.selectedDeploymentId === id || requestedMcpSelection.current === id) return;
+    requestedMcpSelection.current = id;
+    void bridge
+      .select({ deploymentId: id })
+      .catch(() => setFormError("That Opensteer could not be opened."));
+  }, [bridge, mcpAuthorization, snapshot]);
   const [notificationTarget, setNotificationTarget] = useState<DesktopNotificationTarget | null>(
     null,
   );
@@ -432,6 +458,14 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     return (
       <Suspense fallback={opening ?? <DesktopLoadingScreen />}>
         <SignedInApp
+          mcpAuthorizationRequestId={
+            mcpAuthorization?.deploymentId === selected.id ? mcpAuthorization.requestId : null
+          }
+          onMcpAuthorizationClosed={() => {
+            const requestId = mcpAuthorization?.requestId;
+            setMcpAuthorization((current) => (current?.requestId === requestId ? null : current));
+            if (requestId) void bridge.dismissMcpAuthorization?.(requestId).catch(() => undefined);
+          }}
           deploymentAccess={snapshot}
           desktopBridge={bridge}
           desktopDeployment={selected}

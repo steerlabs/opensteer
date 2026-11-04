@@ -62,12 +62,10 @@ import { WorkspaceExecutionAccessPlanSchema } from "@opensteer/workspace";
 import { z } from "zod";
 import { RunEgressPlanSchema } from "./access.js";
 import {
-  RunAgentControlPlanSchema,
   RunAgentToolsPlanSchema,
   RunBrowserCdpPlanSchema,
   RunPluginsPlanSchema,
-  RunIntegrationToolsPlanSchema,
-} from "./agent-control.js";
+} from "./run-plans.js";
 import { RunAttachmentPlanSchema } from "./attachments.js";
 import { BrowserEngineSchema } from "./browser-profile-storage.js";
 import { CorrelationIdSchema, ProtocolErrorSchema } from "./common.js";
@@ -201,12 +199,10 @@ const capabilityTokenSchema = z.string().min(1).max(4_096);
 export const RunExecutionContextSchema = z.strictObject({
   accessMode: ThreadAccessModeSchema,
   assignment: AssignmentRunContextSchema.nullable(),
-  agentControl: RunAgentControlPlanSchema,
   /** Scoped to files already admitted to this provider session and this frozen Run. */
   attachments: RunAttachmentPlanSchema.optional(),
   agentTools: RunAgentToolsPlanSchema,
   browserCdp: RunBrowserCdpPlanSchema,
-  integrationTools: RunIntegrationToolsPlanSchema,
   specialistId: z
     .string()
     .regex(/^[a-zA-Z0-9-]+$/u)
@@ -370,7 +366,6 @@ export const WatchReconcileActivationSchema = z.strictObject({
   anchorThreadId: ThreadIdSchema,
   capabilities: z.strictObject({
     browserCdp: WatchCapabilityPlanSchema.nullable(),
-    integrationMcp: WatchCapabilityPlanSchema,
     mcp: WatchCapabilityPlanSchema,
   }),
   executionGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
@@ -386,7 +381,6 @@ export const TriggerExecutionContextSchema = z.strictObject({
   browserCdp: TriggerCapabilityPlanSchema.nullable(),
   event: TriggerProgramEventSchema,
   executionGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  integrationMcp: TriggerCapabilityPlanSchema,
   mcp: TriggerCapabilityPlanSchema,
   occurrenceId: TriggerOccurrenceIdSchema,
   program: TriggerProgramSchema,
@@ -2022,9 +2016,8 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     result: z.discriminatedUnion("status", [
       z.strictObject({
         credentials: z.strictObject({
-          agentControl: capabilityTokenSchema,
+          agentTools: capabilityTokenSchema,
           attachments: capabilityTokenSchema.optional(),
-          integrationTools: capabilityTokenSchema,
         }),
         status: z.literal("issued"),
       }),

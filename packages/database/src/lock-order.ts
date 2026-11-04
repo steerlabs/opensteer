@@ -53,6 +53,7 @@ export const databaseLockOrder = [
   "advisory:command-idempotency",
   "advisory:plugin-owner-consent",
   // Run admission and control precede Occurrences and browser execution state.
+  "agent_connections",
   "runs",
   "agent_control_requests",
   "trigger_control_requests",
@@ -193,6 +194,7 @@ export const databaseLockOrder = [
   "users",
   "account_directory_projections",
   "auth_sessions",
+  "agent_connections",
   "personal_remote_administration",
   "notification_preview_keys",
   "host_account_adoption_proofs",

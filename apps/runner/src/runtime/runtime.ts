@@ -9,7 +9,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, lstat } from "node:fs/promises";
 import { platform } from "node:os";
 import { join, resolve } from "node:path";
-import { platformGuideForRun } from "@opensteer/agent-tools";
 import { defaultRunnerMaxConcurrentTriggerPrograms, type RunnerConfig } from "@opensteer/config";
 import {
   createId,
@@ -84,7 +83,6 @@ import type { TriggerExecutionOutput } from "@opensteer/triggers";
 import type { ProviderContinuationIdentityProjector } from "@opensteer/runner-client";
 import { CommandLedger, type CommandDecision } from "../agent/command-ledger.js";
 import type { RunWorkspace, WorkspaceAccessManager } from "../workspace/mount-manager.js";
-import { HttpAgentControlClient } from "../agent/agent-control-client.js";
 import { planAgentSkills, type AgentSkillBundle } from "../skills/agent-skills.js";
 import type { RunnerLogger } from "../host/host-connection.js";
 import { cacheRunPlugins } from "../skills/plugin-cache.js";
@@ -2239,7 +2237,6 @@ export class RunnerRuntime {
     let browserCdpRelay: BrowserCdpRelay | undefined;
     let credentialProxy: CredentialProxy | undefined;
     let machineAccessSetup: MachineAccessSetup | undefined;
-    let agentControl: HttpAgentControlClient | undefined;
     let plugins: Awaited<ReturnType<typeof cacheRunPlugins>> | undefined;
     let terminal: HarnessDurableEvent | undefined;
     let consumptionError: unknown;
@@ -2391,7 +2388,7 @@ export class RunnerRuntime {
         });
       }
       const skills = resolveSkillPlan({
-        bundled: planAgentSkills(this.#agentSkills, context.agentTools.capabilityProfileId),
+        bundled: planAgentSkills(this.#agentSkills, context.agentTools.skills),
         integration: runSkills.skills,
         workspace: context.specialistId
           ? []
@@ -2492,8 +2489,8 @@ export class RunnerRuntime {
       }
       if (!browserCdpRelay) {
         browserCdpRelay = new BrowserCdpRelay({
-          plan: context.browserCdp,
-          token: () => current().browserCdp,
+          url: context.browserCdp.url,
+          token: () => current().agentTools,
           transport,
         });
       }
@@ -2506,10 +2503,6 @@ export class RunnerRuntime {
             "agent-tools": {
               token: () => current().agentTools,
               upstream: context.agentTools.url,
-            },
-            "integration-tools": {
-              token: () => current().integrationTools,
-              upstream: context.integrationTools.url,
             },
           },
           transport,
@@ -2600,22 +2593,15 @@ export class RunnerRuntime {
         OPENSTEER_BROWSER_CDP_WS: browserCdpUrl,
         OPENSTEER_BROWSER_HARNESS: this.#browserHarnessExecutable,
       });
-      agentControl = new HttpAgentControlClient({
-        plan: context.agentControl,
-        token: () => credentials.agentControl,
-        transport,
-      });
       const machineAccessContext = context.machineAccess;
       const sessionContext = {
         ...attachmentContext,
         accessMode: context.accessMode,
-        agentControl,
         agentTools: {
           ...context.agentTools,
           token: proxied.secret,
           url: proxied.urls["agent-tools"],
         },
-        integrationTools: { token: proxied.secret, url: proxied.urls["integration-tools"] },
         environment,
         environmentId: context.environmentId,
         history: context.history,
@@ -2642,10 +2628,7 @@ export class RunnerRuntime {
         machineAccessPlatform: launch?.machineAccessPlatform,
         machineAccessRelaySocket: launch?.machineAccessRelaySocket,
         modelSelection: context.modelSelection,
-        platformGuide: platformGuideForRun({
-          capabilityProfileId: context.agentTools.capabilityProfileId,
-          role: context.threadRole,
-        }),
+        platformGuide: context.agentTools.instructions,
         providerState,
         runtimeBoundary: this.#harnessRuntimeBoundary,
         signal: engineLifetime.signal,
@@ -3550,7 +3533,8 @@ export function warmEngineKey(input: {
         context.accessMode,
         input.writableRoots,
         context.specialistId ?? null,
-        context.agentTools.capabilityProfileId,
+        // Names the Host's whole tool inventory, guide and skills.
+        context.agentTools.toolsRevision,
         context.threadRole,
         context.modelSelection,
         [...context.plugins.versions].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
@@ -3558,7 +3542,6 @@ export function warmEngineKey(input: {
         input.workspaceSkillsDigest,
         context.plugins.workspaceSkillPolicy ?? null,
         context.agentTools.url,
-        context.integrationTools.url,
         context.browserCdp.url,
         input.attachmentRoot,
         input.baseEnvironment,

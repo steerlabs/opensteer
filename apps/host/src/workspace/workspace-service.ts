@@ -1,3 +1,4 @@
+import type { AdministrationCommandIdentity } from "@opensteer/database";
 import type { IntegrationProviderAuthorization } from "@opensteer/integration-core";
 import {
   OpensteerError,
@@ -42,6 +43,7 @@ type WorkspaceStore = Pick<
   | "listWorkspacesByStatus"
   | "setWorkspaceIcon"
   | "setWorkspaceProvisioningResult"
+  | "completeWorkspaceStorageRetry"
   | "setWorkspaceStorageState"
 >;
 
@@ -187,6 +189,8 @@ export class WorkspaceService {
   }
 
   setIcon(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
+    readonly authoritySource?: Readonly<Record<string, unknown>>;
     readonly icon: WorkspaceIconName | null;
     readonly idempotencyKey: string;
     readonly requestedBy: UserId;
@@ -211,7 +215,11 @@ export class WorkspaceService {
     });
   }
 
-  async retry(workspaceId: WorkspaceId, requestedBy: UserId): Promise<Workspace> {
+  async retry(
+    workspaceId: WorkspaceId,
+    requestedBy: UserId,
+    administration?: AdministrationCommandIdentity | undefined,
+  ): Promise<Workspace> {
     const workspace = await this.#store.getWorkspaceForOwner(workspaceId, requestedBy);
     if (!workspace) {
       throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
@@ -231,14 +239,21 @@ export class WorkspaceService {
         code: "workspace_unavailable",
         message: workspace.storageIssue.message,
       });
-    if (workspace.status === "ready" || workspace.storageIssue?.code === "relocation-pending")
-      return this.ensureExecutionReady(workspace);
+    if (workspace.status === "ready" || workspace.storageIssue?.code === "relocation-pending") {
+      const ready = await this.ensureExecutionReady(workspace);
+      return administration
+        ? this.#store.completeWorkspaceStorageRetry(administration, workspaceId)
+        : ready;
+    }
     const provisioning = await this.#store.setWorkspaceStorageState({
       issue: null,
       status: "provisioning",
       workspaceId,
     });
-    return this.provision(provisioning);
+    const result = await this.provision(provisioning);
+    return administration
+      ? this.#store.completeWorkspaceStorageRetry(administration, workspaceId)
+      : result;
   }
 
   async adoptRelocated(workspaceId: WorkspaceId, requestedBy: UserId): Promise<Workspace> {

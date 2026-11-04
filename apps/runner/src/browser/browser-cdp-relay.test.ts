@@ -66,7 +66,8 @@ describe("BrowserCdpRelay", () => {
   it("serves a production Personal deployment over its co-located loopback Host", async () => {
     const upstream = await fakeCdpServer((request) => ({ echoed: request.method }));
     const relay = new BrowserCdpRelay({
-      plan: { token: "run-capability-secret", url: upstream.url },
+      token: () => "run-capability-secret",
+      url: upstream.url,
       transport: productionPersonalTransport,
     });
     const url = await relay.start();
@@ -93,7 +94,8 @@ describe("BrowserCdpRelay", () => {
   it("gives every client its own upstream bound to the session it names", async () => {
     const upstream = await fakeCdpServer((request) => ({ echoed: request.method }));
     const relay = new BrowserCdpRelay({
-      plan: { token: "run-capability-secret", url: upstream.url },
+      token: () => "run-capability-secret",
+      url: upstream.url,
       transport: developmentTransport,
     });
     const url = await relay.start();
@@ -118,17 +120,16 @@ describe("BrowserCdpRelay", () => {
     expect(
       () =>
         new BrowserCdpRelay({
-          plan: { token: "run-capability-secret", url: upstream.url },
+          token: () => "run-capability-secret",
+          url: upstream.url,
           transport: productionCloudTransport,
         }),
     ).not.toThrow();
     expect(
       () =>
         new BrowserCdpRelay({
-          plan: {
-            token: "run-capability-secret",
-            url: "http://host.example/internal/v1/browser-cdp",
-          },
+          token: () => "run-capability-secret",
+          url: "http://host.example/internal/v1/browser-cdp",
           transport: productionPersonalTransport,
         }),
     ).toThrow("must use WSS");
@@ -494,7 +495,8 @@ describe("BrowserCdpRelay shutdown", () => {
       sessionId === opening ? "never answers" : sessionId === refused ? "refuses" : "holds",
     );
     const relay = new BrowserCdpRelay({
-      plan: { token: "run-capability-secret", url: host.url },
+      token: () => "run-capability-secret",
+      url: host.url,
       transport: developmentTransport,
     });
     const url = new URL(await relay.start());
@@ -549,7 +551,8 @@ describe("BrowserCdpRelay shutdown", () => {
   it("cuts both sides of a connection at once when a warm engine goes idle, and opens none until it resumes", async () => {
     const host = await heldCdpHost(() => "holds");
     const relay = new BrowserCdpRelay({
-      plan: { token: "run-capability-secret", url: host.url },
+      token: () => "run-capability-secret",
+      url: host.url,
       transport: developmentTransport,
     });
     const url = new URL(await relay.start());
@@ -602,7 +605,8 @@ describe("BrowserCdpRelay shutdown", () => {
 
   it("refuses an upgrade it will not serve, idle or not, without waiting on the peer that sent it", async () => {
     const relay = new BrowserCdpRelay({
-      plan: { token: "run-capability-secret", url: "http://127.0.0.1:9/internal/v1/browser-cdp" },
+      token: () => "run-capability-secret",
+      url: "http://127.0.0.1:9/internal/v1/browser-cdp",
       transport: developmentTransport,
     });
     const url = new URL(await relay.start());
@@ -654,7 +658,8 @@ describe("BrowserCdpRelay shutdown", () => {
 
   it("stops listening when it is closed while still starting", async () => {
     const relay = new BrowserCdpRelay({
-      plan: { token: "run-capability-secret", url: "http://127.0.0.1:9/internal/v1/browser-cdp" },
+      token: () => "run-capability-secret",
+      url: "http://127.0.0.1:9/internal/v1/browser-cdp",
       transport: developmentTransport,
     });
     const starting = settleWithin(relay.start());

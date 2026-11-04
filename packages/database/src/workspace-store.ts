@@ -10,6 +10,13 @@ import type {
   IntegrationProviderAuthorization,
 } from "@opensteer/integration-core";
 import { PluginStore } from "./plugin-store.js";
+import { z } from "zod";
+import {
+  administrationCommand,
+  withAdministrationTransaction,
+  lockAdministrationCommand,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
 import {
   type AgentEvent,
   createId,
@@ -54,6 +61,7 @@ import {
   jsonValue,
   lockCommandIdempotency,
   principalIdForUser,
+  requireActiveWorkspaceMembership,
   safeCount,
   safeGeneration,
   workspaceFromRow,
@@ -336,8 +344,10 @@ export async function createWorkspace(
 export async function setWorkspaceIcon(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly icon: WorkspaceIconName | null;
     readonly idempotencyKey: string;
+    readonly authoritySource?: Readonly<Record<string, unknown>>;
     readonly requestedBy: UserId;
     readonly workspaceId: WorkspaceId;
   },
@@ -386,7 +396,10 @@ export async function setWorkspaceIcon(
     if (workspace.status === "deleting" || workspace.status === "deleted") {
       throw new OpensteerError({ code: "conflict", message: "Workspace is being deleted" });
     }
-    if (existing) return workspaceFromRow(workspace);
+    if (existing) {
+      const stored = z.object({ result: WorkspaceSchema.optional() }).parse(existing.payload);
+      return input.administration && stored.result ? stored.result : workspaceFromRow(workspace);
+    }
     const row = await transaction
       .updateTable("workspaces")
       .set({ icon: input.icon, updatedAt: new Date() })
@@ -397,13 +410,22 @@ export async function setWorkspaceIcon(
       .insertInto("commands")
       .values({
         actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
-        authoritySource: jsonValue({ kind: "user-session", userId: input.requestedBy }),
+        authoritySource: jsonValue(
+          input.authoritySource ?? { kind: "user-session", userId: input.requestedBy },
+        ),
         dispatcherId: null,
         environmentId: null,
         id: createId("command"),
         idempotencyKey: input.idempotencyKey,
         lastError: null,
-        payload: jsonValue({ request, type: "workspace.icon.set" }),
+        payload: jsonValue({
+          request,
+          type: "workspace.icon.set",
+          ...(input.administration ? { result: workspaceFromRow(row) } : {}),
+          ...(input.administration?.output
+            ? { output: await input.administration.output(workspaceFromRow(row)) }
+            : {}),
+        }),
         requestedBy: input.requestedBy,
         runId: null,
         status: "succeeded",
@@ -418,8 +440,10 @@ export async function setWorkspaceIcon(
 export async function setWorkspaceColor(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly color: MarkColor;
     readonly idempotencyKey: string;
+    readonly authoritySource?: Readonly<Record<string, unknown>>;
     readonly requestedBy: UserId;
     readonly workspaceId: WorkspaceId;
   },
@@ -469,7 +493,10 @@ export async function setWorkspaceColor(
     if (workspace.status === "deleting" || workspace.status === "deleted") {
       throw new OpensteerError({ code: "conflict", message: "Workspace is being deleted" });
     }
-    if (existing) return workspaceFromRow(workspace);
+    if (existing) {
+      const stored = z.object({ result: WorkspaceSchema.optional() }).parse(existing.payload);
+      return input.administration && stored.result ? stored.result : workspaceFromRow(workspace);
+    }
     const row = await transaction
       .updateTable("workspaces")
       .set({ color, updatedAt: new Date() })
@@ -480,13 +507,22 @@ export async function setWorkspaceColor(
       .insertInto("commands")
       .values({
         actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
-        authoritySource: jsonValue({ kind: "user-session", userId: input.requestedBy }),
+        authoritySource: jsonValue(
+          input.authoritySource ?? { kind: "user-session", userId: input.requestedBy },
+        ),
         dispatcherId: null,
         environmentId: null,
         id: createId("command"),
         idempotencyKey: input.idempotencyKey,
         lastError: null,
-        payload: jsonValue({ request, type: "workspace.color.set" }),
+        payload: jsonValue({
+          request,
+          type: "workspace.color.set",
+          ...(input.administration ? { result: workspaceFromRow(row) } : {}),
+          ...(input.administration?.output
+            ? { output: await input.administration.output(workspaceFromRow(row)) }
+            : {}),
+        }),
         requestedBy: input.requestedBy,
         runId: null,
         status: "succeeded",
@@ -501,6 +537,7 @@ export async function setWorkspaceColor(
 export async function requestWorkspaceDeletion(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly purgeAfter: Date;
     readonly requestedBy: UserId;
     readonly workspaceId: WorkspaceId;
@@ -521,99 +558,102 @@ export async function requestWorkspaceDeletion(
         pending: true,
       })),
     ],
-    async (transaction) => {
-      const workspace = await transaction
-        .selectFrom("workspaces")
-        .selectAll()
-        .where("id", "=", input.workspaceId)
-        .forNoKeyUpdate()
-        .executeTakeFirst(databaseOperationOptions());
-      if (!workspace) {
-        throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
-      }
-      const membership = await transaction
-        .selectFrom("workspaceMemberships")
-        .select(["role", "state"])
-        .where("workspaceId", "=", input.workspaceId)
-        .where("userId", "=", input.requestedBy)
-        .executeTakeFirst(databaseOperationOptions());
-      if (!membership || membership.state !== "active" || membership.role !== "owner") {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Only an active Workspace owner may delete this Workspace",
-        });
-      }
-      if (workspace.kind === "main") {
-        throw new OpensteerError({ code: "forbidden", message: "Main cannot be deleted" });
-      }
-      if (workspace.status === "deleting") {
-        if (workspace.deletionRequestedBy === input.requestedBy) {
-          return { requestEvents: [], workspace: workspaceFromRow(workspace) };
+    async (transaction) =>
+      administrationCommand(transaction, input.administration, async () => {
+        const workspace = await transaction
+          .selectFrom("workspaces")
+          .selectAll()
+          .where("id", "=", input.workspaceId)
+          .forNoKeyUpdate()
+          .executeTakeFirst(databaseOperationOptions());
+        if (!workspace) {
+          throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
         }
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Workspace deletion was requested by another owner",
-        });
-      }
-      if (workspace.status === "deleted") {
-        throw new OpensteerError({ code: "conflict", message: "Workspace is already deleted" });
-      }
-      if (
-        !["ready", "unavailable", "failed", "archiving", "archived", "provisioning"].includes(
-          workspace.status,
-        )
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Workspace cannot enter deletion retention from its current state",
-        });
-      }
-      const requestedAt = new Date();
-      const row = await transaction
-        .updateTable("workspaces")
-        .set({
-          deletedAt: null,
-          deletionRequestedAt: requestedAt,
-          deletionRequestedBy: input.requestedBy,
-          purgeAfter: input.purgeAfter,
-          status: "deleting",
-          updatedAt: requestedAt,
-        })
-        .where("id", "=", input.workspaceId)
-        .returningAll()
-        .executeTakeFirstOrThrow(databaseOperationOptions());
-      const requestEvents = await cancelPending(transaction, {
-        reason: "workspace-deleted",
-        resolvedAt: requestedAt,
-        workspaceId: input.workspaceId,
-      });
-      await transaction
-        .insertInto("securityAudit")
-        .values({
-          action: "workspace.deletion_requested",
-          actorSessionId: null,
-          actorUserId: input.requestedBy,
-          id: createId("securityAudit"),
-          metadata: jsonValue({ purgeAfter: input.purgeAfter.toISOString() }),
-          requestId: null,
-          targetId: input.workspaceId,
-          targetType: "workspace",
+        const membership = await transaction
+          .selectFrom("workspaceMemberships")
+          .select(["role", "state"])
+          .where("workspaceId", "=", input.workspaceId)
+          .where("userId", "=", input.requestedBy)
+          .executeTakeFirst(databaseOperationOptions());
+        if (!membership || membership.state !== "active" || membership.role !== "owner") {
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "Only an active Workspace owner may delete this Workspace",
+          });
+        }
+        if (workspace.kind === "main") {
+          throw new OpensteerError({ code: "forbidden", message: "Main cannot be deleted" });
+        }
+        if (workspace.status === "deleting") {
+          if (workspace.deletionRequestedBy === input.requestedBy) {
+            return { requestEvents: [], workspace: workspaceFromRow(workspace) };
+          }
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Workspace deletion was requested by another owner",
+          });
+        }
+        if (workspace.status === "deleted") {
+          throw new OpensteerError({ code: "conflict", message: "Workspace is already deleted" });
+        }
+        if (
+          !["ready", "unavailable", "failed", "archiving", "archived", "provisioning"].includes(
+            workspace.status,
+          )
+        ) {
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Workspace cannot enter deletion retention from its current state",
+          });
+        }
+        const requestedAt = new Date();
+        const row = await transaction
+          .updateTable("workspaces")
+          .set({
+            deletedAt: null,
+            deletionRequestedAt: requestedAt,
+            deletionRequestedBy: input.requestedBy,
+            purgeAfter: input.purgeAfter,
+            status: "deleting",
+            updatedAt: requestedAt,
+          })
+          .where("id", "=", input.workspaceId)
+          .returningAll()
+          .executeTakeFirstOrThrow(databaseOperationOptions());
+        const requestEvents = await cancelPending(transaction, {
+          reason: "workspace-deleted",
+          resolvedAt: requestedAt,
           workspaceId: input.workspaceId,
-        })
-        .executeTakeFirstOrThrow(databaseOperationOptions());
-      return { requestEvents, workspace: workspaceFromRow(row) };
-    },
+        });
+        await transaction
+          .insertInto("securityAudit")
+          .values({
+            action: "workspace.deletion_requested",
+            actorSessionId: null,
+            actorUserId: input.requestedBy,
+            id: createId("securityAudit"),
+            metadata: jsonValue({ purgeAfter: input.purgeAfter.toISOString() }),
+            requestId: null,
+            targetId: input.workspaceId,
+            targetType: "workspace",
+            workspaceId: input.workspaceId,
+          })
+          .executeTakeFirstOrThrow(databaseOperationOptions());
+        return { requestEvents, workspace: workspaceFromRow(row) };
+      }),
+    (transaction) => lockAdministrationCommand(transaction, input.administration),
   );
 }
 
 export async function recoverWorkspaceDeletion(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly requestedBy: UserId;
     readonly workspaceId: WorkspaceId;
   },
 ): Promise<Workspace> {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withAdministrationTransaction(database, input.administration, async (transaction) => {
     const workspace = await transaction
       .selectFrom("workspaces")
       .selectAll()
@@ -1202,4 +1242,24 @@ export async function listWorkspacesByStatus(
     .limit(limit)
     .execute(databaseOperationOptions());
   return rows.map(workspaceFromRow);
+}
+
+// Recovery spans remote I/O; record its observed completion without rewriting newer state.
+export function completeWorkspaceStorageRetry(
+  database: Kysely<DatabaseSchema>,
+  identity: AdministrationCommandIdentity,
+  workspaceId: WorkspaceId,
+): Promise<Workspace> {
+  return withDatabaseTransaction(database, (transaction) =>
+    administrationCommand(transaction, identity, async () => {
+      const workspace = await transaction
+        .selectFrom("workspaces")
+        .selectAll()
+        .where("id", "=", workspaceId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      await requireActiveWorkspaceMembership(transaction, workspaceId, identity.requestedBy);
+      return workspaceFromRow(workspace);
+    }),
+  );
 }

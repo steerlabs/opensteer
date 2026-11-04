@@ -21,8 +21,6 @@ import {
   type SDKResultMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import {
   attachmentMaxBytes,
   attachmentImageMaxPixels,
@@ -147,7 +145,7 @@ const claudeEffortOptionId = "effort";
  */
 const claudeEngineDefaultEffort = "default";
 const claudeFastModeOptionId = "fast";
-const opensteerMcpServerNames = new Set(["opensteer", "opensteer_integrations"]);
+const opensteerMcpServerNames = new Set(["opensteer"]);
 const currentRunContextHeading = "Opensteer current Run context — computer inventory:";
 const claudeManagedBoundarySettings = Object.freeze({
   disableAllHooks: true,
@@ -1940,21 +1938,16 @@ class ClaudeHarnessSession implements HarnessSession {
   #queryOptions(environment: Record<string, string | undefined>, active: ActiveTurn): Options {
     const access = claudeAccessModeConfiguration(this.#context.accessMode);
     const systemAppend = this.#systemPromptAppend();
-    const opensteerTools = toolsForCapabilityProfile(
-      this.#context.agentTools.capabilityProfileId,
-    ).map(({ name }) => `mcp__opensteer__${name}`);
-    const integrationTools = integrationGatewayToolNames.map(
-      (name) => `mcp__opensteer_integrations__${name}`,
-    );
+    const opensteerTools = this.#context.agentTools.tools.map((name) => `mcp__opensteer__${name}`);
     const { options: selectedOptions } = this.#context.modelSelection;
     const effort = selectedOptions[claudeEffortOptionId];
     const options: Options = {
       abortController: active.abortController,
-      // The signed Host profile is the authority for product tools. Letting
+      // The Host plan is the authority for product tools. Letting
       // Claude ask again would turn a durable capability decision into
       // provider-specific approval noise; the Host still reauthorizes every
       // actual call against the live Run binding.
-      allowedTools: [...new Set(["ToolSearch", ...opensteerTools, ...integrationTools])],
+      allowedTools: [...new Set(["ToolSearch", ...opensteerTools])],
       canUseTool: this.#canUseTool(active),
       // Native safe-command rules can allow Bash before canUseTool is consulted.
       // SDK hooks remain active while our settings suppress ordinary ambient hooks.
@@ -1996,13 +1989,6 @@ class ClaudeHarnessSession implements HarnessSession {
           headers: { Authorization: `Bearer ${this.#context.agentTools.token}` },
           type: "http",
           url: this.#context.agentTools.url,
-        },
-        opensteer_integrations: {
-          alwaysLoad: false,
-          timeout: 120_000,
-          headers: { Authorization: `Bearer ${this.#context.integrationTools.token}` },
-          type: "http",
-          url: this.#context.integrationTools.url,
         },
       },
       // A catalog folds a foreign endpoint's spelling onto the canonical pair
@@ -2837,10 +2823,7 @@ class ClaudeHarnessSession implements HarnessSession {
       claudeTaskStopTool,
     ]);
     const unexpectedTools = message.tools.filter(
-      (name) =>
-        !builtinTools.has(name) &&
-        !name.startsWith("mcp__opensteer__") &&
-        !name.startsWith("mcp__opensteer_integrations__"),
+      (name) => !builtinTools.has(name) && !name.startsWith("mcp__opensteer__"),
     );
     if (unexpectedTools.length > 0) {
       this.#markUnusable(
@@ -3221,6 +3204,8 @@ function claudeMessageOrigin(input: HarnessInput, body: string): SDKMessageOrigi
       return { kind: "human" };
     case "agent":
       return { body, from: author.threadId, kind: "peer", name: author.displayName };
+    case "connection":
+      return { body, from: author.connectionId, kind: "peer", name: author.displayName };
     case "trigger":
       return author.source === "schedule"
         ? { kind: "task-notification", subkind: "scheduled-trigger" }

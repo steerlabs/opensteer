@@ -80,7 +80,7 @@ export class MemoryPassService {
     );
     if (!zone.success) return;
     const chat = await store.getThreadForOwner(workspace.homeThreadId, workspace.createdBy);
-    if (!chat || chat.capabilityProfileId !== "main") return;
+    if (!chat?.inheritsMain) return;
     const harness = await store.getHarnessInstance(chat.harnessInstanceId);
     if (
       !harness?.enabled ||

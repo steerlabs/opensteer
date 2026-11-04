@@ -1,3 +1,8 @@
+import {
+  assertThreadCaller,
+  lockThreadCaller,
+  type ThreadCallerAuthority,
+} from "./thread-caller.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
@@ -94,6 +99,7 @@ export type RunnerControlInput =
       readonly runId: RunId;
       readonly threadId: ThreadId;
       readonly type: "run.interrupt";
+      readonly authority?: ThreadCallerAuthority;
     }
   | {
       readonly idempotencyKey: string;
@@ -799,6 +805,8 @@ export async function enqueueRunnerControl(
   const controlPayload = canonicalRunnerControlInput(input);
   return withDatabaseTransaction(database, async (transaction) => {
     await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+    if (input.type === "run.interrupt")
+      await lockThreadCaller(transaction, input.authority, [input.runId]);
     const existing = await findCommandByIdempotency(
       transaction,
       input.requestedBy,
@@ -824,6 +832,9 @@ export async function enqueueRunnerControl(
         existingWorkspace.workspaceId,
         input.requestedBy,
       );
+      if (input.type === "run.interrupt") {
+        await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
+      }
       return { command: existing, events: [], revokedGrants: [], wasDuplicate: true };
     }
     const thread = await transaction
@@ -881,6 +892,8 @@ export async function enqueueRunnerControl(
         });
       }
     }
+    if (input.type === "run.interrupt")
+      await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
     const controlEvents: AgentEvent[] = [];
     // A Run the dispatcher has not bound yet has never reached a Runner, and
     // under this lock it never will: binding requires `starting`. It ends
@@ -905,9 +918,9 @@ export async function enqueueRunnerControl(
           .set({
             inputQueuePaused: true,
             inputQueuePausedBy: sql<UserId>`case
-                when input_queue_paused then input_queue_paused_by
-                else ${input.requestedBy}
-              end`,
+              when input_queue_paused then input_queue_paused_by
+              else ${input.requestedBy}
+            end`,
             updatedAt: new Date(),
           })
           .where("id", "=", thread.id)

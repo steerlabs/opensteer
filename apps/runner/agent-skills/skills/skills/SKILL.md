@@ -42,9 +42,7 @@ Read back edited instructions, check linked paths and exercise scripts with repr
 inputs. Use fixtures when a test would repeat an external action. Label untested approaches.
 Reread shared files before editing so other Threads' work survives.
 
-Do not save credentials or capability tokens. If the person explicitly asks you to remember
-a phone's screen-lock PIN, keep it in one private file for that phone outside AGENTS.md and
-version control; read it only to unlock that phone.
+Never save credentials, PINs or capability tokens. The person handles them in the secure UI.
 
 Files grant no access and keep no process alive. Use ordinary access Requests for resources;
 use `opensteer:triggers` for requested recurring work and verify the returned state. Remove
@@ -71,9 +69,12 @@ For repeated, well-understood work, add `specialist.json` and `INSTRUCTIONS.md` 
 List cheaper models in preference order (`engine`, `model`, optional `options`), declare the
 access needs and reasons, and use `fallback: "caller"` only when that cost is intended (the
 default is `"none"`). Test representative inputs and check the outputs before `plugin_install`.
-Resolve the registration's access or binding choices, then call `thread_delegate` with
+Ask the person to resolve missing resource grants or specialist bindings; never grant them yourself. Then call `thread_delegate` with
 `specialist` set to its registration id or plugin name. Continue it with `threadId` to retain
 context. Instructions should name per-task outputs in `PLUGIN_DATA`, shared by this registration.
+
+`plugin_manage` lists, updates, activates/deactivates or removes plugins and removes specialist
+registrations within full-access and reach. Activation grants no resource access.
 
 - Read [durable context](references/durable-context.md) when choosing where a correction, fact or task state belongs.
 - Read [skills](references/skills.md) when authoring procedures.

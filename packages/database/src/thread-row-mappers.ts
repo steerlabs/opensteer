@@ -35,7 +35,6 @@ import type {
   ExecutionNodeTable,
   MessageTable,
   RunAttemptTable,
-  ThreadCapabilityProfileId,
   ThreadInputTable,
 } from "./schema.js";
 
@@ -59,7 +58,7 @@ type ThreadReadRow = {
   readonly inputQueuePaused: boolean;
   readonly accessMode: ThreadAccessMode;
   readonly specialistId?: string | null;
-  readonly capabilityProfileId: ThreadCapabilityProfileId;
+  readonly inheritsMain: boolean;
   readonly role: Thread["role"];
   readonly continuationIdentity: Thread["continuationIdentity"];
   readonly providerSessionId: ProviderSessionId | null;

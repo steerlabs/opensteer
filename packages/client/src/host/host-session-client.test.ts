@@ -4724,6 +4724,8 @@ describe("HttpHostClient durable realtime", () => {
     });
     const invalidated = vi.fn();
     const detachRemoteAccess = client.subscribePersonalRemoteAccess(invalidated);
+    const connectionsChanged = vi.fn();
+    const detachConnections = client.subscribeConnectionsChanged(connectionsChanged);
     await client.load();
     const first = sockets[0]!;
     first.open();
@@ -4741,6 +4743,11 @@ describe("HttpHostClient durable realtime", () => {
     expect(invalidated).toHaveBeenCalledTimes(1);
     first.receive({ type: "host.personal-remote-access-changed" });
     expect(invalidated).toHaveBeenCalledTimes(2);
+    // Another device approved or revoked a connected agent: told on the open
+    // socket, without a reconnect.
+    first.receive({ type: "host.connections-changed" });
+    expect(connectionsChanged).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(1);
     first.serverClose();
     expect(client.getSnapshot().connection).toBe("connecting");
     await vi.advanceTimersByTimeAsync(8);
@@ -4761,6 +4768,9 @@ describe("HttpHostClient durable realtime", () => {
     detachRemoteAccess();
     sockets[1]!.receive({ type: "host.personal-remote-access-changed" });
     expect(invalidated).toHaveBeenCalledTimes(3);
+    detachConnections();
+    sockets[1]!.receive({ type: "host.connections-changed" });
+    expect(connectionsChanged).toHaveBeenCalledTimes(1);
     client.dispose();
   });
 
@@ -13769,7 +13779,7 @@ function makeThread(workspaceId: Thread["workspaceId"]): Thread {
   return {
     doneAt: null,
     accessMode: "full-access",
-    capabilityProfileId: "main",
+    inheritsMain: true,
     continuationIdentity: null,
     providerSessionId: null,
     createdAt: now,

@@ -1,4 +1,4 @@
-import { AgentCapabilityProfileIdSchema, type AgentCapabilityProfileId } from "@opensteer/core";
+import type { ThreadReachScope } from "@opensteer/core";
 import { z } from "zod";
 
 export const OpensteerAgentSkillNameSchema = z.enum([
@@ -14,87 +14,18 @@ export const OpensteerAgentSkillNameSchema = z.enum([
 ]);
 export type OpensteerAgentSkillName = z.infer<typeof OpensteerAgentSkillNameSchema>;
 
-export interface OpensteerAgentSkillDefinition {
-  readonly name: OpensteerAgentSkillName;
-  readonly profiles: readonly AgentCapabilityProfileId[];
-}
-
-export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Object.freeze([
-  Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer:skills"),
-    profiles: Object.freeze([
-      AgentCapabilityProfileIdSchema.parse("main"),
-      AgentCapabilityProfileIdSchema.parse("workspace"),
-      AgentCapabilityProfileIdSchema.parse("delegated"),
-      AgentCapabilityProfileIdSchema.parse("specialist"),
-    ]),
-  }),
-  // Personal memory lives in Main; Project roots and specialists never receive it.
-  Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer:memory"),
-    profiles: Object.freeze([
-      AgentCapabilityProfileIdSchema.parse("main"),
-      AgentCapabilityProfileIdSchema.parse("delegated"),
-    ]),
-  }),
-  Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer:integrations"),
-    profiles: Object.freeze([
-      AgentCapabilityProfileIdSchema.parse("main"),
-      AgentCapabilityProfileIdSchema.parse("workspace"),
-      AgentCapabilityProfileIdSchema.parse("delegated"),
-      AgentCapabilityProfileIdSchema.parse("specialist"),
-    ]),
-  }),
-  Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer:computer-use"),
-    profiles: Object.freeze([
-      AgentCapabilityProfileIdSchema.parse("main"),
-      AgentCapabilityProfileIdSchema.parse("workspace"),
-      AgentCapabilityProfileIdSchema.parse("delegated"),
-      AgentCapabilityProfileIdSchema.parse("specialist"),
-    ]),
-  }),
-  Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer:browser"),
-    profiles: Object.freeze([
-      AgentCapabilityProfileIdSchema.parse("main"),
-      AgentCapabilityProfileIdSchema.parse("workspace"),
-      AgentCapabilityProfileIdSchema.parse("delegated"),
-      AgentCapabilityProfileIdSchema.parse("specialist"),
-    ]),
-  }),
-  Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer:computers"),
-    profiles: Object.freeze([
-      AgentCapabilityProfileIdSchema.parse("main"),
-      AgentCapabilityProfileIdSchema.parse("workspace"),
-      AgentCapabilityProfileIdSchema.parse("delegated"),
-      AgentCapabilityProfileIdSchema.parse("specialist"),
-    ]),
-  }),
-  Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer:projects"),
-    profiles: Object.freeze([AgentCapabilityProfileIdSchema.parse("main")]),
-  }),
-  Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer:threads"),
-    profiles: Object.freeze([
-      AgentCapabilityProfileIdSchema.parse("main"),
-      AgentCapabilityProfileIdSchema.parse("workspace"),
-      AgentCapabilityProfileIdSchema.parse("delegated"),
-      AgentCapabilityProfileIdSchema.parse("specialist"),
-    ]),
-  }),
-  Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer:triggers"),
-    profiles: Object.freeze([...AgentCapabilityProfileIdSchema.options]),
-  }),
+/** The skills bundled with every Runner. */
+export const opensteerAgentSkillNames: readonly OpensteerAgentSkillName[] = Object.freeze([
+  ...OpensteerAgentSkillNameSchema.options,
 ]);
 
-export function skillsForCapabilityProfile(
-  profileId: AgentCapabilityProfileId,
-): readonly OpensteerAgentSkillDefinition[] {
-  const parsed = AgentCapabilityProfileIdSchema.parse(profileId);
-  return opensteerAgentSkills.filter(({ profiles }) => profiles.includes(parsed));
+const withoutMemory = Object.freeze(
+  opensteerAgentSkillNames.filter((name) => name !== "opensteer:memory"),
+);
+
+/** Personal memory lives in Main; Project and specialist Runs never receive it. */
+export function opensteerAgentSkillsFor(
+  reach: ThreadReachScope["kind"],
+): readonly OpensteerAgentSkillName[] {
+  return reach === "user" ? opensteerAgentSkillNames : withoutMemory;
 }

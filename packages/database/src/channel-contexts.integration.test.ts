@@ -455,11 +455,11 @@ integration("channel conversation authority contexts", () => {
     await expect(
       database
         .selectFrom("threads")
-        .select(["capabilityProfileId", "createdBy", "parentThreadId"])
+        .select(["inheritsMain", "createdBy", "parentThreadId"])
         .where("id", "=", owner.input.threadId)
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({
-      capabilityProfileId: "workspace",
+      inheritsMain: false,
       createdBy: fixture.ownerId,
       parentThreadId: null,
     });
@@ -610,11 +610,11 @@ integration("channel conversation authority contexts", () => {
     await expect(
       database
         .selectFrom("threads")
-        .select(["capabilityProfileId", "lineageRootThreadId", "parentThreadId"])
+        .select(["inheritsMain", "lineageRootThreadId", "parentThreadId"])
         .where("id", "=", second.input.threadId)
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({
-      capabilityProfileId: "workspace",
+      inheritsMain: false,
       lineageRootThreadId: second.input.threadId,
       parentThreadId: null,
     });

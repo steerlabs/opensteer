@@ -3,15 +3,12 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  agentCapabilityProfiles,
-  agentToolDefinitions,
-  skillsForCapabilityProfile,
-  toolsForCapabilityProfile,
+  agentTools,
+  opensteerAgentSkillNames,
   type OpensteerAgentSkillName,
 } from "@opensteer/agent-tools";
 import { parseHarnessSkillMetadata, renderHarnessSkillCatalog } from "@opensteer/harness";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveSkillPlan } from "./skill-plan.js";
 import { loadAgentSkillBundle, planAgentSkills } from "./agent-skills.js";
 
 const bundleDirectory = fileURLToPath(new URL("../../agent-skills", import.meta.url));
@@ -24,101 +21,24 @@ afterEach(async () => {
 });
 
 describe("Runner Agent Skills", () => {
-  it("loads the shipped open-standard bundle and scopes it by capability profile", async () => {
+  it("loads exactly the bundled skills named by the Host", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
-
-    expect(skillNames(bundle, "main")).toEqual([
-      "opensteer:skills",
-      "opensteer:memory",
-      "opensteer:integrations",
-      "opensteer:computer-use",
-      "opensteer:browser",
-      "opensteer:computers",
-      "opensteer:projects",
-      "opensteer:threads",
-      "opensteer:triggers",
-    ]);
-    expect(skillNames(bundle, "workspace")).toEqual([
-      "opensteer:skills",
-      "opensteer:integrations",
-      "opensteer:computer-use",
-      "opensteer:browser",
-      "opensteer:computers",
-      "opensteer:threads",
-      "opensteer:triggers",
-    ]);
-    expect(skillNames(bundle, "delegated")).toEqual([
-      "opensteer:skills",
-      "opensteer:memory",
-      "opensteer:integrations",
-      "opensteer:computer-use",
-      "opensteer:browser",
-      "opensteer:computers",
-      "opensteer:threads",
-      "opensteer:triggers",
-    ]);
-    expect(skillNames(bundle, "trigger")).toEqual(["opensteer:triggers"]);
-    expect(
-      planAgentSkills(bundle, "main").find(({ fullName }) => fullName === "opensteer:integrations")
-        ?.path,
-    ).toBe(join(bundle.rootPath, "skills", "integrations"));
-    expect(skillNames(bundle, "main")).toEqual(skillNames(bundle, "main"));
-    expect(skillNames(bundle, "workspace")).toEqual(skillNames(bundle, "workspace"));
-    expect(skillNames(bundle, "delegated")).toEqual(skillNames(bundle, "delegated"));
-    const mainPlan = planAgentSkills(bundle, "main");
-    const catalog = await renderHarnessSkillCatalog({ skills: mainPlan });
-    for (const skill of mainPlan) {
+    const names = ["opensteer:triggers", "opensteer:browser"];
+    expect(skillNames(bundle, names)).toEqual(names);
+    expect(skillNames(bundle, [])).toEqual([]);
+    expect(() => planAgentSkills(bundle, ["opensteer:missing"])).toThrow();
+    const plan = planAgentSkills(bundle, names);
+    const catalog = await renderHarnessSkillCatalog({ skills: plan });
+    for (const skill of plan) {
       expect(catalog).toContain(`- ${skill.fullName}:`);
       expect(catalog).toContain(`SKILL.md: ${join(skill.path, "SKILL.md")}`);
     }
     expect(catalog).not.toContain("Metadata unavailable");
   });
 
-  it("delivers the Trigger contract skill in every trigger-capable Run plan", async () => {
+  it("links only registry tools from the browser skill", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
-    for (const { id } of agentCapabilityProfiles) {
-      if (!toolsForCapabilityProfile(id).some(({ name }) => name === "trigger_write")) continue;
-      const plan = resolveSkillPlan({
-        bundled: planAgentSkills(bundle, id),
-        integration: [],
-        workspace: [],
-      });
-      const skill = plan?.skills.find(({ fullName }) => fullName === "opensteer:triggers");
-      expect(skill, id).toEqual({
-        plugin: "opensteer",
-        localName: "triggers",
-        fullName: "opensteer:triggers",
-        path: bundle.paths["opensteer:triggers"],
-      });
-      const catalog = await renderHarnessSkillCatalog(plan!);
-      expect(catalog).toContain(`SKILL.md: ${join(skill!.path, "SKILL.md")}`);
-      expect(await readFile(join(skill!.path, "SKILL.md"), "utf8")).toContain(
-        "[program contract](references/program-contract.md)",
-      );
-      expect(
-        await readFile(join(skill!.path, "references", "program-contract.md"), "utf8"),
-      ).toContain("Trigger programs execute as Node.js ESM modules");
-    }
-  });
-
-  it("ships browser guidance and callable recovery tools together for every browsing role", async () => {
-    const bundle = await loadAgentSkillBundle(bundleDirectory);
-    const recoveryTools = ["browser_session_open"];
-    for (const profileId of ["main", "workspace", "delegated"] as const) {
-      const selected = planAgentSkills(bundle, profileId);
-      expect(selected.some(({ fullName }) => fullName === "opensteer:browser")).toBe(true);
-      expect(toolsForCapabilityProfile(profileId).map(({ name }) => name)).toEqual(
-        expect.arrayContaining(recoveryTools),
-      );
-    }
-    expect(skillsForCapabilityProfile("trigger").map(({ name }) => name)).not.toContain(
-      "opensteer:browser",
-    );
-    expect(toolsForCapabilityProfile("trigger").map(({ name }) => name)).not.toEqual(
-      expect.arrayContaining(recoveryTools),
-    );
-
-    // Check the skill's tool links against the actual catalog, not its prose.
+    // Check the skill's tool links against the actual registry, not its prose.
     const skill = (
       await Promise.all(
         ["SKILL.md", "references/identity.md", "references/tabs-and-show.md"].map((file) =>
@@ -126,13 +46,15 @@ describe("Runner Agent Skills", () => {
         ),
       )
     ).join("\n");
-    const toolNames = new Set(agentToolDefinitions.map(({ name }) => name as string));
+    const runTools = new Set<string>(
+      agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
+    );
     const references = [...skill.matchAll(/`((?:browser|request)_[a-z_]+)`/gu)].map(
       (match) => match[1],
     );
     expect(references).toEqual(
       expect.arrayContaining([
-        ...recoveryTools,
+        "browser_session_open",
         "browser_session_list",
         "browser_profile_list",
         "browser_profile_create",
@@ -142,7 +64,7 @@ describe("Runner Agent Skills", () => {
         "request_withdraw",
       ]),
     );
-    for (const name of references) expect(toolNames.has(name!)).toBe(true);
+    for (const name of references) expect(runTools.has(name!)).toBe(true);
   });
 
   it("routes app UI work to the computer tool in the skill catalog and bodies", async () => {
@@ -164,7 +86,9 @@ describe("Runner Agent Skills", () => {
     for (const metadata of [computerMetadata, computerUseMetadata, integrationMetadata]) {
       expect(Array.from(metadata.description).length).toBeLessThanOrEqual(1_024);
     }
-    const catalog = await renderHarnessSkillCatalog({ skills: planAgentSkills(bundle, "main") });
+    const catalog = await renderHarnessSkillCatalog({
+      skills: planAgentSkills(bundle, opensteerAgentSkillNames),
+    });
     for (const metadata of [computerMetadata, computerUseMetadata, integrationMetadata]) {
       expect(catalog).toContain(metadata.description);
     }

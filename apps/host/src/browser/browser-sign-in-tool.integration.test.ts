@@ -104,7 +104,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         cleanups.push(() => client.close());
         return client;
       };
-      const client = await connect(run.agentControlToken);
+      const client = await connect(run.toolsToken);
       let loginRef = "";
       await evidence.run("sessionless-before-browser", async () => {
         expect(await host.store.listBrowserSessions(host.ownerId)).toEqual([]);
@@ -206,7 +206,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           key: "foreign",
           title: "Other Workspace",
         });
-        const foreignClient = await connect(other.agentControlToken);
+        const foreignClient = await connect(other.toolsToken);
         const opened = await foreignClient.callTool({
           name: "browser_session_open",
           arguments: { fresh: true },

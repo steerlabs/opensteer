@@ -406,6 +406,12 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     ...clientMessageBase,
     type: z.literal("host.personal-remote-access-changed"),
   }),
+  // The reader approved or revoked a connected agent, on any device. It names
+  // nothing: a client showing the list rereads `connections.list`.
+  z.object({
+    ...clientMessageBase,
+    type: z.literal("host.connections-changed"),
+  }),
   // A listed Thread was created or changed what a task list shows of it — its
   // title, status, last reply or failure — somewhere on this Host, or this
   // reader placed a task. It names nothing: every client rereads

@@ -1,3 +1,4 @@
+import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -28,7 +29,7 @@ import {
   type AppHttpResponse,
 } from "./app-proxy.js";
 import { appFrameHeaders } from "@opensteer/shared/appFrame";
-import type { AgentControlTokenService } from "../agents/agent-control-service.js";
+import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type { WorkspaceFilesService } from "../workspace/files/workspace-files-service.js";
 import type { z } from "zod";
 
@@ -40,7 +41,7 @@ interface AppServiceOptions {
   readonly apps: AppStore;
   readonly store: Pick<OpensteerStore, "admitWorkspaceFiles">;
   readonly files: Pick<WorkspaceFilesService, "list" | "download">;
-  readonly tokens: Pick<AgentControlTokenService, "authenticate" | "reauthorize">;
+  readonly tokens: Pick<RunToolTokenService, "authenticate" | "reauthorize">;
   readonly publishEvent: (event: AgentEvent) => void;
 }
 
@@ -55,9 +56,12 @@ export class AppService {
     this.#directory = join(options.dataDirectory, "apps");
   }
 
-  async publish(token: string, publishKey: string, input: z.infer<typeof AppPublishInputSchema>) {
+  async publish(
+    scope: RunToolScope,
+    publishKey: string,
+    input: z.infer<typeof AppPublishInputSchema>,
+  ) {
     input = AppPublishInputSchema.parse(input);
-    const scope = await this.#options.tokens.authenticate(token);
     return this.#locks.run(input.appId ?? `${scope.runId}:${publishKey}`, async () => {
       const admission = await this.#options.store.admitWorkspaceFiles(
         scope.workspaceId,
@@ -320,14 +324,24 @@ export class AppService {
     }
   }
 
-  async list(token: string) {
-    const scope = await this.#options.tokens.authenticate(token);
+  async list(scope: RunToolScope) {
     return { apps: await this.#options.apps.list({ ...scope, userId: scope.requestedBy }) };
   }
 
-  async fetch(token: string, input: z.infer<typeof AppFetchInputSchema>) {
+  async listForCaller(scope: {
+    readonly requestedBy: UserId;
+    readonly reach: import("@opensteer/core").ThreadReachScope;
+  }) {
+    return {
+      apps: await this.#options.apps.listReachable({
+        userId: scope.requestedBy,
+        reach: scope.reach,
+      }),
+    };
+  }
+
+  async fetch(scope: RunToolScope, input: z.infer<typeof AppFetchInputSchema>) {
     input = AppFetchInputSchema.parse(input);
-    const scope = await this.#options.tokens.authenticate(token);
     await this.#options.apps.authorize({
       ...scope,
       userId: scope.requestedBy,

@@ -1,3 +1,4 @@
+import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { sha256Base64Url } from "@opensteer/core/crypto";
 import {
@@ -44,6 +45,7 @@ import type { MessagingRelayHub } from "./messaging-relay-hub.js";
 import type { CredentialService } from "../identity/credential-service.js";
 
 interface ChannelServiceOptions {
+  readonly onChanged?: () => void;
   /** Where a person signs in to redeem a link code. */
   readonly canonicalOrigin: string;
   readonly credentials: CredentialService;
@@ -57,6 +59,7 @@ interface ChannelServiceOptions {
 }
 
 export class ChannelService {
+  readonly #onChanged: () => void;
   readonly #canonicalOrigin: string;
   readonly #channels: ChannelStore;
   readonly #credentials: CredentialService;
@@ -72,6 +75,7 @@ export class ChannelService {
   #timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: ChannelServiceOptions) {
+    this.#onChanged = options.onChanged ?? (() => {});
     this.#canonicalOrigin = options.canonicalOrigin;
     this.#channels = options.channels;
     this.#credentials = options.credentials;
@@ -442,11 +446,17 @@ export class ChannelService {
     return inspection;
   }
 
-  revokeBinding(bindingId: string, ownerUserId: UserId): Promise<void> {
-    return this.#channels.revokeBinding({
+  async revokeBinding(
+    bindingId: string,
+    ownerUserId: UserId,
+    administration?: AdministrationCommandIdentity | undefined,
+  ): Promise<void> {
+    const changed = await this.#channels.revokeBinding({
+      administration,
       bindingId: ChannelBindingIdSchema.parse(bindingId),
       ownerUserId,
     });
+    if (changed) this.#onChanged();
   }
 
   updateBinding(input: {
@@ -496,13 +506,16 @@ export class ChannelService {
     connectionId: string,
     ownerUserId: UserId,
     status: "connected" | "paused" | "revoked",
+    administration?: AdministrationCommandIdentity | undefined,
   ): Promise<void> {
     await this.#channels.setConnectionStatus(
       IntegrationConnectionIdSchema.parse(connectionId),
       ownerUserId,
       status,
+      administration,
     );
     await this.syncRuntimes();
+    this.#onChanged();
   }
 
   /**

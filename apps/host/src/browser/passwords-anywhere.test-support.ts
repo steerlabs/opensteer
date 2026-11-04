@@ -3,7 +3,7 @@ import { RequestIdSchema } from "@opensteer/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { BrowserSessionIdSchema, hostApiVersionHeader } from "@opensteer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
@@ -117,16 +117,18 @@ export function passwordsAnywhereJourneys() {
               cleanups.push(() => client.close());
               return client;
             };
-            const client = await connect(run.agentControlToken);
+            const client = await connect(run.toolsToken);
             expect(
               (await client.listTools()).tools.map(({ name }) => name),
               "sign_in is a first-class tool without a Browser Session",
             ).toContain("sign_in");
             // The Host still serves browser_sign_in to previous-release Runners;
             // a current driver enables only its own catalog, which offers sign_in.
-            expect(toolsForCapabilityProfile("main").map(({ name }) => name)).not.toContain(
-              "browser_sign_in",
-            );
+            expect(
+              agentTools
+                .filter((tool) => tool.callers.some((kind) => kind === "run"))
+                .map(({ name }) => name),
+            ).not.toContain("browser_sign_in");
             expect(await host.store.listBrowserSessions(host.ownerId)).toEqual([]);
             if (name === "browser-loginFill-required") {
               const browser = await startBrowserRuntime(host.hostPort, "unused-main", {
@@ -302,7 +304,7 @@ export function passwordsAnywhereJourneys() {
               const resumed = await acceptCallerRun(host, caller, await executed);
               expect(resumed.threadId).toBe(run.threadId);
               expect(resumed.runId).not.toBe(run.runId);
-              const continuedClient = await connect(resumed.agentControlToken);
+              const continuedClient = await connect(resumed.toolsToken);
               expect(
                 (
                   await continuedClient.callTool({
@@ -329,7 +331,7 @@ export function passwordsAnywhereJourneys() {
                   title: "Same Workspace",
                   workspaceId: main.id,
                 });
-                const second = await connect(secondRun.agentControlToken);
+                const second = await connect(secondRun.toolsToken);
                 const reused = await second.callTool({
                   name: "sign_in",
                   arguments: { site: passwordFixture.site, reason: "Continue in an app" },

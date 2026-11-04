@@ -9,12 +9,12 @@ The runner is deliberately split by responsibility:
 - `grader.ts`: deterministic recursive partial argument matching, ordered call
   subsequences, counts, invalid calls and final-reply regexes. `*` forbids every
   Opensteer call; `a|b` permits a semantic expectation across a tool rename.
-- `host.ts`: real Host MCP services register and validate the inventory. A
+- `host.ts`: real Host MCP service register and validate the inventory. A
   loopback MCP facade advertises those exact returned definitions and delivers
   case results only after production validation. No product store or integration
   backend can execute a real mutation.
-- `engine.ts`: shipped driver factories, live model inspection, and the Runner's
-  production platform guide and skill selection/delivery. New engines need a
+- `engine.ts`: shipped driver factories, live model inspection, and the Host-selected
+  Run guide and bundled skills, or connection initialize instructions without Run skills. New engines need a
   factory, with no captured or reconstructed native prompt/tool inventory.
 - `isolation.ts`: a disposable HOME and engine profile holding only a copy of
   the existing login; each driver's isolated-service sandbox confines native
@@ -26,9 +26,7 @@ The runner is deliberately split by responsibility:
 
 Case prompts are sanitized paraphrases of mistakes documented in commit
 messages and instruction/skill changes, with paired guards and ordinary-work
-controls. Provenance does not claim to be an exact user transcript. Model discovery and Trigger skill delivery cases retain coverage of
-previous profile gaps: environment_list now exists and Triggers is delivered to
-every profile. Keep those cases as regression tests.
+controls. Provenance does not claim to be an exact user transcript. Model discovery and Trigger skill delivery cases retain coverage of prior discovery gaps. Every Run gets the same tool names and bundled skill names; role/reach select its guide. The historical `profile` fixture label does not select tools or authority. `reach` can override its default; `caller: "connection"` selects the production connection inventory and initialize instructions without a Run guide/skills. Keep these cases as regression tests.
 
 Structured turns accept either text or production HarnessInput content (including
 included app and phone places), with production author/kind validation. Every turn
@@ -46,8 +44,9 @@ responses to successive calls, use `{"$responses": [first, second]}`; exhaustion
 returns an explicit unavailable result. If it needs a response per target, use
 `{"$byArgs": [{"args": partial, "result": response}]}`: the first entry whose
 `args` partially match the call answers it, and no match returns an explicit
-unavailable result. Product calls must reach the stubbed backend through production MCP action
-expansion and control-request validation before a mock is returned. Semantic
+unavailable result. Product calls must reach the stubbed backend through the production MCP
+service's input and access checks, and Trigger actions through their production
+handler expansion, before a mock is returned. Semantic
 errors remain errors, even when the flat tool schema accepts the arguments. `{"$error": "message"}` returns an MCP
 tool error, including inside a response sequence, so refusal cases exercise the
 same result shape as the production service. The transcript contains all native

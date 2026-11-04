@@ -1,5 +1,5 @@
 export * from "./account-directory-store.js";
-export * from "./agent-control-admission.js";
+export * from "./run-tool-admission.js";
 export * from "./attachment-store.js";
 export * from "./app-store.js";
 export * from "./automation-failure-store.js";
@@ -37,5 +37,12 @@ export { readIntegrationAccountBinding } from "./integration-account-binding.js"
 export { requestSettlementActor } from "./request-settlement.js";
 export * from "./memory-pass-store.js";
 
+export * from "./agent-connection-store.js";
+
+export * from "./thread-caller.js";
+
+export { readThreadWaitSnapshot } from "./thread-wait.js";
+
 export * from "./plugin-settings-store.js";
 export type { WorkspaceSkillInventory } from "./workspace-skill-inventory-store.js";
+export * from "./administration-command.js";

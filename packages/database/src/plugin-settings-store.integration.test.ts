@@ -13,6 +13,8 @@ import { testOpenApiAdapterContract } from "./store.integration.test-support.js"
 import { integrationDefinitionSummary } from "@opensteer/integration-core";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import { describeStore } from "./store.integration.test-support.js";
+import { AgentConnectionStore } from "./agent-connection-store.js";
+import { resolveResourceAccess } from "./resource-access.js";
 
 describeStore("plugin Settings authority", (test) => {
   test("a viewer can add an installed catalog service before connecting an account", async ({
@@ -420,6 +422,95 @@ describeStore("plugin Settings authority", (test) => {
       (await platform.settings.detail(run.userId, target)).row.placement.revision,
     ).toBeGreaterThan(detail.row.placement.revision);
   });
+  test("Off narrows an external agent connection exactly as it narrows a Thread", async ({
+    storeFixture: f,
+  }) => {
+    const run = await f.createRunFixture("settings-off-connection");
+    const platform = new IntegrationPlatformStore(f.database);
+    await platform.install({
+      adapterSnapshot: null,
+      actorUserId: run.userId,
+      requestId: "install-off-connection",
+      installation: {
+        id: createIntegrationId("installation"),
+        name: "records",
+        title: "Records",
+        description: "Records",
+        version: "1",
+        sourceKind: "built-in",
+        status: "active",
+        trust: "built-in",
+        manifest: { definition: { id: "records" } },
+        provenance: {},
+      },
+      servers: [],
+    });
+    const account = createIntegrationId("connection");
+    await f.database
+      .insertInto("integrationConnections")
+      .values({
+        id: account,
+        ownerUserId: run.userId,
+        provider: "records",
+        integrationDefinitionId: "records",
+        connectionKind: "provider-account",
+        connectionMethod: "api-key",
+        status: "connected",
+        displayName: "Records",
+        accountIdentifier: null,
+        applicationSource: jsonValue({ kind: "api-key" }),
+        authMethodId: "api-key",
+        authorizationDigest: "a".repeat(43),
+        credentialId: null,
+        computerAccess: null,
+        computerBlockedAt: null,
+        integrationServerId: null,
+        providerApplicationId: null,
+        externalIdentityId: account,
+        externalTenantId: null,
+        capabilities: jsonValue([]),
+        grantedScopes: jsonValue([]),
+        runnerId: null,
+        statusDetail: null,
+        transportKind: null,
+        updatedAt: new Date(),
+      })
+      .execute();
+    const connections = new AgentConnectionStore(f.database);
+    const connection = await connections.create({
+      userId: run.userId,
+      label: "External agent",
+      clientName: "test",
+      accessMode: "full-access",
+      reach: { kind: "user" },
+      resource: "http://localhost/internal/v1/mcp",
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    await connections.activate(connection.id, "c".repeat(64));
+    const access = async (
+      requester: { threadId: typeof run.thread.id } | { connectionId: string },
+    ) =>
+      (
+        await resolveResourceAccess(f.database, {
+          ownerUserId: run.userId,
+          workspaceId: run.workspace.id,
+          resource: { type: "integration", id: account },
+          ...requester,
+        })
+      ).access;
+    expect(await access({ connectionId: connection.id })).toBe("read-write");
+    const target = { kind: "service" as const, definitionId: "records" };
+    await platform.settings.setEnabled(run.userId, {
+      type: "settings.plugin.enabled.set",
+      target,
+      expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement.revision,
+      enabled: false,
+      idempotencyKey: "off-connection",
+    });
+    expect(await access({ threadId: run.thread.id })).toBeNull();
+    expect(await access({ connectionId: connection.id })).toBeNull();
+  });
+
   test("specialist placement preserves existing registrations and applies Personal future consent", async ({
     storeFixture: f,
   }) => {

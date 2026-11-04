@@ -1,4 +1,10 @@
 import {
+  AgentConnectionSchema,
+  AgentConnectionIdSchema,
+  AgentConnectionReachSchema,
+  AgentConnectionConsentSchema,
+} from "./agent-connections.js";
+import {
   PluginTargetSchema,
   PluginsOverviewViewSchema,
   PluginDetailViewSchema,
@@ -740,6 +746,25 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    connectionId: AgentConnectionIdSchema,
+    type: z.literal("connection.revoke"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    requestId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    decision: z.discriminatedUnion("kind", [
+      z.strictObject({ kind: z.literal("deny") }),
+      z.strictObject({
+        kind: z.literal("approve"),
+        label: z.string().trim().min(1).max(120),
+        accessMode: ThreadAccessModeSchema,
+        reach: AgentConnectionReachSchema,
+      }),
+    ]),
+    type: z.literal("connection.authorize"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
     sessionId: AuthSessionIdSchema,
     type: z.literal("session.revoke"),
   }),
@@ -1303,6 +1328,11 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("personal.accountLink.complete"),
     access: PersonalRemoteAccessStatusSchema,
   }),
+  z.object({ type: z.literal("connection.revoke") }),
+  z.object({
+    type: z.literal("connection.authorize"),
+    completionPath: z.string().startsWith("/oauth/mcp/complete?"),
+  }),
   z.object({ type: z.literal("session.revoke") }),
   z.object({
     enrollmentId: z.string().min(1).max(256),
@@ -1633,6 +1663,16 @@ export const hostApi = defineRpc({
     ChannelConnectionInspectionViewSchema,
   ),
   "channels.get": declaration("GET", emptyInputSchema, ChannelDashboardViewSchema),
+  "connections.list": declaration(
+    "GET",
+    emptyInputSchema,
+    z.object({ connections: z.array(AgentConnectionSchema) }),
+  ),
+  "connections.authorization.get": declaration(
+    "GET",
+    z.strictObject({ requestId: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }),
+    AgentConnectionConsentSchema,
+  ),
   "personal.remoteAccess.get": declaration(
     "GET",
     emptyInputSchema,

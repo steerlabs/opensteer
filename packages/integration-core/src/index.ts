@@ -12,7 +12,6 @@ export * from "./effect.js";
 // "@opensteer/integration-core/computer-app-tools", ".../digest",
 // ".../effective-grants" and ".../ports". computer-app.js itself stays free of
 // them so `IntegrationDefinitionSummary.computerApp` is readable everywhere.
-export * from "./gateway.js";
 export * from "./ids.js";
 export * from "./identifiers.js";
 export * from "./models.js";

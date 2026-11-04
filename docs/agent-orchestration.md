@@ -1,5 +1,45 @@
 # Agent orchestration
 
+## One MCP, live caller authority
+
+Runs, Trigger/Watch programs and connected external agents use the same
+`opensteer` MCP server. The [registry](../packages/agent-tools/src/tools/index.ts)
+filters tools by caller kind, access ceiling and consent reach. Run-bound surfaces require a live Run. A connected
+agent starts a managed task when it needs those surfaces; the Host records its
+messages as that connection, never as the person who approved it.
+
+Consent reach comes from the lineage root's Main inheritance and specialist
+binding. Main-inheriting work reaches the person's Workspaces; other work stays
+in its Workspace, and specialists stay in their lineage. Delegation preserves
+that root's reach. Shared channel conversations withhold Main inheritance.
+A connection instead uses the user or Workspace reach its owner approved.
+Membership, live resource grants and the caller's access ceiling still apply.
+
+Reads stay within consent reach; writes also respect the caller's access-mode
+ceiling for targets and new work. Settings require full access. Full access never substitutes for ownership or a
+resource grant. Domain services recheck authority when the effect commits,
+including after a wait. Agents may reduce existing access, but never grant
+access, approve consent, pair/enroll devices, manage account sign-in sessions,
+reveal credentials or raise their own power. Creating work cannot raise its access mode.
+
+Mutating calls pass caller/tool-scoped keys into their domain's idempotency or
+admission receipt. Reuse a stable `operationKey` across MCP reconnects; otherwise
+identity follows the session, request ID and tool. Domain commands reject a key
+reused with different input. Every call runs live resource authorization, including
+retries. The Host never automatically repeats uncertain external effects; an engine
+retry is a new call under the person's current authority. Watch observations retain
+activation-wide deduplication and the hourly observation limit; person messages
+replay their domain result.
+
+Runs receive Assignment results through the Inbox. Programs and connected agents
+can wait on a Thread's current Run, a pending Request, or messages after a known message. Each wait
+pins the observed Run, rechecks live authority on wake-up and returns within
+100 seconds (50 by default) with settled, running, offline or timed-out status. A later Run does
+not replace the pinned one. Disconnecting cancels only the wait, never the task;
+revoking a connection ends open waits and prevents further calls without
+cancelling work it already started. Stop and queue resume remain explicit operations. See
+[Thread waits](../apps/host/src/threads/thread-wait.ts).
+
 ## Inbox authority and delivery
 
 The Host owns delivery semantics in
@@ -57,8 +97,8 @@ replacing code preserves the version. V3 separates environment discovery from
 Workspace listing and requires the anchor's stored `trigger-program-v3`
 capability even offline; dispatch and Watch reconciliation recheck it. Never
 relabel v3 source as v2. See [shipped Trigger skills](../apps/runner/agent-skills/skills)
-and [tool catalog](../packages/agent-tools/src/catalog.ts) for syntax and discovery.
-Watch discovery and delegation use the intersection of program and anchor authority.
+and [tool catalog](../packages/agent-tools/src/tools/index.ts) for syntax and discovery.
+Watch discovery and delegation use the anchor’s live consent reach and resource grants.
 
 Thread state is a stored projection, not a client inference from Request events.
 Run and queue mutations project synchronously; Requests mark their originating
@@ -232,33 +272,35 @@ input or fail a Run merely because its output exceeds storage limits. See
 
 ## Run tool authority
 
-Non-file resource access uses the [resource guard](../packages/database/src/resource-access.ts):
-Main inherits the requester's resources only when the Run's lineage root has the
-`main` profile. Projects require explicit grants belonging to the requester;
-browser consent additionally requires the grant creator's active membership.
-Personal Everywhere consent names exact accounts and access ceilings, and creates
-those grants atomically with future Projects. Project creation and consent edits
-serialize on the owner; unavailable consent rolls back creation. Server Projects
-always require explicit selection. Reads never create grants.
-Connection ceilings, owner Off/Main exclusions and optional specialist restrictions
-can only narrow access. Off retains credentials, grants, activations and specialist
-bindings; Main exclusion also blocks direct grants. Owner management and repair
-remain available while Off. These ceilings govern managed discovery and new
-admission; they cannot erase instructions already in an engine's history or
-revoke files it can read. Loose-skill changes participate in Run planning and
-warm-engine reuse, and require a Runner advertising the Settings policy
-capability. Settings reads use membership-authorized cached skill metadata;
-refreshing Settings does not scan a computer's disk. Offline and failed scans
-retain the last complete inventory. Detail identifies that inventory’s source
-Workspace and metadata-owning computer; a failed replacement scan does not
+Non-file resource access intersects [consent reach](#one-mcp-live-caller-authority)
+with the [resource guard](../packages/database/src/resource-access.ts). Main
+inheritance requires the lineage root to act as the requester in their own Main;
+shared or external channel conversations withhold it even there. Projects need
+explicit grants belonging to the requester; browser consent also requires the
+grant creator's active membership. Personal Everywhere consent names exact
+accounts and access ceilings, and creates those grants atomically with future
+Projects. Project creation and consent edits serialize on the owner; unavailable
+consent rolls back creation. Server Projects always require explicit selection.
+Reads never create grants. Connection ceilings, owner Off/Main exclusions and
+specialist bindings can only narrow access. Off retains credentials, grants,
+activations and specialist bindings; Main exclusion also blocks direct grants.
+Owner management and repair remain available while Off. These ceilings govern
+managed discovery and new admission; they cannot erase instructions already in
+an engine's history or revoke files it can read. Loose-skill changes participate
+in Run planning and warm-engine reuse, and require a Runner advertising the
+Settings policy capability. Settings reads use membership-authorized cached skill
+metadata; refreshing Settings does not scan a computer's disk. Offline and failed
+scans retain the last complete inventory. Detail identifies that inventory’s
+source Workspace and metadata-owning computer; a failed replacement scan does not
 relabel old metadata as coming from the new owner. Offline inventory reports
 Waiting for device; failed scans report setup attention. These are freshness
-hints, never evidence of execution authority.
+hints, never evidence of execution authority. Plugin owner settings are the
+person's consent and are never agent-reachable.
+
 A caller cannot reuse, queue work to, or steer a Thread with Main lineage unless
-its own lineage has Main authority; start a new task instead. Cross-Workspace
-delegation still requires the caller's `main` profile. A specialist may send only
-reports to Threads outside its own registration, even when it shares their Main
-lineage. Reports grant no execution.
+its own lineage has Main authority; start a new task instead. A specialist may
+send only reports to Threads outside its own registration, even when it shares
+their Main lineage. Reports grant no execution.
 
 Every capability names the current attempt's grant. Tool admission needs an
 active grant, live binding, matching Runner boot and non-deleting Workspace;
@@ -293,7 +335,7 @@ reconnect; unconfirmed steers are not. See
 ## Conversation roles and Assignments
 
 Role controls instructions and presentation, never access. Membership,
-capability profile, execution placement and tool admission remain independent.
+lineage consent, execution placement and tool admission remain independent.
 person_message addresses the Run's requester in the same Thread without ending
 work. Only a Run answering the person directly may use it or person_show: the
 Host refuses both for delegated Threads and for any Run on an Assignment, even
@@ -345,10 +387,10 @@ list changes outside subscribed Workspaces. See
 ### A person's task list
 
 Read positions are private; Done is shared. Done/Reopen require active membership
-and the task's creator or Workspace owner. Agent write reach is narrower than
-read reach: Main acts for the requester, Workspace stays local, and delegated
-agents can write themselves and their Assignment descendants. Chat and active
-channel conversations cannot be Done. The agent `thread_write` tool requires a Runner advertising `task-done-v1`.
+and the task's creator or Workspace owner. Agent writes require consent reach; membership and ownership still apply.
+Sending actionable work additionally requires lineage-compatible reuse. Chat and active
+channel conversations cannot be Done. Agent writes use the Host’s current tool contract;
+they do not select tools through per-tool Runner gates.
 
 Done atomically revalidates and stops the task's open Assignment subtree,
 withdraws actionable inputs and Requests, pauses anchored Triggers and revokes
@@ -410,7 +452,8 @@ See [Browser sessions](browser-sessions.md) and [Computer use](computer-use.md).
 ## Chat and native AI sessions
 
 Main and each Project have their own conversation at `homeThreadId`. Project chats
-use the `workspace` capability profile. The `home` alias resolves
+remain within their Workspace and require its explicit resource grants. The
+`home` alias resolves
 only the caller's Chat and preserves authorship. Cross-Workspace reports may
 reach it, but actionable work needs ordinary reach; the alias grants no read
 or execution authority. Reports never alert. Quotes are authorized published
@@ -419,7 +462,7 @@ historical evidence, not instructions or approval receipts.
 Trigger control cannot exceed the actor's access mode; definition requires full
 access within the anchor's kind/scope, except Main's reach. Trigger and Watch
 programs act as their anchor, never with implicit owner-wide authority.
-See [tool catalog](../packages/agent-tools/src/catalog.ts).
+See [tool catalog](../packages/agent-tools/src/tools/index.ts).
 
 Each Run pins the selected ProviderSession before admission. Binding, dispatch
 and recovery never substitute a subsequently selected session. Explicit

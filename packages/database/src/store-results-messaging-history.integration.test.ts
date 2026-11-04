@@ -1188,10 +1188,10 @@ describeStore("PostgreSQL store", (it) => {
     await expect(
       database
         .selectFrom("threads")
-        .select("capabilityProfileId")
+        .select("inheritsMain")
         .where("id", "=", adopted.run.threadId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ capabilityProfileId: "workspace" });
+    ).resolves.toEqual({ inheritsMain: false });
 
     const attribution = await database
       .selectFrom("runs")
@@ -1601,10 +1601,10 @@ describeStore("PostgreSQL store", (it) => {
     await expect(
       database
         .selectFrom("threads")
-        .select(["capabilityProfileId", "parentThreadId"])
+        .select(["inheritsMain", "parentThreadId"])
         .where("id", "=", resent.result.run.threadId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ capabilityProfileId: "workspace", parentThreadId: null });
+    ).resolves.toEqual({ inheritsMain: false, parentThreadId: null });
 
     const revoked = await fixture.channels.reviewAccess({
       bindingId: fixture.configured.binding.id,
@@ -1812,7 +1812,7 @@ describeStore("PostgreSQL store", (it) => {
       expect(externalSender.result.run.threadId).not.toBe(linkedOwner.result.run.threadId);
       const messagingThreads = await database
         .selectFrom("threads")
-        .select(["capabilityProfileId", "createdBy", "id", "parentThreadId"])
+        .select(["inheritsMain", "createdBy", "id", "parentThreadId"])
         .where("id", "in", [linkedOwner.result.run.threadId, externalSender.result.run.threadId])
         .orderBy("id", "asc")
         .execute();
@@ -1820,12 +1820,12 @@ describeStore("PostgreSQL store", (it) => {
       expect(messagingThreads).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            capabilityProfileId: "workspace",
+            inheritsMain: false,
             createdBy: fixture.fixture.userId,
             parentThreadId: null,
           }),
           expect.objectContaining({
-            capabilityProfileId: "workspace",
+            inheritsMain: false,
             createdBy: fixture.fixture.userId,
             parentThreadId: null,
           }),

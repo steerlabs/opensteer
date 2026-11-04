@@ -228,7 +228,7 @@ describeStore("managed memory passes", (it) => {
     const nightly = await role(f, base.userId, "memory-nightly");
     expect(light.anchorThread).toMatchObject({
       accessMode: "approval-required",
-      capabilityProfileId: "delegated",
+      inheritsMain: true,
       createdBy: base.userId,
       environmentId: base.environmentId,
       harnessInstanceId: base.harnessInstance.id,

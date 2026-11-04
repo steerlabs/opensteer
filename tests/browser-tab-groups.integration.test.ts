@@ -1832,9 +1832,9 @@ integration("tab group deletion and response bounds", () => {
     ).rejects.toThrow("200 tab groups");
     expect(result.groups.every((g) => g.tabCount === 50 && !("tabIds" in g))).toBe(true);
     const bytes = Buffer.byteLength(JSON.stringify(result));
-    const { agentControlResponseMaxSerializedBytes } =
-      await import("../packages/protocol/src/agent-control.js");
-    expect(bytes).toBeLessThan(agentControlResponseMaxSerializedBytes);
+    const { agentToolPayloadMaxSerializedBytes } =
+      await import("../packages/protocol/src/index.js");
+    expect(bytes).toBeLessThan(agentToolPayloadMaxSerializedBytes);
     evidence.push({
       bytes,
       groups: result.groups.length,

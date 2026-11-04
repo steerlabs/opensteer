@@ -1432,7 +1432,7 @@ it("models managed role discovery, hidden authorized detail, no-light pauses and
     expect(detail.anchorThread).toMatchObject({
       id: light.anchorThreadId,
       listed: false,
-      capabilityProfileId: "delegated",
+      inheritsMain: true,
       title: "Memory light pass",
       parentThreadId: client.getSnapshot().homeThreadId,
     });

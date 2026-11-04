@@ -1,3 +1,4 @@
+import { agentTools } from "@opensteer/agent-tools";
 import { createId as createStorageFixtureId } from "@opensteer/core";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import {
@@ -552,9 +553,7 @@ describe("RunnerRuntime", () => {
       await waitUntil(() => driver.contexts.length === 1);
       const context = driver.context!;
       expect(context.agentTools.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/[\w-]+\/agent-tools$/u);
-      expect(context.integrationTools.url).toMatch(/\/integration-tools$/u);
       expect(context.agentTools.token).not.toBe(execute.context.agentTools.token);
-      expect(context.integrationTools.token).not.toBe(execute.context.integrationTools.token);
 
       const stream = await fetch(context.agentTools.url, {
         headers: {
@@ -3562,7 +3561,6 @@ describe("RunnerRuntime", () => {
         };
       if (specialist) {
         command.context.specialistId = "registration-1";
-        command.context.agentTools.capabilityProfileId = "specialist";
         command.context.plugins.versions = [
           { pluginId: "example", name: "example", digest: "a".repeat(64) },
         ];
@@ -3593,7 +3591,6 @@ describe("RunnerRuntime", () => {
         hold = true;
         const running = executeCommand(environmentId);
         running.context.specialistId = "registration-1";
-        running.context.agentTools.capabilityProfileId = "specialist";
         running.context.plugins.versions = command.context.plugins.versions;
         await reconcile(registry, running);
         await runtime.handleCommand(running, sink);
@@ -3612,6 +3609,8 @@ describe("RunnerRuntime", () => {
         });
         return;
       }
+      expect(driver.context?.platformGuide).toBe(command.context.agentTools.instructions);
+      expect(driver.context?.agentTools.tools).toEqual(command.context.agentTools.tools);
       expect(reports).toEqual([
         ["release-notes", "research"],
         ["after-run", "release-notes", "research"],
@@ -3648,6 +3647,12 @@ describe("RunnerRuntime", () => {
             localName: "computers",
             fullName: "opensteer:computers",
             path: "/runner/agent-skills/skills/computers",
+          },
+          {
+            plugin: "opensteer",
+            localName: "projects",
+            fullName: "opensteer:projects",
+            path: "/runner/agent-skills/skills/projects",
           },
           {
             plugin: "opensteer",
@@ -5563,23 +5568,27 @@ function executeCommand(
     context: {
       accessMode: "full-access",
       assignment: null,
-      agentControl: {
-        token: "opaque-agent-control-token",
-        url: `${hostOrigin}/internal/v1/agent-control`,
-      },
       agentTools: {
-        capabilityProfileId: "workspace",
+        tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
+        toolsRevision: "test-tools-v1",
+        instructions: "Host Opensteer instructions",
+        skills: [
+          "opensteer:skills",
+          "opensteer:integrations",
+          "opensteer:computer-use",
+          "opensteer:browser",
+          "opensteer:computers",
+          "opensteer:projects",
+          "opensteer:threads",
+          "opensteer:triggers",
+        ],
         token: "opaque-agent-tools-token",
         url: "https://host.example/internal/v1/mcp",
       },
       browserCdp: {
-        token: "opaque-browser-cdp-token",
         url: `${hostOrigin}/internal/v1/browser-cdp`,
       },
-      integrationTools: {
-        token: "opaque-agent-tools-token",
-        url: "https://host.example/internal/v1/integration-mcp",
-      },
+
       plugins: {
         versions: [],
         token: "plugin-cache-token",
@@ -5676,10 +5685,7 @@ function triggerCommand(
         trigger: { anchorThreadId, id: triggerId, revisionId, workspaceId },
       },
       executionGeneration: 1,
-      integrationMcp: {
-        token: "trigger-integration-mcp-token",
-        url: "https://host.example/internal/v1/integration-mcp",
-      },
+
       mcp: { token: "trigger-mcp-token", url: "https://host.example/internal/v1/mcp" },
       occurrenceId,
       program: {
@@ -6090,6 +6096,13 @@ it("invalidates warm engines when the pinned package set changes, regardless of 
   expect(warmEngineKey(input)).toBe(before);
   context.plugins.versions = [{ ...first, digest: "c".repeat(64) }, second];
   expect(warmEngineKey(input)).not.toBe(before);
+  const current = warmEngineKey(input);
+  // The revision names the Host's whole inventory, guide and skills.
+  context.agentTools.tools = [...context.agentTools.tools].reverse();
+  context.agentTools.instructions = "Rephrased";
+  expect(warmEngineKey(input)).toBe(current);
+  context.agentTools.toolsRevision = "changed-tools";
+  expect(warmEngineKey(input)).not.toBe(current);
 });
 
 it("stops app servers on primary connection loss and Runner shutdown", async () => {

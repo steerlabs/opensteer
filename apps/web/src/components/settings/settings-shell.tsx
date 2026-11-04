@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useOutletContext } from "react-router";
 import {
   deploymentStatusLabel,
@@ -34,6 +34,13 @@ import { ChromeSection } from "./sections/chrome.js";
 import { GeneralSection } from "./sections/general.js";
 import { PasswordsSection } from "./sections/passwords.js";
 import { PluginsSection } from "./sections/plugins.js";
+
+// Loaded with its page so connections cost nothing on attach.
+const ConnectedAgentsSection = lazy(() =>
+  import("./sections/connected-agents.js").then((module) => ({
+    default: module.ConnectedAgentsSection,
+  })),
+);
 
 interface SettingsContext extends ShellContext {
   settingsView: SettingsView;
@@ -254,7 +261,11 @@ export function SettingsSectionRoute({
   readonly section: Exclude<SettingsSectionId, "apps" | "computers">;
 }) {
   const location = useLocation();
-  const { settingsView: view, openMobileNavigation } = useOutletContext<SettingsContext>();
+  const {
+    settingsView: view,
+    openMobileNavigation,
+    hostClient,
+  } = useOutletContext<SettingsContext>();
   let content;
   switch (section) {
     case "ai":
@@ -282,6 +293,9 @@ export function SettingsSectionRoute({
             <RemoteAccessSection view={view} compact />
           ) : null}
           <SignedInDevicesSection view={view} />
+          <Suspense fallback={<p role="status">Loading connected agents…</p>}>
+            <ConnectedAgentsSection client={hostClient} />
+          </Suspense>
         </>
       );
       break;

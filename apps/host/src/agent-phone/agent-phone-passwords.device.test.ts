@@ -323,7 +323,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           const gateway = await connectAgentGateway(host, run.integrationTools);
           const signInGateway = await connectAgentGateway(host, {
             url: new URL(hostInternalRoutePaths.mcp, host.config.runtimeOrigin).href,
-            token: run.agentControlToken,
+            token: run.toolsToken,
           });
           gateways.push(gateway, signInGateway);
           const call = async (name: string, args: Record<string, unknown>) => {
@@ -470,7 +470,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             runs.push(foreign);
             const foreignSignIn = await connectAgentGateway(host, {
               url: new URL(hostInternalRoutePaths.mcp, host.config.runtimeOrigin).href,
-              token: foreign.agentControlToken,
+              token: foreign.toolsToken,
             });
             gateways.push(foreignSignIn);
             const foreignReady = await foreignSignIn.call("sign_in", {
