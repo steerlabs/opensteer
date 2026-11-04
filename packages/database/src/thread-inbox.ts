@@ -144,7 +144,7 @@ function canManageQueuedInput(
   const source = row.authoritySource;
   if (source.kind === "workspace-membership") return true;
   const caller = request.authority;
-  if (!caller) return false;
+  if (!caller) return source.kind === "connection";
   switch (caller.kind) {
     case "connection":
       return source.kind === "connection" && source.connectionId === caller.connectionId;

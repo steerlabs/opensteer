@@ -1,3 +1,4 @@
+import type { AdministrationCommandIdentity } from "@opensteer/database";
 import type { ResourceAccessInput } from "@opensteer/database";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
@@ -1125,6 +1126,7 @@ export class BrowserService {
   }
 
   async renameProfile(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly name: string;
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
@@ -1141,6 +1143,7 @@ export class BrowserService {
    * that fails is reported rather than failing a deletion that has happened.
    */
   async deleteProfile(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
   }): Promise<PendingBrowserProfileDeletion | undefined> {
@@ -1155,6 +1158,8 @@ export class BrowserService {
     for (const stop of stops) if (stop.status === "rejected") this.#onError(stop.reason);
     if (deletion) await this.#eraseLocalProfiles?.(deletion.computerId).catch(() => undefined);
     await this.#ownerProfilesChanged(input.ownerId);
+    // Retried agent operations replay admission; subsequent reads show erasure progress.
+    if (input.administration) return deletion;
     return (await this.#localProfiles?.pendingDeletions(input.ownerId))?.find(
       (item) => item.profileId === input.profileId,
     );
@@ -1465,6 +1470,7 @@ export class BrowserService {
     ownerId: UserId,
     input: {
       profileId: BrowserProfileId;
+      administration?: AdministrationCommandIdentity | undefined;
       idempotencyKey: string;
       url?: string;
       authoritySource?: Readonly<Record<string, unknown>>;

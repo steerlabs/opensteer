@@ -1,3 +1,4 @@
+import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
 import {
@@ -470,6 +471,7 @@ export class BrowserSourceService {
 
   /** Stops future sign-ins to the site; browsers already signed in stay signed in. */
   async removeSite(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly ownerId: UserId;
     readonly workspaceId: WorkspaceId;
     readonly site: string;

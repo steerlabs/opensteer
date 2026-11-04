@@ -28,6 +28,7 @@ import {
 import { sql } from "kysely";
 import { describe, expect, it as baseIt } from "vitest";
 import { createDatabase, OpensteerStore } from "./index.js";
+import { AgentConnectionStore } from "./agent-connection-store.js";
 import { AttachmentStore } from "./attachment-store.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -1449,6 +1450,127 @@ integration.sequential("thread input queue promotion", () => {
     // The steer was never dispatched, so the ended Run handed it back to the queue.
     await expect(order(f)).resolves.toEqual([b.message.id, d.message.id]);
   });
+
+  for (const revoked of [false, true]) {
+    it(`lets the person manage their connection's queue, revoked=${revoked}`, async ({
+      storeFixture,
+    }) => {
+      const { fixture, queued, database, store } = storeFixture;
+      const f = await fixture(`connection-person-${revoked}`, true);
+      const connections = new AgentConnectionStore(database);
+      const createConnection = async () => {
+        const connection = await connections.create({
+          userId: f.userId,
+          label: "Agent",
+          clientName: "Agent",
+          accessMode: "full-access",
+          reach: { kind: "user" },
+          resource: "https://test-host.invalid/internal/v1/mcp",
+          expiresAt: new Date(Date.now() + 60_000),
+        });
+        await connections.activate(
+          connection.id,
+          createHash("sha256").update(connection.id).digest("hex"),
+        );
+        return {
+          kind: "connection",
+          connectionId: connection.id,
+          userId: f.userId,
+          accessMode: "full-access",
+          reach: { kind: "user" },
+        } as const;
+      };
+      const author = await createConnection();
+      const other = await createConnection();
+      const anchor = await queued(f, "connection-anchor");
+      const send = (key: string) =>
+        store.enqueueThreadInput({
+          authority: author,
+          content: [{ type: "text", text: key }],
+          idempotencyKey: key,
+          policy: "queue",
+          requestedBy: f.userId,
+          source: { kind: "connection", connectionId: author.connectionId },
+          threadId: f.thread.id,
+        });
+      const cancel = await send("connection-cancel");
+      const move = await send("connection-move");
+      const steer = await send("connection-steer");
+      if (revoked) await connections.revoke(f.userId, author.connectionId);
+      const person = { requestedBy: f.userId, threadId: f.thread.id };
+      const view = await store.getThreadInputQueue(person);
+      expect(view.items.filter(({ message }) => message.id !== anchor.message.id)).toEqual(
+        expect.arrayContaining(
+          [cancel, move, steer].map(({ message }) =>
+            expect.objectContaining({
+              message: expect.objectContaining({ id: message.id }),
+              canCancel: true,
+              canMove: true,
+              canSteer: true,
+            }),
+          ),
+        ),
+      );
+      for (const caller of [
+        { ...person, authority: other },
+        { ...person, requestedBy: f.ownerId },
+      ]) {
+        const restricted = await store.getThreadInputQueue(caller);
+        expect(
+          restricted.items.find(({ message }) => message.id === cancel.message.id),
+        ).toMatchObject({
+          canCancel: false,
+          canMove: false,
+          canSteer: false,
+        });
+        await expect(
+          store.cancelThreadInput({
+            ...caller,
+            messageId: cancel.message.id,
+            idempotencyKey: `cancel-denied-${caller.requestedBy}-${"authority" in caller}`,
+          }),
+        ).rejects.toMatchObject({ code: "forbidden" });
+        await expect(
+          store.moveThreadInput({
+            ...caller,
+            messageId: move.message.id,
+            beforeMessageId: anchor.message.id,
+            idempotencyKey: `move-denied-${caller.requestedBy}-${"authority" in caller}`,
+          }),
+        ).rejects.toMatchObject({ code: "forbidden" });
+        await expect(
+          store.steerThreadInput({
+            ...caller,
+            messageId: steer.message.id,
+            expectedRunId: f.initial.run!.id,
+            idempotencyKey: `steer-denied-${caller.requestedBy}-${"authority" in caller}`,
+          }),
+        ).rejects.toMatchObject({ code: "forbidden" });
+      }
+      await store.moveThreadInput({
+        ...person,
+        messageId: move.message.id,
+        beforeMessageId: anchor.message.id,
+        idempotencyKey: "person-move",
+      });
+      expect((await store.getThreadInputQueue(person)).items[0]?.message.id).toBe(move.message.id);
+      await store.cancelThreadInput({
+        ...person,
+        messageId: cancel.message.id,
+        idempotencyKey: "person-cancel",
+      });
+      await store.steerThreadInput({
+        ...person,
+        messageId: steer.message.id,
+        expectedRunId: f.initial.run!.id,
+        idempotencyKey: "person-steer",
+      });
+      const remaining = (await store.getThreadInputQueue(person)).items.map(
+        ({ message }) => message.id,
+      );
+      expect(remaining).toEqual([move.message.id, anchor.message.id]);
+    });
+  }
 
   it("moves only the reader's own messages, around anyone's", async ({ storeFixture }) => {
     const { fixture, queued, store, move, order } = storeFixture;

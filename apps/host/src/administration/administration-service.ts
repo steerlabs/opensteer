@@ -1,12 +1,18 @@
+import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
+import { createHash } from "node:crypto";
+import { type AdministrationCommandIdentity } from "@opensteer/database";
 import { z } from "zod";
 import {
   EnvironmentIdSchema,
   OpensteerError,
   RunnerIdSchema,
+  WorkspaceSchema,
   type EnvironmentId,
   type WorkspaceId,
 } from "@opensteer/core";
 import {
+  hostApi,
+  PendingBrowserProfileDeletionSchema,
   HarnessModelSettingsMapSchema,
   type HostApiCommand,
   type HostApiCommandOutput,
@@ -23,6 +29,7 @@ import {
   workspaceView,
 } from "./authority.js";
 import {
+  assertAdministrator,
   executeIntegrationAdministration,
   isIntegrationAdministrationCommand,
   type AdministrationActor,
@@ -105,6 +112,7 @@ export function assertUserReach(caller: AgentCaller) {
     });
 }
 export class AdministrationService {
+  readonly #mutations = new KeyedMutationQueue();
   readonly dependencies: AdministrationDependencies;
   readonly scheduleHarnesses: (id: EnvironmentId) => void;
   readonly warn: (fields: Record<string, unknown>, message: string) => void;
@@ -194,9 +202,33 @@ export class AdministrationService {
     caller: AdministrationCaller,
     command: AdministrationCommand,
   ): Promise<HostApiCommandOutput> {
+    if (caller.kind === "person") return this.#authorizedExecute(caller, command);
+    return this.#mutations.run(JSON.stringify([caller.userId, command.idempotencyKey]), () =>
+      this.#authorizedExecute(caller, command),
+    );
+  }
+  async #authorizedExecute(
+    caller: AdministrationCaller,
+    command: AdministrationCommand,
+  ): Promise<HostApiCommandOutput> {
     await this.authorize(caller, command);
     const actor = await this.actor(caller);
-    const result = await this.#execute(caller, actor, command);
+    const administration =
+      caller.kind === "person" ? undefined : this.#commandIdentity(caller, command);
+    if (administration) {
+      if (command.type.startsWith("harness.") && "environmentId" in command)
+        await this.admitHarnessManagement(actor, command.environmentId);
+      if (["plugin.remove", "plugin.update", "integration.uninstall"].includes(command.type))
+        assertAdministrator(actor);
+      const replay = await this.dependencies.store.replayAdministrationCommand(administration);
+      if (replay?.output) return hostApi["commands.dispatch"].success.parse(replay.output);
+      if (replay && command.type === "machine.access.session.stop")
+        return hostApi["commands.dispatch"].success.parse({
+          type: command.type,
+          ...z.object({ ended: z.boolean() }).parse(replay.result),
+        });
+    }
+    const result = await this.#execute(caller, actor, command, administration);
     if (
       command.type.startsWith("workspace.") ||
       command.type.startsWith("harness.") ||
@@ -207,10 +239,95 @@ export class AdministrationService {
       notifyMachinesChanged(this.dependencies.realtime, "unspecified");
     return result;
   }
+  #commandIdentity(
+    caller: AgentCaller,
+    command: AdministrationCommand,
+  ): AdministrationCommandIdentity {
+    const { idempotencyKey, type, ...fields } = command;
+    const request =
+      type === "browser.history.remove"
+        ? {
+            profileId: command.profileId,
+            urlFingerprint: createHash("sha256")
+              .update(`${command.profileId}\0${command.url}`)
+              .digest("base64url"),
+          }
+        : fields;
+    return {
+      requestedBy: caller.userId,
+      idempotencyKey,
+      type,
+      request: z.record(z.string(), z.unknown()).parse(JSON.parse(JSON.stringify(request))),
+      authoritySource: { kind: "mcp", callerKind: caller.kind, callerKey: caller.key },
+      output: async (result) => {
+        let fields: Record<string, unknown> = {};
+        if (
+          [
+            "workspace.icon.set",
+            "workspace.color.set",
+            "workspace.deletion.recover",
+            "workspace.storage.retry",
+          ].includes(command.type)
+        )
+          fields = {
+            workspace: await workspaceView(
+              this.dependencies.workspaces,
+              WorkspaceSchema.parse(result),
+            ),
+          };
+        if (command.type === "workspace.delete")
+          fields = {
+            workspace: await workspaceView(
+              this.dependencies.workspaces,
+              WorkspaceSchema.parse(z.object({ workspace: z.unknown() }).parse(result).workspace),
+            ),
+          };
+        if (command.type.startsWith("harness.")) {
+          const harness = z.record(z.string(), z.unknown()).parse(result);
+          const config = z
+            .object({ models: HarnessModelSettingsMapSchema.optional() })
+            .safeParse(harness.config);
+          fields = {
+            harness: {
+              ...harness,
+              ...(config.success && config.data.models
+                ? { modelSettings: config.data.models }
+                : {}),
+            },
+          };
+        }
+        if (command.type === "execution.preferences.remember") fields = { preferences: result };
+        if (command.type === "viewer.timeZone.update") fields = { timeZone: result };
+        if (command.type === "workspace.notifications.update")
+          fields = z.record(z.string(), z.unknown()).parse(result);
+        if (command.type === "integration.disconnect")
+          fields = { notice: null, revokedUpstream: false };
+        if (command.type === "integration.uninstall") {
+          const removed = z
+            .object({
+              cancelledRequestIds: z.array(z.string()),
+              removedConnectionIds: z.array(z.string()),
+            })
+            .parse(result);
+          fields = {
+            cancelledRequests: removed.cancelledRequestIds.length,
+            removedConnections: removed.removedConnectionIds.length,
+          };
+        }
+        if (command.type === "browser.profile.delete")
+          fields = z
+            .object({ deletion: PendingBrowserProfileDeletionSchema.optional() })
+            .parse(result);
+        if (command.type === "browser.profile.rename") fields = { profile: result };
+        return hostApi["commands.dispatch"].success.parse({ type: command.type, ...fields });
+      },
+    };
+  }
   async #execute(
     caller: AdministrationCaller,
     actor: AdministrationActor,
     command: AdministrationCommand,
+    administration?: AdministrationCommandIdentity | undefined,
   ): Promise<HostApiCommandOutput> {
     const { userId, isAdministrator } = actor;
     const dependencies = this.dependencies;
@@ -225,6 +342,7 @@ export class AdministrationService {
         actor,
         command,
         command.idempotencyKey,
+        administration,
       );
       if (command.type.startsWith("plugin.") || command.type === "specialist.remove")
         notifyMachinesChanged(dependencies.realtime, "integration.connections");
@@ -233,23 +351,30 @@ export class AdministrationService {
     switch (command.type) {
       case "browser.site.remove":
         await dependencies.browserSources.removeSite({
+          administration,
           ownerId: userId,
           workspaceId: command.workspaceId,
           site: command.site,
         });
         return { type: command.type };
       case "channel.binding.revoke":
-        await dependencies.channels.service.revokeBinding(command.bindingId, userId);
+        await dependencies.channels.service.revokeBinding(
+          command.bindingId,
+          userId,
+          administration,
+        );
         return { type: command.type };
       case "channel.connection.status.set":
         await dependencies.channels.service.setConnectionStatus(
           command.connectionId,
           userId,
           command.status,
+          administration,
         );
         return { type: command.type };
       case "workspace.notifications.update": {
         const preference = await dependencies.store.notificationState.setAgentNotificationMute({
+          administration,
           workspaceId: command.workspaceId,
           muted: command.muted,
           userId,
@@ -260,13 +385,18 @@ export class AdministrationService {
       case "viewer.timeZone.update":
         return {
           timeZone: await dependencies.store.notificationState.setTimeZone({
+            administration,
             timeZone: command.timeZone,
             userId,
           }),
           type: command.type,
         };
       case "workspace.storage.retry": {
-        const workspace = await dependencies.workspaces.retry(command.workspaceId, userId);
+        const workspace = await dependencies.workspaces.retry(
+          command.workspaceId,
+          userId,
+          administration,
+        );
         if (workspace.storageIssue) {
           this.warn(
             { storageIssue: workspace.storageIssue.code, workspaceId: workspace.id },
@@ -280,6 +410,7 @@ export class AdministrationService {
       }
       case "workspace.icon.set": {
         const workspace = await dependencies.workspaces.setIcon({
+          administration,
           ...(caller.kind === "person"
             ? {}
             : { authoritySource: { kind: "mcp", callerKind: caller.kind, callerKey: caller.key } }),
@@ -295,6 +426,7 @@ export class AdministrationService {
       }
       case "workspace.color.set": {
         const workspace = await dependencies.commands.setWorkspaceColor({
+          administration,
           ...(caller.kind === "person"
             ? {}
             : { authoritySource: { kind: "mcp", callerKind: caller.kind, callerKey: caller.key } }),
@@ -315,6 +447,7 @@ export class AdministrationService {
         const workspace = await dependencies.workspaceDeletion.requestDeletion(
           command.workspaceId,
           userId,
+          administration,
         );
         await dependencies.apps.stopWorkspace(command.workspaceId);
         dependencies.realtime.sendToUsers(affected, { type: "host.plugins-changed" });
@@ -324,7 +457,11 @@ export class AdministrationService {
         };
       }
       case "workspace.deletion.recover": {
-        const workspace = await dependencies.workspaceDeletion.recover(command.workspaceId, userId);
+        const workspace = await dependencies.workspaceDeletion.recover(
+          command.workspaceId,
+          userId,
+          administration,
+        );
         return {
           type: command.type,
           workspace: await workspaceView(dependencies.workspaces, workspace),
@@ -353,10 +490,14 @@ export class AdministrationService {
             });
           }
         }
-        const preferences = await dependencies.store.rememberExecutionChoice(userId, {
-          ...(command.accessMode === undefined ? {} : { accessMode: command.accessMode }),
-          ...(selection === undefined ? {} : { selection }),
-        });
+        const preferences = await dependencies.store.rememberExecutionChoice(
+          userId,
+          {
+            ...(command.accessMode === undefined ? {} : { accessMode: command.accessMode }),
+            ...(selection === undefined ? {} : { selection }),
+          },
+          administration,
+        );
         return { preferences, type: command.type };
       }
       case "harness.model.configure": {
@@ -406,6 +547,7 @@ export class AdministrationService {
             : { ...currentModels, [command.nativeModelId]: command.settings };
         const harness = await dependencies.store.updateHarnessInstance({
           id: current.id,
+          administration,
           expectedRuntimeRevision: current.runtimeRevision,
           config: { ...config, models },
         });
@@ -420,6 +562,7 @@ export class AdministrationService {
           throw new OpensteerError({ code: "not_found", message: "AI engine not found" });
         }
         const harness = await dependencies.store.updateHarnessInstance({
+          administration,
           ...(command.type === "harness.enabled.set" ? { enabled: command.enabled } : {}),
           id: command.harnessInstanceId,
           ...(command.type === "harness.rename" ? { name: command.name } : {}),
@@ -438,6 +581,7 @@ export class AdministrationService {
           throw new OpensteerError({ code: "not_found", message: "AI engine not found" });
         }
         const harness = await dependencies.store.setDefaultHarnessInstance({
+          administration,
           environmentId: environment.id,
           harnessInstanceId: command.harnessInstanceId,
         });
@@ -454,6 +598,7 @@ export class AdministrationService {
         const revoked = await dependencies.shellControl.withMachineAdmission(runnerId, () =>
           dependencies.computerApps.withRunnerAdmission(runnerId, () =>
             dependencies.store.revokeRunner(runnerId, userId, {
+              administration,
               allowDeployment,
               allowOtherOwners: allowDeployment,
             }),
@@ -488,7 +633,7 @@ export class AdministrationService {
           RunnerIdSchema.parse(command.machineId),
           userId,
           command.name,
-          { allowDeployment },
+          { allowDeployment, administration },
         );
         notifyMachinesChanged(dependencies.realtime, "machine.command");
         return { type: command.type };
@@ -497,12 +642,13 @@ export class AdministrationService {
         // The full row resolves and authorizes the Stop even for an ended
         // session; an unknown id discloses nothing beyond "nothing to end".
         const shellSession = await dependencies.store.getShellSession(command.sessionId);
-        if (!shellSession) return { ended: false, type: command.type };
-        await requireMachineAccessManagement(
-          dependencies.store,
-          { userId, isAdministrator },
-          shellSession.runnerId,
-        );
+        if (!shellSession && caller.kind === "person") return { ended: false, type: command.type };
+        if (shellSession)
+          await requireMachineAccessManagement(
+            dependencies.store,
+            { userId, isAdministrator },
+            shellSession.runnerId,
+          );
         // Through the hub, so a Stop takes the sockets away as well as writing
         // the row; it is the same idempotent ending every other path uses. The
         // key travels with it so a retried click reads back what the first one
@@ -517,6 +663,7 @@ export class AdministrationService {
       case "browser.profile.rename":
         return {
           profile: await dependencies.browser.renameProfile({
+            administration,
             name: command.name,
             ownerId: userId,
             profileId: command.profileId,
@@ -525,13 +672,18 @@ export class AdministrationService {
         };
       case "browser.profile.delete": {
         const deletion = await dependencies.browser.deleteProfile({
+          administration,
           ownerId: userId,
           profileId: command.profileId,
         });
         return { type: command.type, ...(deletion ? { deletion } : {}) };
       }
       case "browser.profileGrant.revoke": {
-        const revoked = await dependencies.store.revokeBrowserProfileGrant(command.grantId, userId);
+        const revoked = await dependencies.store.revokeBrowserProfileGrant(
+          command.grantId,
+          userId,
+          administration,
+        );
         await dependencies.browser.detachAgentSessionsForRevokedProfileGrant({
           ownerId: userId,
           profileId: revoked.profileId,
@@ -543,6 +695,7 @@ export class AdministrationService {
       case "browser.history.clear":
         await dependencies.browser.forgetHistory(userId, {
           ...command,
+          administration,
           ...(caller.kind === "person"
             ? {}
             : { authoritySource: { kind: "mcp", callerKind: caller.kind, callerKey: caller.key } }),

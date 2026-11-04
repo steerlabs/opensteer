@@ -72,6 +72,7 @@ function fixture() {
     uninstallIntegration: vi.fn(),
   };
   const store = {
+    replayAdministrationCommand: vi.fn(async () => undefined),
     userById: vi.fn(async () => ({ instanceRole: "administrator", disabledAt: null })),
     workspaceMembershipForUser: vi.fn(async () => ({ state: "active", role: "owner" })),
     listEnvironmentsForUser: vi.fn(async () => [{ id: environmentId, kind: "local" }]),
@@ -190,9 +191,13 @@ describe("administration through the MCP service", () => {
       { action: "remember_execution", accessMode: "approval-required" },
       { operationKey: "preference" },
     );
-    expect(f.deps.store.rememberExecutionChoice).toHaveBeenCalledWith(f.userId, {
-      accessMode: "approval-required",
-    });
+    expect(f.deps.store.rememberExecutionChoice).toHaveBeenCalledWith(
+      f.userId,
+      {
+        accessMode: "approval-required",
+      },
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
+    );
     expect(f.caller().accessMode).toBe("full-access");
     f.setCaller({ ...f.caller(), accessMode: "approval-required" });
     await expect(
@@ -267,22 +272,13 @@ describe("administration through the MCP service", () => {
     expect(f.deps.workspaces.setIcon).not.toHaveBeenCalled();
     expect(f.deps.browser.renameProfile).not.toHaveBeenCalled();
   });
-  it("passes stable retry identity to the domain and rechecks reach before every retry", async () => {
+  it("rechecks reach before reading an administration replay", async () => {
     const f = fixture();
-    await f.mcp.callTool("token", "computer_write", f.inputs.computer_write, {
-      operationKey: "once",
-    });
-    await f.mcp.callTool("token", "computer_write", f.inputs.computer_write, {
-      operationKey: "once",
-    });
-    expect(f.deps.store.renameRunner).toHaveBeenCalledTimes(2);
-    expect(f.deps.store.renameRunner.mock.calls[0]).toEqual(
-      f.deps.store.renameRunner.mock.calls[1],
-    );
     f.setCaller({ ...f.caller(), reach: { kind: "workspace", workspaceId: f.workspaceId } });
     await expect(
       f.mcp.callTool("token", "computer_write", f.inputs.computer_write, { operationKey: "once" }),
     ).rejects.toThrow("unavailable to this caller");
-    expect(f.deps.store.renameRunner).toHaveBeenCalledTimes(2);
+    expect(f.deps.store.replayAdministrationCommand).not.toHaveBeenCalled();
+    expect(f.deps.store.renameRunner).not.toHaveBeenCalled();
   });
 });

@@ -1,3 +1,9 @@
+import {
+  administrationCommand,
+  withAdministrationTransaction,
+  lockAdministrationCommand,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
 import { type IntegrationConnectionId } from "@opensteer/channel-core";
 import {
   type AgentEvent,
@@ -961,7 +967,11 @@ export async function revokeRunner(
   links: ChannelLinks,
   runnerId: RunnerId,
   ownerId: UserId,
-  options: { readonly allowDeployment?: boolean; readonly allowOtherOwners?: boolean } = {},
+  options: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
+    readonly allowDeployment?: boolean;
+    readonly allowOtherOwners?: boolean;
+  } = {},
 ): Promise<{
   readonly cancelledRequestIds: readonly RequestId[];
   readonly closedBrowserSessions: readonly BrowserSessionId[];
@@ -1002,119 +1012,124 @@ export async function revokeRunner(
       ...(await recheck(transaction)),
       ...(await discoverComputerRequestWorkspaces(transaction, runnerId)),
     ],
-    async (transaction) => {
-      const revokedAt = new Date();
-      await requireRunnerIsRevocable(transaction, runnerId);
-      const result = await transaction
-        .updateTable("runners")
-        .set({
-          connectionGeneration: sql`connection_generation + 1`,
-          revokedAt,
-          updatedAt: revokedAt,
-        })
-        .where("id", "=", runnerId)
-        .where((expression) =>
-          expression.or([
-            expression.and([
-              expression("ownerKind", "=", "user"),
-              expression("ownerUserId", "=", ownerId),
+    async (transaction) =>
+      administrationCommand(transaction, options.administration, async () => {
+        const revokedAt = new Date();
+        await requireRunnerIsRevocable(transaction, runnerId);
+        const result = await transaction
+          .updateTable("runners")
+          .set({
+            connectionGeneration: sql`connection_generation + 1`,
+            revokedAt,
+            updatedAt: revokedAt,
+          })
+          .where("id", "=", runnerId)
+          .where((expression) =>
+            expression.or([
+              expression.and([
+                expression("ownerKind", "=", "user"),
+                expression("ownerUserId", "=", ownerId),
+              ]),
+              // Deployment-administered covers a managed Runner bound to a user:
+              // the binding says whose work runs there, not who may retire it.
+              ...(options.allowDeployment ? [expression("ownerKind", "=", "deployment")] : []),
+              ...(options.allowOtherOwners ? [expression("ownerKind", "=", "user")] : []),
             ]),
-            // Deployment-administered covers a managed Runner bound to a user:
-            // the binding says whose work runs there, not who may retire it.
-            ...(options.allowDeployment ? [expression("ownerKind", "=", "deployment")] : []),
-            ...(options.allowOtherOwners ? [expression("ownerKind", "=", "user")] : []),
-          ]),
-        )
-        .where("revokedAt", "is", null)
-        .executeTakeFirst(databaseOperationOptions());
-      if (result.numUpdatedRows !== 1n) {
-        throw new OpensteerError({ code: "not_found", message: "Active Runner not found" });
-      }
-      // Runs first: every path that ends a Run locks it before its Workspace,
-      // and the steps below lock Workspaces when they cancel Requests.
-      await recheck(transaction);
-      const runEvents = await failRunsForRevokedRunner(transaction, runnerId, links);
-      await transaction
-        .updateTable("triggerWatchActivations")
-        .set({
-          desired: "stopped",
-          leaseExpiresAt: null,
-          observed: "stopped",
-          updatedAt: revokedAt,
-        })
-        .where((expression) =>
-          expression.or([
-            expression("runnerId", "=", runnerId),
-            expression(
-              "environmentId",
-              "in",
-              transaction
-                .selectFrom("executionEnvironments")
-                .select("id")
-                .where("runnerId", "=", runnerId),
-            ),
-          ]),
-        )
-        .where("desired", "=", "active")
-        .execute(databaseOperationOptions());
-
-      const closed = await transaction
-        .updateTable("browserSessions")
-        .set({
-          closedAt: revokedAt,
-          // the session itself can never be reattached.
-          state: "failed",
-          updatedAt: revokedAt,
-        })
-        .where("runnerId", "=", runnerId)
-        .where("state", "in", ["starting", "ready", "closing"])
-        .returning("id")
-        .execute(databaseOperationOptions());
-      const closedBrowserSessions = closed.map((session) => session.id);
-      if (closedBrowserSessions.length > 0) {
+          )
+          .where("revokedAt", "is", null)
+          .executeTakeFirst(databaseOperationOptions());
+        if (result.numUpdatedRows !== 1n) {
+          throw new OpensteerError({ code: "not_found", message: "Active Runner not found" });
+        }
+        // Runs first: every path that ends a Run locks it before its Workspace,
+        // and the steps below lock Workspaces when they cancel Requests.
+        await recheck(transaction);
+        const runEvents = await failRunsForRevokedRunner(transaction, runnerId, links);
         await transaction
-          .deleteFrom("browserSessionAttachments")
-          .where("sessionId", "in", closedBrowserSessions)
+          .updateTable("triggerWatchActivations")
+          .set({
+            desired: "stopped",
+            leaseExpiresAt: null,
+            observed: "stopped",
+            updatedAt: revokedAt,
+          })
+          .where((expression) =>
+            expression.or([
+              expression("runnerId", "=", runnerId),
+              expression(
+                "environmentId",
+                "in",
+                transaction
+                  .selectFrom("executionEnvironments")
+                  .select("id")
+                  .where("runnerId", "=", runnerId),
+              ),
+            ]),
+          )
+          .where("desired", "=", "active")
           .execute(databaseOperationOptions());
-      }
 
-      const revokedComputerConnections = await revokeComputerConnectionsInTransaction(transaction, {
-        runnerId,
-      });
+        const closed = await transaction
+          .updateTable("browserSessions")
+          .set({
+            closedAt: revokedAt,
+            // the session itself can never be reattached.
+            state: "failed",
+            updatedAt: revokedAt,
+          })
+          .where("runnerId", "=", runnerId)
+          .where("state", "in", ["starting", "ready", "closing"])
+          .returning("id")
+          .execute(databaseOperationOptions());
+        const closedBrowserSessions = closed.map((session) => session.id);
+        if (closedBrowserSessions.length > 0) {
+          await transaction
+            .deleteFrom("browserSessionAttachments")
+            .where("sessionId", "in", closedBrowserSessions)
+            .execute(databaseOperationOptions());
+        }
 
-      // A messaging service's accounts may move to another; a channel pinned
-      // to this computer went with its app connection above.
-      await transaction
-        .updateTable("integrationConnections")
-        .set({ runnerId: null, updatedAt: revokedAt })
-        .where("runnerId", "=", runnerId)
-        .where("connectionKind", "=", "channel")
-        .where("transportKind", "!=", "computer")
-        .execute(databaseOperationOptions());
+        const revokedComputerConnections = await revokeComputerConnectionsInTransaction(
+          transaction,
+          {
+            runnerId,
+          },
+        );
 
-      await transaction
-        .updateTable("channelDeliveries")
-        .set({
-          claimExpiresAt: null,
-          claimOwner: null,
-          claimTokenHash: null,
-          nextAttemptAt: revokedAt,
-          status: "pending",
-          updatedAt: revokedAt,
-        })
-        .where("claimOwner", "=", runnerId)
-        .where("status", "=", "leased")
-        .execute(databaseOperationOptions());
+        // A messaging service's accounts may move to another; a channel pinned
+        // to this computer went with its app connection above.
+        await transaction
+          .updateTable("integrationConnections")
+          .set({ runnerId: null, updatedAt: revokedAt })
+          .where("runnerId", "=", runnerId)
+          .where("connectionKind", "=", "channel")
+          .where("transportKind", "!=", "computer")
+          .execute(databaseOperationOptions());
 
-      return {
-        cancelledRequestIds: revokedComputerConnections.cancelledRequestIds,
-        closedBrowserSessions,
-        events: runEvents,
-        requestEvents: revokedComputerConnections.requestEvents,
-        revokedComputerConnectionIds: revokedComputerConnections.connectionIds,
-      };
-    },
+        await transaction
+          .updateTable("channelDeliveries")
+          .set({
+            claimExpiresAt: null,
+            claimOwner: null,
+            claimTokenHash: null,
+            nextAttemptAt: revokedAt,
+            status: "pending",
+            updatedAt: revokedAt,
+          })
+          .where("claimOwner", "=", runnerId)
+          .where("status", "=", "leased")
+          .execute(databaseOperationOptions());
+
+        return {
+          cancelledRequestIds: revokedComputerConnections.cancelledRequestIds,
+          closedBrowserSessions,
+          events: runEvents,
+          requestEvents: revokedComputerConnections.requestEvents,
+          revokedComputerConnectionIds: revokedComputerConnections.connectionIds,
+        };
+      }),
     async (transaction) => {
+      await lockAdministrationCommand(transaction, options.administration);
       runIds = new Set(
         (
           await runs(transaction)
@@ -1140,9 +1155,12 @@ export async function renameRunner(
   runnerId: RunnerId,
   ownerId: UserId,
   name: string,
-  options: { readonly allowDeployment?: boolean } = {},
+  options: {
+    readonly allowDeployment?: boolean;
+    readonly administration?: AdministrationCommandIdentity | undefined;
+  } = {},
 ): Promise<void> {
-  await withDatabaseTransaction(database, async (transaction) => {
+  await withAdministrationTransaction(database, options.administration, async (transaction) => {
     const updatedAt = new Date();
     const result = await transaction
       .updateTable("runners")

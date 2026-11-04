@@ -1,3 +1,7 @@
+import {
+  administrationCommand,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
 import { randomUUID } from "node:crypto";
 import { type Kysely, type Transaction } from "kysely";
 import {
@@ -291,68 +295,73 @@ export class PluginStore {
   }
 
   async setActivation(input: {
+    administration?: AdministrationCommandIdentity | undefined;
     pluginId: string;
     workspaceId: WorkspaceId;
     actorUserId: UserId;
     active: boolean;
   }) {
-    await this.database.transaction().execute(async (tx) => {
-      const workspace = await tx
-        .selectFrom("workspaces")
-        .selectAll()
-        .where("id", "=", input.workspaceId)
-        .executeTakeFirstOrThrow();
-      const member = await tx
-        .selectFrom("workspaceMemberships")
-        .select(["role", "state"])
-        .where("workspaceId", "=", input.workspaceId)
-        .where("userId", "=", input.actorUserId)
-        .executeTakeFirst();
-      const actor = await tx
-        .selectFrom("users")
-        .select("instanceRole")
-        .where("id", "=", input.actorUserId)
-        .executeTakeFirst();
-      if (
-        workspace.createdBy !== input.actorUserId &&
-        (workspace.kind === "main" ||
-          !member ||
-          member.state !== "active" ||
-          (member.role !== "owner" && actor?.instanceRole !== "administrator"))
-      )
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Only the Workspace owner or administrator can change plugins",
-        });
-      if (input.active)
-        await this.activateIn(tx, input.pluginId, input.workspaceId, input.actorUserId);
-      else
-        await tx
-          .deleteFrom("pluginActivations")
+    await this.database.transaction().execute(async (tx) =>
+      administrationCommand(tx, input.administration, async () => {
+        const workspace = await tx
+          .selectFrom("workspaces")
+          .selectAll()
+          .where("id", "=", input.workspaceId)
+          .executeTakeFirstOrThrow();
+        const member = await tx
+          .selectFrom("workspaceMemberships")
+          .select(["role", "state"])
           .where("workspaceId", "=", input.workspaceId)
-          .where("pluginId", "=", input.pluginId)
-          .execute();
-    });
+          .where("userId", "=", input.actorUserId)
+          .executeTakeFirst();
+        const actor = await tx
+          .selectFrom("users")
+          .select("instanceRole")
+          .where("id", "=", input.actorUserId)
+          .executeTakeFirst();
+        if (
+          workspace.createdBy !== input.actorUserId &&
+          (workspace.kind === "main" ||
+            !member ||
+            member.state !== "active" ||
+            (member.role !== "owner" && actor?.instanceRole !== "administrator"))
+        )
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "Only the Workspace owner or administrator can change plugins",
+          });
+        if (input.active)
+          await this.activateIn(tx, input.pluginId, input.workspaceId, input.actorUserId);
+        else
+          await tx
+            .deleteFrom("pluginActivations")
+            .where("workspaceId", "=", input.workspaceId)
+            .where("pluginId", "=", input.pluginId)
+            .execute();
+      }),
+    );
   }
 
-  async remove(pluginId: string) {
-    await this.database.transaction().execute(async (tx) => {
-      const registration = await tx
-        .selectFrom("specialists")
-        .select("id")
-        .where("pluginId", "=", pluginId)
-        .executeTakeFirst();
-      if (registration)
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Remove plugin specialist registrations before uninstalling",
-        });
-      await tx
-        .updateTable("plugins")
-        .set({ currentVersionId: null })
-        .where("id", "=", pluginId)
-        .execute();
-      await tx.deleteFrom("plugins").where("id", "=", pluginId).execute();
-    });
+  async remove(pluginId: string, administration?: AdministrationCommandIdentity | undefined) {
+    await this.database.transaction().execute(async (tx) =>
+      administrationCommand(tx, administration, async () => {
+        const registration = await tx
+          .selectFrom("specialists")
+          .select("id")
+          .where("pluginId", "=", pluginId)
+          .executeTakeFirst();
+        if (registration)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Remove plugin specialist registrations before uninstalling",
+          });
+        await tx
+          .updateTable("plugins")
+          .set({ currentVersionId: null })
+          .where("id", "=", pluginId)
+          .execute();
+        await tx.deleteFrom("plugins").where("id", "=", pluginId).execute();
+      }),
+    );
   }
 }

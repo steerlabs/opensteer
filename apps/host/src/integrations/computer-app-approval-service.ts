@@ -1,3 +1,4 @@
+import type { AdministrationCommandIdentity } from "@opensteer/database";
 import {
   OpensteerError,
   RequestResponseSchema,
@@ -635,6 +636,7 @@ export class ComputerAppApprovalService {
 
   /** Remove under ask, block under automatic: the words the page uses for each. */
   async disconnectComputerConnection(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly connectionId: IntegrationConnectionId;
     readonly ownerUserId: UserId;
     readonly requestId: string;

@@ -1,3 +1,7 @@
+import {
+  administrationCommand,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
 import { pluginPolicyAllows } from "./plugin-settings-store.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -313,12 +317,18 @@ export class SpecialistStore {
     this.removalHandler = handler;
   }
 
-  async remove(input: { workspaceId: WorkspaceId; specialistId: string; actorUserId: UserId }) {
+  async remove(input: {
+    administration?: AdministrationCommandIdentity | undefined;
+    workspaceId: WorkspaceId;
+    specialistId: string;
+    actorUserId: UserId;
+  }) {
     await this.authorize(input.workspaceId, input.actorUserId);
     await this.cleanup(input);
   }
 
   private async cleanup(input: {
+    administration?: AdministrationCommandIdentity | undefined;
     workspaceId: WorkspaceId;
     specialistId: string;
     actorUserId: UserId;
@@ -328,7 +338,15 @@ export class SpecialistStore {
       .select("id")
       .where("id", "=", input.specialistId)
       .executeTakeFirst();
-    if (!exists) return;
+    if (!exists) {
+      if (input.administration)
+        await this.database
+          .transaction()
+          .execute((transaction) =>
+            administrationCommand(transaction, input.administration, async () => {}),
+          );
+      return;
+    }
     const removed = await this.database
       .updateTable("specialists")
       .set({ removedAt: new Date(), status: "removing" })
@@ -364,12 +382,16 @@ export class SpecialistStore {
         .execute();
       throw error;
     }
-    await this.database
-      .deleteFrom("specialists")
-      .where("id", "=", input.specialistId)
-      .where("workspaceId", "=", input.workspaceId)
-      .where("ownerUserId", "=", input.actorUserId)
-      .execute();
+    await this.database.transaction().execute((tx) =>
+      administrationCommand(tx, input.administration, async () => {
+        await tx
+          .deleteFrom("specialists")
+          .where("id", "=", input.specialistId)
+          .where("workspaceId", "=", input.workspaceId)
+          .where("ownerUserId", "=", input.actorUserId)
+          .execute();
+      }),
+    );
   }
 
   async assertRunnable(id: string, workspaceId: WorkspaceId, requester: UserId) {

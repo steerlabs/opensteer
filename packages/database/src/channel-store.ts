@@ -1,3 +1,7 @@
+import {
+  withAdministrationTransaction,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
 import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import { TransactionScopeChanged, withDatabaseTransaction } from "./connection.js";
 import { prepareThreadInsertion } from "./thread-insertion.js";
@@ -700,8 +704,9 @@ export class ChannelStore {
     connectionId: IntegrationConnectionId,
     ownerUserId: UserId,
     status: "connected" | "paused" | "revoked",
+    administration?: AdministrationCommandIdentity | undefined,
   ): Promise<void> {
-    await withDatabaseTransaction(this.#database, async (transaction) => {
+    await withAdministrationTransaction(this.#database, administration, async (transaction) => {
       const connection = await transaction
         .selectFrom("integrationConnections")
         .select("id")
@@ -743,34 +748,39 @@ export class ChannelStore {
    * unrouted conversation is, so nothing has to be torn down here.
    */
   async revokeBinding(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly bindingId: ChannelBindingId;
     readonly ownerUserId: UserId;
   }): Promise<boolean> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
-      const binding = await transaction
-        .selectFrom("channelBindings")
-        .innerJoin("channelAccounts", "channelAccounts.id", "channelBindings.accountId")
-        .innerJoin(
-          "integrationConnections",
-          "integrationConnections.id",
-          "channelAccounts.connectionId",
-        )
-        .select(["channelBindings.id", "channelBindings.status"])
-        .where("channelBindings.id", "=", input.bindingId)
-        .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
-        .forNoKeyUpdate("channelBindings")
-        .executeTakeFirst();
-      if (!binding) {
-        throw new OpensteerError({ code: "not_found", message: "Channel route not found" });
-      }
-      if (binding.status === "revoked") return false;
-      await transaction
-        .updateTable("channelBindings")
-        .set({ status: "revoked", updatedAt: new Date() })
-        .where("id", "=", input.bindingId)
-        .executeTakeFirstOrThrow();
-      return true;
-    });
+    return withAdministrationTransaction(
+      this.#database,
+      input.administration,
+      async (transaction) => {
+        const binding = await transaction
+          .selectFrom("channelBindings")
+          .innerJoin("channelAccounts", "channelAccounts.id", "channelBindings.accountId")
+          .innerJoin(
+            "integrationConnections",
+            "integrationConnections.id",
+            "channelAccounts.connectionId",
+          )
+          .select(["channelBindings.id", "channelBindings.status"])
+          .where("channelBindings.id", "=", input.bindingId)
+          .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
+          .forNoKeyUpdate("channelBindings")
+          .executeTakeFirst();
+        if (!binding) {
+          throw new OpensteerError({ code: "not_found", message: "Channel route not found" });
+        }
+        if (binding.status === "revoked") return false;
+        await transaction
+          .updateTable("channelBindings")
+          .set({ status: "revoked", updatedAt: new Date() })
+          .where("id", "=", input.bindingId)
+          .executeTakeFirstOrThrow();
+        return true;
+      },
+    );
   }
 
   /**
