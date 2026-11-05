@@ -458,3 +458,4 @@ export const UseCardOutputSchema = z.discriminatedUnion("status", [
     ]),
   }),
 ]);
+export type UseCardOutput = z.infer<typeof UseCardOutputSchema>;

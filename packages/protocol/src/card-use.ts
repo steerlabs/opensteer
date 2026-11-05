@@ -68,6 +68,3 @@ export const CardAuthorizationOutcomeSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 export type CardAuthorizationOutcome = z.infer<typeof CardAuthorizationOutcomeSchema>;
-export { UseCardOutputSchema as UseCardResultSchema } from "@opensteer/agent-tools/outputs";
-import { UseCardOutputSchema as UseCardResultSchema } from "@opensteer/agent-tools/outputs";
-export type UseCardResult = z.infer<typeof UseCardResultSchema>;

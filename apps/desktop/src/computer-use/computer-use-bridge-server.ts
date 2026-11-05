@@ -117,6 +117,17 @@ export class ComputerUseSessionOwnership {
   readonly #owners = new Map<ComputerUseSessionId, object>();
   readonly #viewOwners = new Map<string, object>();
   readonly #videoOwners = new Map<string, object>();
+  readonly #passwordOwners = new Map<string, object>();
+
+  /** A live operation has one owner: a repeat claim fails, even from that owner. */
+  claimPassword(id: string, owner: object): boolean {
+    if (this.#passwordOwners.has(id)) return false;
+    this.#passwordOwners.set(id, owner);
+    return true;
+  }
+  releasePassword(id: string, owner: object): void {
+    if (this.#passwordOwners.get(id) === owner) this.#passwordOwners.delete(id);
+  }
 
   claimVideo(id: string, owner: object): boolean {
     const current = this.#videoOwners.get(id);
@@ -670,7 +681,10 @@ export class ComputerUseBridgeServer {
     });
     socket.once("close", () => {
       owner.alive = false;
-      for (const id of owner.passwords) void this.#passwords?.end(id).catch(() => undefined);
+      for (const id of owner.passwords) {
+        this.#ownership.releasePassword(id, owner);
+        void this.#passwords?.end(id).catch(() => undefined);
+      }
       owner.passwords.clear();
       this.#releaseViews(owner);
       connection.detachEvents();
@@ -740,21 +754,35 @@ export class ComputerUseBridgeServer {
         answer({ type: "unavailable" });
         return;
       }
-      if (command.data.type === "login.authorize") owner.passwords.add(command.data.operationId);
+      const disown = (operationId: string): void => {
+        owner.passwords.delete(operationId);
+        this.#ownership.releasePassword(operationId, owner);
+      };
+      const authorizing = command.data.type === "login.authorize";
+      if (command.data.type === "login.authorize") {
+        if (!this.#ownership.claimPassword(command.data.operationId, owner)) {
+          answer({ type: "unavailable" });
+          return;
+        }
+        owner.passwords.add(command.data.operationId);
+      }
       try {
-        answer(
-          await this.#passwords.control(command.data, (event) => {
-            if (
-              event.type === "login.ended" ||
-              (event.type === "login.result" && event.outcome.kind !== "authorized")
-            )
-              owner.passwords.delete(event.operationId);
-            if (owner.alive)
-              send(socket, { kind: "event", event: "passwords.event", params: event });
-          }),
-        );
-        if (command.data.type === "login.cancel") owner.passwords.delete(command.data.operationId);
+        const result = await this.#passwords.control(command.data, (event) => {
+          if (
+            event.type === "login.ended" ||
+            (event.type === "login.result" && event.outcome.kind !== "authorized")
+          )
+            disown(event.operationId);
+          if (owner.alive) send(socket, { kind: "event", event: "passwords.event", params: event });
+        });
+        if (
+          command.data.type === "login.cancel" ||
+          (command.data.type === "login.authorize" && result.type !== "login.authorize.started")
+        )
+          disown(command.data.operationId);
+        answer(result);
       } catch {
+        if (authorizing && "operationId" in command.data) disown(command.data.operationId);
         answer({ type: "unavailable" });
       }
       return;
