@@ -478,8 +478,16 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     await a.getByRole("button", { name: "Cancel", exact: true }).click();
     await tap(a, "single");
     await a.getByRole("dialog").waitFor();
+    const beforeReplacement = await a.evaluate(() => Number(Reflect.get(window, "popupPresented")));
     await read("window.replacePopup()");
     await a.getByRole("dialog").waitFor({ state: "hidden" });
+    // A tap on a picture older than the hit-test change must refuse, so a pixel-identical
+    // replacement still has to deliver a fresh picture.
+    await a.waitForFunction(
+      (before) => Number(Reflect.get(window, "popupPresented")) > before,
+      beforeReplacement,
+      { timeout: 4000 },
+    );
     await tap(a, "multiple");
     const multiple = a.getByRole("listbox", { name: "Choose an option" });
     await multiple.selectOption([]);
