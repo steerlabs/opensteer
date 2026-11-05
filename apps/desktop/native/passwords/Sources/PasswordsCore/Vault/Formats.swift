@@ -180,16 +180,29 @@ enum ItemCodec {
     )
   }
 
-  static func open(_ bytes: Data, entry: ManifestEntry, vaultId: String, epoch: Int64, epochKey: SymmetricKey) throws -> Item {
+  static func seal(_ item: CardItem, vaultId: String, epoch: Int64, revision: Int64, epochKey: SymmetricKey) throws -> Data {
+    var plaintext = try CanonicalJSON.encode(item.json)
+    defer { plaintext.wipe() }
+    return try SealedObject.seal(plaintext, epochKey: epochKey,
+      binding: Bindings.item(vaultId: vaultId, epoch: epoch, itemId: item.id, revision: revision, purpose: "item"),
+      keyBinding: Bindings.item(vaultId: vaultId, epoch: epoch, itemId: item.id, revision: revision, purpose: "item-key"))
+  }
+
+  static func open(_ bytes: Data, entry: ManifestEntry, vaultId: String, epoch: Int64, epochKey: SymmetricKey) throws -> VaultItem {
     var plaintext = try SealedObject.open(
       bytes, hash: entry.hash, epochKey: epochKey,
       binding: Bindings.item(vaultId: vaultId, epoch: epoch, itemId: entry.id, revision: entry.revision, purpose: "item"),
       keyBinding: Bindings.item(vaultId: vaultId, epoch: epoch, itemId: entry.id, revision: entry.revision, purpose: "item-key")
     )
     defer { plaintext.wipe() }
-    let item: Item
+    let item: VaultItem
     do {
-      item = try Item(json: try CanonicalJSON.parseCanonical(plaintext), revision: entry.revision)
+      let json = try CanonicalJSON.parseCanonical(plaintext)
+      if formatVersion(of: json) == 3 {
+        item = .card(try CardItem(json: json, revision: entry.revision))
+      } else {
+        item = .login(try Item(json: json, revision: entry.revision))
+      }
     } catch VaultError.unsupportedVersion {
       throw VaultError.unsupportedVersion
     } catch {

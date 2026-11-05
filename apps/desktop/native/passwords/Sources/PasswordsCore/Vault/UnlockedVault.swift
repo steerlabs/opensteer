@@ -53,7 +53,10 @@ public final class UnlockedVault {
   public func items() throws -> [Item] {
     let key = try requireOpen()
     return try entries.compactMap { entry in
-      do { return try decrypt(entry, key) } catch VaultError.unsupportedVersion { return nil }
+      do {
+        if case .login(let item) = try decode(entry, key) { return item }
+        return nil
+      } catch VaultError.unsupportedVersion { return nil }
     }
   }
 
@@ -64,7 +67,10 @@ public final class UnlockedVault {
     var matches: [Item] = []
     for entry in entries {
       let item: Item
-      do { item = try decrypt(entry, key) } catch VaultError.unsupportedVersion { continue }
+      do {
+        guard case .login(let login) = try decode(entry, key) else { continue }
+        item = login
+      } catch VaultError.unsupportedVersion { continue }
       if item.origins.contains(where: { Origins.isWithinSite($0, site: site) }) {
         matches.append(item)
       }
@@ -76,6 +82,23 @@ public final class UnlockedVault {
     let key = try requireOpen()
     guard let entry = entries.first(where: { $0.id == id }) else { throw VaultError.itemNotFound(id) }
     return try decrypt(entry, key)
+  }
+
+  public func cards() throws -> [CardItem] {
+    let key = try requireOpen()
+    return try entries.compactMap { entry in
+      do {
+        if case .card(let card) = try decode(entry, key) { return card }
+        return nil
+      } catch VaultError.unsupportedVersion { return nil }
+    }
+  }
+
+  public func card(id: String) throws -> CardItem {
+    let key = try requireOpen()
+    guard let entry = entries.first(where: { $0.id == id }),
+      case .card(let card) = try decode(entry, key) else { throw VaultError.itemNotFound(id) }
+    return card
   }
 
   /// The grant for `key`, if the person allowed one.
@@ -186,10 +209,37 @@ public final class UnlockedVault {
     for id in changes.delete {
       guard touched.insert(id).inserted else { throw VaultError.invalidItem("an item is changed twice") }
       guard let entry = original[id] else { throw VaultError.itemNotFound(id) }
-      _ = try decrypt(entry, epochKey)
+      _ = try decode(entry, epochKey)
       next[id] = nil
       deleted.append(id)
       repointed.insert(id)
+    }
+    let cardCount = try cards().filter { !changes.delete.contains($0.id) }.count
+    guard cardCount + changes.addCards.count <= 100 else { throw VaultError.tooManyItems }
+    for draft in changes.addCards {
+      try draft.validate()
+      let card = CardItem(id: VaultIDs.newUUID(), draft: draft, createdAt: now, updatedAt: now, revision: 1)
+      let bytes = try ItemCodec.seal(card, vaultId: vaultId, epoch: epoch, revision: 1, epochKey: epochKey)
+      objects.append(bytes)
+      next[card.id] = ManifestEntry(id: card.id, revision: 1, hash: Hex.sha256(bytes))
+      added.append(card.id)
+    }
+    for edited in changes.updateCards {
+      guard touched.insert(edited.id).inserted else { throw VaultError.invalidItem("an item is changed twice") }
+      guard let entry = original[edited.id], case .card(let current) = try decode(entry, epochKey) else {
+        throw VaultError.itemNotFound(edited.id)
+      }
+      var card = edited
+      card.createdAt = current.createdAt
+      card.updatedAt = current.updatedAt
+      try card.draft.validate()
+      if try CanonicalJSON.encode(card.json) == CanonicalJSON.encode(current.json) { continue }
+      card.updatedAt = max(now, current.updatedAt)
+      let revision = entry.revision + 1
+      let bytes = try ItemCodec.seal(card, vaultId: vaultId, epoch: epoch, revision: revision, epochKey: epochKey)
+      objects.append(bytes)
+      next[card.id] = ManifestEntry(id: card.id, revision: revision, hash: Hex.sha256(bytes))
+      updated.append(card.id)
     }
     guard next.count <= VaultLimits.maxItems else { throw VaultError.tooManyItems }
 
@@ -296,7 +346,12 @@ public final class UnlockedVault {
     return epochKey
   }
 
-  private func decrypt(_ entry: ManifestEntry, _ epochKey: SymmetricKey) throws -> Item {
+  private func decrypt(_ entry: ManifestEntry, _ key: SymmetricKey) throws -> Item {
+    guard case .login(let item) = try decode(entry, key) else { throw VaultError.itemNotFound(entry.id) }
+    return item
+  }
+
+  private func decode(_ entry: ManifestEntry, _ epochKey: SymmetricKey) throws -> VaultItem {
     let commit = vault.tip.commit
     return try ItemCodec.open(
       try vault.store.readObject(entry.hash), entry: entry,

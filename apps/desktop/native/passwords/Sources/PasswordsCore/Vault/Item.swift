@@ -222,6 +222,8 @@ public struct CredentialReplacement: Sendable {
 /// Grants follow their logins: deleting a login, or changing its origins,
 /// login URL or username, removes its grants in the same commit.
 public struct VaultChanges: Sendable {
+  public var addCards: [CardDraft]
+  public var updateCards: [CardItem]
   public var add: [ItemDraft]
   /// Items with edited fields. Their `createdAt` is kept and `updatedAt` set
   /// by the vault; an item whose fields did not change is left as it was.
@@ -236,8 +238,11 @@ public struct VaultChanges: Sendable {
 
   public init(
     add: [ItemDraft] = [], update: [Item] = [], replace: [CredentialReplacement] = [], delete: [String] = [],
-    grant: [GrantChange] = [], revoke: [GrantKey] = []
+    grant: [GrantChange] = [], revoke: [GrantKey] = [],
+    addCards: [CardDraft] = [], updateCards: [CardItem] = []
   ) {
+    self.addCards = addCards
+    self.updateCards = updateCards
     self.add = add
     self.update = update
     self.replace = replace
