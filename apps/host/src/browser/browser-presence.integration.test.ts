@@ -560,7 +560,29 @@ integration("Browser presence and conversation usage", () => {
       { agentReady: true, targetedStreaming: true },
     );
     cleanups.push(() => runtime.close());
-    await until(() => (host.runtime.browser.available ? true : undefined));
+    const producers = [runtime];
+    for (let index = 32; index < 100; index += 32) {
+      const producer = await startBrowserRuntime(
+        host.hostPort,
+        await enrollmentToken(host, {
+          allowedModules: ["browser"],
+          idempotencyKey: `maximum-browser-${index}`,
+          name: `Maximum browser ${index}`,
+        }),
+        { agentReady: true, targetedStreaming: true },
+      );
+      cleanups.push(() => producer.close());
+      producers.push(producer);
+    }
+    // A connected computer takes no Sessions until it has reconciled its profiles.
+    await until(async () => {
+      const { placements } = await host.runtime.browser.bootstrap(host.ownerId);
+      return producers.every(({ runnerId }) =>
+        placements.some((placement) => placement.available && placement.runnerId === runnerId),
+      )
+        ? true
+        : undefined;
+    });
     const sessionIds = [];
     const surfaces = Array.from({ length: 64 }, (_, order) => ({
       id: `maximum-${order}`,
@@ -572,21 +594,8 @@ integration("Browser presence and conversation usage", () => {
       geometryRevision: 1,
       openerId: null,
     }));
-    let producer = runtime;
     for (let index = 0; index < 100; index++) {
-      if (index > 0 && index % 32 === 0) {
-        producer = await startBrowserRuntime(
-          host.hostPort,
-          await enrollmentToken(host, {
-            allowedModules: ["browser"],
-            idempotencyKey: `maximum-browser-${index}`,
-            name: `Maximum browser ${index}`,
-          }),
-          { agentReady: true, targetedStreaming: true },
-        );
-        const held = producer;
-        cleanups.push(() => held.close());
-      }
+      const producer = producers[Math.floor(index / 32)]!;
       const opened = await host.runtime.browser.start({
         ownerId: host.ownerId,
         workspaceId: firstRun.workspaceId,
