@@ -11,6 +11,8 @@ Choose the identity yourself, then observe the exact page: Guest for signed-out 
 
 With full access, `browser_profile_write` lists profiles and grants, renames or deletes profiles, clears history or remembered sites, and revokes grants directly. Request sign-in with `sign_in`; never read credentials, collect MFA codes or manage sign-in sessions yourself.
 
+On a voice call, show pages worth following as you start reading or working in them and when you move to another; a shown page stays visible, so skip repeat shows and quick lookups.
+
 Use the supplied Browser Harness for page operations. Preserve the person's pages and arrangement, and inspect the outcome before repeating input that may have happened.
 
 - Read [identity](references/identity.md) before choosing, opening or requesting a profile or session.

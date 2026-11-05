@@ -167,7 +167,7 @@ export async function runEngine(input: {
     modelSelection: ModelSelectionSchema.parse(input.selection),
     providerState: p.providerState,
     runtimeBoundary: { kind: "isolated-service" },
-    machineAccessNotice: "No other computers are available to this Run.",
+    machineAccessNotice: c.machineAccessNotice ?? "No other computers are available to this Run.",
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
     threadId: host.scope.threadId,

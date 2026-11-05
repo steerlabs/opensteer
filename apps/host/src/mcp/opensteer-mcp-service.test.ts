@@ -735,7 +735,7 @@ it("refuses voice durable-work tools at invocation before their handlers", async
       { directory: "plugin" },
       { operationKey: "voice-install" },
     ),
-  ).rejects.toThrow("Chat does this on a call");
+  ).rejects.toThrow("Chat handles this outside the call");
   expect(f.handlers.plugin_install).not.toHaveBeenCalled();
   await expect(
     service.callTool(

@@ -79,6 +79,7 @@ export const CaseSchema = z.strictObject({
   assigned: z.boolean().optional(),
   /** Runs as a voice call's agent, with its guide and tool fence. */
   voice: z.boolean().optional(),
+  machineAccessNotice: z.string().min(1).optional(),
   requesterTimeZone: TimeZoneSchema.optional(),
   engines: z
     .array(z.enum(["claude", "codex", "cursor", "opencode", "pi"]))
