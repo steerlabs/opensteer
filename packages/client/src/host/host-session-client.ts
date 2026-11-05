@@ -1,4 +1,5 @@
 import { AppTabSchema } from "@opensteer/protocol";
+import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
 import type { PersonShowMessage } from "@opensteer/protocol";
@@ -1617,6 +1618,7 @@ export class HttpHostClient {
   }
 
   #appTabGeneration = 0;
+  readonly #appTabWrites = new KeyedMutationQueue();
   readonly #appTabPending = new Map<
     string,
     { token: symbol; tab: import("@opensteer/protocol").AppTab | null; opening: boolean }
@@ -1694,11 +1696,13 @@ export class HttpHostClient {
         ...this.#snapshot,
         ...this.#applyAppTabs(this.#overlayAppTabs(this.#snapshot.appTabs ?? [])),
       });
-      const result = await this.dispatch({
-        type: open ? "app.tab.open" : "app.tab.close",
-        appId,
-        idempotencyKey: crypto.randomUUID(),
-      });
+      const result = await this.#appTabWrites.run(appId, () =>
+        this.dispatch({
+          type: open ? "app.tab.open" : "app.tab.close",
+          appId,
+          idempotencyKey: crypto.randomUUID(),
+        }),
+      );
       if (viewer !== this.#viewerGeneration) return;
       if (result.type !== "app.tab.open" && result.type !== "app.tab.close")
         throw new Error("Unexpected app tab result");

@@ -442,7 +442,6 @@ function Focused(props: {
   const body =
     destination.kind === "opensteer-app" ? (
       <AppTab
-        active={props.active}
         appId={destination.appId}
         connected={props.connected}
         hostClient={hostClient}
@@ -876,7 +875,6 @@ function CloseBar(props: {
  * once, and two copies never run.
  */
 const AppTab = memo(function AppTab(props: {
-  readonly active: boolean;
   readonly appId: string;
   readonly connected: boolean;
   readonly hostClient: HostClient;
@@ -886,6 +884,7 @@ const AppTab = memo(function AppTab(props: {
 }): ReactNode {
   const { appId, hostClient, onClosed, onTyping } = props;
   const navigation = useNavigation();
+  const focused = useIsFocused();
   const ended = useHostSelector(
     hostClient,
     useCallback(
@@ -917,7 +916,8 @@ const AppTab = memo(function AppTab(props: {
     onTyping(typing);
     return () => onTyping(false);
   }, [onTyping, typing]);
-  if (!props.active) return null;
+  // A covered page could run a second copy; locking the phone must not lose the app's state.
+  if (!focused) return null;
   if (!known) return <TabStatus title="Loading app…" waiting />;
   if (closing) return <TabStatus title="Closing…" waiting />;
   if (ended) return <BrowserEnded detail={null} failed={false} />;

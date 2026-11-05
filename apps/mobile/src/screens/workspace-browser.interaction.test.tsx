@@ -58,6 +58,7 @@ const state = vi.hoisted(() => ({
   /** The native field holding the keyboard, as a composer beside a page does. */
   focusedInput: null as object | null,
   fontScale: 1,
+  foreground: true,
   conversationMounts: 0,
   pageMounts: 0,
   /** Every claim of the active Thread a pane beside the page made. */
@@ -289,6 +290,7 @@ vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
 }));
 vi.mock("../ui/keyboard.js", () => ({ useKeyboardVisible: () => state.keyboard }));
+vi.mock("../ui/foreground.js", () => ({ useAppForeground: () => state.foreground }));
 vi.mock(
   "../browser/toolbar.js",
   async () => (await import("../../test-support/native-chrome.js")).toolbar,
@@ -521,6 +523,7 @@ afterEach(() => {
   state.regions = [];
   state.regionsReady = true;
   state.keyboard = false;
+  state.foreground = true;
   state.focusedInput = null;
   state.fontScale = 1;
   state.conversationMounts = 0;
@@ -1784,6 +1787,15 @@ describe("an app open as a tab", () => {
     render();
     expect(webView()).not.toBeNull();
     expect(webView()).not.toBe(first);
+  });
+
+  it("keeps the WebView when the phone locks or another app comes forward", () => {
+    const { render } = openApp();
+    const first = webView();
+    expect(first).not.toBeNull();
+    state.foreground = false;
+    render();
+    expect(webView()).toBe(first);
   });
 
   it("waits for bootstrap before declaring a cold app route closed", () => {

@@ -16681,6 +16681,7 @@ describe("app tab bootstrap races", () => {
     let nextAppRead: ReturnType<typeof deferred<Response>> | null = null;
     let nextRead: ReturnType<typeof deferred<Response>> | null = null;
     let nextCommand: ReturnType<typeof deferred<Response>> | null = null;
+    const commands: string[] = [];
     const readStarted = vi.fn();
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
@@ -16720,12 +16721,13 @@ describe("app tab bootstrap races", () => {
       }
       if (path.endsWith("auth.logout")) return json({});
       if (path.endsWith("commands.dispatch")) {
+        const command = JSON.parse(String(init?.body));
+        commands.push(command.type);
         if (nextCommand) {
           const gate = nextCommand;
           nextCommand = null;
           return gate.promise;
         }
-        const command = JSON.parse(String(init?.body));
         tabs = command.type === "app.tab.open" ? [tab] : [];
         return json({ appTabs: tabs });
       }
@@ -16738,6 +16740,7 @@ describe("app tab bootstrap races", () => {
     });
     return {
       client,
+      commands,
       tab,
       workspace,
       readStarted,
@@ -16780,6 +16783,24 @@ describe("app tab bootstrap races", () => {
       await opening;
       expect(isAppTabOpen(snapshot, appId)).toBe(true);
       expect(placeDestinationEnded(snapshot, { kind: "opensteer-app", appId })).toBe(false);
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("sends one app's writes in order, so a slow open cannot outlive a later close", async () => {
+    const f = fixture();
+    try {
+      await f.client.load();
+      const gate = f.holdCommand();
+      const opening = f.client.openAppTab(appId);
+      await vi.waitFor(() => expect(f.commands).toEqual(["app.tab.open"]));
+      const closing = f.client.closeAppTab(appId);
+      for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
+      expect(f.commands).toEqual(["app.tab.open"]);
+      gate.resolve(json({ appTabs: [f.tab] }));
+      await Promise.all([opening, closing]);
+      expect(f.commands).toEqual(["app.tab.open", "app.tab.close"]);
+      expect(f.client.getSnapshot().appTabs ?? []).toEqual([]);
     } finally {
       f.client.dispose();
     }
