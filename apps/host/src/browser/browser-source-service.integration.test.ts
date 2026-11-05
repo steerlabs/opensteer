@@ -99,8 +99,9 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
   /** What the Mac answers a sign-in probe; the Passwords switch, as the runtime sees it. */
   holdStartAck = false;
   passwords: "has-login" | "no-login" | "off" | "not-set-up" | "unavailable" = "has-login";
-  onStart = (message: Extract<PasswordSignInAuthorityCommand, { type: "login.authorize" }>) =>
-    this.needSignIn(message.operationId, "approval");
+  onStart = (
+    message: Extract<PasswordSignInAuthorityCommand, { type: "login.authorize"; loginRef: string }>,
+  ) => this.needSignIn(message.operationId, "approval");
   /** How the runtime answers a cancel: by default as cancelled, before authorization. */
   onCancel: (message: Extract<PasswordSignInAuthorityCommand, { type: "login.cancel" }>) => void = (
     message,
@@ -159,6 +160,7 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
       case "signin.probe":
         return { type: "signin.probe.result", passwords: this.passwords };
       case "login.authorize":
+        if (!("loginRef" in command)) return { type: "unavailable" };
         reservedLoginRef = command.loginRef;
         reservedLoginExpiresAt = command.expiresAt;
         queueMicrotask(() => this.onStart(command));
@@ -186,10 +188,17 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
     this.passwordEvents.emit("event", { type: "authority-lost" });
   }
 
-  signInStarts(): Extract<PasswordSignInAuthorityCommand, { type: "login.authorize" }>[] {
+  signInStarts(): Extract<
+    PasswordSignInAuthorityCommand,
+    { type: "login.authorize"; loginRef: string }
+  >[] {
     return this.received.filter(
-      (message): message is Extract<PasswordSignInAuthorityCommand, { type: "login.authorize" }> =>
-        message.type === "login.authorize",
+      (
+        message,
+      ): message is Extract<
+        PasswordSignInAuthorityCommand,
+        { type: "login.authorize"; loginRef: string }
+      > => message.type === "login.authorize",
     );
   }
 

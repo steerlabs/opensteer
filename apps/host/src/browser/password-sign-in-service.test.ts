@@ -11,6 +11,7 @@ import {
 import {
   BrowserSessionIdSchema,
   type LoginAuthorizationOutcome,
+  type CardAuthorizationOutcome,
   type PasswordSignInAuthorityEvent,
 } from "@opensteer/protocol";
 import { ContinuationService } from "../agents/continuation-service.js";
@@ -82,7 +83,9 @@ describe("Passwords wait authority", () => {
     h.event({ kind: "needs", need: "approval" });
     expect(await replay).toEqual(refused);
     const commands = h.hub.sendPasswordSignIn.mock.calls.map(([, command]) => command);
-    expect(commands.filter((command) => command.type === "login.authorize")).toHaveLength(1);
+    expect(
+      commands.filter((command) => command.type === "login.authorize" && "loginRef" in command),
+    ).toHaveLength(1);
     expect(commands.filter((command) => command.type === "login.cancel")).toHaveLength(1);
     expect(h.requests.openPasswordSignIn).not.toHaveBeenCalled();
   });
@@ -106,7 +109,7 @@ describe("Passwords wait authority", () => {
     expect(await fresh).toMatchObject({ status: "pending" });
     expect(
       h.hub.sendPasswordSignIn.mock.calls.filter(
-        ([, command]) => command.type === "login.authorize",
+        ([, command]) => command.type === "login.authorize" && "loginRef" in command,
       ),
     ).toHaveLength(2);
     expect(h.requests.openPasswordSignIn).toHaveBeenCalledWith(
@@ -125,7 +128,7 @@ describe("Passwords wait authority", () => {
     await vi.advanceTimersByTimeAsync(1);
     const start = h.hub.sendPasswordSignIn.mock.calls
       .map(([, command]) => command)
-      .find((command) => command.type === "login.authorize");
+      .find((command) => command.type === "login.authorize" && "loginRef" in command);
     if (start?.type !== "login.authorize") throw new Error("Missing authorization start");
     h.event({ kind: "needs", need: "approval" });
     expect(await first).toMatchObject({ reason: "needs-approval" });
@@ -145,7 +148,7 @@ describe("Passwords wait authority", () => {
     expect(await replay).toMatchObject({ status: "unavailable", reason: "needs-approval" });
     expect(
       h.hub.sendPasswordSignIn.mock.calls.filter(
-        ([, command]) => command.type === "login.authorize",
+        ([, command]) => command.type === "login.authorize" && "loginRef" in command,
       ),
     ).toHaveLength(2);
     expect(h.requests.openPasswordSignIn).not.toHaveBeenCalled();
@@ -158,7 +161,7 @@ describe("Passwords wait authority", () => {
     await vi.advanceTimersByTimeAsync(1);
     const oldStart = h.hub.sendPasswordSignIn.mock.calls
       .map(([, command]) => command)
-      .find((command) => command.type === "login.authorize");
+      .find((command) => command.type === "login.authorize" && "loginRef" in command);
     if (oldStart?.type !== "login.authorize") throw new Error("Missing authorization start");
     h.event({ kind: "needs", need: "approval" });
     await first;
@@ -174,7 +177,7 @@ describe("Passwords wait authority", () => {
     await vi.advanceTimersByTimeAsync(1);
     const freshStart = h.hub.sendPasswordSignIn.mock.calls
       .map(([, command]) => command)
-      .findLast((command) => command.type === "login.authorize");
+      .findLast((command) => command.type === "login.authorize" && "loginRef" in command);
     if (freshStart?.type !== "login.authorize") throw new Error("Missing fresh authorization");
     h.event({
       kind: "result",
@@ -202,7 +205,7 @@ describe("Passwords wait authority", () => {
     await vi.advanceTimersByTimeAsync(1);
     const start = h.hub.sendPasswordSignIn.mock.calls
       .map(([, command]) => command)
-      .find((command) => command.type === "login.authorize");
+      .find((command) => command.type === "login.authorize" && "loginRef" in command);
     if (start?.type !== "login.authorize") throw new Error("Missing authorization start");
     h.event({ kind: "result", outcome: { kind: "busy" } });
     expect(await first).toMatchObject({ status: "unavailable", reason: "busy" });
@@ -274,14 +277,35 @@ function harness() {
       return () => undefined;
     },
     passwordSignInSupported: vi.fn(() => true),
+    cardUseSupported: vi.fn(() => true),
     sendPasswordSignIn: vi.fn<PasswordSignInServiceOptions["authority"]["sendPasswordSignIn"]>(
       async (_runnerId, command) => {
         if (command.type === "signin.probe")
           return { type: "signin.probe.result", passwords: "has-login" };
-        if (command.type === "login.authorize") {
+        if (command.type === "card.probe") return { type: "card.probe.result", cards: "has-card" };
+        if (command.type === "login.authorize" && "cardRef" in command) {
+          operationId = command.operationId;
+          loginRef = command.cardRef;
+          return { type: "login.authorize.started" };
+        }
+        if (command.type === "login.authorize" && "loginRef" in command) {
           operationId = command.operationId;
           loginRef = command.loginRef;
           return { type: "login.authorize.started" };
+        }
+        if (command.type === "login.approve" && "credential" in command) {
+          emit(target.computer.runnerId, {
+            type: "login.result",
+            operationId,
+            outcome: {
+              kind: "authorized",
+              cardRef: loginRef,
+              brand: "Visa",
+              lastFour: "4242",
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            },
+          });
+          return { type: "login.approve.result", result: { ok: true } };
         }
         if (command.type === "login.approve") {
           emit(target.computer.runnerId, {
@@ -406,7 +430,7 @@ function harness() {
         | { kind: "needs"; need: "approval" | null }
         | {
             kind: "result";
-            outcome: LoginAuthorizationOutcome;
+            outcome: LoginAuthorizationOutcome | CardAuthorizationOutcome;
           },
     ) =>
       emit(target.computer.runnerId, {
@@ -846,5 +870,114 @@ describe("human Passwords settlement", () => {
         settlement: { status: "declined" },
       }),
     );
+  });
+});
+
+describe("card Workspace lifecycle", () => {
+  it("settles a fresh Request before committing and publishing the reusable card lease", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const input = {
+      ...h.call,
+      site: h.site,
+      cardRunnerId: h.target.computer.runnerId,
+      admitStart: () => true,
+    };
+    const first = h.service.requestCard(input);
+    await vi.advanceTimersByTimeAsync(1);
+    h.event({ kind: "needs", need: "approval" });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await first).toMatchObject({ status: "pending" });
+    expect(h.request().payload).toMatchObject({ credential: "card", permissionVersion: 5 });
+    expect(h.service.leaseForOperation(h.operationId())).toBeNull();
+    h.hub.sendPasswordSignIn.mockImplementationOnce(async () => ({
+      type: "login.approve.result",
+      result: { ok: true },
+    }));
+    await expect(
+      h.service.respond({
+        ownerId: h.call.ownerId,
+        requestId: h.request().id,
+        sessionId: "phone",
+        revalidate: async () => {},
+        decision: {
+          kind: "approve",
+          loginId: "00000000-0000-4000-8000-000000000001",
+          revision: 1,
+          remember: false,
+          permissionVersion: 5,
+        },
+      }),
+    ).rejects.toThrow("requires card approval");
+    // The rejected login decision never reached the authority.
+    expect(h.hub.sendPasswordSignIn.mock.calls.some(([, c]) => c.type === "login.approve")).toBe(
+      false,
+    );
+    h.hub.sendPasswordSignIn.mockReset();
+    h.hub.sendPasswordSignIn.mockImplementation(async (_runner, c) => {
+      if (c.type === "login.approve") {
+        h.event({
+          kind: "result",
+          outcome: {
+            kind: "authorized",
+            cardRef: h.loginRef(),
+            brand: "Visa",
+            lastFour: "4242",
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+        });
+        return { type: "login.approve.result", result: { ok: true } };
+      }
+      if (c.type === "login.commit") {
+        expect(h.request().status).toBe("fulfilled");
+        expect(h.service.leaseForOperation(h.operationId())).toBeNull();
+        return { type: "login.committed", committed: true };
+      }
+      return { type: "login.cancelled" };
+    });
+    await h.service.respond({
+      ownerId: h.call.ownerId,
+      requestId: h.request().id,
+      sessionId: "phone",
+      revalidate: async () => {},
+      decision: {
+        kind: "approve-card",
+        cardId: "00000000-0000-4000-8000-000000000001",
+        revision: 1,
+        permissionVersion: 7,
+      },
+    });
+    expect(await h.service.requestCard({ ...input, callId: "reuse" })).toMatchObject({
+      status: "ready",
+      cardRef: h.loginRef(),
+      brand: "Visa",
+      lastFour: "4242",
+    });
+    expect(
+      h.service.validateLease({ workspaceId: createId("workspace"), loginRef: h.loginRef() }),
+    ).toBe(false);
+    expect(JSON.stringify(h.request())).not.toContain(h.loginRef());
+    h.end();
+    expect(h.service.continuationState(h.operationId())).toEqual({
+      publishing: false,
+      loginRef: undefined,
+    });
+    expect(
+      h.service.validateLease({ workspaceId: h.call.workspaceId, loginRef: h.loginRef() }),
+    ).toBe(false);
+  });
+  it("refuses capability and different-computer mismatches before sending a card command", async () => {
+    const h = harness();
+    h.hub.cardUseSupported.mockReturnValue(false);
+    expect(
+      await h.service.requestCard({
+        ...h.call,
+        site: h.site,
+        cardRunnerId: h.target.computer.runnerId,
+        admitStart: () => true,
+      }),
+    ).toMatchObject({ status: "unavailable" });
+    expect(h.hub.sendPasswordSignIn).not.toHaveBeenCalled();
+    expect(h.requests.openPasswordSignIn).not.toHaveBeenCalled();
   });
 });

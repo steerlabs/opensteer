@@ -10,7 +10,10 @@ import {
 } from "@opensteer/protocol";
 import { passwordFixture, sealFixtureLogin } from "./passwords-authority.test-support.js";
 
-type Authorization = Extract<PasswordSignInAuthorityCommand, { type: "login.authorize" }>;
+type Authorization = Extract<
+  PasswordSignInAuthorityCommand,
+  { type: "login.authorize"; loginRef: string }
+>;
 
 /**
  * Scripted desktop vault/person, behind the real Main Runner's authenticated
@@ -79,6 +82,7 @@ export async function startPersonalPasswordsBridge() {
             answer({ type: "signin.probe.result", passwords: "has-login" });
             break;
           case "login.authorize":
+            if (!("loginRef" in command)) break;
             operations.set(command.operationId, { command, socket, approved: false });
             answer({ type: "login.authorize.started" });
             emit(socket, {

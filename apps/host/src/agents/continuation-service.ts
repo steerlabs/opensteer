@@ -302,6 +302,13 @@ export async function continuationMessage(
       );
       if (request.payload.scope === "workspace") {
         const { site, computerName } = request.payload;
+        if (request.payload.credential === "card") {
+          const action =
+            response.outcome === "authorized" && loginRef
+              ? `Focus each required checkout field and call fillCard("${loginRef}", field). Never read back, print, log, copy or save card values. This approval covers filling only; the person's request must cover any purchase.`
+              : "The card use ended. Call use_card again only if the task still requires it.";
+          return `Request ${request.id} for card use on ${site} ended. ${action}`;
+        }
         if (response.outcome === "authorized") {
           const action = loginRef
             ? `Use saved login ${loginRef} for ${site} as ${response.account}: in the genuine phone/Mac app, type {loginRef: "${loginRef}", field: "username" | "password" | "code"}; in a browser, focus each field and use Browser Harness fillLogin("${loginRef}", field). Submit and verify the signed-in account. Never reveal or read back saved fields.`
