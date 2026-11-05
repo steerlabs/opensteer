@@ -1543,6 +1543,7 @@ function mockConflict(message: string): HostClientRequestError {
  */
 const mockMachines: readonly MachineSummary[] = [
   {
+    tabOpenedAt: null,
     // The Mac this deployment runs on: it offers Messages and can read it.
     apps: [
       {
@@ -1610,6 +1611,7 @@ const mockMachines: readonly MachineSummary[] = [
     unlinkedLocalFolders: 0,
   },
   {
+    tabOpenedAt: null,
     // A Mac offering Messages that macOS has not let Opensteer read yet.
     apps: [
       {
@@ -1691,6 +1693,7 @@ const mockMachines: readonly MachineSummary[] = [
     unlinkedLocalFolders: 1,
   },
   {
+    tabOpenedAt: null,
     // A Mac with Messages on that is asleep. `apps` is null because a computer
     // that is away reports nothing, so the row reads the connection alone and
     // says the change waits rather than claiming the app is broken.
@@ -1725,6 +1728,7 @@ const mockMachines: readonly MachineSummary[] = [
     unlinkedLocalFolders: 0,
   },
   {
+    tabOpenedAt: mockAgentPhoneSession.openedAt,
     // An Android phone set up over USB: it lends its screen to one task.
     apps: [
       {
@@ -1767,6 +1771,7 @@ const mockMachines: readonly MachineSummary[] = [
     unlinkedLocalFolders: 0,
   },
   {
+    tabOpenedAt: null,
     // A service the deployment provisioned: it offers no apps and says so.
     apps: null,
     access: {
@@ -2491,6 +2496,9 @@ function placeMockMessage(
 
 async function executeMockCommand(client: MockHostState, command: HostApiCommand) {
   switch (command.type) {
+    case "phone.tab.close":
+      client.closePhoneTab(command.machineId);
+      return rpcSuccess(hostApi["commands.dispatch"].success.parse({ type: command.type }));
     case "app.tab.open":
     case "app.tab.close":
       client.setAppTab(command.appId, command.type === "app.tab.open");
@@ -3885,6 +3893,7 @@ export class MockHostClient implements HostClient {
     this.retainComputerView = views.retainComputerView;
     this.openComputerView = async (...args) => {
       const view = await views.openComputerView(...args);
+      if (view.target.kind === "phone") this.#state.openPhoneTab(view.machineId);
       if (view.target.kind === "phone" && view.state === "ready")
         sharedDisplayStreams(this).armAutoWake({
           kind: "owner-view",
@@ -4361,6 +4370,9 @@ export class MockHostClient implements HostClient {
   }
   async closeAppTab(appId: string): Promise<void> {
     this.#state.setAppTab(appId, false);
+  }
+  async closePhoneTab(machineId: string): Promise<void> {
+    this.#state.closePhoneTab(machineId);
   }
   async viewApp(
     _appId: string,
@@ -5008,6 +5020,39 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  openPhoneTab(machineId: string) {
+    this.update({
+      ...this.snapshot,
+      machines: this.snapshot.machines.map((machine) =>
+        machine.id === machineId
+          ? { ...machine, tabOpenedAt: machine.tabOpenedAt ?? this.now().toISOString() }
+          : machine,
+      ),
+    });
+  }
+  /** As the Host does: the person's view goes with the tab, and a held phone refuses. */
+  closePhoneTab(machineId: string) {
+    const machine = this.snapshot.machines.find(({ id }) => id === machineId);
+    if (machine?.computerUse?.sessions.some(({ display }) => display))
+      throw new Error("An agent is using this phone. Stop it to close the tab.");
+    this.update({
+      ...this.snapshot,
+      machines: this.snapshot.machines.map((value) =>
+        value.id === machineId
+          ? {
+              ...value,
+              tabOpenedAt: null,
+              computerUse: value.computerUse && {
+                ...value.computerUse,
+                ownerViews: value.computerUse.ownerViews?.filter(
+                  ({ target }) => target.kind !== "phone",
+                ),
+              },
+            }
+          : value,
+      ),
+    });
+  }
   setAppTab(appId: string, open: boolean) {
     const appTabs = (this.snapshot.appTabs ?? []).filter((tab) => tab.appId !== appId);
     if (open) {
@@ -8704,6 +8749,7 @@ class MockHostState {
       machines: [
         ...this.snapshot.machines,
         {
+          tabOpenedAt: null,
           access: null,
           // A row still waiting to connect has reported no apps either.
           apps: null,
@@ -8817,6 +8863,7 @@ class MockHostState {
       machines: [
         ...this.snapshot.machines,
         {
+          tabOpenedAt: null,
           access: null,
           apps: null,
           allowedModules: ["integrations"],

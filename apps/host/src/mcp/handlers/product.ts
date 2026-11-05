@@ -236,22 +236,25 @@ export class ProductToolHandlers {
         );
       target = { place: current.data.place };
       const place = current.data.place;
-      if (place.kind !== "browser") {
+      if (place.kind === "phone") {
+        // A phone's tab outlives the Run's hold, and agents release before they reply.
+        const owners = await this.#store.effectiveMachineOwners([place.machineId]);
+        if (owners.get(place.machineId)?.effectiveOwner !== claims.requestedBy)
+          throw forbidden("This Run's current place is unavailable.", "Pass target.tabId instead.");
+      } else if (place.kind === "app") {
         const session = this.#computerUse
           ?.sessionsForRunner(place.machineId)
           .find(
             (session) =>
               session.runId === claims.runId &&
-              (place.kind === "phone"
-                ? session.display && place.display === "main"
-                : session.apps.some((app) => computerAppIdentityKey(app) === place.appKey)),
+              session.apps.some((app) => computerAppIdentityKey(app) === place.appKey),
           );
         if (!session || !this.#computerUse)
           throw forbidden("This Run's current place is unavailable.", "Pass target.tabId instead.");
         await this.#computerUse.authorizeDisplay(
           session.sessionId,
           claims.requestedBy,
-          place.kind === "app" ? place.appKey : undefined,
+          place.appKey,
         );
       }
     } else target = input.target;
@@ -492,7 +495,9 @@ export class ProductToolHandlers {
       assignmentWindow: assignments.window,
       messages: await this.#readableMessages(
         caller,
-        page.messages.map(({ addressedToUserId: _addressedToUserId, ...message }) => message),
+        page.messages.map(
+          ({ addressedToUserId: _addressedToUserId, policy: _policy, ...message }) => message,
+        ),
       ),
       thread,
       execution: {

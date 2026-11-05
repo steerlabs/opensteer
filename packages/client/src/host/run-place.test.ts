@@ -1,7 +1,8 @@
 import { createId, PlaceEnteredEventViewSchema, SequenceSchema } from "@opensteer/core";
+import type { MachineSummary } from "@opensteer/protocol";
 import { expect, it, vi } from "vitest";
 import type { HostSnapshot } from "./client.js";
-import { runPlaceDestination, RunPlaceStore } from "./run-place.js";
+import { runPlaceDestination, runPlaceSessionId, RunPlaceStore } from "./run-place.js";
 
 const workspaceId = createId("workspace");
 const threadId = createId("thread");
@@ -27,6 +28,29 @@ function entered(sequence: string, id = runId) {
     },
   });
 }
+it("names a phone while its tab is open, after the Run has let go of it", () => {
+  const machineId = createId("runner");
+  const entry = {
+    runId,
+    data: { place: { kind: "phone" as const, machineId, display: "main" } },
+  };
+  const phone = (tabOpenedAt: string | null, sessions: readonly unknown[]) => ({
+    machines: [
+      { id: machineId, tabOpenedAt, computerUse: { sessions } } as unknown as MachineSummary,
+    ],
+  });
+  const destination = { kind: "phone", machineId };
+  const held = phone(null, [{ runId, display: true, sessionId: "cus_held", apps: [] }]);
+  expect(runPlaceDestination(entry, held)).toEqual(destination);
+  expect(runPlaceSessionId(entry, held)).toBe("cus_held");
+
+  const released = phone("2026-11-05T12:00:00.000Z", []);
+  expect(runPlaceDestination(entry, released)).toEqual(destination);
+  expect(runPlaceSessionId(entry, released)).toBeNull();
+
+  expect(runPlaceDestination(entry, phone(null, []))).toBeNull();
+});
+
 it("seeds by Run, accepts only newer sequences and fences terminal Runs against stale seeds", () => {
   const store = new RunPlaceStore();
   const changed = vi.fn();

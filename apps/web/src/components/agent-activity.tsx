@@ -21,7 +21,6 @@ import {
   type SetStateAction,
 } from "react";
 import {
-  type AskAbout,
   type BrowserSessionSummary,
   incomingMessageAction,
   activityStepHead,
@@ -203,7 +202,6 @@ export function AgentTranscript({
   browserSessions = noBrowsers,
   homeThreadId = null,
   activityOwner = null,
-  askAbout,
   onOpenActivity,
   onReply,
   onActivityAnchor,
@@ -237,8 +235,6 @@ export function AgentTranscript({
   assignments?: Readonly<Record<string, AssignmentSummary>>;
   browserSessions?: readonly BrowserSessionSummary[];
   homeThreadId?: string | null;
-  /** Given, every update published by another agent offers it. */
-  askAbout?: AskAbout | undefined;
   /**
    * Given, each reply in a conversation that did anything on the way offers
    * its Activity, opened from the control the reader pressed.
@@ -369,7 +365,6 @@ export function AgentTranscript({
                                               : null
                                           }
                                           message={group.entry}
-                                          askAbout={askAbout}
                                           viewerUserId={viewerUserId}
                                           workspaces={workspaces}
                                         />
@@ -1723,7 +1718,6 @@ const callMarkTime = (at: string) =>
 export function TranscriptMessage({
   message,
   reveal,
-  askAbout,
   joinedRun = false,
   queued = false,
   viewerUserId,
@@ -1731,7 +1725,6 @@ export function TranscriptMessage({
 }: {
   message: MessageEntry;
   reveal: { readonly id: string } | null;
-  askAbout?: AskAbout | undefined;
   /** It joined the turn under way, which a task says because the person chose to. */
   joinedRun?: boolean;
   queued?: boolean;
@@ -1781,7 +1774,6 @@ export function TranscriptMessage({
   return (
     <InputMessage
       message={message}
-      askAbout={askAbout}
       queued={queued}
       reveal={reveal}
       steered={steered}
@@ -2047,7 +2039,6 @@ function updateSource(
  */
 function InputMessage({
   message,
-  askAbout,
   queued,
   reveal,
   steered,
@@ -2056,7 +2047,6 @@ function InputMessage({
 }: {
   message: MessageEntry;
   reveal: { readonly id: string } | null;
-  askAbout?: AskAbout | undefined;
   queued: boolean;
   steered: boolean;
   viewerUserId: string | null;
@@ -2076,10 +2066,7 @@ function InputMessage({
       <span className="input-card__name">{source.name}</span>
     </>
   );
-  // Quoting is offered for updates another agent published: those are the ones
-  // a reader answers by reference. Their own collaborators' messages already
-  // sit in the conversation they are replying in.
-  const quotable = askAbout !== undefined && message.author.kind === "agent" && message.body !== "";
+  const action = incomingMessageAction(message);
 
   return (
     <div
@@ -2105,15 +2092,7 @@ function InputMessage({
           ) : (
             <span className="input-card__sender">{sender}</span>
           )}
-          {quotable ? (
-            <button
-              className="input-card__ask"
-              onClick={() => askAbout.quote(message)}
-              type="button"
-            >
-              {askAbout.label}
-            </button>
-          ) : null}
+          {action ? <span className="input-card__action">{action}</span> : null}
         </header>
         <MessageAttachments attachments={message.attachments ?? []} />
         {message.body ? (

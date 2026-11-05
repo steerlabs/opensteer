@@ -1101,6 +1101,7 @@ export interface HostClient {
     generation: number,
     options?: ComputerViewMutationOptions,
   ): Promise<ComputerView>;
+  closePhoneTab(machineId: string): Promise<void>;
   renewComputerView(
     viewId: string,
     generation: number,

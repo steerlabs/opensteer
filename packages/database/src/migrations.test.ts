@@ -170,6 +170,7 @@ const releasedMigrationNames = [
   "0160_memory_pass_waiting",
   "0161_app_tabs",
   "0162_voice_thread",
+  "0163_phone_tabs",
 ];
 
 describe("migration names", () => {

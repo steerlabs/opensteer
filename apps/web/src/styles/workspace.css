@@ -1069,6 +1069,62 @@ button.side-needs:hover {
     margin-right: var(--space-4);
     opacity: 1;
   }
+
+  .side-draft-state {
+    display: none;
+  }
+}
+
+/* A task not started yet: dashed, because nothing exists on the Host. */
+.side-draft-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px dashed var(--ember-dim);
+  border-radius: var(--radius-full);
+  color: var(--ember);
+}
+
+.side-draft-mark svg {
+  width: 11px;
+  height: 11px;
+}
+
+.side-task--draft .side-task__title {
+  color: var(--text-soft);
+}
+
+.side-draft-state {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.side-task--draft:is(:hover, :focus-within) .side-draft-state {
+  display: none;
+}
+
+.side-task--draft.is-refused .side-draft-mark {
+  border: 1px solid var(--red-line);
+  background: var(--red-wash);
+  color: var(--red);
+}
+
+.side-task--draft.is-refused .side-draft-state {
+  color: var(--red-text);
+}
+
+.side-unsent {
+  flex: none;
+  color: var(--ember-dim);
+}
+
+.side-unsent svg {
+  display: block;
+  width: 13px;
+  height: 13px;
 }
 
 .side-row-action:hover {

@@ -24,7 +24,7 @@ export const LivePlace = memo(function LivePlace(props: {
 }) {
   const { hostClient } = props;
   const entry = useRunPlace(hostClient, props.runId);
-  const { destination, binding } = useRunPlaceBinding(hostClient, entry);
+  const { destination, sessionId } = useRunPlaceBinding(hostClient, entry);
   const authorized = useHostSelector(
     hostClient,
     (snapshot) => snapshot.session === "authenticated" && snapshot.user !== null,
@@ -67,18 +67,18 @@ export const LivePlace = memo(function LivePlace(props: {
               }}
               tabId={place.surfaceId}
             />
-          ) : binding?.kind !== "browser" && binding?.computerSessionId ? (
+          ) : sessionId !== null ? (
             <ComputerDisplay
               key={placeIdentityKey(place)}
               active={active}
               preserveLastFrame
               hostClient={hostClient}
               label={title}
-              machineId={binding.machineId}
+              machineId={place.machineId}
               phone={place.kind === "phone"}
               source={{
                 kind: "task-session",
-                sessionId: binding.computerSessionId,
+                sessionId,
                 ...(place.kind === "app" ? { appKey: place.appKey } : {}),
               }}
             />

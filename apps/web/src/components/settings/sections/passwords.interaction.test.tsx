@@ -315,7 +315,6 @@ function page(
   const origin = "http://127.0.0.1:43110";
   const context: ShellContext = {
     actionError: null,
-    askOpensteerAbout: noOp,
     clearActionError: noOp,
     clearHomeHandoff: noOp,
     createThreadAndSend: async () => null,
@@ -337,7 +336,6 @@ function page(
           })
         : null,
     executionPreferences: emptyExecutionPreferences,
-    homeDraft: "",
     homeHandoff: null,
     homeThreadId: null,
     hostClient,
@@ -355,7 +353,6 @@ function page(
     rememberExecution: noOp,
     reportActionError: noOp,
     setTaskDone: noOp,
-    setHomeDraft: noOp,
     snapshot: { ...snapshot, connection: "connected" },
     writeInChat: noOp,
   };

@@ -102,6 +102,13 @@ export const MachineSummarySchema = z.object({
    * business and not a fact about the computer anyone managing it may read.
    */
   computerUse: MachineComputerUseSchema.nullable().default(null),
+  /**
+   * When this Agent Phone's tab opened; null while it has none. Beside
+   * `computerUse`, not in it, because that goes null while a phone is offline
+   * and a tab stays. Owner-only like `computerUse`. A Host older than this
+   * field omits it.
+   */
+  tabOpenedAt: z.string().nullable().default(null),
   detail: z.string().nullable(),
   /**
    * What the computer says it is — its shape and platform — from its last

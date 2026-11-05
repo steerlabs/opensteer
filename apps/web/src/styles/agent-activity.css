@@ -246,7 +246,6 @@
 .input-card__from {
   display: flex;
   align-items: center;
-  gap: var(--space-8);
   min-width: 0;
   margin-bottom: var(--space-4);
   line-height: 20px;
@@ -284,38 +283,12 @@ a.input-card__sender:focus-visible {
   white-space: nowrap;
 }
 
-/* Quoting into Chat sits at the end of the line, in the card's own padding,
-   shown where a pointer rests or focus lands; touch has no hover, so it stays. */
-.input-card__ask {
+/* Finishes the sentence the sender's name starts, so a long name gives way
+   before it does. */
+.input-card__action {
   flex: none;
-  margin: -2px calc(-1 * var(--space-6)) -2px auto;
-  padding: 2px var(--space-6);
-  border-radius: var(--radius-xs);
-  color: var(--ember-dim);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-medium);
-  opacity: 0;
-  transition:
-    opacity var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out),
-    background-color var(--duration-fast) var(--ease-out);
-}
-
-.msg--input:hover .input-card__ask,
-.input-card__ask:focus-visible {
-  opacity: 1;
-}
-
-.input-card__ask:hover,
-.input-card__ask:focus-visible {
-  color: var(--ember-bright);
-  background-color: var(--fill-quiet);
-}
-
-@media (hover: none) {
-  .input-card__ask {
-    opacity: 1;
-  }
+  color: var(--muted);
+  font-size: var(--text-sm);
 }
 
 .input-card__glyph {

@@ -23,6 +23,7 @@ import { computerViewMethods } from "./computer-views.js";
 import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
 import {
+  RunnerIdSchema,
   AgentEventViewSchema,
   BrowserSurfaceIdSchema,
   CHAT_THREAD_TITLE,
@@ -1302,6 +1303,20 @@ export class HttpHostClient {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   };
+
+  async closePhoneTab(machineId: string): Promise<void> {
+    await this.dispatch({
+      type: "phone.tab.close",
+      machineId: RunnerIdSchema.parse(machineId),
+      idempotencyKey: crypto.randomUUID(),
+    });
+    this.#update({
+      ...this.#snapshot,
+      machines: this.#snapshot.machines.map((machine) =>
+        machine.id === machineId ? { ...machine, tabOpenedAt: null } : machine,
+      ),
+    });
+  }
 
   async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
     const parsedCommand = hostApi["commands.dispatch"].payload.parse(command);

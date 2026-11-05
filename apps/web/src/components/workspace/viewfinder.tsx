@@ -26,6 +26,8 @@ interface RunPlaceView {
   readonly placeKey: string;
   readonly destination: SurfaceDestination | null;
   readonly binding?: SurfaceDestination | null;
+  /** The Run's session in a native place, whose picture the tile shows. */
+  readonly sessionId?: string | null;
   readonly title: string;
   readonly site: string | null;
   readonly kind: "browser" | "app" | "phone";
@@ -45,7 +47,7 @@ export function LivePlace({
   readonly threadId: string;
 }) {
   const entry = useRunPlace(hostClient, runId);
-  const { destination, binding } = useRunPlaceBinding(hostClient, entry);
+  const { destination, binding, sessionId } = useRunPlaceBinding(hostClient, entry);
   const { selection } = useWorkspace();
   if (entry === null) return null;
   const place: RunPlaceView = {
@@ -53,6 +55,7 @@ export function LivePlace({
       (destination ? destinationPlaceKey(destination) : null) ?? placeIdentityKey(entry.data.place),
     destination,
     binding,
+    sessionId,
     kind: entry.data.place.kind,
     title: entry.data.title,
     site: entry.data.site,
@@ -85,6 +88,8 @@ export const Viewfinder = memo(function Viewfinder({
   const inView = useInView(rootRef);
   const { destination } = place;
   const binding = place.binding ?? destination;
+  const sessionId =
+    place.sessionId ?? (binding?.kind === "app" ? (binding.computerSessionId ?? null) : null);
   // A conversation put away is not on screen, whatever its geometry says: its
   // picture lets go of its watch until it is shown again. A hidden page only
   // pauses it in the client, which keeps the last picture.
@@ -121,10 +126,12 @@ export const Viewfinder = memo(function Viewfinder({
             tabId={destination.tabId}
             threadId={threadId}
           />
-        ) : binding && binding.kind !== "browser" && binding.computerSessionId !== undefined ? (
+        ) : binding &&
+          (binding.kind === "app" || binding.kind === "phone") &&
+          sessionId !== null ? (
           <span className="viewfinder__native">
             <ComputerWatchView
-              key={`${binding.machineId}:${binding.kind === "app" ? binding.appKey : (binding.display ?? "main")}`}
+              key={`${binding.machineId}:${binding.kind === "app" ? binding.appKey : "main"}`}
               appKey={binding.kind === "app" ? binding.appKey : null}
               compact
               preserveLastFrame
@@ -133,7 +140,7 @@ export const Viewfinder = memo(function Viewfinder({
               hostConnected={hostConnected}
               machineId={binding.machineId || null}
               machines={hostClient.getSnapshot().machines}
-              sessionId={binding.computerSessionId}
+              sessionId={sessionId}
               visible={live && destination !== null}
               hiddenReason={
                 !inView

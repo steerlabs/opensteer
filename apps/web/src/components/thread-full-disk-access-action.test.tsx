@@ -182,12 +182,9 @@ function shellContext(input: {
   return {
     actionError: null,
     clearActionError: noOp,
-    askOpensteerAbout: noOp,
     clearHomeHandoff: noOp,
-    homeDraft: "",
     homeHandoff: null,
     homeThreadId: null,
-    setHomeDraft: noOp,
     createThreadAndSend: async () => null,
     defaultPlacement: undefined,
     deploymentAccess: null,

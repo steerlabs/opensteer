@@ -54,6 +54,7 @@ import { createVoiceHandlers } from "./voice/voice-handlers.js";
  * A new browser-facing capability is a new rpc member, not a route added below.
  */
 import type { ComputerViewService } from "./computer-use/computer-view-service.js";
+import type { PhoneTabs } from "./computer-use/phone-tabs.js";
 
 import websocket from "@fastify/websocket";
 import {
@@ -380,6 +381,7 @@ export interface HostServerDependencies {
   /** The Host's end of every `integrations` module stream. */
   readonly computerApps: ComputerAppHub;
   readonly computerViews?: ComputerViewService;
+  readonly phoneTabs?: PhoneTabs;
   readonly displayStreams?: DisplayStreamHub;
   /** The Host's computer-use sessions, for the rows that show one. */
   readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner">;
@@ -1069,6 +1071,8 @@ export async function createHostServer(
         ownedByViewer: runner.ownerUserId === ownerId,
         readiness: moduleReadiness(runner.id, runner.moduleDescriptors.browser?.wireVersion),
         revokedAt: runner.revokedAt,
+        tabOpenedAt:
+          ownership.get(runner.id)?.effectiveOwner === ownerId ? runner.tabOpenedAt : null,
         // Only a live connection says which build it runs.
         runtimeVersion: dependencies.runners.identityForRunner(runner.id)?.runtimeVersion ?? null,
       })),
@@ -2569,6 +2573,7 @@ export async function createHostServer(
       coreRpcHandlers,
       handleCoreCommand,
       dependencies.computerViews,
+      dependencies.phoneTabs,
     ),
     ...(dependencies.connections
       ? createConnectionRpcHandlers(dependencies.connections)

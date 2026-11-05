@@ -154,6 +154,17 @@ export class ComputerViewService {
       .map((view) => this.#public(view));
   }
 
+  /** A tab closing takes the person's view of the phone with it. */
+  closePhoneViews(owner: UserId, machine: RunnerId): void {
+    for (const view of this.#views.values())
+      if (
+        view.record.ownerUserId === owner &&
+        view.record.machineId === machine &&
+        view.record.target.kind === "phone"
+      )
+        this.#end(view, "closed");
+  }
+
   async command(owner: UserId, command: ViewCommand): Promise<ComputerView> {
     const held = command.type === "computer.view.open" ? null : this.#views.get(command.viewId);
     const phone =

@@ -280,6 +280,12 @@ it("keeps subject, state, unread, time, quiet styling and long-press actions ind
     ).childElementCount;
   expect(state(false)).toBe(0);
   expect(state(true)).toBe(1);
+  // An unsent reply sits beside what the row says; it never takes Needs you's place.
+  const penned = render(
+    <TaskRowState drafted row={{ ...original, tone: "needs-you" }} shelf="open" time={null} />,
+  );
+  expect(penned.textContent).toContain("Needs you");
+  expect(penned.querySelector('[data-symbol="pencil"]')).not.toBeNull();
   // The mark reads quietly once settled and seen or put in Done, as on the
   // web; needing someone or having failed stays loud even in Done.
   const markQuiet = () =>

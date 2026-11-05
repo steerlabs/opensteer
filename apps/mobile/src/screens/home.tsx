@@ -13,7 +13,6 @@ import {
 } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { homeReadFailedLabel } from "../client/saved-view-presentation.js";
-import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import { useSidebarMenu } from "../navigation-header.js";
 import { color, space } from "../theme.js";
 import { SavedChat } from "../thread/saved-chat.js";
@@ -28,7 +27,6 @@ import { useScopedThreadHeader, useThreadHeader } from "./thread-header.js";
 export type HomeScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
   readonly messageId?: string | undefined;
-  readonly quote?: ThreadDraftQuote | undefined;
   readonly requestId?: string | undefined;
 }>;
 
@@ -230,7 +228,7 @@ function HomeConversation(props: {
   const navigation = useNavigation();
   const drafts = useMobileClient().drafts;
   const { deploymentId, homeThreadId, hostClient, mainWorkspaceId, onShowing, userId } = props;
-  const { messageId, quote, requestId } = props.params;
+  const { messageId, requestId } = props.params;
   // A first message written before Home existed is still owed a decision: the
   // Home that exists may be one another device started on a different AI. The
   // intro is where it is named and sent — a message handed over, or words, a
@@ -251,7 +249,6 @@ function HomeConversation(props: {
     setCreated(id);
     setIntro(false);
   }, []);
-  const onQuoteTaken = useCallback(() => navigation.setParams({ quote: undefined }), [navigation]);
   const onAnchorReleased = useCallback(
     () => navigation.setParams({ messageId: undefined }),
     [navigation],
@@ -268,8 +265,6 @@ function HomeConversation(props: {
         deploymentId={deploymentId}
         hostClient={hostClient}
         onHomeReady={onHomeReady}
-        onQuoteTaken={onQuoteTaken}
-        quote={quote ?? null}
         userId={userId}
         workspaceId={mainWorkspaceId}
       />
@@ -285,8 +280,6 @@ function HomeConversation(props: {
       onAnchorReleased={onAnchorReleased}
       onHeader={props.onHeader}
       onOpenThread={openThread}
-      onQuoteTaken={onQuoteTaken}
-      quote={quote ?? null}
       requestId={requestId ?? null}
       threadId={threadId}
     />

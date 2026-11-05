@@ -1072,6 +1072,7 @@ describe("rpc envelope", () => {
                 ownerKind,
                 ownerUserId: ownerKind === "user" ? otherOwnerId : null,
                 revokedAt: null,
+                tabOpenedAt: new Date("2026-11-05T12:00:00.000Z"),
               },
             ],
           }),
@@ -1080,11 +1081,14 @@ describe("rpc envelope", () => {
       try {
         const response = await injectRpcRequest(app, "machines.list", {});
         expect(response.statusCode, response.body).toBe(200);
-        const machines = (rpcData(response) as { machines: { apps: unknown; id: string }[] })
-          .machines;
-        expect(machines.find((machine) => machine.id === runnerId)?.apps).toEqual(
-          expected ? apps : null,
-        );
+        const machines = (
+          rpcData(response) as {
+            machines: { apps: unknown; id: string; tabOpenedAt: string | null }[];
+          }
+        ).machines;
+        const machine = machines.find((candidate) => candidate.id === runnerId);
+        expect(machine?.apps).toEqual(expected ? apps : null);
+        expect(machine?.tabOpenedAt).toBe(expected ? "2026-11-05T12:00:00.000Z" : null);
       } finally {
         await app.close();
       }

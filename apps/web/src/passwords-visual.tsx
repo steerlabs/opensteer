@@ -97,7 +97,6 @@ function useShellContext(): ShellContext {
       : live;
   return {
     actionError: null,
-    askOpensteerAbout: noOp,
     clearActionError: noOp,
     clearHomeHandoff: noOp,
     createThreadAndSend: async () => null,
@@ -118,7 +117,6 @@ function useShellContext(): ShellContext {
         })
       : null,
     executionPreferences: emptyExecutionPreferences,
-    homeDraft: "",
     homeHandoff: null,
     homeThreadId: null,
     hostClient: client,
@@ -136,7 +134,6 @@ function useShellContext(): ShellContext {
     rememberExecution: noOp,
     reportActionError: noOp,
     setTaskDone: noOp,
-    setHomeDraft: noOp,
     snapshot: { ...snapshot, connection: "connected" },
     writeInChat: noOp,
   };

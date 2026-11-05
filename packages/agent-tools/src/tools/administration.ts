@@ -221,7 +221,7 @@ export const integration_manage = defineAgentTool({
   minimumReach: "workspace",
   title: "Manage integrations",
   description:
-    "List connections/installations/grants; disconnect, uninstall or revoke_grant directly. Full-access within reach. Returns ok and non-secret inventory for list. New accounts/credentials/consent/grants need integration_request/the person.",
+    "List connections/installations/grants; disconnect, uninstall or revoke_grant directly. Full-access within reach. Returns ok and non-secret inventory for list. New accounts/credentials/grants need integration_request/the person.",
   input: z.strictObject({
     action: z.enum(["list", "disconnect", "uninstall", "revoke_grant"]),
     workspaceId: WorkspaceIdSchema.optional().describe(

@@ -4,7 +4,6 @@ import {
   DeploymentIdSchema,
   ThreadIdSchema,
   UserIdSchema,
-  WorkspaceIdSchema,
 } from "@opensteer/core";
 import { randomUUID } from "expo-crypto";
 import { Directory, File, Paths } from "expo-file-system";
@@ -20,8 +19,8 @@ export interface AttachmentDraftScope {
 
 /**
  * Local files for a first message, before the Thread it starts exists: Chat's
- * first message, or a new task's in one Workspace. They belong to no Thread
- * until the Host has made the one they start.
+ * first message, or one new-task draft's. They belong to no Thread until the
+ * Host has made the one they start.
  */
 export type FirstMessageAttachmentDraftScope =
   | {
@@ -32,8 +31,8 @@ export type FirstMessageAttachmentDraftScope =
   | {
       readonly kind: "new-task";
       readonly deploymentId: string;
+      readonly draftId: string;
       readonly userId: string;
-      readonly workspaceId: string;
     };
 
 export type LocalAttachmentDraftScope = AttachmentDraftScope | FirstMessageAttachmentDraftScope;
@@ -64,7 +63,9 @@ function draftLeaf(scope: LocalAttachmentDraftScope): string {
     case "home-intro":
       return "home-intro";
     case "new-task":
-      return `new-task-${WorkspaceIdSchema.parse(scope.workspaceId)}`;
+      return /^[\w-]{1,200}$/u.test(scope.draftId)
+        ? `new-task-${scope.draftId}`
+        : invalidDraftScope();
     default:
       return invalidDraftScope();
   }

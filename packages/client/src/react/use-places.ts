@@ -1,5 +1,5 @@
 import { placeIdentityKey, type PlaceEnteredEventView } from "@opensteer/core";
-import { runPlaceDestination } from "../host/run-place.js";
+import { runPlaceDestination, runPlaceSessionId } from "../host/run-place.js";
 import { browserTabStrip } from "../host/browser-tab-strip.js";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { HostClient, HostSnapshot } from "../host/client.js";
@@ -107,8 +107,22 @@ export function useRunPlaceBinding(hostClient: HostClient, entry: PlaceEnteredEv
     () => (entry ? runPlaceDestination(entry, source) : null),
     [entry, source],
   );
+  const sessionId = useMemo(
+    () => (entry ? runPlaceSessionId(entry, source) : null),
+    [entry, source],
+  );
   const key = entry ? `${entry.runId}:${placeIdentityKey(entry.data.place)}` : null;
-  const retained = useRef({ key, destination });
-  if (retained.current.key !== key || destination !== null) retained.current = { key, destination };
-  return { destination, binding: destination ?? retained.current.destination };
+  const retained = useRef({ key, destination, sessionId });
+  if (retained.current.key !== key) retained.current = { key, destination, sessionId };
+  else
+    retained.current = {
+      key,
+      destination: destination ?? retained.current.destination,
+      sessionId: sessionId ?? retained.current.sessionId,
+    };
+  return {
+    destination,
+    binding: retained.current.destination,
+    sessionId: retained.current.sessionId,
+  };
 }

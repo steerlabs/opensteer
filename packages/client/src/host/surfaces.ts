@@ -10,6 +10,7 @@ import { browserTabTitle } from "./browser-presentation.js";
 import type { BrowserPageContentPart } from "@opensteer/core";
 import type { Turn } from "./agent-activity-model.js";
 import type { BrowserSessionSummary, HostSnapshot, PlaceEntry } from "./client.js";
+import { phoneTabOpen } from "./phone-tab.js";
 import { runPlaceDestination } from "./run-place.js";
 import { mergeTaskEntries } from "./task-entries.js";
 import { threadsWaitingOnReader } from "./waiting-requests.js";
@@ -77,16 +78,13 @@ export type SurfaceDestination<
       readonly windowId?: number;
       readonly machineId: string;
     } & NativeDestinationSource<Source>)
-  | ({
-      readonly kind: "phone";
-      readonly display?: string;
-      readonly machineId: string;
-    } & NativeDestinationSource<Source>);
+  /** A phone is its own address: its tab shows whichever live view it has. */
+  | { readonly kind: "phone"; readonly machineId: string };
 export type WorkspaceSurfaceDestination =
   | SurfaceDestination<NativeViewerSource>
   | { readonly kind: "opensteer-app"; readonly appId: string };
 export function nativeViewerSource(
-  destination: Extract<WorkspaceSurfaceDestination, { kind: "app" | "phone" }>,
+  destination: Extract<WorkspaceSurfaceDestination, { kind: "app" }>,
 ): NativeViewerSource {
   if (destination.source) return destination.source;
   return { kind: "task-session", sessionId: destination.computerSessionId! };
@@ -103,7 +101,7 @@ export function ownerViewDestination(view: ComputerView): WorkspaceSurfaceDestin
         ...(view.window ? { windowId: view.window.id } : {}),
         source,
       }
-    : { kind: "phone", machineId: view.machineId, display: view.target.display, source };
+    : { kind: "phone", machineId: view.machineId };
 }
 
 const conversationSurfaceKeys = [
@@ -332,18 +330,18 @@ function stableOrder(left: SurfaceItem, right: SurfaceItem): number {
 
 export type TaskSurfaceDestination = Extract<
   SurfaceDestination,
-  { kind: "browser" } | { computerSessionId: string }
+  { kind: "browser" | "phone" } | { computerSessionId: string }
 >;
 export function surfaceDestination(item: SurfaceItem): TaskSurfaceDestination {
-  return item.kind === "browser"
-    ? { kind: "browser", sessionId: item.session.id, tabId: item.tabId }
-    : {
-        ...(item.kind === "app"
-          ? { appKey: item.appKey, kind: "app" as const }
-          : { kind: "phone" as const }),
-        computerSessionId: item.computerSessionId,
-        machineId: item.machine.id,
-      };
+  if (item.kind === "browser")
+    return { kind: "browser", sessionId: item.session.id, tabId: item.tabId };
+  if (item.kind === "phone") return { kind: "phone", machineId: item.machine.id };
+  return {
+    appKey: item.appKey,
+    computerSessionId: item.computerSessionId,
+    kind: "app",
+    machineId: item.machine.id,
+  };
 }
 
 /** A page a reply's Runs used, kept even after its browser ended. */
@@ -588,13 +586,11 @@ export function turnPhones(
             (candidate) => candidate.runId === entry.runId && candidate.display,
           )
         : undefined;
+    const open = machine !== undefined && phoneTabOpen(machine);
     phones.set(key, {
       acting: session?.actingDisplay === true,
-      destination:
-        session && machine
-          ? { kind: "phone", computerSessionId: session.sessionId, machineId: machine.id }
-          : null,
-      ended: session === undefined,
+      destination: open ? { kind: "phone", machineId: machine.id } : null,
+      ended: !open,
       firstUsedAt: entry.createdAt,
       key,
       title: place.computer,

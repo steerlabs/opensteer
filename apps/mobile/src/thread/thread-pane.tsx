@@ -1,6 +1,4 @@
 import {
-  type AskAbout,
-  askAboutLabel,
   messageAuthorName,
   conversationActivityTurn,
   conversationActivities,
@@ -107,7 +105,6 @@ import {
   useKeptComputerStop,
   type TranscriptComputers,
 } from "./computer-use-line.js";
-import { homeIntroDraftKey } from "../screens/home-intro.js";
 import { VoiceDock } from "../voice/controls.js";
 import { VoiceStartBar } from "../voice/start-bar.js";
 import { useVoiceAskedRequest, useVoiceOn } from "../voice/use-voice-value.js";
@@ -219,13 +216,6 @@ interface ThreadPaneProps {
   readonly onOpenThread: (threadId: string) => void;
   /** What the navigation bar should say, when there is one to say it. */
   readonly onHeader?: (header: ThreadHeaderState) => void;
-  /** Clears `quote` once it is in the composer. */
-  readonly onQuoteTaken?: () => void;
-  /**
-   * An update from another Thread to answer here, handed to the composer that
-   * is already on screen. It is in this Thread's saved draft already.
-   */
-  readonly quote?: ThreadDraftQuote | null;
   readonly requestId: string | null;
   /**
    * Drawn in a column beside a page, Mac app or phone rather than as its own
@@ -446,13 +436,6 @@ function ThreadPaneForUser(
       setRestoredDraft((current) => ({ ...message, key: (current?.key ?? 0) + 1 })),
     [],
   );
-  const handedQuote = props.quote ?? null;
-  const onQuoteTaken = props.onQuoteTaken;
-  useEffect(() => {
-    if (handedQuote === null) return;
-    setRestoredDraft((current) => ({ key: (current?.key ?? 0) + 1, quote: handedQuote, text: "" }));
-    onQuoteTaken?.();
-  }, [handedQuote, onQuoteTaken]);
 
   const thread = snapshot.thread;
   const canRespond = canRespondToRequests(snapshot);
@@ -851,38 +834,6 @@ function ThreadPaneForUser(
     () => ({ hostClient, threadId, turns: surfaceTurns, open: openSurface }),
     [hostClient, openSurface, surfaceTurns, threadId],
   );
-  /**
-   * Quotes a published update into Chat's composer and goes back to Chat.
-   *
-   * It never sends, and the reply still addresses Opensteer even when the
-   * update came from somewhere else. The quote is written to Chat's own draft
-   * before the navigation, so it is there whether or not the navigation is
-   * what finishes — and it is still there after a relaunch. Chat is the root
-   * under this task, so going there returns to it rather than opening another.
-   */
-  const quoteIntoChat = useCallback(
-    (message: MessageEntry): void => {
-      if (viewerUserId === null) return;
-      const homeThreadId = snapshot.homeThreadId;
-      const quote = draftQuoteFrom(message, homeThreadId);
-      if (homeThreadId === threadId) {
-        setRestoredDraft((current) => ({ key: (current?.key ?? 0) + 1, quote, text: "" }));
-        return;
-      }
-      // Before Home exists the quote joins the draft Home's first message is
-      // written in, so the reply still addresses Opensteer rather than
-      // silently becoming an answer to this task.
-      void client.drafts
-        .writeDraftQuote(deploymentId, viewerUserId, homeThreadId ?? homeIntroDraftKey, quote)
-        .then(() => navigation.dispatch(StackActions.popTo("Home", { deploymentId, quote })))
-        .catch(() => undefined);
-    },
-    [client.drafts, deploymentId, navigation, snapshot.homeThreadId, threadId, viewerUserId],
-  );
-  const askAbout = useMemo<AskAbout>(
-    () => ({ label: askAboutLabel(isHome), quote: quoteIntoChat }),
-    [isHome, quoteIntoChat],
-  );
   /** Quotes a reply into this conversation's own composer, unsent. */
   const replyWith = useCallback(
     (message: MessageEntry): void => {
@@ -988,7 +939,6 @@ function ThreadPaneForUser(
               onToggleOpen={toggleRow}
               reveal={anchorMessageId ?? receiptId}
               highlightRequestId={requestId}
-              askAbout={askAbout}
               onOpenStep={openStep}
               onOpenThread={openSource}
               spacingTop={item.spacingTop}
@@ -1006,7 +956,6 @@ function ThreadPaneForUser(
       ),
     [
       anchorMessageId,
-      askAbout,
       conversational,
       hostClient,
       live,

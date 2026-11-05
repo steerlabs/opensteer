@@ -217,6 +217,7 @@ export function nativeTabMenuOffered(place: PlaceItem, local: LocalMachine | nul
   return (
     place.kind === "opensteer-app" ||
     place.ownerClose !== null ||
+    (place.phoneTab === true && place.closable) ||
     (place.kind === "app" &&
       place.ownerView !== null &&
       local?.useApp != null &&
@@ -266,7 +267,7 @@ export function NativeTabMenu({
           },
         ]
       : []),
-    ...(place.ownerClose
+    ...(place.ownerClose && !(place.phoneTab && place.closable)
       ? [
           {
             detail:
@@ -277,7 +278,7 @@ export function NativeTabMenu({
           },
         ]
       : []),
-    ...(place.kind === "opensteer-app"
+    ...(place.kind === "opensteer-app" || (place.phoneTab && place.closable)
       ? [{ icon: "close" as const, label: "Close tab", onSelect: () => requestClose(place) }]
       : []),
   ];

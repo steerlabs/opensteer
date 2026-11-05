@@ -148,6 +148,7 @@ import { MessagingRelayHub } from "../channels/messaging-relay-hub.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { ComputerUseService } from "../computer-use/computer-use-service.js";
 import { ComputerViewService } from "../computer-use/computer-view-service.js";
+import { PhoneTabs } from "../computer-use/phone-tabs.js";
 import { DisplayStreamHub } from "../computer-use/display-stream-hub.js";
 import { PlaceContextService } from "../computer-use/place-context-service.js";
 import { HostAuthenticator } from "../identity/auth.js";
@@ -654,6 +655,7 @@ export async function createHostRuntime(
     // lost, so one of the two is bound after the other exists.
     let computerUse: ComputerUseService | undefined;
     let computerViews: ComputerViewService | undefined;
+    let phoneTabs: PhoneTabs | undefined;
     let displayStreams: DisplayStreamHub | undefined;
     let pluginPackages: PluginPackageService | undefined;
     const computerApps = new ComputerAppHub({
@@ -677,6 +679,7 @@ export async function createHostRuntime(
     });
     computerUse = new ComputerUseService({
       onSessionEnded: (sessionId) => displayStreams?.endSession(sessionId),
+      onPhoneHeld: (runnerId) => phoneTabs?.opened(runnerId),
       onAuthorityRevoked: ({ runId, bindingGeneration }) =>
         integrationPlatform.resetComputerGeneration(runId, bindingGeneration),
       // The same minute tick that ends idle sessions settles the approvals
@@ -1008,7 +1011,11 @@ export async function createHostRuntime(
     let logComputerLifecycle = (event: string, details: Readonly<Record<string, unknown>>) =>
       console.info(event, details);
     computerViews = new ComputerViewService({
-      onPhoneView: (status) => app.log.info(status, "Phone owner view command"),
+      onPhoneView: (status) => {
+        app.log.info(status, "Phone owner view command");
+        if (status.operation === "computer.view.open" && status.viewId !== null)
+          phoneTabs?.opened(status.machineId);
+      },
       hub: computerApps,
       connections: (ownerId) => integrationStore.listConnections(ownerId),
       owners: (ids) => store.effectiveMachineOwners(ids),
@@ -1028,6 +1035,14 @@ export async function createHostRuntime(
       log: (event, details) => logComputerLifecycle(event, details),
       ended: (viewId, generation, reason) =>
         displayStreams?.endOwnerView(viewId, generation, reason),
+    });
+    phoneTabs = new PhoneTabs({
+      store,
+      heldByTask: (machine) =>
+        computerUse?.sessionsForRunner(machine).some(({ display }) => display) ?? false,
+      closeViews: (owner, machine) => computerViews?.closePhoneViews(owner, machine),
+      changed: () => notifyMachinesChanged(realtime, "phone-tab"),
+      onError: (error) => reportComputerUseSweepError(error),
     });
     // A connection gaining authority settles the Main-target Requests waiting
     // on it and resumes their agents. The reaction is bound once the platform
@@ -2418,6 +2433,7 @@ export async function createHostRuntime(
         computerApps,
         computerUse,
         computerViews,
+        phoneTabs,
         displayStreams,
         placeContext,
         credentials,

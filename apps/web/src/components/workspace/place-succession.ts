@@ -15,10 +15,10 @@ import { useWorkspace } from "./workspace-context.js";
 /**
  * The row that takes the middle when the place it showed is no longer listed,
  * as a browser picks the tab beside a closed one: the nearest independent
- * row after it on its side of the Tabs' hairline, else before it. Owner and
- * task destinations keep their own authority and never replace each other. Web
- * tabs stay on their side of the hairline. A row that cannot
- * be shown is passed over; null when none is left.
+ * row after it on its side of the Tabs' hairline, else before it. A Mac app's
+ * owner and task destinations keep their own authority and never replace each
+ * other. Web tabs stay on their side of the hairline. A row that cannot be
+ * shown is passed over; null when none is left.
  */
 export function placeSuccessor(
   before: readonly PlaceItem[],
@@ -45,8 +45,7 @@ export function placeSuccessor(
   return null;
 }
 
-const independent = (place: PlaceItem) =>
-  place.kind === "browser" || place.kind === "opensteer-app";
+const independent = (place: PlaceItem) => place.kind !== "app";
 
 /**
  * One rule for the place in the middle going away, whoever made it go — ×,

@@ -242,12 +242,9 @@ function Journey() {
                   >
                     <MacAppView
                       active
-                      destination={{
-                        computerSessionId: connection.target.computerSessionId,
-                        kind: "phone",
-                        machineId: connection.target.machineId,
-                      }}
+                      destination={{ kind: "phone", machineId: connection.target.machineId }}
                       hostClient={connection.client}
+                      onClosed={() => undefined}
                       onTyping={() => undefined}
                     />
                   </View>

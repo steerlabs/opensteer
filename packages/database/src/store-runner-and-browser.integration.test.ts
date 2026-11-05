@@ -1894,6 +1894,18 @@ describeStore("PostgreSQL store", (it) => {
         }),
       ]),
     );
+    const tabOpenedAt = async () =>
+      (await store.listRunners({ includeDeployment: false, limit: 100, ownerId })).runners.find(
+        (runner) => runner.id === localRunnerId,
+      )?.tabOpenedAt;
+    expect(await tabOpenedAt()).toBeNull();
+    await expect(store.openPhoneTab(localRunnerId)).resolves.toBe(true);
+    const opened = await tabOpenedAt();
+    expect(opened).toBeInstanceOf(Date);
+    await expect(store.openPhoneTab(localRunnerId)).resolves.toBe(false);
+    expect(await tabOpenedAt()).toEqual(opened);
+    await store.closePhoneTab(localRunnerId);
+    expect(await tabOpenedAt()).toBeNull();
     await store.renameRunner(localRunnerId, ownerId, "Studio Mac");
     await store.authenticateRunnerConnection({ ...localDescriptor, name: "Descriptor name" });
     expect(
