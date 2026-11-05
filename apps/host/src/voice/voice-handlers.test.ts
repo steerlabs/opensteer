@@ -128,9 +128,9 @@ describe("Host voice Run relay", () => {
   it("creates the Voice Thread for a usable account, and refuses any other", async () => {
     const f = fixture();
     const { environmentId, harnessInstanceId } = f.input;
-    expect(
-      await f.handlers["voice.open"]({ environmentId, harnessInstanceId }, f.context),
-    ).toEqual({ ok: true, data: { threadId: f.call.threadId } });
+    expect(await f.handlers["voice.open"]({ environmentId, harnessInstanceId }, f.context)).toEqual(
+      { ok: true, data: { threadId: f.call.threadId } },
+    );
     f.store.environmentIsAvailableToUser.mockResolvedValueOnce(false);
     await expect(
       f.handlers["voice.open"]({ environmentId, harnessInstanceId }, f.context),

@@ -83,7 +83,6 @@ describe("Passwords wait authority", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(h.service.join({ ...h.call, site: h.site })).toBeNull();
   });
-
 });
 
 function otherRun() {

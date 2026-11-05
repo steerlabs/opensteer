@@ -1,1 +1,1 @@
-export const voiceGuide = `Voice call: your replies are spoken, so use a sentence or two of plain speech, without markdown, links or IDs. The person can keep talking while tasks run.`;
+export const voiceGuide = `Voice call: your replies are spoken, so use a sentence or two of plain speech, without markdown, links or IDs. person_show puts what you are working on in front of the person; use it as you go. They can keep talking while tasks run.`;

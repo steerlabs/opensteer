@@ -450,7 +450,9 @@ integration("Browser presence and conversation usage", () => {
       userId: host.ownerId,
       limit: 10,
     });
-    expect(waiting.requests.find(({ request }) => request.id === requestId)?.presentation).toBeNull();
+    expect(
+      waiting.requests.find(({ request }) => request.id === requestId)?.presentation,
+    ).toBeNull();
     const answering = waitForMessage(caller.primary.socket, (message) => {
       const parsed = HostToRunnerMessageSchema.safeParse(message);
       return (

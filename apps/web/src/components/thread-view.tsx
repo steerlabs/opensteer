@@ -1181,73 +1181,77 @@ function ThreadView({
             }
           />
         ) : null}
-        {voiceThread ? null : (<InputSurface
-          autoContext={home}
-          voice={home}
-          variant={conversational ? "conversation" : "work"}
-          key={composerKey}
-          composerHidden={dock.composerHidden}
-          disabled={!canRespond}
-          inputRef={composerInputRef}
-          onEscape={dockedRequests.length > 0 ? () => focusOpenRequest(bodyRef.current) : undefined}
-          readOnly={thread.status === "archived"}
-          onStop={
-            stopTarget
-              ? async () => {
-                  try {
-                    await hostClient.stopRun(thread.id);
-                  } catch (error) {
-                    reportActionError(error);
-                  }
-                }
-              : undefined
-          }
-          placeholder={composerPlaceholder}
-          recipient={recipient}
-          // A conversation's Stop ends the reply under way, and Chat's cards each
-          // stop their own task. A task's strip stops the task; this stops only
-          // the turn under way, which leaves a task paused.
-          stopLabel={
-            conversational
-              ? "Stop the reply"
-              : workerAssignment(snapshot.assignments, thread.id)?.status === "open"
-                ? "Pause this task"
-                : "Stop the run"
-          }
-          restoredDraft={restoredDraft?.composer === composerKey ? restoredDraft.restore : null}
-          running={stopTarget !== null}
-          stopping={activity === "stopping"}
-          threadId={thread.id}
-          footerExtras={
-            <>
-              {/* The picker opens while a response runs. What it cannot do is
-                  apply — and it says why, instead of being a dead control. */}
-              <ExecutionControls
-                access={{
-                  engine: threadPlacement,
-                  mode: thread.accessMode,
-                  onApply: async (accessMode) => {
+        {voiceThread ? null : (
+          <InputSurface
+            autoContext={home}
+            voice={home}
+            variant={conversational ? "conversation" : "work"}
+            key={composerKey}
+            composerHidden={dock.composerHidden}
+            disabled={!canRespond}
+            inputRef={composerInputRef}
+            onEscape={
+              dockedRequests.length > 0 ? () => focusOpenRequest(bodyRef.current) : undefined
+            }
+            readOnly={thread.status === "archived"}
+            onStop={
+              stopTarget
+                ? async () => {
                     try {
-                      await hostClient.updateThreadAccess(thread.id, accessMode);
+                      await hostClient.stopRun(thread.id);
                     } catch (error) {
                       reportActionError(error);
                     }
-                  },
-                }}
-                disabled={!canRespond || thread.status === "archived"}
-                onAuthenticate={openHarnessAuthentication ?? undefined}
-                onRefresh={refreshHarnessCatalog}
-                onApply={applyExecution}
-                placements={executionPlacements}
-                preferences={executionPreferences}
-                returnFocusRef={composerInputRef}
-                review={reviewSelection}
-                reviewFresh={reviewFresh}
-                selection={threadSelection}
-              />
-            </>
-          }
-        />)}
+                  }
+                : undefined
+            }
+            placeholder={composerPlaceholder}
+            recipient={recipient}
+            // A conversation's Stop ends the reply under way, and Chat's cards each
+            // stop their own task. A task's strip stops the task; this stops only
+            // the turn under way, which leaves a task paused.
+            stopLabel={
+              conversational
+                ? "Stop the reply"
+                : workerAssignment(snapshot.assignments, thread.id)?.status === "open"
+                  ? "Pause this task"
+                  : "Stop the run"
+            }
+            restoredDraft={restoredDraft?.composer === composerKey ? restoredDraft.restore : null}
+            running={stopTarget !== null}
+            stopping={activity === "stopping"}
+            threadId={thread.id}
+            footerExtras={
+              <>
+                {/* The picker opens while a response runs. What it cannot do is
+                  apply — and it says why, instead of being a dead control. */}
+                <ExecutionControls
+                  access={{
+                    engine: threadPlacement,
+                    mode: thread.accessMode,
+                    onApply: async (accessMode) => {
+                      try {
+                        await hostClient.updateThreadAccess(thread.id, accessMode);
+                      } catch (error) {
+                        reportActionError(error);
+                      }
+                    },
+                  }}
+                  disabled={!canRespond || thread.status === "archived"}
+                  onAuthenticate={openHarnessAuthentication ?? undefined}
+                  onRefresh={refreshHarnessCatalog}
+                  onApply={applyExecution}
+                  placements={executionPlacements}
+                  preferences={executionPreferences}
+                  returnFocusRef={composerInputRef}
+                  review={reviewSelection}
+                  reviewFresh={reviewFresh}
+                  selection={threadSelection}
+                />
+              </>
+            }
+          />
+        )}
         {dock.composerHidden ? null : (
           <UsageNotice
             action={
@@ -1474,8 +1478,8 @@ function EmptyThread({
         {voice
           ? "Say what you need. It gets on with it, starts tasks for bigger work, and tells you when it needs you."
           : home
-          ? "Ask here. Updates from your tasks will arrive here too."
-          : "Describe the outcome you want. Opensteer works in your Workspace and checks in when it needs you."}
+            ? "Ask here. Updates from your tasks will arrive here too."
+            : "Describe the outcome you want. Opensteer works in your Workspace and checks in when it needs you."}
       </p>
     </div>
   );

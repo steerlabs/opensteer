@@ -425,7 +425,9 @@ export class VoiceController {
       return { kind: "request", requestId: shown, others: waiting.length - 1 };
     }
     const offer = callPasswordsOffer(snapshot.transcripts[threadId] ?? []);
-    return offer ? { kind: "passwords", site: offer.site, card: offer.credential === "card" } : null;
+    return offer
+      ? { kind: "passwords", site: offer.site, card: offer.credential === "card" }
+      : null;
   }
 
   /**

@@ -148,8 +148,7 @@ export async function runEngine(input: {
         kind: c.caller,
         accessMode: "full-access",
         reach: { kind: caseReach(c) },
-      })
-        .map(({ name }) => name),
+      }).map(({ name }) => name),
       toolsRevision: "eval-tools-v1",
       instructions: guide,
       skills: selected.map(({ fullName }) => fullName),

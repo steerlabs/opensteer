@@ -1037,25 +1037,25 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   });
 
   it("preserves another Run's open Request", async () => {
-      const ready = await startedPasswordSignIn("https://cross-run.test");
-      const other = await runningRun(ready.ownerId, ready.workspaceId, runtime.runnerId!);
-      expect(
-        await service.agentSignIn({
-          ...ready.agent,
-          ...other,
-          callId: randomUUID(),
-          site: ready.site,
-        }),
-      ).toEqual({
-        status: "unavailable",
+    const ready = await startedPasswordSignIn("https://cross-run.test");
+    const other = await runningRun(ready.ownerId, ready.workspaceId, runtime.runnerId!);
+    expect(
+      await service.agentSignIn({
+        ...ready.agent,
+        ...other,
+        callId: randomUUID(),
         site: ready.site,
-        reason: "busy",
-      });
-      expect(ready.connection.signInCancels()).toHaveLength(0);
-      expect((await passwordRequest(ready.requestId)).request.status).toBe("pending");
-      await approvePasswordRequest(ready.requestId, ready.connection, authorized());
-      await waitFor(async () => (await continuationCount(ready.requestId)) === 1);
-      expect(await passwordRequestCount(other.runId)).toBe(0);
+      }),
+    ).toEqual({
+      status: "unavailable",
+      site: ready.site,
+      reason: "busy",
+    });
+    expect(ready.connection.signInCancels()).toHaveLength(0);
+    expect((await passwordRequest(ready.requestId)).request.status).toBe("pending");
+    await approvePasswordRequest(ready.requestId, ready.connection, authorized());
+    await waitFor(async () => (await continuationCount(ready.requestId)) === 1);
+    expect(await passwordRequestCount(other.runId)).toBe(0);
   });
 
   it.each(["authorized", "approval"] as const)(
@@ -2385,6 +2385,10 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const site = "https://example.test";
     chrome.status = "no-state";
 
+    expect(await service.agentSignIn({ ...agent, callId: randomUUID(), site })).toEqual({
+      site,
+      status: "not-signed-in",
+    });
     expect(await service.agentSignIn({ ...agent, callId: randomUUID(), site })).toEqual({
       site,
       status: "not-signed-in",

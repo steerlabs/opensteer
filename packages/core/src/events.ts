@@ -472,7 +472,11 @@ const eventDataViewSchemas = {
   "message.placed": z.object({ message: MessageViewSchema }),
   "reasoning.completed": eventDataSchemas["reasoning.completed"],
   "run.queued": z.object({ run: ThreadRunQueueEntryViewSchema }),
-  "thread.created": z.object({ thread: ThreadViewSchema, home: z.literal(true).optional(), voice: z.literal(true).optional() }),
+  "thread.created": z.object({
+    thread: ThreadViewSchema,
+    home: z.literal(true).optional(),
+    voice: z.literal(true).optional(),
+  }),
   "thread.execution-updated": z.object({ thread: ThreadViewSchema }),
   "thread.listed": z.object({ thread: ThreadViewSchema }),
   "thread-input.updated": z.object({ input: ThreadInputViewSchema }),

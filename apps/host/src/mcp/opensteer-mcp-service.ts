@@ -56,20 +56,18 @@ export class OpensteerMcpService {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: AgentToolHandlers;
     readonly realtime?: Pick<RealtimeHub, "observe">;
-    readonly store: Pick<
-      OpensteerStore,
-      "getThreadForOwner" | "findMainWorkspaceForOwner"
-    > & { readonly requests: Pick<OpensteerStore["requests"], "get"> };
+    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner"> & {
+      readonly requests: Pick<OpensteerStore["requests"], "get">;
+    };
     readonly publicUrl: URL;
   };
   constructor(options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: AgentToolHandlers;
     readonly realtime?: Pick<RealtimeHub, "observe">;
-    readonly store: Pick<
-      OpensteerStore,
-      "getThreadForOwner" | "findMainWorkspaceForOwner"
-    > & { readonly requests: Pick<OpensteerStore["requests"], "get"> };
+    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner"> & {
+      readonly requests: Pick<OpensteerStore["requests"], "get">;
+    };
     readonly publicUrl: URL;
   }) {
     this.options = options;

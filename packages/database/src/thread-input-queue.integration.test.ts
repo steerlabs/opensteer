@@ -477,60 +477,60 @@ integration.sequential("thread input queue promotion", () => {
   it.for([
     { name: "voice-terra", models: ["gpt-6.1-sol", "gpt-6.1-terra"], expected: "gpt-6.1-terra" },
     { name: "voice-default", models: ["gpt-6.1-sol"], expected: "gpt-6.1-sol" },
-  ])("starts the Voice Thread at low effort and Fast on $expected", async (
-    { expected, models, name },
-    { storeFixture },
-  ) => {
-    const { fixture, store, database } = storeFixture;
-    const speed = {
-      defaultValue: "default",
-      id: "speed",
-      label: "Speed",
-      type: "select" as const,
-      values: ["default", "priority"].map((value) => ({ label: value, value })),
-    };
-    const effort = {
-      defaultValue: "medium",
-      id: "effort",
-      label: "Effort",
-      type: "select" as const,
-      values: ["low", "medium", "high"].map((value) => ({ label: value, value })),
-    };
-    const f = await fixture(name);
-    await store.recordHarnessCatalogs({
-      catalogs: [
-        HarnessInstanceCatalogSchema.parse({
-          continuationIdentity,
-          driverKind: "native",
-          harnessInstanceId: f.harness.id,
-          models: models.map((modelId, index) => ({
-            displayName: modelId,
-            isDefault: index === 0,
-            modelId,
-            options: [effort, speed],
-            providerId: "openai",
-          })),
-          status: "ready",
-        }),
-      ],
-      environmentId: f.environmentId,
-      expectedRevisions: new Map([[f.harness.id, f.harness.runtimeRevision]]),
-    });
-    const { threadId } = await store.openVoiceThread({
-      ownerId: f.ownerId,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harness.id,
-    });
-    expect(
-      await database
-        .selectFrom("threads")
-        .select("modelSelection")
-        .where("id", "=", threadId)
-        .executeTakeFirstOrThrow(),
-    ).toMatchObject({
-      modelSelection: { modelId: expected, options: { effort: "low", speed: "priority" } },
-    });
-  });
+  ])(
+    "starts the Voice Thread at low effort and Fast on $expected",
+    async ({ expected, models, name }, { storeFixture }) => {
+      const { fixture, store, database } = storeFixture;
+      const speed = {
+        defaultValue: "default",
+        id: "speed",
+        label: "Speed",
+        type: "select" as const,
+        values: ["default", "priority"].map((value) => ({ label: value, value })),
+      };
+      const effort = {
+        defaultValue: "medium",
+        id: "effort",
+        label: "Effort",
+        type: "select" as const,
+        values: ["low", "medium", "high"].map((value) => ({ label: value, value })),
+      };
+      const f = await fixture(name);
+      await store.recordHarnessCatalogs({
+        catalogs: [
+          HarnessInstanceCatalogSchema.parse({
+            continuationIdentity,
+            driverKind: "native",
+            harnessInstanceId: f.harness.id,
+            models: models.map((modelId, index) => ({
+              displayName: modelId,
+              isDefault: index === 0,
+              modelId,
+              options: [effort, speed],
+              providerId: "openai",
+            })),
+            status: "ready",
+          }),
+        ],
+        environmentId: f.environmentId,
+        expectedRevisions: new Map([[f.harness.id, f.harness.runtimeRevision]]),
+      });
+      const { threadId } = await store.openVoiceThread({
+        ownerId: f.ownerId,
+        environmentId: f.environmentId,
+        harnessInstanceId: f.harness.id,
+      });
+      expect(
+        await database
+          .selectFrom("threads")
+          .select("modelSelection")
+          .where("id", "=", threadId)
+          .executeTakeFirstOrThrow(),
+      ).toMatchObject({
+        modelSelection: { modelId: expected, options: { effort: "low", speed: "priority" } },
+      });
+    },
+  );
 
   it("hands everything sent to the Voice Thread into a live call", async ({ storeFixture }) => {
     const { store, database } = storeFixture;

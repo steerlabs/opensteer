@@ -1613,7 +1613,8 @@ class CodexHarnessSession implements HarnessSession {
         ? {
             ...runtimeConfig,
             // Realtime starts turns itself, so turn/start overrides never run.
-            model_reasoning_effort: this.#context.modelSelection.options[codexEffortOptionId] ?? null,
+            model_reasoning_effort:
+              this.#context.modelSelection.options[codexEffortOptionId] ?? null,
             service_tier: this.#context.modelSelection.options[codexSpeedOptionId] ?? null,
             ...(this.#context.runtimeBoundary.kind === "native-user"
               ? {
@@ -2228,7 +2229,8 @@ class CodexHarnessSession implements HarnessSession {
     const type = optionalString(item.type);
     if (type === "userMessage" && this.#context.voiceCall) {
       const text = realtimeDelegationText(codexUserMessageText(item));
-      if (text) this.#publish({ data: { messageId: createId("message"), text }, type: "voice.heard" });
+      if (text)
+        this.#publish({ data: { messageId: createId("message"), text }, type: "voice.heard" });
       return;
     }
     if (type === "agentMessage") {
