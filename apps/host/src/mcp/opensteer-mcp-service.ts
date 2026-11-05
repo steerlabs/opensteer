@@ -19,18 +19,29 @@ import {
   agentToolRecordResult,
   type AgentTool,
 } from "@opensteer/agent-tools";
-import { OpensteerError, RequestIdSchema, ThreadIdSchema, type Thread } from "@opensteer/core";
+import {
+  OpensteerError,
+  RequestIdSchema,
+  ThreadIdSchema,
+  type Thread,
+  requestHoldLimitMs,
+  shortRequestHoldMs,
+} from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
 import { safeMessage } from "@opensteer/shared/safeMessage";
-import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
+import {
+  requestPendingGuidance,
+  requestStillOpenGuidance,
+} from "@opensteer/shared/requestGuidance";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+import type { RequestHold } from "./request-hold.js";
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
 import { agentToolFailure, internalToolFailureCode } from "./agent-tool-failure.js";
 import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
-import { AgentCallerResolver, type AgentCaller } from "./agent-caller.js";
+import { AgentCallerResolver, type AgentCaller, type RunCaller } from "./agent-caller.js";
 import { toolAccess } from "./tool-access.js";
 import { toolOperationKey } from "./operations.js";
 import type { RealtimeHub } from "@opensteer/orchestration";
@@ -57,6 +68,8 @@ export class OpensteerMcpService {
   readonly options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: AgentToolHandlers;
+    readonly requestHold?: Pick<RequestHold, "wait">;
+    readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
     readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner"> & {
       readonly requests: Pick<OpensteerStore["requests"], "get">;
@@ -68,6 +81,8 @@ export class OpensteerMcpService {
   constructor(options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: AgentToolHandlers;
+    readonly requestHold?: Pick<RequestHold, "wait">;
+    readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
     readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner"> & {
       readonly requests: Pick<OpensteerStore["requests"], "get">;
@@ -174,9 +189,10 @@ export class OpensteerMcpService {
       }
     }
 
-    session.responses.add(response);
+    const completed = responseLifetime(session, response);
     try {
       await session.transport.handleRequest(request, response, body);
+      await completed;
     } catch (error) {
       if (createdSession) {
         const initializedId = session.transport.sessionId;
@@ -188,7 +204,7 @@ export class OpensteerMcpService {
         sendJsonRpcError(response, 500, safeMessage(error, safeMessageOptions));
       }
     } finally {
-      session.responses.delete(response);
+      session.lastSeenAt = Date.now();
       if (createdSession) this.#release(authorization.key);
     }
   }
@@ -244,15 +260,16 @@ export class OpensteerMcpService {
     } finally {
       this.#release(input.key);
     }
-    session.responses.add(response);
+    const completed = responseLifetime(session, response);
     try {
       await session.transport.handleRequest(request, response, body);
+      await completed;
     } catch (error) {
       if (!response.headersSent) {
         sendJsonRpcError(response, 500, safeMessage(error, safeMessageOptions));
       }
     } finally {
-      session.responses.delete(response);
+      session.lastSeenAt = Date.now();
       this.#activeSessions.delete(session);
       await session.server.close().catch(() => undefined);
     }
@@ -270,19 +287,22 @@ export class OpensteerMcpService {
     },
   ): Promise<McpSession> {
     let session!: McpSession;
+    const longRequestHold =
+      input.kind === "run" && (await this.options.longRequestHold?.(input)) === true;
+    const enableJsonResponse = !longRequestHold;
     const transport = new StreamableHTTPServerTransport(
       input.sessionId
         ? {
             allowedHosts: [input.origin.host],
             allowedOrigins: [input.origin.origin],
             enableDnsRebindingProtection: true,
-            enableJsonResponse: true,
+            enableJsonResponse,
           }
         : {
             allowedHosts: [input.origin.host],
             allowedOrigins: [input.origin.origin],
             enableDnsRebindingProtection: true,
-            enableJsonResponse: true,
+            enableJsonResponse,
             onsessionclosed: (closedId) => {
               this.#sessions.delete(closedId);
             },
@@ -292,7 +312,7 @@ export class OpensteerMcpService {
             sessionIdGenerator: randomUUID,
           },
     );
-    const server = await this.createServer(input, input.sessionId);
+    const server = await this.createServer(input, input.sessionId, longRequestHold);
     try {
       // SDK 1.30's Node transport declares optional callbacks more narrowly
       // than its own Transport interface under exactOptionalPropertyTypes.
@@ -320,7 +340,11 @@ export class OpensteerMcpService {
     return session;
   }
 
-  createServer(caller: AgentCaller, detachedSessionId?: string): McpServer {
+  createServer(
+    caller: AgentCaller,
+    detachedSessionId?: string,
+    longRequestHold = false,
+  ): McpServer {
     const server = new McpServer(
       { name: "opensteer", version: "1.0.0" },
       {
@@ -349,10 +373,15 @@ export class OpensteerMcpService {
         execution: { taskSupport: "forbidden" },
       });
       server.registerTool(tool.name, registration, async (args, extra) => {
+        const admittedAt = Date.now();
         try {
           const token = extra.authInfo?.token;
           if (!token) throw new Error("MCP authorization is missing");
           const resolvedCaller = extra.authInfo?.extra?.caller as AgentCaller | undefined;
+          const signal =
+            extra.authInfo?.extra?.disconnected instanceof AbortSignal
+              ? AbortSignal.any([extra.signal, extra.authInfo.extra.disconnected])
+              : extra.signal;
           const result = await this.callTool(token, tool.name, args, {
             ...(resolvedCaller ? { caller: resolvedCaller } : {}),
             operationKey: mcpToolCallId(
@@ -361,10 +390,7 @@ export class OpensteerMcpService {
               extra.requestId,
               tool.name,
             ),
-            signal:
-              extra.authInfo?.extra?.disconnected instanceof AbortSignal
-                ? AbortSignal.any([extra.signal, extra.authInfo.extra.disconnected])
-                : extra.signal,
+            signal,
           });
           // A text result is the whole answer, sent once as written.
           // Each result goes out once, in the shape a model reads best: text as
@@ -375,6 +401,22 @@ export class OpensteerMcpService {
           if (tool.output === IntegrationCallOutputSchema)
             return IntegrationCallOutputSchema.parse(result);
           const currentCaller = resolvedCaller ?? caller;
+          if (
+            currentCaller.kind === "run" &&
+            typeof result.requestId === "string" &&
+            this.options.requestHold
+          ) {
+            const held = await this.options.requestHold.wait({
+              caller: currentCaller,
+              result,
+              tool: tool.name,
+              admittedAt,
+              signal,
+              limitMs: longRequestHold ? requestHoldLimitMs : shortRequestHoldMs,
+            });
+            if (held)
+              return agentToolRecordResult(held.record, held.text ?? requestStillOpenGuidance);
+          }
           let pendingRequest = false;
           if (
             currentCaller.kind === "run" &&
@@ -532,7 +574,8 @@ export class OpensteerMcpService {
   }
   async #sweep(now = Date.now()): Promise<void> {
     const expired = [...this.#sessions.entries()].filter(
-      ([, session]) => now - session.lastSeenAt > sessionIdleLifetimeMs,
+      ([, session]) =>
+        session.responses.size === 0 && now - session.lastSeenAt > sessionIdleLifetimeMs,
     );
     for (const [id, session] of expired) {
       this.#sessions.delete(id);
@@ -540,6 +583,21 @@ export class OpensteerMcpService {
     }
     await Promise.allSettled(expired.map(([, session]) => session.server.close()));
   }
+}
+
+function responseLifetime(session: McpSession, response: ServerResponse): Promise<void> {
+  session.responses.add(response);
+  return new Promise((resolve) => {
+    const ended = () => {
+      response.off("finish", ended);
+      response.off("close", ended);
+      session.responses.delete(response);
+      session.lastSeenAt = Date.now();
+      resolve();
+    };
+    response.once("finish", ended);
+    response.once("close", ended);
+  });
 }
 
 function assertRequestOrigin(request: IncomingMessage, allowed: URL): void {

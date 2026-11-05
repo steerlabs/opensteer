@@ -14,6 +14,8 @@ import {
   type CardAuthorizationOutcome,
   type PasswordSignInAuthorityEvent,
 } from "@opensteer/protocol";
+import { RequestHold } from "../mcp/request-hold.js";
+import type { RunCaller } from "../mcp/agent-caller.js";
 import { ContinuationService } from "../agents/continuation-service.js";
 import type { BrowserSignInTarget } from "./browser-service.js";
 import {
@@ -492,6 +494,7 @@ describe("human Passwords settlement", () => {
           throw error;
         },
         requests: {
+          get: async () => h.request(),
           listPendingContinuations: vi.fn(async () =>
             h.request().status === "fulfilled"
               ? [
@@ -538,6 +541,110 @@ describe("human Passwords settlement", () => {
       }
     },
   );
+  it.each([true, false])(
+    "holds through publication and rereads a snapshot taken before broker commit (committed=%s)",
+    async (committed) => {
+      const h = await pending();
+      const commit = Promise.withResolvers<void>();
+      const releaseSnapshot = Promise.withResolvers<void>();
+      const send = h.hub.sendPasswordSignIn.getMockImplementation()!;
+      h.hub.sendPasswordSignIn.mockImplementation(async (runner, command) => {
+        if (command.type === "login.commit") {
+          await commit.promise;
+          return { type: "login.committed", committed };
+        }
+        return send(runner, command);
+      });
+      const response = answer(h);
+      await vi.advanceTimersByTimeAsync(0);
+      const continuations = new ContinuationService({
+        commands: { enqueueThreadInput: vi.fn() },
+        integrations: {
+          listDiscoveryInventory: async () => [],
+          listCallableTools: async () => [],
+          computerUseMachines: async () => [],
+          computerUsePhones: async () => [],
+        },
+        passwordSignIn: (id) => h.service.continuationState(id),
+        requests: {
+          get: async () => h.request(),
+          listPendingContinuations: async () => [],
+          recordContinuationAttempt: async () => true,
+        },
+        onError: (error) => {
+          throw error;
+        },
+      });
+      const snapshot = () => ({
+        request: h.request(),
+        run: { status: "running" as const, phase: "turn" as const, voiceSessionId: null },
+        queued: false,
+        steered: false,
+      });
+      const holdSnapshot = vi
+        .fn(async () => snapshot())
+        .mockImplementationOnce(async () => snapshot())
+        .mockImplementationOnce(async () => {
+          const stale = snapshot();
+          await releaseSnapshot.promise;
+          return stale;
+        });
+      const markToolDelivered = vi.fn(async () => "delivered" as const);
+      const controller = new AbortController();
+      const hold = new RequestHold({
+        store: { requests: { holdSnapshot, markToolDelivered }, stopHeldRun: async () => null },
+        continuations,
+        onStopped: vi.fn(),
+      });
+      let returned = false;
+      const call = hold
+        .wait({
+          caller: { claims: h.call } as unknown as RunCaller,
+          result: { status: "pending", requestId: h.request().id },
+          tool: "sign_in",
+          admittedAt: Date.now(),
+          limitMs: 45_000,
+          signal: controller.signal,
+        })
+        .then((value) => {
+          returned = true;
+          return value;
+        });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.request().status).toBe("fulfilled");
+        expect(returned).toBe(false);
+        expect(markToolDelivered).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(500);
+        expect(holdSnapshot).toHaveBeenCalledTimes(2);
+        commit.resolve();
+        await response;
+        releaseSnapshot.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(returned).toBe(true);
+        const result = await call;
+        if (committed) {
+          expect(result).toMatchObject({
+            record: { status: "ready", loginRef: h.loginRef(), account: expect.any(String) },
+          });
+          expect(result?.text).toContain(h.loginRef());
+        } else {
+          expect(result).toMatchObject({
+            record: { status: "resolved" },
+            text: expect.stringContaining("stopped"),
+          });
+          expect(JSON.stringify(result)).not.toContain(h.loginRef());
+        }
+      } finally {
+        commit.resolve();
+        releaseSnapshot.resolve();
+        controller.abort();
+        await Promise.allSettled([response, call]);
+        await continuations.close();
+      }
+    },
+  );
+
   it("withholds release authority until durable settlement, then commits the broker", async () => {
     const h = await pending();
     replies(h);

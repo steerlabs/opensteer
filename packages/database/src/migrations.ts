@@ -4716,6 +4716,7 @@ export function migrationProvider() {
         "0162_voice_thread": voiceThreadMigration,
         "0163_phone_tabs": phoneTabsMigration,
         "0164_specialists_adopt_access": specialistsAdoptAccessMigration,
+        "0165_request_tool_delivery": requestToolDeliveryMigration,
       };
     },
   };
@@ -7584,5 +7585,19 @@ const phoneTabsMigration: Migration = {
   },
   async down(database) {
     await sql`alter table runners drop column tab_opened_at`.execute(database);
+  },
+};
+
+export const requestToolDeliveryMigration: Migration = {
+  async up(database) {
+    await sql`alter table request_continuations
+      drop constraint request_continuations_status_check,
+      drop constraint request_continuations_state_check,
+      add constraint request_continuations_status_check check (status in ('waiting', 'queued', 'undeliverable', 'delivered')),
+      add constraint request_continuations_state_check check (
+        (status = 'waiting' and reason is null) or
+        (status in ('queued', 'delivered') and attempted_at is not null and reason is null) or
+        (status = 'undeliverable' and attempted_at is not null and reason is not null)
+      )`.execute(database);
   },
 };

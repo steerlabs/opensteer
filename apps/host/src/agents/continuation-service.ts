@@ -27,7 +27,7 @@ const triggerOriginatedContinuationReason =
 
 type RequestContinuationStore = Pick<
   OpensteerStore["requests"],
-  "listPendingContinuations" | "recordContinuationAttempt"
+  "listPendingContinuations" | "recordContinuationAttempt" | "get"
 >;
 type ThreadInputDisposition = Awaited<
   ReturnType<CommandService["enqueueThreadInput"]>
@@ -95,6 +95,37 @@ export class ContinuationService {
     await this.#drains.stop();
   }
 
+  async outcome(request: Request): Promise<{
+    readonly request: Request;
+    readonly text: string;
+    readonly loginRef?: string;
+    readonly publicCard?: { readonly brand: string; readonly lastFour: string };
+  } | null> {
+    let loginRef: string | undefined;
+    let publicCard: { readonly brand: string; readonly lastFour: string } | undefined;
+    if (request.payload.kind === "browser.password-sign-in") {
+      const state = this.#passwordSignIn(request.payload.operationId);
+      if (state.publishing) return null;
+      loginRef = state.loginRef;
+      publicCard = state.publicCard;
+      request = (await this.#requests.get(request.id)) ?? request;
+    }
+    if (request.status === "pending") return null;
+    const text =
+      request.status === "withdrawn" ||
+      (request.status === "cancelled" &&
+        request.cancellationReason !== "resource-deleted" &&
+        request.cancellationReason !== "authority-revoked")
+        ? `Request ${request.id} ended as ${request.status}.`
+        : await continuationMessage(request, this.#integrations, loginRef);
+    return {
+      request,
+      text,
+      ...(loginRef ? { loginRef } : {}),
+      ...(publicCard ? { publicCard } : {}),
+    };
+  }
+
   async #drainOnce(): Promise<void> {
     const continuations = await this.#requests.listPendingContinuations();
     const groups = new Map<string, Request[]>();
@@ -113,23 +144,16 @@ export class ContinuationService {
       const requests = group.toSorted(
         (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
       );
-      const signIns = requests.map((request) =>
-        request.payload.kind === "browser.password-sign-in"
-          ? this.#passwordSignIn(request.payload.operationId)
-          : undefined,
-      );
-      if (signIns.some((signIn) => signIn?.publishing)) continue;
       const messages: string[] = [];
-      for (const [index, request] of requests.entries()) {
+      let publishing = false;
+      for (const request of requests) {
         try {
-          const signIn = signIns[index];
-          messages.push(
-            await continuationMessage(
-              request,
-              this.#integrations,
-              signIn && !signIn.publishing ? signIn.loginRef : undefined,
-            ),
-          );
+          const outcome = await this.outcome(request);
+          if (!outcome) {
+            publishing = true;
+            break;
+          }
+          messages.push(outcome.text);
         } catch (error) {
           this.#onError(error);
           messages.push(
@@ -137,6 +161,7 @@ export class ContinuationService {
           );
         }
       }
+      if (publishing) continue;
       const request =
         requests.find(
           (row) =>

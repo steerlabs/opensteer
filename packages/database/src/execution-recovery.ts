@@ -1,3 +1,4 @@
+import { assertActiveGrant } from "./execution-authority.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { recoverLostRunTransaction } from "./run-recovery.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
@@ -15,9 +16,10 @@ import {
   type RunnerId,
   type UserId,
   createId,
+  OpensteerError,
   nonTerminalRunStatuses,
 } from "@opensteer/core";
-import { type Kysely, sql } from "kysely";
+import { type Kysely, type Transaction, sql } from "kysely";
 import {
   type CommandRow,
   type DatabaseSchema,
@@ -1023,66 +1025,128 @@ export async function stopRunsPastBackgroundDeadline(
       ) {
         return null;
       }
-      await lockWorkspaceRow(transaction, run.workspaceId);
-      await lockThreadRow(transaction, run.threadId);
-      if (
-        run.status === "queued" ||
-        (run.status === "starting" && run.bindingGeneration === null)
-      ) {
-        return {
-          commandId: null,
-          events: await finalizeRunTransaction(transaction, {
-            completedAt: now,
-            links,
-            queuedInputCancellation: "seed-input",
-            runId: run.id,
-            source: "host",
-            status: "interrupted",
-          }),
-          revokedGrants: [],
-        };
-      }
-      const runEvents = [
-        ...(await cancelPending(transaction, {
-          reason: "run-ended",
-          resolvedAt: now,
-          runId: run.id,
-        })),
-      ];
-      await transaction
-        .updateTable("runs")
-        .set({ status: "running" })
-        .where("id", "=", run.id)
-        .where("status", "=", "waiting")
-        .execute();
-      runEvents.push(...(await projectThreadState(transaction, run.threadId, now)));
-      const command = await transaction
-        .insertInto("commands")
-        .values({
-          actorPrincipalId: await principalIdForUser(transaction, run.requestedBy),
-          authoritySource: jsonValue({ kind: "background-deadline", runId: run.id }),
-          dispatcherId: null,
-          environmentId: run.environmentId,
-          id: createId("command"),
-          idempotencyKey: `background-deadline:${run.id}`,
-          lastError: null,
-          payload: jsonValue({ runId: run.id, threadId: run.threadId, type: "run.interrupt" }),
-          requestedBy: run.requestedBy,
-          runId: run.id,
-          status: "pending",
-          threadId: run.threadId,
-          type: "run.interrupt",
-        })
-        .returning("id")
-        .executeTakeFirstOrThrow();
-      return {
-        commandId: command.id,
-        events: runEvents,
-        revokedGrants: await revokeRunGrants(transaction, [run.id], "stopped"),
-      };
+      return stopRunWithoutPausing(
+        transaction,
+        run,
+        links,
+        now,
+        { kind: "background-deadline", runId: run.id },
+        `background-deadline:${run.id}`,
+      );
     });
     if (stopped) onStopped(stopped);
   }
+}
+
+export async function stopHeldRun(
+  database: Kysely<DatabaseSchema>,
+  claims: Parameters<typeof assertActiveGrant>[1],
+  reason: "limit" | "queued-input",
+  links: ChannelLinks,
+  executionNow: () => number = Date.now,
+): Promise<BackgroundDeadlineStop | null> {
+  return withDatabaseTransaction(database, async (transaction) => {
+    const run = await transaction
+      .selectFrom("runs")
+      .innerJoin("threads", "threads.id", "runs.threadId")
+      .select([
+        "runs.bindingGeneration",
+        "runs.environmentId",
+        "runs.id",
+        "runs.phase",
+        "runs.requestedBy",
+        "runs.status",
+        "runs.threadId",
+        "threads.workspaceId",
+        "runs.voiceSessionId",
+      ])
+      .where("runs.id", "=", claims.runId)
+      .forNoKeyUpdate("runs")
+      .executeTakeFirst();
+    if (!run || run.phase !== "turn" || run.voiceSessionId !== null) return null;
+    try {
+      await assertActiveGrant(transaction, claims, executionNow);
+    } catch (error) {
+      if (error instanceof OpensteerError && error.code === "forbidden") return null;
+      throw error;
+    }
+    if (await runWasStopped(transaction, run.id)) return null;
+    return stopRunWithoutPausing(
+      transaction,
+      run,
+      links,
+      new Date(executionNow()),
+      { kind: "request-hold", runId: run.id, reason },
+      `request-hold:${run.id}:${claims.bindingGeneration}`,
+    );
+  });
+}
+
+async function stopRunWithoutPausing(
+  transaction: Transaction<DatabaseSchema>,
+  run: Pick<
+    RunRow,
+    "bindingGeneration" | "environmentId" | "id" | "requestedBy" | "status" | "threadId"
+  > & { readonly workspaceId: WorkspaceId },
+  links: ChannelLinks,
+  now: Date,
+  authoritySource: Readonly<Record<string, unknown>>,
+  idempotencyKey: string,
+): Promise<BackgroundDeadlineStop> {
+  await lockWorkspaceRow(transaction, run.workspaceId);
+  await lockThreadRow(transaction, run.threadId);
+  if (run.status === "queued" || (run.status === "starting" && run.bindingGeneration === null)) {
+    return {
+      commandId: null,
+      events: await finalizeRunTransaction(transaction, {
+        completedAt: now,
+        links,
+        queuedInputCancellation: "seed-input",
+        runId: run.id,
+        source: "host",
+        status: "interrupted",
+      }),
+      revokedGrants: [],
+    };
+  }
+  const runEvents = [
+    ...(await cancelPending(transaction, {
+      reason: "run-ended",
+      resolvedAt: now,
+      runId: run.id,
+    })),
+  ];
+  await transaction
+    .updateTable("runs")
+    .set({ status: "running" })
+    .where("id", "=", run.id)
+    .where("status", "=", "waiting")
+    .execute();
+  runEvents.push(...(await projectThreadState(transaction, run.threadId, now)));
+  const command = await transaction
+    .insertInto("commands")
+    .values({
+      actorPrincipalId: await principalIdForUser(transaction, run.requestedBy),
+      authoritySource: jsonValue(authoritySource),
+      dispatcherId: null,
+      environmentId: run.environmentId,
+      id: createId("command"),
+      idempotencyKey: idempotencyKey,
+      lastError: null,
+      payload: jsonValue({ runId: run.id, threadId: run.threadId, type: "run.interrupt" }),
+      requestedBy: run.requestedBy,
+      runId: run.id,
+      status: "pending",
+      threadId: run.threadId,
+      type: "run.interrupt",
+    })
+    .returning("id")
+    .executeTakeFirstOrThrow();
+  return {
+    commandId: command.id,
+    events: runEvents,
+    revokedGrants: await revokeRunGrants(transaction, [run.id], "stopped"),
+  };
 }
 
 export async function recoverRunsWithExpiredExecutionBindings(
