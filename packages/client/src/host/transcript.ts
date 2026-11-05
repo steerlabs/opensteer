@@ -1,6 +1,7 @@
 import { requestSettlementLabel } from "./request-settlement.js";
 import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-sources";
 import { browserSiteLabel } from "./browser-sign-in.js";
+import { cardUseTitle } from "./cards.js";
 import { passwordSignInOutcome, passwordSignInReceipt } from "./passwords.js";
 import {
   contentSaysSomething,
@@ -1113,7 +1114,10 @@ export function requestReceipt(
     ...(request.kind === "browser.password-sign-in"
       ? { succeeded: passwordSignInOutcome(request)?.signedIn ?? false }
       : {}),
-    title: requestTitleText(request.presentation),
+    title:
+      request.payload.kind === "browser.password-sign-in" && request.payload.credential === "card"
+        ? cardUseTitle(request.payload.site)
+        : requestTitleText(request.presentation),
     ...(request.mode === "live" ? { waitedSince: request.createdAt } : {}),
   };
 }

@@ -1,3 +1,4 @@
+import { cardUseTitle } from "@opensteer/client/host";
 import { threadMark, type TaskMark as ResolvedTaskMark } from "@opensteer/client/host";
 import { assignmentTitle } from "@opensteer/client/host";
 import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
@@ -391,6 +392,8 @@ function inputSurfaceClass(surface: SurfaceModel | null): string {
 
 /** A request's name as the reader answers it; a sign-in names its site, whatever the wording. */
 function requestTitle(request: Request): string {
+  if (request.payload.kind === "browser.password-sign-in" && request.payload.credential === "card")
+    return cardUseTitle(request.payload.site);
   return request.payload.kind === "browser.sign-in" ||
     request.payload.kind === "browser.password-sign-in"
     ? `Sign in to ${browserSiteLabel(request.payload.site)}`

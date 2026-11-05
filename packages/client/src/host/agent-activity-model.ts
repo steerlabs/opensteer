@@ -23,6 +23,7 @@ import type {
   TranscriptEntry,
 } from "./client.js";
 import { browserSiteLabel } from "./browser-sign-in.js";
+import { readCardUseResult } from "./cards.js";
 import { browserSignInStep, readBrowserSignInResult, type BrowserSignInStep } from "./passwords.js";
 import { requestWaitingOnAssignment } from "./waiting-requests.js";
 import { isTerminalRunEntryStatus } from "./transcript.js";
@@ -447,7 +448,16 @@ export function turnState(turn: Turn): TurnState {
  * the offer, so a Thread shows it once, at its end. A Chrome Request's ending
  * is newer than the `pending` that opened it; a repeated call adds nothing.
  */
+export interface PasswordsSetupOffer {
+  readonly site: string;
+  readonly credential: "login" | "card";
+}
 export function passwordsSetUpSuggestion(groups: readonly TranscriptGroup[]): string | null {
+  return passwordsSetupOffer(groups)?.site ?? null;
+}
+export function passwordsSetupOffer(
+  groups: readonly TranscriptGroup[],
+): PasswordsSetupOffer | null {
   for (let index = groups.length - 1; index >= 0; index -= 1) {
     const group = groups[index]!;
     if (group.kind === "message" && group.entry.author.kind === "human") return null;
@@ -457,7 +467,17 @@ export function passwordsSetUpSuggestion(groups: readonly TranscriptGroup[]): st
     for (let step = group.turn.work.length - 1; step >= 0; step -= 1) {
       const entry = group.turn.work[step]!;
       if (entry.kind === "request" && entry.requestKind === "browser.sign-in") {
-        return entry.passwordsSetUpSite ?? null;
+        return entry.passwordsSetUpSite
+          ? { site: entry.passwordsSetUpSite, credential: "login" }
+          : null;
+      }
+      if (entry.kind === "tool" && entry.tool?.name === "use_card" && entry.output) {
+        const result = readCardUseResult(entry.output.text);
+        if (!result || result.status === "resolved") continue;
+        return result.status === "unavailable" &&
+          ["no-saved-card", "passwords-off", "passwords-not-set-up"].includes(result.reason)
+          ? { site: result.site, credential: "card" }
+          : null;
       }
       if (entry.kind !== "tool" || !isSignInTool(entry) || !entry.output) continue;
       const result = readBrowserSignInResult(entry.output.text);
@@ -466,11 +486,8 @@ export function passwordsSetUpSuggestion(groups: readonly TranscriptGroup[]): st
       const notSetUp =
         ("passwords" in result && result.passwords === "not-set-up") ||
         (result.status === "unavailable" && result.reason === "passwords-not-set-up");
-      return notSetUp
-        ? "site" in result
-          ? result.site
-          : stringField(effectiveArguments(entry), "site")
-        : null;
+      const site = "site" in result ? result.site : stringField(effectiveArguments(entry), "site");
+      return notSetUp && site ? { site, credential: "login" } : null;
     }
   }
   return null;
@@ -1547,7 +1564,7 @@ function toolTone(tool: ToolEntry): ActivityTone {
       return "stopped";
     case "done":
       // A sign-in that came back without signing in must not read as done.
-      return signInResult(tool)?.signedIn === false ? "stopped" : "done";
+      return signInResult(tool)?.signedIn === false || cardUseFailed(tool) ? "stopped" : "done";
     default:
       return tool.state;
   }
@@ -2066,6 +2083,32 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ["request_withdraw", said(["Withdrawing a request", "Withdrew a request"], "stop")],
   ["sign_in", signInPresentation],
   [
+    "use_card",
+    (tool, args) => {
+      const result = tool.output ? readCardUseResult(tool.output.text) : null;
+      const site = result?.site ?? stringField(args, "site");
+      const domain = site ? browserSiteLabel(site) : "the site";
+      return step({
+        activeLabel: `Requesting card use on ${domain}`,
+        label:
+          result?.status === "ready"
+            ? `Card ready to fill on ${domain}`
+            : result?.status === "declined"
+              ? "Card use not allowed"
+              : `Card use on ${domain}`,
+        hint:
+          result?.status === "pending"
+            ? "Waiting for you"
+            : result?.status === "unavailable"
+              ? result.reason
+              : "",
+        hintKind: "prose",
+        icon: "browser",
+        kind: "browser",
+      });
+    },
+  ],
+  [
     "thread_delegate",
     (_tool, args) =>
       step({
@@ -2379,6 +2422,17 @@ function signInPresentation(tool: ToolEntry, args: unknown): ToolPresentation {
     label:
       result?.label ?? (domain === null ? "Tried to sign in" : `Tried to sign in to ${domain}`),
   });
+}
+
+function cardUseFailed(tool: ToolEntry): boolean {
+  if (tool.tool?.namespace !== "opensteer" || tool.tool.name !== "use_card" || !tool.output)
+    return false;
+  const result = readCardUseResult(tool.output.text);
+  return (
+    result?.status === "declined" ||
+    result?.status === "unavailable" ||
+    result?.status === "needs-approval"
+  );
 }
 
 function isSignInTool(tool: ToolEntry): boolean {
@@ -2794,7 +2848,11 @@ export function toolStatusLabel(tool: ToolEntry): string {
     case "running":
       return "Running";
     case "done":
-      return signInResult(tool)?.signedIn === false ? "Didn’t sign in" : "Done";
+      return cardUseFailed(tool)
+        ? "Card use unavailable"
+        : signInResult(tool)?.signedIn === false
+          ? "Didn’t sign in"
+          : "Done";
     case "failed":
       return toolTone(tool) === "stopped" ? "Stopped before finishing" : "Returned an error";
     case "stopped":

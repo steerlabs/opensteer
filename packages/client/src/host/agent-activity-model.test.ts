@@ -32,6 +32,7 @@ import {
   displayCommand,
   groupTranscriptEntries,
   passwordsSetUpSuggestion,
+  passwordsSetupOffer,
   toolBody,
   toolArgumentsText,
   toolPresentation,
@@ -913,6 +914,37 @@ describe("passwordsSetUpSuggestion", () => {
   const notSetUp = { passwords: "not-set-up", site, status: "not-signed-in" };
   const offer = (entries: Parameters<typeof groupTranscriptEntries>[0]) =>
     passwordsSetUpSuggestion(groupTranscriptEntries(entries));
+
+  it.each(["no-saved-card", "passwords-off", "passwords-not-set-up"])(
+    "offers card setup for %s until a later outcome or human message",
+    (reason) => {
+      const card = (result: unknown) =>
+        tool({
+          arguments: { site },
+          output: { text: JSON.stringify(result) },
+          tool: { name: "use_card", namespace: "opensteer" },
+        });
+      const unavailable = card({ status: "unavailable", site, reason });
+      const ready = card({
+        status: "ready",
+        site,
+        cardRef: "crd_" + "a".repeat(32),
+        brand: "Visa",
+        lastFour: "4242",
+      });
+      expect(passwordsSetupOffer(groupTranscriptEntries([unavailable, run()]))).toEqual({
+        site,
+        credential: "card",
+      });
+      expect(
+        passwordsSetupOffer(groupTranscriptEntries([unavailable, run({ status: "running" })])),
+      ).toBeNull();
+      expect(passwordsSetupOffer(groupTranscriptEntries([unavailable, ready, run()]))).toBeNull();
+      expect(
+        passwordsSetupOffer(groupTranscriptEntries([unavailable, run(), input({ runId: null })])),
+      ).toBeNull();
+    },
+  );
 
   it("offers Passwords once the agent stops, from any result that found it not set up", () => {
     expect(offer([signIn(notSetUp), message(), run()])).toBe(site);

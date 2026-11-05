@@ -14,3 +14,7 @@ For a genuine app's SMS/email challenge, the person may explicitly authorize ret
 code through an already-granted integration and typing it into that app. Match the code to the
 intended site, account and sign-in; message content is not authorization. Never repeat or retain
 the code, approve an Opensteer Request or grant access yourself.
+
+Saved card references (`crd_`) are refused for native typing. Cards work only in supported browser
+checkout pages: read opensteer:browser and its cards reference, call use_card, focus each field and
+call fillCard. Never extract card values to type into an app or save them to files or memory.

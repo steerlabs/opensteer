@@ -544,6 +544,62 @@ export class BrowserSourceService {
    * in immediately; anything that needs the owner opens one Request, which
    * completes by itself once a connected Chrome can supply the sign-in.
    */
+  async agentUseCard(
+    input: Omit<Parameters<BrowserSourceService["agentSignIn"]>[0], "sessionId"> & {
+      sessionId: string;
+    },
+  ): Promise<import("@opensteer/protocol").UseCardResult> {
+    const site = parseSite(input.site);
+    const unavailable = (
+      reason:
+        | "not-allowed"
+        | "unsupported"
+        | "session-closed"
+        | "runtime-outdated"
+        | "no-saved-card"
+        | "passwords-off"
+        | "passwords-not-set-up"
+        | "passwords-not-responding",
+    ) => ({ status: "unavailable" as const, site, reason });
+    if (await this.#refusesSite(site)) return unavailable("not-allowed");
+    const check = () =>
+      this.#browser.signInTarget({
+        agentWorkspaceId: input.workspaceId,
+        agentBindingId: `run:${input.runId}`,
+        ownerId: input.ownerId,
+        sessionId: parseSessionId(input.sessionId),
+      });
+    const target = await check();
+    if (!target?.live) return unavailable("session-closed");
+    const availability = await this.#passwords.probeCard(input.ownerId);
+    const current = await check();
+    if (!current?.live || current.computer?.runnerId !== target.computer?.runnerId)
+      return unavailable("session-closed");
+    if (availability !== "has-card")
+      return unavailable(
+        availability === "unsupported" || availability === "runtime-outdated"
+          ? availability
+          : availability === "no-card"
+            ? "no-saved-card"
+            : availability === "off"
+              ? "passwords-off"
+              : availability === "not-set-up"
+                ? "passwords-not-set-up"
+                : "passwords-not-responding",
+      );
+    if (!current.cardFill || !target.computer) return unavailable("runtime-outdated");
+    const result = await this.#passwords.requestCard({
+      ...input,
+      site,
+      cardRunnerId: target.computer.runnerId,
+      admitStart: () => this.#admitCall(input.runId, input.workspaceId, site),
+    });
+    const after = await check();
+    if (!after?.live || !after.cardFill || after.computer?.runnerId !== target.computer.runnerId)
+      return unavailable("session-closed");
+    return result;
+  }
+
   async agentSignIn(input: {
     readonly ownerId: UserId;
     readonly runId: RunId;
@@ -1703,5 +1759,5 @@ function rejectPending(peer: SourceSocket, error: Error): void {
 
 type PasswordSignInEntry = Pick<
   PasswordSignInService,
-  "join" | "probe" | "replayResult" | "request" | "get" | "respond"
+  "join" | "probe" | "replayResult" | "request" | "get" | "respond" | "probeCard" | "requestCard"
 >;

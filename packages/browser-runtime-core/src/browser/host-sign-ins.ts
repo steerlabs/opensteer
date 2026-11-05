@@ -109,6 +109,27 @@ export class HostSignIns {
     void this.#authorize(authority, operation, needs);
   }
 
+  async fillCard(input: {
+    cardRef: string;
+    sessionId: string;
+    targetId: string;
+    field: import("@opensteer/protocol").CardField;
+  }): Promise<LoginFillStatus> {
+    if (this.#closed || !this.#authority?.fillCardReference) return "unavailable";
+    const controller = new AbortController();
+    const fills = this.#fills.get(input.sessionId) ?? new Set<AbortController>();
+    fills.add(controller);
+    this.#fills.set(input.sessionId, fills);
+    try {
+      return await this.#authority.fillCardReference({ ...input, lease: controller.signal });
+    } catch {
+      return controller.signal.aborted ? "expired" : "unavailable";
+    } finally {
+      fills.delete(controller);
+      if (!fills.size) this.#fills.delete(input.sessionId);
+    }
+  }
+
   async fill(input: {
     loginRef: string;
     sessionId: string;

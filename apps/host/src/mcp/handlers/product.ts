@@ -93,7 +93,7 @@ export class ProductToolHandlers {
     | ((userId: RunToolScope["requestedBy"], message: PersonShowMessage) => Promise<number>)
     | undefined;
   readonly #supportsLoginFill: (scope: RunToolScope) => boolean;
-  readonly #browserSources: Pick<BrowserSourceService, "agentSignIn">;
+  readonly #browserSources: Pick<BrowserSourceService, "agentSignIn" | "agentUseCard">;
   readonly #machineFullDiskAccess: Pick<MachineFullDiskAccessService, "request">;
   readonly #browser: Pick<
     BrowserService,
@@ -133,7 +133,7 @@ export class ProductToolHandlers {
       message: PersonShowMessage,
     ) => Promise<number>;
     readonly supportsLoginFill?: (scope: RunToolScope) => boolean;
-    readonly browserSources: Pick<BrowserSourceService, "agentSignIn">;
+    readonly browserSources: Pick<BrowserSourceService, "agentSignIn" | "agentUseCard">;
     readonly machineFullDiskAccess: Pick<MachineFullDiskAccessService, "request">;
     readonly browser: Pick<
       BrowserService,
@@ -989,6 +989,21 @@ export class ProductToolHandlers {
       caller.key,
     );
     return { profiles };
+  }
+
+  async use_card({ caller, input, operationKey }: ToolCall<"use_card">) {
+    const claims = requireRun(caller).claims;
+    return this.#browserSources.agentUseCard({
+      callId: operationId(caller, operationKey, "use_card"),
+      canRequest: true,
+      ownerId: claims.requestedBy,
+      reason: input.reason,
+      runId: claims.runId,
+      sessionId: input.sessionId,
+      site: input.site,
+      threadId: claims.threadId,
+      workspaceId: claims.workspaceId,
+    });
   }
 
   async sign_in({ caller, input, operationKey }: ToolCall<"sign_in">) {

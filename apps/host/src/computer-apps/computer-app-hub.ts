@@ -704,6 +704,15 @@ export class ComputerAppHub {
     return this.#byRunner.get(runnerId)?.loginText ?? null;
   }
 
+  cardUseSupported(runnerId: RunnerId): boolean {
+    const entry = this.#byRunner.get(runnerId);
+    return (
+      this.passwordSignInSupported(runnerId) &&
+      entry?.stream.identity.modules.integrations?.cardUse === 1 &&
+      entry.stream.identity.modules.browser?.cardFill === 1
+    );
+  }
+
   passwordSignInSupported(runnerId: RunnerId): boolean {
     return !this.#closed && this.#byRunner.get(runnerId)?.passwordSignIn === true;
   }
@@ -725,6 +734,12 @@ export class ComputerAppHub {
   ): Promise<PasswordSignInAuthorityResult> {
     const entry = this.#byRunner.get(runnerId);
     if (!entry || !this.passwordSignInSupported(runnerId) || entry.pendingPasswords.size >= 128)
+      return { type: "unavailable" };
+    if (
+      (command.type === "card.probe" ||
+        ("credential" in command && command.credential === "card")) &&
+      !this.cardUseSupported(runnerId)
+    )
       return { type: "unavailable" };
     const parsed = PasswordSignInAuthorityCommandSchema.parse(command);
     const requestId = RunnerAuxiliaryRequestIdSchema.parse(`cai:${randomUUID()}`);

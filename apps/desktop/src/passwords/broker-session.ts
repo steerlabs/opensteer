@@ -1,4 +1,10 @@
 import type {
+  PasswordsBrokerCardRequestParamsSchema,
+  PasswordsBrokerCardRequestResultSchema,
+  PasswordsBrokerCardApproveParamsSchema,
+  PasswordsBrokerCardApproveResultSchema,
+  PasswordsBrokerCardReleaseParamsSchema,
+  PasswordsBrokerCardReleaseResultSchema,
   PasswordsBrokerSignInApproveParamsSchema,
   PasswordsBrokerSignInApproveResultSchema,
   PasswordsBrokerSignInProbeParams,
@@ -51,7 +57,7 @@ export interface PasswordsBrokerSignInGrant {
 
 /** Every transaction call stays on the connection that carried request; it never reconnects. */
 export interface PasswordsBrokerSession {
-  readonly protocolVersion?: 4 | 5 | 6;
+  readonly protocolVersion?: 4 | 5 | 6 | 7;
   probe(params: PasswordsBrokerSignInProbeParams): Promise<PasswordsBrokerSignInProbeResult>;
   request(
     params: PasswordsBrokerSignInRequestParams | PasswordsBrokerSignInRequestV6Params,
@@ -67,4 +73,23 @@ export interface PasswordsBrokerSession {
   ): Promise<PasswordsBrokerSignInReleaseResult>;
   commit(transactionId: string, signal: AbortSignal): Promise<{ committed: boolean }>;
   cancel(transactionId: string): Promise<void>;
+}
+
+export interface PasswordsBrokerCardSession {
+  cardProbe(): Promise<{ cards: import("@opensteer/protocol").CardAvailability }>;
+  cardRequest(
+    params: z.infer<typeof PasswordsBrokerCardRequestParamsSchema>,
+    signal: AbortSignal,
+  ): Promise<{
+    decision: z.infer<typeof PasswordsBrokerCardRequestResultSchema>;
+    lifetime: AbortSignal;
+  }>;
+  cardApprove(
+    params: z.infer<typeof PasswordsBrokerCardApproveParamsSchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof PasswordsBrokerCardApproveResultSchema>>;
+  cardRelease(
+    params: z.infer<typeof PasswordsBrokerCardReleaseParamsSchema>,
+    signal?: AbortSignal,
+  ): Promise<z.infer<typeof PasswordsBrokerCardReleaseResultSchema>>;
 }

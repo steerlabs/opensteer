@@ -192,7 +192,9 @@ export function passwordsAnywhereJourneys() {
               const pending = z
                 .object({ status: z.literal("pending"), requestId: z.string() })
                 .parse(first.structuredContent);
-              const operation = authority.commands.findLast((c) => c.type === "login.authorize");
+              const operation = authority.commands.findLast(
+                (c) => c.type === "login.authorize" && "loginRef" in c,
+              );
               if (operation?.type !== "login.authorize") throw new Error("Missing authorization");
               authority.authorize(operation.operationId);
               const declined = await waitForValue(async () => {
@@ -226,7 +228,9 @@ export function passwordsAnywhereJourneys() {
                 site: passwordFixture.site,
               });
               expect(request.payload).not.toHaveProperty("sessionId");
-              const start = authority.commands.find((c) => c.type === "login.authorize");
+              const start = authority.commands.find(
+                (c) => c.type === "login.authorize" && "loginRef" in c,
+              );
               if (!start || start.type !== "login.authorize")
                 throw new Error("Missing authority authorization");
               expect(start.workspaceId).toBe(main.id);
