@@ -10,6 +10,13 @@ Saved-password consent and computer app approvals use the person's Host session 
 device; the native app confirms each password Allow or Only this time with OS device-owner
 authentication, and OS grants still happen on the computer.
 
+## Identity
+
+The iOS bundle ID is `com.opensteer.opensteer` because the App Store binds a listing to its bundle
+ID for good, and removing a listing loses the name and the ID. `com.opensteer.mobile` stays the
+Android package and the OAuth and deep-link scheme: released Hosts register that scheme, and it cannot
+match the desktop's, which is the same string as this bundle ID. The APNs topic follows the bundle ID.
+
 ## Attachment and identity
 
 [mobile-client.ts](../apps/mobile/src/client/mobile-client.ts) owns the one active Host attachment;

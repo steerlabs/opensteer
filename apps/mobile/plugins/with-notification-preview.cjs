@@ -68,12 +68,10 @@ function project(project, config) {
     )
   )
     return project;
-  const target = project.addTarget(
-    targetName,
-    "app_extension",
-    targetName,
-    "com.opensteer.mobile.NotificationService",
-  );
+  const appIdentifier = config.ios?.bundleIdentifier;
+  if (!appIdentifier) throw new Error("Notification preview requires an iOS bundle identifier");
+  const extensionIdentifier = `${appIdentifier}.NotificationService`;
+  const target = project.addTarget(targetName, "app_extension", targetName, extensionIdentifier);
   const sources = ["NotificationService.swift", "Preview.swift", "KeyStore.swift"].map(
     (f) => `${targetName}/${f}`,
   );
@@ -86,14 +84,13 @@ function project(project, config) {
   const configs = project.pbxXCBuildConfigurationSection();
   const parent =
     Object.values(configs).find(
-      (c) =>
-        c.buildSettings?.PRODUCT_BUNDLE_IDENTIFIER?.replaceAll('"', "") === "com.opensteer.mobile",
+      (c) => c.buildSettings?.PRODUCT_BUNDLE_IDENTIFIER?.replaceAll('"', "") === appIdentifier,
     )?.buildSettings || {};
   const list = project.pbxXCConfigurationList()[target.pbxNativeTarget.buildConfigurationList];
   for (const ref of list.buildConfigurations) {
     const settings = configs[ref.value].buildSettings;
     Object.assign(settings, {
-      PRODUCT_BUNDLE_IDENTIFIER: '"com.opensteer.mobile.NotificationService"',
+      PRODUCT_BUNDLE_IDENTIFIER: `"${extensionIdentifier}"`,
       PRODUCT_NAME: '"$(TARGET_NAME)"',
       SWIFT_VERSION: "5.9",
       INFOPLIST_FILE: `${targetName}/Info.plist`,

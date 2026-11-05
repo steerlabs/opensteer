@@ -238,6 +238,35 @@ describe("control-plane configuration", () => {
     ]);
   });
 
+  it("enables Sign in with Apple only when completely configured with a usable key", () => {
+    const apple = {
+      OPENSTEER_APPLE_SIGN_IN_CLIENT_ID: "com.opensteer.account",
+      OPENSTEER_APPLE_SIGN_IN_KEY_ID: "ABCDE12345",
+      OPENSTEER_APPLE_SIGN_IN_PRIVATE_KEY: apnsPrivateKey,
+      OPENSTEER_APPLE_SIGN_IN_TEAM_ID: "TEAM123456",
+    };
+    expect(loadControlPlaneConfig(validEnvironment).appleSignIn).toBeUndefined();
+    expect(loadControlPlaneConfig({ ...validEnvironment, ...apple }).appleSignIn).toEqual({
+      clientId: apple.OPENSTEER_APPLE_SIGN_IN_CLIENT_ID,
+      keyId: apple.OPENSTEER_APPLE_SIGN_IN_KEY_ID,
+      privateKeyPem: apnsPrivateKey,
+      teamId: apple.OPENSTEER_APPLE_SIGN_IN_TEAM_ID,
+    });
+    expect(() =>
+      loadControlPlaneConfig({
+        ...validEnvironment,
+        OPENSTEER_APPLE_SIGN_IN_CLIENT_ID: apple.OPENSTEER_APPLE_SIGN_IN_CLIENT_ID,
+      }),
+    ).toThrow("Sign in with Apple requires");
+    expect(() =>
+      loadControlPlaneConfig({
+        ...validEnvironment,
+        ...apple,
+        OPENSTEER_APPLE_SIGN_IN_PRIVATE_KEY: wrongCurvePrivateKey,
+      }),
+    ).toThrow("OPENSTEER_APPLE_SIGN_IN_PRIVATE_KEY");
+  });
+
   it("enables either push provider independently with usable keys", () => {
     expect(loadControlPlaneConfig(validEnvironment).push).toBeUndefined();
 

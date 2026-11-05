@@ -7,7 +7,7 @@ import {
 } from "@opensteer/client/host";
 import { useConnectedAgents, usePersonalRemoteAccess } from "@opensteer/client/react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Alert, TextInput, View } from "react-native";
+import { Alert, Linking, TextInput, View } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
@@ -351,6 +351,16 @@ function AccountSettingsContent({
           ...(accountModel.subtitle ? [text("subtitle", accountModel.subtitle)] : []),
           ...(accountModel.action
             ? [button("account-action", accountModel.action.label, onAccountAction)]
+            : []),
+          ...(accountModel.action?.kind === "sign-out" && client.portalOrigin
+            ? [
+                button(
+                  "account-delete",
+                  "Delete Account",
+                  () => void Linking.openURL(`${client.portalOrigin}/account/delete`),
+                  true,
+                ),
+              ]
             : []),
         ],
       });

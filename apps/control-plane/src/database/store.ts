@@ -86,6 +86,16 @@ export interface HostAuthority {
   readonly hostInstanceId: ReturnType<typeof HostInstanceIdSchema.parse>;
 }
 
+export interface OwnedDeployment {
+  readonly activeHostInstanceId: HostInstanceId;
+  readonly connectState: import("./schema.js").ConnectResourceState | null;
+  readonly id: DeploymentId;
+  readonly name: string;
+  /** Other Accounts this Deployment's directory shows it to. */
+  readonly otherMembers: number;
+  readonly reachability: "canonical" | "routed";
+}
+
 interface ControlPlaneStoreOptions {
   readonly portalOrigin: URL;
   readonly adoptionProofVerifier?: HostAccountAdoptionProofVerifier;
@@ -1360,6 +1370,60 @@ export class ControlPlaneStore {
     });
   }
 
+  /** What deleting this Account takes with it, for the person and for Connect teardown. */
+  async ownedDeployments(accountId: ControlPlaneAccountId): Promise<readonly OwnedDeployment[]> {
+    const rows = await this.#database
+      .selectFrom("deployments")
+      .leftJoin(
+        "deploymentConnectResources",
+        "deploymentConnectResources.deploymentId",
+        "deployments.id",
+      )
+      .select((expression) => [
+        "deployments.activeHostInstanceId as activeHostInstanceId",
+        "deployments.id as id",
+        "deployments.name as name",
+        "deployments.reachability as reachability",
+        "deploymentConnectResources.state as connectState",
+        expression
+          .selectFrom("deploymentDirectoryEntries")
+          .select(({ fn }) => fn.countAll<string>().as("count"))
+          .whereRef("deploymentDirectoryEntries.deploymentId", "=", "deployments.id")
+          .where("deploymentDirectoryEntries.accountId", "!=", accountId)
+          .where("deploymentDirectoryEntries.present", "=", true)
+          .as("otherMembers"),
+      ])
+      .where("deployments.ownerAccountId", "=", accountId)
+      .orderBy("deployments.name", "asc")
+      .execute();
+    return rows.map((row) => ({
+      activeHostInstanceId: HostInstanceIdSchema.parse(row.activeHostInstanceId),
+      connectState: row.connectState,
+      id: DeploymentIdSchema.parse(row.id),
+      name: row.name,
+      otherMembers: Number(row.otherMembers ?? 0),
+      reachability: row.reachability,
+    }));
+  }
+
+  async oauthRefreshToken(
+    accountId: ControlPlaneAccountId,
+    providerId: string,
+  ): Promise<string | null> {
+    const account = await this.#database
+      .selectFrom("authAccounts")
+      .select("refreshToken")
+      .where("userId", "=", accountId)
+      .where("providerId", "=", providerId)
+      .executeTakeFirst();
+    return account?.refreshToken ?? null;
+  }
+
+  /**
+   * Removes the Account and the Deployments it owns. Their Connect resources must
+   * already be revoked: a tunnel left behind would outlive every row that names it.
+   * Hosts learn nothing here, so they keep running and find out on their next call.
+   */
   async deleteAccount(accountId: ControlPlaneAccountId): Promise<void> {
     await this.#database.transaction().execute(async (transaction) => {
       const account = await transaction
@@ -1370,20 +1434,6 @@ export class ControlPlaneStore {
         .forUpdate()
         .executeTakeFirst();
       if (!account) throw new ControlPlaneError("not_found", "Account was not found");
-      const owned = await transaction
-        .selectFrom("deployments")
-        .select(({ fn }) => fn.countAll<string>().as("count"))
-        .where("ownerAccountId", "=", accountId)
-        .executeTakeFirstOrThrow();
-      if (BigInt(owned.count) !== 0n) {
-        throw new ControlPlaneError(
-          "owned_deployments_exist",
-          "Unregister owned deployments before deleting the account",
-        );
-      }
-      await transaction.deleteFrom("oauthAccessTokens").where("userId", "=", accountId).execute();
-      await transaction.deleteFrom("oauthRefreshToken").where("userId", "=", accountId).execute();
-      await transaction.deleteFrom("oauthConsents").where("userId", "=", accountId).execute();
       await transaction
         .selectFrom("authSessions")
         .select("id")
@@ -1392,6 +1442,49 @@ export class ControlPlaneStore {
         // FOR UPDATE: Account deletion revokes its sessions before removing the User.
         .forUpdate()
         .execute();
+      await transaction.deleteFrom("oauthAccessTokens").where("userId", "=", accountId).execute();
+      await transaction
+        .selectFrom("personalHostAccountLinkChallenges")
+        .select("challengeId")
+        .where("ownerAccountId", "=", accountId)
+        .orderBy("challengeId", "asc")
+        // FOR UPDATE: Unlink takes a challenge before its Deployment, so this does too.
+        .forUpdate()
+        .execute();
+      const owned = await transaction
+        .selectFrom("deployments")
+        .select("id")
+        .where("ownerAccountId", "=", accountId)
+        .orderBy("id", "asc")
+        // FOR UPDATE: Deleting the Account deletes the Deployments it owns.
+        .forUpdate()
+        .execute();
+      if (owned.length > 0) {
+        const resources = await transaction
+          .selectFrom("deploymentConnectResources")
+          .select("state")
+          .where(
+            "deploymentId",
+            "in",
+            owned.map((deployment) => deployment.id),
+          )
+          .orderBy("deploymentId", "asc")
+          // FOR UPDATE: A provision committing after an unlocked read would lose its row
+          // to the cascade and leave its tunnel unrecorded.
+          .forUpdate()
+          .execute();
+        if (resources.some((resource) => resource.state !== "revoked")) {
+          throw new ControlPlaneError("conflict", "Revoke Connect before deleting the Account", {
+            reason: "connect-resource-active",
+          });
+        }
+        await transaction
+          .deleteFrom("deployments")
+          .where("ownerAccountId", "=", accountId)
+          .execute();
+      }
+      await transaction.deleteFrom("oauthRefreshToken").where("userId", "=", accountId).execute();
+      await transaction.deleteFrom("oauthConsents").where("userId", "=", accountId).execute();
       await transaction.deleteFrom("authSessions").where("userId", "=", accountId).execute();
       await transaction.deleteFrom("authAccounts").where("userId", "=", accountId).execute();
       const deleted = await transaction

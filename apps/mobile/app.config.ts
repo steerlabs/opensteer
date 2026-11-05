@@ -17,6 +17,13 @@ import { z } from "zod";
  */
 const applicationId = "com.opensteer.mobile";
 
+/**
+ * The App Store binds a listing to its bundle ID for good, and Opensteer's listing
+ * uses this one. It is not the application id: that names the OAuth and deep-link
+ * scheme, which released Hosts register and which the desktop's scheme cannot share.
+ */
+const iosBundleIdentifier = "com.opensteer.opensteer";
+
 // Expo evaluates this configuration before native project generation. Both pods
 // compile the same catalog-derived contracts; generation cannot be optional.
 execFileSync("pnpm", ["exec", "tsx", "../../scripts/generate-apple-data-contracts.ts"], {
@@ -54,6 +61,13 @@ const GoogleServicesFileSchema = z
 const googleServicesFile = readGoogleServicesFile();
 const androidPushConfigured = googleServicesFile !== undefined;
 
+/** App Store Connect refuses a second upload that reuses a version's build number. */
+const iosBuildNumber = z
+  .string()
+  .regex(/^[1-9][0-9]*$/u, "OPENSTEER_MOBILE_BUILD_NUMBER must be a positive whole number")
+  .optional()
+  .parse(process.env.OPENSTEER_MOBILE_BUILD_NUMBER);
+
 function readGoogleServicesFile(): string | undefined {
   const supplied = process.env.OPENSTEER_MOBILE_GOOGLE_SERVICES_FILE;
   if (supplied === undefined) return undefined;
@@ -86,7 +100,8 @@ const config: ExpoConfig = {
   // the config type along with it.
   assetBundlePatterns: ["**/*"],
   ios: {
-    bundleIdentifier: applicationId,
+    bundleIdentifier: iosBundleIdentifier,
+    ...(iosBuildNumber === undefined ? {} : { buildNumber: iosBuildNumber }),
     supportsTablet: true,
     // Resizing shares one navigation history and draft owner across device poses.
     infoPlist: {
@@ -143,6 +158,7 @@ const config: ExpoConfig = {
   plugins: [
     // Plist mods compose in reverse order: remove the upstream camera key last.
     "./plugins/with-voice.cjs",
+    "./plugins/with-single-url-scheme.cjs",
     "expo-secure-store",
     [
       "expo-local-authentication",

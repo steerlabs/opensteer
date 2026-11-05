@@ -1,3 +1,4 @@
+import type { AccountDeletionService } from "../account/account-deletion.js";
 import {
   AcknowledgeHostAccountAdoptionRequestSchema,
   AcknowledgeHostAccountAdoptionResponseSchema,
@@ -57,6 +58,7 @@ const PersonalLinkOperationParamsSchema = z.strictObject({
 export function registerControlPlaneRoutes(
   app: FastifyInstance,
   dependencies: {
+    readonly accountDeletion: AccountDeletionService;
     readonly authenticator: ControlPlaneAuthenticator;
     readonly connectLifecycle: ConnectLifecycleService;
     readonly personalRemoteAccount?: PersonalRemoteAccountService;
@@ -366,7 +368,7 @@ export function registerControlPlaneRoutes(
       mutation: true,
       scope: "account:delete",
     });
-    await dependencies.store.deleteAccount(principal.accountId);
+    await dependencies.accountDeletion.delete(principal.accountId);
     void reply.header("cache-control", "no-store");
     return DeleteAccountResponseSchema.parse({ deleted: true });
   });

@@ -1033,7 +1033,6 @@ export const ControlPlaneErrorCodeSchema = z.enum([
   "not_found",
   "conflict",
   "stale_projection",
-  "owned_deployments_exist",
   "unavailable",
   "internal",
 ]);

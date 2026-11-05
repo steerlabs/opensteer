@@ -19,6 +19,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   ControlPlaneAuthenticator,
   createControlPlaneAuth,
+  freshAccountSessionMilliseconds,
   type ControlPlaneAuth,
 } from "../auth/auth.js";
 import type { ControlPlaneConfig } from "../config.js";
@@ -27,6 +28,7 @@ import { createControlPlaneDatabase } from "../database/database.js";
 import { migrateControlPlaneToLatest } from "../database/migrations.js";
 import {
   portalCallbackUri,
+  portalDeleteAccountPath,
   portalOAuthClientId,
   portalOAuthScopes,
   portalSignInPath,
@@ -384,6 +386,134 @@ integration("Opensteer web portal", () => {
     });
 
     expect(response.statusCode).toBe(303);
+  });
+
+  describe("Account deletion", () => {
+    const secondAccountId = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
+    const accountExists = async (id: ControlPlaneAccountId) =>
+      (await database.selectFrom("users").select("id").where("id", "=", id).executeTakeFirst()) !==
+      undefined;
+    const age = () =>
+      database
+        .updateTable("authSessions")
+        .set({ createdAt: new Date(Date.now() - freshAccountSessionMilliseconds - 60_000) })
+        .where("userId", "=", accountId)
+        .execute();
+    const post = (cookie: string, origin = `https://${testDomain}`) =>
+      server.inject({
+        headers: portalHeaders({ cookie, origin }),
+        method: "POST",
+        url: portalDeleteAccountPath,
+      });
+    /** Signs in as `signedInAs`, through a forced login, from the flow this page started. */
+    const proveIdentity = async (cookie: string, signedInAs: ControlPlaneAccountId) => {
+      const start = await server.inject({
+        headers: portalHeaders({ cookie }),
+        method: "GET",
+        url: portalDeleteAccountPath,
+      });
+      expect(start.statusCode, start.body).toBe(303);
+      const signIn = await server.inject({
+        headers: portalHeaders({ cookie }),
+        method: "GET",
+        url: location(start),
+      });
+      expect(signIn.statusCode, signIn.body).toBe(302);
+      const authorizeUrl = new URL(location(signIn));
+      expect(authorizeUrl.searchParams.get("prompt")).toBe("login");
+      expect(authorizeUrl.searchParams.get("max_age")).toBe("0");
+      const forced = await server.inject({
+        headers: { host: accountHost, cookie: await signedSessionCookie(accountId) },
+        method: "GET",
+        url: `${authorizeUrl.pathname}${authorizeUrl.search}`,
+      });
+      expect(new URL(location(forced), publicOrigin).pathname).toBe("/sign-in");
+      // After that login the provider resumes this same request for whoever signed in.
+      authorizeUrl.searchParams.delete("prompt");
+      authorizeUrl.searchParams.delete("max_age");
+      const authorized = await server.inject({
+        headers: { host: accountHost, cookie: await signedSessionCookie(signedInAs) },
+        method: "GET",
+        url: `${authorizeUrl.pathname}${authorizeUrl.search}`,
+      });
+      const callbackUrl = new URL(location(authorized));
+      expect(callbackUrl.origin).toBe(`https://${testDomain}`);
+      return server.inject({
+        headers: portalHeaders({
+          cookie: `${cookie}; ${cookiePair(signIn, portalFlowCookieName)}`,
+        }),
+        method: "GET",
+        url: `${callbackUrl.pathname}${callbackUrl.search}`,
+      });
+    };
+
+    beforeEach(async () => {
+      const now = new Date();
+      await database
+        .insertInto("users")
+        .values({
+          id: secondAccountId,
+          displayName: "Second Account",
+          email: "second-account@example.test",
+          emailVerified: true,
+          image: null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .executeTakeFirstOrThrow();
+    });
+
+    it("names what it removes, then deletes the Account and ends the session", async () => {
+      const cookie = await portalSessionCookie();
+      await registerDeployment("Team server", "team-server");
+      const page = await server.inject({
+        headers: portalHeaders({ cookie }),
+        method: "GET",
+        url: portalDeleteAccountPath,
+      });
+      expect(page.statusCode, page.body).toBe(200);
+      expect(page.body).toContain("portal-owner@example.test");
+      expect(page.body).toContain("Team server");
+
+      const forged = await post(cookie, publicOrigin.origin);
+      expect(forged.statusCode).toBe(403);
+      expect(await accountExists(accountId)).toBe(true);
+
+      const deleted = await post(cookie);
+      expect(deleted.statusCode, deleted.body).toBe(200);
+      expect(cookieFor(deleted, portalSessionCookieName)).toContain("Max-Age=0");
+      expect(await accountExists(accountId)).toBe(false);
+      expect(await database.selectFrom("deployments").selectAll().execute()).toEqual([]);
+      expect(await accountExists(secondAccountId)).toBe(true);
+    });
+
+    it("asks a person who signed in long ago to prove it first", async () => {
+      const cookie = await portalSessionCookie();
+      await age();
+      const refused = await post(cookie);
+      expect(refused.statusCode).toBe(303);
+      expect(await accountExists(accountId)).toBe(true);
+
+      const proven = await proveIdentity(cookie, accountId);
+      expect(proven.statusCode, proven.body).toBe(303);
+      expect(location(proven)).toBe(portalDeleteAccountPath);
+      const freshCookie = sessionCookiePair(proven);
+      const deleted = await post(freshCookie);
+      expect(deleted.statusCode, deleted.body).toBe(200);
+      expect(await accountExists(accountId)).toBe(false);
+    });
+
+    it("never moves the session to a different Account while proving identity", async () => {
+      const cookie = await portalSessionCookie();
+      await age();
+      const proven = await proveIdentity(cookie, secondAccountId);
+      expect(proven.statusCode, proven.body).toBe(409);
+      expect(proven.headers["set-cookie"]?.toString() ?? "").not.toContain(
+        `${portalSessionCookieName}=ops_`,
+      );
+      expect(await accountExists(accountId)).toBe(true);
+      expect(await accountExists(secondAccountId)).toBe(true);
+    });
   });
 
   async function runSignInFlow(accountCookie?: string, signInUrl = `${portalSignInPath}?silent=1`) {

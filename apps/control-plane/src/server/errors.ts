@@ -12,7 +12,6 @@ const statusByCode: Readonly<Record<ControlPlaneErrorCode, number>> = {
   not_found: 404,
   conflict: 409,
   stale_projection: 409,
-  owned_deployments_exist: 409,
   unavailable: 503,
   internal: 500,
 };

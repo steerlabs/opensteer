@@ -13,9 +13,8 @@ import {
  * `apps/mobile/app.config.ts` spells the application id as a literal, because
  * Expo loads that file through Node and Node cannot follow this repository's
  * NodeNext `./x.js` specifiers into `@opensteer/core`. The literal is what the
- * operating system registers: the bundle identifier, the Android package, and
- * the private-use URL scheme that both OAuth callbacks and every notification
- * deep link are addressed to. A drift between it and `@opensteer/core` would
+ * operating system registers: the Android package and the private-use URL scheme
+ * that both OAuth callbacks and every notification deep link are addressed to. A drift between it and `@opensteer/core` would
  * not fail a build — it would silently make a signed-in phone unreachable — so
  * the two are pinned to each other here.
  *
@@ -53,10 +52,10 @@ describe("the mobile application id", () => {
     );
   });
 
-  it("is used as the scheme, the bundle identifier, and the Android package", () => {
+  it("is used as the scheme and the Android package, never as the iOS bundle identifier", () => {
     expect(configSource).toContain("scheme: applicationId,");
-    expect(configSource).toContain("bundleIdentifier: applicationId,");
     expect(configSource).toContain("package: applicationId,");
+    expect(configSource).toContain("bundleIdentifier: iosBundleIdentifier,");
   });
 
   it("is the private-use scheme both OAuth callbacks are registered under", () => {

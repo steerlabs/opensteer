@@ -108,6 +108,90 @@ integration("Opensteer Account host", () => {
     await database.destroy();
   });
 
+  describe("Sign in with Apple", () => {
+    const appleServer = async () => {
+      const appleAuth = createControlPlaneAuth(database, {
+        ...config,
+        apple: { clientId: "com.opensteer.account", clientSecret: "minted-client-secret" },
+      });
+      return createControlPlaneServer({
+        appleSignIn: {
+          clientId: "com.opensteer.account",
+          keyId: "ABCDE12345",
+          privateKeyPem: "unused-until-deletion",
+          teamId: "TEAM123456",
+        },
+        auth: appleAuth,
+        authenticator: new ControlPlaneAuthenticator(appleAuth, database, publicOrigin),
+        connectLifecycle,
+        portalOrigin: new URL(`https://${testDomain}`),
+        portalSessions,
+        publicOrigin,
+        store,
+      });
+    };
+
+    it("starts Apple's form-post flow only where it is configured", async () => {
+      const enabled = await appleServer();
+      try {
+        const page = await enabled.inject({ method: "GET", url: "/sign-in" });
+        expect(page.body).toContain('action="/sign-in/apple"');
+        const started = await enabled.inject({
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            origin: publicOrigin.origin,
+          },
+          method: "POST",
+          payload: "",
+          url: "/sign-in/apple",
+        });
+        expect(started.statusCode, started.body).toBe(302);
+        const authorization = new URL(started.headers.location as string);
+        expect(authorization.origin).toBe("https://appleid.apple.com");
+        expect(authorization.searchParams.get("client_id")).toBe("com.opensteer.account");
+        expect(authorization.searchParams.get("response_mode")).toBe("form_post");
+      } finally {
+        await enabled.close();
+      }
+      const page = await server.inject({ method: "GET", url: "/sign-in" });
+      expect(page.body).not.toContain("/sign-in/apple");
+      const refused = await server.inject({
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          origin: publicOrigin.origin,
+        },
+        method: "POST",
+        payload: "",
+        url: "/sign-in/apple",
+      });
+      expect(refused.statusCode).toBe(404);
+    });
+
+    it("accepts Apple's cross-site post even when the edge set a cookie on this host", async () => {
+      const enabled = await appleServer();
+      try {
+        const answered = await enabled.inject({
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            cookie: "__cf_bm=edge-cookie",
+            origin: "https://appleid.apple.com",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "cross-site",
+          },
+          method: "POST",
+          payload: "code=apple-code&state=apple-state",
+          url: "/api/auth/callback/apple",
+        });
+        expect(answered.statusCode, answered.body).toBe(302);
+        const callback = new URL(answered.headers.location as string);
+        expect(callback.pathname).toBe("/api/auth/callback/apple");
+        expect(callback.searchParams.get("code")).toBe("apple-code");
+      } finally {
+        await enabled.close();
+      }
+    });
+  });
+
   it("sends the front door to the portal instead of serving one", async () => {
     const signedOut = await server.inject({ method: "GET", url: "/" });
     expect(signedOut.statusCode).toBe(302);

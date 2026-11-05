@@ -84,15 +84,20 @@ it("embeds one extension target with standalone native sources and signing setti
   }[])
     if (config.buildSettings)
       Object.assign(config.buildSettings, {
-        PRODUCT_BUNDLE_IDENTIFIER: "com.opensteer.mobile",
+        PRODUCT_BUNDLE_IDENTIFIER: "com.example.app",
         MARKETING_VERSION: "1.0",
         CURRENT_PROJECT_VERSION: "1",
       });
-  plugin.project(project, { version: "1.2.3", ios: { buildNumber: "42" } });
+  const config = {
+    version: "1.2.3",
+    ios: { buildNumber: "42", bundleIdentifier: "com.example.app" },
+  };
+  plugin.project(project, config);
   const once = project.writeSync();
-  plugin.project(project, { version: "1.2.3", ios: { buildNumber: "42" } });
+  plugin.project(project, config);
   expect(project.writeSync()).toBe(once);
-  expect(once).toContain("com.opensteer.mobile.NotificationService");
+  // App Store Connect refuses an extension whose ID does not extend the app's.
+  expect(once).toContain("com.example.app.NotificationService");
   expect(once).toContain("APPLICATION_EXTENSION_API_ONLY = YES");
   // The extension must match the app's Info.plist, which Expo writes from config.
   expect(once).toContain("MARKETING_VERSION = 1.2.3;");

@@ -11,6 +11,7 @@ describe("Account linking from a Host browser", () => {
     const issueLinkChallenge = vi.fn(async () => ({ issued: true }));
     const completeLink = vi.fn();
     const router = createPortalRouter({
+      accountDeletion: {} as never,
       auth: {} as never,
       portalOrigin: new URL("https://portal.test"),
       publicOrigin: new URL("https://accounts.portal.test"),
