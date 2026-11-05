@@ -139,6 +139,43 @@ describe("integrationToolSignature", () => {
     ).toBe("{ payload: {…} }");
   });
 
+  it("never calls an input empty when its arguments come from a combined schema", () => {
+    const required = { properties: { id: { type: "string" } }, required: ["id"] };
+    for (const inputSchema of [
+      { type: "object", allOf: [required] },
+      { type: "object", oneOf: [required] },
+      { $ref: "#/$defs/Input" },
+    ]) {
+      expect(integrationToolSignature({ definitions: { Input: required }, inputSchema })).toBe(
+        "{…}",
+      );
+    }
+  });
+
+  it("says there is more when a schema adds combined arguments to its own", () => {
+    expect(
+      integrationToolSignature({
+        definitions: {},
+        inputSchema: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+          allOf: [{ required: ["token"], properties: { token: { type: "string" } } }],
+        },
+      }),
+    ).toBe("{ id: string; … }");
+    expect(
+      integrationToolSignature({
+        definitions: {},
+        inputSchema: {
+          type: "object",
+          required: ["payload"],
+          properties: { payload: { type: "object", allOf: [{ required: ["id"] }] } },
+        },
+      }),
+    ).toBe("{ payload: {…} }");
+  });
+
   it("drops optional arguments first and says it cut the shape", () => {
     const signature = integrationToolSignature(
       {

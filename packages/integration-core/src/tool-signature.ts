@@ -13,6 +13,11 @@ function record(value: unknown): JsonSchemaObject {
     : {};
 }
 
+/** Arguments can also come from these, which one line does not follow, so it says there is more. */
+function combined(schema: JsonSchemaObject): boolean {
+  return ["$ref", "allOf", "anyOf", "oneOf"].some((keyword) => Object.hasOwn(schema, keyword));
+}
+
 function referenced(reference: string, definitions: Definitions): JsonSchemaObject | undefined {
   if (!reference.startsWith(definitionReferencePrefix)) return undefined;
   const name = reference.slice(definitionReferencePrefix.length).split("/", 1)[0]!;
@@ -32,7 +37,7 @@ function objectType(
   { objects, steps }: Position,
 ): string {
   const properties = Object.entries(record(schema.properties));
-  if (properties.length === 0) return "{}";
+  if (properties.length === 0) return combined(schema) ? "{…}" : "{}";
   if (objects >= maximumObjectDepth) return "{…}";
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
   const shown = properties
@@ -41,7 +46,8 @@ function objectType(
       ([name, value]) =>
         `${name}: ${typeText(record(value), definitions, { objects: objects + 1, steps: steps + 1 })}`,
     );
-  return `{ ${[...shown, ...(shown.length < properties.length ? ["…"] : [])].join("; ")} }`;
+  const cut = shown.length < properties.length || combined(schema);
+  return `{ ${[...shown, ...(cut ? ["…"] : [])].join("; ")} }`;
 }
 
 function typeText(schema: JsonSchemaObject, definitions: Definitions, position: Position): string {
@@ -91,7 +97,7 @@ export function integrationToolSignature(
     ...input.definitions,
   };
   const properties = Object.entries(record(inputSchema.properties));
-  if (properties.length === 0) return "{}";
+  if (properties.length === 0) return combined(inputSchema) ? "{…}" : "{}";
   const required = new Set(Array.isArray(inputSchema.required) ? inputSchema.required : []);
   const start = { objects: 1, steps: 1 };
   const entries = [
@@ -103,7 +109,7 @@ export function integrationToolSignature(
       .map(([name, value]) => `${name}?: ${typeText(record(value), definitions, start)}`),
   ];
   const render = (shown: readonly string[], cut: boolean) =>
-    `{ ${[...shown, ...(cut ? ["…"] : [])].join("; ")} }`;
+    `{ ${[...shown, ...(cut || combined(inputSchema) ? ["…"] : [])].join("; ")} }`;
   let shown = entries.length;
   while (
     shown > required.size &&
