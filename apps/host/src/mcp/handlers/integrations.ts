@@ -2,6 +2,7 @@ import { RequestUnionSchema } from "@opensteer/agent-tools/integrations";
 
 import {
   computerAppIdentityKey,
+  integrationAccountLabel,
   integrationDefinitionSummary,
   integrationSearchTerms,
   isComputerAppDefinition,
@@ -25,6 +26,7 @@ import {
 } from "../../computer-use/computer-use-service.js";
 import {
   RunnerIdSchema,
+  UserIdSchema,
   OpensteerError,
   type SpecialistAccessRequirement,
   type AgentEvent,
@@ -198,15 +200,17 @@ export class IntegrationToolHandlers {
     ) {
       throw new Error("Integration operation schema changed; search and describe it again");
     }
-    const inventory = await this.#platform.listDiscoveryInventory(discoveryRequester(scope));
-    const account = inventory
-      .find(({ installation }) => installation.id === callable.installation.id)
-      ?.accounts.find(({ connectionId }) => connectionId === callable.grant.connectionId);
+    const account = callable.grant.connectionId
+      ? await this.#platform.store.getConnectionAccount({
+          connectionId: callable.grant.connectionId,
+          ownerUserId: UserIdSchema.parse(callable.grant.ownerUserId),
+        })
+      : null;
     const text = renderIntegrationDescribe({
       cursor: input.cursor,
       described: {
         account: {
-          alias: account?.account ?? callable.grant.alias,
+          alias: account ? integrationAccountLabel(account) : callable.grant.alias,
           connectionId: callable.grant.connectionId,
           isDefault: callable.grant.isDefault,
         },

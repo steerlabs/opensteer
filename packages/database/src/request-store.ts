@@ -2878,7 +2878,7 @@ export class RequestStore {
   }
 
   async listPendingContinuations(limit = 100): Promise<readonly PendingRequestContinuation[]> {
-    const rows = await this.#database
+    const pending = this.#database
       .selectFrom("requestContinuations")
       .innerJoin("requests", "requests.id", "requestContinuations.requestId")
       .selectAll("requests")
@@ -2928,7 +2928,29 @@ export class RequestStore {
       )
       .orderBy(sql`request_continuations.attempted_at asc nulls first`)
       .orderBy("requestContinuations.createdAt", "asc")
+      .orderBy("requests.id", "asc");
+    const page = await pending
+      .clearSelect()
+      .select(["requests.id", "requests.originatingRunId"])
       .limit(clampLimit(limit))
+      .execute();
+    if (page.length === 0) return [];
+    const runIds = [
+      ...new Set(
+        page.flatMap(({ originatingRunId }) => (originatingRunId ? [originatingRunId] : [])),
+      ),
+    ];
+    const triggerIds = page
+      .filter(({ originatingRunId }) => originatingRunId === null)
+      .map(({ id }) => id);
+    // A row limit must never split the outcomes delivered for one Run.
+    const rows = await pending
+      .where((eb) =>
+        eb.or([
+          ...(runIds.length > 0 ? [eb("requests.originatingRunId", "in", runIds)] : []),
+          ...(triggerIds.length > 0 ? [eb("requests.id", "in", triggerIds)] : []),
+        ]),
+      )
       .execute();
     return rows.map((row) => ({
       attemptedAt: row.continuationAttemptedAt?.toISOString() ?? null,

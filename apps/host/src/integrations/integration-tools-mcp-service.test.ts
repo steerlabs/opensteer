@@ -451,7 +451,14 @@ describe("Opensteer MCP integration access classes", () => {
       title: "Get issue",
     });
     const callTool = vi.fn(async () => ({ content: [{ text: "called", type: "text" }] }));
-    const { handler } = await createHarness({
+    callable.grant.alias = "Personal only";
+    callable.grant.ownerUserId = createId("user");
+    const { handler, store } = await createHarness({
+      connectionAccount: {
+        ownerUserId: callable.grant.ownerUserId,
+        displayName: "Tim Jang",
+        accountIdentifier: "tim@opensteer.com",
+      },
       callTool,
       callableTools: [callable],
       inventory: [entry],
@@ -462,6 +469,9 @@ describe("Opensteer MCP integration access classes", () => {
         status: "active",
       },
     });
+    store.listDiscoveryInventory.mockRejectedValue(
+      new Error("Describe must not scan discovery inventory"),
+    );
     const toolRef = toolReference(callable);
     const described = await handler(
       { params: { arguments: { toolRef }, name: "integration_describe" } },
@@ -484,6 +494,19 @@ describe("Opensteer MCP integration access classes", () => {
       toolRef,
     });
     expect(JSON.parse(text.slice(newline + 1))).toEqual(linearToolSchemas);
+    const page = await handler(
+      { params: { arguments: { toolRef, path: "/inputSchema" }, name: "integration_describe" } },
+      callExtra("describe-input"),
+    );
+    const pageText = (page as { content: [{ text: string }] }).content[0].text;
+    expect(JSON.parse(pageText.slice(0, pageText.indexOf("\n")))).toMatchObject({
+      toolRef,
+      path: "/inputSchema",
+    });
+    expect(JSON.parse(pageText.slice(pageText.indexOf("\n") + 1))).toEqual(
+      linearToolSchemas.inputSchema,
+    );
+    expect(callable.grant.alias).toBe("Personal only");
     await handler(
       { params: { arguments: { arguments: { id: "LIN-1" }, toolRef }, name: "integration_call" } },
       callExtra("call"),
@@ -1318,6 +1341,11 @@ describe("integration_request computer-app variant", () => {
 });
 
 async function createHarness(input: {
+  readonly connectionAccount?: {
+    readonly ownerUserId: string;
+    readonly displayName: string;
+    readonly accountIdentifier: string | null;
+  };
   readonly reach?: import("@opensteer/core").ThreadReachScope;
   readonly installedComputerApps?: ReturnType<typeof vi.fn>;
   readonly computerAppHolders?: ReadonlyMap<
@@ -1424,6 +1452,9 @@ async function createHarness(input: {
         : null,
     ),
     listCallableTools: vi.fn(async () => input.callableTools ?? []),
+    getConnectionAccount: vi.fn(async ({ ownerUserId }: { readonly ownerUserId: string }) =>
+      ownerUserId === input.connectionAccount?.ownerUserId ? input.connectionAccount : null,
+    ),
     getToolSchemas: vi.fn(async () => input.toolSchemas ?? null),
     listComputerAppSetupRequests: vi.fn(async () => input.computerSetupRequests ?? []),
     listDiscoveryInventory: vi.fn(async () => input.inventory),

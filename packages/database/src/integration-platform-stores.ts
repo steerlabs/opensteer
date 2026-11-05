@@ -2041,6 +2041,20 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
 }
 
 export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase {
+  async getConnectionAccount(input: {
+    readonly connectionId: IntegrationConnectionId;
+    readonly ownerUserId: UserId;
+  }) {
+    return (
+      (await this.database
+        .selectFrom("integrationConnections")
+        .select(["displayName", "accountIdentifier"])
+        .where("id", "=", input.connectionId)
+        .where("ownerUserId", "=", input.ownerUserId)
+        .executeTakeFirst()) ?? null
+    );
+  }
+
   async getConnectionKind(input: {
     readonly connectionId: IntegrationConnectionId;
     readonly ownerUserId: UserId;

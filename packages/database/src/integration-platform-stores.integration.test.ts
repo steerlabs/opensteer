@@ -610,6 +610,34 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     },
   });
 
+  it("reads one account identity within its owner", async ({ storeFixture }) => {
+    const { store, platform, database } = storeFixture;
+    const ownerUserId = await store.createUser("Account owner");
+    const otherOwner = await store.createUser("Other account owner");
+    const connectionId = createIntegrationId("connection");
+    const credentialId = createId("credential");
+    await insertCredential(database, credentialId, ownerUserId);
+    await insertProviderConnection(database, {
+      connectionId,
+      credentialId,
+      definitionId: "account-label",
+      ownerUserId,
+    });
+    await expect(platform.getConnectionAccount({ connectionId, ownerUserId })).resolves.toEqual({
+      displayName: "Alex",
+      accountIdentifier: "alex@example.com",
+    });
+    await expect(
+      platform.getConnectionAccount({ connectionId, ownerUserId: otherOwner }),
+    ).resolves.toBeNull();
+    await expect(
+      platform.getConnectionAccount({
+        connectionId: createIntegrationId("connection"),
+        ownerUserId,
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("orders provider tool reconciliation with grant creation without a deadlock", async ({
     storeFixture,
   }) => {
