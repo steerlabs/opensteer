@@ -1,6 +1,6 @@
 import type { HostClient } from "@opensteer/client/host";
 import { useAppView } from "@opensteer/client/react";
-import { appContentHeight, appFrameReady, isAppPrefixNavigation } from "@opensteer/shared/appFrame";
+import { appContentHeight, appFrameReady, isAppNavigation } from "@opensteer/shared/appFrame";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Linking, Pressable, StyleSheet } from "react-native";
 import { WebView } from "react-native-webview";
@@ -75,7 +75,7 @@ function AppDocument({
       javaScriptCanOpenWindowsAutomatically={false}
       setSupportMultipleWindows
       onShouldStartLoadWithRequest={(request): boolean => {
-        if (request.url === "about:blank" || isAppPrefixNavigation(request.url, url)) return true;
+        if (request.url === "about:blank" || isAppNavigation(request.url, url)) return true;
         if (
           request.isTopFrame !== false &&
           (request.navigationType === "click" || request.navigationType === undefined)

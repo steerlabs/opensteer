@@ -1,4 +1,4 @@
-import { isAppPrefixNavigation } from "@opensteer/shared/appFrame";
+import { isAppNavigation } from "@opensteer/shared/appFrame";
 import { isPublishedAppUrl } from "./published-app-protocol.js";
 
 export class DesktopAppOriginPolicy {
@@ -10,7 +10,7 @@ export class DesktopAppOriginPolicy {
         (!!source &&
           isPublishedAppUrl(source) &&
           isPublishedAppUrl(value) &&
-          isAppPrefixNavigation(value, source)))
+          isAppNavigation(value, source)))
     );
   }
 
