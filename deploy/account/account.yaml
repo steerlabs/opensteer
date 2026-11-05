@@ -9,7 +9,7 @@ metadata:
 apiVersion: secrets-store.csi.x-k8s.io/v1
 kind: SecretProviderClass
 metadata:
-  name: account-runtime-v9
+  name: account-runtime-v10
   namespace: opensteer-system
 spec:
   provider: gke
@@ -17,7 +17,7 @@ spec:
     secrets: |
       - resourceName: "projects/opensteer-staging/secrets/opensteer-account-auth/versions/2"
         path: "account-auth"
-      - resourceName: "projects/opensteer-staging/secrets/opensteer-account-runtime/versions/9"
+      - resourceName: "projects/opensteer-staging/secrets/opensteer-account-runtime/versions/10"
         path: "account-runtime.json"
 ---
 apiVersion: v1
@@ -143,7 +143,8 @@ spec:
                 "OPENSTEER_CONNECT_CLOUDFLARE_API_TOKEN",
                 "OPENSTEER_CONNECT_CLOUDFLARE_ZONE_ID",
                 "OPENSTEER_CONNECT_CREDENTIAL_DERIVATION_SECRET",
-                "OPENSTEER_APNS_PRIVATE_KEY"
+                "OPENSTEER_APNS_PRIVATE_KEY",
+                "OPENSTEER_APPLE_SIGN_IN_PRIVATE_KEY"
               ];
               mkdirSync("/var/run/opensteer-runtime/secrets", { recursive: true, mode: 0o700 });
               chmodSync("/var/run/opensteer-runtime/secrets", 0o700);
@@ -269,6 +270,10 @@ spec:
                 name: OPENSTEER_APNS_PRIVATE_KEY_FILE,
                 value: /var/run/opensteer-runtime/secrets/OPENSTEER_APNS_PRIVATE_KEY,
               }
+            - {
+                name: OPENSTEER_APPLE_SIGN_IN_PRIVATE_KEY_FILE,
+                value: /var/run/opensteer-runtime/secrets/OPENSTEER_APPLE_SIGN_IN_PRIVATE_KEY,
+              }
           ports:
             - { name: http, containerPort: 4142 }
           readinessProbe:
@@ -293,7 +298,7 @@ spec:
           csi:
             driver: secrets-store-gke.csi.k8s.io
             readOnly: true
-            volumeAttributes: { secretProviderClass: account-runtime-v9 }
+            volumeAttributes: { secretProviderClass: account-runtime-v10 }
         - { name: runtime-secrets, emptyDir: {} }
         - { name: tmp, emptyDir: {} }
 ---
