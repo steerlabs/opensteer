@@ -81,6 +81,7 @@
         "scripts/mac-app-tree.py",
         "scripts/install.sh",
         "apps/desktop/native/computer-use/Tests/Fixtures/helper-wire.json",
+        "apps/mobile/modules/phone-display/tests/native/fixtures/lime-key-128x128.h264",
         "apps/desktop/native/passwords/Tests/Fixtures/passwords-wire.json",
         "packages/core/src/fixtures/notification-preview-v1.json"
       ],

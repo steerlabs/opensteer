@@ -98,6 +98,7 @@ vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
 vi.mock("../../../src/client/mobile-client.js", () => ({ operationDetail: () => "error" }));
 vi.mock("../../../src/ui/action-review.js", () => ({ ActionReviewSheet: () => null }));
 vi.mock("../../../src/ui/sheet.js", () => ({ Sheet: () => null }));
+vi.mock("../../browser-popup/index.js", () => ({ browserPopupNative: () => null }));
 import { PageTyping } from "../../../src/browser/browser-page.js";
 const context = {
   contextId: "00000000-0000-4000-8000-000000000001",
