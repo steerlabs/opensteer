@@ -341,6 +341,7 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("host.triggers-changed"),
     workspaceId: WorkspaceIdSchema,
   }),
+  z.object({ ...clientMessageBase, type: z.literal("host.app-tabs-changed") }),
   ThreadPlaceChangedSchema,
   BrowserTabsChangedSchema,
   ...PlaceActivityNoticeViewSchema.options,

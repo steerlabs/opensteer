@@ -710,12 +710,14 @@ const SidebarTabs = memo(function SidebarTabs(props: {
 });
 
 const placeGlyph: Record<PlaceItem["kind"], SFSymbolName> = {
+  "opensteer-app": "desktopcomputer",
   app: "desktopcomputer",
   browser: "globe",
   phone: "smartphone",
 };
 
 const placeKind: Record<PlaceItem["kind"], string> = {
+  "opensteer-app": "App",
   app: "App",
   browser: "Tab",
   phone: "Phone",

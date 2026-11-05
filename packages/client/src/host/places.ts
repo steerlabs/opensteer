@@ -24,12 +24,18 @@ export function browserPlaceUnavailableReason(
     : (rowReason ?? placementReason ?? null);
 }
 
-export type PlaceKind = "browser" | "app" | "phone";
+export type PlaceKind = "browser" | "app" | "phone" | "opensteer-app";
 export type PlaceIcon =
+  | { readonly kind: "opensteer-app" }
   | { readonly kind: "site"; readonly ref: string | null; readonly sessionId: string }
   | { readonly kind: "app"; readonly app: ComputerAppIdentity; readonly machineId: string }
   | { readonly kind: "phone" };
 export interface PlaceItem {
+  readonly opensteerApp?: {
+    readonly appId: string;
+    readonly threadId: string;
+    readonly workspaceId: string;
+  };
   readonly workspaceTab?: BrowserTabOrderTab & {
     readonly lineageId: string;
     readonly unavailableReason?: string | undefined;
@@ -84,6 +90,7 @@ export function placeSearchFields(place: PlaceItem, groupTitle: string | null): 
   ];
 }
 const sourceKeys = [
+  "appTabs",
   "browserTabGroups",
   "workspaceTabs",
   "workspaceTabRestoreVersion",
@@ -124,6 +131,30 @@ function occupants(values: readonly PlaceOccupant[]): PlaceOccupant[] {
 /** Uses only the reader-authorized catalog, never historical lineage or viewer selection. */
 export function placeList(source: PlaceListSource): readonly PlaceItem[] {
   const result: { item: PlaceItem; openedAt: string; order: number }[] = [];
+  for (const tab of source.appTabs ?? [])
+    result.push({
+      openedAt: tab.openedAt,
+      order: 0,
+      item: {
+        kind: "opensteer-app",
+        key: `opensteer-app:${tab.appId}`,
+        title: tab.title,
+        destination: { kind: "opensteer-app", appId: tab.appId },
+        opensteerApp: { appId: tab.appId, threadId: tab.threadId, workspaceId: tab.workspaceId },
+        device: null,
+        occupants: [],
+        availability: "ready",
+        closable: true,
+        icon: { kind: "opensteer-app" },
+        identity: null,
+        browser: null,
+        ownerView: null,
+        ownerClose: null,
+        taskDestination: null,
+        site: null,
+        loading: false,
+      },
+    });
   for (const group of source.workspaceTabs ?? []) {
     const session = source.browserSessions.find((session) => session.id === group.session.id);
     const identity = browserIdentity(group.session.profileId, source.browserProfiles);
@@ -480,6 +511,7 @@ export function placeDestinationEnded(
     }
     return !session?.tabCatalog?.tabs.some((tab) => tab.id === destination.tabId);
   }
+  if (destination.kind === "opensteer-app") return !isAppTabOpen(source, destination.appId);
   const machine = source.machines.find((item) => item.id === destination.machineId);
   if (!machine) return true;
   const computerUse = machine.computerUse;
@@ -508,4 +540,8 @@ export function browserTabCloseImpact(session: BrowserSessionSummary): BrowserTa
     heldByLiveWork: session.attachedRunIds.length > 0,
     discardsFreshSignIns: session.tabCatalog?.tabs.length === 1 && session.profileId === null,
   };
+}
+
+export function isAppTabOpen(source: Pick<HostSnapshot, "appTabs">, appId: string): boolean {
+  return source.appTabs?.some((tab) => tab.appId === appId) === true;
 }

@@ -21,6 +21,7 @@ export const PlaceMark = memo(function PlaceMark({
   readonly hostClient: HostClient;
   readonly icon: PlaceItem["icon"];
 }) {
+  if (icon.kind === "opensteer-app") return null;
   if (icon.kind === "app") {
     return (
       <span aria-hidden className="place-mark">

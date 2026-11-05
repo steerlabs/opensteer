@@ -146,7 +146,11 @@ export function placeGroups(places: readonly PlaceItem[]): readonly PlaceGroup[]
   return [...groups].map(([key, { data, title }]) => ({ data, key, title }));
 }
 
-const kindWord: Record<Exclude<PlaceKind, "phone">, string> = { app: "Apps", browser: "Browser" };
+const kindWord: Record<Exclude<PlaceKind, "phone">, string> = {
+  app: "Apps",
+  browser: "Browser",
+  "opensteer-app": "Apps",
+};
 
 function groupTitle(place: PlaceItem): string {
   const computer = place.device?.name ?? "Computer unavailable";
@@ -312,6 +316,7 @@ function GroupHead(props: { readonly title: string }): ReactNode {
 }
 
 const kindHint: Record<PlaceKind, string> = {
+  "opensteer-app": "Opens this app",
   app: "Opens this app",
   browser: "Opens this tab",
   phone: "Opens this phone",

@@ -1999,6 +1999,7 @@ interface ComputerAppSetupRequestTable {
 }
 
 export interface AppTable {
+  tabOpenedAt: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   id: string;
   workspaceId: WorkspaceId;
   threadId: ThreadId;

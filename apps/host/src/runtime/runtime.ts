@@ -2148,6 +2148,18 @@ export async function createHostRuntime(
       tunnels: new AppTunnelHub(runners),
       dataDirectory,
       apps: new AppStore(database),
+      tabsChanged: async (workspaceId) => {
+        const members = await database
+          .selectFrom("workspaceMemberships")
+          .select("userId")
+          .where("workspaceId", "=", workspaceId)
+          .where("state", "=", "active")
+          .execute();
+        realtime.sendToUsers(
+          members.map(({ userId }) => userId),
+          { type: "host.app-tabs-changed" },
+        );
+      },
       store,
       files,
       tokens: runToolTokens,

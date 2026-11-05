@@ -1,3 +1,4 @@
+import { AppTabSchema } from "@opensteer/protocol";
 import {
   matchModelSelection,
   storedModelSelection as coreStoredModelSelection,
@@ -2488,6 +2489,15 @@ function placeMockMessage(
 
 async function executeMockCommand(client: MockHostState, command: HostApiCommand) {
   switch (command.type) {
+    case "app.tab.open":
+    case "app.tab.close":
+      client.setAppTab(command.appId, command.type === "app.tab.open");
+      return rpcSuccess(
+        hostApi["commands.dispatch"].success.parse({
+          type: command.type,
+          appTabs: [...(client.getSnapshot().appTabs ?? [])],
+        }),
+      );
     case "settings.plugin.enabled.set":
     case "settings.plugin.placement.set":
       return rpcSuccess(
@@ -4340,6 +4350,12 @@ export class MockHostClient implements HostClient {
       binaryChunks(input.source, input.signal),
     );
   }
+  async openAppTab(appId: string): Promise<void> {
+    this.#state.setAppTab(appId, true);
+  }
+  async closeAppTab(appId: string): Promise<void> {
+    this.#state.setAppTab(appId, false);
+  }
   async viewApp(
     _appId: string,
     _theme: "light" | "dark",
@@ -4986,6 +5002,33 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  setAppTab(appId: string, open: boolean) {
+    const appTabs = (this.snapshot.appTabs ?? []).filter((tab) => tab.appId !== appId);
+    if (open) {
+      const existing = this.snapshot.appTabs?.find((tab) => tab.appId === appId);
+      const origin = Object.entries(this.snapshot.transcripts).flatMap(([threadId, entries]) =>
+        entries
+          .filter((entry) => entry.kind === "app" && entry.appId === appId)
+          .map((entry) => ({ threadId, entry })),
+      )[0];
+      const thread = this.snapshot.threads.find((thread) => thread.id === origin?.threadId);
+      if (existing) appTabs.unshift(existing);
+      else if (origin?.entry.kind === "app" && thread)
+        appTabs.unshift(
+          AppTabSchema.parse({
+            appId,
+            title: origin.entry.title,
+            threadId: thread.id,
+            workspaceId: thread.workspaceId,
+            latestVersion: origin.entry.version,
+            openedAt: this.now().toISOString(),
+          }),
+        );
+      else throw new Error("App not found");
+    }
+    this.update({ ...this.snapshot, appTabs });
+  }
+
   automaticModelConfig: AutomaticModelConfig = structuredClone(emptyAutomaticModelConfig);
   readonly automaticModels: "seeded" | "edited" | "excluded" | "none";
   private connections: import("@opensteer/protocol").AgentConnection[];

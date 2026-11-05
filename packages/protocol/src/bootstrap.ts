@@ -1,5 +1,9 @@
 import { WorkspaceNotificationPreferenceSchema } from "@opensteer/core";
 import {
+  AppIdSchema,
+  AppTitleSchema,
+  ThreadIdSchema,
+  WorkspaceIdSchema,
   AuthenticatedUserSchema,
   DeploymentIdSchema,
   ExecutionEnvironmentKindSchema,
@@ -73,7 +77,19 @@ export const IdentityConfigViewSchema = z.object({
   oidcProviders: z.array(z.object(IdentityConfigSchema.shape.oidcProviders.element.shape)).max(16),
 });
 
+export const AppTabSchema = z.object({
+  appId: AppIdSchema,
+  title: AppTitleSchema,
+  threadId: ThreadIdSchema,
+  workspaceId: WorkspaceIdSchema,
+  openedAt: z.iso.datetime({ offset: true }),
+  latestVersion: z.number().int().positive(),
+});
+export const AppTabsSchema = z.array(AppTabSchema).max(500);
+export type AppTab = z.infer<typeof AppTabSchema>;
+
 export const HostBootstrapSchema = z.object({
+  appTabs: AppTabsSchema.optional(),
   notificationPreferences: z.array(WorkspaceNotificationPreferenceSchema).max(101),
   /** Stable identity for client drafts; a route or public origin is not an identity. */
   deploymentId: DeploymentIdSchema,

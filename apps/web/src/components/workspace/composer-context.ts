@@ -451,6 +451,7 @@ async function placePart(hostClient: HostClient, place: PlaceItem): Promise<Plac
 /** A Mac app's or phone's exact reference: the place names it, with its computer. */
 function nativePart(place: PlaceItem): PlacePart {
   const { destination } = place;
+  if (destination.kind === "opensteer-app") throw new Error("App tabs cannot be attached.");
   if (destination.kind === "browser") throw new Error("A page is read, not named.");
   const machineId = RunnerIdSchema.parse(destination.machineId);
   if (destination.kind === "phone") {

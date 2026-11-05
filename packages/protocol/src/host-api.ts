@@ -163,7 +163,7 @@ import { z } from "zod";
 import { AppIdSchema, AppSchema } from "@opensteer/core";
 import { AgentPhoneHostTargetViewSchema } from "./android-phone.js";
 import { AttachmentContentSchema, AttachmentReferenceInputSchema } from "./attachments.js";
-import { HostBootstrapSchema, IdentityConfigViewSchema } from "./bootstrap.js";
+import { AppTabsSchema, HostBootstrapSchema, IdentityConfigViewSchema } from "./bootstrap.js";
 import {
   BrowserSignInDecisionSchema,
   BrowserSignInOutcomeSchema,
@@ -361,6 +361,16 @@ const harnessAuthenticationEnvelopeSchema = z.object({
 });
 
 const otherCommandInputSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("app.tab.open"),
+    appId: AppIdSchema,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  z.strictObject({
+    type: z.literal("app.tab.close"),
+    appId: AppIdSchema,
+    idempotencyKey: idempotencyKeySchema,
+  }),
   ComputerViewOpenCommandSchema,
   ComputerViewCloseCommandSchema,
   ComputerViewRenewCommandSchema,
@@ -1525,6 +1535,8 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("browser.profile.delete"),
     deletion: BrowserProfileDeletionSchema.optional().catch(undefined),
   }),
+  z.object({ type: z.literal("app.tab.open"), appTabs: AppTabsSchema }),
+  z.object({ type: z.literal("app.tab.close"), appTabs: AppTabsSchema }),
   z.object({ type: z.literal("browser.session.close") }),
   z.object({ type: z.literal("browser.history.remove") }),
   z.object({ type: z.literal("browser.history.clear") }),

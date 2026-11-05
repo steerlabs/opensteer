@@ -19,6 +19,7 @@ export function MacAppView(props: {
   readonly onTyping: (typing: boolean) => void;
 }): ReactNode {
   const { destination } = props;
+  if (destination.kind === "opensteer-app") return null;
   const appKey = destination.kind === "app" ? destination.appKey : null;
   if (destination.source?.kind === "owner-view")
     return (

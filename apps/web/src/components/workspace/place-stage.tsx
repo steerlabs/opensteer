@@ -246,7 +246,8 @@ export const PlaceStage = memo(function PlaceStage({
             </div>
           </div>
         )
-      ) : destination.source?.kind === "owner-view" ? (
+      ) : destination.kind === "opensteer-app" ? null : destination.source?.kind ===
+        "owner-view" ? (
         <OwnerView
           destination={destination}
           marks={marks}

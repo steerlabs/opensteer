@@ -139,6 +139,8 @@ function placeDestination(params: URLSearchParams): SurfaceDestination | null {
 /** The place catalog's key for a destination; a browser address without its tab has none yet. */
 export function destinationPlaceKey(destination: SurfaceDestination): string | null {
   switch (destination.kind) {
+    case "opensteer-app":
+      return `opensteer-app:${destination.appId}`;
     case "browser":
       return destination.tabId ? `browser:${destination.sessionId}:${destination.tabId}` : null;
     case "app":
@@ -172,6 +174,7 @@ function writePlace(params: URLSearchParams, selection: PlaceSelection): void {
     return;
   }
   const { destination } = selection;
+  if (destination.kind === "opensteer-app") return;
   if (destination.kind === "browser") {
     params.set("browser", destination.sessionId);
     if (destination.tabId) params.set("browserTab", destination.tabId);

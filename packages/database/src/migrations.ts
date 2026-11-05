@@ -4712,6 +4712,7 @@ export function migrationProvider() {
         "0158_personal_desktop_update": personalDesktopUpdateMigration,
         "0159_background_model_preferences": backgroundModelPreferencesMigration,
         "0160_memory_pass_waiting": memoryPassWaitingMigration,
+        "0161_app_tabs": appTabsMigration,
       };
     },
   };
@@ -7471,5 +7472,19 @@ export const memoryPassWaitingMigration: Migration = {
         and trigger.system_role = 'memory-light'
         and trigger.status = 'paused'
         and trigger.pause_reason = ${noLightModel}`.execute(database);
+  },
+};
+
+const appTabsMigration: Migration = {
+  async up(database) {
+    await sql`alter table apps add column tab_opened_at timestamptz;
+      create index apps_open_tabs on apps(workspace_id, tab_opened_at desc) where tab_opened_at is not null`.execute(
+      database,
+    );
+  },
+  async down(database) {
+    await sql`drop index apps_open_tabs; alter table apps drop column tab_opened_at`.execute(
+      database,
+    );
   },
 };

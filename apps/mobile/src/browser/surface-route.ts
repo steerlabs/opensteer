@@ -83,6 +83,7 @@ export function workspaceRoute(
 }
 
 function targetParams(destination: WorkspaceSurfaceDestination): SurfacesTarget {
+  if (destination.kind === "opensteer-app") throw new Error("App tab routes are not available yet");
   if (destination.kind === "browser")
     return { sessionId: destination.sessionId, tabId: destination.tabId };
   const kind = destination.kind === "phone" ? { phone: true } : { appKey: destination.appKey };
@@ -177,6 +178,7 @@ export function sameDestination(
 function routeDestinationKey(
   destination: Exclude<WorkspaceSurfaceDestination, { kind: "browser" }>,
 ) {
+  if (destination.kind === "opensteer-app") return [destination.kind, destination.appId];
   return [
     destination.kind,
     destination.machineId,

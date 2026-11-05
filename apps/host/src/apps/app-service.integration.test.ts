@@ -17,6 +17,108 @@ import { AppService } from "./app-service.js";
 
 const html = "<title>First</title><body><h1>First</h1>";
 describeStore("published app HTML", (it) => {
+  it("keeps Workspace app tabs idempotent, bounded, and membership-authorized", async ({
+    storeFixture,
+  }) => {
+    const { database, startRunFixture } = storeFixture;
+    const f = await startRunFixture("app tabs");
+    const apps = new AppStore(database);
+    const ids = Array.from({ length: 51 }, () => `app_${crypto.randomUUID()}`);
+    await database
+      .insertInto("apps")
+      .values(
+        ids.map((id) => ({
+          id,
+          workspaceId: f.workspace.id,
+          threadId: f.thread.id,
+          runId: f.run.id,
+          title: "App",
+          latestVersion: 1,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })),
+      )
+      .execute();
+    await apps.setTabOpen(ids[0]!, f.userId, true);
+    const first = await apps.listTabs(f.userId);
+    await apps.setTabOpen(ids[0]!, f.userId, true);
+    expect(await apps.listTabs(f.userId)).toEqual(first);
+    await apps.setTabOpen(ids[0]!, f.userId, false);
+    await apps.setTabOpen(ids[0]!, f.userId, false);
+    expect(await apps.listTabs(f.userId)).toEqual([]);
+    for (const id of ids.slice(0, 50)) await apps.setTabOpen(id, f.userId, true);
+    await expect(apps.setTabOpen(ids[50]!, f.userId, true)).rejects.toMatchObject({
+      code: "conflict",
+      message: expect.stringContaining("50"),
+    });
+    expect(await apps.listTabs(f.userId)).toHaveLength(50);
+    await database
+      .updateTable("workspaces")
+      .set({
+        status: "deleting",
+        deletionRequestedAt: new Date(),
+        deletionRequestedBy: f.userId,
+        purgeAfter: new Date(),
+      })
+      .where("id", "=", f.workspace.id)
+      .execute();
+    await expect(apps.setTabOpen(ids[0]!, f.userId, true)).rejects.toMatchObject({
+      code: "workspace_unavailable",
+    });
+    expect(await apps.listTabs(f.userId)).toEqual([]);
+    await apps.setTabOpen(ids[0]!, f.userId, false);
+    expect(
+      (
+        await database
+          .selectFrom("apps")
+          .select("tabOpenedAt")
+          .where("id", "=", ids[0]!)
+          .executeTakeFirstOrThrow()
+      ).tabOpenedAt,
+    ).toBeNull();
+    await database
+      .updateTable("workspaces")
+      .set({
+        status: "ready",
+        deletionRequestedAt: null,
+        deletionRequestedBy: null,
+        purgeAfter: null,
+      })
+      .where("id", "=", f.workspace.id)
+      .execute();
+    const member = await storeFixture.store.createUser("Tab member");
+    await database
+      .insertInto("workspaceMemberships")
+      .values({
+        id: createId("workspaceMembership"),
+        workspaceId: f.workspace.id,
+        userId: member,
+        role: "collaborator",
+        state: "active",
+        generation: 1,
+        invitedBy: f.userId,
+        joinedAt: new Date(),
+        revokedAt: null,
+        revokedBy: null,
+        updatedAt: new Date(),
+      })
+      .execute();
+    expect(await apps.listTabs(member)).toHaveLength(49);
+    await database
+      .updateTable("workspaceMemberships")
+      .set({ state: "revoked", revokedAt: new Date(), revokedBy: f.userId })
+      .where("workspaceId", "=", f.workspace.id)
+      .where("userId", "=", member)
+      .execute();
+    expect(await apps.listTabs(member)).toEqual([]);
+    await expect(apps.setTabOpen(ids[1]!, member, true)).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(apps.setTabOpen(ids[1]!, member, false)).rejects.toMatchObject({
+      code: "not_found",
+    });
+  });
+
   it("publishes, versions atomically, replays tool calls, serves latest through reusable capabilities, and cleans origin-owned bytes", async ({
     storeFixture,
   }) => {
