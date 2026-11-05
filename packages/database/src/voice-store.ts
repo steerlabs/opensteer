@@ -15,7 +15,6 @@ import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { createThreadInTransaction } from "./thread-store.js";
-import { prepareThreadInsertion } from "./thread-insertion.js";
 import { enqueueThreadInputInTransaction } from "./thread-inbox.js";
 import { enqueueRunnerControlInTransaction } from "./command-store.js";
 import { lockCommandIdempotency, lockWorkspaceRow, type ChannelLinks } from "./store-primitives.js";
@@ -94,11 +93,6 @@ async function ensureVoiceThread(
       reason: "voice-account-unavailable",
       message: "Voice model unavailable.",
     });
-  const insertThread = await prepareThreadInsertion(tx, {
-    createdBy: input.ownerId,
-    environmentId: input.environmentId,
-    harnessInstanceId: input.harnessInstanceId,
-  });
   const created = await createThreadInTransaction(
     tx,
     {
@@ -112,7 +106,7 @@ async function ensureVoiceThread(
       voice: true,
       workspaceId: workspace.id,
     },
-    { insertThread, unlisted: true },
+    { unlisted: true },
   );
   return {
     threadId: created.thread.id,
@@ -157,6 +151,7 @@ export async function startVoiceCall(
     );
     const existing = await resolveVoiceCall(tx, input.ownerId, input.sessionId);
     if (existing) return { busy: false as const, ...existing, revokedGrants: [], events: [] };
+    await lockCommandIdempotency(tx, input.ownerId, `voice-seed:${input.sessionId}`);
     const opened = await ensureVoiceThread(tx, input);
     const events: AgentEvent[] = [...opened.events];
     const thread = await tx
@@ -179,18 +174,16 @@ export async function startVoiceCall(
       .where("threadId", "=", thread.id)
       .where("status", "in", nonTerminalRunStatuses)
       .orderBy("id")
-      .forNoKeyUpdate()
       .execute();
     if (running.length) {
       const revokedGrants: RevokedRunGrant[] = [];
       for (const { id } of running) {
-        const stopped = await stopRun(tx, links, input.ownerId, thread.id, id);
+        const stopped = await stopLiveRun(tx, links, input.ownerId, thread.id, id);
         revokedGrants.push(...stopped.revokedGrants);
         events.push(...stopped.events);
       }
       return { busy: true as const, revokedGrants, events };
     }
-    await lockCommandIdempotency(tx, input.ownerId, `voice-seed:${input.sessionId}`);
     await lockWorkspaceRow(tx, thread.workspaceId);
     const seed = await enqueueThreadInputInTransaction(tx, {
       threadId: thread.id,
@@ -243,6 +236,24 @@ function stopRun(
   });
 }
 
+async function stopLiveRun(
+  tx: Transaction<DatabaseSchema>,
+  links: ChannelLinks,
+  ownerId: UserId,
+  threadId: ThreadId,
+  runId: RunId,
+) {
+  await lockCommandIdempotency(tx, ownerId, `voice-stop:${runId}`);
+  const run = await tx
+    .selectFrom("runs")
+    .select("status")
+    .where("id", "=", runId)
+    .forNoKeyUpdate()
+    .executeTakeFirstOrThrow();
+  if (!liveRunStatuses.includes(run.status)) return { revokedGrants: [], events: [] };
+  return stopRun(tx, links, ownerId, threadId, runId);
+}
+
 export async function stopVoiceCall(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
@@ -253,14 +264,6 @@ export async function stopVoiceCall(
     await sql`select pg_advisory_xact_lock(hashtextextended(${`voice:${ownerId}`}, 0))`.execute(tx);
     const call = await resolveVoiceCall(tx, ownerId, sessionId);
     if (!call) return;
-    await lockCommandIdempotency(tx, ownerId, `voice-stop:${call.runId}`);
-    const run = await tx
-      .selectFrom("runs")
-      .select("status")
-      .where("id", "=", call.runId)
-      .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
-    if (!liveRunStatuses.includes(run.status)) return { revokedGrants: [], events: [] };
-    return stopRun(tx, links, ownerId, call.threadId, call.runId);
+    return stopLiveRun(tx, links, ownerId, call.threadId, call.runId);
   });
 }

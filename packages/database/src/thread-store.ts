@@ -1023,7 +1023,7 @@ export async function createThreadInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: CreateThreadInput,
   prepared?: {
-    readonly insertThread: Awaited<ReturnType<typeof prepareThreadInsertion>>;
+    readonly insertThread?: Awaited<ReturnType<typeof prepareThreadInsertion>>;
     readonly unlisted?: true;
   },
 ): Promise<ThreadCreationResult> {
