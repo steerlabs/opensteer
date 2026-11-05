@@ -90,6 +90,8 @@ let sessionTools;
 let extraSkillRoots = [];
 let turnId = "codex-turn-1";
 let runScopedApprovalCalls = 0;
+const voiceNoteTurn = "voice-note-turn";
+let voiceNoteTurnOpen = false;
 // Opt-in: each root turn gets an id of its own, as Codex mints them.
 const uniqueTurns = process.argv.includes("--unique-turns");
 // Answers model/list this late, as an engine still starting up does.
@@ -729,18 +731,35 @@ function handleClientMethod(message) {
                   item: { type: "agentMessage", id: `answer-${id}`, phase: "final_answer", text },
                 },
               });
+            // The model can follow its reply with an empty one; the reply still stands.
+            if (id === "v2") sendVoiceFinal(id, "");
             send({ method: "turn/completed", params: { threadId, turn: { id, status } } });
           }
+        }
+        if (scenario === "voice-note") {
+          send({ method: "turn/started", params: { threadId, turn: { id: voiceNoteTurn } } });
+          sendVoiceFinal(voiceNoteTurn, "the reply");
+          voiceNoteTurnOpen = true;
+          break;
         }
         send({ method: "turn/started", params: { threadId, turn: { id: "voice-handoff" } } });
       }
       break;
     case "thread/inject_items":
       send({ id: message.id, result: {} });
+      // Real Codex samples again for anything added to a running turn; a note draws an empty reply.
+      if (voiceNoteTurnOpen) sendVoiceFinal(voiceNoteTurn, "");
       break;
     case "thread/realtime/appendText":
     case "thread/realtime/appendSpeech":
       send({ id: message.id, result: {} });
+      if (voiceNoteTurnOpen && message.params.text === "finish the turn") {
+        voiceNoteTurnOpen = false;
+        send({
+          method: "turn/completed",
+          params: { threadId, turn: { id: voiceNoteTurn, status: "completed" } },
+        });
+      }
       break;
     case "thread/realtime/stop":
       send({ id: message.id, result: {} });
@@ -1624,6 +1643,17 @@ function conversationTurn(input) {
 }
 
 const childThreadId = "codex-child-thread-1";
+
+function sendVoiceFinal(turnId, text) {
+  send({
+    method: "item/completed",
+    params: {
+      threadId,
+      turnId,
+      item: { type: "agentMessage", id: `final-${randomUUID()}`, phase: "final_answer", text },
+    },
+  });
+}
 
 function childTurn(id, status) {
   return { error: null, id, items: [], status };

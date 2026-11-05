@@ -227,6 +227,61 @@ describe("Codex app-server harness", () => {
     },
   );
 
+  it("keeps a call's context out of a running turn, so its reply is still spoken", async () => {
+    const fixture = await setup("voice-note", { accessMode: "auto-accept-edits" });
+    const offer = new Deferred<string>();
+    const lifetime = new AbortController();
+    const spoken: string[] = [];
+    let writer:
+      { speak(text: string): Promise<void>; note(text: string): Promise<void> } | undefined;
+    const session = await fixture.adapter.startSession({
+      ...fixture.context,
+      voiceCall: {
+        offer: offer.promise,
+        signal: lifetime.signal,
+        answer: () => undefined,
+        connect: (value: typeof writer) => {
+          writer = value;
+        },
+        speak: async (_id: string, text: string) => {
+          spoken.push(text);
+        },
+        end: () => lifetime.abort(),
+      },
+    });
+    const events: HarnessEvent[] = [];
+    const consume = (async () => {
+      for await (const event of session.events) events.push(event);
+    })();
+    const execution = session.execute(fixture.turn("Voice call seed must never be sent"));
+    const injected = async () =>
+      (await fixture.capture()).flatMap((r) =>
+        r.method === "thread/inject_items" ? [JSON.stringify(r.params)] : [],
+      );
+    try {
+      offer.resolve("private-offer");
+      await vi.waitFor(
+        () => expect(events.some((e) => e.type === "assistant.message")).toBe(true),
+        {
+          timeout: 2000,
+        },
+      );
+      await writer!.note("view during the turn");
+      await writer!.speak("finish the turn");
+      await vi.waitFor(() => expect(spoken).toEqual(["the reply"]), { timeout: 2000 });
+      await vi.waitFor(async () => expect(await injected()).toHaveLength(1), { timeout: 2000 });
+      expect((await injected())[0]).toContain("view during the turn");
+      await writer!.note("view between turns");
+      await vi.waitFor(async () => expect(await injected()).toHaveLength(2), { timeout: 2000 });
+    } finally {
+      lifetime.abort();
+      await execution;
+      await session.stop();
+      await consume;
+      await fixture.adapter.close();
+    }
+  });
+
   it.each([["host_only_tool"], ["thread_read", "integration_call", "computer"]])(
     "enables exactly the Host plan %j",
     async (...tools) => {

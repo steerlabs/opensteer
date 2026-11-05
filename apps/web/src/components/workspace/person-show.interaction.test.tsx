@@ -5,6 +5,7 @@ import { PersonShowMessageSchema, computerAppIdentityKey } from "@opensteer/prot
 import { createId } from "@opensteer/core";
 import { VoiceController } from "@opensteer/client/voice";
 import {
+  click,
   client,
   element,
   goTo,
@@ -166,6 +167,33 @@ it("leaves other focused work, hidden windows and other conversations alone with
   expect(history).toHaveLength(before);
   await act(async () => client.receivePersonShow(message));
   expect(history.at(-1)!.path).toBe(`/threads/${target.id}`);
+});
+
+it("keeps following its Run with a place over the conversation and the dock closed", async () => {
+  await mount("/");
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const snapshot = client.getSnapshot();
+  const source = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+  const show = (target: object) =>
+    act(async () =>
+      client.receivePersonShow(
+        PersonShowMessageSchema.parse({
+          type: "host.show",
+          runId: createId("run"),
+          workspaceId: source.workspaceId,
+          threadId: source.id,
+          target,
+        }),
+      ),
+    );
+  const place = pageTab();
+  if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");
+  await show({ tabId: place.destination.tabId });
+  await click(element('[aria-label="Hide the conversation"]'));
+  const threadId = createId("thread");
+  await show({ threadId });
+  expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
 });
 
 it("opens what the voice call's agent shows from any screen, and ignores a call it replaced", async () => {

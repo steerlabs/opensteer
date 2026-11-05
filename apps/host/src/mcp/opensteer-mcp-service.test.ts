@@ -614,7 +614,11 @@ it("refuses voice durable-work tools at invocation before their handlers", async
     ...f.options,
     store: {
       ...f.options.store,
-      voiceCallForRun: async () => ({ sessionId: "voice", admittedAt: new Date() }),
+      voiceCallForRun: async () => ({
+        sessionId: "voice",
+        ownerId: createId("user"),
+        admittedAt: new Date(),
+      }),
     },
   });
   await expect(
