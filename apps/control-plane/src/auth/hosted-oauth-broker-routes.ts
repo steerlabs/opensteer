@@ -40,6 +40,7 @@ const MetadataQuerySchema = z.strictObject({ version: z.literal("2").optional() 
 export function registerHostedOAuthBrokerRoutes(
   app: FastifyInstance,
   dependencies: {
+    readonly appleSignIn?: boolean;
     readonly authenticator: ControlPlaneAuthenticator;
     readonly auth?: ControlPlaneAuth;
     readonly broker: HostedOAuthBrokerService;
@@ -177,7 +178,10 @@ export function registerHostedOAuthBrokerRoutes(
               title: "Use the linked Opensteer Account",
               detail: `This browser is signed in${session ? ` as ${session.user.email}` : " to another Account"}. Switch to the Opensteer Account linked to that Opensteer.`,
             }) +
-            `<form method="post" action="/sign-in/google"><input type="hidden" name="return_to" value="${escapeHtml(request.url)}"><input type="hidden" name="switch_account" value="1"><button class="btn btn--primary" type="submit">Switch account</button></form>`;
+            `<form method="post" action="/sign-in/google"><input type="hidden" name="return_to" value="${escapeHtml(request.url)}"><input type="hidden" name="switch_account" value="1"><button class="btn btn--primary" type="submit">Switch account</button></form>` +
+            (dependencies.appleSignIn
+              ? `<form method="post" action="/sign-in/apple"><input type="hidden" name="return_to" value="${escapeHtml(request.url)}"><input type="hidden" name="switch_account" value="1"><button class="btn" type="submit">Switch to an Apple account</button></form>`
+              : "");
           return reply.code(403).send(
             sendBrowserPage(reply, {
               body,

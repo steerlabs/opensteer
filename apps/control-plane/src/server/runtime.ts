@@ -1,3 +1,4 @@
+import { appleClientSecret } from "../auth/apple-sign-in.js";
 import { ControlPlaneAuthenticator, createControlPlaneAuth } from "../auth/auth.js";
 import { BetterAuthAccountAdoptionCompletionGrantIssuer } from "../adoption/adoption-grant-issuer.js";
 import { AdoptionOperationCipher } from "../adoption/adoption-operation-crypto.js";
@@ -33,7 +34,18 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
   const database = createControlPlaneDatabase({ connectionString: config.databaseUrl });
   try {
     await migrateControlPlaneToLatest(database);
-    const auth = createControlPlaneAuth(database, config);
+    const appleSignIn = config.appleSignIn;
+    const auth = createControlPlaneAuth(database, {
+      ...config,
+      ...(appleSignIn
+        ? {
+            apple: {
+              clientId: appleSignIn.clientId,
+              clientSecret: await appleClientSecret(appleSignIn),
+            },
+          }
+        : {}),
+    });
     const connectLifecycle = new ConnectLifecycleService(
       database,
       new CloudflareConnectProvider(config.connectCloudflare),
@@ -88,6 +100,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     });
     const server = await createControlPlaneServer(
       {
+        ...(appleSignIn ? { appleSignIn } : {}),
         auth,
         authenticator: new ControlPlaneAuthenticator(auth, database, config.publicOrigin),
         connectLifecycle,

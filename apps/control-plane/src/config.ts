@@ -1,3 +1,4 @@
+import type { AppleSignInConfig } from "./auth/apple-sign-in.js";
 import {
   isBareOrigin,
   isSecureOrLoopbackOrigin,
@@ -101,19 +102,16 @@ function assertPrivateKey(
 
 const minimumRsaModulusLength = 2_048;
 
-/** The ES256 signing key Apple issues for the APNs provider token. */
-const ApnsPrivateKeySchema = z
-  .string()
-  .min(100)
-  .max(8_192)
-  .superRefine((value, context) =>
-    assertPrivateKey(
-      value,
-      { curve: "prime256v1", type: "ec" },
-      context,
-      "OPENSTEER_APNS_PRIVATE_KEY",
-    ),
-  );
+/** Apple issues one ES256 key shape for APNs provider tokens and Sign in with Apple. */
+const applePrivateKeySchema = (label: string) =>
+  z
+    .string()
+    .min(100)
+    .max(8_192)
+    .superRefine((value, context) =>
+      assertPrivateKey(value, { curve: "prime256v1", type: "ec" }, context, label),
+    );
+const ApnsPrivateKeySchema = applePrivateKeySchema("OPENSTEER_APNS_PRIVATE_KEY");
 
 /**
  * The Google service account FCM v1 authenticates with. The project id comes
@@ -178,6 +176,18 @@ const AccountEnvironmentSchema = z
     OPENSTEER_PERSONAL_ACCOUNT_LINK_OPERATION_KEY: Base64UrlKeySchema,
     OPENSTEER_GOOGLE_CLIENT_ID: z.string().min(1),
     OPENSTEER_GOOGLE_CLIENT_SECRET: z.string().min(1),
+    OPENSTEER_APPLE_SIGN_IN_CLIENT_ID: z.string().min(1).optional(),
+    OPENSTEER_APPLE_SIGN_IN_KEY_ID: z
+      .string()
+      .regex(/^[A-Z0-9]{10}$/u)
+      .optional(),
+    OPENSTEER_APPLE_SIGN_IN_PRIVATE_KEY: applePrivateKeySchema(
+      "OPENSTEER_APPLE_SIGN_IN_PRIVATE_KEY",
+    ).optional(),
+    OPENSTEER_APPLE_SIGN_IN_TEAM_ID: z
+      .string()
+      .regex(/^[A-Z0-9]{10}$/u)
+      .optional(),
     OPENSTEER_HOSTED_OAUTH_STATE_KEY: Base64UrlKeySchema.optional(),
     OPENSTEER_HOSTED_OAUTH_ENCRYPTION_KEY: z.string().min(80).max(512).optional(),
     OPENSTEER_HOSTED_OAUTH_DISCORD_CLIENT_ID: z.string().min(1).optional(),
@@ -233,6 +243,7 @@ export interface ControlPlaneConfig {
   readonly personalAccountLinkOperationKey: string;
   readonly googleClientId: string;
   readonly googleClientSecret: string;
+  readonly appleSignIn?: AppleSignInConfig;
   readonly hostedOAuth?: {
     readonly encryptionPrivateKey: string;
     readonly attemptContextEncryptionKey: string;
@@ -325,6 +336,7 @@ export function loadControlPlaneConfig(
     personalAccountLinkOperationKey: parsed.OPENSTEER_PERSONAL_ACCOUNT_LINK_OPERATION_KEY,
     googleClientId: parsed.OPENSTEER_GOOGLE_CLIENT_ID,
     googleClientSecret: parsed.OPENSTEER_GOOGLE_CLIENT_SECRET,
+    ...(appleSignInConfig(parsed) ? { appleSignIn: appleSignInConfig(parsed)! } : {}),
     ...(hostedOAuthConfig(parsed) ? { hostedOAuth: hostedOAuthConfig(parsed)! } : {}),
     portalOrigin: parsed.OPENSTEER_PORTAL_ORIGIN,
     connectDomain: parsed.OPENSTEER_CONNECT_DOMAIN,
@@ -349,6 +361,23 @@ export function loadControlPlaneConfig(
   } satisfies ControlPlaneConfig;
   assertNativeOAuthConfig(config);
   return config;
+}
+
+function appleSignInConfig(
+  parsed: z.infer<typeof AccountEnvironmentSchema>,
+): AppleSignInConfig | undefined {
+  const clientId = parsed.OPENSTEER_APPLE_SIGN_IN_CLIENT_ID;
+  const keyId = parsed.OPENSTEER_APPLE_SIGN_IN_KEY_ID;
+  const privateKeyPem = parsed.OPENSTEER_APPLE_SIGN_IN_PRIVATE_KEY;
+  const teamId = parsed.OPENSTEER_APPLE_SIGN_IN_TEAM_ID;
+  if (clientId && keyId && privateKeyPem && teamId)
+    return { clientId, keyId, privateKeyPem, teamId };
+  if (clientId || keyId || privateKeyPem || teamId) {
+    throw new Error(
+      "Sign in with Apple requires the client ID, key ID, private key and team ID together",
+    );
+  }
+  return undefined;
 }
 
 function pushConfig(parsed: z.infer<typeof AccountEnvironmentSchema>) {
