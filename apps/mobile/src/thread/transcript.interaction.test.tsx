@@ -969,7 +969,7 @@ it("renders published apps in isolated native WebViews, caps inline height and r
     expect(JSON.parse(frame().getAttribute("data-isolation")!)).toEqual({
       incognito: undefined,
       sharedCookiesEnabled: false,
-      thirdPartyCookiesEnabled: true,
+      thirdPartyCookiesEnabled: false,
       allowFileAccess: false,
     });
     press(container, "Report app height");

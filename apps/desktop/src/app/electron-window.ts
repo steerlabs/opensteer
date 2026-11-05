@@ -1,5 +1,5 @@
 import { resolveDesktopAppBranding } from "@opensteer/protocol/desktop";
-import { isAppNavigation } from "@opensteer/shared/appFrame";
+import { isAppNavigation, isAppOriginUrl } from "@opensteer/shared/appFrame";
 import { configureDesktopPermissions } from "./media-permissions.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import {
@@ -76,8 +76,8 @@ export function configureDesktopSession(
       urls: ["<all_urls>"],
     },
     (details: OnBeforeRequestListenerDetails, callback) => {
-      void (async () => {
-        if (attachedHost) policy.setAttachedHost(await attachedHost());
+      const source = details.initiatorOrigin ?? details.frame?.url ?? "";
+      const decide = () =>
         callback({
           cancel: !policy.allowsNetworkRequest(details.url, {
             url: details.frame?.url ?? "",
@@ -87,7 +87,18 @@ export function configureDesktopSession(
               : { initiatorOrigin: details.initiatorOrigin }),
           }),
         });
-      })().catch(() => callback({ cancel: true }));
+      // Resolving the attachment can wait on the route; the app's own files must not.
+      if (!attachedHost || !(isAppOriginUrl(details.url) || isAppOriginUrl(source))) {
+        decide();
+        return;
+      }
+      void attachedHost().then(
+        (host) => {
+          policy.setAttachedHost(host);
+          decide();
+        },
+        () => callback({ cancel: true }),
+      );
     },
   );
 }
@@ -149,6 +160,8 @@ export function configureDesktopWindowNavigation(
       guardNavigation(event, event.url);
       return;
     }
+    // A frame an app embeds is that app's business; the network policy still applies to it.
+    if (event.frame?.parent && policy.isPublishedApp(event.frame.parent.url)) return;
     const source =
       event.frame &&
       (policy.isPublishedApp(event.frame.url) ? event.frame.url : pendingFrames.get(event.frame));

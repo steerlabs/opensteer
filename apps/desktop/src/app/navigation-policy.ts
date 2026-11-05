@@ -76,7 +76,7 @@ export class DesktopAppOriginPolicy {
     if (isDesktopAppUrl(url) || isPublishedAppUrl(value)) return true;
     if (isAppOriginUrl(value) && !this.isAttachedApp(value)) return false;
     if (frame?.resourceType === "subFrame" && this.isAttachedApp(value)) return true;
-    if (frame?.resourceType === "mainFrame" || frame?.resourceType === "subFrame") return false;
+    if (frame?.resourceType === "mainFrame") return false;
     const source = frame?.initiatorOrigin ?? frame?.url;
     if (
       source &&
