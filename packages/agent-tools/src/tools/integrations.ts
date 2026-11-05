@@ -153,7 +153,7 @@ export const computer = defineAgentTool({
   name: "computer",
   title: "Operate apps and phones",
   description:
-    "Run JavaScript for Mac apps/Agent Phones; persistent within this Run only. Discover with apps()/phones(), open app(name, {computer}) or phone(name), then observe. Read opensteer:computer-use for methods and sealed sign-in fields. Await calls; return/print() JSON. Returns ordered text/images/receipts; deadline 100 seconds. No credential reads, permission changes or sign-in bypasses.",
+    "Run JavaScript for Mac apps/Agent Phones; persistent within this Run only. Discover with apps()/phones(), open app(name, {computer}) or phone(name), then observe. Read opensteer:computer-use for methods and sealed sign-in fields. Await calls; return/print() JSON. Returns ordered text/images/receipts; deadline 100 seconds. No permission changes or sign-in bypasses. Credential reads are limited to the authorized phone screen-lock PIN exception in opensteer:computer-use.",
   input: z
     .strictObject({ code: z.string().min(1).max(65536) })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),

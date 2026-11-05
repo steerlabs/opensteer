@@ -78,9 +78,10 @@ tricked agent can still type into the wrong app. Saved credentials use
 
 Agents can press keyguard controls and use a person-supplied screen-lock PIN for an authorized
 unlock, following [agent guidance](../apps/runner/agent-skills/skills/computer-use/references/phones.md).
-A PIN supplied to an agent enters its transcript; remembering one requires the person's explicit
-request and a private file outside memory and version control. Android 13+ hides the bouncer from
-MediaProjection, so agents may need the person when controls are unavailable. Wake dismisses only
+A supplied or retained PIN used by an agent enters its transcript. Remembering one requires the
+person's explicit request and a private file in personal Main, outside memory and version control;
+shared Projects must not hold it. Android 13+ hides the bouncer from MediaProjection, so agents
+may need the person when controls are unavailable. Wake dismisses only
 a keyguard that needs no credential. Lock is not Stop.
 
 ## Live display
