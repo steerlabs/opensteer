@@ -1,3 +1,5 @@
+import { ReplyTargetSchema } from "@opensteer/core";
+import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
 import { requestSettlementActor, readRequestSettlementProvenance } from "./request-settlement.js";
 import {
   AssignmentIdSchema,
@@ -106,7 +108,12 @@ import {
 import { insertBrowserProfile } from "./browser-session-store.js";
 import { runHasActiveGrant } from "./run-grants.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
-import { jsonValue, safeGeneration } from "./store-primitives.js";
+import {
+  jsonValue,
+  safeGeneration,
+  threadPathLinks,
+  type ChannelLinks,
+} from "./store-primitives.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 
 export { cancelPending } from "./request-cancellation.js";
@@ -257,7 +264,10 @@ export interface PreparedIntegrationInstallFulfillment {
 export class RequestStore {
   readonly #database: Kysely<DatabaseSchema>;
 
-  constructor(database: Kysely<DatabaseSchema>) {
+  readonly #links: ChannelLinks;
+
+  constructor(database: Kysely<DatabaseSchema>, links: ChannelLinks = threadPathLinks) {
+    this.#links = links;
     this.#database = database;
   }
 
@@ -312,7 +322,7 @@ export class RequestStore {
           ...(replay ? [replay.originatingWorkspaceId, replay.targetWorkspaceId] : []),
         ];
       },
-      (transaction) => createRequestInTransaction(transaction, input),
+      (transaction) => createRequestInTransaction(this.#links, transaction, input),
       async (transaction) => {
         await lockRequestOrigin(transaction, input);
       },
@@ -1851,6 +1861,7 @@ export class RequestStore {
         }
         if (current && covered) {
           const mutation = await createRequestInTransaction(
+            this.#links,
             transaction,
             await integrationAccessRequestInput(transaction, {
               ...origin,
@@ -1891,7 +1902,7 @@ export class RequestStore {
           },
         });
         const setupRequest = computerAppSetupRequestFromRow(row);
-        const mutation = await createRequestInTransaction(transaction, {
+        const mutation = await createRequestInTransaction(this.#links, transaction, {
           ...origin,
           callId:
             input.idempotencyKey ??
@@ -2699,7 +2710,7 @@ export class RequestStore {
         }
         // A replay of the opening call, a new Request, or the refusal for a
         // Run that can no longer ask.
-        return recordJoins(await createRequestInTransaction(transaction, fields));
+        return recordJoins(await createRequestInTransaction(this.#links, transaction, fields));
       },
       (transaction) => lockRequestOrigin(transaction, input),
     );
@@ -3109,6 +3120,7 @@ async function integrationAccessRequestInput(
 }
 
 async function createRequestInTransaction(
+  links: ChannelLinks,
   transaction: Transaction<DatabaseSchema>,
   input: CreateRequestInput,
 ): Promise<RequestMutation> {
@@ -3350,6 +3362,21 @@ async function createRequestInTransaction(
     await insertIntegrationDetail(transaction, inserted.id, input.integrationDetail);
   }
   const canonical = requestFromRow(inserted);
+  if (canonical.mode === "durable" && canonical.originatingRunId) {
+    const run = await transaction
+      .selectFrom("runs")
+      .select("replyTarget")
+      .where("id", "=", canonical.originatingRunId)
+      .executeTakeFirstOrThrow();
+    if (run.replyTarget) {
+      const target = ReplyTargetSchema.parse(run.replyTarget);
+      await enqueueChannelConversationStatus(transaction, {
+        conversationId: target.conversationId,
+        text: `The agent has asked for your input. Open the Thread in Opensteer: ${links.threadUrl(canonical.originatingThreadId)}`,
+      });
+    }
+  }
+
   const event = await appendHostWorkspaceEvent(transaction, {
     data: { request: canonical },
     environmentId: origin.environmentId,

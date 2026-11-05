@@ -2365,7 +2365,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       kind: "computer.app.access",
       status: "pending",
       replayed: false,
-      nextAction: `Approval for ${mac} is pending; the owner can allow or decline from any Opensteer app. Pending stops the Run.`,
+      nextAction: `Approval for ${mac} is pending; the owner can allow or decline from any Opensteer app. Pending permits only independent work; do not poll, repeat or route around the Request.`,
     });
     const [setup] = await world.persistence.listComputerAppSetupRequests(world.owner.userId);
     expect(setup).toMatchObject({
@@ -2704,7 +2704,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(widen).toMatchObject({
       kind: "computer.app.access",
       status: "pending",
-      nextAction: `Approval for ${mac} is pending; the owner can allow or decline from any Opensteer app. Pending stops the Run.`,
+      nextAction: `Approval for ${mac} is pending; the owner can allow or decline from any Opensteer app. Pending permits only independent work; do not poll, repeat or route around the Request.`,
     });
     await vi.waitFor(() => expect(world.fakeMac.reviews).toHaveLength(reviews + 1));
     expect(await world.appAccess()).toMatchObject({ TextEdit: "read" });
@@ -3679,7 +3679,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     );
     expect(pending).toMatchObject({
       kind: "computer.app.access",
-      nextAction: `Approval is pending; the owner can allow or decline from any Opensteer app. Pending stops the Run.`,
+      nextAction: `Approval is pending; the owner can allow or decline from any Opensteer app. Pending permits only independent work; do not poll, repeat or route around the Request.`,
       replayed: false,
       status: "pending",
     });
@@ -4221,7 +4221,7 @@ function json(result: ToolResult) {
       "pending:mac waits for its owner",
       "pending:workspace waits on a Workspace grant",
       "do not repeat pending Requests",
-      "Pending stops the Run",
+      "Pending permits only independent work; do not poll, repeat or route around the Request",
       "do not retry in a loop",
       "permission-required",
       "appApproval:automatic",

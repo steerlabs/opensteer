@@ -23,7 +23,7 @@ import { OpensteerError, RequestIdSchema, ThreadIdSchema, type Thread } from "@o
 import type { OpensteerStore } from "@opensteer/database";
 import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
 import { safeMessage } from "@opensteer/shared/safeMessage";
-import { requestPendingHeader, requestPendingStopText } from "@opensteer/shared/requestParking";
+import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -129,7 +129,6 @@ export class OpensteerMcpService {
       extra: {
         disconnected: disconnected.signal,
         caller: authorization,
-        parkForRequest: () => response.setHeader(requestPendingHeader, "1"),
       },
     };
     const sessionId = singleHeader(request.headers["mcp-session-id"]);
@@ -374,7 +373,7 @@ export class OpensteerMcpService {
           if (tool.output === IntegrationCallOutputSchema)
             return IntegrationCallOutputSchema.parse(result);
           const currentCaller = resolvedCaller ?? caller;
-          let parking = false;
+          let pendingRequest = false;
           if (
             currentCaller.kind === "run" &&
             result.status === "pending" &&
@@ -382,17 +381,15 @@ export class OpensteerMcpService {
           ) {
             const id = RequestIdSchema.safeParse(result.requestId);
             const request = id.success ? await this.options.store.requests.get(id.data) : null;
-            parking =
+            pendingRequest =
               request?.mode === "durable" &&
               request.status === "pending" &&
               request.originatingRunId === currentCaller.claims.runId;
-            const park = extra.authInfo?.extra?.parkForRequest;
-            if (parking && typeof park === "function") park();
           }
           return {
             content: [
               { type: "text" as const, text: JSON.stringify(result) },
-              ...(parking ? [{ type: "text" as const, text: requestPendingStopText }] : []),
+              ...(pendingRequest ? [{ type: "text" as const, text: requestPendingGuidance }] : []),
             ],
             structuredContent: result,
             ...(result.isError === true ? { isError: true } : {}),

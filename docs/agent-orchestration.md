@@ -42,17 +42,14 @@ Assignment, engine and model; Stop cancels their untaken inputs without pausing 
 ordinary message never answers a Request. Live harness Requests hold their native turn; a new
 person message can start work normally after a Run ends with durable Requests still pending.
 
-Durable Requests return immediately and ask the model to end its turn. The Runner refuses further
-work tools while allowing the remaining setup asks, and interrupts after one bounded grace period if
-the model does not end. A turn that leaves native background work running releases this restriction
-and keeps that work alive. Awaiting the person is not a failure or a person's Stop; durable Requests
-and Assignments outlive the turn. Native harness Requests keep blocking natively. Answered durable
-Requests continue once the origin turn has ended and its durable siblings settle, joining any
-background work still running. A newer Run on the Thread releases older settled outcomes too, so an
-abandoned ask cannot hold up later work. Eligible outcomes from one Run arrive together; different
-Runs stay independent.
-Trigger Occurrences have no native turn to resume. Requests returned without a requestId, including
-plugin installation, cannot signal the Runner to stop.
+Durable Requests return immediately and grant no authority. Agents can continue independent work,
+briefly explain the ask, and end their turn when none remains. They must not poll, repeat or route
+around the ask. An answer during a turn is visible through request_list; automatic delivery waits
+until the turn ends (or enters background) and its durable siblings settle. A newer Run releases
+older settled outcomes too, so an abandoned ask cannot hold up later work. Eligible outcomes from
+one Run arrive together; different Runs stay independent. Requests and Assignments outlive the
+turn. Native harness Requests keep blocking natively. Trigger Occurrences have no native turn to
+resume.
 
 Thread state is a stored projection; pending Requests drive Needs you independently of whether a
 Run still executes. The [lock order](../packages/database/src/lock-order.ts) is authoritative: lock the

@@ -224,7 +224,7 @@ export class OpensteerStore {
     this.#database = database;
     this.#links = options.links ?? threadPathLinks;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
-    this.requests = new RequestStore(database);
+    this.requests = new RequestStore(database, this.#links);
     this.notificationState = new NotificationStateStore(database);
     this.browserHistory = new BrowserHistoryStore(database);
   }

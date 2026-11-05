@@ -12,7 +12,7 @@ Runs, including delegated workers within their inherited reach, can request inte
 
 `integration_request` and `integration_propose` create an `integration.access`,
 `integration.install` or `computer.app.access` Request and return
-`{requestId, kind, status, replayed}` immediately, usually `status: "pending"`. Pending stops the Run; a trigger occurrence gets no such message (see [boundaries](boundaries.md)). After a decline, continue without it unless the user asks again. A
+`{requestId, kind, status, replayed}` immediately, usually `status: "pending"`. Pending permits only independent work; do not poll, repeat or route around the Request; a trigger occurrence gets no such message (see [boundaries](boundaries.md)). After a decline, continue without it unless the user asks again. A
 Request exists only once one of these calls returns a `requestId`; search results are discovery, not
 permission or durable state.
 
