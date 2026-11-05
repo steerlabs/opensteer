@@ -143,6 +143,13 @@ describe("place catalog", () => {
       const row = placeList(offline).find((place) => place.kind === "phone")!;
       expect(row.availability).toBe("unavailable");
       expect(placeDestinationEnded(offline, row.destination)).toBe(false);
+      const closed = withPhone({
+        ...phone,
+        computerUse: null,
+        status: "offline",
+        tabOpenedAt: null,
+      });
+      expect(placeDestinationEnded(closed, row.destination)).toBe(true);
 
       const view = {
         generation: 1,

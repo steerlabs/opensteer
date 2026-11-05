@@ -537,8 +537,8 @@ export function placeDestinationEnded(
   if (destination.kind === "opensteer-app") return !isAppTabOpen(source, destination.appId);
   const machine = source.machines.find((item) => item.id === destination.machineId);
   if (!machine) return true;
+  if (destination.kind === "phone") return !phoneTabOpen(machine);
   const computerUse = machine.computerUse;
-  if (destination.kind === "phone") return computerUse !== null && !phoneTabOpen(machine);
   if (!computerUse) return false;
   if (destination.source?.kind === "owner-view") {
     const { generation, viewId } = destination.source;

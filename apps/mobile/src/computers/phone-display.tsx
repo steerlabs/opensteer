@@ -690,6 +690,17 @@ export function PhoneTabView(props: {
   readonly onTyping: (typing: boolean) => void;
 }) {
   const { hostClient, machineId, onClosed } = props;
+  const navigation = useNavigation();
+  // The view Open asked for can replace the page that asked before the answer
+  // arrives. That is not leaving, so presence is the tab's, or Open cancels its wake.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const stillHere = useCallback(() => mounted.current && navigation.isFocused(), [navigation]);
   const key = phonePlaceKey(machineId);
   const place = usePlaceList(hostClient).find((item) => item.key === key) ?? null;
   const closeTab = () => {
@@ -725,6 +736,7 @@ export function PhoneTabView(props: {
             : []),
         ]}
         onTyping={props.onTyping}
+        stillHere={stillHere}
         viewId={place.ownerView.viewId}
       />
     );
@@ -745,6 +757,7 @@ export function PhoneTabView(props: {
       hostClient={hostClient}
       machineId={machineId}
       onClose={closable ? closeTab : null}
+      stillHere={stillHere}
     />
   );
 }
@@ -753,9 +766,9 @@ function PhoneTabResting(props: {
   readonly hostClient: HostClient;
   readonly machineId: string;
   readonly onClose: (() => void) | null;
+  readonly stillHere: () => boolean;
 }) {
   const { hostClient, machineId } = props;
-  const navigation = useNavigation();
   const [opening, setOpening] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const mounted = useRef(true);
@@ -774,10 +787,11 @@ function PhoneTabResting(props: {
     setOpening(true);
     setFailure(null);
     try {
+      const deploymentId = hostClient.getSnapshot().deploymentId;
       await openPhoneOwnerView(
         hostClient,
         machineId,
-        () => mounted.current && navigation.isFocused(),
+        () => props.stillHere() && hostClient.getSnapshot().deploymentId === deploymentId,
       );
     } catch (error) {
       if (mounted.current)
@@ -861,6 +875,8 @@ export function ComputerOwnerView(props: {
   readonly hostClient: HostClient;
   readonly machineId: string;
   readonly menu?: NativeMenuSection;
+  /** Presence of whatever outlives this view being replaced by a newer generation. */
+  readonly stillHere?: () => boolean;
   readonly viewId: string;
   /** The Mac window the view bound, reopened as the same window. */
   readonly windowId?: number | undefined;
@@ -882,8 +898,7 @@ export function ComputerOwnerView(props: {
     try {
       const deploymentId = hostClient.getSnapshot().deploymentId;
       const stillHere = () =>
-        mounted.current &&
-        navigation.isFocused() &&
+        (props.stillHere?.() ?? (mounted.current && navigation.isFocused())) &&
         hostClient.getSnapshot().deploymentId === deploymentId;
       if (props.appKey === null) {
         await openPhoneOwnerView(hostClient, props.machineId, stillHere);

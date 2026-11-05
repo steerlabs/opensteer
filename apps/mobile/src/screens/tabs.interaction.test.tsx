@@ -2088,6 +2088,7 @@ it.each(["mac", "phone", "personal", "other", "no-computer-use"])(
           {
             ...machine,
             ownership: kind === "personal" ? "deployment" : kind === "other" ? "other" : "mine",
+            tabOpenedAt: null,
             computerUse:
               kind === "no-computer-use"
                 ? null

@@ -48,6 +48,32 @@ describe("phone tabs", () => {
     expect(test.changed).toHaveBeenCalledOnce();
   });
 
+  it("keeps a tab that a new task opened while a close was being written", async () => {
+    let open = true;
+    let finishClose = () => undefined as void;
+    const test = tabs();
+    test.store.openPhoneTab.mockImplementation(async () => {
+      const opened = !open;
+      open = true;
+      return opened;
+    });
+    test.store.closePhoneTab.mockImplementation(
+      () =>
+        new Promise<undefined>((resolve) => {
+          finishClose = () => {
+            open = false;
+            resolve(undefined);
+          };
+        }),
+    );
+    const closing = test.service.close(owner, machine);
+    await vi.waitFor(() => expect(test.store.closePhoneTab).toHaveBeenCalledOnce());
+    test.service.opened(machine);
+    finishClose();
+    await closing;
+    await vi.waitFor(() => expect(open).toBe(true));
+  });
+
   it("refuses anyone but the phone's effective owner", async () => {
     const test = tabs({ effectiveOwner: createId("user") });
     await expect(test.service.close(owner, machine)).rejects.toMatchObject({ code: "not_found" });

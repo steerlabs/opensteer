@@ -1101,6 +1101,44 @@ it("reopens an ended phone owner view through the explicit open path", async () 
   expect(state.dispatch).not.toHaveBeenCalled();
 });
 
+it("keeps Open's wake when the Host's notice replaces the resting page before the answer", async () => {
+  const { client, move, render } = await setup(true, "android", false, true, "tab");
+  const [held] = client.getSnapshot().machines;
+  const resting = {
+    ...held!,
+    tabOpenedAt: "2026-11-02T12:00:00.000Z",
+    computerUse: { ...held!.computerUse!, sessions: [] },
+  };
+  move!({ machines: [resting] });
+  await render();
+  const view = {
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    generation: 2,
+    machineId: "machine",
+    state: "ready",
+    target: { kind: "phone", display: "main" },
+    viewId: "new-owner",
+  };
+  let answer = (_: unknown) => undefined as void;
+  vi.mocked(client.openComputerView).mockImplementationOnce(
+    () => new Promise((resolve) => (answer = resolve as typeof answer)),
+  );
+  const cancel = vi.spyOn(sharedDisplayStreams(client), "cancelAutoWake");
+  await press("Open Your phone");
+  await vi.waitFor(() => expect(client.openComputerView).toHaveBeenCalledOnce());
+  await act(async () =>
+    move!({
+      machines: [{ ...resting, computerUse: { ...resting.computerUse, ownerViews: [view] } }],
+    } as never),
+  );
+  await act(async () => {
+    answer(view);
+    await Promise.resolve();
+  });
+  await act(async () => undefined);
+  expect(cancel).not.toHaveBeenCalled();
+});
+
 it("rests a phone's tab on one Open after its task lets go, and closes it on request", async () => {
   const { client, move, render } = await setup(true, "android", false, true, "tab");
   await render();
