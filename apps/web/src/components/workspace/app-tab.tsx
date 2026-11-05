@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback } from "react";
 import { useLocation } from "react-router";
 import type { ReactNode } from "react";
 import {
@@ -18,7 +18,6 @@ import { conversationAt, homeThreadKind, type TaskDirectory } from "./task-direc
 import { ChatOrb, TaskMark } from "./task-mark.js";
 import { useWorkspace } from "./workspace-context.js";
 
-/** An HTML app's only state is its running frame: only a new version or a new address reloads it. */
 export function AppTab({
   directory,
   hostClient,
@@ -37,17 +36,6 @@ export function AppTab({
   const appId = place.opensteerApp?.appId ?? "";
   const theme = useAppTheme();
   const { view, failed, retry } = useAppView(hostClient, appId, theme);
-  const version = useHostSelector(
-    hostClient,
-    useCallback((snapshot: HostSnapshot) => snapshot.appVersions?.[appId] ?? 0, [appId]),
-  );
-  const held = useRef<{ readonly url: string; readonly version: number } | null>(null);
-  if (view) held.current = { url: view.url, version };
-  const url = held.current?.version === version ? held.current.url : null;
-  const retryFresh = () => {
-    held.current = null;
-    retry();
-  };
   return (
     <section
       aria-label={place.title}
@@ -58,17 +46,17 @@ export function AppTab({
       {selected ? (
         <AppTabBar directory={directory} leading={leading} place={place} trailing={trailing} />
       ) : null}
-      {url ? (
+      {view ? (
         <AppFrame
           fill
-          key={`${version}:${url}`}
-          retry={retryFresh}
+          key={view.url}
+          retry={retry}
           theme={theme}
           title={place.title}
-          url={url}
+          url={view.url}
         />
       ) : failed ? (
-        <AppLoadFailure fill retry={retryFresh} />
+        <AppLoadFailure fill retry={retry} />
       ) : (
         <AppLoading fill />
       )}

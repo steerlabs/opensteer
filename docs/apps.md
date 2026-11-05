@@ -9,7 +9,8 @@ There is no full-window view: a person must be able to look at an app and ask fo
 tab is one fact about the app, shared by the Workspace like a Guest browser tab, so it reaches every
 member's devices. It travels on the bootstrap, not the event stream, because clients follow only some
 Workspace channels; a type-only frame prompts the reread, and the bootstrap poll repairs a lost one.
-A Workspace holds at most 50, so a listed set is complete and absence means closed.
+A Workspace holds at most 50, and the bootstrap lists a viewer's newest 500. Past that a tab drops
+from the list and its frame unmounts, though the app and its cards stay.
 
 An HTML app's only state is its running frame, because the sandbox leaves it no storage. So a client
 runs one copy: while an app is a tab, its cards show a link instead of a frame. Web and desktop keep a
