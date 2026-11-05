@@ -84,7 +84,7 @@ const cardResults = {
     { released: false, reason: "no-field" },
   ],
 };
-const fixture = {
+const fixture: typeof brokerFixture = {
   ...brokerFixture,
   requests: { ...cardRequests, ...brokerFixture.requests },
   results: { ...cardResults, ...brokerFixture.results },

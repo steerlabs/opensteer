@@ -47,6 +47,10 @@ import {
   ComputerUseBridgeServer,
   ComputerUseSessionOwnership,
 } from "../src/computer-use/computer-use-bridge-server.js";
+import type {
+  PasswordsBrokerSession,
+  PasswordsBrokerCardSession,
+} from "../src/passwords/broker-session.js";
 import { PasswordsLoginAuthority } from "../src/passwords/login-authority.js";
 import { openLoginEnvelope } from "../src/passwords/login-envelope.js";
 import { PasswordsService } from "../src/passwords/passwords-service.js";
@@ -107,6 +111,7 @@ function scrub(value: string): string {
 }
 function secrets(): string[] {
   return [
+    "synthetic-payment-canary",
     fixture.password,
     fixture.totpSeed.toString("hex"),
     fixture.totpSeed.toString("base64"),
@@ -416,6 +421,7 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
       "authority echoes the Host reference",
       event?.type === "login.result" &&
         event.outcome.kind === "authorized" &&
+        "loginRef" in event.outcome &&
         event.outcome.loginRef === loginRef,
     );
     return { operationId, loginRef };
@@ -714,6 +720,7 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
   };
   return {
     browser,
+    targetId,
     contents,
     signIns,
     sessionId,
@@ -1015,6 +1022,140 @@ async function run(): Promise<void> {
     check("lease for B fills focused B", (await h.fill(child, "password")) === "filled");
     await h.screenshot("oopif");
   });
+  await journey(
+    "4-card",
+    "Payment OOPIF input, select and top-document replacement race",
+    async () => {
+      const h = await harness();
+      await h.navigate("/parent");
+      await waitFor("payment child", () =>
+        h.contents.mainFrame.frames.some((f) => f.url.startsWith(fixture.origin("other.test"))),
+      );
+      const child = h.contents.mainFrame.frames.find((f) =>
+        f.url.startsWith(fixture.origin("other.test")),
+      )!;
+      check("payment child is out of process", child.processId !== h.contents.mainFrame.processId);
+      await child.executeJavaScript(
+        `document.body.innerHTML='<input id="payment" type="tel"><select id="month"><option value="provider-month">01 - Jan</option></select>'; document.querySelector('#payment').focus()`,
+      );
+      const point = coordinate.parse(
+        await h.evaluate(
+          "(()=>{const r=document.querySelector('#child').getBoundingClientRect();return {x:r.left+40,y:r.top+35}})()",
+        ),
+      );
+      await h.clickAt(point.x, point.y);
+      await child.executeJavaScript("document.querySelector('#payment').focus()");
+      const card = {
+        id: randomUUID(),
+        revision: 1,
+        brand: "Visa",
+        lastFour: "4242",
+        label: null,
+        expiryMonth: 1,
+        expiryYear: 2030,
+      };
+      let hold = false;
+      const released = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      const broker: PasswordsBrokerSession & PasswordsBrokerCardSession = {
+        protocolVersion: 7,
+        probe: async () => ({ passwords: "unavailable" }),
+        request: async () => {
+          throw new Error("Login refused");
+        },
+        approve: async () => {
+          throw new Error("Login refused");
+        },
+        release: async () => ({ released: false, reason: "ended" }),
+        commit: async () => ({ committed: true }),
+        cancel: async () => {},
+        cardProbe: async () => ({ cards: "has-card" }),
+        cardRequest: async () => ({
+          decision: { decision: "approve", cards: [card] },
+          lifetime: new AbortController().signal,
+        }),
+        cardApprove: async () => ({ decision: "authorized", card }),
+        cardRelease: async (params) => {
+          if (hold) {
+            released.resolve();
+            await resume.promise;
+          }
+          return {
+            released: true,
+            value: params.field === "expiry-month" ? "01" : "synthetic-payment-canary",
+          };
+        },
+      };
+      const authority = new PasswordsLoginAuthority({ broker, ownOrigins: () => [] });
+      const events: PasswordSignInAuthorityEvent[] = [];
+      const emit = (e: PasswordSignInAuthorityEvent) => events.push(e);
+      const operationId = randomUUID(),
+        cardRef = `crd_${randomBytes(16).toString("hex")}`;
+      try {
+        await authority.control(
+          {
+            type: "login.authorize",
+            credential: "card",
+            operationId,
+            cardRef,
+            site: "https://bank.test",
+            workspaceId: WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000001"),
+            requester: {
+              deploymentId: "synthetic",
+              deploymentName: "Synthetic",
+              workspaceName: "Main",
+              threadTitle: "Payment",
+              reason: "Test payment field",
+            },
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+          emit,
+        );
+        await waitFor("card chooser", () => events.some((e) => e.type === "login.needs"));
+        await authority.control(
+          {
+            type: "login.approve",
+            credential: "card",
+            operationId,
+            cardId: card.id,
+            revision: 1,
+            permissionVersion: 7,
+          },
+          emit,
+        );
+        await authority.control({ type: "login.commit", operationId }, emit);
+        const fill = (field: "number" | "expiry-month") =>
+          authority.fillCardReference({
+            cardRef,
+            field,
+            targetId: h.targetId,
+            lease: new AbortController().signal,
+          });
+        check("cross-origin payment input filled", (await fill("number")) === "filled");
+        await child.executeJavaScript("document.querySelector('#month').focus()");
+        check("payment month select filled", (await fill("expiry-month")) === "filled");
+        await child.executeJavaScript("document.querySelector('#payment').focus()");
+        hold = true;
+        const pending = fill("number");
+        await Promise.race([
+          released.promise,
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("Card release never started")), 5000),
+          ),
+        ]);
+        await h.navigate("/field");
+        resume.resolve();
+        check("top replacement invalidates OOPIF write", (await pending) === "stale");
+        check(
+          "card results contain no values",
+          !JSON.stringify(events).includes("synthetic-payment-canary"),
+        );
+      } finally {
+        resume.resolve();
+        await authority.close();
+      }
+    },
+  );
   await journey("5", "Non-input focus refuses without release", async () => {
     const h = await harness();
     await h.navigate("/field");

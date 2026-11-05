@@ -215,7 +215,17 @@ const computerUseActionVariants = [
    */
   z.strictObject({
     target: ComputerUseTargetSchema.optional(),
-    text: z.union([z.string().min(1).max(20_000), LoginTextSchema]),
+    text: z.union([
+      z
+        .string()
+        .min(1)
+        .max(20_000)
+        .refine(
+          (value) => !value.startsWith("crd_"),
+          "Saved card references can only be used with fillCard in a Browser Session.",
+        ),
+      LoginTextSchema,
+    ]),
     type: z.literal("type"),
   }),
   z.strictObject({ keys: z.string().min(1).max(64), type: z.literal("key") }),

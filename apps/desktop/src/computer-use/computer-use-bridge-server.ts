@@ -732,7 +732,9 @@ export class ComputerUseBridgeServer {
         return;
       }
       if (
-        (command.data.type === "login.seal" || command.data.type === "login.cancel") &&
+        command.data.type !== "login.authorize" &&
+        command.data.type !== "signin.probe" &&
+        command.data.type !== "card.probe" &&
         !owner.passwords.has(command.data.operationId)
       ) {
         answer({ type: "unavailable" });

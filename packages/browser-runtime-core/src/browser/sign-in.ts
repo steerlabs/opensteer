@@ -1,4 +1,5 @@
 import type {
+  CardField,
   BrowserClientMessage,
   LoginAuthorizationOutcome,
   LoginField,
@@ -29,6 +30,12 @@ export interface BrowserLoginAuthority {
     | { kind: "authorized"; account: string; authority: AbortSignal }
     | { kind: "ended"; outcome: Exclude<LoginAuthorizationOutcome, { kind: "authorized" }> }
   >;
+  fillCardReference?(input: {
+    lease: AbortSignal;
+    cardRef: string;
+    targetId: string;
+    field: CardField;
+  }): Promise<LoginFillStatus>;
   fillReference?(input: {
     lease: AbortSignal;
     loginRef: string;

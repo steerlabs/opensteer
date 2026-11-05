@@ -1,4 +1,3 @@
-import { BrowserSiteSchema, RequestIdSchema } from "@opensteer/core";
 import { z } from "zod";
 
 export const cardUseLifetimeMs = 30 * 60_000;
@@ -69,40 +68,6 @@ export const CardAuthorizationOutcomeSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 export type CardAuthorizationOutcome = z.infer<typeof CardAuthorizationOutcomeSchema>;
-export const UseCardResultSchema = z.discriminatedUnion("status", [
-  z.strictObject({
-    status: z.literal("ready"),
-    site: BrowserSiteSchema,
-    cardRef: CardRefSchema,
-    ...CardPublicSchema.shape,
-  }),
-  z.strictObject({
-    status: z.literal("pending"),
-    site: BrowserSiteSchema,
-    requestId: RequestIdSchema,
-  }),
-  z.strictObject({
-    status: z.enum(["resolved", "declined", "needs-approval"]),
-    site: BrowserSiteSchema,
-  }),
-  z.strictObject({
-    status: z.literal("unavailable"),
-    site: BrowserSiteSchema,
-    reason: z.enum([
-      "unsupported",
-      "runtime-outdated",
-      "session-closed",
-      "not-allowed",
-      "rate-limited",
-      "busy",
-      "stopped",
-      "expired",
-      "interrupted",
-      "no-saved-card",
-      "passwords-off",
-      "passwords-not-set-up",
-      "passwords-not-responding",
-    ]),
-  }),
-]);
+export { UseCardOutputSchema as UseCardResultSchema } from "@opensteer/agent-tools/outputs";
+import { UseCardOutputSchema as UseCardResultSchema } from "@opensteer/agent-tools/outputs";
 export type UseCardResult = z.infer<typeof UseCardResultSchema>;

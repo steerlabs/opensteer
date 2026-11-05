@@ -4,7 +4,14 @@ import {
   PasswordsBrokerAccountsSchema,
   PasswordsBrokerAccountSchema,
 } from "./password-sign-in-accounts.js";
-import { CardChooserSchema, CardChooserViewSchema } from "./card-use.js";
+import {
+  CardChooserSchema,
+  CardChooserViewSchema,
+  CardApprovalSchema,
+  CardRefSchema,
+  CardAvailabilitySchema,
+  CardAuthorizationOutcomeSchema,
+} from "./card-use.js";
 import { ComputerUseSessionIdSchema } from "./computer-use-id.js";
 
 /** One deadline covers approval and the authorized login lease. */
@@ -119,7 +126,12 @@ export const PasswordSignInOutcomeSchema = z.discriminatedUnion("kind", [
 ]);
 export type PasswordSignInOutcome = z.infer<typeof PasswordSignInOutcomeSchema>;
 
-export const LoginRefSchema = z.string().regex(/^lgn_[0-9a-f]{32}$/u);
+export const LoginRefSchema = z
+  .string()
+  .regex(
+    /^lgn_[0-9a-f]{32}$/u,
+    "Saved card references can only be used with fillCard in a Browser Session.",
+  );
 export const LoginFieldSchema = z.enum(["username", "password", "code"]);
 export type LoginField = z.infer<typeof LoginFieldSchema>;
 export const LoginFillStatusSchema = z.enum([
@@ -294,7 +306,24 @@ export const PasswordSignInApprovalSchema = z.strictObject({
   permissionVersion: z.literal(5),
 });
 /** Session-independent Host commands, carried by the Personal Runner/desktop bridge. */
-export const PasswordSignInAuthorityCommandSchema = z.discriminatedUnion("type", [
+export const PasswordSignInAuthorityCommandSchema = z.union([
+  z.strictObject({ type: z.literal("card.probe") }),
+  z.strictObject({
+    type: z.literal("login.authorize"),
+    credential: z.literal("card"),
+    operationId: z.uuid(),
+    cardRef: CardRefSchema,
+    site: BrowserSiteSchema,
+    workspaceId: WorkspaceIdSchema,
+    requester: PasswordSignInRequesterSchema,
+    expiresAt: z.iso.datetime({ offset: true }),
+  }),
+  z.strictObject({
+    type: z.literal("login.approve"),
+    credential: z.literal("card"),
+    operationId: z.uuid(),
+    ...CardApprovalSchema.shape,
+  }),
   z.strictObject({ type: z.literal("signin.probe"), site: BrowserSiteSchema }),
   z.strictObject({ type: z.literal("login.get"), operationId: z.uuid() }),
   z.strictObject({
@@ -339,6 +368,7 @@ export const LoginSealResultSchema = z.discriminatedUnion("status", [
 ]);
 export type LoginSealResult = z.infer<typeof LoginSealResultSchema>;
 export const PasswordSignInAuthorityResultSchema = z.union([
+  z.strictObject({ type: z.literal("card.probe.result"), cards: CardAvailabilitySchema }),
   z.strictObject({
     type: z.literal("signin.probe.result"),
     passwords: PasswordSignInAvailabilitySchema,
@@ -371,7 +401,7 @@ export const PasswordSignInAuthorityEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("login.result"),
     operationId: z.uuid(),
-    outcome: LoginAuthorizationOutcomeSchema,
+    outcome: z.union([LoginAuthorizationOutcomeSchema, CardAuthorizationOutcomeSchema]),
   }),
   z.strictObject({ type: z.literal("login.ended"), operationId: z.uuid() }),
 ]);
