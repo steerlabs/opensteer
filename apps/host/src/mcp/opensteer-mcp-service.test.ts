@@ -10,6 +10,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentCaller, RunCaller } from "./agent-caller.js";
 import type { AgentToolHandlers } from "./handlers/index.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
+import { ProductToolHandlers } from "./handlers/product.js";
+import { TriggerToolHandlers } from "./handlers/triggers.js";
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -419,6 +421,139 @@ describe("Opensteer MCP spine", () => {
       await client.close();
     } finally {
       for (const resolve of finish) resolve();
+      await f.service.close();
+    }
+  });
+  it.each(["run", "connection"])(
+    "preserves safe Request details for %s without exposing payloads or answers",
+    async (token) => {
+      const f = fixture();
+      const request = {
+        id: createId("request"),
+        kind: "browser.password-sign-in",
+        status: "pending",
+        createdAt: new Date().toISOString(),
+        originatingThreadId: f.thread.id,
+        targetWorkspaceId: f.thread.workspaceId,
+        presentation: { kind: "confirm", title: "Sign in to Example" },
+        payload: {
+          kind: "browser.password-sign-in",
+          reason: "Check the account",
+          loginSecret: "private-payload",
+        },
+        response: { password: "private-answer" },
+      };
+      const window = {
+        hasMore: false,
+        nextBefore: null,
+        totalItems: 2,
+        itemCount: 2,
+        byteCount: 0,
+      };
+      const page = {
+        requests: [
+          request,
+          {
+            ...request,
+            id: createId("request"),
+            kind: "harness.input",
+            payload: { kind: "harness.input" },
+          },
+        ],
+        window,
+      };
+      const product = new ProductToolHandlers({
+        store: {
+          requests: {
+            visiblePage: async () => page,
+            connectionPage: async () => page,
+            withdraw: async () => ({ request: { ...request, status: "withdrawn" }, events: [] }),
+          },
+        },
+        onWorkspaceEvent: vi.fn(),
+      } as unknown as ConstructorParameters<typeof ProductToolHandlers>[0]);
+      f.handlers.request_list = (call) => product.request_list(call);
+      f.handlers.request_withdraw = (call) => product.request_withdraw(call);
+      try {
+        const result = await f.service.callTool(
+          token,
+          "request_list",
+          {},
+          { operationKey: "list" },
+        );
+        expect(result).toMatchObject({
+          requests: [
+            { id: request.id, title: "Sign in to Example", reason: "Check the account" },
+            { kind: "harness.input", reason: null },
+          ],
+          window,
+        });
+        expect(JSON.stringify(result)).not.toMatch(
+          /private-payload|private-answer|presentation|payload|response/,
+        );
+        if (token === "run") {
+          const withdrawn = await f.service.callTool(
+            token,
+            "request_withdraw",
+            { requestId: request.id },
+            { operationKey: "withdraw" },
+          );
+          expect(withdrawn).toMatchObject({
+            request: {
+              title: "Sign in to Example",
+              reason: "Check the account",
+              status: "withdrawn",
+            },
+          });
+          expect(JSON.stringify(withdrawn)).not.toMatch(
+            /private-payload|private-answer|payload|response/,
+          );
+        }
+      } finally {
+        await f.service.close();
+      }
+    },
+  );
+  it("returns webhook setup credentials to the creating task but excludes them from reads", async () => {
+    const f = fixture();
+    Object.assign(f.run, { accessMode: "full-access" });
+    f.run.thread.accessMode = "full-access";
+    const webhook = {
+      url: "https://host.example.test/hooks/v1/wh_synthetic",
+      secret: "oswh_synthetic_setup_secret",
+    };
+    const manager = new TriggerToolHandlers({
+      manage: async () => ({ webhook, unrelatedSecret: "private-other-secret" }),
+    });
+    f.handlers.trigger_write = (call) => manager.trigger_write(call);
+    f.handlers.trigger_read = (call) => manager.trigger_read(call);
+    try {
+      const created = await f.service.callTool(
+        "run",
+        "trigger_write",
+        {
+          action: "create",
+          name: "Example delivery",
+          anchorThreadId: f.thread.id,
+          source: { kind: "webhook" },
+          program: {
+            language: "typescript",
+            source: "export default async function () {}",
+            toolContractVersion: 3,
+          },
+        },
+        { operationKey: "create-webhook" },
+      );
+      expect(created).toEqual({ webhook });
+      expect(
+        await f.service.callTool(
+          "run",
+          "trigger_read",
+          { action: "list" },
+          { operationKey: "read-webhooks" },
+        ),
+      ).toEqual({});
+    } finally {
       await f.service.close();
     }
   });
