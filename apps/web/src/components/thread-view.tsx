@@ -157,7 +157,9 @@ const readingPositions = new Map<
   { readonly scrollTop: number; readonly seenSequence: string | null }
 >();
 
-const renderPasswordsSuggestion = (site: string) => <PasswordsSuggestion site={site} />;
+const renderPasswordsSuggestion = (site: string, credential?: "card" | "login") => (
+  <PasswordsSuggestion site={site} card={credential === "card"} />
+);
 
 function ThreadView({
   canLoadEarlier,

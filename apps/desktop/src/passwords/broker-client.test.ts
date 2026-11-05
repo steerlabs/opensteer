@@ -43,6 +43,58 @@ const requestParams = {
 
 // Unix sockets and the kernel's peer credentials: this runs in the macOS job.
 describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
+  it("never sends a card command on a legacy connection", async () => {
+    const harness = await clientHarness();
+    await expect(harness.client.call("card.probe", {})).rejects.toMatchObject({ code: "invalid" });
+    expect(harness.broker.transcript).toEqual([]);
+  });
+
+  it("negotiates v7 and reads card choices without changing login replies", async () => {
+    const harness = await clientHarness({ clientProtocolVersion: 7 });
+    const card = {
+      id: transactionId,
+      revision: 1,
+      brand: "Visa",
+      lastFour: "4242",
+      label: null,
+      expiryMonth: 1,
+      expiryYear: 2030,
+    };
+    harness.broker.reply("card.probe", () => ({ cards: "has-card" }));
+    harness.broker.reply("card.approve", () => ({
+      decision: "authorized",
+      card: {
+        id: card.id,
+        revision: card.revision,
+        brand: card.brand,
+        lastFour: card.lastFour,
+      },
+    }));
+    await expect(harness.client.call("card.probe", {})).resolves.toEqual({ cards: "has-card" });
+    await expect(
+      harness.client.call("card.approve", {
+        transactionId,
+        cardId: card.id,
+        revision: 1,
+        permissionVersion: 7,
+      }),
+    ).resolves.toMatchObject({ decision: "authorized", card: { lastFour: "4242" } });
+    await expect(
+      harness.client.call("signin.probe", { site: requestParams.site }),
+    ).resolves.toEqual({ passwords: "has-login" });
+    expect(harness.broker.received("hello")[0]?.params).toMatchObject({ protocolVersion: 7 });
+  });
+
+  it("discards untrusted broker errors that could echo a card value", async () => {
+    const harness = await clientHarness({ clientProtocolVersion: 7 });
+    const canary = "synthetic-card-secret-canary";
+    harness.broker.fail("card.probe", { code: "invalid", message: canary });
+    const error = await harness.client.call("card.probe", {}).catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(PasswordsBrokerFailure);
+    expect(String(error)).not.toContain(canary);
+    expect(JSON.stringify(harness.log.mock.calls)).not.toContain(canary);
+  });
+
   it("sends only the site when probing", async () => {
     const harness = await clientHarness();
     await expect(
@@ -520,6 +572,7 @@ async function clientHarness(
     readonly peerUid?: number;
     readonly peerVerificationTimeoutMs?: number;
     readonly protocolVersion?: number;
+    readonly clientProtocolVersion?: 4 | 5 | 6 | 7;
     readonly requestTimeoutMs?: number;
     readonly signedIdentifier?: string;
     readonly startListening?: boolean;
@@ -574,6 +627,9 @@ async function clientHarness(
   const log = vi.fn();
   const client = new PasswordsBrokerClient({
     appVersion: "9.9.9",
+    ...(options.clientProtocolVersion === undefined
+      ? {}
+      : { protocolVersion: options.clientProtocolVersion }),
     brokerAppPath,
     connectTimeoutMs: 3_000,
     development,

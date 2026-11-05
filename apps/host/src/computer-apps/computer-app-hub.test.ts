@@ -229,6 +229,12 @@ describe("ComputerAppHub", () => {
     });
     expect(hub.loginReceiver(runnerId)).toEqual(key);
     expect(hub.passwordSignInSupported(runnerId)).toBe(true);
+    expect(await hub.sendPasswordSignIn(runnerId, { type: "card.probe" })).toEqual({
+      type: "unavailable",
+    });
+    expect(peer.sent.some((frame) => frame.type === "host.integrations.password-sign-in")).toBe(
+      false,
+    );
     const probe = hub.sendPasswordSignIn(runnerId, {
       type: "signin.probe",
       site: "https://example.com",

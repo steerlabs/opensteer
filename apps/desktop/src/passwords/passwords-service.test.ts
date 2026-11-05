@@ -114,6 +114,47 @@ describe("PasswordsService off the platforms the broker runs on", () => {
 
 // Unix sockets, the lifecycle lock and peer credentials: the macOS job.
 describe.runIf(process.platform === "darwin")("PasswordsService end to end", () => {
+  it("binds card transactions to their kind and original v7 connection", async () => {
+    const harness = await serviceHarness("card connection", { clientProtocolVersion: 7 });
+    const broker = harness.service.broker();
+    const signal = new AbortController().signal;
+    harness.broker.reply("card.request", () => ({ decision: "approve", cards: [] }));
+    const { runtimeId: _runtimeId, sessionId: _sessionId, ...request } = requestParams;
+    const grant = await broker.cardRequest(
+      { ...request, protocolVersion: 7, permissionVersion: 7 },
+      signal,
+    );
+    expect(grant.decision).toEqual({ decision: "approve", cards: [] });
+    await expect(
+      broker.release({ transactionId, field: "password", kind: "app" }),
+    ).rejects.toMatchObject({ code: "invalid" });
+    await expect(
+      broker.approve(
+        {
+          transactionId,
+          loginId: transactionId,
+          revision: 1,
+          permissionVersion: 5,
+          remember: false,
+        },
+        signal,
+      ),
+    ).rejects.toMatchObject({ code: "invalid" });
+    expect(harness.broker.received("signin.release")).toEqual([]);
+    expect(harness.broker.received("signin.approve")).toEqual([]);
+    await harness.service.stop();
+    expect(grant.lifetime.aborted).toBe(true);
+    await expect(
+      broker.cardRelease({
+        transactionId,
+        topOrigin: "https://example.com",
+        frameOrigin: "https://payments.example.net",
+        field: "number",
+      }),
+    ).rejects.toBeInstanceOf(Error);
+    expect(harness.broker.received("card.release")).toEqual([]);
+  });
+
   it("reports a broker this build does not ship as unavailable, with the build sentence", async () => {
     const harness = await serviceHarness("not built", { bundled: false });
 
@@ -585,7 +626,7 @@ async function serviceHarness(
     readonly bundled?: boolean;
     readonly development?: boolean;
     readonly protocolVersion?: number;
-    readonly clientProtocolVersion?: 4 | 5 | 6;
+    readonly clientProtocolVersion?: 4 | 5 | 6 | 7;
     readonly status?: PasswordsBrokerStatus;
   } = {},
 ) {

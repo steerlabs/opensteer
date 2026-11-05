@@ -1242,6 +1242,12 @@ export type RunnerAgentsModule = z.infer<typeof RunnerAgentsModuleSchema>;
 
 export const RunnerBrowserModuleSchema = z
   .object({
+    cardFill: z
+      .number()
+      .int()
+      .positive()
+      .transform((v) => (v === 1 ? (1 as const) : undefined))
+      .optional(),
     localProfileStorage: z
       .object({ storageInstanceId: z.uuid(), engine: BrowserEngineSchema })
       .optional()
@@ -1382,6 +1388,12 @@ export const runnerIntegrationsProtocolVersion = 6;
 export const androidIntegrationsProtocolVersion = 4;
 
 export const RunnerIntegrationsModuleSchema = z.object({
+  cardUse: z
+    .number()
+    .int()
+    .positive()
+    .transform((v) => (v === 1 ? (1 as const) : undefined))
+    .optional(),
   computerUseVersion: z
     .number()
     .int()

@@ -1,5 +1,5 @@
 import Foundation
-import PasswordsCore
+@testable import PasswordsCore
 import XCTest
 
 @testable import PasswordsBrokerKit
@@ -23,6 +23,25 @@ final class WireFixtureTests: XCTestCase {
 
   /// Built from JSON the desktop would send, read by the broker's decoder,
   /// then written by the type's own encoder.
+  private static var card: Wire.CardChoice {
+    Wire.CardChoice(CardItem(id: loginId,
+      draft: CardDraft(number: "4242424242424242", expiryMonth: 3, expiryYear: 2030, cvc: "123", label: "Test card"),
+      createdAt: 0, updatedAt: 0, revision: 3))
+  }
+
+  private static var cardRequest: JSONValue {
+    Fixtures.request(transactionId, site: "https://github.com", expiresAt: "2026-10-11T17:00:00.000Z",
+      extra: ["protocolVersion": .integer(7), "permissionVersion": .integer(7)])
+  }
+  private static var cardApproval: JSONValue {
+    .object(["transactionId": .string(transactionId), "cardId": .string(loginId),
+      "revision": .integer(3), "permissionVersion": .integer(7)])
+  }
+  private static func cardRelease(_ field: Wire.CardField) -> JSONValue {
+    .object(["transactionId": .string(transactionId), "topOrigin": .string("https://github.com"),
+      "frameOrigin": .string("https://js.stripe.com"), "field": .string(field.rawValue)])
+  }
+
   private static func requests() throws -> [String: [JSONValue]] {
     let request = try Wire.SignInRequestParams(
       json: .object([
@@ -66,7 +85,12 @@ final class WireFixtureTests: XCTestCase {
         Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 4).json,
         Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 5).json,
         Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 6).json,
+        Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 7).json,
       ],
+      Wire.Method.cardProbe.rawValue: [.object([:])],
+      Wire.Method.cardRequest.rawValue: [try Wire.CardRequestParams(json: cardRequest).json],
+      Wire.Method.cardApprove.rawValue: [cardApproval],
+      Wire.Method.cardRelease.rawValue: Wire.CardField.allCases.map(cardRelease),
       Wire.Method.status.rawValue: [.object([:])],
       Wire.Method.windowOpen.rawValue: [.object([:])],
       Wire.Method.signInProbe.rawValue: [Wire.ProbeParams(site: "https://github.com").json],
@@ -102,7 +126,15 @@ final class WireFixtureTests: XCTestCase {
         Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 5).json,
         Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 6).json,
         Wire.HelloResult(brokerVersion: "0.1.117", development: true).json,
+        Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 7).json,
       ],
+      Wire.Method.cardProbe.rawValue: ["has-card", "no-card", "off", "not-set-up", "unavailable"].map { .object(["cards": .string($0)]) },
+      Wire.Method.cardRequest.rawValue: [Wire.cardChoices([card]), Wire.cardChoices([]), Wire.Decision.unavailable(.busy).json],
+      Wire.Method.cardApprove.rawValue: [
+        .object(["decision": .string("authorized"), "card": card.descriptor]),
+        Wire.cardChoices([], message: Copy.accountGone), Wire.Decision.unavailable(.passwordsOff).json],
+      Wire.Method.cardRelease.rawValue: [Wire.ReleaseResult.released("4242424242424242").json] +
+        ["ended", "revoked", "wrong-site", "passwords-off", "no-field"].map(Wire.cardRefused),
       Wire.Method.status.rawValue: [
         Wire.Status(vault: .ready, agentSignIns: true).json,
         Wire.Status(vault: .notSetUp, agentSignIns: false).json,
@@ -141,6 +173,11 @@ final class WireFixtureTests: XCTestCase {
     let event = try CanonicalJSON.parse(
       Wire.statusChanged(Wire.Status(vault: .ready, agentSignIns: true)))
     let fixture = JSONValue.object([
+      "rejected": .array([
+        .object(["method": .string("card.approve"), "params": Fixtures.approve(transactionId, .object(["id": .string(loginId), "revision": .integer(3)]), remember: true)]),
+        .object(["method": .string("card.release"), "params": Fixtures.release(transactionId)]),
+        .object(["method": .string("signin.release"), "params": cardRelease(.number)]),
+      ]),
       "error": error,
       "event": event,
       "requests": .object(try requests().mapValues(JSONValue.array)),
@@ -169,6 +206,20 @@ final class WireFixtureTests: XCTestCase {
         + "OPENSTEER_WRITE_WIRE_FIXTURE=1 swift test --filter WireFixtureTests")
   }
 
+  func testRejectedCrossKindSamples() throws {
+    let fixture = try CanonicalJSON.parse(try Data(contentsOf: Self.fixtureURL))
+    guard case .array(let rejected)? = fixture["rejected"] else { return XCTFail("missing rejections") }
+    for sample in rejected {
+      let params = try XCTUnwrap(sample["params"])
+      switch sample["method"]?.string {
+      case "card.approve": XCTAssertThrowsError(try Wire.CardApproveParams(json: params))
+      case "card.release": XCTAssertThrowsError(try Wire.CardReleaseParams(json: params))
+      case "signin.release": XCTAssertThrowsError(try Wire.ReleaseParams(json: params, protocolVersion: 7))
+      default: XCTFail("unknown rejection")
+      }
+    }
+  }
+
   func testTheFixtureCoversEveryMethod() throws {
     let methods = Set(Wire.Method.allCases.map(\.rawValue))
     XCTAssertEqual(Set(try Self.requests().keys), methods)
@@ -187,8 +238,12 @@ final class WireFixtureTests: XCTestCase {
       }
       for params in entries {
         switch known {
+        case .cardProbe: XCTAssertNoThrow(try Wire.empty(params))
+        case .cardRequest: XCTAssertNoThrow(try Wire.CardRequestParams(json: params))
+        case .cardApprove: XCTAssertNoThrow(try Wire.CardApproveParams(json: params))
+        case .cardRelease: XCTAssertNoThrow(try Wire.CardReleaseParams(json: params))
         case .hello:
-          XCTAssertTrue([4, 5, 6].contains(try Wire.HelloParams(json: params).protocolVersion))
+          XCTAssertTrue([4, 5, 6, 7].contains(try Wire.HelloParams(json: params).protocolVersion))
         case .status, .windowOpen: XCTAssertNoThrow(try Wire.empty(params))
         case .signInProbe:
           XCTAssertEqual(try Wire.ProbeParams(json: params).site, "https://github.com")

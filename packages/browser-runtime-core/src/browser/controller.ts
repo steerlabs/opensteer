@@ -18,6 +18,8 @@ import {
   browserTabOpenClosedReason,
   browserWorkspaceTabUrlMaxLength,
   LoginFieldSchema,
+  CardRefSchema,
+  CardFieldSchema,
   LoginRefSchema,
   previousReleaseEligibility,
   type BrowserAttachTicketClaims,
@@ -1273,6 +1275,30 @@ export class BrowserController {
         result: await this.files.stage(message.command.parameters),
         type: "cdp.result",
       });
+      return;
+    }
+    if (message.type === "cdp.command" && message.command.method === "Opensteer.fillCard") {
+      const params = z
+        .strictObject({ cardRef: CardRefSchema, field: CardFieldSchema })
+        .safeParse(message.command.parameters);
+      const targetId =
+        message.command.sessionId === undefined
+          ? null
+          : this.cdpRouter.attachedTargetId(this.claims.sessionId, message.command.sessionId);
+      if (!params.success || !targetId)
+        throw new BrowserRuntimeError(
+          "bad_message",
+          "fillCard requires a card reference, field and attached page session.",
+        );
+      if (this.claims.access !== "read-write")
+        throw new BrowserRuntimeError("forbidden", "Filling a card requires read-write access.");
+      this.ledger.recordAgentCommand(targetId);
+      const status = await this.signIns.fillCard({
+        ...params.data,
+        targetId,
+        sessionId: this.claims.sessionId,
+      });
+      await this.send({ type: "cdp.result", requestId: message.requestId, result: { status } });
       return;
     }
     if (message.type === "cdp.command" && message.command.method === "Opensteer.fillLogin") {

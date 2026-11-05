@@ -690,7 +690,7 @@ export class ReconnectingHostConnection {
                 rasterDemand: 1,
                 editing: 2,
                 clipboard: false,
-                ...(agents.browserBridge.signIn ? { signIn: { version: 3 } } : {}),
+                ...(agents.browserBridge.signIn ? { signIn: { version: 3 }, cardFill: 1 } : {}),
               },
             }
           : {}),

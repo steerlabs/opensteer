@@ -20,6 +20,9 @@ public enum ActivityOutcome: String, CaseIterable, Sendable {
 /// recognise a sign-in and nothing that would help anyone use one: never a
 /// password, a full username, a code or the agent's reason.
 public struct ActivityEntry: Equatable, Sendable {
+  public let brand: String?
+  public let lastFour: String?
+  public var credential: String? { brand == nil ? nil : "card" }
   public let at: Date
   /// The site's registrable domain, e.g. `github.com`.
   public let site: String
@@ -34,10 +37,12 @@ public struct ActivityEntry: Equatable, Sendable {
 
   public init(
     at: Date, site: String, account: String?, deployment: String, workspace: String, thread: String, automatic: Bool,
-    outcome: ActivityOutcome
+    outcome: ActivityOutcome, brand: String? = nil, lastFour: String? = nil
   ) {
     // Whole milliseconds, so an entry reads back exactly as it was written.
     self.at = Date(timeIntervalSince1970: (at.timeIntervalSince1970 * 1_000).rounded(.down) / 1_000)
+    self.brand = brand
+    self.lastFour = lastFour
     self.site = site
     self.account = account
     self.deployment = deployment
@@ -48,7 +53,7 @@ public struct ActivityEntry: Equatable, Sendable {
   }
 
   var json: JSONValue {
-    .object([
+    var fields: [String: JSONValue] = [
       "account": account.map(JSONValue.string) ?? .null,
       "at": .string(ActivityLog.timestamp(at)),
       "automatic": .bool(automatic),
@@ -57,13 +62,27 @@ public struct ActivityEntry: Equatable, Sendable {
       "site": .string(site),
       "thread": .string(thread),
       "workspace": .string(workspace),
-    ])
+    ]
+    if let brand, let lastFour {
+      fields["credential"] = .string("card")
+      fields["brand"] = .string(brand)
+      fields["lastFour"] = .string(lastFour)
+    }
+    return .object(fields)
   }
 
   init?(line: Data) {
-    guard let value = try? CanonicalJSON.parseCanonical(line),
+    guard let value = try? CanonicalJSON.parseCanonical(line) else { return nil }
+    let cardKeys: Set<String>
+    if case .object(let fields) = value, fields["credential"] == .string("card") {
+      guard case .string(let brand)? = fields["brand"], (1...64).contains(brand.utf8.count),
+        case .string(let last)? = fields["lastFour"], last.utf8.count == 4,
+        last.utf8.allSatisfy({ (48...57).contains($0) }) else { return nil }
+      cardKeys = ["credential", "brand", "lastFour"]
+    } else { cardKeys = [] }
+    guard
       let object = try? StrictObject(
-        value, keys: ["account", "at", "automatic", "deployment", "outcome", "site", "thread", "workspace"],
+        value, keys: Set(["account", "at", "automatic", "deployment", "outcome", "site", "thread", "workspace"]).union(cardKeys),
         context: "activity"),
       let at = (try? object.string("at")).flatMap(WireRules.isoDate),
       let site = try? object.string("site"),
@@ -82,7 +101,7 @@ public struct ActivityEntry: Equatable, Sendable {
     }
     self.init(
       at: at, site: site, account: account, deployment: deployment, workspace: workspace, thread: thread,
-      automatic: automatic, outcome: outcome)
+      automatic: automatic, outcome: outcome, brand: try? object.string("brand"), lastFour: try? object.string("lastFour"))
   }
 }
 

@@ -6,6 +6,7 @@ import {
   createId,
   UserIdSchema,
   WaitingRequestSchema,
+  RequestSchema,
   requestAgentProposedDetail,
   type Request,
 } from "@opensteer/core";
@@ -13,7 +14,7 @@ import type { MachineSummary } from "@opensteer/protocol";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mockTmdbProposal } from "@opensteer/client/mock";
+import { mockCardUseRequest, mockTmdbProposal } from "@opensteer/client/mock";
 import { createThreadMutationGate } from "./thread-mutation-gate.js";
 
 vi.mock("./password-approval-auth.js", () => ({
@@ -143,6 +144,7 @@ const roots: Root[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
+  vi.mocked(authenticatePasswordApproval).mockImplementation(async () => true);
 });
 
 /*
@@ -199,6 +201,79 @@ describe("RequestCard computer owner approvals", () => {
           expect.objectContaining({ type: "integration.computer.setup.set" }),
         );
       }
+    },
+  );
+});
+
+describe("saved card consent", () => {
+  it.each(["allow", "cancel", "settled"] as const)(
+    "authenticates card use and fences %s",
+    async (mode) => {
+      const request = mockCardUseRequest();
+      let finish: ((value: boolean) => void) | undefined;
+      vi.mocked(authenticatePasswordApproval).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const dispatch = vi.fn(async () => ({
+        type: "browser.password-sign-in.respond",
+        status: "fulfilled",
+      }));
+      const passwordRead = vi.fn(async () => ({
+        ok: true,
+        data: {
+          stage: "card-approval",
+          permissionVersion: 7,
+          cards: [
+            {
+              id: "00000000-0000-4000-8000-000000000042",
+              revision: 2,
+              brand: "Visa",
+              lastFour: "4242",
+              label: null,
+              expiryMonth: 12,
+              expiryYear: 2030,
+            },
+          ],
+        },
+      }));
+      await render(surface(request), dispatch, { passwordRead });
+      expect(text()).not.toContain("Sign in to");
+      await click("Review request");
+      await click("Allow card use");
+      expect(authenticatePasswordApproval).toHaveBeenCalledWith("card");
+      expect(dispatch).not.toHaveBeenCalled();
+      if (mode === "settled")
+        await render(
+          surface(
+            RequestSchema.parse({
+              ...request,
+              status: "declined",
+              resolvedAt: new Date().toISOString(),
+              resolvedBy: request.requestedBy,
+              response: { kind: "external", value: { decision: "declined" } },
+            }),
+          ),
+          dispatch,
+          { passwordRead, root: roots.at(-1)! },
+        );
+      await act(async () => {
+        finish?.(mode !== "cancel");
+      });
+      if (mode === "allow")
+        expect(dispatch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            decision: {
+              kind: "approve-card",
+              cardId: "00000000-0000-4000-8000-000000000042",
+              revision: 2,
+              permissionVersion: 7,
+            },
+          }),
+        );
+      else expect(dispatch).not.toHaveBeenCalled();
     },
   );
 });
@@ -686,6 +761,7 @@ async function render(
   model: SurfaceModel,
   dispatch: ReturnType<typeof vi.fn>,
   options: {
+    readonly root?: Root;
     readonly canRespond?: boolean;
     readonly inspect?: ReturnType<typeof vi.fn>;
     readonly machines?: readonly MachineSummary[];
@@ -696,8 +772,8 @@ async function render(
 ): Promise<void> {
   const container = document.createElement("div");
   document.body.append(container);
-  const root = createRoot(container);
-  roots.push(root);
+  const root = options.root ?? createRoot(container);
+  if (!options.root) roots.push(root);
   const snapshot = {
     identityConfig: { deployment: { name: "Alex’s Opensteer" } },
     workspaces: [{ id: workspaceId, name: "Research" }],

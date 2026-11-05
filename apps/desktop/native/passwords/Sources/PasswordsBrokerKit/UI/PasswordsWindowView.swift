@@ -25,6 +25,8 @@ public struct PasswordsWindowView: View {
     .frame(minWidth: 520, idealWidth: 560, minHeight: 440, idealHeight: 600)
     .sheet(item: $model.sheet) { sheet in
       switch sheet {
+      case .addCard: CardForm(model: model, editing: nil)
+      case .editCard(let card): CardForm(model: model, editing: card)
       case .add: LoginForm(model: model, editing: nil)
       case .edit(let login): LoginForm(model: model, editing: login)
       case .importing:
@@ -260,6 +262,26 @@ private struct ReadyView: View {
         Text(Copy.confirming).foregroundStyle(.secondary)
       }
     case .shown(let all):
+      VStack(alignment: .leading) {
+        HStack {
+          Text("Cards").font(.headline)
+          Spacer()
+          Button("Add card") { model.sheet = .addCard }
+        }
+        ForEach(model.cards, id: \.id) { card in
+          HStack {
+            VStack(alignment: .leading) {
+              Text("\(card.brand) ending \(card.lastFour)")
+              if let label = card.label { Text(label).foregroundStyle(.secondary) }
+              Text(String(format: "%02lld/%04lld", card.expiryMonth, card.expiryYear)).font(.caption)
+            }
+            Spacer()
+            Button("Edit") { model.sheet = .editCard(card) }
+            Button("Delete", role: .destructive) { Task { await model.deleteCard(id: card.id) } }
+          }
+        }
+      }.padding(.vertical, 12)
+
       TextField(Copy.search, text: $model.search, prompt: Text(Copy.search))
         .textFieldStyle(.roundedBorder)
         .labelsHidden()
@@ -418,11 +440,14 @@ private struct ActivityRow: View {
       VStack(alignment: .leading, spacing: 2) {
         HStack(spacing: 6) {
           Text(entry.site).font(.body.weight(.medium))
-          OutcomeLabel(outcome: entry.outcome)
+          if entry.credential == "card", entry.outcome == .used {
+            Text("Card details released").font(.caption)
+          } else { OutcomeLabel(outcome: entry.outcome) }
           if entry.automatic {
             Text(Copy.automatic).font(.caption).foregroundStyle(.secondary)
           }
         }
+        if let brand = entry.brand, let last = entry.lastFour { Text("\(brand) ending \(last)").font(.callout) }
         Text(([entry.account].compactMap { $0 } + [entry.workspace, "“\(entry.thread)”"]).joined(separator: " · "))
           .font(.callout)
           .foregroundStyle(.secondary)
@@ -537,5 +562,75 @@ private struct LoginForm: View {
       outcome = await model.add(website: websites, username: username, password: password, twoFactor: twoFactor, label: label)
     }
     if case .stays(let sentence) = outcome { problem = sentence }
+  }
+}
+
+private struct CardForm: View {
+  @ObservedObject var model: PasswordsWindowModel
+  let editing: Wire.CardChoice?
+  @Environment(\.dismiss) private var dismiss
+  @State private var number = ""
+  @State private var cvc = ""
+  @State private var month = ""
+  @State private var year = ""
+  @State private var name = ""
+  @State private var label = ""
+  @State private var postal = ""
+  @State private var loaded = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text(editing == nil ? "Add card" : "Edit card").font(.title2)
+      SecureField("Card number", text: $number)
+      TextField("Expiry month", text: $month)
+      TextField("Expiry year", text: $year)
+      SecureField("Security code", text: $cvc)
+      TextField("Name on card (optional)", text: $name)
+      TextField("Label (optional)", text: $label)
+      TextField("Billing postal code (optional)", text: $postal)
+      if let message = model.message { Text(message).foregroundStyle(.secondary) }
+      HStack {
+        Button("Cancel") { clear(); dismiss() }
+        Spacer()
+        Button("Save") {
+          Task {
+            guard let month = Int64(month), let year = Int64(year) else {
+              model.message = "Enter a valid expiry month and year."
+              return
+            }
+            let draft = CardDraft(number: number, expiryMonth: month, expiryYear: year, cvc: cvc,
+              name: name.isEmpty ? nil : name, label: label.isEmpty ? nil : label,
+              postalCode: postal.isEmpty ? nil : postal)
+            if await model.saveCard(draft, id: editing?.id) { clear(); dismiss() }
+          }
+        }.disabled(!loaded || model.working)
+      }
+    }.padding(24).frame(width: 420)
+    .task {
+      if let editing {
+        do {
+          let card = try await model.cardForEditing(id: editing.id)
+          guard !Task.isCancelled, model.sheet == .editCard(editing) else { return }
+          number = card.draft.number
+          cvc = card.draft.cvc
+          month = String(card.draft.expiryMonth)
+          year = String(card.draft.expiryYear)
+          name = card.draft.name ?? ""
+          label = card.draft.label ?? ""
+          postal = card.draft.postalCode ?? ""
+        } catch { dismiss(); return }
+      }
+      loaded = true
+    }
+    .onDisappear { clear() }
+  }
+  private func clear() {
+    number = ""
+    cvc = ""
+    month = ""
+    year = ""
+    name = ""
+    label = ""
+    postal = ""
   }
 }

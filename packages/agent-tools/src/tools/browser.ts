@@ -17,6 +17,7 @@ import {
 import {
   BrowserProfileListOutputSchema,
   SignInOutputSchema,
+  UseCardOutputSchema,
   RequestCreationOutputSchema,
   BrowserTabReadOutputSchema,
   BrowserTabWriteOutputSchema,
@@ -33,6 +34,22 @@ export const browser_profile_list = defineAgentTool({
   output: BrowserProfileListOutputSchema,
   access: "read",
   callers: ["run", "program"] as const,
+});
+
+export const use_card = defineAgentTool({
+  name: "use_card",
+  title: "Request saved card use",
+  description:
+    "Request the person's approval to use a saved card on the checkout site in this Browser Session. Run-only. On ready, focus each required field and call fillCard(cardRef, field); values never appear in results. Pending stops the Run. Never read back, print, log, copy or save card values, including to files. Approval covers filling, not permission to place an order: the person's request must cover the purchase.",
+  input: z.strictObject({
+    site: z.string().trim().min(1).max(2048),
+    reason: z.string().trim().min(1).max(500),
+    sessionId: BrowserSessionIdInputSchema,
+    operationKey: OperationKeySchema.optional(),
+  }),
+  output: UseCardOutputSchema,
+  access: "write",
+  callers: ["run"] as const,
 });
 
 export const sign_in = defineAgentTool({

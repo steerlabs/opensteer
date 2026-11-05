@@ -3145,7 +3145,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "browser.sign-in.respond":
       return rpcSuccess({ outcome: client.respondBrowserSignIn(command), type: command.type });
     case "browser.password-sign-in.respond":
-      return rpcSuccess({ status: client.respondPasswordSignIn(command), type: command.type });
+      return rpcSuccess({ ...client.respondPasswordSignIn(command), type: command.type });
     case "browser.profile.grant":
       return rpcSuccess(
         hostApi["commands.dispatch"].success.parse({
@@ -3692,6 +3692,9 @@ export class MockHostClient implements HostClient {
   readonly browserFrames: BrowserFrameStore;
   readonly browserWatchFrames: BrowserFrameStore;
   readonly rpc: HostApiClient;
+  get cardUseMockStates() {
+    return this.#state.cardUseMockStates;
+  }
   get searchSuggestionRequests() {
     return this.#state.searchSuggestionRequests;
   }
@@ -8342,6 +8345,11 @@ class MockHostState {
    * Declines a saved-password sign-in from any device. The preview has no Mac
    * to race, so the decline always settles the Request.
    */
+  readonly cardUseMockStates = new Map<
+    string,
+    "pending" | "changed" | "expired" | "declined" | "gone" | "no-card" | "off" | "not-set-up"
+  >();
+
   passwordSignInCard(requestId: string): PasswordSignInCard {
     const request = Object.values(this.snapshot.requests)
       .flat()
@@ -8353,6 +8361,32 @@ class MockHostState {
       request.payload.permissionVersion !== 5
     )
       return { stage: "gone" };
+    if (request.payload.credential === "card") {
+      const state = this.cardUseMockStates.get(requestId) ?? "pending";
+      if (
+        ["expired", "declined", "gone", "off", "not-set-up"].includes(state) ||
+        Date.parse(request.payload.expiresAt) <= this.now().getTime()
+      )
+        return { stage: "gone" };
+      return {
+        stage: "card-approval",
+        permissionVersion: 7,
+        cards:
+          state === "no-card"
+            ? []
+            : [
+                {
+                  id: "00000000-0000-4000-8000-000000000042",
+                  revision: state === "changed" ? 2 : 1,
+                  brand: "Visa",
+                  lastFour: "4242",
+                  label: "Preview card",
+                  expiryMonth: 12,
+                  expiryYear: 2030,
+                },
+              ],
+      };
+    }
     return {
       stage: "approval",
       permissionVersion: 5,
@@ -8372,7 +8406,7 @@ class MockHostState {
 
   respondPasswordSignIn(
     command: Extract<HostApiCommand, { readonly type: "browser.password-sign-in.respond" }>,
-  ): "declined" | "fulfilled" {
+  ): { status: "declined" | "fulfilled" | "pending"; card?: PasswordSignInCard; message?: string } {
     const request = Object.values(this.snapshot.requests)
       .flat()
       .find((candidate) => candidate.id === command.requestId);
@@ -8382,6 +8416,27 @@ class MockHostState {
       request.payload.kind !== "browser.password-sign-in"
     ) {
       throw mockConflict("This sign-in Request is no longer waiting.");
+    }
+    if (
+      command.decision.kind !== "decline" &&
+      (command.decision.kind === "approve-card") !== (request.payload.credential === "card")
+    )
+      throw mockConflict("Choose the matching credential.");
+    if (command.decision.kind === "approve-card") {
+      const choice = command.decision;
+      const chooser = this.passwordSignInCard(request.id);
+      if (
+        chooser.stage !== "card-approval" ||
+        !chooser.cards.some(
+          (card) => card.id === choice.cardId && card.revision === choice.revision,
+        )
+      )
+        return { status: "pending", card: chooser, message: "Choose a current saved card." };
+      this.settleBrowserSignIn(request, "fulfilled", {
+        outcome: "authorized",
+        account: "Visa ending 4242",
+      });
+      return { status: "fulfilled" };
     }
     if (command.decision.kind === "approve") {
       const choice = command.decision;
@@ -8397,10 +8452,10 @@ class MockHostState {
         outcome: "authorized",
         account: "p•••@example.test",
       });
-      return "fulfilled";
+      return { status: "fulfilled" };
     }
     this.settleBrowserSignIn(request, "declined", { decision: "declined" });
-    return "declined";
+    return { status: "declined" };
   }
 
   #browserProfileName(profileId: string | null): string | null {
@@ -13474,3 +13529,53 @@ const mockCatalogProducts: Readonly<
   "macos-app": { title: "Computer use", category: "devices", popular: false },
   "android-phone": { title: "Android phone", category: "devices", popular: false },
 };
+
+export function mockCardUseRequest(
+  input: Parameters<typeof mockPasswordSignInRequest>[0] = {},
+): Request {
+  const request = mockPasswordSignInRequest(input);
+  if (request.payload.kind !== "browser.password-sign-in")
+    throw new Error("Missing Passwords payload");
+  return RequestSchema.parse({
+    ...request,
+    payload: { ...request.payload, credential: "card", reason: "Fill the saved card at checkout." },
+    presentation: {
+      ...request.presentation,
+      title: `Use a saved card on ${new URL(request.payload.site).hostname}?`,
+    },
+  });
+}
+
+export function mockCardUseScenario(
+  state: "pending" | "changed" | "expired" | "declined" | "gone" | "no-card" | "off" | "not-set-up",
+) {
+  const site = "https://shop.example.com";
+  const reason =
+    state === "no-card"
+      ? "no-saved-card"
+      : state === "off"
+        ? "passwords-off"
+        : state === "not-set-up"
+          ? "passwords-not-set-up"
+          : null;
+  if (reason) return { request: null, result: { status: "unavailable", site, reason } };
+  const request = mockCardUseRequest({
+    site,
+    ...(state === "declined"
+      ? { status: "declined" }
+      : state === "expired"
+        ? { status: "fulfilled", response: { outcome: "expired" } }
+        : state === "gone"
+          ? { status: "fulfilled", response: { outcome: "interrupted" } }
+          : {}),
+  });
+  return {
+    request,
+    result:
+      state === "declined"
+        ? { status: "declined", site }
+        : state === "expired" || state === "gone"
+          ? { status: "unavailable", site, reason: state === "expired" ? "expired" : "interrupted" }
+          : { status: "pending", site, requestId: request.id },
+  };
+}

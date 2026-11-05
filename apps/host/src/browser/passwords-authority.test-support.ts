@@ -33,8 +33,21 @@ export async function startPasswordsAuthority(hostPort: number, primary: Primary
   const protocolErrors: string[] = [];
   const operations = new Map<
     string,
-    Extract<PasswordSignInAuthorityCommand, { type: "login.authorize" }>
+    Extract<PasswordSignInAuthorityCommand, { type: "login.authorize"; loginRef: string }>
   >();
+  const cards = new Map<
+    string,
+    Extract<PasswordSignInAuthorityCommand, { type: "login.authorize"; credential: "card" }>
+  >();
+  const cardChoice = {
+    id: "00000000-0000-4000-8000-000000000001",
+    revision: 1,
+    brand: "Visa",
+    lastFour: "4242",
+    label: null,
+    expiryMonth: 1,
+    expiryYear: 2030,
+  };
   const policy = {
     approval: false,
     declined: false,
@@ -94,10 +107,20 @@ export async function startPasswordsAuthority(hostPort: number, primary: Primary
         result,
       });
     switch (command.type) {
+      case "card.probe":
+        reply({ type: "card.probe.result", cards: "has-card" });
+        break;
       case "signin.probe":
         reply({ type: "signin.probe.result", passwords: "has-login" });
         break;
       case "login.get":
+        if (cards.has(command.operationId)) {
+          reply({
+            type: "login.get.result",
+            card: { stage: "card-approval", permissionVersion: 7, cards: [cardChoice] },
+          });
+          break;
+        }
         reply({
           type: "login.get.result",
           card: {
@@ -118,6 +141,23 @@ export async function startPasswordsAuthority(hostPort: number, primary: Primary
         });
         break;
       case "login.approve":
+        if ("credential" in command) {
+          const card = cards.get(command.operationId);
+          if (!card) throw new Error("Unknown card operation");
+          event({
+            type: "login.result",
+            operationId: command.operationId,
+            outcome: {
+              kind: "authorized",
+              cardRef: card.cardRef,
+              brand: cardChoice.brand,
+              lastFour: cardChoice.lastFour,
+              expiresAt: card.expiresAt,
+            },
+          });
+          reply({ type: "login.approve.result", result: { ok: true } });
+          break;
+        }
         authorize(command.operationId);
         reply({ type: "login.approve.result", result: { ok: true } });
         break;
@@ -128,6 +168,12 @@ export async function startPasswordsAuthority(hostPort: number, primary: Primary
         });
         break;
       case "login.authorize":
+        if ("cardRef" in command) {
+          cards.set(command.operationId, command);
+          reply({ type: "login.authorize.started" });
+          event({ type: "login.needs", operationId: command.operationId, need: "approval" });
+          break;
+        }
         operations.set(command.operationId, command);
         reply({ type: "login.authorize.started" });
         if (policy.approval)
@@ -135,6 +181,7 @@ export async function startPasswordsAuthority(hostPort: number, primary: Primary
         else authorize(command.operationId);
         break;
       case "login.cancel":
+        cards.delete(command.operationId);
         operations.delete(command.operationId);
         reply({ type: "login.cancelled" });
         break;
