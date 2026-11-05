@@ -310,7 +310,6 @@ async function runDesktop(
   configureDesktopSession(session.defaultSession, appOriginPolicy, usbDevices, downloads, () =>
     attachedHostOrigin(hostTransport),
   );
-  hostTransport.subscribe(() => appOriginPolicy.setAttachedHost(null));
   const detachUsbDevices = usbDevices.attach(session.defaultSession);
 
   let fatal = false;
@@ -572,6 +571,7 @@ async function runDesktop(
     projection: accessProjection,
     sessions: hostSessions,
   });
+  hostTransport.subscribe(() => appOriginPolicy.setAttachedHost(null));
   const deploymentUpdates = new Map<DeploymentId, DesktopUpdatesService>();
   const deploymentUpdatesFor = (deploymentId: DeploymentId): DesktopUpdatesService => {
     const existing = deploymentUpdates.get(deploymentId);
