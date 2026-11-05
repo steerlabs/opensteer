@@ -78,7 +78,11 @@ it("keeps a newer attachment when an older read finishes after it", async () => 
     },
     localRuntime: { current: async () => null },
   });
+  let invalidations = 0;
+  fence.onInvalidated(() => (invalidations += 1));
   await fence.current();
+  await fence.current();
+  expect(invalidations).toBe(0);
   holdFirst = true;
   const slow = fence.current();
   await withTimeout(stalled, 3_000, {
@@ -91,4 +95,5 @@ it("keeps a newer attachment when an older read finishes after it", async () => 
   expect((await slow).resolved.key).toBe(newest.resolved.key);
   expect(fence.currentKey()).toBe(newest.resolved.key);
   expect(fence.generation).toBe(generation);
+  expect(invalidations).toBe(1);
 });

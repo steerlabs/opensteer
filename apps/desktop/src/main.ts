@@ -95,11 +95,7 @@ import {
 } from "./supervisor/local-runner-service.js";
 import { DesktopLocalRunnerTargetResolver } from "./supervisor/local-runner-authority.js";
 import { OpenAtLoginService, shouldOpenDesktopWindowAtLaunch } from "./supervisor/open-at-login.js";
-import {
-  attachedHostOrigin,
-  clearOnReattachment,
-  DesktopAppOriginPolicy,
-} from "./app/navigation-policy.js";
+import { attachedHostOrigin, DesktopAppOriginPolicy } from "./app/navigation-policy.js";
 import { DesktopHostTransport } from "./connections/host-transport.js";
 import { HostSessionExchange } from "@opensteer/client/auth";
 import { AccountBrokeredHostSessions, HostSession } from "@opensteer/client/auth";
@@ -575,7 +571,7 @@ async function runDesktop(
     projection: accessProjection,
     sessions: hostSessions,
   });
-  clearOnReattachment(appOriginPolicy, hostTransport);
+  hostTransport.onAttachmentInvalidated(() => appOriginPolicy.setAttachedHost(null));
   const deploymentUpdates = new Map<DeploymentId, DesktopUpdatesService>();
   const deploymentUpdatesFor = (deploymentId: DeploymentId): DesktopUpdatesService => {
     const existing = deploymentUpdates.get(deploymentId);

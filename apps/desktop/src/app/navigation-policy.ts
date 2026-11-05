@@ -14,20 +14,6 @@ export async function attachedHostOrigin(transport: {
   }
 }
 
-/** Subscribers also hear ordinary catalog notices, which must not interrupt a running app. */
-export function clearOnReattachment(
-  policy: Pick<DesktopAppOriginPolicy, "setAttachedHost">,
-  transport: { currentKey(): string | null; subscribe(listener: () => void): () => void },
-): () => void {
-  let attached = transport.currentKey();
-  return transport.subscribe(() => {
-    const key = transport.currentKey();
-    if (key === attached) return;
-    attached = key;
-    policy.setAttachedHost(null);
-  });
-}
-
 export class DesktopAppOriginPolicy {
   #host: URL | null = null;
 
