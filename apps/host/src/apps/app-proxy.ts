@@ -14,7 +14,17 @@ export function appOriginHeaders(mode: AppOriginMode): Record<string, string> {
   delete headers["content-type"];
   delete headers["cache-control"];
   headers["content-security-policy"] = `frame-ancestors ${mode.parents.join(" ")}`;
+  // `no-referrer` makes a page's own form posts send `Origin: null`, which CSRF checks refuse.
+  headers["referrer-policy"] = "same-origin";
   return headers;
+}
+/** The Connect edge would otherwise cache static files and serve them with no authorization. */
+function appOriginCacheControl(value: string | undefined): string {
+  const directives = (value ?? "no-cache")
+    .split(",")
+    .map((directive) => directive.trim())
+    .filter((directive) => directive && !/^(?:public|private|s-maxage=.*)$/iu.test(directive));
+  return ["private", ...directives].join(", ");
 }
 export function appOriginCookies(value: string | undefined): string | undefined {
   const cookies = (value ?? "")
@@ -70,8 +80,9 @@ export function appOriginResponseHeaders(
     return rewritten ? [rewritten] : [];
   });
   if (cookies.length) outgoing["set-cookie"] = cookies;
-  if (/^text\/html(?:;|$)/iu.test(headers["content-type"] ?? ""))
-    outgoing["cache-control"] = "private, no-store";
+  outgoing["cache-control"] = /^text\/html(?:;|$)/iu.test(headers["content-type"] ?? "")
+    ? "private, no-store"
+    : appOriginCacheControl(headers["cache-control"]);
   return outgoing;
 }
 

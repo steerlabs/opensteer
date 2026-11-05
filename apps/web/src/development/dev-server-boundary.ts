@@ -1,3 +1,4 @@
+import { appIdFromHostname } from "@opensteer/shared/appFrame";
 import { isRecord } from "@opensteer/shared/isRecord";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -32,6 +33,13 @@ export const localHostProxyRoutes = {
   "/internal/v1/runners": { target: localHostProxyTarget, ws: true },
   "/internal/v1/trigger-cdp": { target: localHostProxyTarget, ws: true },
   "/v1": { target: localHostProxyTarget, ws: true },
+  // An app origin belongs to the Host at every path. Vite stops at the first bypass, so this is last.
+  "^/": {
+    target: localHostProxyTarget,
+    ws: true,
+    bypass: (request: IncomingMessage) =>
+      appIdFromHostname((request.headers.host ?? "").split(":")[0] ?? "") ? undefined : request.url,
+  },
 } as const;
 
 const setupRedirectTimeoutMs = 1_500;

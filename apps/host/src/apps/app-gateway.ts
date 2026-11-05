@@ -29,6 +29,7 @@ import {
 import type { AppService } from "./app-service.js";
 
 const cookieLifetime = 30 * 24 * 60 * 60 * 1_000;
+const loopbackNames = ["localhost", "127.0.0.1", "[::1]"];
 const identitySchema = z.strictObject({
   appId: AppIdSchema,
   origin: z.string(),
@@ -79,8 +80,8 @@ export class AppGateway {
       origin = `https://${appOriginKey(appId)}-${connect[1]!.replaceAll("-", "")}.${connect[2]}`;
     else if (
       canonical.protocol === "http:" &&
-      ["localhost", "127.0.0.1", "[::1]"].includes(canonical.hostname) &&
-      host === canonical.host
+      loopbackNames.includes(canonical.hostname) &&
+      loopbackNames.some((name) => host === name + (canonical.port && `:${canonical.port}`))
     ) {
       const agent = typeof headers["user-agent"] === "string" ? headers["user-agent"] : "";
       if (/Safari/iu.test(agent) && !/Chrome|Chromium|CriOS|Edg|OPR/iu.test(agent))
@@ -295,7 +296,7 @@ export class AppGateway {
         `https://connect-${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}.${connect[2]}`,
       );
     } else if (url.protocol === "http:" && /^[a-z2-7]{26}\.localhost$/u.test(url.hostname)) {
-      for (const host of ["localhost", "127.0.0.1", "[::1]"])
+      for (const host of loopbackNames)
         parents.push(`http://${host}${url.port ? `:${url.port}` : ""}`);
     } else throw new Error("Invalid app authority");
     return { appId, origin, parents };

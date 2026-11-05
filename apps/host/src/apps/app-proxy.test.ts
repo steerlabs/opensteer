@@ -4,7 +4,26 @@ import { connect } from "node:net";
 import { Readable } from "node:stream";
 import { expect, it } from "vitest";
 import { closeHttpServerNow } from "@opensteer/shared/httpServer";
-import { requestAppHttp, appRequestBodyMaxBytes } from "./app-proxy.js";
+import {
+  appOriginResponseHeaders,
+  appRequestBodyMaxBytes,
+  requestAppHttp,
+} from "./app-proxy.js";
+
+it.each([
+  [undefined, "private, no-cache"],
+  ["public, max-age=60, s-maxage=600", "private, max-age=60"],
+  ["no-store", "private, no-store"],
+])("keeps app files out of the shared Connect cache: %s", (cacheControl, expected) => {
+  const headers = appOriginResponseHeaders(
+    {
+      "content-type": "text/javascript",
+      ...(cacheControl ? { "cache-control": cacheControl } : {}),
+    },
+    { origin: "https://app.test", parents: [] },
+  );
+  expect(headers["cache-control"]).toBe(expected);
+});
 
 it("injects HTML with exact lengths, strips connection and credential headers, rewrites redirects and streams SSE and binary responses", async () => {
   let seen: import("node:http").IncomingHttpHeaders = {};

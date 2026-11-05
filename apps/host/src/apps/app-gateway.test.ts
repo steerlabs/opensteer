@@ -256,7 +256,8 @@ it("hijacks app authorities before Host hooks, matched routes, parsing and compr
       expect(result.headers["content-security-policy"]).toBe(
         "frame-ancestors app://opensteer http://localhost:1234 http://127.0.0.1:1234 http://[::1]:1234",
       );
-      expect(result.headers["cache-control"]).toBe("public, max-age=20");
+      expect(result.headers["cache-control"]).toBe("private, max-age=20");
+      expect(result.headers["referrer-policy"]).toBe("same-origin");
     }
     const body = "not json";
     const post = await f.app.inject({
@@ -427,7 +428,8 @@ it("enforces Fetch Metadata and Origin isolation and emits Connect and Safari-aw
       f.gateway.entryUrl(appId, session, "light", { host, "user-agent": agent });
     expect(entry("127.0.0.1:1234", "Version/18 Safari/605")).toBeUndefined();
     expect(entry("127.0.0.1:1234", "Chrome/130 Safari/605")).toContain(origin);
-    expect(entry("localhost:1234")).toBeUndefined();
+    expect(entry("localhost:1234")).toContain(".localhost:1234/?");
+    expect(entry("localhost:9999")).toBeUndefined();
     expect(entry("192.168.1.2:1234")).toBeUndefined();
     expect(entry("server.example.test")).toBeUndefined();
     const connectEntry = entry(
