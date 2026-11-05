@@ -2413,8 +2413,7 @@ export async function createHostRuntime(
         appOriginSigningKey: createHmac("sha256", config.authSecret)
           .update("opensteer-app-cookie-v1")
           .digest(),
-        appRealOrigins:
-          !deploymentSupportsSharing(config.workspace.shape) || config.mode === "development",
+        appRealOrigins: !deploymentSupportsSharing(config.workspace.shape),
         liveRuns,
         machineFullDiskAccess,
         requestResponseVault: integrationVault,

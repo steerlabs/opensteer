@@ -22,7 +22,7 @@ export function createAppHandlers(
       const session = requireSession(context);
       const view = await apps.view(input.appId, session.user.id, input.theme);
       const entryUrl = gateway?.entryUrl(input.appId, session, input.theme, context.headers);
-      return rpcSuccess({ ...view, ...(entryUrl ? { entryUrl, sessionId: session.id } : {}) });
+      return rpcSuccess({ ...view, ...(entryUrl ? { entryUrl } : {}) });
     },
   };
 }

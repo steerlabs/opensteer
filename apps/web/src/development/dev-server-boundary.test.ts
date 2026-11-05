@@ -29,17 +29,6 @@ describe("development Web boundary", () => {
     expect(localHostProxyRoutes).not.toHaveProperty("/internal/v1/devices/connect");
   });
 
-  it("hands every path of an app origin to the Host and leaves the viewer's own paths alone", () => {
-    const routes = Object.keys(localHostProxyRoutes);
-    expect(routes.at(-1)).toBe("^/");
-    const request = (host: string) => ({ headers: { host }, url: "/assets/app.js" });
-    const { bypass } = localHostProxyRoutes["^/"];
-    expect(
-      bypass(request(`${"a".repeat(25)}a.localhost:43100`) as IncomingMessage),
-    ).toBeUndefined();
-    expect(bypass(request("localhost:43100") as IncomingMessage)).toBe("/assets/app.js");
-  });
-
   it("serves Host discovery from the canonical origin a native client is given", () => {
     expect(localHostProxyRoutes).toMatchObject({ "/.well-known/opensteer": {} });
   });

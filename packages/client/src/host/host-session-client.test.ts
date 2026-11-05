@@ -434,7 +434,12 @@ describe("HttpHostClient Workspace files", () => {
 
 describe("HttpHostClient authentication and onboarding", () => {
   it("projects, clears, and tolerates an absent authenticated session surface", async () => {
-    const remoteBootstrap = { ...bootstrap([]), sessionSurface: "personal-remote" as const };
+    const sessionId = createId("authSession");
+    const remoteBootstrap = {
+      ...bootstrap([]),
+      sessionId,
+      sessionSurface: "personal-remote" as const,
+    };
     let authenticated = true;
     const remote = createHttpHostClient({
       fetch: async (input) => {
@@ -446,6 +451,7 @@ describe("HttpHostClient authentication and onboarding", () => {
     });
     await remote.load();
     expect(remote.getSnapshot().sessionSurface).toBe("personal-remote");
+    expect(remote.getSnapshot().sessionId).toBe(sessionId);
 
     authenticated = false;
     await remote.refresh();

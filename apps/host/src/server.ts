@@ -1236,6 +1236,7 @@ export async function createHostServer(
           identityConfig,
           machines,
           ...(context.surface ? { sessionSurface: context.surface } : {}),
+          sessionId: session.id,
           user: session.user,
           workspaceSharingAvailable: deploymentSupportsSharing(
             dependencies.discovery.document.deploymentShape,

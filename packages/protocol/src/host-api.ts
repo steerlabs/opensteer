@@ -1615,8 +1615,6 @@ export const hostApi = defineRpc({
       path: z.string().regex(/^\/v1\/apps\/app_[0-9a-f-]{36}\/(light|dark)\/[A-Za-z0-9_-]{43}\/$/u),
       /** One-use address on the app's own origin; absent on routes without one. */
       entryUrl: z.url().max(512).optional(),
-      /** The session entryUrl belongs to; a running app outlives neither. */
-      sessionId: AuthSessionIdSchema.optional(),
     }),
   ),
   "attachment.get": declaration("GET", AttachmentReferenceInputSchema, AttachmentSchema),

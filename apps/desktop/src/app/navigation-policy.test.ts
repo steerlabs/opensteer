@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   attachedHostOrigin,
+  clearOnReattachment,
   DesktopAppOriginPolicy,
   HostOriginPolicy,
   ServiceOriginPolicy,
@@ -21,6 +22,27 @@ it("lets only the current attachment answer an attachment lookup", async () => {
   const current = attachedHostOrigin(transport);
   finish({ resolved: { key: "second", origin: "https://second.test" } });
   await expect(current).resolves.toBe("https://second.test");
+});
+
+it("ends the old Deployment's access on re-attachment and on nothing else", () => {
+  let key: string | null = "first";
+  let notify!: () => void;
+  const cleared: (string | null)[] = [];
+  clearOnReattachment(
+    { setAttachedHost: (host) => cleared.push(host) },
+    {
+      currentKey: () => key,
+      subscribe: (listener) => {
+        notify = listener;
+        return () => undefined;
+      },
+    },
+  );
+  notify();
+  expect(cleared).toEqual([]);
+  key = "second";
+  notify();
+  expect(cleared).toEqual([null]);
 });
 
 describe("DesktopAppOriginPolicy", () => {

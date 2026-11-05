@@ -915,6 +915,8 @@ export interface HostSnapshot {
   transcriptWindows: Record<string, TranscriptWindow>;
   transcripts: Record<string, TranscriptEntry[]>;
   user: AuthenticatedUser | null;
+  /** Recovery can replace the session with no other visible change, ending what was bound to it. */
+  sessionId?: string;
   /** Host-declared deployment capability; false for Personal deployments. */
   workspaceSharingAvailable: boolean;
   workspaceWindow: DurableWindow;
@@ -1128,11 +1130,7 @@ export interface HostClient {
     appId: string,
     theme: "light" | "dark",
     signal?: AbortSignal,
-  ): Promise<{
-    readonly app: import("@opensteer/core").OpensteerApp;
-    readonly url: string;
-    readonly sessionId?: string;
-  }>;
+  ): Promise<{ readonly app: import("@opensteer/core").OpensteerApp; readonly url: string }>;
   getAttachment(attachmentId: string): Promise<Attachment>;
   readAttachment(attachmentId: string, signal?: AbortSignal): Promise<Blob>;
   discardAttachment(attachmentId: string): Promise<void>;

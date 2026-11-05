@@ -76,9 +76,9 @@ It steals nothing, and Connect neighbors could already do it. Apps can move to t
 later by changing the origin the Host chooses and the router; logins and browser storage stay behind.
 
 `apps.view` mints a one-use ticket, which the first request exchanges for a signed cookie, so opening
-an app costs no extra round trip. A fresh ticket replaces any cookie, so a second person on a device
-never inherits the first. The cookie survives Host restart and binds the app, origin, person and
-session. Every request rechecks that session and Workspace membership, and requests and sockets
+an app costs no extra round trip. A fresh ticket replaces the gateway cookie. The cookie survives
+Host restart and binds the app, origin, person and session. Recovery can replace a session silently,
+so bootstrap reports the session and clients open a new frame when it changes. Every request rechecks that session and Workspace membership, and requests and sockets
 still open stop within 30 seconds of access ending. A service worker can still show pages it
 cached, but gets no new data.
 
@@ -87,7 +87,8 @@ cached, but gets no new data.
 Routes with no per-app hostname (private networks), shared Deployments, Safari on the same computer
 (WebKit refuses `Secure` cookies on `*.localhost`) and previous releases use
 `/v1/apps/<id>/<theme>/<token>/`. A real origin holds one person's app logins and storage on a
-device, so a Deployment people share needs an origin per person before it can have real origins. Its document is on the Host's own origin, so the frame and every
+device, so a Deployment people can share, which includes the development stack, needs an origin per
+person before it can have real origins. Its document is on the Host's own origin, so the frame and every
 response enforce an opaque-origin sandbox, and it must never get `allow-same-origin`. That keeps
 Opensteer cookies, storage and the parent document out of reach, and leaves the app without browser
 storage. The [proxy](../apps/host/src/apps/app-proxy.ts) strips credentials and cookies both ways.
