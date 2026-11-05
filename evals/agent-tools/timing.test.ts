@@ -24,13 +24,13 @@ it("splits a turn into waits and tool time, counting parallel tools as one round
   });
 });
 
-it("counts a call announced before dispatch once", () => {
+it("counts a call announced before it is written once, and writing it as a wait", () => {
   const clock = new TurnClock(0);
   clock.note(started("a"), 1_000);
-  clock.note(started("a"), 1_005);
-  clock.note(completed("a"), 1_020);
+  clock.note(started("a"), 1_500);
+  clock.note(completed("a"), 1_520);
 
-  expect(clock.finish(1_020).rounds).toEqual([{ waitMs: 1_000, toolMs: 20, tools: 1 }]);
+  expect(clock.finish(1_520).rounds).toEqual([{ waitMs: 1_500, toolMs: 20, tools: 1 }]);
 });
 
 it("ends a tool still running when the turn does", () => {

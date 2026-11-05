@@ -47,8 +47,15 @@ export class TurnClock {
       this.#idleSince = now;
       return;
     }
-    // Engines can announce a call before dispatching it, under one ID.
-    if (this.#seen.has(callId)) return;
+    // Claude announces a call as it starts writing it, then restates it once
+    // complete. Until then the model is still working, so that time is a wait.
+    if (this.#seen.has(callId)) {
+      if (this.#running.has(callId) && this.#toolsSince !== undefined) {
+        this.#rounds.at(-1)!.waitMs += now - this.#toolsSince;
+        this.#toolsSince = now;
+      }
+      return;
+    }
     this.#seen.add(callId);
     this.#running.add(callId);
     if (this.#toolsSince === undefined) {

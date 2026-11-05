@@ -46,6 +46,7 @@ import type { MessagingRelayHub } from "./messaging-relay-hub.js";
 import type { CredentialService } from "../identity/credential-service.js";
 
 interface ChannelServiceOptions {
+  readonly onError?: (error: unknown) => void;
   readonly onChanged?: () => void;
   /** Where a person signs in to redeem a link code. */
   readonly canonicalOrigin: string;
@@ -74,7 +75,7 @@ export class ChannelService {
   readonly #runners: ChannelRunners;
   readonly #store: OpensteerStore;
   #closed = false;
-  readonly #drains = new CoalescedWake({ run: () => this.#drainIngress() });
+  readonly #drains: CoalescedWake;
   #ticks = 0;
   #timer: ReturnType<typeof setInterval> | null = null;
 
@@ -88,6 +89,10 @@ export class ChannelService {
     this.#relay = options.relay;
     this.#runners = options.runners;
     this.#store = options.store;
+    this.#drains = new CoalescedWake({
+      run: () => this.#drainIngress(),
+      ...(options.onError ? { onError: options.onError } : {}),
+    });
   }
 
   start(): void {

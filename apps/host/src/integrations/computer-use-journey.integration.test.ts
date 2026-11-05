@@ -168,7 +168,8 @@ vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => ({
           ["computer", "integration_call"].includes(request.params.name) &&
           result &&
           typeof result === "object" &&
-          "structuredContent" in result
+          "structuredContent" in result &&
+          !("isError" in result && result.isError)
         )
           return result.structuredContent as ToolResult;
         return result as ToolResult;
@@ -4187,7 +4188,7 @@ function inventorySource(platform: IntegrationPlatformService): IntegrationInven
 }
 
 function refusal(message: string) {
-  return { content: [{ type: "text", text: message }], isError: true };
+  return expect.objectContaining({ content: [{ type: "text", text: message }], isError: true });
 }
 
 interface CatalogRow {

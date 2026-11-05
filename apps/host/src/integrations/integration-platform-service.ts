@@ -2019,7 +2019,13 @@ export class IntegrationPlatformService {
         ? {}
         : { description: IntegrationProposalDescriptionSchema.parse(input.description) }),
     };
-    if (input.kind) return this.#inspectProposalKind(source, input.kind, options);
+    if (input.kind) {
+      return this.#inspectProposalKind(source, input.kind, options).catch((cause: unknown) => {
+        throw cause instanceof OpensteerError
+          ? cause
+          : refused("bad_request", safeMessage(cause, proposalFailureOptions));
+      });
+    }
     const kinds = ["mcp", "openapi", "graphql"] as const;
     const attempts = await Promise.allSettled(
       kinds.map((kind) => this.#inspectProposalKind(source, kind, options)),
