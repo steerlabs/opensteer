@@ -4010,8 +4010,6 @@ it("offers voice on Chat's first message but not on a new task composer", async 
           deploymentId={deploymentId}
           hostClient={host.client}
           onHomeReady={vi.fn()}
-          onQuoteTaken={vi.fn()}
-          quote={null}
           userId={host.client.getSnapshot().user!.id}
           workspaceId={host.client.getSnapshot().workspaces[0]!.id}
         />

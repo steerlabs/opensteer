@@ -70,41 +70,13 @@ export function messageFoldLines(message: MessageEntry, viewerUserId: string | n
 }
 
 /**
- * What an update line says woke Opensteer: a `report` left a note for its next
- * turn; a `queue` or `steer` from a trigger or watch is that automation
- * running, and from another agent is that agent asking. The reply below it is
- * Opensteer's own message, so the line names the cause, not a second sender.
+ * What a sender did, where the message doesn't show it. A `report` starts no
+ * turn and draws no reply, so it must not read as a message awaiting an answer.
  */
-export function incomingMessageAction(message: MessageEntry): string {
+export function incomingMessageAction(message: MessageEntry): string | null {
   if (message.author.kind === "platform" && message.author.cause === "run-recovery")
     return "resumed this task";
-  if (message.policy === "report") return "left a note";
-  if (message.policy === undefined) return "sent a message";
-  switch (message.author.kind) {
-    case "trigger":
-    case "watch":
-      return "ran";
-    case "agent":
-    case "connection":
-      return "asked Opensteer";
-    case "human":
-    case "platform":
-      return "sent a message";
-  }
-}
-
-/**
- * Quoting an update into Chat's composer. It never sends and never changes who
- * the reply addresses; the label says where the quote lands.
- */
-export interface AskAbout {
-  readonly label: string;
-  readonly quote: (message: MessageEntry) => void;
-}
-
-/** In Chat the quote joins this composer; anywhere else it opens Chat's. */
-export function askAboutLabel(inChat: boolean): string {
-  return inChat ? "Ask about this" : "Ask in Chat";
+  return message.policy === "report" ? "left a note" : null;
 }
 
 /** One automation's own page. */

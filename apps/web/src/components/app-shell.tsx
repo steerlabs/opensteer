@@ -62,7 +62,7 @@ import {
 } from "@opensteer/client/host";
 import { Dialog } from "./dialog.js";
 import { useActionReview, useHostSelector } from "@opensteer/client/react";
-import type { ComposerQuote, PendingSubmission } from "./composer.js";
+import type { PendingSubmission } from "./composer.js";
 import {
   claimFirstMessage,
   pendingScopeUnavailable,
@@ -112,12 +112,6 @@ import { useToast } from "./toast.js";
 
 export interface ShellContext {
   actionError: string | null;
-  /**
-   * Quotes an update into Chat's composer and goes there. It never sends, and
-   * never changes who the reply addresses: a report from Email is still
-   * answered to Opensteer, in Chat.
-   */
-  askOpensteerAbout: (quote: ComposerQuote) => void;
   clearActionError: () => void;
   /** Taken once, by Home's composer, so a later visit starts from its own draft. */
   clearHomeHandoff: () => void;
@@ -133,10 +127,9 @@ export interface ShellContext {
    * composer, not a Thread that does not exist.
    */
   homeThreadId: string | null;
-  /** Words or a quote handed to Home's composer from elsewhere, to land focused and unsent. */
+  /** Words handed to Home's composer from elsewhere, to land focused and unsent. */
   homeHandoff: {
     readonly key: number;
-    readonly quote?: ComposerQuote;
     readonly text: string;
   } | null;
   /**
@@ -562,13 +555,6 @@ export function AppShell({
   const clearHomeHandoff = useCallback(() => setHomeHandoff(null), []);
   // Handing words to Chat changes only the conversation: the place stays.
   const { openConversation } = nav;
-  const askOpensteerAbout = useCallback(
-    (quote: ComposerQuote) => {
-      setHomeHandoff((current) => ({ key: (current?.key ?? 0) + 1, quote, text: "" }));
-      openConversation("/");
-    },
-    [openConversation],
-  );
   const writeInChat = useCallback(
     (text: string) => {
       setHomeHandoff((current) => ({ key: (current?.key ?? 0) + 1, text }));
@@ -912,7 +898,6 @@ export function AppShell({
   const context = useMemo<ShellSharedContext>(
     () => ({
       actionError,
-      askOpensteerAbout,
       clearActionError,
       clearHomeHandoff,
       createThreadAndSend,
@@ -945,7 +930,6 @@ export function AppShell({
     }),
     [
       actionError,
-      askOpensteerAbout,
       clearActionError,
       clearHomeHandoff,
       createThreadAndSend,

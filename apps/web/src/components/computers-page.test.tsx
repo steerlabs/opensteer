@@ -924,7 +924,6 @@ function pageElement(input: PageInput) {
   const context: ShellContext = {
     actionError: null,
     clearActionError: noOp,
-    askOpensteerAbout: noOp,
     clearHomeHandoff: noOp,
     homeDraft: "",
     homeHandoff: null,

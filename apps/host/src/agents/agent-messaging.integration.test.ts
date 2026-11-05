@@ -717,6 +717,13 @@ integration("agent-to-agent messaging round trip", () => {
         .where("type", "in", ["run.execute", "run.steer"])
         .execute(),
     ).resolves.toEqual([]);
+    const history = await store.threadMessagePageForOwner({
+      ownerId: fixture.userId,
+      threadId: fixture.threadB.id,
+    });
+    expect(history?.messages.find(({ id }) => id === queued.result.message.id)?.policy).toBe(
+      "report",
+    );
   });
 
   /*

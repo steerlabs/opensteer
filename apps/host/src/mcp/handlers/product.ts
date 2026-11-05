@@ -492,7 +492,9 @@ export class ProductToolHandlers {
       assignmentWindow: assignments.window,
       messages: await this.#readableMessages(
         caller,
-        page.messages.map(({ addressedToUserId: _addressedToUserId, ...message }) => message),
+        page.messages.map(
+          ({ addressedToUserId: _addressedToUserId, policy: _policy, ...message }) => message,
+        ),
       ),
       thread,
       execution: {

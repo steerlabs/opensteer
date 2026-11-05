@@ -97,7 +97,6 @@ function useShellContext(): ShellContext {
       : live;
   return {
     actionError: null,
-    askOpensteerAbout: noOp,
     clearActionError: noOp,
     clearHomeHandoff: noOp,
     createThreadAndSend: async () => null,

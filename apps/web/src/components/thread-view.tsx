@@ -4,7 +4,6 @@ import { useCallback, useId, useLayoutEffect, useEffect, useMemo, useRef, useSta
 import { Navigate, useLocation, useParams, useSearchParams } from "react-router";
 import { placeContentLabel, type ModelSelection, type Request } from "@opensteer/core";
 import {
-  type AskAbout,
   type ConversationActivitySelection,
   canContinueThreadOnPlacement,
   canRespondToRequests,
@@ -27,7 +26,6 @@ import {
   withoutOwnAssignment,
   workerAssignment,
   assignmentPresentation,
-  askAboutLabel,
   blockingDetail,
   conversationName,
   messageAuthorName,
@@ -181,7 +179,6 @@ function ThreadView({
   const phoneStage = phone && work;
   const keyboardInset = useVisualViewportKeyboardInset();
   const {
-    askOpensteerAbout,
     clearHomeHandoff,
     executionPreferences,
     homeHandoff,
@@ -791,7 +788,7 @@ function ThreadView({
     [composerKey],
   );
 
-  /* ---- Quoting an update ---- */
+  /* ---- Quoting a reply ---- */
 
   /** Quotes a message into this conversation's own composer, focused and unsent. */
   const replyWith = (message: MessageEntry) => {
@@ -802,25 +799,15 @@ function ThreadView({
     }));
     requestAnimationFrame(() => composerInputRef.current?.focus());
   };
-  const quoteInto = (message: MessageEntry) => {
-    // Opensteer is already the recipient; from a task, the question still goes to Opensteer.
-    if (home) replyWith(message);
-    else askOpensteerAbout(quoteFromMessage(message, snapshot.homeThreadId));
-  };
-  const askAbout: AskAbout = { label: askAboutLabel(home), quote: quoteInto };
 
-  // A quote or request handed over from elsewhere lands in Chat's composer,
-  // focused and unsent. It is taken once, so returning here later starts from
-  // this conversation's own draft.
+  // A request handed over from elsewhere lands in Chat's composer, focused and
+  // unsent. It is taken once, so returning here later starts from this
+  // conversation's own draft.
   useEffect(() => {
     if (!home || !homeHandoff) return;
     setRestoredDraft((current) => ({
       composer: composerKey,
-      restore: {
-        key: (current?.restore.key ?? 0) + 1,
-        ...(homeHandoff.quote ? { quote: homeHandoff.quote } : {}),
-        text: homeHandoff.text,
-      },
+      restore: { key: (current?.restore.key ?? 0) + 1, text: homeHandoff.text },
     }));
     clearHomeHandoff();
     requestAnimationFrame(() => composerInputRef.current?.focus());
@@ -1060,7 +1047,6 @@ function ThreadView({
                   ) : null
                 }
                 homeThreadId={snapshot.homeThreadId}
-                askAbout={askAbout}
                 {...(conversational
                   ? {
                       activityOwner:

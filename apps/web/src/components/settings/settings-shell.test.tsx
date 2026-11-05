@@ -192,7 +192,6 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
   const context: ShellContext = {
     actionError: null,
     clearActionError: noOp,
-    askOpensteerAbout: noOp,
     clearHomeHandoff: noOp,
     homeDraft: "",
     homeHandoff: null,

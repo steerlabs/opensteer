@@ -162,7 +162,6 @@ try {
         header: await text(page, ".conv-header__name"),
         from: await text(page, ".msg--input__from"),
         fromHref: await page.locator(".msg--input__from").first().getAttribute("href"),
-        ask: await text(page, ".msg--input__actions button"),
         found: await findAuthors(page, brief.split(/\s+/u).slice(0, 2).join(" ")),
       };
       await capture(page, "task-from-chat");
@@ -182,11 +181,6 @@ try {
         "the brief does not say it came from Chat",
       );
       expectThat(observed, observed.fromHref === "/", "the brief does not lead back to Chat");
-      expectThat(
-        observed,
-        observed.ask[0] === "Ask in Chat",
-        "the quote action does not name Chat",
-      );
       expectThat(
         observed,
         observed.found[0] === "Chat",
@@ -265,20 +259,6 @@ try {
       return observed;
     },
   );
-
-  await check("asking in Chat about the brief lands a quote from Chat", async () => {
-    await page.locator(".msg--input").first().hover();
-    await page.locator(".msg--input__actions button").first().click();
-    await page.locator(".composer-quote__attribution").waitFor();
-    const observed = {
-      path: new URL(page.url()).pathname,
-      attribution: await text(page, ".composer-quote__attribution"),
-    };
-    await capture(page, "quote-in-chat");
-    expectThat(observed, observed.path === "/", "the quote did not open Chat");
-    expectThat(observed, observed.attribution[0] === "Chat", "the quote is not attributed to Chat");
-    return observed;
-  });
 
   await check("with a tab in the middle, the closed conversation is shown as Chat", async () => {
     await page.locator(".side-tab__main").first().click();
