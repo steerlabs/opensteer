@@ -192,10 +192,11 @@ describe("private popup and committed keyboard bridge", () => {
       });
     open("old");
     open("next");
-    f.events.emit("message", {}, "OpensteerPopup.closed", { popupId: "old", reason: "applied" });
+    f.events.emit("message", {}, "OpensteerPopup.closed", { popupId: "old", reason: "accepted" });
     expect(onPopup.mock.calls.at(-1)?.[0]).toMatchObject({
       type: "closed",
       ref: { popupId: "old" },
+      reason: "applied",
     });
     f.events.emit("message", {}, "OpensteerPopup.updated", {
       popupId: "next",

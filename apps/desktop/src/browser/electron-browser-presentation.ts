@@ -168,11 +168,12 @@ export class ElectronBrowserPresentation implements BrowserPresentationPort {
           }
           if (this.#popup?.popupId === id) this.#popup = null;
           this.#focusToken = "";
-          const reason = z.enum(["canceled", "applied", "expired"]).safeParse(raw.reason);
+          const reason = z.enum(["canceled", "expired"]).safeParse(raw.reason);
           options.onPopup?.({
             type: "closed",
             ref,
-            reason: reason.success ? reason.data : "interrupted",
+            reason:
+              raw.reason === "accepted" ? "applied" : reason.success ? reason.data : "interrupted",
           });
           return;
         }
