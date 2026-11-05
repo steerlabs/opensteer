@@ -204,7 +204,7 @@ function StateBody({
         <div className="card">
           <div className="card__form">
             <p className="sign-in-card__lead">{passwordsSetUpLead}</p>
-            <Facts facts={passwordsSetUpFacts} icons={["key", "shield", "desktop"]} />
+            <Facts facts={passwordsSetUpFacts} icons={["key", "shield", "desktop", "browser"]} />
             <div>
               <button
                 className="btn btn--primary"

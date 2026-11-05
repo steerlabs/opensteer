@@ -94,8 +94,8 @@ private struct CenteredScreen<Content: View>: View {
 
 private struct SetUpView: View {
   @ObservedObject var model: PasswordsWindowModel
-  /// One for each of `Copy.setUpFacts`, in order: what is typed, who allows it, where it lives.
-  private static let factSymbols = ["keyboard", "hand.raised", "laptopcomputer"]
+  /// One for each of `Copy.setUpFacts`, in order.
+  private static let factSymbols = ["keyboard", "hand.raised", "laptopcomputer", "checkmark.shield"]
 
   var body: some View {
     CenteredScreen(symbol: "key.fill", tint: .accentColor, title: Copy.appName, lead: Copy.setUpLead) {

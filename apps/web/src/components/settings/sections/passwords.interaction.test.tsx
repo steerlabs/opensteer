@@ -69,6 +69,9 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
       "You allow an account from any device signed in to this Opensteer.",
     );
     expect(text(page)).toContain("Passwords are kept only on this Mac and aren’t backed up.");
+    expect(text(page)).toContain(
+      "In the browser, each password goes only to its own website. In apps, the agent checks it’s the real app.",
+    );
     expect(buttons(page)).toEqual(["Set up Passwords"]);
     await click(button(page, "Set up Passwords"));
     expect(fake.bridge.passwordsOpen).toHaveBeenCalledExactlyOnceWith();

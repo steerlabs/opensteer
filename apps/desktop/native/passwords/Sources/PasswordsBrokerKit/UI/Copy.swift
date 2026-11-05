@@ -14,6 +14,7 @@ public enum Copy {
     "Opensteer never sends your password to the agent; it types it into the website or app, which can read it.",
     "You allow an account from any device signed in to this Opensteer.",
     "Passwords are kept only on this Mac and aren’t backed up. If this Mac is lost or erased, ones saved only here are gone.",
+    "In the browser, each password goes only to its own website. In apps, the agent checks it’s the real app.",
   ]
   public static let setUpAction = "Set Up Passwords"
   public static let updateRequired =
