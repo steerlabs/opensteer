@@ -28,6 +28,7 @@ export class DesktopMainProcess {
   #stopPromise: Promise<void> | undefined;
   #serviceStartPromise: Promise<void> | undefined;
   #window: DesktopWindowHandle | null = null;
+  #windowOpening: Promise<void> | undefined;
 
   constructor(options: {
     readonly onServiceError?: (error: Error) => void;
@@ -71,10 +72,7 @@ export class DesktopMainProcess {
   async activate(): Promise<void> {
     if (!this.#started || this.#stopPromise) return;
     if (!this.#window || this.#window.isDestroyed()) await this.#openWindow({ show: true });
-    else {
-      this.#window.show();
-      this.#window.focus();
-    }
+    this.focus();
   }
 
   focus(): void {
@@ -115,16 +113,25 @@ export class DesktopMainProcess {
   async #openWindow(options: { readonly show: boolean }): Promise<void> {
     const existing = this.#window;
     if (existing && !existing.isDestroyed()) return;
-    let created: DesktopWindowHandle | undefined;
-    created = await this.#windows.create(() => {
-      if (this.#window !== created) return;
-      this.#window = null;
-      this.#onWindowClosed();
-    }, options);
-    if (!this.#started || this.#stopPromise) {
-      created.destroy();
-      return;
+    if (this.#windowOpening) return this.#windowOpening;
+    const opening = (async () => {
+      let created: DesktopWindowHandle | undefined;
+      created = await this.#windows.create(() => {
+        if (this.#window !== created) return;
+        this.#window = null;
+        this.#onWindowClosed();
+      }, options);
+      if (!this.#started || this.#stopPromise) {
+        created.destroy();
+        return;
+      }
+      this.#window = created;
+    })();
+    this.#windowOpening = opening;
+    try {
+      await opening;
+    } finally {
+      this.#windowOpening = undefined;
     }
-    this.#window = created;
   }
 }
