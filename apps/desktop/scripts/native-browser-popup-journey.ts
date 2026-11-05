@@ -603,18 +603,13 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     await a.getByRole("dialog").waitFor();
     const old = counts[0];
     const beforeHandoff = admissions[1];
-    const beforePicture = await b.evaluate(() => Number(Reflect.get(window, "popupPresented")));
     await b.getByRole("button", { name: "Take control", exact: true }).click();
     await a.getByRole("dialog").waitFor({ state: "hidden" });
     assert.equal(counts[1], 0, "Handoff transferred the previous picker");
     assert(counts[0] >= old);
     await kit.snapshot("popups", "handoff");
     await kit.until(async () => admissions[1] > beforeHandoff, "replacement media admission", 4000);
-    await b.waitForFunction(
-      (before) => Number(Reflect.get(window, "popupPresented")) > before,
-      beforePicture,
-      { timeout: 4000 },
-    );
+    await pictureAfter(b, async () => undefined);
     await tap(b, "single");
     await b.getByRole("dialog").waitFor();
     // Local input retains the stock route and interrupts a pre-existing remote draft.
