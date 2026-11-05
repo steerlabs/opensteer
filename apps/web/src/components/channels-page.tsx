@@ -740,11 +740,7 @@ export function ChannelOverview({
                 <Fragment key={connection.id}>
                   <div className="card__row settings-messaging-row">
                     <IntegrationIcon
-                      id={
-                        connection.provider === "apple-messages"
-                          ? "apple-messages"
-                          : connection.provider
-                      }
+                      id={connection.provider}
                       name={provider?.label ?? connection.provider}
                     />
                     <div className="card__row-body">

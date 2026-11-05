@@ -1,0 +1,128 @@
+{
+  "notice": "Brand assets identify their respective products. Trademarks belong to their owners. Sources from gilbarbara/logos are distributed under CC0; pheralb/svgl under MIT. Assets are resized without recoloring; aspect ratios are preserved.",
+  "assets": {
+    "apple-contacts": {
+      "url": "https://www.apple.com/v/apps/f/images/overview/apps/tier1/chiclets/contacts_chiclet__bfsq7qs1ptjm_xlarge_2x.png",
+      "owner": "Apple"
+    },
+    "apple-photos": {
+      "url": "https://www.apple.com/v/apps/f/images/overview/apps/tier1/chiclets/photos_chiclet__cs6rufbxntqq_xlarge_2x.png",
+      "owner": "Apple"
+    },
+    "apple-notes": {
+      "url": "https://www.apple.com/v/apps/f/images/overview/apps/tier1/chiclets/notes_chiclet__clow1nl1x7bm_xlarge_2x.png",
+      "owner": "Apple"
+    },
+    "apple-reminders": {
+      "url": "https://www.apple.com/v/apps/f/images/overview/apps/tier1/chiclets/reminders_chiclet__egnksg9gd4ya_xlarge_2x.png",
+      "owner": "Apple"
+    },
+    "apple-calendar": {
+      "url": "https://www.apple.com/v/apps/f/images/overview/apps/tier1/chiclets/calendar_chiclet__c1v02zaw5vgy_xlarge_2x.png",
+      "owner": "Apple"
+    },
+    "google-docs": {
+      "url": "https://www.gstatic.com/images/branding/product/2x/docs_2020q4_48dp.png",
+      "owner": "Google"
+    },
+    "google-drive": {
+      "url": "https://www.gstatic.com/images/branding/product/2x/drive_2020q4_48dp.png",
+      "owner": "Google"
+    },
+    "google-gmail": {
+      "url": "https://www.gstatic.com/images/branding/product/2x/gmail_2020q4_48dp.png",
+      "owner": "Google"
+    },
+    "google-calendar": {
+      "url": "https://www.gstatic.com/images/branding/product/2x/calendar_2020q4_48dp.png",
+      "owner": "Google"
+    },
+    "google-sheets": {
+      "url": "https://www.gstatic.com/images/branding/product/2x/sheets_2020q4_48dp.png",
+      "owner": "Google"
+    },
+    "google-slides": {
+      "url": "https://www.gstatic.com/images/branding/product/2x/slides_2020q4_48dp.png",
+      "owner": "Google"
+    },
+    "google-forms": {
+      "url": "https://www.gstatic.com/images/branding/product/2x/forms_2020q4_48dp.png",
+      "owner": "Google"
+    },
+    "axiom": {
+      "url": "https://raw.githubusercontent.com/pheralb/svgl/main/static/library/axiom-light.svg"
+    },
+    "browserbase": {
+      "url": "https://raw.githubusercontent.com/gilbarbara/logos/main/logos/browserbase-icon.svg"
+    },
+    "context7": {
+      "url": "https://context7.com/context7-icon.svg"
+    },
+    "exa": {
+      "url": "https://raw.githubusercontent.com/gilbarbara/logos/main/logos/exa-icon.svg"
+    },
+    "firecrawl": {
+      "url": "https://raw.githubusercontent.com/gilbarbara/logos/main/logos/firecrawl-icon.svg"
+    },
+    "microsoft": {
+      "url": "https://raw.githubusercontent.com/gilbarbara/logos/main/logos/microsoft-icon.svg"
+    },
+    "monday": {
+      "url": "https://raw.githubusercontent.com/gilbarbara/logos/main/logos/monday-icon.svg"
+    },
+    "openai": {
+      "url": "https://raw.githubusercontent.com/gilbarbara/logos/main/logos/openai-icon.svg"
+    },
+    "twilio": {
+      "url": "https://raw.githubusercontent.com/gilbarbara/logos/main/logos/twilio-icon.svg"
+    },
+    "val-town": {
+      "url": "https://www.val.town/favicon.svg?dot=false"
+    },
+    "figma": {
+      "url": "https://raw.githubusercontent.com/gilbarbara/logos/main/logos/figma.svg"
+    },
+    "slack": {
+      "url": "https://raw.githubusercontent.com/gilbarbara/logos/main/logos/slack-icon.svg"
+    },
+    "gitlab": {
+      "url": "https://raw.githubusercontent.com/gilbarbara/logos/main/logos/gitlab-icon.svg"
+    },
+    "posthog": {
+      "url": "https://raw.githubusercontent.com/gilbarbara/logos/main/logos/posthog-icon.svg"
+    },
+    "cloudflare": {
+      "url": "https://raw.githubusercontent.com/gilbarbara/logos/main/logos/cloudflare-icon.svg"
+    },
+    "neon": {
+      "url": "https://raw.githubusercontent.com/gilbarbara/logos/main/logos/neon-icon.svg"
+    },
+    "asana": {
+      "url": "https://raw.githubusercontent.com/gilbarbara/logos/main/logos/asana-icon.svg"
+    },
+    "microsoft-outlook": {
+      "url": "https://res-1.cdn.office.net/files/fabric-cdn-prod_20240129.001/assets/brand-icons/product/svg/outlook_48x1.svg"
+    },
+    "microsoft-teams": {
+      "url": "https://res-1.cdn.office.net/files/fabric-cdn-prod_20240129.001/assets/brand-icons/product/svg/teams_48x1.svg"
+    },
+    "microsoft-todo": {
+      "url": "https://res-1.cdn.office.net/files/fabric-cdn-prod_20240129.001/assets/brand-icons/product/svg/todo_48x1.svg"
+    },
+    "microsoft-onedrive": {
+      "url": "https://res-1.cdn.office.net/files/fabric-cdn-prod_20240129.001/assets/brand-icons/product/svg/onedrive_48x1.svg"
+    },
+    "microsoft-onenote": {
+      "url": "https://res-1.cdn.office.net/files/fabric-cdn-prod_20240129.001/assets/brand-icons/product/svg/onenote_48x1.svg"
+    },
+    "deepwiki": {
+      "url": "https://devin.ai/assets/askdeepwiki.png",
+      "preparation": "Symbol cropped from the official README badge linked by github.com/CognitionAI/deepwiki."
+    },
+    "google-contacts": {
+      "url": "https://www.gstatic.com/images/branding/product/2x/contacts_2022_48dp.png",
+      "owner": "Google"
+    }
+  },
+  "androidNotice": "The Android robot is reproduced or modified from work created and shared by Google and used according to terms described in the Creative Commons 3.0 Attribution License (https://creativecommons.org/licenses/by/3.0/)."
+}
