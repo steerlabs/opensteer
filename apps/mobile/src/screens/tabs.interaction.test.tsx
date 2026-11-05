@@ -1552,7 +1552,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     w.record("J1 streamed token and sign-in");
   });
 
-  it("says when it cannot refresh, with Try again, when it is offline, and when there is nothing", async () => {
+  it("says when it cannot refresh, with Try again, and when there is nothing, and leaves a lost connection to the pill", async () => {
     let host!: ReturnType<typeof steerable>;
     let refresh!: ReturnType<typeof vi.spyOn>;
     const w = await world({
@@ -1575,8 +1575,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     expect(notices()).toEqual([]);
 
     await host.change((snapshot) => ({ ...snapshot, connection: "offline" }));
-    expect(notices()).toHaveLength(1);
-    expect(notices()[0]).toContain("Tabs reconnect when the deployment is available.");
+    expect(notices()).toEqual([]);
     expect(placeRows(front(w)).length).toBeGreaterThan(0);
 
     await host.change((snapshot) => ({

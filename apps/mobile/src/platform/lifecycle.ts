@@ -1,6 +1,7 @@
 import type {
   ClientLifecycle,
   ClientLifecycleSnapshot,
+  ClientNetworkPath,
   ClientNetworkState,
 } from "@opensteer/client/host";
 
@@ -49,22 +50,20 @@ export function createMobileLifecycle(options: {
   const onReadFailure = options.onReadFailure ?? (() => undefined);
   const backgroundListeners = new Set<() => void>();
   const foregroundListeners = new Set<() => void>();
-  const networkListeners = new Set<(state: ClientNetworkState) => void>();
+  const networkListeners = new Set<(state: ClientNetworkState, path: ClientNetworkPath) => void>();
 
   let snapshot: ClientLifecycleSnapshot = {
     network: "unknown",
     visibility: appState.currentState === "active" ? "foreground" : "background",
   };
 
-  // Every notification is forwarded, repeats included. The phone reports
-  // `online` on both sides of a Wi-Fi to cellular handover, and that move
-  // invalidates every socket the app has open — filtering the repeat out is
-  // exactly how a client is left holding sockets on a path that no longer
-  // exists. The contract on `onNetworkChange` says so; the client decides what
-  // a notification is worth.
-  const publishNetwork = (state: ClientNetworkState): void => {
+  // Every notification is forwarded, repeats included, because a move between
+  // two Wi-Fi networks reads the same and filtering it out would leave a client
+  // holding sockets on a path that no longer exists. The reading only says
+  // whether the phone saw a move; the client decides what each is worth.
+  const publishNetwork = (state: ClientNetworkState, path: ClientNetworkPath): void => {
     snapshot = { ...snapshot, network: state };
-    for (const listener of networkListeners) listener(state);
+    for (const listener of networkListeners) listener(state, path);
   };
 
   let lastReading: NetworkReading | undefined;
@@ -80,25 +79,19 @@ export function createMobileLifecycle(options: {
       .getNetworkStateAsync()
       .then((reading) => {
         if (revision !== networkRevision) return;
-        const previous = lastReading;
+        const path = pathOf(lastReading, reading);
         lastReading = reading;
-        if (
-          foreground &&
-          previous?.type &&
-          reading.type === previous.type &&
-          reading.isConnected === previous.isConnected &&
-          reading.isInternetReachable === previous.isInternetReachable
-        )
-          return;
-        publishNetwork(networkStateOf(reading));
+        if (foreground && path === "same") return;
+        publishNetwork(networkStateOf(reading), path);
       })
       .catch(onReadFailure);
   };
 
   const networkSubscription = network.addNetworkStateListener((reading) => {
     networkRevision += 1;
+    const path = pathOf(lastReading, reading);
     lastReading = reading;
-    publishNetwork(networkStateOf(reading));
+    publishNetwork(networkStateOf(reading), path);
   });
 
   const appStateSubscription = appState.addEventListener("change", (state) => {
@@ -137,6 +130,15 @@ export function createMobileLifecycle(options: {
       return () => networkListeners.delete(listener);
     },
   };
+}
+
+function pathOf(previous: NetworkReading | undefined, reading: NetworkReading): ClientNetworkPath {
+  return previous?.type &&
+    reading.type === previous.type &&
+    reading.isConnected === previous.isConnected &&
+    reading.isInternetReachable === previous.isInternetReachable
+    ? "same"
+    : "changed";
 }
 
 /**

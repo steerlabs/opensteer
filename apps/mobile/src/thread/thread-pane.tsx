@@ -59,7 +59,7 @@ import {
   type NativeSyntheticEvent,
 } from "react-native";
 import Animated from "react-native-reanimated";
-import { canRespondToRequests, describeHostConnection } from "@opensteer/client/host";
+import { canRespondToRequests, showsHostLive } from "@opensteer/client/host";
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import type { ArtifactContentPart } from "@opensteer/core";
 import {
@@ -156,7 +156,6 @@ type TranscriptItem =
  */
 export interface ThreadHeaderState {
   readonly connectionLabel: string | null;
-  readonly canRetry: boolean;
   readonly title: string;
   readonly workspaceName: string | null;
   readonly workspaceColor: WorkspaceSummary["color"];
@@ -176,7 +175,6 @@ export function sameThreadHeader(
   return (
     left !== null &&
     left.connectionLabel === right.connectionLabel &&
-    left.canRetry === right.canRetry &&
     left.title === right.title &&
     left.workspaceName === right.workspaceName &&
     left.workspaceColor === right.workspaceColor &&
@@ -249,6 +247,7 @@ function selectThreadPane(snapshot: HostSnapshot, threadId: string) {
     browserSessions: snapshot.browserSessions,
     browserProfiles: snapshot.browserProfiles,
     connection: snapshot.connection,
+    connectionInterrupted: snapshot.connectionInterrupted,
     network: snapshot.network,
     session: snapshot.session,
     user: snapshot.user,
@@ -456,16 +455,11 @@ function ThreadPaneForUser(
   }, [handedQuote, onQuoteTaken]);
 
   const thread = snapshot.thread;
-  const connection = describeHostConnection(snapshot);
   const canRespond = canRespondToRequests(snapshot);
   const environment = snapshot.environments.find(({ id }) => id === thread?.environmentId);
-  const live = canRespond && environment?.status === "connected";
-  const connectionLabel = !canRespond
-    ? connection.label
-    : environment?.status === "disconnected"
-      ? `${environment.name} offline`
-      : null;
-  const canRetry = connection.action === "retry";
+  const live = showsHostLive(snapshot) && environment?.status === "connected";
+  const connectionLabel =
+    canRespond && environment?.status === "disconnected" ? `${environment.name} offline` : null;
 
   const entries = useMemo(() => snapshot.entries ?? [], [snapshot.entries, threadId]);
   // The Host names the subagent behind each Request waiting on this reader;
@@ -723,7 +717,6 @@ function ThreadPaneForUser(
   useEffect(() => {
     onHeader?.({
       connectionLabel,
-      canRetry,
       task,
       title: headerTitle ?? "Thread",
       workspaceName,
@@ -736,7 +729,6 @@ function ThreadPaneForUser(
     });
   }, [
     connectionLabel,
-    canRetry,
     headerTitle,
     onHeader,
     task,

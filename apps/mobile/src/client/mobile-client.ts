@@ -1958,7 +1958,8 @@ export class MobileClient {
   /**
    * Reads the attachment's own state off the client, and answers whether it
    * changed. "Reconnecting" is not a state a Host client has: it is dialling
-   * after having been connected once, which only this side remembers.
+   * after having been connected once, which only this side remembers. A drop
+   * still inside the client's hold stays "connected", as it does everywhere.
    */
   #readAttachment(hostClient: HostClient): boolean {
     const snapshot = hostClient.getSnapshot();
@@ -1974,7 +1975,9 @@ export class MobileClient {
     const state: DeploymentAttachment =
       snapshot.connection === "connecting"
         ? this.#attachmentConnected
-          ? "reconnecting"
+          ? snapshot.connectionInterrupted
+            ? "reconnecting"
+            : "connected"
           : "connecting"
         : snapshot.connection;
     const refused = snapshot.session === "authentication-required";

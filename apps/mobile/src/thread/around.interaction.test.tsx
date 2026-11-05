@@ -278,7 +278,6 @@ async function world(options: { readonly automations?: "absent" } = {}) {
 }
 
 const header: ThreadHeaderState = {
-  canRetry: false,
   color: null,
   connectionLabel: null,
   icon: null,

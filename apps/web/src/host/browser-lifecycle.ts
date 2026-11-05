@@ -23,8 +23,8 @@ export function browserClientLifecycle(
     onBackground: (listener) => visibilityListener(false, listener),
     onForeground: (listener) => visibilityListener(true, listener),
     onNetworkChange: (listener) => {
-      const online = () => listener("online");
-      const offline = () => listener("offline");
+      const online = () => listener("online", "changed");
+      const offline = () => listener("offline", "changed");
       window.addEventListener("online", online);
       window.addEventListener("offline", offline);
       return () => {
