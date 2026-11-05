@@ -28,7 +28,7 @@ const fixturePath = path.resolve(
   import.meta.dirname,
   "../../../apps/desktop/native/passwords/Tests/Fixtures/passwords-wire.json",
 );
-const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as {
+const brokerFixture = JSON.parse(readFileSync(fixturePath, "utf8")) as {
   readonly error: unknown;
   readonly event: unknown;
   readonly requests: Readonly<Record<string, readonly unknown[]>>;
@@ -84,8 +84,11 @@ const cardResults = {
     { released: false, reason: "no-field" },
   ],
 };
-Object.assign(fixture.requests, cardRequests);
-Object.assign(fixture.results, cardResults);
+const fixture = {
+  ...brokerFixture,
+  requests: { ...cardRequests, ...brokerFixture.requests },
+  results: { ...cardResults, ...brokerFixture.results },
+};
 const methods = PasswordsBrokerMethodSchema.options;
 
 describe("Passwords broker wire fixture", () => {
