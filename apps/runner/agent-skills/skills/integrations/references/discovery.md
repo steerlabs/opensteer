@@ -3,7 +3,8 @@
 - `operations` — operations callable right now, best matches first. Each has its `name`, `effect`
   (`read` or `write`), a short `description`, and `input`: its arguments as TypeScript, where `?` is
   optional and `…` means more exists in `integration_describe`. Call it with `name` as `operation`.
-  `accounts` appears only when it works on some, not all, of its integration's accounts.
+  `installation` is the `name` of its entry in `results`, where its accounts are; `accounts` appears
+  only when it works on some, not all, of them.
 - `results` — integrations installed on this Deployment, with their accounts and server readiness.
   An account includes its `connectionId`, access class, and default status. Choose an account by
   `connectionId`, never by name: names can repeat. `tools` lists only operations that need access

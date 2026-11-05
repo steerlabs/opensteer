@@ -607,16 +607,15 @@ export async function integrationGateway(plan: { readonly token: string; readonl
 export function operations(search: Record<string, unknown>) {
   const rows = search.operations as readonly {
     readonly accounts?: readonly string[];
-    readonly integration: string;
+    readonly installation: string;
     readonly name: string;
   }[];
   const results = search.results as readonly {
     readonly accounts: readonly { readonly account: string; readonly connectionId: string }[];
-    readonly integration: string;
+    readonly name: string;
   }[];
   return rows.flatMap((row) => {
-    const accounts =
-      results.find(({ integration }) => integration === row.integration)?.accounts ?? [];
+    const accounts = results.find(({ name }) => name === row.installation)?.accounts ?? [];
     const shown = row.accounts
       ? accounts.filter(({ connectionId }) => row.accounts?.includes(connectionId))
       : accounts;
@@ -630,7 +629,7 @@ export function operations(search: Record<string, unknown>) {
         }))
       : [
           {
-            account: row.integration,
+            account: row.installation,
             address: { operation: row.name },
             connectionId: null as string | null,
             name,

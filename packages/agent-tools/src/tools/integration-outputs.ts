@@ -80,7 +80,7 @@ export const IntegrationSearchOutputSchema = z.object({
         description: z.string(),
         effect: z.string(),
         input: z.string().optional(),
-        integration: z.string(),
+        installation: z.string(),
         name: z.string(),
       }),
     )

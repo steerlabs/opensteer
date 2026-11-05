@@ -598,8 +598,9 @@ export class IntegrationToolHandlers {
           ...(accounts.length > 0 && accounts.length < shownAccounts ? { accounts } : {}),
           description: toolSummary(operation.tool),
           effect: integrationToolEffect(operation.tool.annotations),
-          integration: operation.installation.title,
           ...(stored ? { input: integrationToolSignature(stored) } : {}),
+          // Titles can repeat; this is the `name` of its entry in `results`.
+          installation: operation.installation.name,
           name: operationAddress(operation),
         };
       }),

@@ -296,7 +296,7 @@ describe("Opensteer MCP integration access classes", () => {
           description: "List issues",
           effect: "read",
           input: "{}",
-          integration: "Linear",
+          installation: "linear",
           name: expect.stringMatching(/^issues\.list@[\w-]{8}$/u),
         },
       ],
@@ -421,7 +421,7 @@ describe("Opensteer MCP integration access classes", () => {
   it("keeps two integrations' same-named operations apart", async () => {
     const first = inventoryEntry();
     const other = inventoryEntry();
-    other.installation.title = "Tracker";
+    other.installation.name = "tracker";
     const linear = callableTool({
       entry: first,
       effect: "read",
@@ -446,7 +446,7 @@ describe("Opensteer MCP integration access classes", () => {
         callExtra("shared"),
       ),
     );
-    const rows = searched.operations as { integration: string; name: string }[];
+    const rows = searched.operations as { installation: string; name: string }[];
     expect(rows).toHaveLength(2);
     const account = tracker.grant.connectionId;
     expect(
@@ -459,12 +459,53 @@ describe("Opensteer MCP integration access classes", () => {
         ),
       ),
     ).toContain("names more than one operation");
-    const trackerRow = rows.find(({ integration }) => integration === "Tracker")!;
+    const trackerRow = rows.find(({ installation }) => installation === "tracker")!;
     await handler(
       { params: { arguments: { account, operation: trackerRow.name }, name: "integration_call" } },
       callExtra("addressed"),
     );
     expect(callTool).toHaveBeenCalledWith(tracker, {}, expect.anything(), expect.any(AbortSignal));
+  });
+
+  it("ties each operation to its installation when two share a title", async () => {
+    const first = inventoryEntry();
+    const second = inventoryEntry();
+    second.installation.name = "linear-other";
+    const firstTool = callableTool({
+      entry: first,
+      effect: "read",
+      name: "issues.list",
+      title: "List issues",
+    });
+    const secondTool = callableTool({
+      entry: second,
+      effect: "read",
+      name: "tickets.list",
+      title: "List tickets",
+    });
+    const { handler } = await createHarness({
+      callableTools: [firstTool, secondTool],
+      inventory: [first, second],
+    });
+    const searched = result(
+      await handler(
+        { params: { arguments: { query: "list" }, name: "integration_search" } },
+        callExtra("same-title"),
+      ),
+    );
+    const rows = searched.operations as { installation: string; name: string }[];
+    expect(rows.find(({ name }) => name.startsWith("tickets.list@"))?.installation).toBe(
+      "linear-other",
+    );
+    expect(searched.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          accounts: second.accounts,
+          integration: "Linear",
+          name: "linear-other",
+        }),
+      ]),
+    );
   });
 
   it("shows an integration's accounts whenever one of its operations is on the page", async () => {
