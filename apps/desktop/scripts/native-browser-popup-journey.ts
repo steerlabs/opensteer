@@ -637,18 +637,14 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     );
     assert.equal(counts[2], 0, "Watch received a chooser during local takeover");
     const beforeDisconnect = admissions[0];
-    const beforeRecovery = await a.evaluate(() => Number(Reflect.get(window, "popupPresented")));
     await viewers[1]!.viewer.close();
     await kit.until(
       async () => admissions[0] > beforeDisconnect,
       "remaining viewer's replacement admission",
       4000,
     );
-    await a.waitForFunction(
-      (before) => Number(Reflect.get(window, "popupPresented")) > before,
-      beforeRecovery,
-      { timeout: 4000 },
-    );
+    // The focused field's caret keeps painting, so only a later picture is from the new stream.
+    await pictureAfter(a, async () => undefined);
     await tap(a, "single");
     await a.getByRole("dialog").waitFor();
     const catalog = await context.api["browser.tabs.get"]({ sessionId: context.sessionId });
