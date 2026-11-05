@@ -159,8 +159,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   const sessionMatches = [false, false];
   const guardedResults: Record<string, number> = {};
   const tapStarted: (number | null)[] = [null, null];
-  const lastVideoState: (string | null)[] = [null, null];
-  const videoStarts = [0, 0];
   const answers = new Map<string, number>();
   const tapToPopupMs: number[] = [];
   const answerToAppliedMs: number[] = [];
@@ -185,15 +183,17 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         const page = await viewer.newPage();
         page.setDefaultTimeout(4000);
         await page.addInitScript(() => {
-          Object.assign(window, { popupPresented: 0 });
+          Object.assign(window, { popupPresented: 0, popupCorner: -1 });
           document.addEventListener("browser-picture-presented", (event) => {
             const canvas = event.target;
-            if (
-              canvas instanceof HTMLCanvasElement &&
-              canvas.getContext("2d")?.getImageData(0, 0, 1, 1).data[3]
-            )
+            const pixel =
+              canvas instanceof HTMLCanvasElement
+                ? canvas.getContext("2d")?.getImageData(0, 0, 1, 1).data
+                : undefined;
+            if (pixel?.[3])
               Object.assign(window, {
                 popupPresented: Number(Reflect.get(window, "popupPresented")) + 1,
+                popupCorner: pixel[0],
               });
           });
         });
@@ -203,11 +203,8 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
             try {
               const m: unknown = JSON.parse(payload);
               const videoState = BrowserVideoStateSchema.safeParse(m);
-              if (videoState.success) {
+              if (videoState.success)
                 record(index, `video:${videoState.data.state}:${videoState.data.reason ?? "none"}`);
-                lastVideoState[index] = videoState.data.state;
-                if (videoState.data.state === "starting") videoStarts[index]!++;
-              }
               const popup = BrowserPopupServerMessageSchema.safeParse(m);
               if (popup.success) {
                 if (popup.data.type === "browser.popup.opened" && tapStarted[index] != null) {
@@ -363,14 +360,17 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         canvas.y + (point.y / point.h) * canvas.height,
       );
     };
-    // A tap on a picture older than a hit-test change must refuse, and a viewer can't tap what
-    // it hasn't presented. Page changes, even pixel-identical ones, deliver a fresh picture.
+    // A tap on a picture older than a hit-test change must refuse, and a frame already in flight
+    // can arrive after a change without containing it. A repaint ordered after the change, seen
+    // in the viewer's own pixels, proves the presented picture is newer.
     const pictureAfter = async (page: Page, change: () => Promise<unknown>) => {
-      const before = await page.evaluate(() => Number(Reflect.get(window, "popupPresented")));
       await change();
+      const red = (await read(
+        `(()=>{const s=document.body.style;const light=s.backgroundColor!=="rgb(255, 255, 255)";s.backgroundColor=light?"rgb(255, 255, 255)":"rgb(200, 200, 200)";return light?255:200})()`,
+      )) as number;
       await page.waitForFunction(
-        (count) => Number(Reflect.get(window, "popupPresented")) > count,
-        before,
+        (expected) => Math.abs(Number(Reflect.get(window, "popupCorner")) - expected) < 24,
+        red,
         { timeout: 4000 },
       );
     };
@@ -556,7 +556,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       "datalist answer updates the original input",
       3000,
     );
-    // A focused field's caret keeps painting, so only a later picture proves the answer arrived.
     await pictureAfter(a, async () => undefined);
     const beforeContext = editingContexts[0];
     await tap(a, "ime");
@@ -578,7 +577,15 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     // The typed text already equals this suggestion, so the native value doesn't change.
     await ime.waitFor({ state: "hidden" });
     await pictureAfter(a, async () => undefined);
-    await pictureAfter(a, () => tap(a, "successor"));
+    const dispatchedBefore = guardedResults["dispatched:none"] ?? 0;
+    await pictureAfter(a, async () => {
+      await tap(a, "successor");
+      await kit.until(
+        async () => (guardedResults["dispatched:none"] ?? 0) > dispatchedBefore,
+        "successor tap dispatched",
+        3000,
+      );
+    });
     await tap(a, "single");
     await a.getByRole("dialog", { name: "Choose an option" }).waitFor();
     await pictureAfter(a, async () => {
@@ -605,10 +612,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     await tap(b, "single");
     await b.getByRole("dialog").waitFor();
     // Local input retains the stock route and interrupts a pre-existing remote draft.
-    const startsBeforeLocal = videoStarts[1]!;
-    const picturesBeforeLocal = await b.evaluate(() =>
-      Number(Reflect.get(window, "popupPresented")),
-    );
     await kit.selectNativePage(context.sessionId, surfaceId);
     await kit.focusPage();
     await kit.pageMouse("#single", true);
@@ -620,15 +623,8 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         localMenu.windows.length > before.windows.length,
       "Local select did not create its stock native UI",
     );
-    // Selecting the native page can resize it, which restarts the stream, and an idle page emits
-    // no further picture, so require one only after an actual restart.
-    await kit.until(async () => lastVideoState[1] === "live", "viewer stream live", 4000);
-    if (videoStarts[1]! > startsBeforeLocal)
-      await b.waitForFunction(
-        (count) => Number(Reflect.get(window, "popupPresented")) > count,
-        picturesBeforeLocal,
-        { timeout: 4000 },
-      );
+    // Selecting the native page can resize it, which restarts the stream.
+    await pictureAfter(b, async () => undefined);
     const tapsBefore = commands["input.guarded-click"] ?? 0;
     await tap(b, "single");
     await b
@@ -663,9 +659,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       "remaining viewer's replacement admission",
       4000,
     );
-    // The focused field's caret keeps painting. The first picture after admission can still refuse
-    // a tap, so the replacement stream has to present a second one.
-    await pictureAfter(a, async () => undefined);
     await pictureAfter(a, async () => undefined);
     await tap(a, "single");
     await a.getByRole("dialog").waitFor();
