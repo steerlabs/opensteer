@@ -65,6 +65,19 @@ final class SnapshotTests: BrokerTestCase {
     return rep
   }
 
+  /// The Dock and Command-Tab are how the person gets back from exporting, so the
+  /// window is a real app only while it is open. Here because it orders a window in.
+  func testTheWindowIsAnAppOnlyWhileOpen() throws {
+    NSApplication.shared.setActivationPolicy(.accessory)
+    let model = PasswordsWindowModel(
+      broker: broker, activityLog: harness.activity, runner: ImportRunner(worker: builtWorker))
+    let windows = PasswordsWindowController(model: model)
+    windows.openPasswordsWindow()
+    XCTAssertEqual(NSApplication.shared.activationPolicy(), .regular)
+    model.leave()
+    XCTAssertEqual(NSApplication.shared.activationPolicy(), .accessory)
+  }
+
   func testWindowStates() async throws {
     let size = NSSize(width: 560, height: 640)
     let model = PasswordsWindowModel(
