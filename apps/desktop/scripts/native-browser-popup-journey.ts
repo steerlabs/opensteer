@@ -569,7 +569,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       "IME commit was inserted more than once",
     );
     await pictureAfter(a, () => a.getByRole("option", { name: /漢字/ }).click());
-    await tap(a, "successor");
+    await pictureAfter(a, () => tap(a, "successor"));
     await tap(a, "single");
     await a.getByRole("dialog", { name: "Choose an option" }).waitFor();
     await a
