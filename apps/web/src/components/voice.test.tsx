@@ -102,6 +102,8 @@ it("shows the agent's step inside the orb and glints once when the call changes 
     spoken: null,
     since: null,
     activity: "browser",
+    tasks: 0,
+    ask: null,
     notice: null,
   };
   const listeners = new Set<() => void>();
@@ -117,6 +119,7 @@ it("shows the agent's step inside the orb and glints once when the call changes 
       shown = listener;
       return () => undefined;
     },
+    openThread: vi.fn(async () => null),
     start: vi.fn(async () => undefined),
     stop: vi.fn(),
     setMuted: vi.fn(),
@@ -151,6 +154,52 @@ it("shows the agent's step inside the orb and glints once when the call changes 
     expect(island.querySelector(".voice-island__caption")?.textContent).toBe("Listening");
   } finally {
     await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
+it("carries what needs the person on the bar, and claims room over a place", async () => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  const snapshot: VoiceSnapshot = {
+    available: true,
+    phase: "listening",
+    muted: false,
+    heard: null,
+    spoken: null,
+    since: null,
+    activity: null,
+    tasks: 2,
+    ask: null,
+    notice: null,
+  };
+  const controller: VoiceControls = {
+    subscribe: () => () => undefined,
+    getSnapshot: () => snapshot,
+    subscribeLevel: () => () => undefined,
+    openThread: vi.fn(async () => null),
+    start: vi.fn(async () => undefined),
+    stop: vi.fn(),
+    setMuted: vi.fn(),
+    dismissNotice: vi.fn(),
+  };
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () =>
+      root.render(
+        <VoiceContext value={controller}>
+          <VoiceIsland ask={<p className="fixture-ask">Sign in</p>} />
+        </VoiceContext>,
+      ),
+    );
+    const float = container.querySelector(".voice-float")!;
+    expect(float.firstElementChild?.className).toBe("fixture-ask");
+    expect(float.querySelector(".voice-island__tasks")?.textContent).toBe("2 tasks");
+    expect(document.documentElement.style.getPropertyValue("--voice-reserve")).not.toBe("");
+    await act(async () => root.unmount());
+    expect(document.documentElement.style.getPropertyValue("--voice-reserve")).toBe("");
+  } finally {
     container.remove();
   }
 });

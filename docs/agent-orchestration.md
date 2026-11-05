@@ -102,15 +102,14 @@ conversation exists nor that none does: startup repeats only when earlier attemp
 happened, and resume returns the exact native reference, never a fresh conversation or replayed Host
 messages ([Runner runtime](../apps/runner/src/runtime/runtime.ts)).
 
-A voice call is one non-recoverable Run on a hidden child Thread of Chat. Its Thread accepts only
-the call seed and is archived atomically when the Run ends. Durable work goes through Chat, so tasks
-and their results survive the call. That includes asking the person: a Request's answer wakes its
-Thread, which a call's Thread refuses, so opening a durable Request from a call is refused with
-directions to Chat. The tools stay listed, because whatever needs no one's answer, such as a saved
-login or an automatically approved app, still works on the call, and because a low-effort agent only
-hands off when a result tells it to at that moment; a sentence in its guide did not move it in evals.
-The agent shows its own work with `person_show`, because what is worth watching is its
-judgment. For presence it counts as Chat, and an engine approval it can't hand off docks on Chat.
+Voice is a permanent Thread beside Chat, the person's spoken manager, and a call is one
+non-recoverable Run on it. Codex hands each utterance to a turn on that same Thread, so a call has
+Chat's whole tool set: it opens Requests, starts tasks and hears what they return. Because a call's
+Run stays open between turns, everything sent to its Thread is handed in at once, as a steer, and a
+Request's answer is released without waiting for the Run to end. What arrives after hang-up wakes an
+ordinary text Run on the Thread, which notifies the person. A call takes the Thread only once
+nothing else runs there, so the Host stops what is running and tries again. The Thread's model is
+its own and must be a Codex model; tasks it starts can use any engine.
 Context for the agent waits between turns: Codex samples again for anything injected into a running
 turn, and that second answer would replace the reply.
 

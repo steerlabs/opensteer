@@ -2154,7 +2154,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "harness.modelServers.discover": async (input) =>
       rpcSuccess({ servers: mockModelServers(input.address) }),
     // The preview has no Runner to create a call, so voice never starts here.
-    "voice.open": async () => mockVoiceEnded("The preview has no voice.", "voice-refused"),
+    "voice.open": async (input) =>
+      rpcSuccess({ threadId: ThreadIdSchema.parse(await client.openVoiceThread(input)) }),
     "voice.start": async () => mockVoiceEnded("The preview has no voice.", "voice-refused"),
     "voice.renew": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.context": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
@@ -9894,6 +9895,34 @@ class MockHostState {
       Math.max(100, this.latencyMs),
     );
     this.#titleTimers.set(thread.id, timer);
+  }
+
+  /** The preview's Voice Thread, so its screens can be seen; a call itself never starts here. */
+  async openVoiceThread(input: {
+    readonly environmentId: string;
+    readonly harnessInstanceId: string;
+  }): Promise<string> {
+    if (this.snapshot.voiceThreadId) return this.snapshot.voiceThreadId;
+    const placement = resolveThreadPlacement(
+      this.snapshot.environments,
+      this.snapshot.harnesses,
+      input,
+    );
+    const thread = await this.createThread({
+      ...input,
+      accessMode: this.snapshot.executionPreferences.accessMode,
+      modelSelection: placement.modelSelection,
+      title: "Voice",
+      workspaceId: this.snapshot.homeWorkspaceId!,
+    });
+    this.update({
+      ...this.snapshot,
+      voiceThreadId: thread.id,
+      threads: this.snapshot.threads.map((item) =>
+        item.id === thread.id ? { ...item, listed: false, role: "conversation" } : item,
+      ),
+    });
+    return thread.id;
   }
 
   async createThread(input: CreateThreadInput): Promise<ThreadSummary> {

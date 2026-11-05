@@ -77,7 +77,7 @@ export const CaseSchema = z.strictObject({
   role: z.enum(["conversation", "work"]),
   /** Overrides the profile default for workers without an Assignment. */
   assigned: z.boolean().optional(),
-  /** Runs as a voice call's agent, with its guide and tool fence. */
+  /** Runs as a voice call's agent, with its guide. */
   voice: z.boolean().optional(),
   machineAccessNotice: z.string().min(1).optional(),
   requesterTimeZone: TimeZoneSchema.optional(),

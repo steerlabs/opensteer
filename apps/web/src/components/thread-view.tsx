@@ -1027,7 +1027,7 @@ function ThreadView({
                 </button>
               ) : null}
               {conversation.length === 0 && historyState === undefined ? (
-                <EmptyThread home={home} />
+                <EmptyThread home={home} voice={voiceThread} />
               ) : null}
               <AgentTranscript
                 revealMessage={revealMessage}
@@ -1459,13 +1459,21 @@ function ConversationSheetHandle({
 
 /* ---- Empty state ---- */
 
-function EmptyThread({ home = false }: { readonly home?: boolean }) {
+function EmptyThread({
+  home = false,
+  voice = false,
+}: {
+  readonly home?: boolean;
+  readonly voice?: boolean;
+}) {
   return (
     <div className="hero__inner">
       <BrandMark large />
-      <h2 className="hero__title">What can I help you with?</h2>
+      <h2 className="hero__title">{voice ? "Talk to Opensteer" : "What can I help you with?"}</h2>
       <p className="hero__subtitle">
-        {home
+        {voice
+          ? "Say what you need. It gets on with it, starts tasks for bigger work, and tells you when it needs you."
+          : home
           ? "Ask here. Updates from your tasks will arrive here too."
           : "Describe the outcome you want. Opensteer works in your Workspace and checks in when it needs you."}
       </p>
