@@ -307,12 +307,8 @@ async function runDesktop(
   const phoneAdb = new AgentPhoneAdbServer({ isGranted: (device) => usbDevices.isGranted(device) });
   const detachPhoneAdb = usbDevices.onRevoked((device) => phoneAdb.revoke(device));
   const appOriginPolicy = new DesktopAppOriginPolicy();
-  configureDesktopSession(
-    session.defaultSession,
-    appOriginPolicy,
-    usbDevices,
-    downloads,
-    () => attachedHostOrigin(hostTransport),
+  configureDesktopSession(session.defaultSession, appOriginPolicy, usbDevices, downloads, () =>
+    attachedHostOrigin(hostTransport),
   );
   hostTransport.subscribe(() => appOriginPolicy.setAttachedHost(null));
   const detachUsbDevices = usbDevices.attach(session.defaultSession);
