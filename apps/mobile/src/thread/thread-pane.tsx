@@ -36,6 +36,7 @@ import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/i
 import { CHAT_THREAD_TITLE, type BrowserPageContentPart } from "@opensteer/core";
 import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
+import { conversationActions } from "./conversation-actions.js";
 import {
   StackActions,
   useFocusEffect,
@@ -1182,6 +1183,16 @@ function ThreadPaneForUser(
   // over it.
   const companion = props.withPage ?? null;
   const underHeader = companion === null;
+  // Beside a page there is no title menu, so the composer's carries these.
+  const actionsBesidePage =
+    companion === null
+      ? []
+      : conversationActions({
+          deploymentId: props.deploymentId,
+          onFind: () =>
+            navigation.navigate("ThreadFind", { deploymentId: props.deploymentId, threadId }),
+          threadId,
+        });
   const transcript = (
     <View style={styles.body}>
       <FlatList
@@ -1428,14 +1439,9 @@ function ThreadPaneForUser(
                   }
                   modelOptions={thread.modelSelection.options}
                   mutationGate={mutationGate}
+                  conversationActions={actionsBesidePage}
                   page={companion?.page ?? null}
                   onChangeModel={openSettings}
-                  onFind={() =>
-                    navigation.navigate("ThreadFind", {
-                      deploymentId: props.deploymentId,
-                      threadId: thread.id,
-                    })
-                  }
                   placeholder={
                     isHome
                       ? "Ask anything…"

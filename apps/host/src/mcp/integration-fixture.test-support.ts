@@ -44,49 +44,46 @@ export function createIntegrationMcpFixture(
       throw new Error("Unexpected install");
     },
   });
-  return Object.assign(
-    new OpensteerMcpService({
-      handlers,
-      publicUrl: options.publicUrl,
-      store: {
-        requests: { get: async () => null },
-        getThreadForOwner: Reflect.get(unavailable, "getThreadForOwner"),
-        findMainWorkspaceForOwner: Reflect.get(unavailable, "findMainWorkspaceForOwner"),
-      } as never,
-      callers: {
-        authenticate: async (token: string): Promise<AgentCaller> => {
-          const run = await options.runTokens.authenticate(token).catch(() => null);
-          const claims = run ?? (await options.triggerTokens.authenticate(token));
-          const thread = {
-            id: claims.threadId,
-            workspaceId: claims.workspaceId,
-            environmentId: claims.environmentId,
-            lineageRootThreadId: claims.threadId,
-            accessMode: "full-access",
-          } as Thread;
-          const base = {
-            key: run
-              ? `run:${run.runId}`
-              : `trigger:${(claims as IntegrationToolsTriggerScope).occurrenceId}`,
-            userId: claims.requestedBy,
-            accessMode: thread.accessMode,
-            reach: options.reach ?? { kind: "user" as const },
-          };
-          return run
-            ? { ...base, kind: "run", thread, claims: run as RunCaller["claims"] }
-            : {
-                ...base,
-                kind: "program",
-                anchor: thread,
-                program: {
-                  ...claims,
-                  kind: "trigger",
-                  aud: "opensteer-trigger-control",
-                } as TriggerControlScope & { kind: "trigger" },
-              };
-        },
+  return new OpensteerMcpService({
+    handlers,
+    publicUrl: options.publicUrl,
+    store: {
+      requests: { get: async () => null },
+      getThreadForOwner: Reflect.get(unavailable, "getThreadForOwner"),
+      findMainWorkspaceForOwner: Reflect.get(unavailable, "findMainWorkspaceForOwner"),
+    } as never,
+    callers: {
+      authenticate: async (token: string): Promise<AgentCaller> => {
+        const run = await options.runTokens.authenticate(token).catch(() => null);
+        const claims = run ?? (await options.triggerTokens.authenticate(token));
+        const thread = {
+          id: claims.threadId,
+          workspaceId: claims.workspaceId,
+          environmentId: claims.environmentId,
+          lineageRootThreadId: claims.threadId,
+          accessMode: "full-access",
+        } as Thread;
+        const base = {
+          key: run
+            ? `run:${run.runId}`
+            : `trigger:${(claims as IntegrationToolsTriggerScope).occurrenceId}`,
+          userId: claims.requestedBy,
+          accessMode: thread.accessMode,
+          reach: options.reach ?? { kind: "user" as const },
+        };
+        return run
+          ? { ...base, kind: "run", thread, claims: run as RunCaller["claims"] }
+          : {
+              ...base,
+              kind: "program",
+              anchor: thread,
+              program: {
+                ...claims,
+                kind: "trigger",
+                aud: "opensteer-trigger-control",
+              } as TriggerControlScope & { kind: "trigger" },
+            };
       },
-    }),
-    { requestSpecialistAccess: integration.requestSpecialistAccess.bind(integration) },
-  );
+    },
+  });
 }

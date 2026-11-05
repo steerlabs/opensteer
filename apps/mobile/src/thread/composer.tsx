@@ -16,9 +16,6 @@ import {
 } from "@opensteer/client/host";
 import {
   attachmentMessageMaxCount,
-  buildMobileThreadDeepLink,
-  DeploymentIdSchema,
-  ThreadIdSchema,
   type ArtifactContentPart,
   type AuthenticatedUser,
   type BrowserPageContentPart,
@@ -27,7 +24,6 @@ import {
   type ThreadAccessMode,
 } from "@opensteer/core";
 import type { HarnessModelDescriptor, MachineSummary } from "@opensteer/protocol";
-import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import {
   useCallback,
@@ -135,8 +131,8 @@ export function Composer(props: {
    */
   readonly page?: BrowserPageContentPart | null;
   readonly onChangeModel: (conversation?: boolean) => void;
-  /** Opens Find in conversation for this Thread. */
-  readonly onFind: () => void;
+  /** This Thread's own actions, where no title menu carries them. */
+  readonly conversationActions: readonly NativeMenuOption[];
   readonly placeholder: string;
   readonly requests: readonly Request[];
   /**
@@ -299,22 +295,6 @@ export function Composer(props: {
   const canSend =
     view.canSend || (dictating && !disabled && !sending && pending === null && attachmentsReady);
   const requestBlocked = disabled || sending || pending !== null;
-  /**
-   * The link a person shares to bring another device back here. It is built
-   * from ids this phone already holds, and it is offered only when both parse:
-   * a link that names nothing openable is worse than no menu entry.
-   */
-  const threadLink = useMemo(() => {
-    const deployment = DeploymentIdSchema.safeParse(deploymentId);
-    const thread = ThreadIdSchema.safeParse(threadId);
-    if (!deployment.success || !thread.success) return null;
-    return buildMobileThreadDeepLink({
-      deploymentId: deployment.data,
-      requestId: null,
-      threadId: thread.data,
-    });
-  }, [deploymentId, threadId]);
-
   const changeText = (next: string): void => {
     draftText.current = next;
     const write = ++draftWrite.current;
@@ -697,12 +677,7 @@ export function Composer(props: {
       label: props.variant === "conversation" ? "AI settings" : "Change model…",
       onPress: () => props.onChangeModel(),
     },
-    {
-      icon: "magnifyingglass",
-      id: "find",
-      label: "Find in conversation…",
-      onPress: props.onFind,
-    },
+    ...props.conversationActions,
     ...(props.running
       ? [
           {
@@ -714,16 +689,6 @@ export function Composer(props: {
           } satisfies NativeMenuOption,
         ]
       : []),
-    ...(threadLink === null
-      ? []
-      : [
-          {
-            icon: "link" as const,
-            id: "link",
-            label: "Copy thread link",
-            onPress: () => copyThreadLink(threadLink),
-          },
-        ]),
   ];
 
   if (done)
@@ -1103,13 +1068,6 @@ function IncludedPage(props: {
  * the way the first line is.
  */
 const fieldPadding = space[8];
-
-function copyThreadLink(link: string): void {
-  void Clipboard.setStringAsync(link).then(
-    () => Haptics.selectionAsync(),
-    () => Alert.alert("Link not copied", "This thread's link could not be put on the clipboard."),
-  );
-}
 
 const styles = StyleSheet.create({
   // The update the next message answers. The excerpt is shown so the reader

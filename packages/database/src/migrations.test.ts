@@ -171,6 +171,7 @@ const releasedMigrationNames = [
   "0161_app_tabs",
   "0162_voice_thread",
   "0163_phone_tabs",
+  "0164_specialists_adopt_access",
 ];
 
 describe("migration names", () => {

@@ -146,7 +146,10 @@ vi.mock("../client/mobile-client.js", () => ({
   operationDetail: (error: unknown, fallback: string) =>
     error instanceof Error ? error.message : fallback,
 }));
-vi.mock("../ui/glass.js", () => ({ useLiquidGlass: () => true }));
+vi.mock("../ui/glass.js", () => ({
+  GlassSurface: ({ children }: { readonly children?: ReactNode }) => <>{children}</>,
+  useLiquidGlass: () => true,
+}));
 vi.mock("../ui/pane.js", () => ({
   useContentInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
 }));
@@ -185,9 +188,11 @@ vi.mock("../ui/task-mark.js", () => ({
   ),
 }));
 vi.mock("./task-status.js", () => ({
-  TaskMenu: ({ children }: { readonly children?: ReactNode }) => <>{children}</>,
+  TaskStateIndicator: () => null,
   TaskStatus: ({ word }: { readonly word: string }) => <span>{word}</span>,
-  useTaskMenuChoices: () => ({ any: false }),
+}));
+vi.mock("./thread-menu.js", () => ({
+  ThreadMenu: ({ children }: { readonly children?: ReactNode }) => <>{children}</>,
 }));
 vi.mock("./thread-subtitle.js", () => ({
   ThreadName: ({ title }: { readonly title: string }) => <span>{title}</span>,

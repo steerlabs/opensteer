@@ -29,7 +29,7 @@ export const browser_profile_list = defineAgentTool({
   name: "browser_profile_list",
   title: "List browser profiles",
   description:
-    "Find the named browser profiles this Workspace can use: every owner profile in Main, granted ones in a Project, narrowed by specialist bindings. Open the one that fits the task; if none does, use browser_profile_request. Names never prove a website login; verify there.",
+    "Find the named browser profiles this Workspace can use: every owner profile in Main, granted ones in a Project. Open the one that fits the task; if none does, use browser_profile_request. Names never prove a website login; verify there.",
   input: z.strictObject({}),
   output: BrowserProfileListOutputSchema,
   access: "read",

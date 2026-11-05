@@ -11,18 +11,9 @@ import {
   type HostSnapshot,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import {
-  BrowserProfileIdSchema,
-  WorkspaceIdSchema,
-  type SpecialistManifest,
-} from "@opensteer/core";
+import { WorkspaceIdSchema, type SpecialistManifest } from "@opensteer/core";
 import { rpcSuccess } from "@opensteer/protocol";
 import { native } from "../../test-support/settings-screens.js";
-
-// What a person could find broken: a specialist's choice that does not bind,
-// missing access with no way to allow it, a removal or deletion with no
-// confirmation, a plugin switch a member can move, or changes offered while
-// Opensteer cannot be reached.
 
 const harness = vi.hoisted(() => ({ client: null as HostClient | null }));
 vi.mock(
@@ -92,13 +83,11 @@ async function answered(container: HTMLElement): Promise<void> {
 }
 
 /**
- * A Project with two allowed browser profiles and the researcher specialist,
+ * A Project with the researcher specialist,
  * seen by its owner unless told otherwise.
  */
 async function open(
   options: {
-    readonly rebind?: boolean;
-    readonly restoreAccess?: boolean;
     readonly member?: boolean;
     readonly offline?: boolean;
     readonly storageIssue?: NonNullable<HostSnapshot["workspaces"][number]["storageIssue"]>;
@@ -111,9 +100,7 @@ async function open(
       {
         id: "plg_researcher",
         name: "researcher",
-        manifest: options.rebind
-          ? { ...researcher, access: researcher.access!.slice(0, 1) }
-          : researcher,
+        manifest: researcher,
       },
     ],
   });
@@ -121,20 +108,6 @@ async function open(
   await host.load();
   const project = host.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
   const workspaceId = WorkspaceIdSchema.parse(project.id);
-  for (const name of ["Work", "Personal"]) {
-    const created = await host.dispatch({
-      idempotencyKey: mutationIdempotencyKey("profile"),
-      input: { name },
-      type: "browser.profile.create",
-    });
-    if (created.type !== "browser.profile.create") throw new Error("Profile not created");
-    await host.dispatch({
-      idempotencyKey: mutationIdempotencyKey("grant"),
-      profileId: BrowserProfileIdSchema.parse(created.profile.id),
-      type: "browser.profile.grant",
-      workspaceId,
-    });
-  }
   await host.dispatch({
     idempotencyKey: mutationIdempotencyKey("specialist"),
     pluginId: "plg_researcher",
@@ -142,40 +115,6 @@ async function open(
     workspaceId,
   });
 
-  if (options.rebind) {
-    const result = await host.rpc["specialist.list"]({ workspaceId });
-    if (!result.ok) throw new Error("Specialists unavailable");
-    const specialist = result.data.specialists[0]!;
-    await host.dispatch({
-      type: "specialist.bind",
-      workspaceId,
-      specialistId: specialist.id,
-      requirement: 0,
-      resourceId: specialist.access[0]!.candidates[0]!.resourceId,
-      idempotencyKey: mutationIdempotencyKey("bind"),
-    });
-    for (const grant of host
-      .getSnapshot()
-      .browserProfileGrants.filter((g) => g.workspaceId === workspaceId)) {
-      await host.dispatch({
-        type: "browser.profileGrant.revoke",
-        grantId: grant.id,
-        idempotencyKey: mutationIdempotencyKey("revoke"),
-      });
-    }
-    const revoked = await host.rpc["specialist.list"]({ workspaceId });
-    expect(revoked).toMatchObject({
-      data: { specialists: [{ access: [{ state: "rebind", candidates: [] }] }] },
-    });
-    if (options.restoreAccess !== false) {
-      await host.dispatch({
-        type: "browser.profile.grant",
-        workspaceId,
-        profileId: BrowserProfileIdSchema.parse(specialist.access[0]!.candidates[0]!.resourceId),
-        idempotencyKey: mutationIdempotencyKey("restore"),
-      });
-    }
-  }
   if (options.member === true || options.offline === true) {
     const read = host.getSnapshot.bind(host);
     const held = new WeakMap<HostSnapshot, HostSnapshot>();
@@ -264,81 +203,15 @@ async function answerAlert(text: string): Promise<void> {
 }
 
 describe("a Project's settings on the phone", () => {
-  it("offers access setup for revoked access with no remaining candidates", async () => {
-    const { container } = await open({ rebind: true, restoreAccess: false });
-    expect(button(container, "Allow a profile")).toBeTruthy();
-    expect(container.querySelector('[aria-label="Which to use for A browser profile"]')).toBeNull();
-  });
-
-  it("offers an explicit choice after revoked access is restored and returns to ready", async () => {
-    const { container, host } = await open({ rebind: true });
-    const dispatch = vi.spyOn(host, "dispatch");
-    const choice = container.querySelector('[aria-label="Which to use for A browser profile"]')!;
-    expect(choice.getAttribute("data-menu")).toBe("Choose which account to use now");
-    await press(button(choice, "Work"));
-    await shows(() => expect(container.textContent).toContain("Uses Work"));
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "specialist.bind", requirement: 0 }),
-    );
-    expect(container.textContent).not.toContain("Needs setup");
-  });
-
-  it("refreshes a visible specialist after its browser access is revoked elsewhere", async () => {
-    const { container, host, project } = await open({ rebind: true });
-    const choice = container.querySelector('[aria-label="Which to use for A browser profile"]')!;
-    await press(button(choice, "Work"));
-    await shows(() => expect(container.textContent).toContain("Uses Work"));
-    await act(async () => {
-      for (const grant of host
-        .getSnapshot()
-        .browserProfileGrants.filter((g) => g.workspaceId === project.id)) {
-        await host.dispatch({
-          type: "browser.profileGrant.revoke",
-          grantId: grant.id,
-          idempotencyKey: mutationIdempotencyKey("revoke-visible"),
-        });
-      }
-    });
-    await shows(() =>
-      expect(button(container, "Allow a profile"), "the revoked binding still showed").toBeTruthy(),
-    );
-  });
-
-  it("binds a specialist's choice, allows its missing account, and removes it after confirming", async () => {
-    const { container, host, project } = await open();
-    expect(container.textContent).toContain("Needs setup");
+  it("loads a ready specialist without access rows and removes it after confirming", async () => {
+    const { container, host } = await open();
+    expect(container.textContent).toContain("researcher");
     expect(container.textContent).toContain("Runs on Claude Code · opus");
-    expect(container.textContent).toContain("Reads the sites you research in");
-
-    const choice = container.querySelector('[aria-label="Which to use for A browser profile"]')!;
-    await press(button(choice, "Work"));
-    await shows(() =>
-      expect(container.textContent, "the choice never bound").toContain("Uses Work"),
+    expect(container.textContent).toContain(
+      `Uses ${host.getSnapshot().user!.displayName} accounts.`,
     );
-    // GitHub is still not allowed here, so it is still not ready.
-    expect(container.textContent).toContain("Needs setup");
-
-    // GitHub is allowed from here with one of the person's own accounts, at
-    // the level the specialist asked for, or by connecting another.
-    const allowGitHub = '[aria-label="Allow GitHub for this project"]';
-    await press(button(container.querySelector(allowGitHub)!, "Connect another account"));
-    expect(native.navigate.at(-1)).toEqual({
-      name: "ConnectedApps",
-      params: { deploymentId: "deployment" },
-    });
-    const dispatch = vi.spyOn(host, "dispatch");
-    await press(button(container.querySelector(allowGitHub)!, "Allow octocat"));
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "integration.grant.create",
-        input: expect.objectContaining({ access: "read", workspaceId: project.id }),
-      }),
-    );
-    // Its access is read again, so the row no longer asks for what it now has.
-    await shows(() =>
-      expect(container.querySelector(allowGitHub), "GitHub still asks for access").toBeNull(),
-    );
-
+    expect(container.querySelector('[aria-label="Which to use for A browser profile"]')).toBeNull();
+    expect(container.textContent).not.toContain("Reads the sites you research in");
     await press(button(container, "Remove"));
     expect(native.alert?.title).toBe("Remove researcher?");
     await answerAlert("Remove specialist");

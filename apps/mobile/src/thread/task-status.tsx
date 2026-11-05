@@ -1,8 +1,5 @@
-import { setTaskDone } from "../threads/task-row.js";
 import type { AssignmentSummary } from "@opensteer/core";
 import {
-  heldThread,
-  taskCanBeDone,
   assignmentPresentation,
   assignmentReturnText,
   assignmentRequester,
@@ -10,29 +7,15 @@ import {
   formatDuration,
   workerAssignment,
   type AssignmentTone,
-  type HostClient,
   type HostSnapshot,
 } from "@opensteer/client/host";
-import { MenuView } from "@expo/ui/community/menu";
-import { useRef, useState, type ReactNode } from "react";
-import { useHostSelector } from "@opensteer/client/react";
-import { TaskIconPicker } from "../ui/mark-picker.js";
-import { RenameTaskDialog } from "./rename-task-dialog.js";
-import {
-  AccessibilityInfo,
-  findNodeHandle,
-  type HostInstance,
-  Platform,
-  Pressable,
-  StyleSheet,
-  View,
-} from "react-native";
+import type { ReactNode } from "react";
+import { Pressable, StyleSheet, View } from "react-native";
 import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
 import { color, headerFontScaleLimit, space } from "../theme.js";
 import { appear } from "../ui/motion.js";
 import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { useAssignmentStop, useLifecycleNews } from "./task-line.js";
 
 /**
  * What a task's own Thread says about the work another conversation handed
@@ -109,7 +92,7 @@ function openableRequester(assignment: AssignmentSummary, snapshot: HostSnapshot
  * way, which breathes only while a Run is working now, and the system's own
  * glyph once it has ended.
  */
-function TaskStateIndicator(props: {
+export function TaskStateIndicator(props: {
   readonly moving: boolean;
   readonly tone: AssignmentTone;
 }): ReactNode {
@@ -144,202 +127,6 @@ function taskWordColor(tone: AssignmentTone): string {
     default:
       return color.muted;
   }
-}
-
-/** A task's title menu, including tasks nobody assigned to another conversation. */
-interface TaskMenuProps {
-  readonly children: ReactNode;
-  readonly hostClient: HostClient;
-  /** The native menu sizes its trigger to its content; a width keeps long titles inside the bar. */
-  readonly maxWidth: number;
-  readonly onOpenThread: (threadId: string) => void;
-  readonly task: TaskHeading | null;
-  readonly threadId: string | null;
-  readonly title: string;
-  readonly projectName?: string | null;
-  readonly connectionLabel?: string | null;
-}
-
-/** This conversation’s own actions, independent of its children. */
-export function useTaskMenuChoices(
-  hostClient: HostClient,
-  threadId: string | null,
-  task: TaskHeading | null,
-): {
-  readonly any: boolean;
-  readonly canChangeIcon: boolean;
-  readonly canRename: boolean;
-} {
-  const canRename = useHostSelector(
-    hostClient,
-    (snapshot) =>
-      threadId !== null &&
-      snapshot.threadRenameAvailable &&
-      snapshot.homeThreadId !== threadId &&
-      snapshot.voiceThreadId !== threadId &&
-      !snapshot.workspaces.some((workspace) => workspace.homeThreadId === threadId),
-  );
-  const canChangeIcon = useHostSelector(
-    hostClient,
-    (snapshot) =>
-      threadId !== null &&
-      snapshot.taskMarksAvailable &&
-      snapshot.homeThreadId !== threadId &&
-      snapshot.voiceThreadId !== threadId &&
-      !snapshot.workspaces.some((workspace) => workspace.homeThreadId === threadId),
-  );
-  const canBeDone = useHostSelector(hostClient, (snapshot) => {
-    const thread = threadId === null ? null : heldThread(snapshot, threadId);
-    return thread !== null && taskCanBeDone(snapshot, thread);
-  });
-  const any =
-    canBeDone ||
-    canRename ||
-    canChangeIcon ||
-    (task !== null && (task.requesterThreadId !== null || task.open));
-  return { any, canChangeIcon, canRename };
-}
-
-export function TaskMenu(props: TaskMenuProps): ReactNode {
-  const { task, threadId } = props;
-  useLifecycleNews(task?.announcement ?? "");
-  const { any, canChangeIcon, canRename } = useTaskMenuChoices(props.hostClient, threadId, task);
-  if (!any) return props.children;
-  return task === null ? (
-    <Menu key={threadId} {...props} canRename={canRename} canChangeIcon={canChangeIcon} />
-  ) : (
-    <AssignedMenu
-      key={threadId}
-      {...props}
-      canRename={canRename}
-      canChangeIcon={canChangeIcon}
-      task={task}
-    />
-  );
-}
-
-function AssignedMenu(
-  props: TaskMenuProps & {
-    readonly canRename: boolean;
-    readonly canChangeIcon: boolean;
-    readonly task: TaskHeading;
-  },
-): ReactNode {
-  const stop = useAssignmentStop(props.hostClient, {
-    assignmentId: props.task.assignmentId,
-    requester: props.task.requester,
-    title: props.title,
-  });
-  return <Menu {...props} stop={stop} />;
-}
-
-function Menu(
-  props: TaskMenuProps & {
-    readonly canRename: boolean;
-    readonly canChangeIcon: boolean;
-    readonly stop?: ReturnType<typeof useAssignmentStop>;
-  },
-): ReactNode {
-  const { task, title, threadId } = props;
-  const [renaming, setRenaming] = useState(false);
-  const [changingIcon, setChangingIcon] = useState(false);
-  const trigger = useRef<HostInstance>(null);
-  const restoreFocus = () => {
-    const handle = findNodeHandle(trigger.current);
-    if (typeof handle === "number") AccessibilityInfo.setAccessibilityFocus(handle);
-  };
-  const doneThread = useHostSelector(props.hostClient, (snapshot) => {
-    const thread = threadId === null ? null : heldThread(snapshot, threadId);
-    return thread !== null && taskCanBeDone(snapshot, thread) ? thread : null;
-  });
-  const canStop = task?.open === true && task.stopBlocked === null;
-  const requesterThreadId = task?.requesterThreadId ?? null;
-  return (
-    <>
-      {props.stop?.sheet}
-      {renaming && props.canRename && threadId !== null ? (
-        <RenameTaskDialog
-          key={threadId}
-          hostClient={props.hostClient}
-          threadId={threadId}
-          title={title}
-          onClose={() => setRenaming(false)}
-        />
-      ) : null}
-      {changingIcon && props.canChangeIcon && threadId !== null ? (
-        <TaskIconPicker
-          hostClient={props.hostClient}
-          threadId={threadId}
-          onClose={() => setChangingIcon(false)}
-          onDismiss={restoreFocus}
-        />
-      ) : null}
-      <MenuView
-        actions={[
-          ...(doneThread !== null
-            ? [
-                {
-                  id: "done",
-                  image:
-                    doneThread.doneAt !== null
-                      ? ("arrow.uturn.backward" as const)
-                      : ("checkmark" as const),
-                  title: doneThread.doneAt !== null ? "Reopen" : "Mark Done",
-                },
-              ]
-            : []),
-          ...(props.canRename
-            ? [{ id: "rename", image: "pencil" as const, title: "Rename…" }]
-            : []),
-          ...(props.canChangeIcon
-            ? [{ id: "icon", image: "square.grid.2x2" as const, title: "Change icon…" }]
-            : []),
-          ...(requesterThreadId === null
-            ? []
-            : [{ id: "open", image: "bubble.left" as const, title: `Open ${task?.requester}` }]),
-          ...(task?.open
-            ? [
-                {
-                  attributes: { destructive: true, disabled: !canStop },
-                  id: "stop",
-                  image: "stop.circle" as const,
-                  title: "Stop Task…",
-                },
-              ]
-            : []),
-        ]}
-        colorScheme="dark"
-        onPressAction={({ nativeEvent }) => {
-          if (nativeEvent.event === "icon" && props.canChangeIcon) setChangingIcon(true);
-          if (nativeEvent.event === "done" && doneThread !== null)
-            setTaskDone(props.hostClient, doneThread.id, doneThread.doneAt === null);
-          if (nativeEvent.event === "rename" && props.canRename) setRenaming(true);
-          if (nativeEvent.event === "open" && requesterThreadId !== null)
-            props.onOpenThread(requesterThreadId);
-          if (nativeEvent.event === "stop" && canStop) props.stop?.ask();
-        }}
-        title={
-          task === null
-            ? title
-            : [`From ${task.requester} · ${task.word}`, task.detail]
-                .filter((line) => line !== null)
-                .join("\n")
-        }
-      >
-        <View
-          ref={trigger}
-          accessibilityHint="Shows what you can do with this task"
-          accessibilityLabel={`${title}${props.projectName ? `, ${props.projectName}` : ""}${props.connectionLabel ? `, ${props.connectionLabel}` : task === null ? "" : `, ${task.word}`}. Task actions`}
-          accessibilityRole="button"
-          accessible
-          style={[styles.trigger, { maxWidth: props.maxWidth }]}
-        >
-          {props.children}
-          <Symbol name="chevron.down" size={11} tint={color.muted} weight="bold" />
-        </View>
-      </MenuView>
-    </>
-  );
 }
 
 /**
@@ -492,12 +279,5 @@ const styles = StyleSheet.create({
   outcomeText: { flexShrink: 1, textAlign: "center" },
   pressed: { opacity: 0.6 },
   status: { alignItems: "center", flexDirection: "row", flexShrink: 1, gap: space[6] },
-  trigger: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: space[4],
-    flexShrink: 1,
-    minHeight: Platform.OS === "android" ? 48 : 44,
-  },
   word: { flexShrink: 1 },
 });

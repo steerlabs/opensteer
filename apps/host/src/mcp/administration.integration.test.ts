@@ -905,7 +905,7 @@ describeStore("MCP administration", (it) => {
       await channels.close();
     }
   });
-  it("lists specialist summaries without creating bindings and reverses plugin activation", async ({
+  it("lists ready specialist summaries and reverses plugin activation", async ({
     storeFixture: f,
   }) => {
     const run = await f.createRunFixture("admin-plugin");
@@ -955,11 +955,11 @@ describeStore("MCP administration", (it) => {
         (
           await f.database
             .selectFrom("specialists")
-            .select("bindings")
+            .select("status")
             .where("id", "=", specialist.id)
             .executeTakeFirstOrThrow()
-        ).bindings,
-      ).toEqual([]);
+        ).status,
+      ).toBe("ready");
       await retryAfterPersonChange(
         agent,
         "plugin_manage",

@@ -5,30 +5,18 @@ import {
   pluginSummaries,
   pluginVersionLabel,
   sameStableHostSnapshot,
-  specialistAccessLevel,
-  specialistAccessName,
   specialistModels,
-  specialistPendingSummary,
   unwrapRpcResult,
   type HostClient,
   type HostSnapshot,
   type PluginSummary,
-  type SpecialistAccessItem,
   type WorkspaceMemberSummary,
   type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { useHostRead, useHostSnapshot, type HostRead } from "@opensteer/client/react";
 import { WorkspaceIdSchema, type SpecialistRegistration } from "@opensteer/core";
 import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Alert, ScrollView, Share, StyleSheet, Text, View } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, radius, space, touchTarget } from "../theme.js";
@@ -47,11 +35,7 @@ import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { ProjectHealthNotice } from "./project-health.js";
-import {
-  integrationAllowOptions,
-  memberInitials,
-  type AllowOption,
-} from "./project-settings-model.js";
+import { memberInitials } from "./project-settings-model.js";
 
 export type ProjectSettingsScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -233,10 +217,7 @@ function ProjectSettings(props: {
         />
         <SpecialistsSection
           connected={connected}
-          destinations={destinations}
-          grants={grants}
           hostClient={hostClient}
-          snapshot={snapshot}
           userId={userId}
           workspace={project}
         />
@@ -694,68 +675,26 @@ function PluginsSection(props: {
 
 function SpecialistsSection(props: {
   readonly connected: boolean;
-  readonly destinations: Destinations;
-  readonly grants: HostRead<readonly ProjectGrant[]>;
   readonly hostClient: HostClient;
-  readonly snapshot: Pick<HostSnapshot, "browserProfileGrants" | "browserProfiles">;
   readonly userId: string | null;
   readonly workspace: WorkspaceSummary;
 }): ReactNode {
-  const { hostClient, snapshot, workspace } = props;
-  // A binding's state follows the browser access it uses, which can change elsewhere.
-  const browserAccess = JSON.stringify([
-    snapshot.browserProfileGrants.filter((grant) => grant.workspaceId === workspace.id),
-    snapshot.browserProfiles,
-  ]);
+  const { hostClient, workspace } = props;
   const specialists = useHostRead(
     () =>
       hostClient.rpc["specialist.list"]({ workspaceId: WorkspaceIdSchema.parse(workspace.id) })
         .then(unwrapRpcResult)
         .then(({ specialists }) => specialists),
-    `specialists:${workspace.id}:${browserAccess}`,
+    `specialists:${workspace.id}`,
   );
-  // A bind answers with the specialist as it now stands; that is shown at
-  // once, and replaced by the next full read.
-  const [updated, setUpdated] = useState<ReadonlyMap<string, SpecialistRegistration>>(new Map());
-  useEffect(() => setUpdated(new Map()), [specialists.data]);
-  const list = useMemo(
-    () => specialists.data?.map((registration) => updated.get(registration.id) ?? registration),
-    [specialists.data, updated],
-  );
-  // The accounts a missing integration could use are read only when one is missing.
-  const mine = list?.filter((registration) => registration.ownerUserId === props.userId) ?? [];
-  const needsIntegration = mine.some((registration) =>
-    registration.access.some(
-      (item) =>
-        item.type === "integration" &&
-        (item.state === "needs-access" ||
-          (item.state === "rebind" && item.candidates.length === 0)),
-    ),
-  );
-  const accounts = useHostRead(
-    needsIntegration
-      ? () =>
-          Promise.all([
-            hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
-            hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
-          ])
-      : null,
-    `specialist-accounts:${workspace.id}`,
-  );
-  const reloadSpecialists = specialists.reload;
-  const reloadAccounts = accounts.reload;
-  useReadAgainOnReturn(
-    useCallback(() => {
-      reloadSpecialists();
-      reloadAccounts();
-    }, [reloadAccounts, reloadSpecialists]),
-  );
+  const list = specialists.data ?? undefined;
+  useReadAgainOnReturn(specialists.reload);
 
   // Agents add specialists as work calls for them; with none, there is nothing to set here.
   if (list?.length === 0) return null;
   return (
     <Section
-      footer="Agents added these to hand parts of their work to. Each runs on its own models and uses only the access listed for it."
+      footer="Agents added these to hand parts of their work to. Each runs on its own models and can use what this project can."
       label="Specialists"
     >
       {list === undefined ? (
@@ -772,21 +711,11 @@ function SpecialistsSection(props: {
       ) : (
         list.map((registration) => (
           <SpecialistCard
-            allow={(item) =>
-              accounts.data === null
-                ? accounts.loading
-                  ? "checking"
-                  : []
-                : integrationAllowOptions(item, accounts.data[0], accounts.data[1])
-            }
             connected={props.connected}
-            destinations={props.destinations}
-            grants={props.grants}
             hostClient={hostClient}
             key={registration.id}
             mine={registration.ownerUserId === props.userId}
-            onChanged={(next) => setUpdated((current) => new Map(current).set(next.id, next))}
-            onReread={reloadSpecialists}
+            onReread={specialists.reload}
             registration={registration}
             workspace={workspace}
           />
@@ -797,26 +726,17 @@ function SpecialistsSection(props: {
 }
 
 function SpecialistCard(props: {
-  readonly allow: (item: SpecialistAccessItem) => readonly AllowOption[] | "checking";
   readonly connected: boolean;
-  readonly destinations: Destinations;
-  readonly grants: HostRead<readonly ProjectGrant[]>;
   readonly hostClient: HostClient;
   readonly mine: boolean;
-  readonly onChanged: (registration: SpecialistRegistration) => void;
   readonly onReread: () => void;
   readonly registration: SpecialistRegistration;
   readonly workspace: WorkspaceSummary;
 }): ReactNode {
   const { hostClient, registration, workspace } = props;
-  const editable =
-    props.mine &&
-    props.connected &&
-    (registration.status === "ready" || registration.status === "pending");
   const [pending, setPending] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const workspaceId = WorkspaceIdSchema.parse(workspace.id);
-  const summary = specialistPendingSummary(registration);
   const models = specialistModels(registration);
 
   const run = (key: string, action: () => Promise<void>): void => {
@@ -827,40 +747,6 @@ function SpecialistCard(props: {
       .catch((error: unknown) => setFailure(operationDetail(error, "That didn’t save. Try again.")))
       .finally(() => setPending(null));
   };
-  const bind = (requirement: number, resourceId: string) =>
-    run(`item:${requirement}`, async () => {
-      const result = await hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`specialist-bind:${registration.id}:${requirement}`),
-        requirement,
-        resourceId,
-        specialistId: registration.id,
-        type: "specialist.bind",
-        workspaceId,
-      });
-      if (result.type === "specialist.bind") props.onChanged(result.specialist);
-    });
-  const grant = (requirement: number, item: SpecialistAccessItem, option: AllowOption) =>
-    run(`item:${requirement}`, async () => {
-      const others = (props.grants.data ?? []).some(
-        (existing) => existing.installationId === option.installationId,
-      );
-      await hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(
-          `specialist-grant:${registration.id}:${requirement}`,
-        ),
-        input: {
-          access: item.level,
-          alias: option.title.slice(0, 80),
-          connectionId: option.connectionId,
-          installationId: option.installationId,
-          isDefault: !others,
-          workspaceId: workspace.id,
-        },
-        type: "integration.grant.create",
-      });
-      props.grants.reload();
-      props.onReread();
-    });
   const remove = () =>
     Alert.alert(
       `Remove ${registration.plugin}?`,
@@ -907,7 +793,7 @@ function SpecialistCard(props: {
             </View>
           </View>
           <AppText role="caption" tone="muted">
-            {`Uses ${registration.ownerName ?? (props.mine ? "your" : "another member’s")} accounts. ${registration.canUse === false ? "Unavailable to you. " : ""}${summary === null ? "" : `${summary}. `}Runs on ${models.join(", then ")}${
+            {`Uses ${registration.ownerName ?? (props.mine ? "your" : "another member’s")} accounts. ${registration.canUse === false ? "Unavailable to you. " : ""}Runs on ${models.join(", then ")}${
               registration.fallback === "caller" ? ", or the model of the task that asks" : ""
             }.`}
           </AppText>
@@ -927,27 +813,6 @@ function SpecialistCard(props: {
           />
         ) : null}
       </View>
-      {registration.access.length === 0 ? (
-        <View style={styles.accessRow}>
-          <AppText role="caption" tone="muted">
-            It needs no access beyond this project’s folder.
-          </AppText>
-        </View>
-      ) : (
-        registration.access.map((item, index) => (
-          <AccessItemRow
-            allow={props.allow(item)}
-            busy={pending === `item:${index}`}
-            destinations={props.destinations}
-            disabled={pending !== null}
-            editable={editable}
-            item={item}
-            key={index}
-            onBind={(resourceId) => bind(index, resourceId)}
-            onGrant={(option) => grant(index, item, option)}
-          />
-        ))
-      )}
       {failure === null ? null : (
         <View style={styles.accessRow}>
           <ErrorLine detail={failure} />
@@ -963,153 +828,6 @@ function SpecialistCard(props: {
     </View>
   );
 }
-
-const accessGlyphs: Readonly<Record<SpecialistAccessItem["type"], SFSymbolName>> = {
-  "browser-profile": "globe",
-  "computer-app": "desktopcomputer",
-  integration: "key",
-  phone: "smartphone",
-};
-
-/**
- * One thing a specialist asks to use: what, how much, why, and where it
- * stands. A choice is made here; missing access is allowed here for an
- * account or opens the page that allows it; an app or phone is allowed on
- * its own computer, which is where approving one always happens.
- */
-function AccessItemRow(props: {
-  readonly allow: readonly AllowOption[] | "checking";
-  readonly busy: boolean;
-  readonly destinations: Destinations;
-  readonly disabled: boolean;
-  readonly editable: boolean;
-  readonly item: SpecialistAccessItem;
-  readonly onBind: (resourceId: string) => void;
-  readonly onGrant: (option: AllowOption) => void;
-}): ReactNode {
-  const { item } = props;
-  const name = specialistAccessName(item);
-  const bound = item.binding
-    ? (item.candidates.find(({ resourceId }) => resourceId === item.binding?.resourceId)?.name ??
-      null)
-    : null;
-  return (
-    <View style={styles.accessRow}>
-      <View style={styles.accessHead}>
-        <Symbol name={accessGlyphs[item.type]} size={15} tint={color.textSoft} />
-        <View style={styles.grow}>
-          <AppText role="secondaryMedium">{name}</AppText>
-          <AppText role="caption" tone="muted">
-            {`${specialistAccessLevel(item)} · ${item.reason}`}
-          </AppText>
-        </View>
-      </View>
-      <View style={styles.accessState}>
-        <AccessState {...props} bound={bound} name={name} />
-      </View>
-    </View>
-  );
-}
-
-function AccessState(props: {
-  readonly allow: readonly AllowOption[] | "checking";
-  readonly bound: string | null;
-  readonly busy: boolean;
-  readonly destinations: Destinations;
-  readonly disabled: boolean;
-  readonly editable: boolean;
-  readonly item: SpecialistAccessItem;
-  readonly name: string;
-  readonly onBind: (resourceId: string) => void;
-  readonly onGrant: (option: AllowOption) => void;
-}): ReactNode {
-  const { item } = props;
-  if (item.state === "bound") {
-    return (
-      <View style={styles.boundLine}>
-        <Symbol name="checkmark" size={13} tint={color.green} />
-        <AppText role="caption" style={styles.readyText}>
-          {props.bound === null ? "Allowed" : `Uses ${props.bound}`}
-        </AppText>
-      </View>
-    );
-  }
-  if (item.state === "choose" || (item.state === "rebind" && item.candidates.length > 0)) {
-    return props.editable ? (
-      <ChoiceMenu
-        accessibilityLabel={`Which to use for ${props.name}`}
-        busy={props.busy}
-        choices={item.candidates.map(({ name, resourceId }) => ({ id: resourceId, title: name }))}
-        disabled={props.disabled}
-        label={item.state === "rebind" ? "Choose which account to use now" : "Choose which to use"}
-        onChoose={props.onBind}
-      />
-    ) : (
-      <AppText role="caption" tone="muted">
-        Waiting for a choice
-      </AppText>
-    );
-  }
-  if (!props.editable) {
-    return (
-      <AppText role="caption" tone="muted">
-        Not allowed yet
-      </AppText>
-    );
-  }
-  switch (item.type) {
-    case "integration": {
-      const options = props.allow;
-      if (options === "checking") return <ActivityIndicator color={color.muted} size="small" />;
-      if (options.length === 0) {
-        return (
-          <SecondaryButton
-            compact
-            label={`Connect ${props.name}`}
-            onPress={props.destinations.connections}
-          />
-        );
-      }
-      return (
-        <ChoiceMenu
-          accessibilityLabel={`Allow ${props.name} for this project`}
-          busy={props.busy}
-          choices={[
-            ...options.map((option) => ({
-              id: option.connectionId,
-              title: `Allow ${option.title}`,
-            })),
-            { id: "connect", title: "Connect another account" },
-          ]}
-          disabled={props.disabled}
-          label="Allow access"
-          onChoose={(id) => {
-            const option = options.find(({ connectionId }) => connectionId === id);
-            if (option !== undefined) props.onGrant(option);
-            else props.destinations.connections();
-          }}
-        />
-      );
-    }
-    case "browser-profile":
-      return (
-        <SecondaryButton
-          compact
-          label="Allow a profile"
-          onPress={props.destinations.browserProfiles}
-        />
-      );
-    case "computer-app":
-    case "phone":
-      return (
-        <AppText role="caption" tone="muted">
-          Allow it from Opensteer on that computer
-        </AppText>
-      );
-  }
-}
-
-/* ---- Notifications and deletion ---- */
 
 function MuteSection(props: {
   readonly connected: boolean;
@@ -1316,7 +1034,6 @@ function ErrorLine(props: { readonly detail: string | null }): ReactNode {
 }
 
 const styles = StyleSheet.create({
-  accessHead: { alignItems: "flex-start", flexDirection: "row", gap: space[12] },
   accessRow: {
     borderColor: color.line,
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -1324,7 +1041,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[16],
     paddingVertical: space[12],
   },
-  accessState: { alignItems: "flex-start", paddingLeft: space[24] + space[2] },
   actionStart: { alignItems: "flex-start" },
   avatar: {
     alignItems: "center",
@@ -1335,7 +1051,6 @@ const styles = StyleSheet.create({
     width: 30,
   },
   avatarText: { color: color.textSoft, fontSize: 12, fontWeight: "700" },
-  boundLine: { alignItems: "center", flexDirection: "row", gap: space[6] },
   card: {
     backgroundColor: color.surface,
     borderColor: color.line,

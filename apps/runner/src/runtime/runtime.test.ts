@@ -3663,15 +3663,15 @@ describe("RunnerRuntime", () => {
       await waitUntil(() => runtime.activeRunIds().length === 0);
 
       if (specialist) {
-        const cwd = join(workspacePath, ".specialists", "registration-1");
-        expect(driver.context?.workspacePath).toBe(cwd);
-        expect(driver.context?.writableRoots).toEqual([cwd]);
+        const pluginData = join(workspacePath, ".specialists", "registration-1");
+        expect(driver.context?.workspacePath).toBe(workspacePath);
+        expect(driver.context?.writableRoots).toEqual(["/runner/workspaces"]);
         expect(driver.context?.instructions).toContain(
-          `Workspace instructions\n\nPlugin instructions ${pluginRoot} ${cwd}`,
+          `Workspace instructions\n\nPlugin instructions ${pluginRoot} ${pluginData}`,
         );
         expect(driver.context?.environment).toMatchObject({
           PLUGIN_ROOT: pluginRoot,
-          PLUGIN_DATA: cwd,
+          PLUGIN_DATA: pluginData,
         });
         expect(driver.context?.skills?.skills.some((skill) => skill.plugin === null)).toBe(false);
         expect(

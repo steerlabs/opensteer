@@ -596,17 +596,25 @@ vi.mock("./composer-bar.js", () => ({
   ComposerGlyph: () => null,
   composerLaneHeight: 36,
 }));
+type MenuOption = {
+  readonly disabled?: boolean;
+  readonly id: string;
+  readonly label: string;
+  readonly onPress: () => void;
+};
 vi.mock("./composer-menu.js", () => ({
   NativeMenu: (props: {
-    readonly options: readonly {
-      readonly disabled?: boolean;
-      readonly id: string;
-      readonly label: string;
-      readonly onPress: () => void;
-    }[];
+    readonly accessibilityLabel: string;
+    readonly children?: ReactNode;
+    readonly options: readonly (MenuOption | readonly MenuOption[])[];
+    readonly title?: string;
+    readonly triggerRef?: Ref<HTMLDivElement>;
   }) => (
     <div aria-label="Thread actions">
-      {props.options.map((option) => (
+      <div aria-label={props.accessibilityLabel} ref={props.triggerRef}>
+        {props.children}
+      </div>
+      {props.options.flat().map((option) => (
         <button disabled={option.disabled} key={option.id} onClick={option.onPress}>
           {option.label}
         </button>
@@ -2483,6 +2491,36 @@ describe("a conversation's own title in its bar", () => {
     expect(hasButton(container, "Retry")).toBe(false);
   });
 
+  // Ways the conversation's actions can go missing: Chat's title answers a tap
+  // with nothing, or moving them to the title strands them beside a page,
+  // where there is no title; or they appear twice where there is one.
+  it("offers Find and the link once: in Chat's title, and in the composer beside a page", async () => {
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: chatId }));
+    const chat = await mount(host, chatId, { header: true });
+    const named = (name: string) =>
+      [...chat.container.querySelectorAll("button")].filter(
+        (candidate) => candidate.textContent === name,
+      );
+    expect(named("Find in conversation…")).toHaveLength(1);
+    expect(named("Copy thread link")).toHaveLength(1);
+    expect(hasButton(chat.container, "Rename…")).toBe(false);
+    expect(hasButton(chat.container, "Mark Done")).toBe(false);
+
+    await press(chat.container, "Find in conversation…");
+    expect(harness.navigate).toHaveBeenCalledWith("ThreadFind", { deploymentId, threadId: chatId });
+    await press(chat.container, "Copy thread link");
+    const { setStringAsync } = await import("expo-clipboard");
+    expect(setStringAsync).toHaveBeenCalledWith(expect.stringContaining(chatId));
+
+    const beside = await mount(
+      fakeHost(snapshotFor({ entries: [], run: null, threadId: workId })),
+      workId,
+      { withPage: { page: null } },
+    );
+    expect(hasButton(beside.container, "Find in conversation…")).toBe(true);
+    expect(hasButton(beside.container, "Copy thread link")).toBe(true);
+  });
+
   it("gives a lost connection no line of its own on a docked Request", async () => {
     const runId = createId("run");
     const host = fakeHost({
@@ -3042,10 +3080,9 @@ describe("a task", () => {
 });
 
 // Ways a finished task's title can fail: the bar drops "Finished" while the
-// drawn transcript is a window from before the ending, and the title has no
-// menu either — nothing on screen, nor its accessible name, says the task
-// ended; or the bar keeps a second status line beside a menu that already
-// says it.
+// drawn transcript is a window from before the ending, and nothing on screen,
+// nor its accessible name, says the task ended; or the bar keeps a second
+// status line beside a menu that already says it.
 describe("a finished task's title", () => {
   it.each([
     ["a menu to mark Done", false, false],
@@ -3102,8 +3139,8 @@ describe("a finished task's title", () => {
       // The window is from before the ending, so the transcript does not say it.
       expect(text(container)).not.toContain("Returned to");
       const bar = container.querySelector("header")!;
-      const trigger = bar.querySelector('[aria-label$="Task actions"]');
-      expect(trigger?.getAttribute("aria-label")).toMatch(/, Finished\. Task actions$/);
+      const trigger = bar.querySelector('[aria-label$="Actions"]');
+      expect(trigger?.getAttribute("aria-label")).toMatch(/, Finished\. Actions$/);
       expect(bar.textContent).not.toContain("Finished");
       expect(hasButton(container, "Mark Done")).toBe(true);
       expect(hasButton(container, "Rename…")).toBe(capable);
@@ -3232,7 +3269,7 @@ describe("task marks on a phone", () => {
       await press(container, "Change icon…");
       expect(container.querySelector('[aria-label="Search icons"]')).not.toBeNull();
       const focus = (await import("react-native")).AccessibilityInfo.setAccessibilityFocus;
-      const opener = container.querySelector('[aria-label$="Task actions"]');
+      const opener = container.querySelector('[aria-label$="Actions"]');
       vi.mocked(focus).mockClear();
       await press(container, "Plane");
       await settle();

@@ -3,11 +3,7 @@ import { ModelPolicyEntrySchema } from "@opensteer/core";
 import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostSnapshot } from "@opensteer/client/host";
-import {
-  BrowserProfileIdSchema,
-  WorkspaceIdSchema,
-  type SpecialistManifest,
-} from "@opensteer/core";
+import { WorkspaceIdSchema, type SpecialistManifest } from "@opensteer/core";
 import {
   click,
   client,
@@ -42,7 +38,7 @@ const section = (title: string) => {
   return heading.closest("section")!;
 };
 
-async function openProjectSettings({ offline = false, rebind = false, restoreAccess = true } = {}) {
+async function openProjectSettings({ offline = false } = {}) {
   await mount(
     (source) => {
       // Every snapshot the Host publishes reads as a lost connection.
@@ -60,34 +56,13 @@ async function openProjectSettings({ offline = false, rebind = false, restoreAcc
     },
     {
       mock: {
-        specialistPlugins: rebind
-          ? [
-              {
-                ...plugins[0]!,
-                manifest: { ...researcher, access: researcher.access!.slice(0, 1) },
-              },
-            ]
-          : plugins,
+        specialistPlugins: plugins,
       },
     },
   );
   const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
   const workspaceId = WorkspaceIdSchema.parse(project.id);
   await act(async () => {
-    for (const name of ["Work", "Personal"]) {
-      const created = await client.dispatch({
-        idempotencyKey: mutationIdempotencyKey("profile"),
-        input: { name },
-        type: "browser.profile.create",
-      });
-      if (created.type !== "browser.profile.create") throw new Error("Profile not created");
-      await client.dispatch({
-        idempotencyKey: mutationIdempotencyKey("grant"),
-        profileId: BrowserProfileIdSchema.parse(created.profile.id),
-        type: "browser.profile.grant",
-        workspaceId,
-      });
-    }
     await client.dispatch({
       idempotencyKey: mutationIdempotencyKey("specialist"),
       pluginId: "plg_researcher",
@@ -95,116 +70,22 @@ async function openProjectSettings({ offline = false, rebind = false, restoreAcc
       workspaceId,
     });
   });
-  await act(async () => {
-    if (rebind) {
-      const result = await client.rpc["specialist.list"]({ workspaceId });
-      if (!result.ok) throw new Error("Specialists unavailable");
-      const specialist = result.data.specialists[0]!;
-      await client.dispatch({
-        type: "specialist.bind",
-        workspaceId,
-        specialistId: specialist.id,
-        requirement: 0,
-        resourceId: specialist.access[0]!.candidates[0]!.resourceId,
-        idempotencyKey: mutationIdempotencyKey("bind"),
-      });
-      for (const grant of client
-        .getSnapshot()
-        .browserProfileGrants.filter((g) => g.workspaceId === workspaceId)) {
-        await client.dispatch({
-          type: "browser.profileGrant.revoke",
-          grantId: grant.id,
-          idempotencyKey: mutationIdempotencyKey("revoke"),
-        });
-      }
-      const revoked = await client.rpc["specialist.list"]({ workspaceId });
-      expect(revoked).toMatchObject({
-        data: { specialists: [{ access: [{ state: "rebind", candidates: [] }] }] },
-      });
-      if (restoreAccess) {
-        await client.dispatch({
-          type: "browser.profile.grant",
-          workspaceId,
-          profileId: BrowserProfileIdSchema.parse(specialist.access[0]!.candidates[0]!.resourceId),
-          idempotencyKey: mutationIdempotencyKey("restore"),
-        });
-      }
-    }
-  });
   await act(async () => goTo!(`/workspaces/${project.id}/settings`));
   await settle(60);
   return project;
 }
 
 describe("a Project's settings", () => {
-  it("refreshes a visible specialist after its browser access is revoked", async () => {
-    const project = await openProjectSettings({ rebind: true });
-    await click(button("Use", section("Specialists")));
-    await settle();
-    expect(section("Specialists").textContent).toContain("Uses Work");
-    await act(async () => {
-      for (const grant of client
-        .getSnapshot()
-        .browserProfileGrants.filter((g) => g.workspaceId === project.id)) {
-        await client.dispatch({
-          type: "browser.profileGrant.revoke",
-          grantId: grant.id,
-          idempotencyKey: mutationIdempotencyKey("revoke-visible"),
-        });
-      }
-    });
-    await settle();
-    await vi.waitFor(
-      () => {
-        expect(section("Specialists").textContent).toContain("Needs setup");
-        expect(button("Allow access", section("Specialists"))).toBeTruthy();
-      },
-      { timeout: 3000 },
-    );
-  });
-
-  it("offers access setup for revoked access with no remaining candidates", async () => {
-    await openProjectSettings({ rebind: true, restoreAccess: false });
-    expect(button("Allow access", section("Specialists"))).toBeTruthy();
-    expect(section("Specialists").querySelector("select")).toBeNull();
-  });
-
-  it("offers an explicit choice after revoked access is restored and returns to ready", async () => {
-    await openProjectSettings({ rebind: true });
-    const dispatch = vi.spyOn(client, "dispatch");
-    expect(section("Specialists").textContent).toContain("Choose which account to use now");
-    await click(button("Use", section("Specialists")));
-    await settle();
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "specialist.bind", requirement: 0 }),
-    );
-    expect(section("Specialists").textContent).toContain("Uses Work");
-    expect(section("Specialists").textContent).not.toContain("Needs setup");
-  });
-
-  it("walks a specialist from a choice to its remaining access, then removes it", async () => {
-    const project = await openProjectSettings();
+  it("loads a ready specialist without access rows and removes it after confirming", async () => {
+    await openProjectSettings();
     const specialists = section("Specialists");
-    expect(element(".card__row-title", specialists).textContent).toContain("Needs setup");
+    expect(element(".card__row-title", specialists).textContent).toContain("researcher");
     expect(specialists.textContent).toContain("Runs on Claude Code · opus");
-    expect(specialists.textContent).toContain("accounts.");
-    expect(specialists.textContent).toContain("Unavailable to you.");
-    const [profile, github] = [...specialists.querySelectorAll<HTMLElement>(".specialist-access")];
-    expect(profile!.textContent).toContain("Reads the sites you research in");
-    expect(profile!.className).toContain("specialist-access--choose");
-    // What it may not use yet goes to the one place that allows it, for this Project.
-    expect(button("Allow access", github!).getAttribute("href")).toContain(
-      `/settings/plugins?provider=github&workspace=${encodeURIComponent(project.id)}`,
+    expect(specialists.textContent).toContain(
+      `Uses ${client.getSnapshot().user!.displayName} accounts.`,
     );
-
-    await click(button("Use", profile!));
-    await settle();
-    const bound = element(".specialist-access", section("Specialists"));
-    expect(bound.className).toContain("specialist-access--bound");
-    expect(bound.textContent).toMatch(/Uses /u);
-    // GitHub is still not allowed here, so it is still not ready.
-    expect(section("Specialists").textContent).toContain("Needs setup");
-
+    expect(specialists.querySelector(".specialist-access")).toBeNull();
+    expect(specialists.textContent).not.toContain("Reads the sites you research in");
     await click(button("Remove", section("Specialists")));
     expect(element('[role="dialog"]').textContent).toContain("Remove researcher?");
     await click(button("Remove specialist"));

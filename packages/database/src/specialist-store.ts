@@ -7,18 +7,14 @@ import { randomUUID } from "node:crypto";
 import {
   OpensteerError,
   SpecialistManifestSchema,
-  type SpecialistAccessRequirement,
-  type SpecialistBinding,
   type UserId,
   type WorkspaceId,
 } from "@opensteer/core";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { PluginStore } from "./plugin-store.js";
-import { resolveResourceAccess } from "./resource-access.js";
-import { jsonValue } from "./store-primitives.js";
 
-/** Registration never creates consent: bindings name only resources already authorized here. */
+/** A registration adds a model and instructions; its access is its caller's in that Workspace. */
 export class SpecialistStore {
   private readonly database: Kysely<DatabaseSchema>;
   constructor(database: Kysely<DatabaseSchema>) {
@@ -39,16 +35,10 @@ export class SpecialistStore {
       });
   }
 
-  /**
-   * Adding a specialist is the owner's consent for it to use their accounts.
-   * `autoBind: false` registers it for an agent, which may not give that
-   * consent: every requirement then waits for the owner's choice.
-   */
   async add(input: {
     workspaceId: WorkspaceId;
     pluginId: string;
     actorUserId: UserId;
-    autoBind?: boolean;
     activate?: boolean;
   }) {
     return this.database.transaction().execute((tx) => this.addIn(tx, input));
@@ -60,11 +50,9 @@ export class SpecialistStore {
       workspaceId: WorkspaceId;
       pluginId: string;
       actorUserId: UserId;
-      autoBind?: boolean;
       activate?: boolean;
     },
   ) {
-    const autoBind = input.autoBind ?? true;
     await new SpecialistStore(tx).authorize(input.workspaceId, input.actorUserId);
     if (input.activate !== false)
       await new PluginStore(tx).activateIn(
@@ -97,16 +85,8 @@ export class SpecialistStore {
         code: "conflict",
         message: "Specialist cleanup is pending; retry removal before adding it again",
       });
-    if (previous?.pluginVersionId === plugin.id) {
-      // Only the owner's own add gives consent; an agent's re-add never withdraws it.
-      if (autoBind && !previous.autoBind)
-        await tx
-          .updateTable("specialists")
-          .set({ autoBind: true, updatedAt: new Date() })
-          .where("id", "=", previous.id)
-          .execute();
-      return new SpecialistStore(tx).refresh(previous.id);
-    }
+    if (previous?.pluginVersionId === plugin.id)
+      return new SpecialistStore(tx).registration(previous.id);
     const now = new Date();
     const id = previous?.id ?? randomUUID();
     await tx
@@ -118,90 +98,22 @@ export class SpecialistStore {
         pluginVersionId: plugin.id,
         ownerUserId: input.actorUserId,
         createdBy: input.actorUserId,
-        status: "pending",
-        bindings: jsonValue([]),
-        autoBind,
+        status: "ready",
         createdAt: now,
         updatedAt: now,
       })
       .onConflict((c) =>
         c.columns(["workspaceId", "pluginId", "ownerUserId"]).doUpdateSet({
           pluginVersionId: plugin.id,
-          status: "pending",
-          bindings: jsonValue([]),
-          autoBind,
+          status: "ready",
           updatedAt: now,
         }),
       )
       .execute();
-    return new SpecialistStore(tx).refresh(id);
+    return new SpecialistStore(tx).registration(id);
   }
 
-  async bind(input: {
-    workspaceId: WorkspaceId;
-    specialistId: string;
-    actorUserId: UserId;
-    requirement: number;
-    resourceId: string;
-  }) {
-    await this.authorize(input.workspaceId, input.actorUserId);
-    const owned = await this.database
-      .selectFrom("specialists")
-      .select("id")
-      .where("id", "=", input.specialistId)
-      .where("workspaceId", "=", input.workspaceId)
-      .where("ownerUserId", "=", input.actorUserId)
-      .executeTakeFirst();
-    if (!owned)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Only the consent owner may bind this specialist",
-      });
-    const current = await this.refresh(input.specialistId);
-    if (current.workspaceId !== input.workspaceId || current.ownerUserId !== input.actorUserId)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Only the consent owner may bind this specialist",
-      });
-    if (current.status === "removing" || current.status === "removal-failed")
-      throw new OpensteerError({ code: "conflict", message: "Specialist is being removed" });
-    const stored = await this.database
-      .selectFrom("specialists")
-      .select("bindings")
-      .where("id", "=", input.specialistId)
-      .executeTakeFirstOrThrow();
-    const requirement = current.access[input.requirement];
-    if (!requirement?.candidates.some((c) => c.resourceId === input.resourceId))
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Choose a currently allowed candidate",
-      });
-    const updated = await this.database
-      .updateTable("specialists")
-      .set({
-        bindings: jsonValue([
-          ...stored.bindings.filter((b) => b.requirement !== input.requirement),
-          {
-            requirement: input.requirement,
-            resourceId: input.resourceId,
-            level: requirement.level,
-          },
-        ]),
-      })
-      .where("id", "=", input.specialistId)
-      .where("removedAt", "is", null)
-      .where("pluginVersionId", "=", current.pluginVersionId)
-      .where("bindings", "=", jsonValue(stored.bindings))
-      .executeTakeFirst();
-    if (updated.numUpdatedRows !== 1n)
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Specialist changed while choosing access; list again",
-      });
-    return this.refresh(input.specialistId);
-  }
-
-  async refresh(id: string) {
+  private async registration(id: string) {
     const row = await this.database
       .selectFrom("specialists")
       .innerJoin("pluginVersions", "pluginVersions.id", "specialists.pluginVersionId")
@@ -217,56 +129,6 @@ export class SpecialistStore {
       .where("specialists.id", "=", id)
       .executeTakeFirstOrThrow();
     const manifest = SpecialistManifestSchema.parse(row.specialistManifest);
-    const bindings: SpecialistBinding[] = [];
-    const states = [];
-    for (const [index, requirement] of (manifest.access ?? []).entries()) {
-      const previous = row.bindings.find((binding) => binding.requirement === index);
-      const candidates = await this.candidates(row.workspaceId, row.ownerUserId, requirement);
-      const resourceId =
-        previous && !previous.rebind && candidates.some((c) => c.resourceId === previous.resourceId)
-          ? previous.resourceId
-          : !previous && row.autoBind && candidates.length === 1
-            ? candidates[0]!.resourceId
-            : null;
-      const binding = resourceId
-        ? { requirement: index, resourceId, level: requirement.level }
-        : null;
-      if (binding) bindings.push(binding);
-      else if (previous) bindings.push({ ...previous, rebind: true });
-      states.push({
-        ...requirement,
-        binding,
-        state: binding
-          ? ("bound" as const)
-          : previous
-            ? ("rebind" as const)
-            : candidates.length
-              ? ("choose" as const)
-              : ("needs-access" as const),
-        candidates,
-      });
-    }
-    const status = row.removedAt
-      ? row.status === "removal-failed"
-        ? ("removal-failed" as const)
-        : ("removing" as const)
-      : states.every((s) => s.state === "bound")
-        ? ("ready" as const)
-        : ("pending" as const);
-    const update = await this.database
-      .updateTable("specialists")
-      .set({ bindings: jsonValue(bindings), status, updatedAt: new Date() })
-      .where("id", "=", id)
-      .where("status", "=", row.status)
-      .where("removedAt", row.removedAt ? "is not" : "is", null)
-      .where("pluginVersionId", "=", row.pluginVersionId)
-      .where("bindings", "=", jsonValue(row.bindings))
-      .executeTakeFirst();
-    if (update.numUpdatedRows !== 1n)
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Specialist changed while checking access; list again",
-      });
     return {
       id,
       workspaceId: row.workspaceId,
@@ -276,16 +138,15 @@ export class SpecialistStore {
       ownerName: row.ownerName,
       plugin: row.name,
       version: row.digest,
-      status,
+      status: row.status,
       models: manifest.models,
       fallback: manifest.fallback,
-      access: states,
+      access: [],
     };
   }
 
   async summaries(workspaceId: WorkspaceId, actorUserId: UserId) {
     await this.authorize(workspaceId, actorUserId);
-    // Agent reads must not refresh: refresh can automatically bind a sole candidate.
     return this.database
       .selectFrom("specialists")
       .innerJoin("plugins", "plugins.id", "specialists.pluginId")
@@ -311,7 +172,7 @@ export class SpecialistStore {
       .execute();
     return Promise.all(
       rows.map(async ({ id }) => {
-        const registration = await this.refresh(id);
+        const registration = await this.registration(id);
         return {
           ...registration,
           canUse: registration.ownerUserId === actorUserId && registration.status === "ready",
@@ -420,7 +281,7 @@ export class SpecialistStore {
         code: "conflict",
         message: "Specialist registration was removed",
       });
-    const registration = await this.refresh(id);
+    const registration = await this.registration(id);
     const workspace = await this.database
       .selectFrom("workspaces")
       .select("kind")
@@ -450,10 +311,7 @@ export class SpecialistStore {
     if (registration.status !== "ready")
       throw new OpensteerError({
         code: "conflict",
-        message: `Specialist is ${registration.status}: ${registration.access
-          .filter((a) => a.state !== "bound")
-          .map((a) => `${a.type}: ${a.state} (${a.reason})`)
-          .join("; ")}`,
+        message: `Specialist is ${registration.status}`,
       });
     return registration;
   }
@@ -514,100 +372,5 @@ export class SpecialistStore {
         }
       }
     }
-  }
-
-  private async candidates(
-    workspaceId: WorkspaceId,
-    ownerUserId: UserId,
-    requirement: SpecialistAccessRequirement,
-  ) {
-    const membership = await this.database
-      .selectFrom("workspaceMemberships")
-      .select("state")
-      .where("workspaceId", "=", workspaceId)
-      .where("userId", "=", ownerUserId)
-      .executeTakeFirst();
-    const candidates: { resourceId: string; name: string }[] = [];
-    if (membership?.state !== "active") return candidates;
-    if (requirement.type === "browser-profile") {
-      const profiles = await this.database
-        .selectFrom("browserProfiles")
-        .select(["id", "name"])
-        .where("ownerId", "=", ownerUserId)
-        .where("archivedAt", "is", null)
-        .orderBy("id")
-        .execute();
-      for (const profile of profiles) {
-        const grants = await this.database
-          .selectFrom("browserProfileGrants")
-          .select("access")
-          .where("workspaceId", "=", workspaceId)
-          .where("createdBy", "=", ownerUserId)
-          .where("profileId", "=", profile.id)
-          .where("revokedAt", "is", null)
-          .execute();
-        const explicitAccess = grants.some((g) => g.access === "read-write")
-          ? "read-write"
-          : (grants[0]?.access ?? null);
-        const decision = await resolveResourceAccess(this.database, {
-          workspaceId,
-          ownerUserId,
-          explicitAccess,
-        });
-        if (decision.access === "read-write" || decision.access === requirement.level)
-          candidates.push({ resourceId: profile.id, name: profile.name });
-      }
-      return candidates;
-    }
-    const connections = await this.database
-      .selectFrom("integrationConnections")
-      .selectAll()
-      .where("ownerUserId", "=", ownerUserId)
-      .where("status", "=", "connected")
-      .orderBy("id")
-      .execute();
-    for (const connection of connections) {
-      if (
-        requirement.type === "integration" &&
-        connection.provider !== requirement.service &&
-        connection.integrationDefinitionId !== requirement.service
-      )
-        continue;
-      if (requirement.type === "phone" && connection.integrationDefinitionId !== "android-phone")
-        continue;
-      if (
-        requirement.type === "computer-app" &&
-        (connection.integrationDefinitionId !== "macos-app" ||
-          connection.computerAppKey !== requirement.app.toLowerCase())
-      )
-        continue;
-      if (connection.computerBlockedAt) continue;
-      const grants = await this.database
-        .selectFrom("integrationGrants")
-        .select("access")
-        .where("workspaceId", "=", workspaceId)
-        .where("ownerUserId", "=", ownerUserId)
-        .where("connectionId", "=", connection.id)
-        .where("status", "=", "active")
-        .where("revokedAt", "is", null)
-        .execute();
-      const explicitAccess = grants.some((g) => g.access === "read-write")
-        ? "read-write"
-        : (grants[0]?.access ?? null);
-      const decision = await resolveResourceAccess(this.database, {
-        workspaceId,
-        ownerUserId,
-        explicitAccess,
-        ...(connection.connectionKind === "computer"
-          ? { connectionCeiling: connection.computerAccess }
-          : {}),
-      });
-      if (decision.access === "read-write" || decision.access === requirement.level)
-        candidates.push({
-          resourceId: connection.id,
-          name: connection.displayName ?? connection.id,
-        });
-    }
-    return candidates;
   }
 }

@@ -5,7 +5,6 @@ import { HarnessCatalogReconciliationOwner } from "../agents/harness-catalogs.js
 import { ThreadService } from "../threads/thread-service.js";
 import { ConnectionOAuth } from "../mcp/connections/index.js";
 import { AgentConnectionStore } from "@opensteer/database";
-import { requestSpecialistRequirements } from "../integrations/specialist-access-requests.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { withWorkspacePluginPackage } from "../integrations/workspace-plugin-package.js";
 import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
@@ -2375,16 +2374,8 @@ export async function createHostRuntime(
                       workspaceId: scope.workspaceId,
                       pluginId,
                       actorUserId: scope.requestedBy,
-                      autoBind: false,
                     })
                   : null;
-              if (registration)
-                await requestSpecialistRequirements({
-                  registration,
-                  scope: { ...scope, aud: "opensteer-integration-tools" },
-                  browser,
-                  integrations: integrationTools,
-                });
               return {
                 pluginId,
                 issues: result.issues,
