@@ -54,6 +54,10 @@ const fileRules = z
       path: z.union([fixturePath, z.literal("."), z.array(fixturePath).min(1)]),
       exists: z.boolean().optional(),
       recursive: z.boolean().default(false),
+      matchingText: regex.optional(),
+      count: z.number().int().nonnegative().optional(),
+      mode: z.number().int().min(0).max(0o777).optional(),
+      gitIgnored: z.boolean().optional(),
       exclude: z.array(fixturePath).default([]),
       textMust: z.array(regex).default([]),
       textMustNot: z.array(regex).default([]),
@@ -79,6 +83,7 @@ export const CaseSchema = z.strictObject({
     .min(1)
     .optional(),
   fixtures: z.record(fixturePath, z.string()).default({}),
+  gitRepository: z.boolean().default(false),
   turns: z.array(z.union([z.string().min(1), structuredTurn])).min(1),
   mocks: z.record(z.string(), z.json()).default({}),
   expect: z.strictObject({
@@ -105,6 +110,17 @@ export const CaseSchema = z.strictObject({
           path: z.array(z.string().min(1)).min(1),
           pattern: regex,
           first: z.boolean().default(false),
+        }),
+      )
+      .default([]),
+    notCallsArgMatch: z
+      .array(
+        z.strictObject({
+          tool: z.string().min(1),
+          args: z.record(z.string(), z.json()).default({}),
+          path: z.array(z.string().min(1)).min(1),
+          pattern: regex,
+          after: call.extend({ result: z.json() }),
         }),
       )
       .default([]),

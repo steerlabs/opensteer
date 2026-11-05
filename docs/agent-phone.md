@@ -76,10 +76,13 @@ an app renders as ordinary content; discard anything collected across a protecte
 tricked agent can still type into the wrong app. Saved credentials use
 [sealed delivery](passwords.md#sealed-delivery), and the agent must judge the genuine app.
 
-Agents can press keyguard controls, but Android 13+ hides the bouncer from MediaProjection and
-[agent guidance](../apps/runner/agent-skills/skills/computer-use/references/phones.md) says never
-collect or enter a PIN: one given to an agent enters its transcript. Wake dismisses only a keyguard
-that needs no credential. Lock is not Stop.
+Agents can press keyguard controls and use a person-supplied screen-lock PIN for an authorized
+unlock, following [agent guidance](../apps/runner/agent-skills/skills/computer-use/references/phones.md).
+A supplied or retained PIN used by an agent enters its transcript. Remembering one requires the
+person's explicit request and a private file in personal Main, outside memory and version control;
+shared Projects must not hold it. Android 13+ hides the bouncer from MediaProjection, so agents
+may need the person when controls are unavailable. Wake dismisses only
+a keyguard that needs no credential. Lock is not Stop.
 
 ## Live display
 

@@ -31,4 +31,10 @@ when it works against what the person wants. For a failure an agent can fix, wri
 and continue, not a rule to stop and report.
 
 Do not store credentials or short-lived capability tokens in these files; refer to granted access.
-Never store or retrieve a screen-lock PIN; ask the person to unlock the phone.
+The one exception is a phone's screen-lock PIN when the person explicitly asks you to remember it.
+In personal Main, keep it in `.private/phone-pins/<runnerId>.pin`, using the phone's enrolled ID from
+the included phone or discovery. Keep the directory owner-only (`0700`), the file `0600`, and exclude
+it from version control. A later authorized unlock reads that phone's file; delete it when asked
+to forget it. Never put the PIN in AGENTS.md, memory or replies. A Project must not store a PIN or
+copy a retained PIN from Main; return retention to Main instead. This exception does not cover
+app or website passwords.

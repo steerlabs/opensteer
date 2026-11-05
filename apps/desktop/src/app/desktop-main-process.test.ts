@@ -6,6 +6,33 @@ import {
 } from "./desktop-main-process.js";
 
 describe("DesktopMainProcess", () => {
+  it("shares the startup window with concurrent activations", async () => {
+    const calls: string[] = [];
+    const window = new TestWindow(calls);
+    let finishLoading!: (window: DesktopWindowHandle) => void;
+    const loaded = new Promise<DesktopWindowHandle>((resolve) => {
+      finishLoading = resolve;
+    });
+    const windows = { create: vi.fn(() => loaded) };
+    const main = new DesktopMainProcess({
+      services: { start: async () => undefined, stop: async () => undefined },
+      windows,
+    });
+
+    const starting = main.start({ openWindow: false });
+    const activations = [main.activate(), main.activate()];
+    try {
+      expect(windows.create).toHaveBeenCalledOnce();
+    } finally {
+      finishLoading(window);
+      await Promise.all([starting, ...activations]);
+      await main.stop();
+    }
+    expect(calls).toContain("window.show");
+    expect(calls).toContain("window.focus");
+    expect(window.isDestroyed()).toBe(true);
+  });
+
   it("opens the shell before optional services, recreates a closed window, and stops once", async () => {
     const calls: string[] = [];
     const onWindowClosed = vi.fn();
