@@ -99,7 +99,7 @@ import {
   type WorkspaceView,
 } from "@opensteer/protocol";
 import { z } from "zod";
-import { BrowserWatchStore } from "./browser-watch.js";
+import { BrowserWatchStore, browserCommandNeedsNoView } from "./browser-watch.js";
 import type {
   BrowserCommand,
   BrowserFrameStore,
@@ -3146,14 +3146,7 @@ export class HttpHostClient {
       !channel.synchronized ||
       session?.state !== "ready"
     ) {
-      // Layout and cleanup can race with the socket disconnecting; neither
-      // needs an error when the view will resynchronize on its return.
-      if (
-        command.type === "stream.unsubscribe" ||
-        command.type === "viewport.follow" ||
-        command.type === "input.cancel"
-      )
-        return;
+      if (browserCommandNeedsNoView(command)) return;
       throw new Error("The browser view is not synchronized.");
     }
     channel.socket.send(JSON.stringify(command));
