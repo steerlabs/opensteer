@@ -1,0 +1,7 @@
+# Must be live before any Host that returns Connect app origins ships. Connect hostnames keep
+# their exact no-script routes (OPENSTEER_CONNECT_CLOUDFLARE_WORKERS_ROUTE_BYPASS), so they skip this.
+name = "opensteer-connect-apps"
+main = "../../apps/control-plane/src/account/connect-app-router.ts"
+compatibility_date = "2026-08-01"
+workers_dev = false
+routes = [{ pattern = "*.opensteerapp.com/*", zone_name = "opensteerapp.com" }]

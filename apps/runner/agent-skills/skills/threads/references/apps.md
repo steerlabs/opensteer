@@ -4,7 +4,8 @@ Publish an app with `app_publish` when a chart, diagram or interactive page expl
 
 - A UI-only app is one self-contained UTF-8 HTML file. An app with data, APIs or several files is a Workspace-relative folder plus `start`, a shell command.
 - Server apps require a full-access Run and a local-directory Workspace on this computer. Listen on `127.0.0.1:$PORT` and serve the UI at `/`. Publishing starts and verifies the server before saving, and files run in place.
-- Use relative URLs (`api/items`, `./assets/app.js`), or the base path from `x-forwarded-prefix` (Vite `base: './'`).
+- Use relative URLs (`api/items`, `./assets/app.js`), or the base path from `x-forwarded-prefix` (Vite `base: './'`), because some viewers open an app under a path.
+- Most viewers give an app its own web origin, so `localStorage`, cookies, WebSockets and public APIs work. Browser storage stays on one device and some viewers have none, so the app must still load without it. Only people who can open the app in Opensteer can reach it, so it can't receive webhooks or POST callbacks from other sites.
 - People open apps on phones. Design for a 380px-wide screen and avoid `vh`-based full-height layouts. Support light and dark themes: the viewer sets `data-theme` and sends an `opensteer:theme` event.
 - Keep app data in its folder and document its API in a README so other agents can use `app_fetch`.
 - Opensteer keeps only a 16 KiB in-memory log tail. Redirect output in `start` when you need persistent logs.
