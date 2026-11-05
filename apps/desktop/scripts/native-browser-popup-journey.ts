@@ -159,6 +159,8 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   const sessionMatches = [false, false];
   const guardedResults: Record<string, number> = {};
   const tapStarted: (number | null)[] = [null, null];
+  const lastVideoState: (string | null)[] = [null, null];
+  const videoStarts = [0, 0];
   const answers = new Map<string, number>();
   const tapToPopupMs: number[] = [];
   const answerToAppliedMs: number[] = [];
@@ -201,8 +203,11 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
             try {
               const m: unknown = JSON.parse(payload);
               const videoState = BrowserVideoStateSchema.safeParse(m);
-              if (videoState.success)
+              if (videoState.success) {
                 record(index, `video:${videoState.data.state}:${videoState.data.reason ?? "none"}`);
+                lastVideoState[index] = videoState.data.state;
+                if (videoState.data.state === "starting") videoStarts[index]!++;
+              }
               const popup = BrowserPopupServerMessageSchema.safeParse(m);
               if (popup.success) {
                 if (popup.data.type === "browser.popup.opened" && tapStarted[index] != null) {
@@ -598,6 +603,10 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     await tap(b, "single");
     await b.getByRole("dialog").waitFor();
     // Local input retains the stock route and interrupts a pre-existing remote draft.
+    const startsBeforeLocal = videoStarts[1]!;
+    const picturesBeforeLocal = await b.evaluate(() =>
+      Number(Reflect.get(window, "popupPresented")),
+    );
     await kit.selectNativePage(context.sessionId, surfaceId);
     await kit.focusPage();
     await kit.pageMouse("#single", true);
@@ -609,6 +618,15 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         localMenu.windows.length > before.windows.length,
       "Local select did not create its stock native UI",
     );
+    // Selecting the native page can resize it, which restarts the stream, and an idle page emits
+    // no further picture, so require one only after an actual restart.
+    await kit.until(async () => lastVideoState[1] === "live", "viewer stream live", 4000);
+    if (videoStarts[1]! > startsBeforeLocal)
+      await b.waitForFunction(
+        (count) => Number(Reflect.get(window, "popupPresented")) > count,
+        picturesBeforeLocal,
+        { timeout: 4000 },
+      );
     const tapsBefore = commands["input.guarded-click"] ?? 0;
     await tap(b, "single");
     await b
