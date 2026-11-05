@@ -739,15 +739,24 @@ integration("Runs that outlive their connection", () => {
     const holdDurationMs = Date.now() - holdStartedAt;
     expect(heldSnapshots.at(-1)!.run.status).toBe("queued");
     expect(heldSnapshots.at(-1)!.command.status).toBe("pending");
+    const recoveryEvent = await active.host.store.database
+      .selectFrom("workspaceEvents")
+      .select("sequence")
+      .where("runId", "=", recoveringRunId)
+      .where("type", "=", "run.restarted")
+      .orderBy("sequence", "desc")
+      .executeTakeFirstOrThrow();
     const heldEvents = await active.host.store.database
       .selectFrom("workspaceEvents")
       .select(["sequence", "type", "data"])
       .where("runId", "=", recoveringRunId)
-      .where("createdAt", ">=", recoveryInput.createdAt)
+      .where("sequence", ">", recoveryEvent.sequence)
       .orderBy("sequence", "asc")
       .execute();
+    const heldStatuses = heldEvents.filter((event) => event.type === "run.status");
+    expect(heldStatuses[0]?.data).toMatchObject({ status: "queued" });
     // At most the one claim and requeue of a dispatch that raced the attach-time inspection.
-    expect(heldEvents.filter((event) => event.type === "run.status").length).toBeLessThanOrEqual(2);
+    expect(heldStatuses.slice(1).length).toBeLessThanOrEqual(2);
     expect(heldEvents.filter((event) => event.type === "run.failed")).toEqual([]);
     expect((await captured()).filter((record) => record.dispatchReadinessTurn)).toHaveLength(2);
     const frozenContext =
