@@ -4,6 +4,7 @@ import {
   PasswordsBrokerAccountsSchema,
   PasswordsBrokerAccountSchema,
 } from "./password-sign-in-accounts.js";
+import { CardChooserSchema, CardChooserViewSchema } from "./card-use.js";
 import { ComputerUseSessionIdSchema } from "./computer-use-id.js";
 
 /** One deadline covers approval and the authorized login lease. */
@@ -273,6 +274,7 @@ export const PasswordSignInCardSchema = z.discriminatedUnion("stage", [
   }),
   z.strictObject({ stage: z.literal("authorized") }),
   z.strictObject({ stage: z.literal("gone") }),
+  CardChooserSchema,
 ]);
 export type PasswordSignInCard = z.infer<typeof PasswordSignInCardSchema>;
 export const PasswordSignInCardViewSchema = z.discriminatedUnion("stage", [
@@ -282,6 +284,7 @@ export const PasswordSignInCardViewSchema = z.discriminatedUnion("stage", [
   }),
   z.object(PasswordSignInCardSchema.options[1].shape),
   z.object(PasswordSignInCardSchema.options[2].shape),
+  CardChooserViewSchema,
 ]);
 
 export const PasswordSignInApprovalSchema = z.strictObject({
