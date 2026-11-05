@@ -6,12 +6,13 @@ import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import { placeHasAgents, placeList, type HostSnapshot } from "@opensteer/client/host";
+import { placeHasAgents, placeList, type AppTab, type HostSnapshot } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 
 import type { DesktopWorkspaceTabCommand } from "@opensteer/protocol/desktop";
 
 import { tabOrder } from "./tab-order.js";
+import { placeSuccessor } from "./place-succession.js";
 
 import {
   root,
@@ -1100,4 +1101,175 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       }
     }
   }, 20_000);
+});
+
+describe("an app tab", () => {
+  const first = "app_11111111-1111-4111-8111-111111111111";
+  const second = "app_22222222-2222-4222-8222-222222222222";
+  const address = (appId: string) => `/?panel=browser&opensteerApp=${appId}`;
+  const frame = (title: string) =>
+    document.querySelector<HTMLIFrameElement>(`.place--opensteer-app iframe[title="${title}"]`);
+  const row = (appId: string) => `.side-tab[data-place-key="opensteer-app:${appId}"]`;
+
+  /** Two open apps from Chat on a Host whose connection and versions the test moves. */
+  function withApps(source: MockHostClient) {
+    const base = source.getSnapshot;
+    const baseSubscribe = source.subscribe;
+    const listeners = new Set<() => void>();
+    const home = base().homeThreadId!;
+    const workspaceId = base().threads.find((thread) => thread.id === home)!.workspaceId;
+    const tab = (appId: string, title: string, openedAt: string): AppTab => ({
+      appId,
+      latestVersion: 1,
+      openedAt,
+      threadId: home as AppTab["threadId"],
+      title,
+      workspaceId: workspaceId as AppTab["workspaceId"],
+    });
+    const held = {
+      appTabs: [
+        tab(second, "Second", "2026-11-04T10:00:01.000Z"),
+        tab(first, "First", "2026-11-04T10:00:00.000Z"),
+      ],
+      appVersions: {} as Record<string, number>,
+      connection: "connected" as HostSnapshot["connection"],
+    };
+    let merged = new WeakMap<HostSnapshot, HostSnapshot>();
+    vi.spyOn(source, "getSnapshot").mockImplementation(() => {
+      const from = base();
+      const value = merged.get(from) ?? { ...from, ...held };
+      merged.set(from, value);
+      return value;
+    });
+    vi.spyOn(source, "subscribe").mockImplementation((listener) => {
+      listeners.add(listener);
+      const stop = baseSubscribe(listener);
+      return () => {
+        listeners.delete(listener);
+        stop();
+      };
+    });
+    const apply = (next: Partial<typeof held>) => {
+      Object.assign(held, next);
+      merged = new WeakMap();
+      for (const listener of listeners) listener();
+    };
+    const change = async (next: Partial<typeof held>) => {
+      await act(async () => apply(next));
+      await settle();
+    };
+    vi.spyOn(source, "closeAppTab").mockImplementation(async (appId) =>
+      apply({ appTabs: held.appTabs.filter((item) => item.appId !== appId) }),
+    );
+    const read = vi.spyOn(source, "viewApp").mockImplementation(async (appId) => ({
+      app: { id: appId } as never,
+      url: `https://host.test/v1/apps/${appId}/dark/token/`,
+    }));
+    return { change, read };
+  }
+  function stubFrames() {
+    vi.spyOn(HTMLIFrameElement.prototype, "contentWindow", "get").mockReturnValue({
+      postMessage: vi.fn(),
+    } as unknown as Window);
+  }
+
+  it("keeps its running frame through other tabs, Talk and a new conversation, in the order first shown, until closed", async () => {
+    stubFrames();
+    let apps!: ReturnType<typeof withApps>;
+    await mount((source) => {
+      apps = withApps(source);
+      return address(first);
+    });
+    const running = frame("First")!;
+    expect(running).not.toBeNull();
+    expect(frame("Second"), "a tab not yet shown runs nothing").toBeNull();
+    expect(apps.read).toHaveBeenCalledOnce();
+
+    const page = pageTab();
+    await click(element(`.side-tab[data-place-key="${page.key}"] .side-tab__main`));
+    expect(frame("First")).toBe(running);
+    expect(running.closest<HTMLElement>(".place")?.hidden).toBe(true);
+
+    await act(async () => goTo!("/"));
+    await settle();
+    expect(document.querySelector(".workspace--talk")).not.toBeNull();
+    expect(frame("First")).toBe(running);
+
+    const task = client.getSnapshot().threads.find((thread) => thread.role === "work")!;
+    await act(async () => goTo!(`/threads/${task.id}${address(first).slice(1)}`));
+    await settle();
+    expect(frame("First")).toBe(running);
+    expect(running.closest<HTMLElement>(".place")?.hidden).toBe(false);
+
+    // The list puts Second first; moving First in the DOM would reload it.
+    await click(element(`${row(second)} .side-tab__main`));
+    expect([...document.querySelectorAll("iframe")].map((item) => item.title)).toEqual([
+      "First",
+      "Second",
+    ]);
+    expect(frame("First")).toBe(running);
+
+    await act(async () => {
+      element(row(first)).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    });
+    const close = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) =>
+      item.textContent?.includes("Close tab"),
+    )!;
+    await click(close);
+    expect(running.isConnected).toBe(false);
+    expect(frame("First")).toBeNull();
+    expect(frame("Second")).not.toBeNull();
+  });
+
+  it("outlives a reconnect and reloads for a new version", async () => {
+    stubFrames();
+    let apps!: ReturnType<typeof withApps>;
+    await mount((source) => {
+      apps = withApps(source);
+      return address(first);
+    });
+    const running = frame("First")!;
+    await apps.change({ connection: "connecting" });
+    await apps.change({ connection: "connected" });
+    expect(frame("First")).toBe(running);
+    await apps.change({ appVersions: { [first]: 2 } });
+    expect(frame("First")).not.toBeNull();
+    expect(frame("First")).not.toBe(running);
+  });
+
+  it("an address naming an app that is not open says so and moves nowhere", async () => {
+    const closed = "app_33333333-3333-4333-8333-333333333333";
+    await mount((source) => {
+      withApps(source);
+      return address(closed);
+    });
+    expect(element(".place--opensteer-app .place-state").textContent).toContain("isn’t open");
+    expect(history.at(-1)?.search).toContain(closed);
+  });
+
+  it("on a phone, choosing a place puts the conversation sheet away", async () => {
+    stubFrames();
+    await mount(
+      (source) => {
+        withApps(source);
+        return address(first);
+      },
+      { width: 390 },
+    );
+    await click(element(".thread__sheet-handle"));
+    expect(document.querySelector(".thread--sheet-open")).not.toBeNull();
+    await act(async () => goTo!(address(second)));
+    await settle();
+    expect(document.querySelector(".thread--sheet-open")).toBeNull();
+  });
+
+  it("hands the middle to the row beside it, whatever kind of view that is", () => {
+    const place = (key: string, kind: string, ownerView: unknown = null) =>
+      ({ availability: "ready", key, kind, ownerView }) as unknown as Parameters<
+        typeof placeSuccessor
+      >[0][number];
+    const app = place("opensteer-app:a", "opensteer-app");
+    const owner = place("app:mac:notes:1", "app", { viewId: "view" });
+    expect(placeSuccessor([app, owner], [owner], app.key)).toBe(owner);
+  });
 });

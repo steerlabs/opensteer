@@ -12,7 +12,7 @@ import { SiteMark } from "../site-mark.js";
 
 /**
  * A place's mark at 16px: the site's own icon, the app's mark, or the phone
- * glyph. Site icons are read once per session and reference, on demand.
+ * or published app's glyph. Site icons are read once per session and reference, on demand.
  */
 export const PlaceMark = memo(function PlaceMark({
   hostClient,
@@ -21,7 +21,13 @@ export const PlaceMark = memo(function PlaceMark({
   readonly hostClient: HostClient;
   readonly icon: PlaceItem["icon"];
 }) {
-  if (icon.kind === "opensteer-app") return null;
+  if (icon.kind === "opensteer-app") {
+    return (
+      <span aria-hidden className="place-mark place-mark--glyph">
+        <Icon name="app" />
+      </span>
+    );
+  }
   if (icon.kind === "app") {
     return (
       <span aria-hidden className="place-mark">

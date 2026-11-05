@@ -13,6 +13,7 @@ import { Icon } from "../icon.js";
 import { useToastToolbar } from "../toast.js";
 import { SidebarRestoreButton } from "../sidebar-chrome.js";
 import { TaskMark, TaskBadge, ChatOrb } from "./task-mark.js";
+import { AppTab, AppTabGone } from "./app-tab.js";
 import { useBrowserPresentations } from "./identity.js";
 import { OwnerView } from "./owner-view.js";
 import { StartPage } from "./start-page.js";
@@ -24,7 +25,7 @@ import {
   type StartPageLink,
 } from "./navigation.js";
 import { OccupantMarks } from "./occupant-marks.js";
-import { useTaskDirectory, type TaskDirectory } from "./task-directory.js";
+import { conversationAt, useTaskDirectory, type TaskDirectory } from "./task-directory.js";
 import { useWorkspace } from "./workspace-context.js";
 
 /**
@@ -44,10 +45,89 @@ export const PlaceStage = memo(function PlaceStage({
   readonly hostConnected: boolean;
   readonly onReportError: (error: unknown) => void;
 }) {
-  const { drawer, nav, phone, selection } = useWorkspace();
+  const { drawer, phone } = useWorkspace();
+  const directory = useTaskDirectory(hostClient);
+  const leading = drawer ? <DrawerButton /> : <SidebarRestoreButton />;
+  const trailing = phone ? null : <ChatToggle directory={directory} />;
+  return (
+    <>
+      <SelectedPlace
+        chromeSignIn={chromeSignIn}
+        directory={directory}
+        hostClient={hostClient}
+        hostConnected={hostConnected}
+        leading={leading}
+        onReportError={onReportError}
+        trailing={trailing}
+      />
+      <AppTabs
+        directory={directory}
+        hostClient={hostClient}
+        leading={leading}
+        trailing={trailing}
+      />
+    </>
+  );
+});
+
+/** Kept in the order first shown, never the list's: moving an iframe reloads it. */
+function AppTabs({
+  directory,
+  hostClient,
+  leading,
+  trailing,
+}: {
+  readonly directory: TaskDirectory;
+  readonly hostClient: HostClient;
+  readonly leading: ReactNode;
+  readonly trailing: ReactNode;
+}) {
+  const { selection } = useWorkspace();
+  const open = new Map(
+    usePlaceList(hostClient).flatMap((place) =>
+      place.opensteerApp ? [[place.opensteerApp.appId, place] as const] : [],
+    ),
+  );
+  const selected =
+    selection.kind === "place" && selection.destination.kind === "opensteer-app"
+      ? selection.destination.appId
+      : null;
+  const shown = useRef(new Set<string>());
+  for (const appId of shown.current) if (!open.has(appId)) shown.current.delete(appId);
+  if (selected && open.has(selected)) shown.current.add(selected);
+  return [...shown.current].map((appId) => (
+    <AppTab
+      directory={directory}
+      hostClient={hostClient}
+      key={appId}
+      leading={leading}
+      place={open.get(appId)!}
+      selected={appId === selected}
+      trailing={trailing}
+    />
+  ));
+}
+
+function SelectedPlace({
+  chromeSignIn,
+  directory,
+  hostClient,
+  hostConnected,
+  leading,
+  onReportError,
+  trailing,
+}: {
+  readonly chromeSignIn: BrowserChromeSignIn | null;
+  readonly directory: TaskDirectory;
+  readonly hostClient: HostClient;
+  readonly hostConnected: boolean;
+  readonly leading: ReactNode;
+  readonly onReportError: (error: unknown) => void;
+  readonly trailing: ReactNode;
+}) {
+  const { nav, phone, selection } = useWorkspace();
   const toolbarRef = useToastToolbar();
   const places = usePlaceList(hostClient);
-  const directory = useTaskDirectory(hostClient);
   const presentations = useBrowserPresentations(places);
   const pageVisible = usePageVisible();
   const known = useRef(new Map<string, PlaceItem>());
@@ -157,8 +237,6 @@ export const PlaceStage = memo(function PlaceStage({
     [],
   );
 
-  const leading = drawer ? <DrawerButton /> : <SidebarRestoreButton />;
-  const trailing = phone ? null : <ChatToggle directory={directory} />;
   const openMark = useCallback(
     (threadId: string) => {
       if (place) nav.showPlaceWithConversation(place.destination, nav.threadPath(threadId));
@@ -200,6 +278,7 @@ export const PlaceStage = memo(function PlaceStage({
       />
     );
   const { destination } = selection;
+  if (destination.kind === "opensteer-app" && live) return null;
   // The address is the person's to type; a tab id it names is checked before use.
   const tabId =
     destination.kind === "browser" && destination.tabId
@@ -246,8 +325,14 @@ export const PlaceStage = memo(function PlaceStage({
             </div>
           </div>
         )
-      ) : destination.kind === "opensteer-app" ? null : destination.source?.kind ===
-        "owner-view" ? (
+      ) : destination.kind === "opensteer-app" ? (
+        <AppTabGone
+          destination={destination}
+          hostClient={hostClient}
+          leading={leading}
+          trailing={trailing}
+        />
+      ) : destination.source?.kind === "owner-view" ? (
         <OwnerView
           destination={destination}
           marks={marks}
@@ -287,7 +372,7 @@ export const PlaceStage = memo(function PlaceStage({
       )}
     </section>
   );
-});
+}
 
 /**
  * The start page, fresh for each opening and kept through a change of
@@ -378,12 +463,7 @@ function ChatToggle({ directory }: { readonly directory: TaskDirectory }) {
         <Icon name="panel" />
       </button>
     );
-  const threadId =
-    pathname === "/"
-      ? directory.homeThreadId
-      : pathname.startsWith("/threads/")
-        ? decodeURIComponent(pathname.slice("/threads/".length))
-        : null;
+  const threadId = conversationAt(pathname, directory.homeThreadId);
   // "/" is Chat even before Chat has a Thread.
   const home = pathname === "/" || (threadId !== null && threadId === directory.homeThreadId);
   const row = threadId ? directory.rows.get(threadId) : undefined;

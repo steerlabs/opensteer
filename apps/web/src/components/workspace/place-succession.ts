@@ -36,12 +36,17 @@ export function placeSuccessor(
     if (
       place &&
       place.availability !== "unavailable" &&
-      (previous.kind === "browser" || Boolean(previous.ownerView) === Boolean(place.ownerView))
+      (independent(previous) ||
+        independent(place) ||
+        Boolean(previous.ownerView) === Boolean(place.ownerView))
     )
       return place;
   }
   return null;
 }
+
+const independent = (place: PlaceItem) =>
+  place.kind === "browser" || place.kind === "opensteer-app";
 
 /**
  * One rule for the place in the middle going away, whoever made it go — ×,

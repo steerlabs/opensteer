@@ -1,12 +1,16 @@
 // @vitest-environment happy-dom
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createId, type OpensteerApp } from "@opensteer/core";
 import type { AppEntry } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { AppCard } from "./app-card.js";
 import { TranscriptHostClientContext } from "../attachments/message-attachments.js";
+import { ToastProvider } from "../toast.js";
+import type { WorkspaceNavigation } from "../workspace/navigation.js";
+import { WorkspaceProvider } from "../workspace/workspace-context.js";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | null = null;
 beforeEach(() => {
@@ -43,20 +47,67 @@ const metadata: OpensteerApp = {
   createdAt: entry.createdAt,
   updatedAt: entry.createdAt,
 };
-async function mount(client: MockHostClient, count = 1) {
+async function mount(
+  client: MockHostClient,
+  count = 1,
+  frame: (card: ReactNode) => ReactNode = (card) => card,
+) {
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
   await act(async () =>
     root!.render(
-      <TranscriptHostClientContext value={client}>
-        {Array.from({ length: count }, (_, index) => (
-          <AppCard key={index} entry={entry} />
-        ))}
-      </TranscriptHostClientContext>,
+      frame(
+        <TranscriptHostClientContext value={client}>
+          {Array.from({ length: count }, (_, index) => (
+            <AppCard key={index} entry={entry} />
+          ))}
+        </TranscriptHostClientContext>,
+      ),
     ),
   );
   return container;
+}
+const tab = {
+  appId,
+  title: "Budget",
+  threadId: metadata.threadId,
+  workspaceId: metadata.workspaceId,
+  latestVersion: 1,
+  openedAt: entry.createdAt,
+};
+/** A workspace around the card and a Host whose open tabs the test moves. */
+function inWorkspace(client: MockHostClient) {
+  let snapshot = client.getSnapshot();
+  const listeners = new Set<() => void>();
+  vi.spyOn(client, "subscribe").mockImplementation((listener) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  });
+  vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
+  vi.spyOn(client, "viewApp").mockResolvedValue({ app: metadata, url: appUrl });
+  const showPlace = vi.fn();
+  const nav = { showPlace } as unknown as WorkspaceNavigation;
+  return {
+    frame: (card: ReactNode) => (
+      <ToastProvider>
+        <MemoryRouter>
+          <WorkspaceProvider attention={0} nav={nav} openDrawer={() => undefined}>
+            {card}
+          </WorkspaceProvider>
+        </MemoryRouter>
+      </ToastProvider>
+    ),
+    setOpen: async (open: boolean) => {
+      snapshot = { ...snapshot, appTabs: open ? [tab] : [] };
+      await act(async () => {
+        for (const listener of listeners) listener();
+      });
+    },
+    showPlace,
+  };
 }
 it("uses an opaque sandbox, caps tall inline content, ignores foreign messages, and stays readable without height reports", async () => {
   const client = new MockHostClient();
@@ -102,7 +153,7 @@ it("uses an opaque sandbox, caps tall inline content, ignores foreign messages, 
   );
   expect(frame.style.height).toBe("640px");
 });
-it("reloads already-rendered cards on republish and expands the same app instance", async () => {
+it("reloads already-rendered cards on republish", async () => {
   const client = new MockHostClient();
   let snapshot = client.getSnapshot();
   let latest = 1;
@@ -132,32 +183,52 @@ it("reloads already-rendered cards on republish and expands the same app instanc
   ]);
   expect(container.querySelector(".app-card__header")?.textContent).toContain("Budget 2");
   expect(container.querySelector("iframe")).not.toBe(original);
-  const frame = container.querySelector("iframe")!;
-  const toggle = container.querySelector("button") as HTMLButtonElement;
-  toggle.focus();
-  await act(() => toggle.click());
-  expect(read).toHaveBeenCalledTimes(4);
-  expect(container.querySelector('[role="dialog"] iframe')).toBe(frame);
-  expect(document.activeElement).toBe(toggle);
-  await act(() => toggle.click());
-  expect(container.querySelector("iframe")).toBe(frame);
-  await act(() => toggle.click());
-  await act(() =>
-    toggle.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
+});
+it("opens as a tab at once, runs no second copy there, and comes back live when the tab closes", async () => {
+  const client = new MockHostClient();
+  const { frame, setOpen, showPlace } = inWorkspace(client);
+  const opened = Promise.withResolvers<void>();
+  const open = vi.spyOn(client, "openAppTab").mockReturnValue(opened.promise);
+  const container = await mount(client, 1, frame);
+  expect(container.querySelector("iframe")).not.toBeNull();
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>(".app-card__header button")!.click(),
   );
-  expect(container.querySelector('[role="dialog"]')).toBeNull();
-  expect(document.activeElement).toBe(toggle);
-  await act(() => toggle.click());
-  await act(() =>
-    window.dispatchEvent(
-      new MessageEvent("message", {
-        source: frame.contentWindow,
-        origin: "null",
-        data: { type: "opensteer-app:escape" },
-      }),
-    ),
-  );
-  expect(container.querySelector('[role="dialog"]')).toBeNull();
+  expect(open).toHaveBeenCalledExactlyOnceWith(appId);
+  expect(showPlace).toHaveBeenCalledExactlyOnceWith({ kind: "opensteer-app", appId });
+  await setOpen(true);
+  opened.resolve();
+  expect(container.querySelector("iframe")).toBeNull();
+  expect(container.querySelector(".app-card__title")?.textContent).toBe("Budget");
+  showPlace.mockClear();
+  await act(async () => container.querySelector<HTMLButtonElement>(".app-card__go")!.click());
+  expect(showPlace).toHaveBeenCalledExactlyOnceWith({ kind: "opensteer-app", appId });
+  await setOpen(false);
+  expect(container.querySelector("iframe")?.src).toBe(appUrl);
+});
+it("says why an open failed and leaves the running card usable", async () => {
+  const client = new MockHostClient();
+  const { frame } = inWorkspace(client);
+  const open = vi
+    .spyOn(client, "openAppTab")
+    .mockRejectedValue(new Error("This Host does not know app tabs."));
+  const container = await mount(client, 1, frame);
+  const running = container.querySelector("iframe");
+  const button = container.querySelector<HTMLButtonElement>(".app-card__header button")!;
+  await act(async () => button.click());
+  expect(document.querySelector(".toast")?.textContent).toContain("does not know app tabs");
+  expect(container.querySelector("iframe")).toBe(running);
+  expect(button.disabled).toBe(false);
+  await act(async () => button.click());
+  expect(open).toHaveBeenCalledTimes(2);
+});
+it("stays inline where there is no stage to open it in", async () => {
+  const client = new MockHostClient();
+  vi.spyOn(client, "viewApp").mockResolvedValue({ app: metadata, url: appUrl });
+  vi.spyOn(client, "getSnapshot").mockReturnValue({ ...client.getSnapshot(), appTabs: [tab] });
+  const container = await mount(client);
+  expect(container.querySelector("iframe")).not.toBeNull();
+  expect(container.querySelector("button")).toBeNull();
 });
 it("offers retry when a view read fails", async () => {
   const client = new MockHostClient();

@@ -169,7 +169,7 @@ function ThreadView({
   thread,
   workspace,
 }: ThreadViewProps) {
-  const { phone, work } = useWorkspace();
+  const { phone, selection, work } = useWorkspace();
   const phoneStage = phone && work;
   const keyboardInset = useVisualViewportKeyboardInset();
   const {
@@ -925,9 +925,8 @@ function ThreadView({
   // On a phone with a page open, the conversation is a sheet under it: the
   // composer and the latest reply, opened to the whole conversation on request.
   const [sheetOpen, setSheetOpen] = useState(false);
-  useEffect(() => {
-    if (!phoneStage) setSheetOpen(false);
-  }, [phoneStage]);
+  // Choosing a place is choosing to look at it.
+  useEffect(() => setSheetOpen(false), [phoneStage, selection]);
   useLayoutEffect(() => {
     const scroller = currentScroller();
     if (sheetOpen && scroller && followsTailRef.current) scroller.scrollTop = scroller.scrollHeight;
