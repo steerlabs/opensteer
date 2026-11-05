@@ -442,6 +442,7 @@ function Focused(props: {
   const body =
     destination.kind === "opensteer-app" ? (
       <AppTab
+        active={props.active}
         appId={destination.appId}
         connected={props.connected}
         hostClient={hostClient}
@@ -875,6 +876,7 @@ function CloseBar(props: {
  * once, and two copies never run.
  */
 const AppTab = memo(function AppTab(props: {
+  readonly active: boolean;
   readonly appId: string;
   readonly connected: boolean;
   readonly hostClient: HostClient;
@@ -891,6 +893,7 @@ const AppTab = memo(function AppTab(props: {
       [appId],
     ),
   );
+  const known = useHostSelector(hostClient, (snapshot) => snapshot.deploymentShape !== null);
   const [closing, setClosing] = useState(false);
   const [closeFailure, setCloseFailure] = useState<string | null>(null);
   const close = () => {
@@ -914,6 +917,8 @@ const AppTab = memo(function AppTab(props: {
     onTyping(typing);
     return () => onTyping(false);
   }, [onTyping, typing]);
+  if (!props.active) return null;
+  if (!known) return <TabStatus title="Loading app…" waiting />;
   if (closing) return <TabStatus title="Closing…" waiting />;
   if (ended) return <BrowserEnded detail={null} failed={false} />;
   return (

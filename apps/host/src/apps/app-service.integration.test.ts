@@ -13,10 +13,115 @@ import { AppStore } from "@opensteer/database";
 import { expect, vi } from "vitest";
 import { describeStore } from "@opensteer/database/test-support/store";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
+import {
+  startMachineAccessHost,
+  signUpUser,
+  openRealtime,
+} from "../runtime/machine-access.test-support.js";
+import { testRpcData } from "../server/test-host-api-request.js";
 import { AppService } from "./app-service.js";
 
 const html = "<title>First</title><body><h1>First</h1>";
 describeStore("published app HTML", (it) => {
+  it("joins tab commands, bootstrap, and membership-scoped realtime through the real Host", async ({
+    storeFixture,
+  }) => {
+    const host = await startMachineAccessHost(storeFixture.databaseUrl, { signupPolicy: "open" });
+    const sockets: Awaited<ReturnType<typeof openRealtime>>[] = [];
+    try {
+      const f = await storeFixture.startRunFixture("tab-wire");
+      const member = await signUpUser(host, {
+        email: "tab-member@example.test",
+        password: "tab-member-password",
+      });
+      const stranger = await signUpUser(host, {
+        email: "tab-stranger@example.test",
+        password: "tab-stranger-password",
+      });
+      for (const userId of [host.ownerId, member.userId])
+        await storeFixture.database
+          .insertInto("workspaceMemberships")
+          .values({
+            id: createId("workspaceMembership"),
+            workspaceId: f.workspace.id,
+            userId,
+            role: "collaborator",
+            state: "active",
+            generation: 1,
+            invitedBy: f.userId,
+            joinedAt: new Date(),
+            revokedAt: null,
+            revokedBy: null,
+            updatedAt: new Date(),
+          })
+          .execute();
+      const apps = new AppStore(storeFixture.database);
+      const published = await apps.publish({
+        workspaceId: f.workspace.id,
+        threadId: f.thread.id,
+        runId: f.run.id,
+        environmentId: f.environmentId,
+        userId: f.userId,
+        title: "Wire app",
+        sha256: "a".repeat(64),
+        sizeBytes: 1,
+        publishKey: "wire",
+      });
+      const active = await openRealtime(host, member.headers);
+      sockets.push(active);
+      const outsider = await openRealtime(host, stranger.headers);
+      sockets.push(outsider);
+      const dispatch = (type: "app.tab.open" | "app.tab.close", headers = host.ownerHeaders) =>
+        testRpcData(
+          host.origin,
+          "commands.dispatch",
+          { type, appId: published.appId, idempotencyKey: crypto.randomUUID() },
+          { headers },
+        );
+      expect(await dispatch("app.tab.open")).toMatchObject({
+        type: "app.tab.open",
+        appTabs: [{ appId: published.appId, latestVersion: 1 }],
+      });
+      await vi.waitFor(() =>
+        expect(active.messages.filter((m) => m.type === "host.app-tabs-changed")).toHaveLength(1),
+      );
+      const bootstrap = await testRpcData(
+        host.origin,
+        "bootstrap.get",
+        {},
+        { headers: member.headers },
+      );
+      expect(bootstrap.appTabs).toMatchObject([
+        { appId: published.appId, title: "Wire app", latestVersion: 1 },
+      ]);
+      expect(
+        (await testRpcData(host.origin, "bootstrap.get", {}, { headers: stranger.headers }))
+          .appTabs,
+      ).toEqual([]);
+      await expect(dispatch("app.tab.open", stranger.headers)).rejects.toThrow(/not_found/);
+      await expect(dispatch("app.tab.close", stranger.headers)).rejects.toThrow(/not_found/);
+      expect(await dispatch("app.tab.close")).toMatchObject({ type: "app.tab.close", appTabs: [] });
+      await vi.waitFor(() =>
+        expect(active.messages.filter((m) => m.type === "host.app-tabs-changed")).toHaveLength(2),
+      );
+      expect(
+        (await testRpcData(host.origin, "bootstrap.get", {}, { headers: member.headers })).appTabs,
+      ).toEqual([]);
+      expect(outsider.messages.filter((m) => m.type === "host.app-tabs-changed")).toEqual([]);
+      await storeFixture.database
+        .updateTable("workspaceMemberships")
+        .set({ state: "revoked", revokedAt: new Date(), revokedBy: f.userId })
+        .where("workspaceId", "=", f.workspace.id)
+        .where("userId", "=", member.userId)
+        .execute();
+      for (const type of ["app.tab.open", "app.tab.close"] as const)
+        await expect(dispatch(type, member.headers)).rejects.toThrow(/not_found/);
+    } finally {
+      for (const socket of sockets) await socket.close();
+      await host.close();
+    }
+  });
+
   it("keeps Workspace app tabs idempotent, bounded, and membership-authorized", async ({
     storeFixture,
   }) => {

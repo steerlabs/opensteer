@@ -91,6 +91,7 @@ export function placeSearchFields(place: PlaceItem, groupTitle: string | null): 
 }
 const sourceKeys = [
   "appTabs",
+  "openingAppTabs",
   "browserTabGroups",
   "workspaceTabs",
   "workspaceTabRestoreVersion",
@@ -542,6 +543,12 @@ export function browserTabCloseImpact(session: BrowserSessionSummary): BrowserTa
   };
 }
 
-export function isAppTabOpen(source: Pick<HostSnapshot, "appTabs">, appId: string): boolean {
-  return source.appTabs?.some((tab) => tab.appId === appId) === true;
+export function isAppTabOpen(
+  source: Pick<HostSnapshot, "appTabs" | "openingAppTabs">,
+  appId: string,
+): boolean {
+  return (
+    source.openingAppTabs?.includes(appId) === true ||
+    source.appTabs?.some((tab) => tab.appId === appId) === true
+  );
 }

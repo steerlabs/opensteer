@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createId, type OpensteerApp } from "@opensteer/core";
 import type { AppEntry } from "@opensteer/client/host";
+import { useAppView } from "@opensteer/client/react";
 import { MockHostClient } from "@opensteer/client/mock";
 import { AppCard } from "./app-card.js";
 import { TranscriptHostClientContext } from "../attachments/message-attachments.js";
@@ -303,4 +304,47 @@ it("retries a document that loaded without its bootstrap, ignoring forged ready 
   await act(() => fresh.dispatchEvent(new Event("load")));
   expect(container.querySelector('[role="alert"]')).toBeNull();
   expect(read).toHaveBeenCalledTimes(2);
+});
+
+it("keeps a live app view during a link blip and invalidates it for a publication", async () => {
+  const client = new MockHostClient();
+  let snapshot = client.getSnapshot();
+  const listeners = new Set<() => void>();
+  vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
+  vi.spyOn(client, "subscribe").mockImplementation((listener) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  });
+  const read = vi.spyOn(client, "viewApp").mockResolvedValue({ app: metadata, url: appUrl });
+  function Probe() {
+    const { view } = useAppView(client, appId, "dark");
+    return <span>{view?.url ?? "loading"}</span>;
+  }
+  const container = document.createElement("div");
+  root = createRoot(container);
+  await act(async () => root!.render(<Probe />));
+  expect(container.textContent).toBe(appUrl);
+  const gate = Promise.withResolvers<{ app: OpensteerApp; url: string }>();
+  read.mockImplementation(() => gate.promise);
+  try {
+    await act(async () => {
+      snapshot = { ...snapshot, connection: "connecting" };
+      for (const listener of listeners) listener();
+    });
+    expect(container.textContent).toBe(appUrl);
+    await act(async () => {
+      snapshot = { ...snapshot, connection: "connected" };
+      for (const listener of listeners) listener();
+    });
+    expect(container.textContent).toBe(appUrl);
+    await act(async () => {
+      snapshot = { ...snapshot, appVersions: { [appId]: 2 } };
+      for (const listener of listeners) listener();
+    });
+    expect(container.textContent).toBe("loading");
+  } finally {
+    await act(async () => gate.resolve({ app: metadata, url: appUrl }));
+  }
 });

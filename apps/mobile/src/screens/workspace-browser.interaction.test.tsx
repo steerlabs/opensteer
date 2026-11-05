@@ -1773,6 +1773,28 @@ describe("an app open as a tab", () => {
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
+  it("destroys the WebView when another screen covers its app page", () => {
+    const { render } = openApp();
+    const first = webView();
+    expect(first).not.toBeNull();
+    state.focused = false;
+    render();
+    expect(webView()).toBeNull();
+    state.focused = true;
+    render();
+    expect(webView()).not.toBeNull();
+    expect(webView()).not.toBe(first);
+  });
+
+  it("waits for bootstrap before declaring a cold app route closed", () => {
+    const { container, render } = openApp();
+    state.snapshot = { ...state.snapshot!, deploymentShape: null, appTabs: [] };
+    render();
+    expect(container.textContent).not.toContain("This tab was closed");
+    expect(container.textContent).toContain("Loading app");
+    expect(webView()).toBeNull();
+  });
+
   it("ends in place when the tab closes elsewhere, keeping its name and Ask", () => {
     const { container, render } = openApp();
     state.snapshot = { ...state.snapshot!, appTabs: [] };

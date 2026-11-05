@@ -40,6 +40,7 @@ import {
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
+import { isAppTabOpen, placeDestinationEnded } from "./places.js";
 import { assignmentMark } from "./assignment-presentation.js";
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import { browserTabStrip } from "./browser-tab-strip.js";
@@ -16677,6 +16678,7 @@ describe("app tab bootstrap races", () => {
       openedAt: now,
     };
     let tabs = initialOpen ? [tab] : [];
+    let nextAppRead: ReturnType<typeof deferred<Response>> | null = null;
     let nextRead: ReturnType<typeof deferred<Response>> | null = null;
     let nextCommand: ReturnType<typeof deferred<Response>> | null = null;
     const readStarted = vi.fn();
@@ -16691,7 +16693,12 @@ describe("app tab bootstrap races", () => {
         }
         return json({ ...bootstrap([workspace]), appTabs: tabs });
       }
-      if (path.endsWith("apps.get"))
+      if (path.endsWith("apps.get")) {
+        if (nextAppRead) {
+          const gate = nextAppRead;
+          nextAppRead = null;
+          return gate.promise;
+        }
         return json({
           id: new URL(input instanceof Request ? input.url : input.toString()).searchParams.has(
             "input",
@@ -16710,6 +16717,7 @@ describe("app tab bootstrap races", () => {
           createdAt: now,
           updatedAt: now,
         });
+      }
       if (path.endsWith("auth.logout")) return json({});
       if (path.endsWith("commands.dispatch")) {
         if (nextCommand) {
@@ -16733,6 +16741,11 @@ describe("app tab bootstrap races", () => {
       tab,
       workspace,
       readStarted,
+      holdAppRead: () => {
+        const gate = deferred<Response>();
+        nextAppRead = gate;
+        return gate;
+      },
       holdRead: () => {
         const gate = deferred<Response>();
         nextRead = gate;
@@ -16745,6 +16758,57 @@ describe("app tab bootstrap races", () => {
       },
     };
   }
+  it("reserves the app while metadata loads so immediate navigation does not end it", async () => {
+    const f = fixture();
+    try {
+      await f.client.load();
+      const gate = f.holdAppRead();
+      const opening = f.client.openAppTab(appId);
+      const snapshot = f.client.getSnapshot();
+      gate.resolve(
+        json({
+          id: appId,
+          title: f.tab.title,
+          threadId: f.tab.threadId,
+          workspaceId: f.tab.workspaceId,
+          runId: createId("run"),
+          latestVersion: 4,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
+      await opening;
+      expect(isAppTabOpen(snapshot, appId)).toBe(true);
+      expect(placeDestinationEnded(snapshot, { kind: "opensteer-app", appId })).toBe(false);
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("does not reopen a tab when a later close overtakes its metadata read", async () => {
+    const f = fixture();
+    try {
+      await f.client.load();
+      const gate = f.holdAppRead();
+      const opening = f.client.openAppTab(appId);
+      await f.client.closeAppTab(appId);
+      gate.resolve(
+        json({
+          id: appId,
+          title: f.tab.title,
+          threadId: f.tab.threadId,
+          workspaceId: f.tab.workspaceId,
+          runId: createId("run"),
+          latestVersion: 4,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
+      await opening;
+      expect(f.client.getSnapshot().appTabs ?? []).toEqual([]);
+    } finally {
+      f.client.dispose();
+    }
+  });
   it("merges bootstrap app versions without lowering an observed version", async () => {
     const f = fixture(true);
     try {

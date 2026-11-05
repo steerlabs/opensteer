@@ -1619,7 +1619,7 @@ export class HttpHostClient {
   #appTabGeneration = 0;
   readonly #appTabPending = new Map<
     string,
-    { token: symbol; tab: import("@opensteer/protocol").AppTab | null }
+    { token: symbol; tab: import("@opensteer/protocol").AppTab | null; opening: boolean }
   >();
   #overlayAppTabs(tabs: readonly import("@opensteer/protocol").AppTab[]) {
     const result = new Map(tabs.map((tab) => [tab.appId, tab]));
@@ -1633,7 +1633,13 @@ export class HttpHostClient {
     const appVersions = { ...this.#snapshot.appVersions };
     for (const tab of tabs)
       appVersions[tab.appId] = Math.max(appVersions[tab.appId] ?? 0, tab.latestVersion);
-    return { appTabs: tabs, appVersions };
+    return {
+      appTabs: tabs,
+      appVersions,
+      openingAppTabs: [...this.#appTabPending]
+        .filter(([, pending]) => pending.opening && !pending.tab)
+        .map(([id]) => id),
+    };
   }
   openAppTab(appId: string): Promise<void> {
     return this.#setAppTab(appId, true);
@@ -1645,43 +1651,49 @@ export class HttpHostClient {
     const viewer = this.#viewerGeneration;
     const token = Symbol();
     const previous = this.#snapshot.appTabs?.find((tab) => tab.appId === appId);
-    let tab = previous;
-    if (open && !tab) {
-      const entry = Object.entries(this.#snapshot.transcripts).flatMap(([threadId, entries]) =>
-        entries
-          .filter((entry) => entry.kind === "app" && entry.appId === appId)
-          .map((entry) => ({ threadId, entry })),
-      )[0];
-      const thread = this.#snapshot.threads.find((thread) => thread.id === entry?.threadId);
-      if (entry?.entry.kind === "app" && thread)
-        tab = AppTabSchema.parse({
-          appId,
-          title: entry.entry.title,
-          threadId: thread.id,
-          workspaceId: thread.workspaceId,
-          latestVersion: entry.entry.version,
-          openedAt: new Date().toISOString(),
-        });
-      else {
-        const app = unwrapRpcResult(await this.rpc["apps.get"]({ appId }));
-        if (viewer !== this.#viewerGeneration) return;
-        tab = {
-          appId,
-          title: app.title,
-          threadId: app.threadId,
-          workspaceId: app.workspaceId,
-          latestVersion: app.latestVersion,
-          openedAt: new Date().toISOString(),
-        };
-      }
-    }
     const mutation = ++this.#appTabGeneration;
-    this.#appTabPending.set(appId, { token, tab: open ? tab! : null });
+    this.#appTabPending.set(appId, { token, tab: previous ?? null, opening: open });
     this.#update({
       ...this.#snapshot,
       ...this.#applyAppTabs(this.#overlayAppTabs(this.#snapshot.appTabs ?? [])),
     });
     try {
+      let tab = previous;
+      if (open && !tab) {
+        const entry = Object.entries(this.#snapshot.transcripts).flatMap(([threadId, entries]) =>
+          entries
+            .filter((entry) => entry.kind === "app" && entry.appId === appId)
+            .map((entry) => ({ threadId, entry })),
+        )[0];
+        const thread = this.#snapshot.threads.find((thread) => thread.id === entry?.threadId);
+        if (entry?.entry.kind === "app" && thread)
+          tab = AppTabSchema.parse({
+            appId,
+            title: entry.entry.title,
+            threadId: thread.id,
+            workspaceId: thread.workspaceId,
+            latestVersion: entry.entry.version,
+            openedAt: new Date().toISOString(),
+          });
+        else {
+          const app = unwrapRpcResult(await this.rpc["apps.get"]({ appId }));
+          if (viewer !== this.#viewerGeneration || this.#appTabPending.get(appId)?.token !== token)
+            return;
+          tab = {
+            appId,
+            title: app.title,
+            threadId: app.threadId,
+            workspaceId: app.workspaceId,
+            latestVersion: app.latestVersion,
+            openedAt: new Date().toISOString(),
+          };
+        }
+      }
+      this.#appTabPending.set(appId, { token, tab: open ? tab! : null, opening: open });
+      this.#update({
+        ...this.#snapshot,
+        ...this.#applyAppTabs(this.#overlayAppTabs(this.#snapshot.appTabs ?? [])),
+      });
       const result = await this.dispatch({
         type: open ? "app.tab.open" : "app.tab.close",
         appId,
