@@ -781,6 +781,19 @@ describe("human Passwords settlement", () => {
       });
     },
   );
+  it("refuses an older client's login decision on a stored card Request", async () => {
+    const h = await pending();
+    const request = h.request();
+    if (request.payload.kind !== "browser.password-sign-in")
+      throw new Error("Expected Passwords Request");
+    request.payload.credential = "card";
+    await expect(answer(h)).rejects.toThrow("requires card approval");
+    expect(request.status).toBe("pending");
+    expect(
+      h.hub.sendPasswordSignIn.mock.calls.some(([, command]) => command.type === "login.approve"),
+    ).toBe(false);
+    expect(h.requests.settlePasswordSignInRequest).not.toHaveBeenCalled();
+  });
   it("refuses another user's chooser and answer", async () => {
     const h = await pending();
     const ownerId = UserIdSchema.parse("usr_00000000-0000-4000-8000-000000000099");

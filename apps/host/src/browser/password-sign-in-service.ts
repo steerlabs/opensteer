@@ -507,6 +507,16 @@ export class PasswordSignInService {
         > & { kind: "approve" });
   }): Promise<{ status: Request["status"]; card?: PasswordSignInCard; message?: string }> {
     const request = await this.#requester(input);
+    if (
+      request.payload.kind === "browser.password-sign-in" &&
+      request.payload.credential === "card" &&
+      input.decision.kind !== "decline"
+    ) {
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This Request requires card approval.",
+      });
+    }
     if (request.status !== "pending") return { status: request.status };
     const operation = this.#operations.get(
       request.payload.kind === "browser.password-sign-in" ? request.payload.operationId : "",
