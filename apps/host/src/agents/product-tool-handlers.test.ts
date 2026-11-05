@@ -296,31 +296,39 @@ describe("Product tool handlers", () => {
     },
   );
 
-  it("keeps saved logins on a voice call but opens no Request", async () => {
-    const result = {
-      status: "unavailable",
-      site: "https://example.com",
-      reason: "needs-approval",
-    } as const;
-    const agentSignIn = vi.fn(async () => result);
+  it("keeps saved logins and cards on a voice call but opens no Request", async () => {
+    const site = "https://example.com";
+    const agentSignIn = vi.fn(
+      async () => ({ status: "unavailable", site, reason: "needs-approval" }) as const,
+    );
+    const agentUseCard = vi.fn(async () => ({ status: "needs-approval", site }) as const);
     const { service } = makeService({
-      browserSources: { agentSignIn },
+      browserSources: { agentSignIn, agentUseCard },
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       messages: [],
       threads: [thread(currentThreadId, nativeHarnessId, "Worker")],
       voiceCall: true,
     });
-    const response = await service.handle("run-token", {
+    const sessionId = createBrowserSessionId();
+    const reason = "Read the account";
+    const signIn = await service.handle("run-token", {
       requestId: crypto.randomUUID(),
       type: "sign-in",
-      sessionId: createBrowserSessionId(),
-      site: "https://example.com",
-      reason: "Read the account",
+      sessionId,
+      site,
+      reason,
     });
+    const card = await service.service.callTool(
+      "run-token",
+      "use_card",
+      { sessionId, site, reason },
+      { operationKey: crypto.randomUUID() },
+    );
     expect(agentSignIn).toHaveBeenCalledWith(expect.objectContaining({ canRequest: false }));
-    expect(response).toMatchObject({
-      result: { guidance: expect.stringContaining('threadId "home"') },
-    });
+    expect(agentUseCard).toHaveBeenCalledWith(expect.objectContaining({ canRequest: false }));
+    const handOff = expect.stringContaining('threadId "home"');
+    expect(signIn).toMatchObject({ result: { guidance: handOff } });
+    expect(card).toMatchObject({ guidance: handOff });
   });
 
   it("does not preserve Main authority after its member is no longer an owner", async () => {

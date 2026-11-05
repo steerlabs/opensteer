@@ -438,6 +438,7 @@ export const UseCardOutputSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.enum(["resolved", "declined", "needs-approval"]),
     site: BrowserSiteSchema,
+    guidance: z.string().optional(),
   }),
   z.strictObject({
     status: z.literal("unavailable"),

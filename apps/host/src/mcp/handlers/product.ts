@@ -990,9 +990,11 @@ export class ProductToolHandlers {
 
   async use_card({ caller, input, operationKey }: ToolCall<"use_card">) {
     const claims = requireRun(caller).claims;
-    return this.#browserSources.agentUseCard({
+    // A card already approved still works on a call; a Request's answer can't reach its Thread.
+    const voiceCall = await this.#store.voiceCallForRun(claims.runId);
+    const result = await this.#browserSources.agentUseCard({
       callId: operationId(caller, operationKey, "use_card"),
-      canRequest: true,
+      canRequest: !voiceCall,
       ownerId: claims.requestedBy,
       reason: input.reason,
       runId: claims.runId,
@@ -1001,6 +1003,9 @@ export class ProductToolHandlers {
       threadId: claims.threadId,
       workspaceId: claims.workspaceId,
     });
+    return voiceCall && result.status === "needs-approval"
+      ? { ...result, guidance: voiceRequestHandOff }
+      : result;
   }
 
   async sign_in({ caller, input, operationKey }: ToolCall<"sign_in">) {
