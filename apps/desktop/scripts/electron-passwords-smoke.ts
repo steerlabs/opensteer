@@ -144,6 +144,7 @@ const journeys: Journey[] = [
   ["2", "Identifier first"],
   ["3", "Wrong site"],
   ["4", "Cross-site OOPIF"],
+  ["4-card", "Payment OOPIF"],
   ["5", "No field and page-bound admission"],
   ["6", "Lease checks"],
   ["7", "Platform leak scan"],
