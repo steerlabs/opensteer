@@ -329,7 +329,7 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
     },
   });
   authority = new PasswordsLoginAuthority({
-    broker: service.broker(6),
+    broker: service.broker(),
     legacyBroker: service.broker(4),
     ownOrigins: () => ["https://opensteer.test"],
   });
