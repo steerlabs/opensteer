@@ -36,13 +36,13 @@ xcodebuild -workspace apps/mobile/ios/Opensteer.xcworkspace -scheme Opensteer \
   -archivePath "$MOBILE_EVIDENCE_DIR/Opensteer.xcarchive" \
   DEVELOPMENT_TEAM="$MOBILE_SIGNING_TEAM" CODE_SIGN_STYLE=Automatic \
   -allowProvisioningUpdates archive
-test "$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleShortVersionString' "$MOBILE_EVIDENCE_DIR/Opensteer.xcarchive/Info.plist")" = "$MOBILE_VERSION"
 plutil -create xml1 "$MOBILE_EVIDENCE_DIR/export.plist"
 plutil -insert method -string app-store-connect "$MOBILE_EVIDENCE_DIR/export.plist"
 plutil -insert destination -string upload "$MOBILE_EVIDENCE_DIR/export.plist"
 plutil -insert signingStyle -string automatic "$MOBILE_EVIDENCE_DIR/export.plist"
 plutil -insert teamID -string "$MOBILE_SIGNING_TEAM" "$MOBILE_EVIDENCE_DIR/export.plist"
-xcodebuild -exportArchive -archivePath "$MOBILE_EVIDENCE_DIR/Opensteer.xcarchive" \
+test "$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleShortVersionString' "$MOBILE_EVIDENCE_DIR/Opensteer.xcarchive/Info.plist")" = "$MOBILE_VERSION" &&
+  xcodebuild -exportArchive -archivePath "$MOBILE_EVIDENCE_DIR/Opensteer.xcarchive" \
   -exportPath "$MOBILE_EVIDENCE_DIR/export" \
   -exportOptionsPlist "$MOBILE_EVIDENCE_DIR/export.plist" -allowProvisioningUpdates
 ```
