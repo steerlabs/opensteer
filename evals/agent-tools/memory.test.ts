@@ -5,9 +5,9 @@ import { describe, expect, it } from "vitest";
 import { ThreadSchema } from "@opensteer/core";
 import { TriggerSchema, TriggerRevisionSchema } from "../../packages/triggers/src/models.js";
 import { ThreadWriteOutputSchema } from "../../packages/agent-tools/src/tools/outputs.js";
-import { CaseSchema, inputForCaseTurn, parseCases } from "./cases.js";
+import { toolsFor } from "@opensteer/agent-tools";
+import { CaseSchema, caseReach, inputForCaseTurn, parseCases } from "./cases.js";
 import { grade, gradeWorkspaceFiles, gradeToolBoundary } from "./grader.js";
-import { startFakeHost } from "./host.js";
 
 const memoryCases = async () =>
   parseCases(await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"));
@@ -132,16 +132,13 @@ it("requires quiet home delivery and queued important items rather than report-o
 it("offers every expected call and uses production-shaped control fixtures", async () => {
   const cases = await memoryCases();
   for (const c of cases) {
-    const host = await startFakeHost(c);
-    try {
-      const offered = new Set(
-        [...host.endpoints.values()].flatMap(({ tools }) => tools.map(({ name }) => name)),
-      );
-      for (const call of c.expect.calls)
-        expect(offered.has(call.tool), `${c.id}: ${call.tool}`).toBe(true);
-    } finally {
-      await host.close();
-    }
+    const offered = new Set<string>(
+      toolsFor({ kind: c.caller, accessMode: "full-access", reach: { kind: caseReach(c) } }).map(
+        ({ name }) => name,
+      ),
+    );
+    for (const call of c.expect.calls)
+      expect(offered.has(call.tool), `${c.id}: ${call.tool}`).toBe(true);
   }
   const results = (mock: unknown) =>
     (mock as { $byArgs: { result: Record<string, unknown> }[] }).$byArgs.map(

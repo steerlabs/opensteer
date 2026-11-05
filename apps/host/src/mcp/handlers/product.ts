@@ -16,6 +16,8 @@ import {
   OpensteerError,
   placeContentLabel,
   provisionalThreadTitle,
+  requestTitleText,
+  type Request,
   ThreadIdSchema,
   WorkspaceIdSchema,
   type AgentEvent,
@@ -634,13 +636,15 @@ export class ProductToolHandlers {
   }
 
   async request_list({ caller, input }: ToolCall<"request_list">) {
-    if (caller.kind === "connection")
-      return this.#store.requests.connectionPage({
+    if (caller.kind === "connection") {
+      const page = await this.#store.requests.connectionPage({
         userId: caller.userId,
         limit: input.limit,
         ...(input.before ? { before: input.before } : {}),
         ...(caller.reach.kind === "workspace" ? { workspaceId: caller.reach.workspaceId } : {}),
       });
+      return { ...page, requests: page.requests.map(agentRequest) };
+    }
     const claims = callerContext(caller);
 
     const page = await this.#store.requests.visiblePage({
@@ -649,7 +653,7 @@ export class ProductToolHandlers {
       originatingThreadId: claims.threadId,
       targetWorkspaceId: claims.workspaceId,
     });
-    return { requests: page.requests, window: page.window };
+    return { requests: page.requests.map(agentRequest), window: page.window };
   }
 
   async request_withdraw({ caller, input }: ToolCall<"request_withdraw">) {
@@ -661,7 +665,7 @@ export class ProductToolHandlers {
       withdrawnBy: claims.requestedBy,
     });
     for (const event of withdrawn.events) this.#onWorkspaceEvent(event);
-    return { request: withdrawn.request };
+    return { request: agentRequest(withdrawn.request) };
   }
 
   async prepareDelegation({ caller, input }: ToolCall<"thread_delegate">) {
@@ -1529,4 +1533,20 @@ function badRequest(message: string): OpensteerError {
 
 function conflict(message: string, retryable = false): OpensteerError {
   return new OpensteerError({ code: "conflict", message, retryable });
+}
+
+function agentRequest(request: Request) {
+  return {
+    id: request.id,
+    kind: request.kind,
+    status: request.status,
+    title: requestTitleText(request.presentation),
+    reason: "reason" in request.payload ? request.payload.reason : null,
+    originatingThreadId: request.originatingThreadId,
+    targetWorkspaceId: request.targetWorkspaceId,
+    createdAt: request.createdAt,
+    settlementProvenance: request.settlementProvenance
+      ? { deviceLabel: request.settlementProvenance.deviceLabel }
+      : request.settlementProvenance,
+  };
 }

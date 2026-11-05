@@ -3,7 +3,7 @@ import { defineAgentTool } from "../registry.js";
 import { TriggerReadInputSchema, TriggerWriteInputSchema } from "@opensteer/triggers";
 
 import { OperationKeySchema } from "./inputs.js";
-import { TriggerOutputSchema } from "./outputs.js";
+import { TriggerOutputSchema, TriggerWriteOutputSchema } from "./outputs.js";
 export const trigger_read = defineAgentTool({
   name: "trigger_read",
   title: "Inspect Triggers",
@@ -20,9 +20,9 @@ export const trigger_write = defineAgentTool({
   targetFields: ["anchorThreadId"],
   title: "Manage Triggers",
   description:
-    "Create or control schedules, webhooks and watches. Before writing or changing a program, load opensteer:triggers. Timing controls require anchor access no higher than yours. Creation, code changes, manual runs and archiving require full-access within reach. create: name, anchorThreadId (home is Chat), program, source. update: triggerId, expectedRevisionId, changed fields. set_status: triggerId, status. set_next_fire: triggerId, future ISO nextFireAt; moves the next unclaimed cron run, then cadence resumes. run: non-archived schedule/webhook triggerId, optional payload. cancel: triggerId, optional occurrenceId (omit for all pending). Started work keeps running. Managed memory passes refuse archive, run, name/program edits and non-cron sources. Returns Trigger/occurrence state.",
+    "Create or control schedules, webhooks and watches. Before writing or changing a program, load opensteer:triggers. Timing controls require anchor access no higher than yours. Creation, code changes, manual runs and archiving require full-access within reach. create: name, anchorThreadId (home is Chat), program, source. update: triggerId, expectedRevisionId, changed fields. set_status: triggerId, status. set_next_fire: triggerId, future ISO nextFireAt; moves the next unclaimed cron run, then cadence resumes. run: non-archived schedule/webhook triggerId, optional payload. cancel: triggerId, optional occurrenceId (omit for all pending). Started work keeps running. Managed memory passes refuse archive, run, name/program edits and non-cron sources. Returns Trigger/occurrence state; webhook creation also returns its setup URL and secret. Use the secret only for authorized setup.",
   input: TriggerWriteInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
-  output: TriggerOutputSchema,
+  output: TriggerWriteOutputSchema,
   access: "write",
   callers: ["run", "program"] as const,
 });

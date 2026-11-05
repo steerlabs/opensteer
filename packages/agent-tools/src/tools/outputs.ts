@@ -368,6 +368,10 @@ export const TriggerOutputSchema = z.object({
   replayed: z.boolean().optional(),
 });
 
+export const TriggerWriteOutputSchema = TriggerOutputSchema.extend({
+  webhook: z.object({ url: z.url(), secret: z.string().min(1) }).optional(),
+});
+
 export { AgentMediaContentSchema, IntegrationCallOutputSchema } from "./integration-outputs.js";
 
 export const ThreadWaitOutputSchema = z.object({

@@ -564,25 +564,6 @@
     ]
   },
   {
-    "file": "apps/host/src/agents/runner-reattach.integration.test.ts",
-    "name": [
-      "Runs that outlive their connection",
-      "preserves a delegated recovery through Runner preparation and a dispatch disconnect race"
-    ],
-    "area": "Run lifecycle",
-    "owner": "Run lifecycle maintainers",
-    "status": "quarantined",
-    "firstSeen": "2026-11-04T09:00:00Z",
-    "deadline": "2026-11-11T09:00:00Z",
-    "sha": "2ae8c55607cb877bad58cc26e8b3461935f2656e",
-    "evidence": [
-      "Pre-existing race, reproduced on origin/main 2ae8c556 in 5 of 14 local runs (1 of 14 on the MCP overhaul head). Every failure records run.status queued -> starting -> queued; every pass records only queued.",
-      "Cause: runner-registry marks the Runner attached and onAttached wakes dispatch (apps/host/src/runtime/runtime.ts onAttached) before the registration-time account inspection answers, so the dispatcher's preparing guard (apps/host/src/agents/dispatcher.ts, Runner preparation check) has not yet seen 'preparing'. The dispatch claims the Run, its own inspection reports preparing, it throws the retryable 'Preparing <account>…' error and the Run is requeued.",
-      "The assertion at runner-reattach.integration.test.ts:749-750 allows at most 2 run.status events, but the claim-and-requeue its own comment tolerates always yields 3, so the case passes only when the race does not occur.",
-      "Reproduce: pnpm test:integration -- apps/host/src/agents/runner-reattach.integration.test.ts -t \"dispatch disconnect race\" (several runs). Acceptance: do not dispatch new Runs on a freshly attached Runner until its first account inspection answers, so a held recovery records no extra claim/requeue, with the assertion unchanged."
-    ]
-  },
-  {
     "file": "apps/host/src/agents/stack-teardown.integration.test.ts",
     "name": [
       "Vertical stack teardown",

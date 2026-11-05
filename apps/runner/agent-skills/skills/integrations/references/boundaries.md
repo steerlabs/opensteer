@@ -8,6 +8,14 @@ and point the person to the key field on the request card; the UI owns secrets, 
 Request decision. For an authorized Agent Phone screen-lock PIN, follow the narrow exception in
 opensteer:computer-use, references/phones.md; this does not cover app or website passwords.
 
+With the person's explicit authorization for the current sign-in, use an already-granted SMS/email
+integration to retrieve its fresh code and enter it only into the genuine site's or app's challenge.
+Match the site, account and intended sign-in; never repeat or retain the code. This does not permit
+approving an Opensteer Request, granting access or retrieving passwords or API keys.
+
+A webhook creation result can include its setup address and secret. Use them only for the requested
+webhook setup; never commit the secret, put it in memory or send it to an unrelated recipient.
+
 Do not substitute a Browser Session merely because an account is not connected:
 use the browser only when the user asks for website interaction, the work is inherently visual, or
 no integration applies.

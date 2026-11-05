@@ -12,6 +12,7 @@ import {
   ThreadIdSchema,
   threadReachScope,
   type AgentEvent,
+  type EnvironmentId,
   type ThreadId,
   type WorkspaceId,
   type UserId,
@@ -131,6 +132,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
   readonly #onTriggerChanged: (workspaceId: WorkspaceId) => void;
   readonly #runners: RunnerRegistry;
+  readonly #runnerRegistrationPending: (environmentId: EnvironmentId) => boolean;
   readonly #onRunAdmitted: (threadId: ThreadId) => void;
   readonly #executionLeaseMs: number;
   readonly #executionNow: () => number;
@@ -164,6 +166,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly executionClock?: Pick<import("@opensteer/shared/clock").Clock, "now">;
     readonly publicUrl: URL;
     readonly runners: RunnerRegistry;
+    readonly runnerRegistrationPending?: (environmentId: EnvironmentId) => boolean;
     readonly onRunAdmitted?: (threadId: ThreadId) => void;
     readonly store: OpensteerStore;
     readonly triggerControlTokens: TriggerControlTokenService;
@@ -187,6 +190,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
     this.#onTriggerChanged = options.onTriggerChanged ?? (() => undefined);
     this.#runners = options.runners;
+    this.#runnerRegistrationPending = options.runnerRegistrationPending ?? (() => false);
     this.#onRunAdmitted = options.onRunAdmitted ?? (() => undefined);
     this.#executionLeaseMs = options.executionLeaseMs;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
@@ -206,6 +210,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       if (identity && !identity.capabilities.includes("execution-plane-v2")) return true;
     }
     if (command.type !== "run.execute") return this.#runners.isAttached(command.environmentId);
+    // Attachment can wake dispatch before this connection's first account inspection answers.
+    if (this.#runnerRegistrationPending(command.environmentId)) return false;
     // An account still preparing waits without dispatch attempts; its Runner
     // says when preparation settles.
     if (

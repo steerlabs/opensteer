@@ -348,7 +348,7 @@ export async function confirmRunnerRegistration(
 }
 
 export function runnerRegistrationHook<T>(
-  wake: () => void,
+  wake: (identity: T) => void,
   afterRegistration: (identity: T) => Promise<void>,
 ): (identity: T) => Promise<void> {
   return async (identity) => {
@@ -358,7 +358,7 @@ export function runnerRegistrationHook<T>(
       // A Runner that failed its catalog capture is still reachable, so
       // scheduling must resume either way; the capture itself stays best
       // effort and the convergence pass retries it.
-      wake();
+      wake(identity);
     }
   };
 }
@@ -1435,6 +1435,7 @@ export async function createHostRuntime(
     let wakeExecutionCoordinator = (): void => undefined;
     let dispatchingRunIds = (): readonly RunId[] => [];
     let watchService: WatchService | undefined;
+    const registeringRunners = new Set<string>();
     const runnerAuthenticator = new RunnerAuthenticator({
       issuancePrivateKey: keys.privateKey,
       store,
@@ -1722,8 +1723,12 @@ export async function createHostRuntime(
           }
         },
         onRegistered: runnerRegistrationHook(
-          () => wakeExecutionCoordinator(),
+          (identity: RunnerIdentity) => {
+            registeringRunners.delete(identity.connectionId);
+            wakeExecutionCoordinator();
+          },
           async (identity) => {
+            registeringRunners.add(identity.connectionId);
             // Before anything else, and outside the try: the far side of the
             // remote-access fence. A computer sent away here was never online,
             // so there is nothing to announce and nothing to reconcile.
@@ -1929,6 +1934,10 @@ export async function createHostRuntime(
       onError: reportThreadNamingError,
     });
     const dispatcher = new HostCommandDispatcher({
+      runnerRegistrationPending: (environmentId) => {
+        const identity = runners.identityForEnvironment(environmentId);
+        return identity !== undefined && registeringRunners.has(identity.connectionId);
+      },
       onRunAdmitted: (threadId) => {
         void naming?.request(threadId);
       },

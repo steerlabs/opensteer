@@ -18,6 +18,11 @@ the agent judges the package, publisher and install source. A tricked agent can 
 Secure-field observations suppress text, but screenshots and ordinary fields show what an app
 displays. Revoking or turning off cannot recall input, sign anything out or undo actions.
 
+A person may explicitly authorize an agent to retrieve a fresh SMS/email code through an already
+granted integration for the intended sign-in and enter it into the genuine website or app. That
+code enters the agent transcript; it must not be repeated in replies or retained. This permission
+does not authorize approving an Opensteer Request or granting access.
+
 ## Authority
 
 The broker owns keys, grants and release; desktop main owns browser checks and sealing; the Host

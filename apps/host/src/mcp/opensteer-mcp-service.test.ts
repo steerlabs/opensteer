@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentCaller, RunCaller } from "./agent-caller.js";
 import type { AgentToolHandlers } from "./handlers/index.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
+import { ProductToolHandlers } from "./handlers/product.js";
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -420,6 +421,96 @@ describe("Opensteer MCP spine", () => {
       await f.service.close();
     }
   });
+  it.each(["run", "connection"])(
+    "preserves safe Request details for %s without exposing payloads or answers",
+    async (token) => {
+      const f = fixture();
+      const request = {
+        id: createId("request"),
+        kind: "browser.password-sign-in",
+        status: "pending",
+        createdAt: new Date().toISOString(),
+        originatingThreadId: f.thread.id,
+        targetWorkspaceId: f.thread.workspaceId,
+        presentation: { kind: "confirm", title: "Sign in to Example" },
+        payload: {
+          kind: "browser.password-sign-in",
+          reason: "Check the account",
+          loginSecret: "private-payload",
+        },
+        response: { password: "private-answer" },
+      };
+      const window = {
+        hasMore: false,
+        nextBefore: null,
+        totalItems: 2,
+        itemCount: 2,
+        byteCount: 0,
+      };
+      const page = {
+        requests: [
+          request,
+          {
+            ...request,
+            id: createId("request"),
+            kind: "harness.input",
+            payload: { kind: "harness.input" },
+          },
+        ],
+        window,
+      };
+      const product = new ProductToolHandlers({
+        store: {
+          requests: {
+            visiblePage: async () => page,
+            connectionPage: async () => page,
+            withdraw: async () => ({ request: { ...request, status: "withdrawn" }, events: [] }),
+          },
+        },
+        onWorkspaceEvent: vi.fn(),
+      } as unknown as ConstructorParameters<typeof ProductToolHandlers>[0]);
+      f.handlers.request_list = (call) => product.request_list(call);
+      f.handlers.request_withdraw = (call) => product.request_withdraw(call);
+      try {
+        const result = await f.service.callTool(
+          token,
+          "request_list",
+          {},
+          { operationKey: "list" },
+        );
+        expect(result).toMatchObject({
+          requests: [
+            { id: request.id, title: "Sign in to Example", reason: "Check the account" },
+            { kind: "harness.input", reason: null },
+          ],
+          window,
+        });
+        expect(JSON.stringify(result)).not.toMatch(
+          /private-payload|private-answer|presentation|payload|response/,
+        );
+        if (token === "run") {
+          const withdrawn = await f.service.callTool(
+            token,
+            "request_withdraw",
+            { requestId: request.id },
+            { operationKey: "withdraw" },
+          );
+          expect(withdrawn).toMatchObject({
+            request: {
+              title: "Sign in to Example",
+              reason: "Check the account",
+              status: "withdrawn",
+            },
+          });
+          expect(JSON.stringify(withdrawn)).not.toMatch(
+            /private-payload|private-answer|payload|response/,
+          );
+        }
+      } finally {
+        await f.service.close();
+      }
+    },
+  );
   it("resolves a caller once per HTTP request before invoking the tool", async () => {
     const f = await httpFixture();
     try {
