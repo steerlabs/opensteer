@@ -18,6 +18,7 @@ import {
 import {
   PasswordsBrokerFailure,
   type PasswordsBrokerSession,
+  type PasswordsBrokerCardSession,
   type PasswordsBrokerSignInGrant,
 } from "./broker-session.js";
 import { ensurePasswordsBrokerInstalled } from "./install.js";
@@ -38,7 +39,7 @@ const notRunningSentence =
 
 export interface PasswordsServiceOptions {
   readonly appVersion: string;
-  readonly protocolVersion?: 4 | 5 | 6;
+  readonly protocolVersion?: 4 | 5 | 6 | 7;
   /** The broker this build ships, already resolved for packaged/development. */
   readonly bundledBrokerPath: () => string;
   /** Test seams for the broker connection; production uses the defaults. */
@@ -62,6 +63,7 @@ export interface PasswordsServiceOptions {
 }
 
 interface Transaction {
+  readonly credential: "login" | "card";
   /** The client and connection the broker bound this transaction to. */
   readonly client: PasswordsBrokerClient;
   readonly generation: number;
@@ -125,18 +127,37 @@ export class PasswordsService {
   }
 
   /** The narrow surface the login authority uses. */
-  broker(protocolVersion: 4 | 5 | 6 = this.#options.protocolVersion ?? 6): PasswordsBrokerSession {
+  broker(
+    protocolVersion: 4 | 5 | 6 | 7 = this.#options.protocolVersion ?? 7,
+  ): PasswordsBrokerSession & PasswordsBrokerCardSession {
     // Browser-only consent from a previous-release Host must stay on protocol4.
-    if (protocolVersion !== (this.#options.protocolVersion ?? 6)) {
+    if (protocolVersion !== (this.#options.protocolVersion ?? 7)) {
       this.#compatibilityService ??= new PasswordsService({ ...this.#options, protocolVersion });
       return this.#compatibilityService.broker();
     }
     return {
+      cardProbe: async () => {
+        try {
+          return await this.#call("card.probe", {});
+        } catch {
+          return { cards: "unavailable" };
+        }
+      },
+      cardRequest: async (params, signal) =>
+        await this.#startTransaction("card.request", params, signal),
+      cardApprove: async (params, signal) =>
+        await this.#bound(params.transactionId, "card.approve", (client, connection) =>
+          client.call("card.approve", params, { connection, signal }),
+        ),
+      cardRelease: async (params, signal) =>
+        await this.#bound(params.transactionId, "card.release", (client, connection) =>
+          client.call("card.release", params, { connection, ...(signal ? { signal } : {}) }),
+        ),
       commit: async (transactionId, signal) =>
         await this.#bound(transactionId, "signin.commit", (client, connection) =>
           client.call("signin.commit", { transactionId }, { connection, signal }),
         ),
-      protocolVersion: this.#options.protocolVersion ?? 6,
+      protocolVersion: this.#options.protocolVersion ?? 7,
       cancel: async (transactionId) => await this.#cancel(transactionId),
       probe: async (params) => await this.#probe(params),
       approve: async (params, signal) =>
@@ -177,6 +198,14 @@ export class PasswordsService {
     params: PasswordsBrokerSignInRequestParams | PasswordsBrokerSignInRequestV6Params,
     signal: AbortSignal,
   ): Promise<PasswordsBrokerSignInGrant> {
+    return await this.#startTransaction("signin.request", params, signal);
+  }
+
+  async #startTransaction<Method extends "signin.request" | "card.request">(
+    method: Method,
+    params: PasswordsBrokerParams<Method>,
+    signal: AbortSignal,
+  ): Promise<{ decision: PasswordsBrokerResult<Method>; lifetime: AbortSignal }> {
     this.#assertSupported();
     const client = await this.#ready();
     const connection = await this.#guard(client.connect(signal));
@@ -184,6 +213,7 @@ export class PasswordsService {
       throw new PasswordsBrokerFailure("invalid", "That sign-in was already requested.");
     }
     const transaction: Transaction = {
+      credential: method === "card.request" ? "card" : "login",
       aborted: false,
       client,
       generation: connection.generation,
@@ -192,7 +222,7 @@ export class PasswordsService {
     this.#transactions.set(params.transactionId, transaction);
     try {
       const decision = await this.#guard(
-        client.call("signin.request", params, { connection: connection.generation, signal }),
+        client.call(method, params, { connection: connection.generation, signal }),
       );
       return { decision, lifetime: transaction.lifetime.signal };
     } catch (error) {
@@ -232,6 +262,13 @@ export class PasswordsService {
     const transaction = this.#transactions.get(transactionId);
     if (!transaction) {
       throw new PasswordsBrokerFailure("invalid", `There is no open sign-in for ${method}.`);
+    }
+    if (
+      (method.startsWith("card.") && transaction.credential !== "card") ||
+      ((method === "signin.approve" || method === "signin.release") &&
+        transaction.credential !== "login")
+    ) {
+      throw new PasswordsBrokerFailure("invalid", "This credential cannot be used on that path.");
     }
     if (transaction.aborted) {
       throw new PasswordsBrokerFailure("aborted", "That sign-in was already cancelled.");
@@ -353,7 +390,7 @@ export class PasswordsService {
     const client = new PasswordsBrokerClient({
       ...this.#options.client,
       appVersion: this.#options.appVersion,
-      protocolVersion: this.#options.protocolVersion ?? 6,
+      protocolVersion: this.#options.protocolVersion ?? 7,
       brokerAppPath: installed.path,
       development,
       launchFreshInstance: installed.launchFreshInstance,

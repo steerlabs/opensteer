@@ -45,7 +45,10 @@ const defaultPeerVerificationTimeoutMs = 5_000;
 const socketPollIntervalMs = 100;
 
 /** The calls that wait for the person, for as long as the person takes. */
-const personMethods: ReadonlySet<PasswordsBrokerMethod> = new Set(["signin.approve"]);
+const personMethods: ReadonlySet<PasswordsBrokerMethod> = new Set([
+  "signin.approve",
+  "card.approve",
+]);
 
 type Requests = typeof passwordsBrokerRequests;
 type Results = typeof passwordsBrokerResults;
@@ -80,7 +83,7 @@ export interface PasswordsBrokerPeerVerifier {
 
 export interface PasswordsBrokerClientOptions {
   readonly appVersion: string;
-  readonly protocolVersion?: 4 | 5 | 6;
+  readonly protocolVersion?: 4 | 5 | 6 | 7;
   /** The installed broker, which is what LaunchServices starts. */
   readonly brokerAppPath: string;
   readonly connectTimeoutMs?: number;
@@ -205,6 +208,12 @@ export class PasswordsBrokerClient {
     options: PasswordsBrokerCallOptions = {},
   ): Promise<PasswordsBrokerResult<Method>> {
     if (this.#closed) throw stopped();
+    if (method.startsWith("card.") && this.#options.protocolVersion !== 7) {
+      throw new PasswordsBrokerFailure(
+        "invalid",
+        "Saved cards require an updated Opensteer Passwords connection.",
+      );
+    }
     const { signal } = options;
     if (signal?.aborted) throw aborted();
     const requestSchema: z.ZodType = passwordsBrokerRequests[method];
@@ -229,7 +238,7 @@ export class PasswordsBrokerClient {
       timeoutMs: personMethods.has(method)
         ? null
         : (this.#options.requestTimeoutMs ??
-          (method === "signin.probe" ? 5_000 : defaultRequestTimeoutMs)),
+          (method === "signin.probe" || method === "card.probe" ? 5_000 : defaultRequestTimeoutMs)),
     });
     const resultSchema: z.ZodType = passwordsBrokerResults[method];
     const result = resultSchema.safeParse(answer);
@@ -478,7 +487,10 @@ export class PasswordsBrokerClient {
       pending.reject(
         new PasswordsBrokerFailure(
           data.error.code,
-          data.error.message.trim() || "Opensteer Passwords refused the request.",
+          (pending.method.startsWith("card.") || pending.method.startsWith("signin.")) &&
+            data.error.message !== "Unlock this Mac to use Opensteer Passwords."
+            ? "Opensteer Passwords refused the request."
+            : data.error.message.trim() || "Opensteer Passwords refused the request.",
         ),
       );
       return;
@@ -520,7 +532,8 @@ export class PasswordsBrokerClient {
       const onAbort = (): void => {
         if (!this.#pending.delete(id)) return;
         settle();
-        if (method.startsWith("signin.")) this.#cancelAbandoned(socket, params);
+        if (method.startsWith("signin.") || method.startsWith("card."))
+          this.#cancelAbandoned(socket, params);
         rejectPromise(aborted());
       };
       if (timeoutMs !== null) {
