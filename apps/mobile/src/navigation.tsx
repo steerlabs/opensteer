@@ -484,7 +484,11 @@ type OpensteerRootParamList = {
     readonly requestId?: string | undefined;
   };
   readonly NewProject: { readonly deploymentId: string };
-  readonly NewTask: { readonly deploymentId: string; readonly workspaceId: string };
+  readonly NewTask: {
+    readonly deploymentId: string;
+    readonly draftId: string;
+    readonly workspaceId: string;
+  };
   readonly NewThread: {
     readonly deploymentId: string;
     /** Set when the choice is for Chat's first message rather than a new task's. */

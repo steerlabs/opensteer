@@ -63,7 +63,7 @@ import {
   type SurfacesRoute,
 } from "../browser/surface-route.js";
 import { tabSiteLabel } from "../browser/site-label.js";
-import { newTaskDraftKey } from "../client/thread-drafts.js";
+import { newTaskDraftBlank, newTaskDraftId, newTaskDraftKey } from "../client/thread-drafts.js";
 import { MacAppView } from "../computers/mac-app-view.js";
 import { color, headerFontScaleLimit, space, touchTarget } from "../theme.js";
 import {
@@ -218,7 +218,9 @@ function SurfacesForUser(props: {
 }
 
 /** What is beside the page: a Thread, or a task being started from it. */
-type Companion = { readonly kind: "thread"; readonly threadId: string } | { readonly kind: "task" };
+type Companion =
+  | { readonly kind: "thread"; readonly threadId: string }
+  | { readonly draftId: string; readonly kind: "task" };
 
 const selectHomeThreadId = (snapshot: HostSnapshot) => snapshot.homeThreadId;
 
@@ -325,7 +327,7 @@ function Focused(props: {
    * stand for what was asked about. Answers whether there is such a draft.
    */
   const putPageOnDraft = useCallback(
-    (target: AskTarget): boolean => {
+    (target: AskTarget, taskDraftId: string): boolean => {
       const { appThreadId: origin, homeThreadId: home, shownPage: included } = latest.current;
       const current = hostClient.getSnapshot();
       const userId = current.user?.id;
@@ -337,8 +339,11 @@ function Focused(props: {
             ? home
             : workspaceId === undefined
               ? null
-              : newTaskDraftKey(workspaceId);
+              : newTaskDraftKey(taskDraftId);
       if (userId === undefined || draftKey === null) return false;
+      if (target === "task" && workspaceId !== undefined) {
+        drafts.placeNewTaskDraft(deploymentId, userId, taskDraftId, workspaceId);
+      }
       void drafts.writeDraftPage(deploymentId, userId, draftKey, included).catch(() => undefined);
       return true;
     },
@@ -347,7 +352,8 @@ function Focused(props: {
   /** Ask, on a phone: that composer's own screen, with the page on its draft. */
   const askAway = useCallback(
     (target: AskTarget) => {
-      if (!putPageOnDraft(target)) return;
+      const draftId = newTaskDraftId();
+      if (!putPageOnDraft(target, draftId)) return;
       const { appThreadId: origin } = latest.current;
       const workspaceId = mainWorkspace(hostClient.getSnapshot())?.id;
       if (target === "thread") {
@@ -355,20 +361,28 @@ function Focused(props: {
       } else if (target === "chat")
         navigation.dispatch(StackActions.popTo("Home", { deploymentId }));
       else if (workspaceId !== undefined)
-        navigation.dispatch(StackActions.push("NewTask", { deploymentId, workspaceId }));
+        navigation.dispatch(StackActions.push("NewTask", { deploymentId, draftId, workspaceId }));
     },
     [deploymentId, hostClient, navigation, openThread, putPageOnDraft],
   );
   /** Ask, where a pair fits: the composer opens beside the page, with the page on its draft. */
   const askBeside = useCallback(
     (target: AskTarget) => {
-      if (!putPageOnDraft(target)) return;
+      const userId = hostClient.getSnapshot().user?.id;
+      // A blank draft already beside the page takes this one; one with words waits in the sidebar.
+      const draftId =
+        chosen?.kind === "task" &&
+        userId !== undefined &&
+        newTaskDraftBlank(drafts, deploymentId, userId, chosen.draftId)
+          ? chosen.draftId
+          : newTaskDraftId();
+      if (!putPageOnDraft(target, draftId)) return;
       const { appThreadId: origin, homeThreadId: home } = latest.current;
       const threadId = target === "thread" ? origin : home;
-      if (target === "task") setChosen({ kind: "task" });
+      if (target === "task") setChosen({ draftId, kind: "task" });
       else if (threadId !== null) setChosen({ kind: "thread", threadId });
     },
-    [putPageOnDraft],
+    [chosen, deploymentId, drafts, hostClient, putPageOnDraft],
   );
   const closeCompanion = useCallback(() => setChosen(null), []);
   const onStarted = useCallback(
@@ -483,8 +497,9 @@ function Focused(props: {
         <NewTaskPane
           autoFocus
           deploymentId={deploymentId}
+          draftId={companion.draftId}
           hostClient={hostClient}
-          key="new-task"
+          key={companion.draftId}
           onStarted={onStarted}
           underHeader={false}
           workspaceId={mainWorkspaceId}

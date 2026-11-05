@@ -4105,6 +4105,7 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
       <NewTaskPane
         autoFocus={false}
         deploymentId={deploymentId}
+        draftId={workspaceId}
         hostClient={host.client}
         onStarted={onStarted}
         underHeader={false}
@@ -4168,6 +4169,7 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
     <NewTaskPane
       autoFocus={false}
       deploymentId={deploymentId}
+      draftId={workspaceId}
       hostClient={host.client}
       onStarted={() => false}
       underHeader={false}
@@ -4219,7 +4221,7 @@ describe("a new task Ask started", () => {
     document.body.append(container);
     const root = createRoot(container);
     roots.push(root);
-    const params = (route ?? { deploymentId, workspaceId }) as Parameters<
+    const params = { deploymentId, draftId: workspaceId, workspaceId, ...route } as Parameters<
       typeof NewTaskScreen
     >[0]["route"]["params"];
     await act(async () => root.render(<NewTaskScreen route={{ params }} />));
@@ -4249,6 +4251,86 @@ describe("a new task Ask started", () => {
     const third = await open(files);
     expect(field(third.container)).toBe("Compare these");
     expect(text(third.container)).not.toContain("Research page");
+  });
+
+  it("reopens each of several drafts as it was left, and an unknown one blank", async () => {
+    const files = new MemoryPrivateFilesystem();
+    const first = await open(files, { draftId: "draft-first" });
+    await type(first.container, "Message", "First words");
+    await act(async () => first.root.render(<div />));
+    const second = await open(files, { draftId: "draft-second" });
+    expect(field(second.container)).toBe("");
+    await type(second.container, "Message", "Second words");
+    await act(() =>
+      second.drafts.writeDraftPage(
+        deploymentId,
+        userId,
+        newTaskDraftKey("draft-second"),
+        included(),
+      ),
+    );
+    await act(async () => second.root.render(<div />));
+
+    const again = await open(files, { draftId: "draft-first" });
+    expect(field(again.container)).toBe("First words");
+    expect(text(again.container)).not.toContain("Research page");
+    expect(
+      again.drafts
+        .readDraftSummary(deploymentId, userId, null)
+        .newTasks.map((draft) => [draft.draftId, draft.workspaceId]),
+    ).toEqual(
+      expect.arrayContaining([
+        ["draft-first", workspaceId],
+        ["draft-second", workspaceId],
+      ]),
+    );
+    await act(async () => again.root.render(<div />));
+    const unknown = await open(files, { draftId: "draft-gone" });
+    expect(field(unknown.container)).toBe("");
+    expect(text(unknown.container)).toContain("What should this task take care of?");
+  });
+
+  it("opens a draft whose Workspace is gone, with its words kept and Send held", async () => {
+    const files = new MemoryPrivateFilesystem();
+    const gone = "wsp_00000000-0000-4000-8000-0000000000ff";
+    const seeded = createThreadDraftStore({
+      filePath: "/private/new-task.json",
+      now: () => new Date(at),
+      privateFiles: files,
+    });
+    await seeded.writeDraft(deploymentId, userId, newTaskDraftKey("draft-gone"), "Kept words");
+    const { container, drafts } = await open(files, { draftId: "draft-gone", workspaceId: gone });
+    expect(field(container)).toBe("Kept words");
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled,
+    ).toBe(true);
+    expect(drafts.readDraft(deploymentId, userId, newTaskDraftKey("draft-gone"))?.text).toBe(
+      "Kept words",
+    );
+  });
+
+  it("gives a refused message back to the draft it came from, under new keys next time", async () => {
+    const files = new MemoryPrivateFilesystem();
+    const { container, drafts } = await open(files, { draftId: "draft-refused" });
+    const key = newTaskDraftKey("draft-refused");
+    const createThread = vi.fn().mockRejectedValue(
+      new HostClientRequestError({
+        code: "workspace_not_ready",
+        message: "Not ready.",
+        status: 409,
+      }),
+    );
+    Object.assign(harness.activeHost!, { createThread });
+    await type(container, "Message", "Refused words");
+    await press(container, "Send message");
+    expect(createThread).toHaveBeenCalledOnce();
+    await settle();
+    expect(drafts.readPending(deploymentId, userId, key)).toBeNull();
+    expect(drafts.readDraft(deploymentId, userId, key)).toMatchObject({
+      text: "Refused words",
+      workspaceId,
+    });
+    expect(field(container)).toBe("Refused words");
   });
 
   it("never shows another reader's Ask page, nor one a route still carries", async () => {
