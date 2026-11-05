@@ -137,18 +137,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   kit.cleanup.push(() => {
     patched._createOpensteerInputOwner = createOwner;
   });
-  kit.artifacts.json("cases/popups/startup-trace-status.json", { mode: "startup", seconds: 30 });
-  const server = await chromium.launchServer({
-    executablePath: executable,
-    headless: false,
-    args: [
-      "--trace-startup=toplevel,cc,viz,gpu,blink,devtools.timeline,renderer.scheduler,disabled-by-default-renderer.scheduler",
-      "--trace-startup-duration=30",
-      "--trace-startup-record-mode=record-continuously",
-      "--trace-startup-format=json",
-      `--trace-startup-file=${path.join(kit.run, "cases/popups/startup-native-trace.json")}`,
-    ],
-  });
+  const server = await chromium.launchServer({ executablePath: executable, headless: false });
   const pid = server.process().pid;
   assert(pid);
   kit.ownedPids.add(pid);
@@ -187,63 +176,8 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         );
         const page = await viewer.newPage();
         page.setDefaultTimeout(4000);
-        const profiler = await viewer.newCDPSession(page);
-        await profiler.send("Profiler.enable");
-        await profiler.send("Profiler.start");
-        let profileCompletion: Promise<void> | undefined;
-        const stopProfile = () => {
-          profileCompletion ??= profiler.send("Profiler.stop").then(({ profile }) => {
-            kit.artifacts.json(`cases/popups/startup-${index}.cpuprofile`, profile);
-          });
-          return profileCompletion;
-        };
-        const profileDeadline = setTimeout(() => void stopProfile().catch(() => undefined), 30000);
-        kit.cleanup.push(async () => {
-          clearTimeout(profileDeadline);
-          await stopProfile();
-        });
         await page.addInitScript(() => {
-          const diagnostic = {
-            started: performance.now(),
-            raf: 0,
-            timers: 0,
-            maxRafGap: 0,
-            longTasks: [] as number[],
-            samples: [] as unknown[],
-          };
-          Object.assign(window, { popupPresented: 0, startupDiagnostic: diagnostic });
-          let last = performance.now();
-          const tick = (now: number) => {
-            diagnostic.raf++;
-            diagnostic.maxRafGap = Math.max(diagnostic.maxRafGap, now - last);
-            last = now;
-            if (diagnostic.samples.length < 256)
-              diagnostic.samples.push({
-                now,
-                visible: document.visibilityState,
-                focus: document.hasFocus(),
-                bounds: [
-                  ...document.querySelectorAll(
-                    '.side-tab[data-group="web"] .side-tab__main,button[aria-label="Hide the conversation"]',
-                  ),
-                ].map((e) => {
-                  const r = e.getBoundingClientRect();
-                  return [r.x, r.y, r.width, r.height];
-                }),
-              });
-            if (now - diagnostic.started < 30000) requestAnimationFrame(tick);
-          };
-          requestAnimationFrame(tick);
-          const timer = setInterval(() => {
-            diagnostic.timers++;
-            if (performance.now() - diagnostic.started >= 30000) clearInterval(timer);
-          }, 100);
-          const observer = new PerformanceObserver((list) => {
-            for (const entry of list.getEntries())
-              if (diagnostic.longTasks.length < 128) diagnostic.longTasks.push(entry.duration);
-          });
-          observer.observe({ type: "longtask", buffered: true });
-          setTimeout(() => observer.disconnect(), 30000);
+          Object.assign(window, { popupPresented: 0 });
           document.addEventListener("browser-picture-presented", (event) => {
             const canvas = event.target;
             if (
@@ -342,54 +276,20 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
             }
           });
         });
-        try {
-          record(index, "startup.navigation");
-          await page.goto(context.hostOrigin);
-          const sidebar = page.getByRole("button", { name: "Open sidebar", exact: true });
-          if (await sidebar.isVisible()) await sidebar.click();
-          record(index, "startup.tab-control");
-          kit.artifacts.json(
-            `cases/popups/startup-${index}-tab-start.json`,
-            await profiler.send("Runtime.evaluate", {
-              expression:
-                "JSON.stringify({now:performance.now(),timeOrigin:performance.timeOrigin,diagnostic:window.startupDiagnostic})",
-              returnByValue: true,
-              timeout: 1000,
-            }),
-          );
-          await page
-            .locator('.side-tab[data-group="web"] .side-tab__main')
-            .filter({ hasText: "Browser popup fixture" })
-            .click();
-          record(index, "startup.conversation-control");
-          await page.getByRole("button", { name: "Hide the conversation", exact: true }).click();
-          record(index, "startup.pixel-wait");
-          await page
-            .locator('canvas[aria-label="Live browser page"]')
-            .waitFor({ state: "visible" });
-          await page.waitForFunction(
-            () => Number(Reflect.get(window, "popupPresented")) > 0,
-            undefined,
-            { timeout: 4000 },
-          );
-          record(index, "startup.pixel-presented");
-        } catch (error) {
-          kit.artifacts.json(`cases/popups/startup-${index}-failure.json`, {
-            error: error instanceof Error ? error.message : String(error),
-          });
-          throw error;
-        } finally {
-          const diagnostic = await profiler
-            .send("Runtime.evaluate", {
-              expression: "JSON.stringify(window.startupDiagnostic)",
-              returnByValue: true,
-              timeout: 1000,
-            })
-            .catch(() => null);
-          kit.artifacts.json(`cases/popups/startup-${index}-cadence.json`, diagnostic);
-          clearTimeout(profileDeadline);
-          await stopProfile();
-        }
+        await page.goto(context.hostOrigin);
+        const sidebar = page.getByRole("button", { name: "Open sidebar", exact: true });
+        if (await sidebar.isVisible()) await sidebar.click();
+        await page
+          .locator('.side-tab[data-group="web"] .side-tab__main')
+          .filter({ hasText: "Browser popup fixture" })
+          .click();
+        await page.getByRole("button", { name: "Hide the conversation", exact: true }).click();
+        await page.locator('canvas[aria-label="Live browser page"]').waitFor({ state: "visible" });
+        await page.waitForFunction(
+          () => Number(Reflect.get(window, "popupPresented")) > 0,
+          undefined,
+          { timeout: 4000 },
+        );
         return { viewer, page };
       }),
     );
