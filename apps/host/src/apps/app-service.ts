@@ -27,6 +27,8 @@ import {
   appCorsHeaders,
   appRequestPath,
   type AppHttpResponse,
+  type AppOriginMode,
+  appOriginHeaders,
 } from "./app-proxy.js";
 import { appFrameHeaders } from "@opensteer/shared/appFrame";
 import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
@@ -284,7 +286,9 @@ export class AppService {
 
   async response(input: {
     appId: string;
-    token: string;
+    token?: string;
+    userId?: UserId;
+    originMode?: AppOriginMode;
     theme: AppTheme;
     path: string;
     prefix: string;
@@ -294,15 +298,28 @@ export class AppService {
     signal: AbortSignal;
   }): Promise<AppHttpResponse> {
     // The lock covers only the connection decision, never the streaming lifetime.
-    const latest = await this.authorizeView(input.appId, input.token);
+    const userId = input.originMode ? input.userId : this.#views.get(input.token ?? "")?.userId;
+    if (!userId) throw unavailable();
+    const latest = input.originMode
+      ? await this.#options.apps.latest(input.appId, userId)
+      : await this.authorizeView(input.appId, input.token ?? "");
     if (!latest.version.server) {
-      if (input.path !== "/" || !["GET", "HEAD"].includes(input.method)) throw unavailable();
-      const html = await this.content(input.appId, input.token, input.theme);
+      if (
+        (input.originMode ? input.path.split("?")[0] : input.path) !== "/" ||
+        !["GET", "HEAD"].includes(input.method)
+      )
+        throw unavailable();
+      const html = await this.#content(latest.version, input.theme, !!input.originMode);
       return {
         status: 200,
         headers: {
-          ...appFrameHeaders(),
-          ...appCorsHeaders,
+          ...(input.originMode
+            ? {
+                ...appOriginHeaders(input.originMode),
+                "content-type": "text/html; charset=utf-8",
+                "cache-control": "private, no-store",
+              }
+            : { ...appFrameHeaders(), ...appCorsHeaders }),
           "content-length": String(Buffer.byteLength(html)),
         },
         body: Readable.from(input.method === "HEAD" ? [] : [html]),
@@ -311,29 +328,18 @@ export class AppService {
     try {
       return await requestAppHttp({
         ...input,
-        connect: (signal) =>
-          this.#locks.run(input.appId, async () => {
-            const current = await this.authorizeView(input.appId, input.token);
-            if (!current.version.server)
-              throw new AppTunnelError("This app no longer runs a server");
-            const admission = await this.#options.store.admitWorkspaceFiles(
-              current.app.workspaceId,
-              this.#views.get(input.token)!.userId,
-            );
-            if (!admission) throw unavailable();
-            const spec = this.#runtimeSpec(
-              input.appId,
-              current.version.version,
-              current.version.server,
-              admission.workspace,
-            );
-            return this.#tunnels().connect(spec, signal);
-          }),
+        connect: (signal) => this.connect(input.appId, userId, signal),
       });
     } catch (error) {
       if (input.signal.aborted) throw error;
       if (error && typeof error === "object" && "statusCode" in error && error.statusCode === 413)
-        return this.#errorResponse(413, "App request exceeds the 32 MiB limit", input.theme, false);
+        return this.#errorResponse(
+          413,
+          "App request exceeds the 32 MiB limit",
+          input.theme,
+          false,
+          input.originMode,
+        );
       // Workspace admission refuses deleted or deleting apps before a tunnel is opened.
       if (
         error instanceof OpensteerError &&
@@ -344,14 +350,37 @@ export class AppService {
           "This app is no longer available. Its Project may have been deleted.",
           input.theme,
           input.headers.accept?.includes("text/html") ?? input.path === "/",
+          input.originMode,
         );
       return this.#errorResponse(
         503,
         "This app's server is unavailable. Try again after its computer reconnects or the app is republished.",
         input.theme,
         input.headers.accept?.includes("text/html") ?? input.path === "/",
+        input.originMode,
       );
     }
+  }
+
+  connect(appId: string, userId: UserId, signal: AbortSignal) {
+    return this.#locks.run(appId, async () => {
+      const current = await this.#options.apps.latest(appId, userId);
+      if (!current.version.server) throw new AppTunnelError("This app no longer runs a server");
+      const admission = await this.#options.store.admitWorkspaceFiles(
+        current.app.workspaceId,
+        userId,
+      );
+      if (!admission) throw unavailable();
+      return this.#tunnels().connect(
+        this.#runtimeSpec(
+          appId,
+          current.version.version,
+          current.version.server,
+          admission.workspace,
+        ),
+        signal,
+      );
+    });
   }
 
   async list(scope: RunToolScope) {
@@ -513,15 +542,26 @@ export class AppService {
     if (!this.#options.tunnels) throw new AppTunnelError("App servers are unavailable");
     return this.#options.tunnels;
   }
-  #errorResponse(status: number, message: string, theme: AppTheme, html: boolean): AppHttpResponse {
+  #errorResponse(
+    status: number,
+    message: string,
+    theme: AppTheme,
+    html: boolean,
+    originMode?: AppOriginMode,
+  ): AppHttpResponse {
     const body = html
-      ? prepareAppHtml(`<title>App unavailable</title><body><p>${message}</p></body>`, theme)
+      ? prepareAppHtml(
+          `<title>App unavailable</title><body><p>${message}</p></body>`,
+          theme,
+          !!originMode,
+        )
       : message;
     return {
       status,
       headers: {
-        ...appFrameHeaders(),
-        ...appCorsHeaders,
+        ...(originMode
+          ? { ...appOriginHeaders(originMode), "cache-control": "private, no-store" }
+          : { ...appFrameHeaders(), ...appCorsHeaders }),
         "content-type": html ? "text/html; charset=utf-8" : "text/plain; charset=utf-8",
         "content-length": String(Buffer.byteLength(body)),
       },
@@ -531,12 +571,23 @@ export class AppService {
 
   async content(appId: string, token: string, theme: AppTheme): Promise<string> {
     const { version } = await this.authorizeView(appId, token);
+    return this.#content(version, theme, false);
+  }
+  async #content(
+    version: { sha256: string | null; sizeBytes: number | null },
+    theme: AppTheme,
+    realOrigin: boolean,
+  ): Promise<string> {
     if (!version.sha256 || !version.sizeBytes) throw unavailable();
     const file = join(this.#directory, version.sha256);
     if ((await stat(file)).size !== version.sizeBytes) throw unavailable();
     const bytes = await readFile(file);
     if (createHash("sha256").update(bytes).digest("hex") !== version.sha256) throw unavailable();
-    return prepareAppHtml(new TextDecoder("utf-8", { fatal: true }).decode(bytes), theme);
+    return prepareAppHtml(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      theme,
+      realOrigin,
+    );
   }
 }
 

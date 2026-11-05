@@ -6,7 +6,7 @@ import { ThreadService } from "../threads/thread-service.js";
 import { ConnectionOAuth } from "../mcp/connections/index.js";
 import { AgentConnectionStore } from "@opensteer/database";
 import { requestSpecialistRequirements } from "../integrations/specialist-access-requests.js";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { withWorkspacePluginPackage } from "../integrations/workspace-plugin-package.js";
 import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
 import {
@@ -2394,6 +2394,9 @@ export async function createHostRuntime(
           : {}),
         attachments,
         apps,
+        appOriginSigningKey: createHmac("sha256", config.authSecret)
+          .update("opensteer-app-cookie-v1")
+          .digest(),
         liveRuns,
         machineFullDiskAccess,
         requestResponseVault: integrationVault,

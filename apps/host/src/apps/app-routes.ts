@@ -4,20 +4,26 @@ import { appTunnelMaxFrameBytes } from "@opensteer/protocol";
 import { appCorsHeaders } from "./app-proxy.js";
 import { AppIdSchema } from "@opensteer/core";
 import { rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
-import { appFrameHeaders } from "@opensteer/shared/appFrame";
+import { appFrameContentSecurityPolicy, appFrameHeaders } from "@opensteer/shared/appFrame";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireSession } from "../integrations/integration-rpc-context.js";
+import type { AppGateway } from "./app-gateway.js";
 import type { AppService } from "./app-service.js";
 
 export function createAppHandlers(
   apps: Pick<AppService, "get" | "view">,
+  gateway?: Pick<AppGateway, "entryUrl">,
 ): Pick<HostApiHandlers, "apps.get" | "apps.view"> {
   return {
     "apps.get": async (input, context) =>
       rpcSuccess(await apps.get(input.appId, requireSession(context).user.id)),
-    "apps.view": async (input, context) =>
-      rpcSuccess(await apps.view(input.appId, requireSession(context).user.id, input.theme)),
+    "apps.view": async (input, context) => {
+      const session = requireSession(context);
+      const view = await apps.view(input.appId, session.user.id, input.theme);
+      const entryUrl = gateway?.entryUrl(input.appId, session, input.theme, context.headers);
+      return rpcSuccess({ ...view, ...(entryUrl ? { entryUrl } : {}) });
+    },
   };
 }
 
@@ -43,6 +49,16 @@ export function registerAppRoutes(app: FastifyInstance, apps: AppService): void 
         if (!parsed.success) return reply.code(404).send("App not found");
         const { appId, theme, token } = parsed.data;
         const prefix = `/v1/apps/${appId}/${theme}/${token}`;
+        const host = request.headers.host;
+        // Explicit HTTP sources also match HTTPS, including behind TLS-terminating ingress.
+        if (host && /^[A-Za-z0-9.[\]:_-]+$/u.test(host))
+          reply.header(
+            "content-security-policy",
+            appFrameContentSecurityPolicy.replace(
+              "connect-src 'self'",
+              `connect-src 'self' http://${host}`,
+            ),
+          );
         const controller = new AbortController();
         const abort = () => controller.abort(new Error("App viewer disconnected"));
         const close = () => {
@@ -80,7 +96,8 @@ export function registerAppRoutes(app: FastifyInstance, apps: AppService): void 
             body: request.body instanceof Readable ? request.body : request.raw,
             signal: controller.signal,
           });
-          for (const [name, value] of Object.entries(result.headers)) reply.header(name, value);
+          for (const [name, value] of Object.entries(result.headers))
+            if (name.toLowerCase() !== "content-security-policy") reply.header(name, value);
           return reply.code(result.status).send(result.body);
         } catch {
           if (controller.signal.aborted) return reply;

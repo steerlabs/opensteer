@@ -16,6 +16,7 @@ export function hostServerTestDependencies(
   return {
     // Not inert: bootstrap lists open app tabs for every viewer.
     apps: { listTabs: async () => [] } as unknown as HostServerDependencies["apps"],
+    appOriginSigningKey: Buffer.alloc(32, 1),
     attachments: inert(),
     runToolTokens: inert(),
     agentTools: inert(),

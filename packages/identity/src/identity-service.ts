@@ -787,6 +787,44 @@ export class IdentityService {
     return remote ? null : session;
   }
 
+  async isSessionCurrent(sessionId: AuthSessionId, userId: UserId): Promise<boolean> {
+    const now = new Date();
+    const row = await this.#database
+      .selectFrom("authSessions")
+      .innerJoin("users", "users.id", "authSessions.userId")
+      .leftJoin("personalRemoteSessions", "personalRemoteSessions.authSessionId", "authSessions.id")
+      .leftJoin("personalRemoteAccess", (join) =>
+        join.on("personalRemoteAccess.singletonKey", "=", "personal"),
+      )
+      .select([
+        "personalRemoteSessions.authSessionId as remoteSessionId",
+        "personalRemoteSessions.routeKind",
+        "personalRemoteSessions.routeGeneration",
+        "personalRemoteSessions.routeOrigin as sessionOrigin",
+        "personalRemoteAccess.mode",
+        "personalRemoteAccess.generation",
+        "personalRemoteAccess.routeOrigin as currentOrigin",
+      ])
+      .where("authSessions.id", "=", sessionId)
+      .where("authSessions.userId", "=", userId)
+      .where("users.disabledAt", "is", null)
+      .where("authSessions.expiresAt", ">", now)
+      .where("authSessions.absoluteExpiresAt", ">", now)
+      .executeTakeFirst();
+    return (
+      !!row &&
+      (row.remoteSessionId === null ||
+        personalRemoteRouteIntact(
+          {
+            routeKind: row.routeKind,
+            routeGeneration: row.routeGeneration,
+            routeOrigin: row.sessionOrigin,
+          },
+          { mode: row.mode, generation: row.generation, routeOrigin: row.currentOrigin },
+        ))
+    );
+  }
+
   async #authenticateSessionCookie(headers: Headers): Promise<AuthenticatedSession | null> {
     const raw = await this.#auth.api.getSession({ headers });
     if (!raw) return null;
@@ -1015,14 +1053,8 @@ export class IdentityService {
     ]);
     // Route facts only. A session whose signed route is gone or has rotated is
     // dead for good, so it is deleted here rather than left to be retried.
-    const routeIntact =
-      remote !== undefined &&
-      state !== undefined &&
-      state.mode !== "off" &&
-      remote.routeKind === state.mode &&
-      Number(remote.routeGeneration) === Number(state.generation) &&
-      remote.routeOrigin === state.routeOrigin;
-    if (!routeIntact) {
+    const routeIntact = personalRemoteRouteIntact(remote, state);
+    if (!remote || !state || !routeIntact) {
       await this.#database.deleteFrom("authSessions").where("id", "=", session.id).execute();
       return null;
     }
@@ -3137,4 +3169,27 @@ async function sqlAdvisoryLock(
 
 function sqlJson<T>(value: T) {
   return sql<T>`${JSON.stringify(value)}::jsonb`;
+}
+
+function personalRemoteRouteIntact(
+  remote:
+    | {
+        routeKind: string | null;
+        routeGeneration: string | number | null;
+        routeOrigin: string | null;
+      }
+    | undefined,
+  state:
+    | { mode: string | null; generation: string | number | null; routeOrigin: string | null }
+    | undefined,
+): boolean {
+  return (
+    remote !== undefined &&
+    state !== undefined &&
+    state.mode !== null &&
+    state.mode !== "off" &&
+    remote.routeKind === state.mode &&
+    Number(remote.routeGeneration) === Number(state.generation) &&
+    remote.routeOrigin === state.routeOrigin
+  );
 }
