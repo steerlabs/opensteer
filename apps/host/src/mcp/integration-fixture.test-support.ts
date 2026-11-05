@@ -48,7 +48,12 @@ export function createIntegrationMcpFixture(
     new OpensteerMcpService({
       handlers,
       publicUrl: options.publicUrl,
-      store: unavailable as never,
+      store: {
+        voiceCallForRun: async () => undefined,
+        requests: { get: async () => null },
+        getThreadForOwner: Reflect.get(unavailable, "getThreadForOwner"),
+        findMainWorkspaceForOwner: Reflect.get(unavailable, "findMainWorkspaceForOwner"),
+      } as never,
       callers: {
         authenticate: async (token: string): Promise<AgentCaller> => {
           const run = await options.runTokens.authenticate(token).catch(() => null);

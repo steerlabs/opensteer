@@ -4,15 +4,15 @@ For a known installation, call `integration_request` directly; discovery is not 
 
 Pass `reason`, the installation name or `iin_` id as `integration`, and needed `access` (`read` or `read-write`). Select a specific account with its connection id and a multi-server installation with its `server` id from search. Runs may name a reachable `workspaceId`; programs use their own Workspace. For a catalog definition, pass its `definitionId` as `catalog` instead. One request covers installation, connection and access; omit access only for explicit installation alone. `READY` still permits adding, switching or reconnecting an account. Installation progress alone does not fulfill access; use fresh operations for the connection named by the fulfillment continuation.
 
+Choose the intended account by its identifying address, not its display name. A work address does not establish that personal email is connected. If the address is missing, do not guess the account.
+
 Write each request `reason` as one plain sentence explaining what you need and why. The person sees it verbatim; omit internal codes such as `REAUTHORIZATION_REQUIRED`.
 
 Runs, including delegated workers within their inherited reach, can request integration access. Mac app and Android phone discovery and approval also use integration tools; operate them through `app()` or `phone()` in `computer`, following opensteer:computer-use.
 
 `integration_request` and `integration_propose` create an `integration.access`,
 `integration.install` or `computer.app.access` Request and return
-`{requestId, kind, status, replayed}` immediately, usually `status: "pending"`. Do not wait, poll,
-or resubmit. In a Run, the resolution message arrives on the Thread that opened the Request, so continue
-other useful work or end your turn; a trigger occurrence gets no such message (see [boundaries](boundaries.md)). After a decline, continue without it unless the user asks again. A
+`{requestId, kind, status, replayed}` immediately, usually `status: "pending"`. Pending stops the Run; a trigger occurrence gets no such message (see [boundaries](boundaries.md)). After a decline, continue without it unless the user asks again. A
 Request exists only once one of these calls returns a `requestId`; search results are discovery, not
 permission or durable state.
 

@@ -36,6 +36,7 @@ import {
 } from "@opensteer/orchestration";
 import {
   CorrelationIdSchema,
+  ProtocolErrorSchema,
   HarnessInputSchema,
   RunInitialContextSchema,
   type HarnessInstanceCatalog,
@@ -955,7 +956,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       await this.#runners.dispatch(runnerCommand, signal);
     } catch (error) {
       if (!(error instanceof CommandDispatchError) || error.disposition !== "failed") throw error;
-      for (const event of await this.#store.refuseSteer(command.id, error.message)) {
+      for (const event of await this.#store.refuseSteer(
+        command.id,
+        error.message,
+        ProtocolErrorSchema.safeParse(error.cause).data?.reason,
+      )) {
         this.#onWorkspaceEvent(event);
       }
       return;

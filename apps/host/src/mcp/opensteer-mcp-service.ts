@@ -19,10 +19,11 @@ import {
   connectionInstructions,
   type AgentTool,
 } from "@opensteer/agent-tools";
-import { OpensteerError, ThreadIdSchema, type Thread } from "@opensteer/core";
+import { OpensteerError, RequestIdSchema, ThreadIdSchema, type Thread } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
 import { safeMessage } from "@opensteer/shared/safeMessage";
+import { requestPendingHeader, requestPendingStopText } from "@opensteer/shared/requestParking";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -59,7 +60,7 @@ export class OpensteerMcpService {
     readonly store: Pick<
       OpensteerStore,
       "getThreadForOwner" | "findMainWorkspaceForOwner" | "voiceCallForRun"
-    >;
+    > & { readonly requests: Pick<OpensteerStore["requests"], "get"> };
     readonly publicUrl: URL;
   };
   constructor(options: {
@@ -69,7 +70,7 @@ export class OpensteerMcpService {
     readonly store: Pick<
       OpensteerStore,
       "getThreadForOwner" | "findMainWorkspaceForOwner" | "voiceCallForRun"
-    >;
+    > & { readonly requests: Pick<OpensteerStore["requests"], "get"> };
     readonly publicUrl: URL;
   }) {
     this.options = options;
@@ -125,7 +126,11 @@ export class OpensteerMcpService {
       clientId: authorization.key,
       scopes: [],
       token,
-      extra: { disconnected: disconnected.signal, caller: authorization },
+      extra: {
+        disconnected: disconnected.signal,
+        caller: authorization,
+        parkForRequest: () => response.setHeader(requestPendingHeader, "1"),
+      },
     };
     const sessionId = singleHeader(request.headers["mcp-session-id"]);
     let session: McpSession;
@@ -368,8 +373,28 @@ export class OpensteerMcpService {
             return { content: [{ type: "text" as const, text: result }] };
           if (tool.output === IntegrationCallOutputSchema)
             return IntegrationCallOutputSchema.parse(result);
+          const currentCaller = resolvedCaller ?? caller;
+          let parking = false;
+          if (
+            currentCaller.kind === "run" &&
+            result.status === "pending" &&
+            typeof result.requestId === "string" &&
+            !(await this.options.store.voiceCallForRun(currentCaller.claims.runId))
+          ) {
+            const id = RequestIdSchema.safeParse(result.requestId);
+            const request = id.success ? await this.options.store.requests.get(id.data) : null;
+            parking =
+              request?.mode === "durable" &&
+              request.status === "pending" &&
+              request.originatingRunId === currentCaller.claims.runId;
+            const park = extra.authInfo?.extra?.parkForRequest;
+            if (parking && typeof park === "function") park();
+          }
           return {
-            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            content: [
+              { type: "text" as const, text: JSON.stringify(result) },
+              ...(parking ? [{ type: "text" as const, text: requestPendingStopText }] : []),
+            ],
             structuredContent: result,
             ...(result.isError === true ? { isError: true } : {}),
           };

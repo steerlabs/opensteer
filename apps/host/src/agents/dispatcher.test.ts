@@ -152,29 +152,44 @@ describe("HostCommandDispatcher steering", () => {
     expect(runnersDispatch).not.toHaveBeenCalled();
   });
 
-  it("compensates through the Thread Inbox when the Runner refuses steering", async () => {
-    const requeuedEvent = { type: "run.queued" } as never;
-    const refuseSteer = vi.fn(async () => [requeuedEvent]);
-    const succeedCommand = vi.fn(async () => []);
-    const onWorkspaceEvent = vi.fn();
-    const dispatcher = steerDispatcher({
-      onWorkspaceEvent,
-      refuseSteer,
-      runnersDispatch: vi.fn(async () => {
-        throw new CommandDispatchError("Harness does not support steering", "failed");
-      }),
-      succeedCommand,
-    });
-    const command = steerCommand();
+  it.each([undefined, "request-pending"])(
+    "compensates through the Thread Inbox when the Runner refuses steering (%s)",
+    async (reason) => {
+      const requeuedEvent = { type: "run.queued" } as never;
+      const refuseSteer = vi.fn(async () => [requeuedEvent]);
+      const succeedCommand = vi.fn(async () => []);
+      const onWorkspaceEvent = vi.fn();
+      const dispatcher = steerDispatcher({
+        onWorkspaceEvent,
+        refuseSteer,
+        runnersDispatch: vi.fn(async () => {
+          throw new CommandDispatchError(
+            "Harness does not support steering",
+            "failed",
+            reason
+              ? {
+                  cause: { code: "conflict", message: "Run is stopping", reason, retryable: false },
+                }
+              : undefined,
+          );
+        }),
+        succeedCommand,
+      });
+      const command = steerCommand();
 
-    await expect(
-      dispatcher.dispatch(command, new AbortController().signal),
-    ).resolves.toBeUndefined();
+      await expect(
+        dispatcher.dispatch(command, new AbortController().signal),
+      ).resolves.toBeUndefined();
 
-    expect(refuseSteer).toHaveBeenCalledWith(command.id, "Harness does not support steering");
-    expect(onWorkspaceEvent).toHaveBeenCalledWith(requeuedEvent);
-    expect(succeedCommand).not.toHaveBeenCalled();
-  });
+      expect(refuseSteer).toHaveBeenCalledWith(
+        command.id,
+        "Harness does not support steering",
+        reason,
+      );
+      expect(onWorkspaceEvent).toHaveBeenCalledWith(requeuedEvent);
+      expect(succeedCommand).not.toHaveBeenCalled();
+    },
+  );
 
   it("leaves a retryable steer to the coordinator", async () => {
     const refuseSteer = vi.fn(async () => []);

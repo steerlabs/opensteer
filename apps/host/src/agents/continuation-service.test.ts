@@ -1,4 +1,6 @@
 import type { BrowserSignInRequestResponse } from "@opensteer/protocol/browser-sources";
+import { createBrowserSessionId } from "@opensteer/protocol";
+import { createHash } from "node:crypto";
 import { OpensteerError, PendingRequestSchema, RequestSchema, createId } from "@opensteer/core";
 import type { Request } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
@@ -27,6 +29,95 @@ type InventoryEntry = Awaited<
 >[number];
 
 describe("ContinuationService", () => {
+  it("uses a human-settled reference and a different key when later outcomes from the same Run arrive", async () => {
+    const answered = RequestSchema.parse({
+      ...fulfilledRequest("browser.access"),
+      settlementProvenance: { sessionId: createId("authSession"), deviceLabel: "Test phone" },
+    });
+    const cancelled = RequestSchema.parse({
+      ...fulfilledRequest("browser.access"),
+      originatingRunId: answered.originatingRunId,
+      createdAt: "2026-08-21T12:00:00.000Z",
+      status: "cancelled",
+      cancellationReason: "resource-deleted",
+      response: null,
+      resolvedBy: null,
+    });
+    const automatic = {
+      ...fulfilledRequest("browser.access"),
+      originatingRunId: answered.originatingRunId,
+      createdAt: "2026-08-21T13:00:00.000Z",
+    };
+    const fixture = makeService([cancelled, automatic, answered]);
+    fixture.service.notify();
+    await fixture.service.close();
+    expect(fixture.enqueueThreadInput).toHaveBeenCalledOnce();
+    expect(fixture.enqueueThreadInput.mock.calls[0]![0].source.referenceId).toBe(answered.id);
+    expect(fixture.enqueueThreadInput.mock.calls[0]![0].content[0].text).toContain(
+      "cancelled (resource-deleted)",
+    );
+    const later = makeService([answered]);
+    later.service.notify();
+    await later.service.close();
+    expect(later.enqueueThreadInput.mock.calls[0]![0].idempotencyKey).not.toBe(
+      fixture.enqueueThreadInput.mock.calls[0]![0].idempotencyKey,
+    );
+  });
+
+  it("holds all a Run's outcomes while a sign-in is still publishing", async () => {
+    const answered = fulfilledRequest("browser.access");
+    const signIn = RequestSchema.parse({
+      ...answered,
+      id: createId("request"),
+      kind: "browser.password-sign-in",
+      payload: {
+        kind: "browser.password-sign-in",
+        computerName: "Test Mac",
+        runnerId: createId("runner"),
+        expiresAt: now,
+        operationId: crypto.randomUUID(),
+        reason: "Read email",
+        sessionId: createBrowserSessionId(),
+        site: "https://example.com",
+      },
+    });
+    const fixture = makeService([answered, signIn], {
+      passwordSignIn: () => ({ publishing: true, loginRef: undefined }),
+    });
+    fixture.service.notify();
+    await fixture.service.close();
+    expect(fixture.enqueueThreadInput).not.toHaveBeenCalled();
+    expect(fixture.recordContinuationAttempt).not.toHaveBeenCalled();
+  });
+  it("batches a Run's outcomes, retaining siblings when one outcome cannot be rendered", async () => {
+    const first = fulfilledRequest("browser.access");
+    const second = {
+      ...fulfilledRequest("integration.access"),
+      originatingRunId: first.originatingRunId,
+    };
+    const broken = RequestSchema.parse({
+      ...fulfilledRequest("browser.access"),
+      originatingRunId: first.originatingRunId,
+      kind: "browser.sign-in",
+      payload: {
+        kind: "browser.sign-in",
+        reason: "Sign in",
+        site: "https://example.com",
+        sessionId: createBrowserSessionId(),
+      },
+    });
+    const fixture = makeService([second, first, broken]);
+    fixture.service.notify();
+    await fixture.service.close();
+    expect(fixture.enqueueThreadInput).toHaveBeenCalledOnce();
+    const input = fixture.enqueueThreadInput.mock.calls[0]![0];
+    expect(input.idempotencyKey).toMatch(/^request-continuation:[a-f0-9]{64}$/);
+    expect(input.content[0].text).toContain(first.id);
+    expect(input.content[0].text).toContain(second.id);
+    expect(input.content[0].text).toContain(broken.id);
+    expect(input.content[0].text).toContain("request_list");
+    expect(fixture.recordContinuationAttempt).toHaveBeenCalledTimes(3);
+  });
   it("settles historical Guest-save continuations without delivering agent instructions", async () => {
     const request = fulfilledRequest("browser.profile.save");
     const fixture = makeService([request]);
@@ -61,7 +152,9 @@ describe("ContinuationService", () => {
     for (const request of requests) {
       expect(fixture.enqueueThreadInput).toHaveBeenCalledWith(
         expect.objectContaining({
-          idempotencyKey: `request-continuation:${request.id}`,
+          idempotencyKey: `request-continuation:${createHash("sha256")
+            .update(JSON.stringify([request.id]))
+            .digest("hex")}`,
           requestedBy: request.requestedBy,
           source: {
             cause: "request-resolved",
@@ -641,7 +734,10 @@ function entry(
 
 function makeService(
   requests: readonly Request[],
-  options: { enqueueThreadInput?: ReturnType<typeof vi.fn> } = {},
+  options: {
+    enqueueThreadInput?: ReturnType<typeof vi.fn>;
+    passwordSignIn?: ConstructorParameters<typeof ContinuationService>[0]["passwordSignIn"];
+  } = {},
 ) {
   const errors: unknown[] = [];
   const enqueueThreadInput = options.enqueueThreadInput ?? vi.fn(async () => delivery("pending"));
@@ -657,6 +753,7 @@ function makeService(
   const service = new ContinuationService({
     commands: { enqueueThreadInput } as unknown as Pick<CommandService, "enqueueThreadInput">,
     integrations: inventory(),
+    ...(options.passwordSignIn ? { passwordSignIn: options.passwordSignIn } : {}),
     onError: (error) => errors.push(error),
     requests: {
       listPendingContinuations,

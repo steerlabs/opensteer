@@ -2553,6 +2553,7 @@ async function browserProfilesTurn(input) {
       };
       report.request = await call("browser_profile_request", input, 9001);
       if (plan.request.replay) report.replayed = await call("browser_profile_request", input, 9001);
+      if (report.request.status === "pending") return report;
     }
     let sessionId = plan.sessionId;
     if (plan.open) {

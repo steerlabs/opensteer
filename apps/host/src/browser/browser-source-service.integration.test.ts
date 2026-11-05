@@ -727,7 +727,18 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       workspaceId,
     };
     await store.commitRunnerEvent({ environmentId, event: started, runnerBootId, runnerId });
-    return { runId: admitted.run.id, runnerId, threadId: thread.id };
+    return {
+      runId: admitted.run.id,
+      runnerId,
+      threadId: thread.id,
+      complete: () =>
+        store.commitRunnerEvent({
+          environmentId,
+          runnerBootId,
+          runnerId,
+          event: { ...started, ordinal: 1, type: "run.completed", data: { status: "completed" } },
+        }),
+    };
   }
 
   async function pendingSignIns(ownerId: UserId) {
@@ -793,6 +804,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         workspaceId: workspace.id,
       },
       connection,
+      complete: run.complete,
       ownerId,
       sessionId: opened.session.id,
       workspaceId: workspace.id,
@@ -2226,7 +2238,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   });
 
   it("completes an allowed Request by itself when Chrome reconnects as a new connection", async () => {
-    const { agent, connection, ownerId, workspaceId } = await scene();
+    const { agent, connection, ownerId, workspaceId, complete } = await scene();
     const first = await pairChrome(ownerId, "Chrome A");
     const chromeA = await connectChrome(first);
     const site = "https://example.test";
@@ -2275,9 +2287,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(connection.imports()).toHaveLength(1);
     expect(chromeB.exports).toBe(1);
     expect(resolvedRequests).toBeGreaterThan(0);
-    expect(
-      (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
-    ).toContain(asked.requestId);
     expect((await sourceStore.list(ownerId)).map(({ id }) => id)).toEqual([second.sourceId]);
     expect(
       await service.respond({
@@ -2320,11 +2329,15 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       await sourceStore.authenticate(createHash("sha256").update(second.token).digest("hex")),
     ).toBeNull();
     expect(await sourceStore.getGrant({ ownerId, site, workspaceId })).not.toBeNull();
+    await complete();
+    expect(
+      (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
+    ).toContain(asked.requestId);
     expect(serviceErrors).toEqual([]);
   });
 
   it("ends an unallowed Request when Chrome connects without the site's sign-in", async () => {
-    const { agent, connection, ownerId } = await scene();
+    const { agent, connection, ownerId, complete } = await scene();
     const site = "https://example.test";
     const callId = randomUUID();
     const asked = await service.agentSignIn({ ...agent, callId, site });
@@ -2336,9 +2349,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(await store.requests.get(asked.requestId)).toMatchObject({
       response: { kind: "external", value: { outcome: "not-signed-in" } },
     });
-    expect(
-      (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
-    ).toContain(asked.requestId);
     expect(await service.agentSignIn({ ...agent, callId, site })).toEqual({
       site,
       status: "not-signed-in",
@@ -2374,6 +2384,10 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       creating.mockRestore();
       checked.mockRestore();
     }
+    await complete();
+    expect(
+      (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
+    ).toContain(asked.requestId);
     expect(serviceErrors).toEqual([]);
   });
 

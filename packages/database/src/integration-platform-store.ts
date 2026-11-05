@@ -32,6 +32,7 @@ export class IntegrationPlatformStore {
   readonly listServers: IntegrationInstallStore["listServers"];
   readonly listTools: IntegrationInstallStore["listTools"];
   readonly reconcileProviderConnectionTools: IntegrationInstallStore["reconcileProviderConnectionTools"];
+  readonly getConnectionAccount: IntegrationConnectionAuthStore["getConnectionAccount"];
   readonly getConnectionKind: IntegrationConnectionAuthStore["getConnectionKind"];
   readonly listComputerAppSetupRequests: IntegrationConnectionAuthStore["listComputerAppSetupRequests"];
   readonly getComputerAppSetupRequest: IntegrationConnectionAuthStore["getComputerAppSetupRequest"];
@@ -92,6 +93,7 @@ export class IntegrationPlatformStore {
     this.listTools = this.installations.listTools.bind(this.installations);
     this.reconcileProviderConnectionTools =
       this.installations.reconcileProviderConnectionTools.bind(this.installations);
+    this.getConnectionAccount = this.connections.getConnectionAccount.bind(this.connections);
     this.getConnectionKind = this.connections.getConnectionKind.bind(this.connections);
     this.listComputerAppSetupRequests = this.connections.listComputerAppSetupRequests.bind(
       this.connections,

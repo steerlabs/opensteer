@@ -1462,12 +1462,14 @@ describeStore("PostgreSQL store", (it) => {
         manifest: contract.manifest,
       }),
     ]);
-    await expect(platform.requests.listPendingContinuations()).resolves.toEqual([
-      expect.objectContaining({
-        request: expect.objectContaining({ id: opened.request.id }),
-        status: "waiting",
-      }),
-    ]);
+    await expect(platform.requests.listPendingContinuations()).resolves.toEqual([]);
+    await expect(
+      database
+        .selectFrom("requestContinuations")
+        .select("status")
+        .where("requestId", "=", opened.request.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "waiting" });
   });
 
   it("enriches valid integration access, rejects mismatched accounts, and preserves project grants", async ({
@@ -1873,21 +1875,22 @@ describeStore("PostgreSQL store", (it) => {
         workspaceId: project.id,
       }),
     ]);
-    await expect(platform.requests.listPendingContinuations()).resolves.toEqual([
-      expect.objectContaining({
-        request: expect.objectContaining({ id: mainRequest.request.id }),
-      }),
-      expect.objectContaining({
-        request: expect.objectContaining({ id: projectRequest.request.id }),
-      }),
-      expect.objectContaining({
-        request: expect.objectContaining({ id: declinedRequest.request.id, status: "declined" }),
-        status: "waiting",
-      }),
-      expect.objectContaining({
-        request: expect.objectContaining({ id: mcpRequest.request.id }),
-      }),
-    ]);
+    await expect(platform.requests.listPendingContinuations()).resolves.toEqual([]);
+    const storedContinuations = await database
+      .selectFrom("requestContinuations")
+      .select(["requestId", "status"])
+      .orderBy("requestId", "asc")
+      .execute();
+    expect(storedContinuations).toEqual(
+      [
+        mainRequest.request.id,
+        projectRequest.request.id,
+        declinedRequest.request.id,
+        mcpRequest.request.id,
+      ]
+        .sort()
+        .map((requestId) => ({ requestId, status: "waiting" })),
+    );
   });
 
   it("serializes catalog Request currentness by exact definition identity and preserves replay", async ({

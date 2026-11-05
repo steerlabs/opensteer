@@ -93,6 +93,23 @@ export async function cancelPending(
   const events = await Promise.all(
     rows.map((row) => cancellationEvent(transaction, requestFromRow(row))),
   );
+  if (input.reason === "resource-deleted" || input.reason === "authority-revoked") {
+    for (const row of rows) {
+      if (row.mode !== "durable") continue;
+      await transaction
+        .insertInto("requestContinuations")
+        .values({
+          requestId: row.id,
+          status: "waiting",
+          reason: null,
+          attemptedAt: null,
+          createdAt: input.resolvedAt,
+          updatedAt: input.resolvedAt,
+        })
+        .onConflict((conflict) => conflict.column("requestId").doNothing())
+        .execute();
+    }
+  }
   const runIds = new Set(
     rows.map((row) => row.originatingRunId).filter((id): id is RunId => id !== null),
   );

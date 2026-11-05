@@ -120,6 +120,306 @@ afterAll(async () => {
 });
 
 describe("RunnerRuntime", () => {
+  it("keeps a terminal failure while execution cleanup outlives the parking deadline", async () => {
+    const host = createServer((request, response) => {
+      if (ignoreForeignTestRequest(request, response, (path) => path === "/internal/v1/mcp"))
+        return;
+      request.resume();
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "x-opensteer-request-pending": "1",
+      });
+      response.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
+    });
+    host.listen(0, "127.0.0.1");
+    await once(host, "listening");
+    const address = host.address();
+    if (!address || typeof address === "string") throw new Error("No fake Host address");
+    const ended = deferred<void>();
+    const released = deferred<void>();
+    const interrupt = vi.fn(async () => undefined);
+    const session: HarnessSession = {
+      providerSessionReference: "terminal-before-deadline",
+      events: (async function* () {
+        yield { type: "run.started", data: { status: "running" } } as const;
+        await ended.promise;
+        yield {
+          type: "run.failed",
+          data: {
+            status: "failed",
+            code: "real_failure",
+            message: "The engine failed",
+            retryable: false,
+          },
+        } as const;
+      })(),
+      execute: async () => released.promise,
+      interrupt,
+      resolveRequest: async () => undefined,
+      stop: async () => undefined,
+    };
+    const driver = new FakeHarnessDriver("test-driver", () => session);
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry, requestParkDeadlineMs: 1 });
+    const command = executeCommand(environmentId);
+    command.context = {
+      ...command.context,
+      agentTools: {
+        ...command.context.agentTools,
+        url: `http://127.0.0.1:${address.port}/internal/v1/mcp`,
+      },
+    };
+    const messages: RunnerOperationalReport[] = [];
+    try {
+      await probeTestServer(host);
+      await reconcile(registry, command);
+      await runtime.handleCommand(command, {
+        send: async (message) => void messages.push(message),
+      });
+      await waitUntil(() => hasEvent(messages, "run.started"));
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await (
+        await fetch(driver.context!.agentTools.url, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${driver.context!.agentTools.token}`,
+            "content-type": "application/json",
+          },
+          body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integration_request"}}',
+        })
+      ).arrayBuffer();
+      ended.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1);
+      released.resolve();
+      vi.useRealTimers();
+      await waitUntil(() => runtime.activeRunIds().length === 0);
+      expect(
+        messages.find(
+          (message) => message.type === "runner.event" && message.event.type === "run.failed",
+        ),
+      ).toMatchObject({ event: { type: "run.failed", data: { code: "real_failure" } } });
+      expect(hasEvent(messages, "run.completed")).toBe(false);
+      expect(interrupt).not.toHaveBeenCalled();
+    } finally {
+      ended.resolve();
+      released.resolve();
+      vi.useRealTimers();
+      await runtime.close();
+      host.closeAllConnections();
+      await new Promise<void>((resolve) => host.close(() => resolve()));
+    }
+  });
+  it.each([false, true])(
+    "ends a parked Run at its deadline, preserving a person's Stop (%s)",
+    async (personStops) => {
+      const host = createServer((request, response) => {
+        if (ignoreForeignTestRequest(request, response, (path) => path === "/internal/v1/mcp"))
+          return;
+        request.resume();
+        response.writeHead(200, {
+          "content-type": "application/json",
+          "x-opensteer-request-pending": "1",
+        });
+        response.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
+      });
+      host.listen(0, "127.0.0.1");
+      await once(host, "listening");
+      const address = host.address();
+      if (!address || typeof address === "string") throw new Error("No fake Host address");
+      const session = new HeldHarnessSession();
+      const steer = vi.fn(async () => undefined);
+      Object.assign(session, { steer });
+      const driver = new FakeHarnessDriver("test-driver", () => session);
+      const registry = new HarnessRegistry();
+      registry.registerDriver(driver);
+      const environmentId = createId("environment");
+      const runtime = configuredRuntime({ environmentId, registry });
+      const command = executeCommand(environmentId);
+      command.context = {
+        ...command.context,
+        agentTools: {
+          ...command.context.agentTools,
+          url: `http://127.0.0.1:${address.port}/internal/v1/mcp`,
+        },
+      };
+      const messages: RunnerOperationalReport[] = [];
+      const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+      try {
+        await probeTestServer(host);
+        await reconcile(registry, command);
+        await runtime.handleCommand(command, sink);
+        await waitUntil(() => hasEvent(messages, "run.started"));
+        const context = driver.context!;
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        await (
+          await fetch(context.agentTools.url, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${context.agentTools.token}`,
+              "content-type": "application/json",
+            },
+            body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integration_request"}}',
+          })
+        ).arrayBuffer();
+        const refused = await runtime.handleCommand(
+          steerCommand(environmentId, {
+            runId: command.context.runId,
+            threadId: command.context.threadId,
+            messageId: createId("message"),
+          }),
+          sink,
+        );
+        expect(refused).toMatchObject({
+          status: "rejected",
+          error: { code: "conflict", reason: "request-pending" },
+        });
+        expect(steer).not.toHaveBeenCalled();
+        if (personStops)
+          await runtime.handleCommand(
+            {
+              type: "run.interrupt",
+              commandId: createId("command"),
+              correlationId: command.correlationId,
+              environmentId,
+              runId: command.context.runId,
+              threadId: command.context.threadId,
+            },
+            sink,
+          );
+        else {
+          await vi.advanceTimersByTimeAsync(59_999);
+          expect(runtime.activeRunIds()).toContain(command.context.runId);
+          await vi.advanceTimersByTimeAsync(1);
+        }
+        vi.useRealTimers();
+        await waitUntil(() => runtime.activeRunIds().length === 0);
+        expect(hasEvent(messages, personStops ? "run.interrupted" : "run.completed")).toBe(true);
+        expect(hasEvent(messages, personStops ? "run.completed" : "run.interrupted")).toBe(false);
+      } finally {
+        vi.useRealTimers();
+        await runtime.close();
+        host.closeAllConnections();
+        await new Promise<void>((resolve) => host.close(() => resolve()));
+      }
+    },
+  );
+  it.each([false, true])(
+    "releases parking before publishing background, preserving a person's Stop (%s)",
+    async (personStops) => {
+      const host = createServer((request, response) => {
+        if (ignoreForeignTestRequest(request, response, (path) => path === "/internal/v1/mcp"))
+          return;
+        let body = "";
+        request.on("data", (chunk: Buffer) => {
+          body += chunk.toString();
+        });
+        request.on("end", () => {
+          response.writeHead(200, {
+            "content-type": "application/json",
+            ...(body.includes("integration_request") ? { "x-opensteer-request-pending": "1" } : {}),
+          });
+          response.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
+        });
+      });
+      host.listen(0, "127.0.0.1");
+      await once(host, "listening");
+      const address = host.address();
+      if (!address || typeof address === "string") throw new Error("No fake Host address");
+      const session = new HeldHarnessSession();
+      const interrupt = vi.spyOn(session, "interrupt");
+      const steer = vi.fn(async () => undefined);
+      Object.assign(session, { steer });
+      const driver = new FakeHarnessDriver("test-driver", () => session);
+      const registry = new HarnessRegistry();
+      registry.registerDriver(driver);
+      const environmentId = createId("environment");
+      const runtime = configuredRuntime({ environmentId, registry });
+      const command = executeCommand(environmentId);
+      command.context = {
+        ...command.context,
+        agentTools: {
+          ...command.context.agentTools,
+          url: `http://127.0.0.1:${address.port}/internal/v1/mcp`,
+        },
+      };
+      const messages: RunnerOperationalReport[] = [];
+      const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+      try {
+        await probeTestServer(host);
+        await reconcile(registry, command);
+        await runtime.handleCommand(command, sink);
+        await waitUntil(() => hasEvent(messages, "run.started"));
+        const context = driver.context!;
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        await (
+          await fetch(context.agentTools.url, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${context.agentTools.token}`,
+              "content-type": "application/json",
+            },
+            body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integration_request"}}',
+          })
+        ).arrayBuffer();
+        const refused = await runtime.handleCommand(
+          steerCommand(environmentId, {
+            runId: command.context.runId,
+            threadId: command.context.threadId,
+            messageId: createId("message"),
+          }),
+          sink,
+        );
+        expect(refused).toMatchObject({
+          status: "rejected",
+          error: { code: "conflict", reason: "request-pending" },
+        });
+        expect(steer).not.toHaveBeenCalled();
+        session.publish({ type: "run.phase", data: { phase: "background" } });
+        await vi.waitFor(() => expect(hasEvent(messages, "run.phase")).toBe(true));
+        // The Host can deliver a continuation as soon as it sees background.
+        const admitted = await runtime.handleCommand(
+          steerCommand(environmentId, {
+            runId: command.context.runId,
+            threadId: command.context.threadId,
+            messageId: createId("message"),
+          }),
+          sink,
+        );
+        expect(admitted.status).toBe("accepted");
+        expect(steer).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(59_999);
+        expect(interrupt).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(interrupt).not.toHaveBeenCalled();
+        expect(runtime.activeRunIds()).toContain(command.context.runId);
+        if (personStops)
+          await runtime.handleCommand(
+            {
+              type: "run.interrupt",
+              commandId: createId("command"),
+              correlationId: command.correlationId,
+              environmentId,
+              runId: command.context.runId,
+              threadId: command.context.threadId,
+            },
+            sink,
+          );
+        else session.publish({ type: "run.completed", data: { status: "completed" } });
+        vi.useRealTimers();
+        await waitUntil(() => runtime.activeRunIds().length === 0);
+        expect(hasEvent(messages, personStops ? "run.interrupted" : "run.completed")).toBe(true);
+        expect(hasEvent(messages, personStops ? "run.completed" : "run.interrupted")).toBe(false);
+      } finally {
+        vi.useRealTimers();
+        await runtime.close();
+        host.closeAllConnections();
+        await new Promise<void>((resolve) => host.close(() => resolve()));
+      }
+    },
+  );
   it.each(["timeout", "shutdown"] as const)("reaps background processes on %s", async (mode) => {
     const registry = new HarnessRegistry();
     const driver = new FakeHarnessDriver();
@@ -5470,6 +5770,11 @@ class HeldHarnessSession implements HarnessSession {
     await this.#released.promise;
   }
 
+  publish(event: HarnessEvent): void {
+    this.#stream.publish(event, { delivery: "must-deliver" });
+    if (event.type === "run.completed") this.#released.resolve();
+  }
+
   async interrupt(): Promise<void> {
     this.#released.resolve();
   }
@@ -5921,6 +6226,7 @@ function runtimeWithLeaseGrants(
 }
 
 function configuredRuntime(input: {
+  readonly requestParkDeadlineMs?: number;
   readonly containment?: ConstructorParameters<typeof RunnerRuntime>[0]["containment"];
   readonly manualLeaseGrants?: boolean;
   readonly harnessSandbox?: HarnessProcessSandbox;
@@ -5940,6 +6246,9 @@ function configuredRuntime(input: {
   return runtimeWithLeaseGrants(
     {
       nodeExecutable: process.execPath,
+      ...(input.requestParkDeadlineMs === undefined
+        ? {}
+        : { requestParkDeadlineMs: input.requestParkDeadlineMs }),
       agentSkills: testAgentSkills,
       plugins: noPlugins,
       bootId: "boot-control-test",
