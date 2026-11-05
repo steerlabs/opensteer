@@ -46,7 +46,7 @@ import { Popover } from "./popover.js";
 import { createPortal } from "react-dom";
 import { actionErrorMessage, fromLivePage } from "../ui-utils.js";
 import { useToast } from "./toast.js";
-import { discardStagedFiles } from "./attachments/use-staged-attachments.js";
+import { setAsideStagedFiles } from "./attachments/use-staged-attachments.js";
 import {
   composerDraftKey,
   composerDrafts,
@@ -54,7 +54,7 @@ import {
   type ComposerDraftTarget,
   type TaskDraftRow,
 } from "./composer-drafts.js";
-import { TaskMark, TaskState, ChatOrb, taskStateWords } from "./workspace/task-mark.js";
+import { TaskMark, TaskState, ChatOrb, UnsentMark, taskStateWords } from "./workspace/task-mark.js";
 import {
   ProfileAvatar,
   browserWords,
@@ -402,11 +402,15 @@ export function Sidebar({
     const key = composerDraftKey({ deploymentId, userId }, target);
     const draft = composerDrafts.read(key);
     if (!draft) return;
-    discardStagedFiles(key);
+    const files = setAsideStagedFiles(key);
     composerDrafts.clear(key);
     toast.success("Draft discarded", {
       label: "Undo",
-      run: () => composerDrafts.restore(key, draft),
+      lapse: files.forget,
+      run: () => {
+        composerDrafts.restore(key, draft);
+        files.takeBack();
+      },
     });
   };
   const discardTaskDraft = (row: TaskDraftRow, open: boolean) => {
@@ -777,6 +781,7 @@ export function Sidebar({
                               onNavigate={onCloseMobile}
                               open={folder.chat.threadId === openRowThreadId}
                               row={folder.chat}
+                              unsent={drafts.replies.has(folder.chat.threadId)}
                               work={workspace.work}
                             />,
                           ]
@@ -1070,15 +1075,6 @@ function VoiceTimer({ since }: { readonly since: number }) {
   return (
     <span className="side-home__timer">
       {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}
-    </span>
-  );
-}
-
-/** Words waiting on a conversation, unsent. It sits beside a row's state, never in its place. */
-function UnsentMark() {
-  return (
-    <span aria-hidden className="side-unsent" title="Unsent draft">
-      <Icon name="pencil" />
     </span>
   );
 }

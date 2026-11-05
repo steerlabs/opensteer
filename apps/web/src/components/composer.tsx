@@ -564,6 +564,7 @@ export function Composer({
             quote: carriedQuote,
             reason:
               sendError instanceof Error ? sendError.message : "The message could not be sent.",
+            workspaceId: draftWorkspaceId,
           });
         return;
       }

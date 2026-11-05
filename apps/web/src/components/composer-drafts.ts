@@ -75,6 +75,8 @@ export interface ReturnedToDraft {
   readonly quote?: z.infer<typeof QuoteSchema> | null;
   /** Why it came back, shown when the draft is read. */
   readonly reason?: string;
+  /** Where its task was to start: sending may have emptied the draft that knew. */
+  readonly workspaceId?: string | undefined;
 }
 
 export interface TaskDraftRow {
@@ -336,6 +338,7 @@ export function createComposerDraftStore(
         ...(returned.reason === undefined ? {} : { refusal: returned.reason }),
         text: returned.edit(draft.text),
         updatedAt: now(),
+        ...(returned.workspaceId ? { workspaceId: returned.workspaceId } : {}),
       });
       publish();
     },
@@ -368,7 +371,7 @@ export function createComposerDraftStore(
         if (!open || refusal !== undefined) publish();
         return true;
       }
-      if (current !== null && sameDraft(draft, current)) return true;
+      if (current !== null && sameDraft(draft, current) && !unsaved.has(key)) return true;
       const saved = write(key, { ...draft, updatedAt: now() });
       if (!open || refusal !== undefined) publish();
       return saved;

@@ -33,6 +33,8 @@ interface Toast {
 /** One thing to do about what just happened, such as taking it back. */
 export interface ToastAction {
   readonly label: string;
+  /** The toast left without its action being taken. */
+  readonly lapse?: () => void;
   readonly run: () => void;
 }
 
@@ -78,6 +80,7 @@ function ToastLayer({ children }: { readonly children: ReactNode }) {
   const nextId = useRef(0);
   const layerRef = useRef<HTMLDivElement | null>(null);
   const timers = useRef(new Map<number, number>());
+  const lapses = useRef(new Map<number, () => void>());
 
   const dismiss = useCallback((id: number) => {
     const timer = timers.current.get(id);
@@ -85,6 +88,8 @@ function ToastLayer({ children }: { readonly children: ReactNode }) {
       window.clearTimeout(timer);
       timers.current.delete(id);
     }
+    lapses.current.get(id)?.();
+    lapses.current.delete(id);
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
 
@@ -93,6 +98,7 @@ function ToastLayer({ children }: { readonly children: ReactNode }) {
       const trimmed = message.trim();
       if (trimmed === "") return;
       const id = (nextId.current += 1);
+      if (action?.lapse) lapses.current.set(id, action.lapse);
       setToasts((current) => [
         ...current.slice(-2),
         { id, message: trimmed, tone, ...(action ? { action } : {}) },
@@ -183,6 +189,7 @@ function ToastLayer({ children }: { readonly children: ReactNode }) {
                 <button
                   className="toast__action"
                   onClick={() => {
+                    lapses.current.delete(toast.id);
                     dismiss(toast.id);
                     toast.action?.run();
                   }}

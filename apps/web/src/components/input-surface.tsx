@@ -18,7 +18,6 @@ import { IntegrationInstallReview } from "./integration-install-review.js";
 import { AgentProposedChip } from "./integrations/agent-proposed-chip.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { useComposerContext } from "./workspace/composer-context.js";
-import { homeThreadKind } from "./workspace/task-directory.js";
 import { TaskMark, TaskBadge } from "./workspace/task-mark.js";
 import { sendMessageCommand, usePendingSends } from "./pending-sends.js";
 import { VoiceButton, VoiceDock } from "./voice.js";
@@ -100,7 +99,7 @@ export function InputSurface({
   const draftKey = composerDraftKeyFor(
     deploymentId,
     userId,
-    homeThreadKind(threadId, snapshot) === "main" ? { kind: "chat" } : { kind: "thread", threadId },
+    threadId === snapshot.homeThreadId ? { kind: "chat" } : { kind: "thread", threadId },
   );
   const context = useComposerContext({ auto: autoContext, draftKey, hostClient });
   const placeContext = useMemo(() => ({ context, hostClient }), [context, hostClient]);

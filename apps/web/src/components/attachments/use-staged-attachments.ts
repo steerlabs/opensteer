@@ -100,6 +100,8 @@ class StagedFiles {
   #workspaceId: string;
   #state: State = noState;
   #unchecked: string[] = [];
+  /** Its draft was discarded and may yet be taken back: uploads go on, the draft is left alone. */
+  #asideFromDraft = false;
   readonly #records = new Map<string, StagedRecord>();
   readonly #listeners = new Set<() => void>();
 
@@ -181,6 +183,20 @@ class StagedFiles {
     }
   }
 
+  get aside(): boolean {
+    return this.#asideFromDraft;
+  }
+
+  setAside(): void {
+    this.#asideFromDraft = true;
+  }
+
+  takeBack(): void {
+    if (sessions.get(this.#scope) !== this) return;
+    this.#asideFromDraft = false;
+    this.#saveFiles();
+  }
+
   dispose(): void {
     for (const record of this.#records.values()) forget(record);
     this.#records.clear();
@@ -197,9 +213,12 @@ class StagedFiles {
     const filesChanged = state.items !== this.#state.items;
     this.#state = state;
     for (const listener of this.#listeners) listener();
-    if (!filesChanged) return;
+    if (filesChanged && !this.#asideFromDraft) this.#saveFiles();
+  }
+
+  #saveFiles(): void {
     composerDrafts.update(this.#scope, {
-      files: state.items.map((item) => ({
+      files: this.#state.items.map((item) => ({
         mediaType: item.mediaType,
         name: item.name,
         part: item.part ?? this.#records.get(item.localId)?.part ?? null,
@@ -462,7 +481,7 @@ const sessions = new Map<string, StagedFiles>();
 
 function stagedFiles(target: AttachmentTarget): StagedFiles {
   const session = sessions.get(target.scope);
-  if (session?.client === target.client) return session;
+  if (session?.client === target.client && !session.aside) return session;
   // A new connection's composer takes over; the draft still holds what was saved.
   session?.dispose();
   const created = new StagedFiles(target);
@@ -470,9 +489,22 @@ function stagedFiles(target: AttachmentTarget): StagedFiles {
   return created;
 }
 
-/** Stops whatever one draft is uploading, for a draft being thrown away. */
-export function discardStagedFiles(scope: string): void {
-  sessions.get(scope)?.dispose();
+/**
+ * Sets a discarded draft's files aside, still uploading, until it is decided:
+ * taking the discard back returns them to the draft, with their bytes.
+ */
+export function setAsideStagedFiles(scope: string): {
+  readonly forget: () => void;
+  readonly takeBack: () => void;
+} {
+  const session = sessions.get(scope);
+  session?.setAside();
+  return {
+    forget: () => {
+      if (session?.aside) session.dispose();
+    },
+    takeBack: () => session?.takeBack(),
+  };
 }
 
 /** Stops every draft's uploads, for a person signing out. */

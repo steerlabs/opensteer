@@ -298,6 +298,38 @@ describe("what a person has written and not sent", () => {
     expect(field().value).toBe("Do the thing\nWritten meanwhile, and more");
   });
 
+  it("keeps an upload going through a discard that is taken back", async () => {
+    await mount("/new", { latencyMs: 30 });
+    await settle();
+    await attach("notes.txt");
+    await openTask(firstTaskId());
+    await settle();
+
+    await click(element('[aria-label="Discard draft: notes.txt"]'));
+    await settle();
+    await click(element(".toast__action"));
+    await settle(200);
+
+    await openDraft();
+    await settle();
+    expect(document.body.textContent).not.toContain("added again");
+    expect(document.querySelector(".composer__send")?.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("does not let a discarded draft's upload bring it back", async () => {
+    await mount("/new", { latencyMs: 30 });
+    await settle();
+    await attach("notes.txt");
+    await openTask(firstTaskId());
+    await settle();
+
+    await click(element('[aria-label="Discard draft: notes.txt"]'));
+    await settle(200);
+
+    expect(draftRows()).toHaveLength(0);
+    expect(Object.keys(localStorage).filter((key) => key.includes("composer-draft"))).toEqual([]);
+  });
+
   it("finishes an upload after leaving, and the file is there on return", async () => {
     await mount("/new", { latencyMs: 20 });
     await settle();

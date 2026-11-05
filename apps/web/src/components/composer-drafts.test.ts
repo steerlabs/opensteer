@@ -207,6 +207,13 @@ describe("composer drafts", () => {
     expect(drafts.read(task("a"))?.text).toBe("returned");
   });
 
+  it("puts a returned task back in the Workspace it was to start in", () => {
+    const storage = memoryStorage();
+    const drafts = createComposerDraftStore(() => storage);
+    drafts.handBack(task("a"), { edit: () => "words", workspaceId: "project" });
+    expect(drafts.index(scope).tasks[0]?.workspaceId).toBe("project");
+  });
+
   it("lays a discarded draft back exactly as it was", () => {
     const storage = memoryStorage();
     const drafts = createComposerDraftStore(() => storage);
@@ -229,6 +236,22 @@ describe("composer drafts", () => {
     expect(drafts.update(task("a"), { text: "unsaved" })).toBe(false);
     expect(drafts.read(task("a"))?.text).toBe("unsaved");
     expect(drafts.index(scope).tasks.map((row) => row.title)).toEqual(["unsaved"]);
+  });
+
+  it("keeps saying a draft is unsaved until storage takes it", () => {
+    const storage = memoryStorage();
+    const setItem = storage.setItem;
+    storage.setItem = () => {
+      throw new DOMException("Full", "QuotaExceededError");
+    };
+    const drafts = createComposerDraftStore(() => storage);
+    drafts.update(task("a"), { text: "unsaved" });
+
+    expect(drafts.update(task("a"), { text: "unsaved" })).toBe(false);
+
+    storage.setItem = setItem;
+    expect(drafts.update(task("a"), { text: "unsaved" })).toBe(true);
+    expect(storage.getItem(task("a"))).toContain("unsaved");
   });
 
   it("works with no storage at all", () => {

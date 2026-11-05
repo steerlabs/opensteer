@@ -9,7 +9,7 @@ import {
 } from "@opensteer/client/host";
 import { Icon } from "./icon.js";
 import { WorkspaceOrb } from "./workspace-orb.js";
-import { ChatOrb, TaskState } from "./workspace/task-mark.js";
+import { ChatOrb, TaskState, UnsentMark } from "./workspace/task-mark.js";
 import type { WorkspaceNavigation } from "./workspace/navigation.js";
 
 const closedKey = "opensteer.sidebar-projects-closed";
@@ -182,15 +182,19 @@ export const ProjectChatRow = memo(function ProjectChatRow({
   onNavigate,
   open,
   row,
+  unsent,
   work,
 }: {
   readonly nav: WorkspaceNavigation;
   readonly onNavigate: () => void;
   readonly open: boolean;
   readonly row: TaskRow;
+  /** A reply is waiting here, unsent. */
+  readonly unsent: boolean;
   readonly work: boolean;
 }) {
   const path = nav.threadPath(row.threadId);
+  const label = taskRowLabel(row, { chat: true });
   return (
     <li
       className={[
@@ -206,7 +210,7 @@ export const ProjectChatRow = memo(function ProjectChatRow({
     >
       <Link
         aria-current={open ? "page" : undefined}
-        aria-label={taskRowLabel(row, { chat: true })}
+        aria-label={unsent ? `${label}, unsent draft` : label}
         className="side-task__main"
         onClick={(event) => {
           onNavigate();
@@ -220,6 +224,7 @@ export const ProjectChatRow = memo(function ProjectChatRow({
         <span className="side-task__text">
           <span className="side-task__title">Chat</span>
         </span>
+        {unsent ? <UnsentMark /> : null}
         <TaskState state={row.tone} unread={row.unread} />
       </Link>
     </li>
