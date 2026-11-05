@@ -42,7 +42,9 @@ Read back edited instructions, check linked paths and exercise scripts with repr
 inputs. Use fixtures when a test would repeat an external action. Label untested approaches.
 Reread shared files before editing so other Threads' work survives.
 
-Never save credentials, PINs or capability tokens. The person handles them in the secure UI.
+Do not save credentials or capability tokens. A phone's screen-lock PIN is the sole exception when
+the person explicitly asks you to remember it; follow [durable context](references/durable-context.md).
+App and website passwords stay in the secure sign-in UI.
 
 Files grant no access and keep no process alive. Use ordinary access Requests for resources;
 use `opensteer:triggers` for requested recurring work and verify the returned state. Remove

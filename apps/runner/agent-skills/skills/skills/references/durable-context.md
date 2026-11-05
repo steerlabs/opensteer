@@ -31,4 +31,7 @@ when it works against what the person wants. For a failure an agent can fix, wri
 and continue, not a rule to stop and report.
 
 Do not store credentials or short-lived capability tokens in these files; refer to granted access.
-Never store or retrieve a screen-lock PIN; ask the person to unlock the phone.
+The one exception is a phone's screen-lock PIN when the person explicitly asks you to remember it.
+Keep it in one private file (mode `0600`) for that phone, outside AGENTS.md, memory and version control;
+read it only for an authorized unlock of that phone. Never repeat it in replies or copy it into
+standing instructions. This exception does not cover app or website passwords.
