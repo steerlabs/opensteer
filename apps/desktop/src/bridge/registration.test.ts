@@ -10,7 +10,7 @@ import {
   type DeploymentAccessSnapshot,
   type DesktopPasswordsStatus,
 } from "@opensteer/protocol/desktop";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import type { DesktopHostTransport } from "../connections/host-transport.js";
 import { AdHocSignedHelperError } from "../signed-helpers/signed-helper.js";
 import { desktopBridgeChannels } from "./desktop-bridge-channels.js";
@@ -151,6 +151,29 @@ describe("desktop bridge", () => {
       desktopBridgeChannels.integrationAuthorizationReturn,
       callback,
     );
+    const fire = (name: string) => {
+      const once = event.sender.once as unknown as Mock<
+        (eventName: string, listener: () => void) => void
+      >;
+      for (const [eventName, listener] of once.mock.calls) if (eventName === name) listener();
+    };
+    const nextReturn = async () => {
+      const attempt = { ...started, attemptId: createIntegrationId("oauthAttempt") };
+      await integrationAuthorizations.register(attempt);
+      const next = {
+        deploymentId: attempt.deploymentId,
+        attemptId: attempt.attemptId,
+        returnProof: "s".repeat(43),
+      };
+      integrationAuthorizations.accept(buildIntegrationAuthorizationAppReturn("desktop", next));
+      await integrationAuthorizations.settled();
+      return [desktopBridgeChannels.integrationAuthorizationReturn, next] as const;
+    };
+    // Electron reports a route change as a load; only a new document ends the subscription.
+    fire("did-start-loading");
+    expect(event.sender.send).toHaveBeenCalledWith(...(await nextReturn()));
+    fire("did-navigate");
+    expect(event.sender.send).not.toHaveBeenCalledWith(...(await nextReturn()));
     await handlers.get(desktopBridgeChannels.finishIntegrationAuthorization)!(event, {
       ...envelope,
       input: { deploymentId: started.deploymentId, attemptId: started.attemptId },

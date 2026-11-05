@@ -23,6 +23,30 @@ it("only enables delivery and acknowledgement for the selected connected Persona
   );
   expect(personalWebLinksAvailable(snapshot("personal", "connected"), "other")).toBe(false);
 });
+it("keeps delivering links across a route change, which Electron reports as a load", () => {
+  const links = new DesktopWebLinks(() => undefined);
+  const workspace = {
+    send: vi.fn(),
+    once: vi.fn(),
+    removeListener: vi.fn(),
+    isDestroyed: () => false,
+  };
+  const owner = new WebLinkDeliveryOwner(
+    links,
+    (sender) => sender === workspace,
+    () => true,
+  );
+  owner.handle(workspace, {
+    deploymentId: createId("deployment"),
+    userId: createId("user"),
+    generation: crypto.randomUUID(),
+    ready: true,
+  });
+  for (const [eventName, listener] of workspace.once.mock.calls)
+    if (eventName === "did-start-loading") listener();
+  links.accept("https://example.com/after-route-change");
+  expect(workspace.send).toHaveBeenCalledOnce();
+});
 it("refuses another authorized app window and ignores stale generation cleanup and acknowledgements", async () => {
   const links = new DesktopWebLinks(() => undefined);
   const workspace = {

@@ -377,14 +377,15 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
       if (integrationSubscription?.generation === input.generation) detachIntegrationSubscription();
     };
     event.sender.once("destroyed", cleanup);
-    event.sender.once("did-start-loading", cleanup);
+    // Not did-start-loading: Electron fires that for every route change and iframe.
+    event.sender.once("did-navigate", cleanup);
     integrationSubscription = {
       sender: event.sender,
       generation: input.generation,
       detach: () => {
         detach();
         event.sender.removeListener("destroyed", cleanup);
-        event.sender.removeListener("did-start-loading", cleanup);
+        event.sender.removeListener("did-navigate", cleanup);
       },
     };
   });

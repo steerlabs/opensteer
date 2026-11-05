@@ -80,7 +80,7 @@ export class WebLinkDeliveryOwner {
       generation: input.generation,
       detach: () => {
         detachConsumer();
-        sender.removeListener("did-start-loading", cleanup);
+        sender.removeListener("did-navigate", cleanup);
         sender.removeListener("destroyed", cleanup);
       },
     };
@@ -91,7 +91,8 @@ export class WebLinkDeliveryOwner {
           generation: input.generation,
         });
     });
-    sender.once("did-start-loading", cleanup);
+    // Not did-start-loading: Electron fires that for every route change and iframe.
+    sender.once("did-navigate", cleanup);
     sender.once("destroyed", cleanup);
     return null;
   }
