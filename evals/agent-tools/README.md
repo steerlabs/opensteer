@@ -16,6 +16,9 @@ pnpm eval:agent-tools --engine claude --area memory --validate   # selection onl
 pnpm eval:agent-tools --engine codex --baseline /absolute/baseline/results.jsonl
 ```
 
+Each sample records `timing`, and `summary.md` reports rounds, waits and tool time per case. A
+wait holds model, engine and transport time together; these events cannot separate provider time.
+
 `pnpm eval:agent-tools --help` lists every option. Choose `--out` outside the checkout;
 existing results are never overwritten. A run without a baseline measures current behavior and
 may legitimately report failed cases. Infrastructure and authentication failures make a sample

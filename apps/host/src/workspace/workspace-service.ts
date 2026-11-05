@@ -11,6 +11,7 @@ import {
   type WorkspaceIconName,
   type WorkspaceId,
   type WorkspaceKind,
+  refused,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import {
@@ -170,7 +171,7 @@ export class WorkspaceService {
 
   async projectPath(workspace: Workspace): Promise<string> {
     if (workspace.kind !== "project" || !workspace.slug || workspace.status !== "ready")
-      throw new Error("Project storage is not ready");
+      throw refused("conflict", "Project storage is not ready");
     const main = await this.#store.findMainWorkspaceForOwner(workspace.createdBy);
     const root = main ? this.#drivers.local?.storageLocation?.(main) : null;
     if (
@@ -180,7 +181,7 @@ export class WorkspaceService {
       workspace.backing.ownerEnvironmentId !== main.backing.ownerEnvironmentId ||
       workspace.backing.storageAuthorityId !== main.backing.storageAuthorityId
     )
-      throw new Error("The computer holding this Project is unavailable");
+      throw refused("conflict", "The computer holding this Project is unavailable");
     return (win32.isAbsolute(root) && !posix.isAbsolute(root) ? win32 : posix).join(
       root,
       "Projects",

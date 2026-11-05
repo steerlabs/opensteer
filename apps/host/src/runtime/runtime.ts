@@ -2317,6 +2317,7 @@ export async function createHostRuntime(
     const agentTools = new OpensteerMcpService({
       publicUrl: config.runtimeOrigin,
       realtime,
+      onToolError: (error, tool) => app.log.error({ err: error, tool }, "Agent tool failed"),
       callers: new AgentCallerResolver({
         store,
         runs: runToolTokens,

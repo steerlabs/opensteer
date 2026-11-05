@@ -525,7 +525,7 @@ describe("Opensteer MCP integration access classes", () => {
       { params: { arguments: { toolRef: stale }, name: "integration_call" } },
       callExtra("stale"),
     )) as { content: readonly { text: string }[]; isError: boolean };
-    expect(refused).toEqual({
+    expect(refused).toMatchObject({
       content: [
         {
           text: "Integration operation schema changed; search and describe it again",
@@ -557,7 +557,7 @@ describe("Opensteer MCP integration access classes", () => {
       },
       callExtra("write-under-read"),
     )) as { content: readonly { text: string }[]; isError: boolean };
-    expect(response).toEqual({
+    expect(response).toMatchObject({
       content: [
         {
           text: 'Linear operation Create issue makes changes, and this Workspace has read access as Work. Call integration_request with integration "linear" and access "read-write"; do not retry this call until it is fulfilled.',

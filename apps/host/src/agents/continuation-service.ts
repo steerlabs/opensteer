@@ -13,6 +13,7 @@ import {
   type PasswordSignInRequestResponse,
 } from "@opensteer/protocol";
 import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-sources";
+import { CoalescedWake } from "@opensteer/shared/coalescedWake";
 import { z } from "zod";
 import type { PasswordSignInContinuationState } from "../browser/password-sign-in-service.js";
 import type { ComputerAppApprovalService } from "../integrations/computer-app-approval-service.js";
@@ -53,9 +54,8 @@ export class ContinuationService {
   readonly #onError: (error: unknown) => void;
   readonly #requests: RequestContinuationStore;
   readonly #passwordSignIn: (operationId: string) => PasswordSignInContinuationState;
-  #drainAgain = false;
   #closed = false;
-  #drain: Promise<void> | undefined;
+  readonly #drains: CoalescedWake;
   #timer: NodeJS.Timeout | undefined;
 
   constructor(options: {
@@ -73,6 +73,7 @@ export class ContinuationService {
     this.#requests = options.requests;
     this.#passwordSignIn =
       options.passwordSignIn ?? (() => ({ publishing: false, loginRef: undefined }));
+    this.#drains = new CoalescedWake({ run: () => this.#drainOnce(), onError: this.#onError });
   }
 
   start(): void {
@@ -84,26 +85,14 @@ export class ContinuationService {
 
   notify(): void {
     if (this.#closed) return;
-    if (this.#drain) {
-      this.#drainAgain = true;
-      return;
-    }
-    this.#drain = this.#drainOnce()
-      .catch(this.#onError)
-      .finally(() => {
-        this.#drain = undefined;
-        if (this.#drainAgain) {
-          this.#drainAgain = false;
-          this.notify();
-        }
-      });
+    this.#drains.wake();
   }
 
   async close(): Promise<void> {
     this.#closed = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
-    await this.#drain;
+    await this.#drains.stop();
   }
 
   async #drainOnce(): Promise<void> {

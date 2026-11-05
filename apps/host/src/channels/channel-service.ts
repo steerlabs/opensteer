@@ -41,6 +41,7 @@ import {
   type ChannelCredentialPurpose,
   type RuntimeChannelRequest,
 } from "@opensteer/channel-protocol";
+import { CoalescedWake } from "@opensteer/shared/coalescedWake";
 import type { MessagingRelayHub } from "./messaging-relay-hub.js";
 import type { CredentialService } from "../identity/credential-service.js";
 
@@ -73,8 +74,7 @@ export class ChannelService {
   readonly #runners: ChannelRunners;
   readonly #store: OpensteerStore;
   #closed = false;
-  #draining: Promise<void> | null = null;
-  #wakeAgain = false;
+  readonly #drains = new CoalescedWake({ run: () => this.#drainIngress() });
   #ticks = 0;
   #timer: ReturnType<typeof setInterval> | null = null;
 
@@ -101,7 +101,7 @@ export class ChannelService {
     this.#closed = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
-    await this.#draining;
+    await this.#drains.stop();
   }
 
   #tick(): void {
@@ -116,21 +116,7 @@ export class ChannelService {
 
   wake(): void {
     if (this.#closed) return;
-    if (this.#draining) {
-      // The running drain may already have read past an event committed now;
-      // without another pass it would wait for the next tick.
-      this.#wakeAgain = true;
-      return;
-    }
-    const operation = this.#drainIngress().finally(() => {
-      if (this.#draining !== operation) return;
-      this.#draining = null;
-      if (this.#wakeAgain) {
-        this.#wakeAgain = false;
-        this.wake();
-      }
-    });
-    this.#draining = operation;
+    this.#drains.wake();
   }
 
   /**

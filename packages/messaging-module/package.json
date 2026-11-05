@@ -16,7 +16,8 @@
     "@opensteer/channel-core": "workspace:*",
     "@opensteer/channel-protocol": "workspace:*",
     "@opensteer/protocol": "workspace:*",
-    "@opensteer/runner-client": "workspace:*"
+    "@opensteer/runner-client": "workspace:*",
+    "@opensteer/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",

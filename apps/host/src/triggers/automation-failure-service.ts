@@ -1,6 +1,7 @@
 import { OpensteerError } from "@opensteer/core";
 import type { AutomationFailureStore, PendingAutomationFailure } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
+import { CoalescedWake } from "@opensteer/shared/coalescedWake";
 
 const defaultIntervalMs = 30_000;
 
@@ -16,8 +17,7 @@ export class AutomationFailureService {
   readonly #onError: (error: unknown) => void;
   readonly #store: Pick<AutomationFailureStore, "listDue" | "retryLater" | "settle">;
   #closed = false;
-  #drain: Promise<void> | undefined;
-  #again = false;
+  readonly #drains: CoalescedWake;
   #timer: NodeJS.Timeout | undefined;
 
   constructor(options: {
@@ -30,6 +30,7 @@ export class AutomationFailureService {
     this.#intervalMs = options.intervalMs ?? defaultIntervalMs;
     this.#onError = options.onError;
     this.#store = options.store;
+    this.#drains = new CoalescedWake({ run: () => this.#drainOnce(), onError: this.#onError });
   }
 
   start(): void {
@@ -42,26 +43,14 @@ export class AutomationFailureService {
   /** Something may have stopped; read the notices owed now. */
   notify(): void {
     if (this.#closed) return;
-    if (this.#drain) {
-      this.#again = true;
-      return;
-    }
-    this.#drain = this.#drainOnce()
-      .catch(this.#onError)
-      .finally(() => {
-        this.#drain = undefined;
-        if (this.#again) {
-          this.#again = false;
-          this.notify();
-        }
-      });
+    this.#drains.wake();
   }
 
   async close(): Promise<void> {
     this.#closed = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
-    await this.#drain;
+    await this.#drains.stop();
   }
 
   async #drainOnce(): Promise<void> {

@@ -132,6 +132,20 @@ runs again only once its prior processes are proven gone, with start time checke
 ([containment](../apps/runner/src/runtime/execution-containment.ts)). Interrupts, restarts and
 Request answers replay by command ID after reconnect; unconfirmed steers do not.
 
+## Tool failures
+
+An agent can only recover from what it reads, so every failure says what happened and what to do
+next, naming the real tool and parameter. `message` can reach a person; `next` is for the agent and
+stays off the Host's HTTP errors. Access refusals stay vague on purpose and never suggest a way
+around. Only text written for its reader passes the [boundary](../apps/host/src/mcp/agent-tool-failure.ts):
+any other error is logged and replaced, because it may hold a query or a provider's response. So an
+error an agent should read must be an `OpensteerError`, not a plain `Error`. Replacement text follows
+the tool's access: a write may have taken effect, so it never says to retry blindly.
+
+Engines read different halves of a [result](../packages/agent-tools/src/results.ts): Codex shows its
+model only `structuredContent` when there is any, and Pi only `content`. Whatever a model must read
+goes in both.
+
 ## Conversation roles and Assignments
 
 Role controls instructions and presentation, never access. Only a Run answering the person directly

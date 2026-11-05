@@ -28,6 +28,7 @@ import {
   RunnerIdSchema,
   UserIdSchema,
   OpensteerError,
+  refused,
   type SpecialistAccessRequirement,
   type AgentEvent,
   type Request,
@@ -181,7 +182,8 @@ export class IntegrationToolHandlers {
   async computer(call: ToolCall<"computer">) {
     const run = requireRun(call.caller).claims;
     if (!(await this.#platform.computerToolEnabled(run)))
-      throw new Error(
+      throw refused(
+        "conflict",
         "The computer tool is not available to this execution. Update this task's Runner to use it.",
       );
     return this.#platform.runComputerCode(
@@ -198,7 +200,10 @@ export class IntegrationToolHandlers {
       stored.status !== "active" ||
       stored.schemaDigest !== callable.tool.schemaDigest
     ) {
-      throw new Error("Integration operation schema changed; search and describe it again");
+      throw refused(
+        "conflict",
+        "Integration operation schema changed; search and describe it again",
+      );
     }
     const account = callable.grant.connectionId
       ? await this.#platform.store.getConnectionAccount({
@@ -287,7 +292,7 @@ export class IntegrationToolHandlers {
           installationDefinitionId(entry.installation) ?? "",
         )
       )
-        throw new Error(computerUseToolRequiredSentence);
+        throw refused("bad_request", computerUseToolRequiredSentence);
       const tool = entry?.tools.find(({ id }) => id === reference.toolId);
       const readiness = entry?.readiness.tools.find(
         ({ toolId }) => toolId === reference.toolId,
@@ -299,7 +304,8 @@ export class IntegrationToolHandlers {
         readiness?.code === "ACCESS_GRANT_REQUIRED" &&
         readiness.requiredAccess === "read-write"
       ) {
-        throw new Error(
+        throw refused(
+          "forbidden",
           `${entry.installation.title} operation ${tool.title} makes changes, and this Workspace has read access as ${entry.accounts.find(({ connectionId }) => connectionId === grant.connectionId)?.account ?? grant.alias}. Call integration_request with integration "${entry.installation.name}" and access "read-write"; do not retry this call until it is fulfilled.`,
         );
       }
@@ -324,14 +330,15 @@ export class IntegrationToolHandlers {
           ownerUserId: scope.requestedBy,
         });
         if (connection?.access === "read") {
-          throw new Error(
+          throw refused(
+            "forbidden",
             definitionId === androidPhoneDefinitionId
               ? `${connection.runnerName} allows seeing only. Ask for read-write to act: call ${phoneRequestShape} with access "read-write"; do not retry this call until it is fulfilled.`
               : `${connection.runnerName} allows reading only. Ask for read-write to send: call integration_request with integration "${entry.installation.name}" and access "read-write"; do not retry this call until it is fulfilled.`,
           );
         }
       }
-      throw new Error("Integration operation is no longer available; search again");
+      throw refused("not_found", "Integration operation is no longer available; search again");
     }
     if (
       computerCall &&
@@ -340,9 +347,12 @@ export class IntegrationToolHandlers {
         selected.server.transport.definitionId,
       )
     )
-      throw new Error(computerUseToolRequiredSentence);
+      throw refused("bad_request", computerUseToolRequiredSentence);
     if (selected.tool.schemaDigest !== reference.schemaDigest) {
-      throw new Error("Integration operation schema changed; search and describe it again");
+      throw refused(
+        "conflict",
+        "Integration operation schema changed; search and describe it again",
+      );
     }
     return selected;
   }
@@ -426,7 +436,7 @@ export class IntegrationToolHandlers {
           structuredContent: output,
         };
       }
-      if (!machine) throw new Error(unknownComputerUseMac(runnerId));
+      if (!machine) throw refused("not_found", unknownComputerUseMac(runnerId));
       const [installed, callable, pending] = await Promise.all([
         this.#platform.computerAppApprovals.installedComputerApps(
           {
@@ -445,7 +455,8 @@ export class IntegrationToolHandlers {
         this.#pendingComputerApprovals(scope),
       ]);
       if (installed.unavailableReason)
-        throw new Error(
+        throw refused(
+          "conflict",
           installed.unavailableReason === "offline"
             ? `${machine.name} is offline.`
             : `${machine.name} isn’t ready to list apps yet.`,
@@ -818,7 +829,7 @@ export class IntegrationToolHandlers {
       threadId: scope.threadId,
       workspaceId: targetWorkspaceId,
     });
-    if (access === "withheld") throw new Error(mainAccessWithheldRefusal);
+    if (access === "withheld") throw refused("forbidden", mainAccessWithheldRefusal);
   }
 
   async requestSpecialistAccess(
@@ -894,22 +905,26 @@ export class IntegrationToolHandlers {
       // A Trigger execution asks only where it runs; another Workspace's access
       // is a Run's request to make within its reach.
       if (!("runId" in scope)) {
-        throw new Error(
+        throw refused(
+          "forbidden",
           "A Trigger execution may only request integration access for its own Workspace. Omit workspaceId and request access where the Trigger runs.",
         );
       }
       const workspace = await this.#getWorkspaceForOwner(targetWorkspaceId, scope.requestedBy);
-      if (!workspace) throw new Error("Target Workspace is unavailable to this user");
+      if (!workspace) throw refused("forbidden", "Target Workspace is unavailable to this user");
       if (scope.reach?.kind !== "user") {
-        throw new Error("This caller may request access only in its Workspace");
+        throw refused("forbidden", "This caller may request access only in its Workspace");
       }
     }
     if ("catalog" in input) {
-      if (input.catalog === computerUseDefinitionId) throw new Error(computerUseRequestRefusal);
-      if (input.catalog === androidPhoneDefinitionId) throw new Error(phoneRequestRefusal);
+      if (input.catalog === computerUseDefinitionId)
+        throw refused("bad_request", computerUseRequestRefusal);
+      if (input.catalog === androidPhoneDefinitionId)
+        throw refused("bad_request", phoneRequestRefusal);
       const definition = this.#definitions.find((candidate) => candidate.id === input.catalog);
       if (!definition) {
-        throw new Error(
+        throw refused(
+          "not_found",
           `No catalog definition with id "${input.catalog}" exists on this Deployment.`,
         );
       }
@@ -962,24 +977,24 @@ export class IntegrationToolHandlers {
       ({ installation }) =>
         installation.id === input.integration || installation.name === input.integration,
     );
-    if (!selected) throw new Error(`Unknown integration "${input.integration}".`);
+    if (!selected) throw refused("not_found", `Unknown integration "${input.integration}".`);
     // Each app is its own account, so an ask that names no account names no
     // app: it could neither add one nor say which one to grant.
     if (
       installationDefinitionId(selected.installation) === computerUseDefinitionId &&
       input.account === undefined
     ) {
-      throw new Error(computerUseRequestRefusal);
+      throw refused("bad_request", computerUseRequestRefusal);
     }
     // Each phone is its own account too, so an ask that names none names no phone.
     if (
       installationDefinitionId(selected.installation) === androidPhoneDefinitionId &&
       input.account === undefined
     ) {
-      throw new Error(phoneRequestRefusal);
+      throw refused("bad_request", phoneRequestRefusal);
     }
     if (selected.installation.status !== "active") {
-      throw new Error(`Integration "${input.integration}" is inactive.`);
+      throw refused("conflict", `Integration "${input.integration}" is inactive.`);
     }
     const access = input.access;
     const accountServers = input.account
@@ -996,15 +1011,19 @@ export class IntegrationToolHandlers {
       input.account &&
       !selected.accounts.some(({ connectionId }) => connectionId === input.account)
     ) {
-      throw new Error(
+      throw refused(
+        "not_found",
         "The requested account is not available for this integration. Search again for its current account identity.",
       );
     }
     if (input.server && !selected.servers.some(({ id }) => id === input.server)) {
-      throw new Error("The requested server does not belong to this integration.");
+      throw refused("bad_request", "The requested server does not belong to this integration.");
     }
     if (input.server && accountServers.length > 0 && !accountServers.includes(input.server)) {
-      throw new Error("The requested account belongs to a different integration server.");
+      throw refused(
+        "bad_request",
+        "The requested account belongs to a different integration server.",
+      );
     }
     const requestedServerId =
       input.server ??
@@ -1077,7 +1096,8 @@ export class IntegrationToolHandlers {
     callId: string,
   ) {
     if (!("runId" in scope)) {
-      throw new Error(
+      throw refused(
+        "forbidden",
         "A session on a computer belongs to a running task, so only a task can ask for one.",
       );
     }
@@ -1094,15 +1114,17 @@ export class IntegrationToolHandlers {
         ? phones.find(({ runnerId }) => runnerId === input.runnerId)
         : undefined;
       if (phone) {
-        throw new Error(
+        throw refused(
+          "bad_request",
           `${phone.name} is an Android phone, which is asked for whole: call ${phoneRequestShape} without app.`,
         );
       }
       const eligible = macs;
       if (eligible.length === 0) {
-        throw new Error(noComputerUseMac);
+        throw refused("conflict", noComputerUseMac);
       }
-      throw new Error(
+      throw refused(
+        "bad_request",
         input.runnerId
           ? `That computer is not one of yours set up for computer use. These are: ${eligible.map(({ name }) => name).join(", ")}.`
           : `This task is not running on a Mac set up for computer use, so name one with runnerId. These are set up: ${eligible
@@ -1140,7 +1162,8 @@ export class IntegrationToolHandlers {
     const phone = phones.find(({ runnerId }) => runnerId === input.runnerId);
     if (!phone) {
       const mac = machines.find(({ runnerId }) => runnerId === input.runnerId);
-      throw new Error(
+      throw refused(
+        "bad_request",
         mac
           ? `${mac.name} is a Mac, whose apps are asked for one at a time: call ${computerAppRequestShape}.`
           : phones.length === 0
