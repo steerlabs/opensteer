@@ -82,3 +82,42 @@ it("keeps only same-prefix app frame navigations inside the renderer", () => {
     expect(preventDefault.mock.calls.length).toBe(denied ? 1 : 0);
   }
 });
+
+it("keeps real-origin redirects inside the app and opens departures externally", () => {
+  const origin = `http://${"a".repeat(26)}.localhost:4310`;
+  const policy = new DesktopAppOriginPolicy();
+  policy.setAttachedHost("http://127.0.0.1:4310");
+  const contents = { focusedFrame: { url: origin }, setWindowOpenHandler: vi.fn(), on: vi.fn() };
+  configureDesktopWindowNavigation(contents as unknown as WebContents, policy);
+  const redirect = contents.on.mock.calls.find(
+    ([name]) => name === "will-redirect",
+  )![1] as (event: {
+    isMainFrame: boolean;
+    frame: { url: string };
+    url: string;
+    preventDefault: () => void;
+  }) => void;
+  const start = contents.on.mock.calls.find(
+    ([name]) => name === "did-start-navigation",
+  )![1] as (event: { isMainFrame: boolean; frame: { url: string }; url: string }) => void;
+  const pendingFrame = { url: "about:blank" };
+  start({ isMainFrame: false, frame: pendingFrame, url: origin });
+  const initialRedirect = vi.fn();
+  redirect({
+    isMainFrame: false,
+    frame: pendingFrame,
+    url: origin + "/login",
+    preventDefault: initialRedirect,
+  });
+  expect(initialRedirect).not.toHaveBeenCalled();
+  for (const [url, denied] of [
+    [origin + "/next", false],
+    ["https://external.test", true],
+    ["app://opensteer", true],
+  ] as const) {
+    const preventDefault = vi.fn();
+    redirect({ isMainFrame: false, frame: { url: origin }, url, preventDefault });
+    expect(preventDefault).toHaveBeenCalledTimes(denied ? 1 : 0);
+  }
+  expect(shell.openExternal).toHaveBeenCalledWith("https://external.test");
+});

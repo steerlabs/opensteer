@@ -62,9 +62,9 @@ function AppDocument({
       containerStyle={frameStyle}
       // Route every scheme through our policy; WebView otherwise opens non-whitelisted URLs itself.
       originWhitelist={["*"]}
-      incognito
       sharedCookiesEnabled={false}
-      thirdPartyCookiesEnabled={false}
+      thirdPartyCookiesEnabled
+      domStorageEnabled
       allowFileAccess={false}
       allowFileAccessFromFileURLs={false}
       allowUniversalAccessFromFileURLs={false}
