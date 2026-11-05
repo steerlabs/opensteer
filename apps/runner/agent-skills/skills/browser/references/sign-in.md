@@ -17,3 +17,6 @@ When a page you need shows the user signed out, open its sign-in form in the Bro
 The same `loginRef` also signs in to that site's genuine app on a phone or Mac (see opensteer:computer-use, references/sign-in.md). Never loop on `sign_in`, ask for passwords, MFA codes or recovery answers in chat, or copy cookies or browser state yourself. Opensteer never sends a saved password to you; it fills it into the approved website, where the page can read it.
 
 Passkey support is off by default. When enabled by the Host and supported by the browser and viewing Mac, a passkey request needs the person's approval and OS credential manager; you cannot complete it yourself. Without that support, use `sign_in` for an available saved login or Chrome sign-in. If the site still requires a passkey, explain that the person needs a supported viewer or another sign-in method and continue without the site. Do not bypass the site's authentication requirements.
+
+For payment cards at checkout, read [cards](cards.md), request `use_card` and use `fillCard`.
+A card reference cannot be used with `fillLogin` or native typing.

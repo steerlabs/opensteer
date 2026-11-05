@@ -57,8 +57,9 @@ events reach agents. Main-world access needs positive context provenance; the
 
 Agent keys are page actions, never browser or OS shortcuts. Agent paste is always refused, and on an
 engine sharing the machine clipboard so are copy and cut: they could overwrite a person's copied
-password. `Opensteer.fillLogin` is platform-handled and never reaches Chromium; after a fill, page
-scripts and agent JavaScript can read the value ([Passwords](passwords.md#filling-a-field)).
+password. `Opensteer.fillLogin` and `Opensteer.fillCard` are platform-handled and never reach Chromium.
+Card approval binds the top-level merchant, and filling may reach its cross-origin payment frame.
+After a fill, page scripts and agent JavaScript can read the value ([Passwords](passwords.md#filling-a-field)).
 
 ## Remote editing and clipboard
 
