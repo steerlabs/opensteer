@@ -532,6 +532,51 @@ integration.sequential("thread input queue promotion", () => {
     },
   );
 
+  it("takes its next call on the account the Voice Thread moved to", async ({ storeFixture }) => {
+    const { store, database } = storeFixture;
+    const { call, f, input } = await startedCall(storeFixture, "voice-move");
+    await database
+      .updateTable("runs")
+      .set({ status: "interrupted" })
+      .where("id", "=", call.runId)
+      .execute();
+    const next = await store.createHarnessInstance({
+      config: { model: "test" },
+      driverKind: HarnessIdSchema.parse("native"),
+      environmentId: f.environmentId,
+      name: "Second account",
+      stateKind: "isolated",
+    });
+    const thread = await store.getThreadForOwner(call.threadId, f.ownerId);
+    await store.updateThreadExecutionSelection({
+      continuation: { expectedProviderSessionId: thread!.providerSessionId },
+      continuationIdentity: {
+        ...continuationIdentity,
+        continuationKey: "runner:v1:XBFO4gDBdSg2fXioCLyTd-RGpc_Zcz838BvyfVUY5d0",
+      },
+      harnessInstanceId: next.id,
+      idempotencyKey: "voice-move",
+      modelSelection: thread!.modelSelection,
+      requestedBy: f.ownerId,
+      threadId: call.threadId,
+    });
+
+    expect(await store.openVoiceThread(input)).toMatchObject({
+      threadId: call.threadId,
+      harnessInstanceId: next.id,
+    });
+    await expect(store.startVoiceCall({ ...input, sessionId: randomUUID() })).rejects.toMatchObject(
+      { reason: "voice-account-unavailable" },
+    );
+    expect(
+      await store.startVoiceCall({
+        ...input,
+        harnessInstanceId: next.id,
+        sessionId: randomUUID(),
+      }),
+    ).toMatchObject({ busy: false, threadId: call.threadId });
+  });
+
   it("hands everything sent to the Voice Thread into a live call", async ({ storeFixture }) => {
     const { store, database } = storeFixture;
     const { call, f } = await startedCall(storeFixture, "voice-inbox");

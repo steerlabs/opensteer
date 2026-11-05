@@ -201,6 +201,54 @@ describe("VoiceController", () => {
     f.dispose();
   });
 
+  it("follows the account the call is on, not the one it would pick now", async () => {
+    const f = setup();
+    const snapshot = f.host.getSnapshot();
+    const account = voiceAccount(snapshot)!;
+    const environment = snapshot.environments.find(({ id }) => id === account.environmentId)!;
+    const catalog = environment.harnessCatalogs.find(
+      ({ harnessInstanceId }) => harnessInstanceId === account.harnessInstanceId,
+    )!;
+    const harness = snapshot.harnesses.find(({ id }) => id === account.harnessInstanceId)!;
+    const other = createId("harnessInstance");
+    const both = {
+      environments: snapshot.environments.map((item) =>
+        item.id === environment.id
+          ? {
+              ...item,
+              harnessCatalogs: [...item.harnessCatalogs, { ...catalog, harnessInstanceId: other }],
+            }
+          : item,
+      ),
+      harnesses: [...snapshot.harnesses, { ...harness, id: other }],
+    };
+    f.publish(both);
+    await f.controller.start();
+    expect(f.controller.getSnapshot().phase).toBe("listening");
+
+    // Chat moving to the other account changes this device's pick, and nothing about the call.
+    f.publish({
+      environments: both.environments
+        .filter(({ id }) => id === environment.id)
+        .map((item) => ({ ...item, harnessCatalogs: [...item.harnessCatalogs].reverse() })),
+      harnesses: both.harnesses,
+      homeThreadId: null,
+    });
+    expect(voiceAccount(f.host.getSnapshot())?.harnessInstanceId).toBe(other);
+    expect(f.controller.getSnapshot().phase).toBe("listening");
+
+    f.publish({
+      environments: both.environments.map((item) => ({
+        ...item,
+        harnessCatalogs: item.harnessCatalogs.filter(
+          ({ harnessInstanceId }) => harnessInstanceId !== account.harnessInstanceId,
+        ),
+      })),
+    });
+    await vi.waitFor(() => expect(f.controller.getSnapshot().phase).toBe("idle"));
+    f.dispose();
+  });
+
   it("says the call failed when the Voice Thread can't open", async () => {
     const f = setup();
     f.publish({ voiceThreadId: null });

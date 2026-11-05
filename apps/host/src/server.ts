@@ -1093,7 +1093,7 @@ export async function createHostServer(
   ) => projectMachines({ ...(await machineRegistryRows(session)), deploymentKind });
 
   const coreRpcHandlers = {
-    ...createVoiceHandlers({ ...dependencies, publishWorkspaceEvent }),
+    ...createVoiceHandlers({ ...dependencies, publishWorkspaceEvent, threads: threadService }),
     "agentPhone.target.get": async (_input, context) => {
       requireRpcSession(context);
       return rpcSuccess(

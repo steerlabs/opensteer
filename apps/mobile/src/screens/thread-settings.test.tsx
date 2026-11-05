@@ -271,7 +271,7 @@ describe("Expo engine/account/model journeys", () => {
     expect(access).not.toHaveBeenCalled();
   });
 
-  it("keeps the Voice Thread on its own Codex account, with no engine to switch to", async () => {
+  it("lets the Voice Thread change Codex account, with no engine to switch to", async () => {
     await mount();
     await act(async () => move({ ...snapshot, voiceThreadId: original.id }));
     expect(document.querySelector('[aria-label^="Engine:"]')).toBeNull();
@@ -289,7 +289,7 @@ describe("Expo engine/account/model journeys", () => {
       harnessInstanceId: codex.harnessInstanceId,
       modelSelection: codex.modelSelection,
     }).find((row) => row.placement.harnessInstanceId === second.harnessInstanceId)!;
-    expect(button(others.title)).toBeUndefined();
+    expect(button(others.title)).toBeDefined();
   });
 
   it("restores options for the account and model rather than reusing same-model current values", async () => {

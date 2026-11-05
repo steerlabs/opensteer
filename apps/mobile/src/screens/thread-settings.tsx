@@ -635,8 +635,8 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
 }
 
 /**
- * Where a Thread can run from its own computer. Codex hands speech to a turn on
- * the Voice Thread itself, so that Thread stays on the harness it has.
+ * Where a Thread can run from its own computer. Only Codex carries a call, so
+ * the Voice Thread can change account but not engine.
  */
 function threadPlacements(
   snapshot: Pick<HostSnapshot, "environments" | "harnesses" | "voiceThreadId">,
@@ -645,8 +645,7 @@ function threadPlacements(
   return threadPlacementOptions(snapshot.environments, snapshot.harnesses).filter(
     (placement) =>
       placement.environmentId === thread.environmentId &&
-      (snapshot.voiceThreadId !== thread.id ||
-        placement.harnessInstanceId === thread.harnessInstanceId),
+      (snapshot.voiceThreadId !== thread.id || placement.driverKind === "codex"),
   );
 }
 

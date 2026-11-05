@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import {
   OpensteerError,
+  voiceModelSelection,
   type AgentEvent,
   type EnvironmentId,
   type HarnessInstanceId,
@@ -15,6 +16,7 @@ import {
   type HostApiServerContext,
   type RunnerVoiceCommand,
 } from "@opensteer/protocol";
+import type { ThreadService } from "../threads/thread-service.js";
 
 /** How long a new call waits for what is running on the Voice Thread to end, and how often it looks. */
 const voiceThreadWaitMs = 10_000;
@@ -37,12 +39,14 @@ export function createVoiceHandlers(dependencies: {
     | "environmentIsAvailableToUser"
     | "listAgentHarnessInstancesForUser"
     | "getHarnessCatalog"
+    | "getThreadForOwner"
     | "openVoiceThread"
     | "startVoiceCall"
     | "resolveVoiceCall"
     | "stopVoiceCall"
   >;
   readonly runners: Pick<RunnerRegistry, "voice">;
+  readonly threads: Pick<ThreadService, "configure">;
   readonly publishWorkspaceEvent?: (event: AgentEvent) => void;
 }): Pick<
   HostApiHandlers,
@@ -90,12 +94,12 @@ export function createVoiceHandlers(dependencies: {
       });
     return rpcSuccess({});
   };
-  const requireAccount = async (
+  const usableCatalog = async (
     ownerId: UserId,
     input: { environmentId: EnvironmentId; harnessInstanceId: HarnessInstanceId },
   ) => {
     if (!(await dependencies.store.environmentIsAvailableToUser(input.environmentId, ownerId)))
-      throw unavailable();
+      return null;
     const [profile] = await dependencies.store.listAgentHarnessInstancesForUser(ownerId, {
       id: input.harnessInstanceId,
       limit: 1,
@@ -108,15 +112,24 @@ export function createVoiceHandlers(dependencies: {
       profile.removedAt ||
       profile.driverKind !== "codex"
     )
-      throw unavailable();
+      return null;
     const catalog = await dependencies.store.getHarnessCatalog(
       input.environmentId,
       input.harnessInstanceId,
     );
-    if (
-      !catalog?.connections.some((c) => c.authKind === "subscription" && c.status === "connected")
+    return catalog?.connections.some(
+      (c) => c.authKind === "subscription" && c.status === "connected",
     )
-      throw unavailable();
+      ? catalog
+      : null;
+  };
+  const requireAccount = async (
+    ownerId: UserId,
+    input: { environmentId: EnvironmentId; harnessInstanceId: HarnessInstanceId },
+  ) => {
+    const catalog = await usableCatalog(ownerId, input);
+    if (!catalog) throw unavailable();
+    return catalog;
   };
   /** Waits out whatever is finishing on the Voice Thread; the store has asked it to stop. */
   const admit = async (
@@ -150,7 +163,7 @@ export function createVoiceHandlers(dependencies: {
   return {
     "voice.open": async (input, context) => {
       const ownerId = owner(context);
-      await requireAccount(ownerId, input);
+      const catalog = await requireAccount(ownerId, input);
       const { events, ...opened } = await dependencies.store.openVoiceThread({
         ownerId,
         environmentId: input.environmentId,
@@ -158,7 +171,28 @@ export function createVoiceHandlers(dependencies: {
         ...(input.accessMode ? { accessMode: input.accessMode } : {}),
       });
       for (const event of events) dependencies.publishWorkspaceEvent?.(event);
-      return rpcSuccess(opened);
+      if (
+        opened.harnessInstanceId === input.harnessInstanceId ||
+        opened.environmentId !== input.environmentId ||
+        (await usableCatalog(ownerId, opened))
+      )
+        return rpcSuccess(opened);
+      // Its account is gone. A Thread can't change computer, but it can change account here.
+      const thread = await dependencies.store.getThreadForOwner(opened.threadId, ownerId);
+      const modelSelection = voiceModelSelection(catalog);
+      if (!thread || !modelSelection) throw unavailable();
+      await dependencies.threads.configure(
+        { kind: "person", userId: ownerId },
+        {
+          continuation: { expectedProviderSessionId: thread.providerSessionId },
+          harnessInstanceId: input.harnessInstanceId,
+          idempotencyKey: `voice-move:${thread.providerSessionId ?? thread.id}:${input.harnessInstanceId}`,
+          modelSelection,
+          threadId: thread.id,
+          type: "thread.execution.update",
+        },
+      );
+      return rpcSuccess({ ...opened, harnessInstanceId: input.harnessInstanceId });
     },
     "voice.start": async (input, context) => {
       const ownerId = owner(context);

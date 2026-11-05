@@ -32,8 +32,8 @@ export interface VoiceAccount {
   readonly harnessInstanceId: string;
 }
 
-export function voiceAccount(snapshot: HostSnapshot): VoiceAccount | null {
-  const eligible = snapshot.environments.flatMap((environment) =>
+function voiceAccounts(snapshot: HostSnapshot): readonly VoiceAccount[] {
+  return snapshot.environments.flatMap((environment) =>
     environment.harnessCatalogs
       .filter(
         (catalog) =>
@@ -56,6 +56,10 @@ export function voiceAccount(snapshot: HostSnapshot): VoiceAccount | null {
         harnessInstanceId: catalog.harnessInstanceId,
       })),
   );
+}
+
+export function voiceAccount(snapshot: HostSnapshot): VoiceAccount | null {
+  const eligible = voiceAccounts(snapshot);
   const home = snapshot.homeThreadId ? heldThread(snapshot, snapshot.homeThreadId) : null;
   return (
     eligible.find(
@@ -65,6 +69,13 @@ export function voiceAccount(snapshot: HostSnapshot): VoiceAccount | null {
     ) ??
     eligible[0] ??
     null
+  );
+}
+
+function holdsAccount(snapshot: HostSnapshot, account: VoiceAccount): boolean {
+  return voiceAccounts(snapshot).some(
+    ({ environmentId, harnessInstanceId }) =>
+      environmentId === account.environmentId && harnessInstanceId === account.harnessInstanceId,
   );
 }
 
@@ -115,6 +126,8 @@ interface VoiceSession {
   readonly id: string;
   readonly abort: AbortController;
   readonly baseline: HostSnapshot;
+  /** The account the Host opened this call on, which outlives any later choice of Chat's. */
+  account: VoiceAccount | null;
   call: VoiceCall | null;
   speaker: VoiceSpeaker | null;
   releaseThread: (() => void) | null;
@@ -200,6 +213,7 @@ export class VoiceController {
       id: VoiceSessionIdSchema.parse(this.#input.createId()),
       abort: new AbortController(),
       baseline,
+      account: null,
       call: null,
       speaker: null,
       releaseThread: null,
@@ -235,6 +249,7 @@ export class VoiceController {
         await this.#end(session, "connection-failed");
         return;
       }
+      session.account = opened;
       const provider = (this.#input.createProvider ?? createCodexVoiceProvider)({
         ...this.#input,
         environmentId: opened.environmentId,
@@ -402,7 +417,7 @@ export class VoiceController {
       snapshot.user?.id !== session.baseline.user?.id ||
       snapshot.session !== "authenticated" ||
       !snapshot.voiceAvailable ||
-      JSON.stringify(voiceAccount(snapshot)) !== JSON.stringify(voiceAccount(session.baseline))
+      (session.account !== null && !holdsAccount(snapshot, session.account))
     ) {
       void this.#end(session);
       return;

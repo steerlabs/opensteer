@@ -135,9 +135,8 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
       executionPlacements={placements.filter(
         (placement) =>
           placement.environmentId === thread.environmentId &&
-          // Codex hands speech to a turn on this same Thread, so only its own account can carry it.
-          (thread.id !== snapshot.voiceThreadId ||
-            placement.harnessInstanceId === thread.harnessInstanceId),
+          // Only Codex carries a call, so this Thread can change account but not engine.
+          (thread.id !== snapshot.voiceThreadId || placement.driverKind === "codex"),
       )}
       thread={thread}
       workspace={workspace}
