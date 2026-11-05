@@ -14,7 +14,7 @@ export function VoiceAsk() {
   if (!ask || !host.voiceThreadId) return null;
   return ask.kind === "passwords" ? (
     <div className="voice-ask">
-      <PasswordsSuggestion card={ask.card} site={ask.site} />
+      <PasswordsSuggestion offer={ask.offer} />
     </div>
   ) : (
     <VoiceRequests threadId={host.voiceThreadId} />

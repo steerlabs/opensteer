@@ -1103,14 +1103,14 @@ function toolEntryId(runId: string | null, callId: string): string {
 export function requestReceipt(
   request: Extract<Request, { status: "declined" | "fulfilled" | "withdrawn" }>,
 ): RequestReceiptEntry {
-  const passwordsSetUpSite = browserSignInPasswordsSetUpSite(request);
+  const passwordsOffer = browserSignInPasswordsOffer(request);
   return {
     createdAt: request.resolvedAt,
     ...(request.status === "declined" ? { declined: true } : {}),
     id: `request:${request.id}`,
     kind: "request",
     outcome: requestOutcome(request),
-    ...(passwordsSetUpSite === null ? {} : { passwordsSetUpSite }),
+    ...(passwordsOffer === null ? {} : { passwordsOffer }),
     requestId: request.id,
     requestKind: request.kind,
     runId: request.originatingRunId,
@@ -1156,15 +1156,15 @@ function requestOutcome(request: Request): string {
   return prefix;
 }
 
-function browserSignInPasswordsSetUpSite(request: Request): string | null {
+function browserSignInPasswordsOffer(
+  request: Request,
+): NonNullable<RequestReceiptEntry["passwordsOffer"]> | null {
   if (request.payload.kind !== "browser.sign-in" || request.status !== "fulfilled") return null;
   const response = BrowserSignInRequestResponseSchema.safeParse(
     request.response.kind === "external" ? request.response.value : null,
   );
-  return response.success &&
-    response.data.outcome === "not-signed-in" &&
-    response.data.passwords === "not-set-up"
-    ? request.payload.site
+  return response.success && response.data.outcome === "not-signed-in" && response.data.passwords
+    ? { need: response.data.passwords, site: request.payload.site }
     : null;
 }
 

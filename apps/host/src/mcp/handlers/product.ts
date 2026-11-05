@@ -36,6 +36,7 @@ import { computerAppIdentityKey } from "@opensteer/protocol";
 
 import type { BrowserService } from "../../browser/browser-service.js";
 import type { BrowserSourceService } from "../../browser/browser-source-service.js";
+import { passwordsOfferGuidance } from "../../browser/passwords-offers.js";
 import type { BrowserTabGroupService } from "../../browser/browser-tab-group-service.js";
 import type { PlaceContextService } from "../../computer-use/place-context-service.js";
 import type { ComputerUseService } from "../../computer-use/computer-use-service.js";
@@ -1009,7 +1010,7 @@ export class ProductToolHandlers {
     const claims = requireRun(caller).claims;
     const requestId = operationId(caller, operationKey, "sign_in");
 
-    return await this.#browserSources.agentSignIn({
+    const result = await this.#browserSources.agentSignIn({
       loginFill: this.#supportsLoginFill(claims),
       callId: requestId,
       ownerId: claims.requestedBy,
@@ -1022,6 +1023,8 @@ export class ProductToolHandlers {
       threadId: claims.threadId,
       workspaceId: claims.workspaceId,
     });
+    const guidance = passwordsOfferGuidance(result);
+    return guidance === null ? result : { ...result, guidance };
   }
 
   async machine_full_disk_access_request({

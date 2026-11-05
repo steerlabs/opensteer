@@ -3928,7 +3928,12 @@ describe("the Voice Thread", () => {
       ),
     );
     await act(async () =>
-      voice.publish({ ask: { card: false, kind: "passwords", site: "example.com" } }),
+      voice.publish({
+        ask: {
+          kind: "passwords",
+          offer: { credential: "login", need: "not-set-up", site: "example.com" },
+        },
+      }),
     );
     expect(occurrences(container, "Opensteer Passwords")).toBe(1);
   });

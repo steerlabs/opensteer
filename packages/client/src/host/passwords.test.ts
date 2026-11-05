@@ -4,6 +4,8 @@ import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import { describe, expect, it } from "vitest";
 import {
   browserSignInStep,
+  passwordsOfferLine,
+  passwordsOfferNeedHere,
   passwordSignInAccountList,
   passwordSignInConsent,
   passwordSignInAllowRemembers,
@@ -246,6 +248,30 @@ describe("passwordsSettingsState", () => {
     expect(passwordsWaitingDetail(2)).toBe(
       "2 password or card requests to answer in their conversations",
     );
+  });
+});
+
+describe("the offer of Passwords", () => {
+  it("follows what this Mac says now, newer than what the agent was told", () => {
+    expect(passwordsOfferNeedHere("not-set-up", null)).toBe("not-set-up");
+    expect(passwordsOfferNeedHere("ready", "on")).toBe("no-login");
+    expect(passwordsOfferNeedHere("ready", "off")).toBe("off");
+    expect(passwordsOfferNeedHere("unsupported", null)).toBeNull();
+    expect(passwordsOfferNeedHere(null, null)).toBeNull();
+  });
+
+  it("never sends the person back to tell the agent about a login", () => {
+    for (const need of ["not-set-up", "no-login", "off"] as const) {
+      for (const computer of [null, "Tim’s Mac"]) {
+        const { after, before, name } = passwordsOfferLine({
+          card: false,
+          computer,
+          need,
+          site: "https://brex.com",
+        });
+        expect(`${before}${name}${after}`).not.toMatch(/agent(?! sign-ins)(?!s sign in)/iu);
+      }
+    }
   });
 });
 

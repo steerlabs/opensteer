@@ -25,7 +25,8 @@ interface AskedState {
 }
 
 const selectPasswords = ({ ask }: VoiceSnapshot) => ask?.kind === "passwords";
-const selectPasswordsCard = ({ ask }: VoiceSnapshot) => ask?.kind === "passwords" && ask.card;
+const selectPasswordsOffer = ({ ask }: VoiceSnapshot) =>
+  ask?.kind === "passwords" ? ask.offer : null;
 const selectOthers = ({ ask }: VoiceSnapshot) => (ask?.kind === "request" ? ask.others : 0);
 
 /**
@@ -99,14 +100,14 @@ function sameAsk(left: AskedState, right: AskedState): boolean {
 }
 
 function AskedPasswords(props: { readonly hostClient: HostClient }): ReactNode {
-  const card = useVoiceValue(selectPasswordsCard);
+  const offer = useVoiceValue(selectPasswordsOffer);
   const deploymentId = useMobileClient().getSnapshot().selection.deploymentId;
   const userId = useHostUserId(props.hostClient);
-  if (deploymentId === null || userId === null) return null;
+  if (deploymentId === null || userId === null || offer === null) return null;
   return (
     <Animated.View entering={appear} exiting={exit}>
       <PasswordsSuggestion
-        card={card}
+        offer={offer}
         deploymentId={deploymentId}
         hostClient={props.hostClient}
         userId={userId}

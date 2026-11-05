@@ -43,7 +43,7 @@ import { previewPasswordsSignInCard } from "./desktop/desktop-preview-bridge.js"
  *   resolved  every way a sign-in ends: cards, Request receipts and `sign_in` steps
  *   settings  Settings → Passwords                            `&state=` below, `&waiting` adds two sign-ins
  *   suggestion the offer under a reply, elsewhere; `&here&state=not-set-up` on the Mac, where
- *             Set up finishes setup; `&work` reads as a task
+ *             Set up finishes setup; `&need=no-login` asks for the login; `&work` reads as a task
  *
  * Settings states: not-set-up, ready (default), ready-off, development,
  * needs-reset, unsupported (hardware), unsupported-platform, unsupported-os,
@@ -361,7 +361,11 @@ function SuggestionView() {
     },
     {
       ...signInStep(
-        { passwords: "not-set-up", site: "https://brex.com", status: "not-signed-in" },
+        {
+          passwords: search.get("need") === "no-login" ? "no-login" : "not-set-up",
+          site: "https://brex.com",
+          status: "not-signed-in",
+        },
         0,
       ),
       runId,
@@ -390,7 +394,7 @@ function SuggestionView() {
       <AgentTranscript
         conversation={!search.has("work")}
         entries={entries}
-        renderPasswordsSuggestion={(site) => <PasswordsSuggestion site={site} />}
+        renderPasswordsSuggestion={(offer) => <PasswordsSuggestion offer={offer} />}
       />
     </div>
   );

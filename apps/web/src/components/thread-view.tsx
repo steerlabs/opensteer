@@ -1,4 +1,4 @@
-import { threadMark } from "@opensteer/client/host";
+import { threadMark, type PasswordsSetupOffer } from "@opensteer/client/host";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import { useCallback, useId, useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useLocation, useParams, useSearchParams } from "react-router";
@@ -163,8 +163,8 @@ const readingPositions = new Map<
   { readonly scrollTop: number; readonly seenSequence: string | null }
 >();
 
-const renderPasswordsSuggestion = (site: string, credential?: "card" | "login") => (
-  <PasswordsSuggestion site={site} card={credential === "card"} />
+const renderPasswordsSuggestion = (offer: PasswordsSetupOffer) => (
+  <PasswordsSuggestion offer={offer} />
 );
 
 function ThreadView({

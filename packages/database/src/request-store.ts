@@ -2518,6 +2518,21 @@ export class RequestStore {
     return row ? requestFromRow(row) : null;
   }
 
+  /** Whether a durable Request from this Run, outside `except`, still waits for someone. */
+  async hasPendingDurableRequest(input: {
+    readonly except: readonly RequestId[];
+    readonly originatingRunId: RunId;
+  }): Promise<boolean> {
+    let pending = this.#database
+      .selectFrom("requests")
+      .select("id")
+      .where("originatingRunId", "=", input.originatingRunId)
+      .where("mode", "=", "durable")
+      .where("status", "=", "pending");
+    if (input.except.length > 0) pending = pending.where("id", "not in", input.except);
+    return (await pending.limit(1).executeTakeFirst()) !== undefined;
+  }
+
   /** Current requester authority over a stored durable sign-in, independent of its Run's status. */
   async hasDurablePasswordSignInRequestAuthority(input: {
     readonly ownerId: UserId;

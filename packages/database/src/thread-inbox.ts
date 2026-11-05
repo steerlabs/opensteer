@@ -605,11 +605,11 @@ async function inputUpdatedEvent(
 
 /** Whether the person stopped this Run themselves, rather than a deadline or a cancelled task. */
 async function runStoppedByPerson(
-  transaction: Transaction<DatabaseSchema>,
+  database: Kysely<DatabaseSchema>,
   runId: RunId,
 ): Promise<boolean> {
   return (
-    (await transaction
+    (await database
       .selectFrom("commands")
       .select("id")
       .where("runId", "=", runId)
@@ -618,6 +618,21 @@ async function runStoppedByPerson(
       .limit(1)
       .executeTakeFirst()) !== undefined
   );
+}
+
+/** Whether the person stopped the Thread's newest Run themselves. */
+export async function latestRunStoppedByPerson(
+  database: Kysely<DatabaseSchema>,
+  threadId: ThreadId,
+): Promise<boolean> {
+  const latest = await database
+    .selectFrom("runs")
+    .select("id")
+    .where("threadId", "=", threadId)
+    .orderBy("runOrdinal", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  return latest !== undefined && (await runStoppedByPerson(database, latest.id));
 }
 
 /**

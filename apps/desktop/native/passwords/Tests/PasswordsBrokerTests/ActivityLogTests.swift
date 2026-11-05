@@ -143,7 +143,6 @@ final class CopyParityTests: XCTestCase {
     let shared =
       [
         Copy.agentSignIns, Copy.setUpLead, Copy.unsupported, Copy.developmentBanner, Copy.appName,
-        Copy.setUpNote,
       ]
       + Copy.setUpFacts
     for sentence in shared {
@@ -169,11 +168,10 @@ final class CopyParityTests: XCTestCase {
         XCTAssertFalse(sentence.contains(claim), "“\(claim)” in “\(sentence)”")
       }
     }
-    XCTAssertTrue(Copy.setUpLead.contains("never sends your password to the agent"))
-    XCTAssertTrue(Copy.setUpLead.contains("website or app, which can read it"))
+    XCTAssertTrue(Copy.setUpFacts[0].contains("never sends your password to the agent"))
+    XCTAssertTrue(Copy.setUpFacts[0].contains("website or app, which can read it"))
     XCTAssertEqual(
-      Copy.setUpLead.components(separatedBy: ". ").last,
-      "You allow an account from any device signed in to this Opensteer.")
+      Copy.setUpFacts[1], "You allow an account from any device signed in to this Opensteer.")
     XCTAssertEqual(
       Copy.startFreshConfirm,
       "This permanently deletes the passwords saved on this Mac. Ones you added or changed here can’t be recovered unless you also keep them somewhere else."
@@ -206,7 +204,7 @@ final class CopyParityTests: XCTestCase {
         Copy.olderVersion, Copy.startFreshConfirm, Copy.deleteExport, Copy.couldNotRead,
         Copy.authenticationCancelled,
         Copy.accountChanged, Copy.allowedIn("Main", site: nil),
-      ] + Copy.setUpFacts + ImportSource.allCases.flatMap(\.steps)
+      ] + Copy.setUpFacts + ImportSource.allCases.map(\.exportStep)
       + ImportSource.allCases.compactMap(\.note)
     for sentence in sentences {
       XCTAssertFalse(sentence.contains("'"), "curly apostrophes: \(sentence)")
@@ -216,8 +214,7 @@ final class CopyParityTests: XCTestCase {
       }
     }
     // Titles end without a period unless they ask.
-    for title in [Copy.setUpDone, Copy.locked] { XCTAssertFalse(title.hasSuffix("."), title) }
-    XCTAssertEqual(Copy.setUpDone, "You’re all set")
+    for title in [Copy.addPasswords, Copy.locked] { XCTAssertFalse(title.hasSuffix("."), title) }
     XCTAssertEqual(
       Copy.setUpFacts.last,
       "In the browser, each password goes only to its own website. In apps, the agent checks it’s the real app."

@@ -597,10 +597,6 @@ label.action-row input {
   color: var(--ember);
 }
 
-.passwords-suggestion--done > svg {
-  color: var(--green);
-}
-
 .passwords-suggestion__text {
   min-width: 0;
   min-height: var(--control-height-sm);

@@ -1,5 +1,5 @@
 import type { VoiceView } from "@opensteer/protocol/voice";
-import type { ActivityIcon } from "../host/agent-activity-model.js";
+import type { ActivityIcon, PasswordsSetupOffer } from "../host/agent-activity-model.js";
 import type { WorkspaceSurfaceDestination } from "../host/surfaces.js";
 
 /**
@@ -143,7 +143,7 @@ export interface VoiceSnapshot {
 /** What rides on the call bar, wherever the person is. Each kind is its client's existing card. */
 export type VoiceAsk =
   | { readonly kind: "request"; readonly requestId: string; readonly others: number }
-  | { readonly kind: "passwords"; readonly site: string; readonly card: boolean };
+  | { readonly kind: "passwords"; readonly offer: PasswordsSetupOffer };
 
 export const idleVoiceSnapshot: VoiceSnapshot = {
   available: false,

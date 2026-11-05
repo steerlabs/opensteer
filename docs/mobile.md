@@ -100,6 +100,14 @@ rebuilt binary; a JavaScript update cannot add them. Expo's generated UIKit scen
 sole startup and link owner, and multiple scenes stay disabled so there is one navigation history
 and draft owner.
 
+## The call bar
+
+The bar floats at the app's root, so an iOS sheet covers it while open. `FullWindowOverlay` would
+keep it on top, but a window-level view has no view controller, so the Request card's sheet can't
+present from it and the person couldn't approve. Android moves the bar with `Keyboard` events
+rather than `useAnimatedKeyboard`, which clears the decor insets listener on exit and leaves form
+sheets without keyboard handling.
+
 ## This iPhone's apps
 
 While the app is open, an iPhone can serve Calendar, Contacts, Reminders, current Location and

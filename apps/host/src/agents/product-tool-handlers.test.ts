@@ -288,7 +288,12 @@ describe("Product tool handlers", () => {
           site: result.site,
           reason: "Read the account",
         }),
-      ).resolves.toEqual({ requestId, type: `${type}.result`, result });
+      ).resolves.toEqual({
+        requestId,
+        type: `${type}.result`,
+        // On the result, because a long-lived session keeps the skill it read first.
+        result: { ...result, guidance: expect.stringContaining("call sign_in again") },
+      });
       expect(agentSignIn).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId, site: result.site }),
       );

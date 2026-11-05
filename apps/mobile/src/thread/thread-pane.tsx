@@ -1097,14 +1097,14 @@ function ThreadPaneForUser(
       ) : null,
     [thread?.role, inputQueue, queueCanRespond, hostClient, restoreQueuedDraft, viewerUserId],
   );
-  const offersPasswords = useMemo(() => passwordsSetupOffer(groups) !== null, [groups]);
+  const passwordsOffer = useMemo(() => passwordsSetupOffer(groups), [groups]);
   const listFooter =
-    offersPasswords && viewerUserId !== null && !(voiceThread && onCall) ? (
+    passwordsOffer !== null && viewerUserId !== null && !(voiceThread && onCall) ? (
       <>
         <PasswordsSuggestion
-          card={passwordsSetupOffer(groups)?.credential === "card"}
           deploymentId={props.deploymentId}
           hostClient={hostClient}
+          offer={passwordsOffer}
           style={styles.passwords}
           userId={viewerUserId}
         />

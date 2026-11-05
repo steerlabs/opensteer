@@ -49,6 +49,9 @@ public final class UnlockedVault {
     grants = []
   }
 
+  /// Whether nothing at all is saved, read without decrypting anything.
+  public var isEmpty: Bool { entries.isEmpty }
+
   /// Every item, decrypted. Any object that fails to decrypt is an error.
   public func items() throws -> [Item] {
     let key = try requireOpen()

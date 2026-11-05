@@ -159,7 +159,7 @@ import {
 import { threadPathLinks, type ChannelLinks } from "./store-primitives.js";
 import * as taskDone from "./task-done.js";
 import { type ThreadHistoryQuery } from "./thread-history.js";
-import { type AssignmentReturnDrain } from "./thread-inbox.js";
+import { latestRunStoppedByPerson, type AssignmentReturnDrain } from "./thread-inbox.js";
 import { executionNodeFromRow, runAttemptFromRow } from "./thread-row-mappers.js";
 import { drainPendingThreadStates } from "./thread-status.js";
 import * as threadStore from "./thread-store.js";
@@ -258,6 +258,9 @@ export class OpensteerStore {
   }
   openVoiceThread(input: Parameters<typeof voiceStore.openVoiceThread>[1]) {
     return voiceStore.openVoiceThread(this.#database, input);
+  }
+  latestRunStoppedByPerson(threadId: ThreadId) {
+    return latestRunStoppedByPerson(this.#database, threadId);
   }
   async stopVoiceCall(ownerId: UserId, sessionId: string) {
     const result = await voiceStore.stopVoiceCall(this.#database, this.#links, ownerId, sessionId);

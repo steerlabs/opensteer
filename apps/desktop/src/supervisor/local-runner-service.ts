@@ -202,13 +202,6 @@ export interface LocalRunnerServiceDependencies {
   readonly userEnvironment?: PersonalUserEnvironmentPort;
 }
 
-export interface LocalRunnerSummary {
-  readonly deploymentId: DeploymentId;
-  readonly runAgents: boolean;
-  readonly runnerName: string;
-  readonly state: DesktopLocalExecutionStatus["runner"]["state"];
-}
-
 interface RunnerSlot {
   /** The module set of the running worker, which a changed `runAgents` restarts. */
   activeRunAgents: boolean | undefined;
@@ -484,18 +477,6 @@ export class LocalRunnerService {
     return this.#reconcileTail;
   }
 
-  async enrolledRunners(): Promise<readonly LocalRunnerSummary[]> {
-    const preference = await readPreference(this.#preferencePath);
-    return Object.entries(preference.runners)
-      .filter((entry) => entry[1].enrolled)
-      .map(([deploymentId, runner]) => ({
-        deploymentId: DeploymentIdSchema.parse(deploymentId),
-        runAgents: runner.runAgents,
-        runnerName: runner.runnerName,
-        state: this.#runners.get(DeploymentIdSchema.parse(deploymentId))?.state ?? "disabled",
-      }));
-  }
-
   async hasEnrolledRunners(): Promise<boolean> {
     const preference = await readPreference(this.#preferencePath);
     return Object.values(preference.runners).some(({ enrolled }) => enrolled);
@@ -760,9 +741,9 @@ export class LocalRunnerService {
      * Two lifetimes run through this worker and only one of them ends. The
      * start call is answered once — connected, cancelled, or failed — while the
      * child keeps reporting for as long as it lives. Settling the startup
-     * promise therefore must not stop the slot and the tray from following the
-     * child: a reconnect after a disconnect has to read as running again, and a
-     * failure reported long after startup still has to mark the slot failed.
+     * promise therefore must not stop the slot from following the child: a
+     * reconnect after a disconnect has to read as running again, and a failure
+     * reported long after startup still has to mark the slot failed.
      */
     return new Promise<DesktopLocalExecutionStatus>((resolvePromise, rejectPromise) => {
       let statusGeneration = 0;
