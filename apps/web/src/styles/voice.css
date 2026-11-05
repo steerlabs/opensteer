@@ -26,7 +26,7 @@
 /* The bar with no composer claims this much of the middle, so a desktop tab,
    a native view drawn over the app, shrinks to leave it rather than hiding it. */
 .workspace__middle {
-  padding-bottom: var(--voice-reserve, 0px);
+  padding-bottom: var(--voice-reserve, var(--sheet-gutter));
 }
 
 .voice-float {
