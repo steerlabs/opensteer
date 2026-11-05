@@ -354,7 +354,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     // picture is newer than it; the trailing frames of that page activity then need to finish.
     const settle = async (page: Page) => {
       const red = (await read(
-        `(()=>{const s=document.body.style;const light=s.backgroundColor!=="rgb(255, 255, 255)";s.backgroundColor=light?"rgb(255, 255, 255)":"rgb(200, 200, 200)";return light?255:200})()`,
+        `(()=>{const s=document.body.style;const light=s.backgroundColor==="rgb(200, 200, 200)";s.backgroundColor=light?"rgb(255, 255, 255)":"rgb(200, 200, 200)";return light?255:200})()`,
       )) as number;
       await page.waitForFunction(
         (expected) => Math.abs(Number(Reflect.get(window, "popupCorner")) - expected) < 24,
