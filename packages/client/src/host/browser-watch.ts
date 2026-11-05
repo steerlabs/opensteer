@@ -20,6 +20,18 @@ export interface BrowserWatchState {
   readonly inputError?: string | null;
 }
 const empty: BrowserWatchState = { frame: null, status: "unavailable", error: null };
+/**
+ * Cleanup, layout and cursor hints are moot without a live view, so they drop
+ * quietly while a view is away; a discrete action must still refuse.
+ */
+export function browserCommandNeedsNoView(command: BrowserCommand): boolean {
+  return (
+    command.type === "input.cancel" ||
+    command.type === "stream.unsubscribe" ||
+    command.type === "viewport.follow" ||
+    command.type.startsWith("cursor.")
+  );
+}
 interface Watch {
   readonly sessionId: string;
   readonly surfaceId: string;
@@ -127,18 +139,9 @@ export class BrowserWatchStore {
     const target = this.#targets.get(this.#key(sessionId, surfaceId));
     if (this.mode !== "control" || !target?.synchronized || target.socket?.readyState !== 1) {
       // A connecting socket has admitted no input; a departed socket's Host
-      // producer cleanup releases its held state. Cleanup never needs to wait
-      // for a replacement stream, while a discrete action must still refuse.
-      if (command.type === "input.cancel") {
-        if (target) target.generation++;
-        return;
-      }
-      if (
-        command.type === "viewport.follow" ||
-        command.type === "stream.unsubscribe" ||
-        command.type.startsWith("cursor.")
-      )
-        return;
+      // producer cleanup releases its held state.
+      if (command.type === "input.cancel" && target) target.generation++;
+      if (browserCommandNeedsNoView(command)) return;
       throw new Error("The targeted browser control is not synchronized.");
     }
     if (

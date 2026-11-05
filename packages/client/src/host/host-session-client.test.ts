@@ -7321,6 +7321,13 @@ describe("HttpHostClient hosted browser", () => {
     expect(() =>
       client.sendBrowserCommand(sessionId, { type: "stream.unsubscribe" }),
     ).not.toThrow();
+    // A streamed view resets its cursor around the moments it holds no tab.
+    expect(() =>
+      client.sendBrowserCommand(sessionId, {
+        surfaceId: BrowserSurfaceIdSchema.parse("surface_released"),
+        type: "cursor.reset",
+      }),
+    ).not.toThrow();
     expect(() => client.sendBrowserCommand(sessionId, { type: "navigation.reload" })).toThrow(
       "The browser view is not synchronized.",
     );
