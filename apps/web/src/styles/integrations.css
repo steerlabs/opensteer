@@ -178,9 +178,11 @@
   box-shadow: none;
 }
 
-.intg-icon--mark svg {
+.intg-icon--mark svg,
+.intg-icon--mark img {
   width: 58%;
   height: 58%;
+  padding: 0;
 }
 
 .intg-icon--monogram {

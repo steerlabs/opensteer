@@ -2,11 +2,7 @@ import { integrationMark } from "@opensteer/client/integrations";
 import { bundledIntegrationArt } from "./bundled-icons.js";
 import { integrationHue } from "./helpers.js";
 
-/**
- * Icon tile for one integration: the shipped tile or mark the tree has for it,
- * else an emoji or image a definition carries, else a hue-tinted monogram so
- * an unknown integration still gets a stable, distinguishable mark.
- */
+/** Local artwork and vector marks share the same tile treatment on every client. */
 export function IntegrationIcon({
   icon,
   id,
@@ -20,9 +16,11 @@ export function IntegrationIcon({
 }) {
   const className = `intg-icon ${size === "lg" ? "intg-icon--lg" : ""}`;
   const mark = integrationMark(id);
-  if (mark?.kind === "art")
+  if (mark?.kind === "art" || mark?.kind === "logo")
     return (
-      <span className={`${className} intg-icon--art`}>
+      <span
+        className={`${className} ${mark.kind === "art" ? "intg-icon--art" : "intg-icon--mark"}`}
+      >
         <img alt="" decoding="async" src={bundledIntegrationArt[mark.art]} />
       </span>
     );
