@@ -8,7 +8,7 @@ Choose the identity for each piece of work yourself. Ask the person which profil
 
 Main inherits the owner’s profiles: when the person supplies an existing owner profile’s ID, open that ID directly. A profile the Workspace that needs it can already use never needs a Request; asking for it is refused. Omit `workspaceId` to ask for this Workspace. From Main, `browser_profile_list` shows every profile the person has, but a Project can use only those granted to it: to give a Project one, pass the Project's `workspaceId`.
 
-The Request returns `pending`. Pending permits only independent work; do not poll, repeat or route around the Request. The continuation names the profile the person chose, which may differ from your suggestion: open that one, before anyone signs in. If they decline, carry on without it and do not ask again unless the person brings it up.
+The call waits for the person and returns the outcome, naming the profile they chose, which may differ from your suggestion: open that one, before anyone signs in. Pending gives no profile; do not poll, repeat or route around the Request. If they decline, carry on without it and do not ask again unless the person brings it up.
 
 ## Sessions
 

@@ -1121,6 +1121,7 @@ export function requestReceipt(
       request.payload.kind === "browser.password-sign-in" && request.payload.credential === "card"
         ? cardUseTitle(request.payload.site)
         : requestTitleText(request.presentation),
+    // Only native harness waits are recorded; durable tool-call holds are not measured here.
     ...(request.mode === "live" ? { waitedSince: request.createdAt } : {}),
   };
 }
