@@ -23,6 +23,12 @@
   padding-bottom: var(--space-8);
 }
 
+/* The bar with no composer claims this much of the middle, so a desktop tab,
+   a native view drawn over the app, shrinks to leave it rather than hiding it. */
+.workspace__middle {
+  padding-bottom: var(--voice-reserve, 0px);
+}
+
 .voice-float {
   position: absolute;
   bottom: var(--space-20);
@@ -34,6 +40,109 @@
 }
 .voice-float > * {
   pointer-events: auto;
+}
+
+.voice-float,
+.voice-dock:not(:empty) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.voice-ask {
+  border: 1px solid var(--rim-attention);
+  border-radius: var(--radius-lg);
+  background: var(--sheen) var(--surface-elevated);
+  box-shadow: var(--edge-attention), var(--lift-float);
+  padding: var(--space-4) var(--space-8);
+  animation: rise-in var(--duration-med) var(--ease-out) both;
+}
+
+.voice-slot {
+  padding: 0 var(--space-16) var(--space-14);
+}
+
+.voice-start {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-8);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-lg);
+  background: var(--sheen) var(--surface-elevated);
+  box-shadow: var(--edge-plate), var(--lift-float);
+}
+.voice-start > .exec-controls {
+  margin-left: auto;
+}
+.voice-start__talk {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-8);
+  height: calc(var(--control-height) + 2px);
+  padding: 0 var(--space-14);
+  border-radius: var(--radius-full);
+  background: var(--sheen-accent) var(--fill-accent);
+  box-shadow: var(--edge-accent);
+  color: var(--ink-on-ember);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+.voice-start__talk:hover:not(:disabled) {
+  background-color: var(--fill-accent-hover);
+}
+.voice-start__talk:disabled {
+  opacity: 0.45;
+}
+.voice-start__talk svg {
+  width: 15px;
+  height: 15px;
+}
+
+.voice-island__tasks {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-6);
+  height: 24px;
+  padding: 0 var(--space-10);
+  border-radius: var(--radius-full);
+  background: var(--fill-quiet);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+}
+.voice-island__tasks .spinner {
+  width: 10px;
+  height: 10px;
+}
+
+.voice-mark {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-full);
+  background: radial-gradient(
+    circle at 34% 30%,
+    var(--orb-light) 0%,
+    var(--ember-bright) 30%,
+    var(--ember) 58%,
+    var(--orb-core) 100%
+  );
+}
+.side-home__timer {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.voice-call-mark {
+  align-self: center;
+  margin: var(--space-12) auto;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  text-align: center;
 }
 
 .voice-island {

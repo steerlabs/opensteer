@@ -30,13 +30,14 @@ import {
   describeHostConnection,
   groupTasksByProject,
   listedRowThreadId,
+  requestsWaitingOn,
   taskRowLabel,
   type HostClient,
   type PlaceItem,
   type TaskRow,
 } from "@opensteer/client/host";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
-import { useHostSelector, usePlaceList } from "@opensteer/client/react";
+import { useHostSelector, usePlaceList, useVoice } from "@opensteer/client/react";
 import { deploymentNameFrom } from "./deployment-name.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
 import { Icon } from "./icon.js";
@@ -569,6 +570,15 @@ export function Sidebar({
           row={list.chat}
           workspace={workspace}
         />
+        <VoiceRow
+          asked={
+            snapshot.voiceThreadId !== null &&
+            requestsWaitingOn(snapshot.waitingRequests, snapshot.voiceThreadId).length > 0
+          }
+          onNavigate={onCloseMobile}
+          open={openThreadId !== null && openThreadId === snapshot.voiceThreadId}
+          workspace={workspace}
+        />
         {/* No tasks yet, no heading: ⌘N and Chat are the ways to start
                   one, and the heading arrives with the first. */}
         {!hasTasksSection ? null : (
@@ -927,6 +937,66 @@ function ChatRow({
         ) : null}
       </Link>
     </div>
+  );
+}
+
+/** The way to the person's Voice Thread, which shows a live call wherever they are. */
+function VoiceRow({
+  asked,
+  onNavigate,
+  open,
+  workspace,
+}: {
+  readonly asked: boolean;
+  readonly onNavigate: () => void;
+  readonly open: boolean;
+  readonly workspace: WorkspaceState;
+}) {
+  const { controller, snapshot } = useVoice();
+  if (!controller || (!snapshot.available && snapshot.phase === "idle")) return null;
+  const go = async () => {
+    const id = await controller.openThread();
+    if (!id) return;
+    onNavigate();
+    workspace.nav.openConversation(`/threads/${encodeURIComponent(id)}`);
+  };
+  return (
+    <div
+      className={["side-home", open ? (workspace.work ? "is-open" : "is-filled") : ""]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      <button
+        aria-current={open ? "page" : undefined}
+        className="side-home__main"
+        onClick={() => void go()}
+        type="button"
+      >
+        <span aria-hidden className="voice-mark" />
+        <span className="side-home__title">Voice</span>
+        {snapshot.since !== null ? (
+          <VoiceTimer since={snapshot.since} />
+        ) : asked ? (
+          <span aria-hidden className="side-bang">
+            !
+          </span>
+        ) : null}
+      </button>
+    </div>
+  );
+}
+
+function VoiceTimer({ since }: { readonly since: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, []);
+  const seconds = Math.max(0, Math.floor((now - since) / 1_000));
+  return (
+    <span className="side-home__timer">
+      {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}
+    </span>
   );
 }
 

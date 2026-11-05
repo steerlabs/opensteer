@@ -165,6 +165,8 @@ export interface VoiceControls {
   subscribeLevel(listener: (levels: VoiceLevels) => void): () => void;
   /** Fires when the call's agent changed the screen. */
   subscribeShown?(listener: () => void): () => void;
+  /** The person's Voice Thread, created the first time anyone needs it. */
+  openThread(): Promise<string | null>;
   start(): Promise<void>;
   stop(): unknown;
   setMuted(muted: boolean): void;

@@ -341,7 +341,6 @@ function page(
     homeDraft: "",
     homeHandoff: null,
     homeThreadId: null,
-    voiceThreadId: null,
     hostClient,
     localExecutionAction: null,
     localExecutionError: null,

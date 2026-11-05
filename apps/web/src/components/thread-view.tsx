@@ -57,6 +57,8 @@ import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { Icon } from "./icon.js";
 import type { ComposerQuote, ComposerRestore } from "./composer.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
+import { useVoice } from "@opensteer/client/react";
+import { VoiceStart } from "./voice.js";
 import { QueuedMessages } from "./queued-messages.js";
 import { setThreadReading } from "./thread-reading.js";
 import { ThreadFind } from "./thread-find.js";
@@ -131,7 +133,11 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
         "disconnected"
       }
       executionPlacements={placements.filter(
-        (placement) => placement.environmentId === thread.environmentId,
+        (placement) =>
+          placement.environmentId === thread.environmentId &&
+          // Codex hands speech to a turn on this same Thread, so only its own account can carry it.
+          (thread.id !== snapshot.voiceThreadId ||
+            placement.harnessInstanceId === thread.harnessInstanceId),
       )}
       thread={thread}
       workspace={workspace}
@@ -262,7 +268,10 @@ function ThreadView({
     typeof location.state.focusRequest === "string"
       ? location.state.focusRequest
       : null;
-  const dock = useRequestDock(thread.id, requests);
+  const voiceThread = snapshot.voiceThreadId === thread.id;
+  const { snapshot: call } = useVoice();
+  // On a call, this Thread's Requests ride on the call bar, on every screen.
+  const dock = useRequestDock(thread.id, requests, voiceThread && call.phase !== "idle");
   const { items: dockedRequests, openId: openRequestId, setOpenId: openRequest } = dock;
   // The exact request is opened and focused once it can be: its body may load
   // after the conversation does, and it may wait behind another request. Once
@@ -1155,7 +1164,24 @@ function ThreadView({
             threadId={thread.id}
           />
         ) : null}
-        <InputSurface
+        {voiceThread ? (
+          <VoiceStart
+            controls={
+              <ExecutionControls
+                disabled={!canRespond}
+                onAuthenticate={openHarnessAuthentication ?? undefined}
+                onRefresh={refreshHarnessCatalog}
+                onApply={applyExecution}
+                placements={executionPlacements}
+                preferences={executionPreferences}
+                review={reviewSelection}
+                reviewFresh={reviewFresh}
+                selection={threadSelection}
+              />
+            }
+          />
+        ) : null}
+        {voiceThread ? null : (<InputSurface
           autoContext={home}
           voice={home}
           variant={conversational ? "conversation" : "work"}
@@ -1221,7 +1247,7 @@ function ThreadView({
               />
             </>
           }
-        />
+        />)}
         {dock.composerHidden ? null : (
           <UsageNotice
             action={

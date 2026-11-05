@@ -1,3 +1,4 @@
+import { voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
 import { AppMark } from "./computer-apps/computer-use-section.js";
 import { useTaskSnapshot } from "./task-rows.js";
@@ -1718,6 +1719,13 @@ function Reply({ message, streaming }: { message: MessageEntry; streaming: boole
  * considers authorship so another agent's update never looks like the reader's words.
  * A queued message is drawn as it will be once sent; only its edge says it waits.
  */
+const callMarkTime = (at: string) =>
+  new Date(at).toLocaleString(undefined, {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+
 export function TranscriptMessage({
   message,
   reveal,
@@ -1752,6 +1760,14 @@ export function TranscriptMessage({
 
   if (message.author.kind === "platform" && message.author.cause === "run-recovery") {
     return <RecoveryNote author={message.author} message={message} reveal={reveal} />;
+  }
+
+  if (message.author.kind === "human" && message.body === voiceCallSeed) {
+    return (
+      <div className="voice-call-mark">
+        Call · <time dateTime={message.createdAt}>{callMarkTime(message.createdAt)}</time>
+      </div>
+    );
   }
 
   // In a conversation every message joins the reply under way, so only a task marks it.
