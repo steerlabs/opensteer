@@ -650,18 +650,6 @@ export class DesktopHostTransport extends HostTransport {
           },
           message: (data) => {
             if (closed) return;
-            if (diagnostic.kind === "realtime") {
-              try {
-                if (typeof data !== "string") throw new Error("Realtime requires JSON text.");
-                HostToClientMessageSchema.parse(JSON.parse(data));
-              } catch (error) {
-                const { issuePaths, ...metadata } = describeRealtimeFrameFailure(data, error);
-                diagnose("desktop.host-socket.frame-unrecognized", {
-                  ...metadata,
-                  issuePaths: issuePaths.join(";"),
-                });
-              }
-            }
             if (browser && !admitted && typeof data === "string") {
               let message: unknown;
               try {
