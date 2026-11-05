@@ -1412,7 +1412,10 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         await service.agentSignIn({ ...ready.agent, callId: randomUUID(), site }),
       ).toMatchObject({ status: "applied" });
       expect(ready.connection.signInStarts()).toHaveLength(0);
-      expect(ready.connection.received.filter((m) => m.type === "signin.probe")).toHaveLength(0);
+      // The sweep still checks what earlier tests offered, on this same connection.
+      expect(
+        ready.connection.received.filter((m) => m.type === "signin.probe" && m.site === site),
+      ).toHaveLength(0);
     } finally {
       await chrome.close();
     }
