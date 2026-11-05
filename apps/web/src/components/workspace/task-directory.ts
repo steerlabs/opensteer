@@ -30,6 +30,14 @@ export function homeThreadKind(
   return snapshot.workspaces.find((workspace) => workspace.homeThreadId === threadId)?.kind ?? null;
 }
 
+/** The conversation a path shows: "/" is Chat even before Chat has a Thread. */
+export function conversationAt(pathname: string, homeThreadId: string | null): string | null {
+  if (pathname === "/") return homeThreadId;
+  return pathname.startsWith("/threads/")
+    ? decodeURIComponent(pathname.slice("/threads/".length))
+    : null;
+}
+
 /** The task list, read once for every mark and row that names a task. */
 export function useTaskDirectory(
   hostClient: HostClient,

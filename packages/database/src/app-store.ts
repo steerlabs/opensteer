@@ -30,6 +30,101 @@ export class AppStore {
     this.#database = database;
   }
 
+  openTab(appId: string, userId: UserId) {
+    return this.setTabOpen(appId, userId, true);
+  }
+  closeTab(appId: string, userId: UserId) {
+    return this.setTabOpen(appId, userId, false);
+  }
+  async openTabWorkspace(appId: string) {
+    return this.#database
+      .selectFrom("apps")
+      .select("workspaceId")
+      .where("id", "=", AppIdSchema.parse(appId))
+      .where("tabOpenedAt", "is not", null)
+      .executeTakeFirst();
+  }
+  async listTabs(userId: UserId) {
+    const rows = await this.#database
+      .selectFrom("apps")
+      .innerJoin("workspaces", "workspaces.id", "apps.workspaceId")
+      .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "apps.workspaceId")
+      .select([
+        "apps.id as appId",
+        "apps.title",
+        "apps.threadId",
+        "apps.workspaceId",
+        "apps.latestVersion",
+        "apps.tabOpenedAt",
+      ])
+      .where("workspaceMemberships.userId", "=", userId)
+      .where("workspaceMemberships.state", "=", "active")
+      .where("workspaces.status", "not in", ["deleting", "deleted"])
+      .where("apps.tabOpenedAt", "is not", null)
+      .orderBy("apps.tabOpenedAt", "desc")
+      .orderBy("apps.id", "asc")
+      .limit(500)
+      .execute();
+    return rows.map(({ tabOpenedAt, ...row }) => ({
+      ...row,
+      openedAt: tabOpenedAt!.toISOString(),
+    }));
+  }
+
+  async setTabOpen(appId: string, userId: UserId, open: boolean) {
+    const id = AppIdSchema.parse(appId);
+    const workspaceId = await withRequestWorkspaceLocks(
+      this.#database,
+      async (transaction) => {
+        const row = await transaction
+          .selectFrom("apps")
+          .select("workspaceId")
+          .where("id", "=", id)
+          .executeTakeFirst();
+        return row ? [row.workspaceId] : [];
+      },
+      async (transaction) => {
+        const row = await transaction
+          .selectFrom("apps")
+          .innerJoin("workspaces", "workspaces.id", "apps.workspaceId")
+          .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "apps.workspaceId")
+          .select(["apps.workspaceId", "apps.tabOpenedAt", "workspaces.status"])
+          .where("apps.id", "=", id)
+          .where("workspaceMemberships.userId", "=", userId)
+          .where("workspaceMemberships.state", "=", "active")
+          .executeTakeFirst();
+        if (!row) throw missing();
+        if (open && (row.status === "deleting" || row.status === "deleted"))
+          throw new OpensteerError({
+            code: "workspace_unavailable",
+            message: "Workspace is awaiting deletion",
+            reason: "workspace-deleting",
+          });
+        if (open && !row.tabOpenedAt) {
+          const count = await transaction
+            .selectFrom("apps")
+            .select((eb) => eb.fn.countAll<number>().as("count"))
+            .where("workspaceId", "=", row.workspaceId)
+            .where("tabOpenedAt", "is not", null)
+            .executeTakeFirstOrThrow();
+          if (Number(count.count) >= 50)
+            throw new OpensteerError({
+              code: "conflict",
+              message: "A Workspace can have at most 50 open app tabs",
+            });
+        }
+        if (open !== (row.tabOpenedAt !== null))
+          await transaction
+            .updateTable("apps")
+            .set({ tabOpenedAt: open ? new Date() : null })
+            .where("id", "=", id)
+            .execute();
+        return row.workspaceId;
+      },
+    );
+    return { workspaceId, appTabs: await this.listTabs(userId) };
+  }
+
   async referencedDigests(): Promise<readonly string[]> {
     return (
       await this.#database.selectFrom("appVersions").select("sha256").distinct().execute()

@@ -1678,7 +1678,7 @@ export class MockPlaceWorld {
       ...places.filter((place) => place.kind !== "browser"),
       ...places.filter((place) => place.kind === "browser"),
     ]) {
-      if (place.availability !== "ready") continue;
+      if (place.availability !== "ready" || place.destination.kind === "opensteer-app") continue;
       for (const occupant of place.occupants.filter((occupant) => occupant.acting)) {
         const runId = liveRuns.get(occupant.threadId);
         if (!runId) continue;

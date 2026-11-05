@@ -781,6 +781,8 @@ type HostSessionState = "authenticated" | "authentication-required" | "checking"
 export type ThreadLookupState = "failed" | "loading" | "missing";
 
 export interface HostSnapshot {
+  readonly openingAppTabs?: readonly string[];
+  readonly appTabs?: readonly import("@opensteer/protocol").AppTab[];
   readonly appVersions?: Readonly<Record<string, number>>;
   readonly pendingBrowserTabs?: readonly PendingBrowserTab[];
   readonly savedViewReadiness?: SavedViewReadiness;
@@ -1113,6 +1115,8 @@ export interface HostClient {
     readonly source: Blob;
     readonly signal?: AbortSignal;
   }): Promise<Attachment>;
+  openAppTab(appId: string): Promise<void>;
+  closeAppTab(appId: string): Promise<void>;
   viewApp(
     appId: string,
     theme: "light" | "dark",

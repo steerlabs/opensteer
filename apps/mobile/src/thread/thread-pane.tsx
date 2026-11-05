@@ -62,7 +62,12 @@ import Animated from "react-native-reanimated";
 import { canRespondToRequests, describeHostConnection } from "@opensteer/client/host";
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import type { ArtifactContentPart } from "@opensteer/core";
-import { paramsDestination, sameDestination, surfaceRoute } from "../browser/surface-route.js";
+import {
+  paramsDestination,
+  sameDestination,
+  surfaceRoute,
+  type OpensteerAppDestination,
+} from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
@@ -85,7 +90,12 @@ import {
 } from "./task-status.js";
 import { WaitingQuestions } from "./waiting-questions.js";
 import { waitingQuestion } from "./docked-requests.js";
-import { TranscriptSurfacesContext, type TranscriptSurfaces } from "./surface-chips.js";
+import {
+  TranscriptAppTabsContext,
+  TranscriptSurfacesContext,
+  type TranscriptAppTabs,
+  type TranscriptSurfaces,
+} from "./surface-chips.js";
 import { TranscriptHostClientContext } from "./attachment-views.js";
 import { Composer } from "./composer.js";
 import { LivePlace } from "./live-place.js";
@@ -802,19 +812,34 @@ function ThreadPaneForUser(
       ),
     [groups],
   );
-  const openSurface = useCallback(
-    (destination: SurfaceDestination) => {
-      const route = surfaceRoute(deploymentId, threadId, destination);
+  const inFront = useCallback(
+    (destination: SurfaceDestination | OpensteerAppDestination) => {
       const state = navigation.getState();
       const current = state?.routes[state.index];
-      if (
+      return (
         current?.name === "WorkspaceBrowser" &&
         sameDestination(paramsDestination(current.params), destination)
-      )
-        return;
-      navigation.dispatch(StackActions.push("WorkspaceBrowser", route));
+      );
     },
-    [deploymentId, navigation, threadId],
+    [navigation],
+  );
+  const openSurface = useCallback(
+    (destination: SurfaceDestination | OpensteerAppDestination) => {
+      if (inFront(destination)) return;
+      navigation.dispatch(
+        StackActions.push("WorkspaceBrowser", surfaceRoute(deploymentId, threadId, destination)),
+      );
+    },
+    [deploymentId, inFront, navigation, threadId],
+  );
+  const appTabs = useMemo<TranscriptAppTabs>(
+    () => ({
+      leave: (appId) => {
+        if (inFront({ appId, kind: "opensteer-app" })) navigation.dispatch(StackActions.pop(1));
+      },
+      open: (appId) => openSurface({ appId, kind: "opensteer-app" }),
+    }),
+    [inFront, navigation, openSurface],
   );
   const surfaces = useMemo<TranscriptSurfaces>(
     () => ({ hostClient, threadId, turns: surfaceTurns, open: openSurface }),
@@ -1474,7 +1499,9 @@ function ThreadPaneForUser(
     <TaskScopeContext.Provider value={taskScope}>
       <TranscriptComputersContext.Provider value={computers}>
         <TranscriptSurfacesContext.Provider value={surfaces}>
-          {pane}
+          <TranscriptAppTabsContext.Provider value={appTabs}>
+            {pane}
+          </TranscriptAppTabsContext.Provider>
         </TranscriptSurfacesContext.Provider>
       </TranscriptComputersContext.Provider>
     </TaskScopeContext.Provider>

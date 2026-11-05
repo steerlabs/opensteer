@@ -38,6 +38,7 @@ import {
 } from "react-native";
 import { ActingDot } from "../browser/acting-dot.js";
 import { AgentMarks } from "../browser/agent-marks.js";
+import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { tabSiteLabel } from "../browser/site-label.js";
 import { workspaceRoute } from "../browser/surface-route.js";
 import { MacAppIcon } from "../computers/app-mark.js";
@@ -146,13 +147,12 @@ export function placeGroups(places: readonly PlaceItem[]): readonly PlaceGroup[]
   return [...groups].map(([key, { data, title }]) => ({ data, key, title }));
 }
 
-const kindWord: Record<Exclude<PlaceKind, "phone">, string> = { app: "Apps", browser: "Browser" };
-
 function groupTitle(place: PlaceItem): string {
+  // On no computer: it lives in the Deployment, so there is none to name or miss.
+  if (place.kind === "opensteer-app") return "Apps";
   const computer = place.device?.name ?? "Computer unavailable";
-  return place.kind === "phone"
-    ? `Agent Phone · ${computer}`
-    : `${computer} · ${kindWord[place.kind]}`;
+  if (place.kind === "phone") return `Agent Phone · ${computer}`;
+  return `${computer} · ${place.kind === "app" ? "Apps" : "Browser"}`;
 }
 
 /**
@@ -312,6 +312,7 @@ function GroupHead(props: { readonly title: string }): ReactNode {
 }
 
 const kindHint: Record<PlaceKind, string> = {
+  "opensteer-app": "Opens this app",
   app: "Opens this app",
   browser: "Opens this tab",
   phone: "Opens this phone",
@@ -324,7 +325,9 @@ function placeDetail(place: PlaceItem, showProfile: boolean): readonly string[] 
       ? tabSiteLabel(place.site)
       : place.kind === "app"
         ? "Mac app"
-        : "Agent Phone";
+        : place.kind === "phone"
+          ? "Agent Phone"
+          : "Opensteer app";
   const state =
     place.availability === "unavailable"
       ? "Unavailable"
@@ -396,7 +399,13 @@ const PlaceRow = memo(function PlaceRow(props: PlaceRowProps): ReactNode {
         ) : (
           <View style={styles.glyph}>
             <Symbol
-              name={place.kind === "phone" ? "smartphone" : "globe"}
+              name={
+                place.kind === "opensteer-app"
+                  ? opensteerAppGlyph
+                  : place.kind === "phone"
+                    ? "smartphone"
+                    : "globe"
+              }
               size={17}
               tint={color.muted}
             />

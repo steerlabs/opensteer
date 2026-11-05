@@ -215,6 +215,7 @@ export function TabMenu({
 /** Whether an app's or phone's row has anything to offer in a menu of its own. */
 export function nativeTabMenuOffered(place: PlaceItem, local: LocalMachine | null): boolean {
   return (
+    place.kind === "opensteer-app" ||
     place.ownerClose !== null ||
     (place.kind === "app" &&
       place.ownerView !== null &&
@@ -226,7 +227,7 @@ export function nativeTabMenuOffered(place: PlaceItem, local: LocalMachine | nul
 /**
  * An app's or phone's own menu: bring the app forward on this Mac (only the
  * desktop app, only for this Mac), or close the person's view — which never
- * quits the app and never stops a task.
+ * quits the app and never stops a task. A published app's menu closes its tab.
  */
 export function NativeTabMenu({
   anchor,
@@ -275,6 +276,9 @@ export function NativeTabMenu({
             onSelect: () => requestClose(place),
           },
         ]
+      : []),
+    ...(place.kind === "opensteer-app"
+      ? [{ icon: "close" as const, label: "Close tab", onSelect: () => requestClose(place) }]
       : []),
   ];
   return (

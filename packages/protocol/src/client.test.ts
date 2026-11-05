@@ -1,3 +1,4 @@
+import { HostBootstrapSchema } from "./bootstrap.js";
 import { createId, type Workspace } from "@opensteer/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -164,4 +165,20 @@ describe("browser tab sites", () => {
     expect(browserPageSite(address)).toBe(site);
     expect(isBrowserPageSite(browserPageSite(address))).toBe(true);
   });
+});
+
+it("accepts app tab invalidation and bounds the bootstrap app catalog", () => {
+  expect(HostToClientMessageSchema.parse({ type: "host.app-tabs-changed" })).toEqual({
+    type: "host.app-tabs-changed",
+  });
+  const tab = {
+    appId: "app_00000000-0000-4000-8000-000000000001",
+    title: "Budget",
+    workspaceId: createId("workspace"),
+    threadId: createId("thread"),
+    openedAt: timestamps.createdAt,
+    latestVersion: 2,
+  };
+  expect(HostBootstrapSchema.shape.appTabs.parse([tab])).toEqual([tab]);
+  expect(HostBootstrapSchema.shape.appTabs.safeParse(Array(501).fill(tab)).success).toBe(false);
 });

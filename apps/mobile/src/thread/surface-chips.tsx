@@ -35,6 +35,18 @@ export interface TranscriptSurfaces {
 
 export const TranscriptSurfacesContext = createContext<TranscriptSurfaces | null>(null);
 
+/**
+ * How an app's card reaches its tab. Apart from the surfaces above, whose value
+ * changes with every streamed token, so a card never redraws on one.
+ */
+export interface TranscriptAppTabs {
+  readonly open: (appId: string) => void;
+  /** Takes back the page `open` put in front, once its tab turns out not to exist. */
+  readonly leave: (appId: string) => void;
+}
+
+export const TranscriptAppTabsContext = createContext<TranscriptAppTabs | null>(null);
+
 /** A reply shows this many pages before the rest fold behind "+N". */
 const shownChips = 3;
 

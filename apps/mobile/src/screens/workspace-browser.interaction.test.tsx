@@ -55,7 +55,10 @@ const state = vi.hoisted(() => ({
   regions: [] as import("react-native-reserved-regions").ReservedRegion[],
   regionsReady: true,
   keyboard: false,
+  /** The native field holding the keyboard, as a composer beside a page does. */
+  focusedInput: null as object | null,
   fontScale: 1,
+  foreground: true,
   conversationMounts: 0,
   pageMounts: 0,
   /** Every claim of the active Thread a pane beside the page made. */
@@ -88,10 +91,24 @@ vi.mock("expo-haptics", () => ({
 vi.mock("../client/mobile-client.js", () => ({
   operationDetail: (_error: unknown, fallback: string) => fallback,
 }));
+vi.mock("react-native-webview", () => ({
+  WebView: (props: { source: { uri: string }; style: unknown }) => (
+    <div
+      data-style={JSON.stringify(flatten(props.style))}
+      data-testid="app-webview"
+      data-uri={props.source.uri}
+    />
+  ),
+}));
 vi.mock("@opensteer/client/react", async () => ({
   useActionReview: (
     await vi.importActual<typeof import("@opensteer/client/react")>("@opensteer/client/react")
   ).useActionReview,
+  useAppView: (_client: unknown, appId: string) => ({
+    failed: false,
+    retry: () => undefined,
+    view: { app: { title: "Budget" }, url: `https://host.test/v1/apps/${appId}/dark/token/` },
+  }),
   useHostSelector: (_client: unknown, selector: (snapshot: HostSnapshot) => unknown) =>
     selector(state.snapshot!),
   useHostSnapshot: () => ({ snapshot: state.snapshot, loadError: null, reload: state.refresh }),
@@ -191,25 +208,28 @@ vi.mock("react-native", () => ({
         : ListEmptyComponent}
     </div>
   ),
-  TextInput: ({
-    accessibilityLabel,
-    value,
-    onChangeText,
-    onSubmitEditing,
-  }: {
-    accessibilityLabel?: string;
-    value?: string;
-    onChangeText?: (text: string) => void;
-    onSubmitEditing?: () => void;
-  }) => (
-    <input
-      aria-label={accessibilityLabel}
-      value={value}
-      onChange={(event) => onChangeText?.(event.target.value)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") onSubmitEditing?.();
-      }}
-    />
+  TextInput: Object.assign(
+    ({
+      accessibilityLabel,
+      value,
+      onChangeText,
+      onSubmitEditing,
+    }: {
+      accessibilityLabel?: string;
+      value?: string;
+      onChangeText?: (text: string) => void;
+      onSubmitEditing?: () => void;
+    }) => (
+      <input
+        aria-label={accessibilityLabel}
+        value={value}
+        onChange={(event) => onChangeText?.(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") onSubmitEditing?.();
+        }}
+      />
+    ),
+    { State: { currentlyFocusedInput: () => state.focusedInput } },
   ),
   StyleSheet: { create: (styles: object) => styles, flatten, hairlineWidth: 1 },
   useWindowDimensions: () => ({ fontScale: state.fontScale, height: 844, width: 390 }),
@@ -270,6 +290,7 @@ vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
 }));
 vi.mock("../ui/keyboard.js", () => ({ useKeyboardVisible: () => state.keyboard }));
+vi.mock("../ui/foreground.js", () => ({ useAppForeground: () => state.foreground }));
 vi.mock(
   "../browser/toolbar.js",
   async () => (await import("../../test-support/native-chrome.js")).toolbar,
@@ -502,6 +523,8 @@ afterEach(() => {
   state.regions = [];
   state.regionsReady = true;
   state.keyboard = false;
+  state.foreground = true;
+  state.focusedInput = null;
   state.fontScale = 1;
   state.conversationMounts = 0;
   state.pageMounts = 0;
@@ -1627,6 +1650,202 @@ describe("the page's bar", () => {
  * the composer no room once the keyboard is up; a fold that has not been
  * measured yet is straddled; a phone draws a second pane.
  */
+/*
+ * An Opensteer App as a place. What can go wrong: Ask goes anywhere but the
+ * Thread that made it, or leaves an earlier page standing for it; the view
+ * address reaches the route; there is no way to close it, or a failed close
+ * loses the tab; a tab closed elsewhere keeps running; a link's bad id reaches
+ * the Host; the keyboard lifts the wrong pane.
+ */
+describe("an app open as a tab", () => {
+  const appId = "app_11111111-1111-4111-8111-111111111111";
+  const openTab = {
+    appId,
+    latestVersion: 1,
+    openedAt: "2026-11-04T10:00:00.000Z",
+    threadId: "thread-maker",
+    title: "Budget",
+    workspaceId: source.id,
+  };
+  function openApp(params: Partial<SurfacesRoute> = { appId } as Partial<SurfacesRoute>) {
+    const closeAppTab = vi.fn(async (): Promise<void> => undefined);
+    state.hostClient = { closeAppTab };
+    const opened = setup(params);
+    state.snapshot = {
+      ...withAgents([]),
+      appTabs: [openTab] as unknown as NonNullable<HostSnapshot["appTabs"]>,
+    };
+    opened.render();
+    return { ...opened, closeAppTab };
+  }
+  const webView = () => document.querySelector("[data-testid='app-webview']");
+  const pressAsk = () => {
+    const ask = element(header(), "Ask")!;
+    act(() => ask.click());
+  };
+
+  it("fills the page under the bar with the app's title, whatever height it reports", () => {
+    openApp();
+    expect(state.setOptions).toHaveBeenLastCalledWith(expect.objectContaining({ title: "Budget" }));
+    expect(JSON.parse(webView()!.getAttribute("data-style")!)).toMatchObject({ flex: 1 });
+    expect(document.querySelector("[data-testid='page-toolbar']")?.textContent).toContain("Budget");
+  });
+
+  it("asks in the Thread that made it, going back when that Thread is under the page", () => {
+    const { container } = openApp();
+    expect(element(header(), "Ask")!.dataset["menuTitle"]).toBeUndefined();
+    pressAsk();
+    expect(state.dispatch).toHaveBeenLastCalledWith({
+      name: "Thread",
+      params: { deploymentId: "deployment-a", threadId: "thread-maker" },
+      type: "PUSH",
+    });
+    state.dispatch.mockClear();
+    state.routes = [
+      { name: "Thread", params: { threadId: "thread-maker" } },
+      { name: "WorkspaceBrowser" },
+    ];
+    pressAsk();
+    expect(state.goBack).toHaveBeenCalledOnce();
+    expect(state.dispatch).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("beside");
+  });
+
+  it("opens that Thread beside the app where two fit, and keeps the app mounted", () => {
+    state.pair = { height: 760, width: 1100 };
+    const { container } = openApp();
+    const app = webView();
+    pressAsk();
+    expect(container.textContent).toContain("Thread thread-maker beside");
+    expect(state.dispatch).not.toHaveBeenCalled();
+    expect(webView()).toBe(app);
+  });
+
+  it("takes an earlier page off the Thread's draft, which it does not stand for", async () => {
+    openApp();
+    const earlier = BrowserPageContentPartSchema.parse({
+      sessionId: "bsn_00000000-0000-4000-8000-0000000000aa",
+      tabId: "page-1",
+      title: "Earlier page",
+      type: "browser-page",
+      url: "https://example.com",
+    });
+    await act(() =>
+      state.drafts!.writeDraftPage("deployment-a", "user-a", "thread-maker", earlier),
+    );
+    pressAsk();
+    expect(state.drafts!.readDraft("deployment-a", "user-a", "thread-maker")).toBeNull();
+  });
+
+  it("closes from the bar and leaves, past an app under it that has ended too", async () => {
+    const { container, closeAppTab, render } = openApp();
+    const answer = Promise.withResolvers<void>();
+    closeAppTab.mockReturnValue(answer.promise);
+    state.routes = [
+      { name: "Thread" },
+      { name: "WorkspaceBrowser", params: { appId: appId.replace("1111-4", "2222-4") } },
+      { name: "WorkspaceBrowser", params: { appId } },
+    ];
+    press(container, "Close tab");
+    expect(closeAppTab).toHaveBeenCalledWith(appId);
+    // The card under this page comes back at once, so this copy has already gone.
+    expect(webView()).toBeNull();
+    state.snapshot = { ...state.snapshot!, appTabs: [] };
+    render();
+    expect(container.textContent).not.toContain("This tab was closed");
+    await act(async () => answer.resolve());
+    expect(state.dispatch).toHaveBeenCalledWith({ count: 2, type: "POP" });
+  });
+
+  it("stays and explains a failed close, with the app back and a way to retry", async () => {
+    const { container, closeAppTab } = openApp();
+    closeAppTab.mockRejectedValueOnce(new Error("The Host refused."));
+    await pressAsync(container, "Close tab");
+    expect(container.textContent).toContain("The Host refused.");
+    expect(webView()).not.toBeNull();
+    expect(state.dispatch).not.toHaveBeenCalled();
+    await pressAsync(container, "Try again");
+    expect(closeAppTab).toHaveBeenCalledTimes(2);
+    expect(state.dispatch).toHaveBeenCalledWith({ count: 1, type: "POP" });
+  });
+
+  it("does not move a person who left before the close finished", async () => {
+    const { container } = openApp();
+    state.navigationFocused = false;
+    await pressAsync(container, "Close tab");
+    expect(state.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("destroys the WebView when another screen covers its app page", () => {
+    const { render } = openApp();
+    const first = webView();
+    expect(first).not.toBeNull();
+    state.focused = false;
+    render();
+    expect(webView()).toBeNull();
+    state.focused = true;
+    render();
+    expect(webView()).not.toBeNull();
+    expect(webView()).not.toBe(first);
+  });
+
+  it("keeps the WebView when the phone locks or another app comes forward", () => {
+    const { render } = openApp();
+    const first = webView();
+    expect(first).not.toBeNull();
+    state.foreground = false;
+    render();
+    expect(webView()).toBe(first);
+  });
+
+  it("waits for bootstrap before declaring a cold app route closed", () => {
+    const { container, render } = openApp();
+    state.snapshot = { ...state.snapshot!, deploymentShape: null, appTabs: [] };
+    render();
+    expect(container.textContent).not.toContain("This tab was closed");
+    expect(container.textContent).toContain("Loading app");
+    expect(webView()).toBeNull();
+  });
+
+  it("ends in place when the tab closes elsewhere, keeping its name and Ask", () => {
+    const { container, render } = openApp();
+    state.snapshot = { ...state.snapshot!, appTabs: [] };
+    render();
+    expect(container.textContent).toContain("This tab was closed");
+    expect(webView()).toBeNull();
+    expect(state.dispatch).not.toHaveBeenCalled();
+    expect(state.setOptions).toHaveBeenLastCalledWith(expect.objectContaining({ title: "Budget" }));
+    pressAsk();
+    expect(state.dispatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ name: "Thread", type: "PUSH" }),
+    );
+  });
+
+  it("shows nothing for a link with a malformed id", () => {
+    const { container } = openApp({
+      appId: "../../v1/rpc/bootstrap.get",
+    } as Partial<SurfacesRoute>);
+    expect(container.textContent).toContain("This tab isn’t available");
+    expect(webView()).toBeNull();
+  });
+
+  it("lifts for a field in the app and gives its bar up, but not for a composer beside it", () => {
+    state.pair = { height: 760, width: 1100 };
+    const { render } = openApp();
+    const slot = () => document.querySelector("[data-testid='page-slot']")!;
+    state.keyboard = true;
+    render();
+    expect(slot().getAttribute("data-avoids")).toBe("true");
+    expect(document.querySelector("[data-testid='page-toolbar']")).toBeNull();
+    state.focusedInput = {};
+    state.keyboard = false;
+    render();
+    state.keyboard = true;
+    render();
+    expect(slot().getAttribute("data-avoids")).toBe("false");
+  });
+});
+
 describe("a page beside its agent's thread", () => {
   /** One live page with an acting agent, opened, with the address field open when asked. */
   function openPage(editAddress = false, occupants?: readonly Occupant[]) {

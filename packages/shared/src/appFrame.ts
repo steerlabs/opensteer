@@ -45,7 +45,6 @@ export function prepareAppHtml(html: string, theme: AppTheme): string {
     if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage(JSON.stringify(message));
   };
   send({type:'opensteer-app:ready'});
-  addEventListener('keydown',e=>{if(e.key==='Escape')send({type:'opensteer-app:escape'})});
   addEventListener('click',e=>{const a=e.target instanceof Element&&e.target.closest('a[href]');if(!a||e.defaultPrevented)return;
     const url=new URL(a.href,location.href);
     if(isAppPrefixNavigation(url.href,location.href))return;

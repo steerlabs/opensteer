@@ -1,3 +1,4 @@
+import { AppTabSchema } from "@opensteer/protocol";
 import { defaultTaskSymbol } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { placeIdentityKey } from "@opensteer/protocol";
@@ -9,6 +10,41 @@ import { assignmentMark } from "./assignment-presentation.js";
 const now = () => new Date("2026-10-19T12:00:00.000Z");
 
 describe("place catalog", () => {
+  it("lists Opensteer apps independently of machines and detects closed tabs", async () => {
+    const client = new MockHostClient({ latencyMs: 0, now });
+    try {
+      await client.load();
+      const appId = "app_00000000-0000-4000-8000-000000000001";
+      const snapshot = client.getSnapshot();
+      const tab = AppTabSchema.parse({
+        appId,
+        title: "Budget",
+        threadId: snapshot.threads[0]!.id,
+        workspaceId: snapshot.workspaces[0]!.id,
+        latestVersion: 3,
+        openedAt: now().toISOString(),
+      });
+      const source = { ...snapshot, appTabs: [tab] };
+      const row = placeList(source).find((row) => row.key === `opensteer-app:${appId}`)!;
+      expect(row).toMatchObject({
+        kind: "opensteer-app",
+        title: "Budget",
+        destination: { kind: "opensteer-app", appId },
+        device: null,
+        occupants: [],
+        availability: "ready",
+        closable: true,
+        icon: { kind: "opensteer-app" },
+        opensteerApp: { appId, threadId: tab.threadId, workspaceId: tab.workspaceId },
+      });
+      expect(placeDestinationEnded(source, row.destination)).toBe(false);
+      expect(placeDestinationEnded(snapshot, row.destination)).toBe(true);
+      expect(samePlaceListSource(snapshot, source)).toBe(false);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("cold-loads exact tabs and native places without observing transcripts", async () => {
     const client = new MockHostClient({ latencyMs: 0, now });
     try {

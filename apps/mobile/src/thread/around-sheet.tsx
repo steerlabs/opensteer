@@ -40,6 +40,7 @@ import {
   type NativeSyntheticEvent,
   type ViewStyle,
 } from "react-native";
+import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { surfaceRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, radius, space, type } from "../theme.js";
@@ -618,7 +619,12 @@ const Page = memo(function Page(props: {
   );
 });
 
-const placeKind = { globe: "Page", laptopcomputer: "Mac app", smartphone: "Phone" } as const;
+const placeKind = {
+  globe: "Page",
+  laptopcomputer: "Mac app",
+  smartphone: "Phone",
+  [opensteerAppGlyph]: "App",
+} as const;
 
 const PlaceRow = memo(function PlaceRow(props: {
   readonly place: AroundPlace;

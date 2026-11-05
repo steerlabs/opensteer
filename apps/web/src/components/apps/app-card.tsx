@@ -1,41 +1,134 @@
 import { useAppView } from "@opensteer/client/react";
-import type { AppEntry } from "@opensteer/client/host";
+import type { AppEntry, HostClient } from "@opensteer/client/host";
 import {
-  appContentHeight,
-  appFrameReady,
-  appFrameSandbox,
-  appFrameScheme,
-  type AppTheme,
-} from "@opensteer/shared/appFrame";
-import { useCallback, useContext, useEffect, useId, useRef, useState } from "react";
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type RefObject,
+} from "react";
+import { actionErrorMessage } from "../../ui-utils.js";
 import { TranscriptHostClientContext } from "../attachments/message-attachments.js";
-import { handleModalKeyDown } from "../dialog.js";
-import { useNativeBrowserOverlay } from "../native-browser-overlays.js";
+import { Icon } from "../icon.js";
+import { useToast } from "../toast.js";
+import { destinationPlaceKey } from "../workspace/navigation.js";
+import { useOptionalWorkspace, type WorkspaceState } from "../workspace/workspace-context.js";
+import { AppFrame, AppLoadFailure, AppLoading, useAppTheme } from "./app-frame.js";
 
+const noSubscription = () => () => undefined;
+
+/** While open as a tab it is a row that goes there, so a client never runs two copies. */
 export function AppCard({ entry }: { readonly entry: AppEntry }) {
   const client = useContext(TranscriptHostClientContext);
+  const workspace = useOptionalWorkspace();
   const card = useRef<HTMLElement | null>(null);
+  const { appId } = entry;
+  const tabTitle = useSyncExternalStore(
+    client?.subscribe ?? noSubscription,
+    () => client?.getSnapshot().appTabs?.find((tab) => tab.appId === appId)?.title ?? null,
+  );
+  // The pressed control is replaced; the keyboard stays in this card.
+  const keepFocus = () =>
+    requestAnimationFrame(() =>
+      card.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus(),
+    );
+  const tab = client && workspace && tabTitle !== null;
+  return (
+    <section className={tab ? "app-card app-card--tab" : "app-card"} ref={card}>
+      {tab ? (
+        <AppTabRow
+          appId={appId}
+          client={client}
+          onClosed={keepFocus}
+          title={tabTitle}
+          workspace={workspace}
+        />
+      ) : (
+        <LiveApp
+          card={card}
+          client={client}
+          entry={entry}
+          onOpened={keepFocus}
+          workspace={workspace}
+        />
+      )}
+    </section>
+  );
+}
+
+function AppTabRow({
+  appId,
+  client,
+  onClosed,
+  title,
+  workspace,
+}: {
+  readonly appId: string;
+  readonly client: HostClient;
+  readonly onClosed: () => void;
+  readonly title: string;
+  readonly workspace: WorkspaceState;
+}) {
+  const toast = useToast();
+  const { nav, selection } = workspace;
+  const destination = { kind: "opensteer-app", appId } as const;
+  const showing =
+    selection.kind === "place" &&
+    destinationPlaceKey(selection.destination) === destinationPlaceKey(destination);
+  return (
+    <>
+      <button
+        className="app-card__go"
+        disabled={showing}
+        onClick={() => nav.showPlace(destination)}
+        type="button"
+      >
+        <span aria-hidden className="app-card__mark">
+          <Icon name="app" />
+        </span>
+        <span className="app-card__words">
+          <span className="app-card__title">{title}</span>
+          <span className="app-card__where">
+            {showing ? "Showing in its tab" : "Open in a tab"}
+          </span>
+        </span>
+        {showing ? null : <Icon className="app-card__arrow" name="arrow-right" />}
+      </button>
+      <button
+        aria-label={`Close the ${title} tab`}
+        className="icon-btn"
+        onClick={() => {
+          void client
+            .closeAppTab(appId)
+            .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+          onClosed();
+        }}
+        title="Close tab"
+        type="button"
+      >
+        <Icon name="close" />
+      </button>
+    </>
+  );
+}
+
+function LiveApp({
+  card,
+  client,
+  entry,
+  onOpened,
+  workspace,
+}: {
+  readonly card: RefObject<HTMLElement | null>;
+  readonly client: HostClient | null;
+  readonly entry: AppEntry;
+  readonly onOpened: () => void;
+  readonly workspace: WorkspaceState | null;
+}) {
+  const toast = useToast();
   const [near, setNear] = useState(() => typeof IntersectionObserver === "undefined");
-  const [open, setOpen] = useState(false);
-  const [theme, setTheme] = useState<AppTheme>(currentTheme);
-  const titleId = useId();
-  const toggle = useRef<HTMLButtonElement | null>(null);
-  const close = useCallback(() => setOpen(false), []);
-  useNativeBrowserOverlay(open);
-  useEffect(() => {
-    if (!open) return;
-    const opener = toggle.current;
-    toggle.current?.focus();
-    const containFocus = (event: FocusEvent) => {
-      if (event.target instanceof Node && !card.current?.contains(event.target))
-        toggle.current?.focus();
-    };
-    document.addEventListener("focusin", containFocus);
-    return () => {
-      document.removeEventListener("focusin", containFocus);
-      opener?.focus();
-    };
-  }, [open]);
+  const theme = useAppTheme();
   useEffect(() => {
     if (near || !card.current) return;
     const observer = new IntersectionObserver(
@@ -46,149 +139,38 @@ export function AppCard({ entry }: { readonly entry: AppEntry }) {
     );
     observer.observe(card.current);
     return () => observer.disconnect();
-  }, [near]);
-  useEffect(() => {
-    const observer = new MutationObserver(() => setTheme(currentTheme()));
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class", "style", "data-theme"],
-    });
-    const query = window.matchMedia?.("(prefers-color-scheme: dark)");
-    const changed = () => setTheme(currentTheme());
-    query?.addEventListener("change", changed);
-    return () => {
-      observer.disconnect();
-      query?.removeEventListener("change", changed);
-    };
-  }, []);
+  }, [card, near]);
   const { view, failed, retry } = useAppView(client, entry.appId, theme, near);
   const title = view?.app.title ?? entry.title;
   return (
-    <section
-      className={open ? "app-card app-card--full" : "app-card"}
-      ref={card}
-      role={open ? "dialog" : undefined}
-      aria-modal={open ? true : undefined}
-      aria-labelledby={titleId}
-      onKeyDown={open ? (event) => handleModalKeyDown(event, card.current, close) : undefined}
-    >
+    <>
       <header className="app-card__header">
-        <span id={titleId}>{title}</span>
-        <button
-          type="button"
-          className="btn btn--ghost btn--small"
-          ref={toggle}
-          onClick={() => setOpen((value) => !value)}
-          disabled={!view && !open}
-        >
-          {open ? "Close" : "Open"}
-        </button>
+        <span>{title}</span>
+        {client && workspace ? (
+          <button
+            type="button"
+            className="btn btn--ghost btn--small"
+            onClick={() => {
+              void client
+                .openAppTab(entry.appId)
+                .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+              workspace.nav.showPlace({ kind: "opensteer-app", appId: entry.appId });
+              onOpened();
+            }}
+          >
+            Open
+          </button>
+        ) : null}
       </header>
       {failed ? (
-        <p role="alert">
-          Could not load this app.{" "}
-          <button type="button" onClick={retry}>
-            Retry
-          </button>
-        </p>
+        <AppLoadFailure retry={retry} />
       ) : view ? (
-        <AppFrame
-          key={view.url}
-          url={view.url}
-          title={title}
-          theme={theme}
-          retry={retry}
-          fullScreen={open}
-          onEscape={close}
-        />
+        <AppFrame key={view.url} url={view.url} title={title} theme={theme} retry={retry} />
+      ) : client ? (
+        <AppLoading />
       ) : (
-        <p role="status">{client ? "Loading app…" : "App unavailable"}</p>
+        <p role="status">App unavailable</p>
       )}
-    </section>
-  );
-}
-
-function currentTheme(): AppTheme {
-  return typeof document !== "undefined" &&
-    getComputedStyle(document.documentElement).colorScheme === "light"
-    ? "light"
-    : "dark";
-}
-
-function AppFrame({
-  url,
-  title,
-  theme,
-  retry,
-  fullScreen = false,
-  onEscape,
-}: {
-  readonly url: string;
-  readonly title: string;
-  readonly theme: AppTheme;
-  readonly retry: () => void;
-  readonly fullScreen?: boolean;
-  readonly onEscape: () => void;
-}) {
-  const frame = useRef<HTMLIFrameElement | null>(null);
-  const [height, setHeight] = useState(280);
-  const ready = useRef(false);
-  const [loaded, setLoaded] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const sendTheme = () =>
-    frame.current?.contentWindow?.postMessage({ type: "opensteer-app:theme", theme }, "*");
-  useEffect(() => {
-    const receive = (event: MessageEvent) => {
-      if (event.source !== frame.current?.contentWindow || event.origin !== "null") return;
-      if (appFrameReady(event.data)) {
-        ready.current = true;
-        setLoaded(true);
-      }
-      if (event.data?.type === "opensteer-app:escape") onEscape();
-      const height = appContentHeight(event.data);
-      if (height !== null) {
-        setHeight(height);
-      }
-    };
-    window.addEventListener("message", receive);
-    return () => window.removeEventListener("message", receive);
-  }, [url, onEscape]);
-  useEffect(sendTheme, [theme]);
-  if (failed)
-    return (
-      <p role="alert">
-        Could not load this app.{" "}
-        <button className="btn btn--small" type="button" onClick={retry}>
-          Retry
-        </button>
-      </p>
-    );
-  const parsed = new URL(url);
-  const src =
-    globalThis.location?.protocol === "app:"
-      ? `${appFrameScheme}://view${parsed.pathname}${parsed.search}`
-      : url;
-  return (
-    <div className={fullScreen ? "app-frame app-frame--full" : "app-frame"}>
-      {!loaded ? (
-        <p className="app-frame__status" role="status">
-          Loading app…
-        </p>
-      ) : null}
-      <iframe
-        ref={frame}
-        key={src}
-        title={title}
-        src={src}
-        sandbox={appFrameSandbox}
-        referrerPolicy="no-referrer"
-        style={fullScreen ? undefined : { height: Math.max(160, Math.min(640, height)) }}
-        onError={() => setFailed(true)}
-        onLoad={() => {
-          if (!ready.current) setFailed(true);
-          else sendTheme();
-        }}
-      />
-    </div>
+    </>
   );
 }

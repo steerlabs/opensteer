@@ -42,6 +42,7 @@ interface AppServiceOptions {
   readonly store: Pick<OpensteerStore, "admitWorkspaceFiles">;
   readonly files: Pick<WorkspaceFilesService, "list" | "download">;
   readonly tokens: Pick<RunToolTokenService, "authenticate" | "reauthorize">;
+  readonly tabsChanged?: (workspaceId: WorkspaceId) => Promise<void>;
   readonly publishEvent: (event: AgentEvent) => void;
 }
 
@@ -54,6 +55,29 @@ export class AppService {
   constructor(options: AppServiceOptions) {
     this.#options = options;
     this.#directory = join(options.dataDirectory, "apps");
+  }
+
+  listTabs(userId: UserId) {
+    return this.#options.apps.listTabs(userId);
+  }
+  async setTabOpen(appId: string, userId: UserId, open: boolean) {
+    const result = await this.#options.apps.setTabOpen(appId, userId, open);
+    await this.#notifyTabs(async () => result.workspaceId);
+    return { appTabs: result.appTabs };
+  }
+  #publishedTabsChanged(appId: string) {
+    return this.#notifyTabs(
+      async () => (await this.#options.apps.openTabWorkspace(appId))?.workspaceId,
+    );
+  }
+  /** The change is committed, and the bootstrap poll repairs a lost notice. */
+  async #notifyTabs(workspace: () => Promise<WorkspaceId | undefined>) {
+    try {
+      const workspaceId = await workspace();
+      if (workspaceId) await this.#options.tabsChanged?.(workspaceId);
+    } catch {
+      return;
+    }
   }
 
   async publish(
@@ -119,7 +143,10 @@ export class AppService {
             server,
             expectedVersion: version,
           });
-          if (result.event) this.#options.publishEvent(result.event);
+          if (result.event) {
+            this.#options.publishEvent(result.event);
+            await this.#publishedTabsChanged(result.appId);
+          }
           return publicationResult(result);
         } catch (error) {
           await this.#tunnels()
@@ -219,7 +246,10 @@ export class AppService {
             ),
           );
       }
-      if (result.event) this.#options.publishEvent(result.event);
+      if (result.event) {
+        this.#options.publishEvent(result.event);
+        await this.#publishedTabsChanged(result.appId);
+      }
       return publicationResult(result);
     });
   }

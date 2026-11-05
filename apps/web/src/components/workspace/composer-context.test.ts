@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import type { HostClient, PlaceItem } from "@opensteer/client/host";
-import { autoPlacePart } from "./composer-context.js";
+import { attachablePlaces, autoPlacePart } from "./composer-context.js";
 
 it("reads the ready shown page as automatic context and leaves blank tabs out", async () => {
   const candidate = {
@@ -28,4 +28,15 @@ it("reads the ready shown page as automatic context and leaves blank tabs out", 
   expect(await autoPlacePart(host, { ...place, availability: "unavailable" })).toBeNull();
   expect(await autoPlacePart(host, null)).toBeNull();
   expect(readBrowserContextCandidate).not.toHaveBeenCalled();
+});
+
+it("keeps app tabs out of a draft's choices and its automatic context", async () => {
+  const page = { kind: "browser" } as unknown as PlaceItem;
+  const app = {
+    availability: "ready",
+    destination: { kind: "opensteer-app", appId: "app_11111111-1111-4111-8111-111111111111" },
+    kind: "opensteer-app",
+  } as unknown as PlaceItem;
+  expect(attachablePlaces([page, app])).toEqual([page]);
+  expect(await autoPlacePart({} as unknown as HostClient, app)).toBeNull();
 });

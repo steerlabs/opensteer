@@ -1,5 +1,6 @@
 /* An Opensteer App in the transcript is a card like any other: a lit plate
-   whose header names it, opening into the whole window. */
+   whose header names it. Opened, it runs as a tab in the middle, and the card
+   shrinks to a row that goes there. */
 .app-card {
   width: 100%;
   min-width: 0;
@@ -51,31 +52,131 @@
   background: transparent;
 }
 
-.app-card--full {
-  position: fixed;
-  inset: 0;
-  z-index: var(--layer-dialog);
+/* While the app runs in a tab: one plate row, its mark the tab's own. */
+.app-card--tab {
   display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding-right: var(--space-6);
+}
+
+.app-card__go {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-10);
+  min-width: 0;
+  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-10);
+  color: var(--text);
+  text-align: left;
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.app-card__go:hover:not(:disabled) {
+  background-color: var(--fill-quiet);
+}
+
+.app-card__go:disabled {
+  cursor: default;
+}
+
+.app-card__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--ember-wash);
+  color: var(--ember);
+}
+
+.app-card__mark .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.app-card__words {
+  display: flex;
+  flex: 1;
   flex-direction: column;
-  border: 0;
-  border-radius: 0;
-  background: var(--ground);
-  box-shadow: none;
-  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
-    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  gap: 1px;
+  min-width: 0;
 }
 
-.app-card--full .app-card__header {
-  flex-shrink: 0;
+.app-card__title,
+.app-card__where {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.app-frame--full {
-  display: flex;
+.app-card__title {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+}
+
+.app-card__where {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.app-card__arrow {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  color: var(--muted);
+}
+
+/* ---- The app in the middle ---- */
+
+.place[hidden] {
+  display: none;
+}
+
+.place > .app-frame--fill {
   flex: 1;
   min-height: 0;
 }
 
-.app-frame--full iframe {
-  flex: 1;
+.app-frame--fill iframe {
   height: 100%;
+}
+
+.app-frame > .app-frame__cover {
+  position: absolute;
+  inset: 0;
+}
+
+.place--opensteer-app .computer-watch__app {
+  flex: 0 1 auto;
+  max-width: none;
+}
+
+/* The conversation that made the app, quiet after the app's name. */
+.app-tab__origin {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  height: var(--control-height);
+  padding: 0 var(--space-8);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--text-md);
+  white-space: nowrap;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.app-tab__origin:hover {
+  color: var(--text);
+  background-color: var(--fill-quiet);
+}
+
+.app-tab__origin > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

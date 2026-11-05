@@ -3,6 +3,8 @@ import type { WorkspaceSurfaceDestination } from "@opensteer/client/host";
 import {
   paramsDestination,
   routeDestination,
+  sameDestination,
+  surfaceRoute,
   viewedPage,
   workspaceRoute,
 } from "./surface-route.js";
@@ -16,6 +18,44 @@ describe("viewedPage", () => {
     expect(viewedPage(session, tab as never)).toMatchObject({ url: "https://example.com/" });
     expect(viewedPage(session, { ...tab, navigationFailed: true } as never)).toBeNull();
   });
+});
+
+describe("app tab routes", () => {
+  const appId = "app_11111111-1111-4111-8111-111111111111";
+  const destination = { appId, kind: "opensteer-app" } as const;
+
+  it("round trips through typed and untyped params from Tabs and from a conversation", () => {
+    for (const route of [
+      workspaceRoute("deployment", destination),
+      surfaceRoute("deployment", "thread", destination),
+    ]) {
+      expect(route.appId).toBe(appId);
+      expect(routeDestination(route)).toEqual(destination);
+      expect(paramsDestination(JSON.parse(JSON.stringify(route)))).toEqual(destination);
+    }
+  });
+
+  it("tells one app from another and from every other place", () => {
+    const other = {
+      appId: appId.replace("1111-4111", "2222-4222"),
+      kind: "opensteer-app",
+    } as const;
+    expect(sameDestination(destination, { ...destination })).toBe(true);
+    expect(sameDestination(destination, other)).toBe(false);
+    expect(sameDestination(destination, { kind: "browser", sessionId: "s", tabId: appId })).toBe(
+      false,
+    );
+  });
+
+  // A link can carry any value, and a malformed one must not reach a Host read
+  // or fall through to the browser the same route also names.
+  it.each(["", "app_1", "../../v1/rpc/bootstrap.get", `${appId}/dark/token`, "https://host.test"])(
+    "names nothing for the malformed id %j",
+    (malformed) => {
+      expect(routeDestination({ appId: malformed })).toBeNull();
+      expect(paramsDestination({ appId: malformed, sessionId: "s", tabId: "t" })).toBeNull();
+    },
+  );
 });
 
 describe("native viewer routes", () => {

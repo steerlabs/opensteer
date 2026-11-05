@@ -286,3 +286,22 @@ it.each(["deleted", "deleting"])(
     expect(connectApp).not.toHaveBeenCalled();
   },
 );
+
+it("reports a committed tab change when notifying other devices fails", async () => {
+  const workspaceId = createId("workspace");
+  const appTabs = [{ appId: `app_${crypto.randomUUID()}` }];
+  const service = new AppService({
+    dataDirectory: tmpdir(),
+    apps: { setTabOpen: async () => ({ workspaceId, appTabs }) } as unknown as AppStore,
+    store: { admitWorkspaceFiles: vi.fn() },
+    files: { list: vi.fn(), download: vi.fn() },
+    tokens: { authenticate: vi.fn(), reauthorize: vi.fn() },
+    publishEvent: vi.fn(),
+    tabsChanged: async () => {
+      throw new Error("membership read failed");
+    },
+  });
+  await expect(service.setTabOpen(appTabs[0]!.appId, createId("user"), true)).resolves.toEqual({
+    appTabs,
+  });
+});

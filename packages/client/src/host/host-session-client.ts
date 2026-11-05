@@ -1,3 +1,5 @@
+import { AppTabSchema } from "@opensteer/protocol";
+import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
 import { BrowserCursorStore } from "./browser-cursor.js";
 import type { PersonShowMessage } from "@opensteer/protocol";
@@ -1613,6 +1615,123 @@ export class HttpHostClient {
         { body: input.source, ...(input.signal ? { signal: input.signal } : {}) },
       ),
     );
+  }
+
+  #appTabGeneration = 0;
+  readonly #appTabWrites = new KeyedMutationQueue();
+  readonly #appTabPending = new Map<
+    string,
+    { token: symbol; tab: import("@opensteer/protocol").AppTab | null; opening: boolean }
+  >();
+  #overlayAppTabs(tabs: readonly import("@opensteer/protocol").AppTab[]) {
+    const result = new Map(tabs.map((tab) => [tab.appId, tab]));
+    for (const [id, { tab }] of this.#appTabPending) {
+      if (tab) result.set(id, tab);
+      else result.delete(id);
+    }
+    return [...result.values()].sort((a, b) => b.openedAt.localeCompare(a.openedAt));
+  }
+  #applyAppTabs(tabs: readonly import("@opensteer/protocol").AppTab[]) {
+    const appVersions = { ...this.#snapshot.appVersions };
+    for (const tab of tabs)
+      appVersions[tab.appId] = Math.max(appVersions[tab.appId] ?? 0, tab.latestVersion);
+    return {
+      appTabs: tabs,
+      appVersions,
+      openingAppTabs: [...this.#appTabPending]
+        .filter(([, pending]) => pending.opening && !pending.tab)
+        .map(([id]) => id),
+    };
+  }
+  openAppTab(appId: string): Promise<void> {
+    return this.#setAppTab(appId, true);
+  }
+  closeAppTab(appId: string): Promise<void> {
+    return this.#setAppTab(appId, false);
+  }
+  async #setAppTab(appId: string, open: boolean): Promise<void> {
+    const viewer = this.#viewerGeneration;
+    const token = Symbol();
+    const previous = this.#snapshot.appTabs?.find((tab) => tab.appId === appId);
+    const mutation = ++this.#appTabGeneration;
+    this.#appTabPending.set(appId, { token, tab: previous ?? null, opening: open });
+    this.#update({
+      ...this.#snapshot,
+      ...this.#applyAppTabs(this.#overlayAppTabs(this.#snapshot.appTabs ?? [])),
+    });
+    try {
+      let tab = previous;
+      if (open && !tab) {
+        const entry = Object.entries(this.#snapshot.transcripts).flatMap(([threadId, entries]) =>
+          entries
+            .filter((entry) => entry.kind === "app" && entry.appId === appId)
+            .map((entry) => ({ threadId, entry })),
+        )[0];
+        const thread = this.#snapshot.threads.find((thread) => thread.id === entry?.threadId);
+        if (entry?.entry.kind === "app" && thread)
+          tab = AppTabSchema.parse({
+            appId,
+            title: entry.entry.title,
+            threadId: thread.id,
+            workspaceId: thread.workspaceId,
+            latestVersion: entry.entry.version,
+            openedAt: new Date().toISOString(),
+          });
+        else {
+          const app = unwrapRpcResult(await this.rpc["apps.get"]({ appId }));
+          if (viewer !== this.#viewerGeneration || this.#appTabPending.get(appId)?.token !== token)
+            return;
+          tab = {
+            appId,
+            title: app.title,
+            threadId: app.threadId,
+            workspaceId: app.workspaceId,
+            latestVersion: app.latestVersion,
+            openedAt: new Date().toISOString(),
+          };
+        }
+      }
+      this.#appTabPending.set(appId, { token, tab: open ? tab! : null, opening: open });
+      this.#update({
+        ...this.#snapshot,
+        ...this.#applyAppTabs(this.#overlayAppTabs(this.#snapshot.appTabs ?? [])),
+      });
+      const result = await this.#appTabWrites.run(appId, async () =>
+        viewer === this.#viewerGeneration && !this.#disposed
+          ? this.dispatch({
+              type: open ? "app.tab.open" : "app.tab.close",
+              appId,
+              idempotencyKey: crypto.randomUUID(),
+            })
+          : null,
+      );
+      if (result === null || viewer !== this.#viewerGeneration) return;
+      if (result.type !== "app.tab.open" && result.type !== "app.tab.close")
+        throw new Error("Unexpected app tab result");
+      if (this.#appTabPending.get(appId)?.token !== token) return;
+      this.#appTabPending.delete(appId);
+      const tabs =
+        mutation === this.#appTabGeneration
+          ? result.appTabs
+          : [
+              ...(this.#snapshot.appTabs ?? []).filter((tab) => tab.appId !== appId),
+              ...result.appTabs.filter((tab) => tab.appId === appId),
+            ];
+      this.#update({ ...this.#snapshot, ...this.#applyAppTabs(this.#overlayAppTabs(tabs)) });
+    } catch (error) {
+      if (viewer === this.#viewerGeneration && this.#appTabPending.get(appId)?.token === token) {
+        this.#appTabPending.delete(appId);
+        const restored = (this.#snapshot.appTabs ?? []).filter((tab) => tab.appId !== appId);
+        if (previous) restored.push(previous);
+        this.#update({ ...this.#snapshot, ...this.#applyAppTabs(this.#overlayAppTabs(restored)) });
+      }
+      throw error;
+    } finally {
+      if (viewer === this.#viewerGeneration) {
+        this.#appTabGeneration++;
+        this.#reread("host.app-tabs-changed");
+      }
+    }
   }
 
   async viewApp(appId: string, theme: "light" | "dark", signal?: AbortSignal) {
@@ -3880,6 +3999,7 @@ export class HttpHostClient {
 
   async #performBootstrap(reason: BootstrapReason, revalidateCapabilities: boolean): Promise<void> {
     const generation = this.#viewerGeneration;
+    const appTabMark = this.#appTabGeneration;
     const presenceMark = this.#presenceCounter;
     const browserStateMark = this.#browserStateCounter;
     const ownerViewRevision = this.#ownerViews.revision;
@@ -4113,6 +4233,11 @@ export class HttpHostClient {
       browserProfileDeletions: payload.browser.profileDeletions?.map((deletion) => ({
         ...deletion,
       })),
+      ...this.#applyAppTabs(
+        appTabMark === this.#appTabGeneration
+          ? this.#overlayAppTabs(payload.appTabs ?? [])
+          : (this.#snapshot.appTabs ?? []),
+      ),
       browserSessions,
       connection: workspaces.length ? this.#snapshot.connection : "connected",
       deploymentShape: payload.deploymentShape,
@@ -4938,7 +5063,10 @@ export class HttpHostClient {
       this.browserHistory.changed(message.profileId);
       return;
     }
-    if (message.type === "host.browser-sessions-changed") {
+    if (
+      message.type === "host.browser-sessions-changed" ||
+      message.type === "host.app-tabs-changed"
+    ) {
       // The catalog is viewer-wide, whichever Workspace this socket follows.
       // A session opened, ended or changed hands. Browser Sessions arrive on
       // the bootstrap, not the event stream, so the reread is the whole answer
@@ -5901,6 +6029,7 @@ export class HttpHostClient {
     this.#cancelLostFrameReread();
     this.#savedViewReadiness = emptySavedViewReadiness();
     this.#viewerGeneration += 1;
+    this.#appTabPending.clear();
     this.#retainedWorkspaceTabLineages.clear();
     this.#workspaceTabReads.clear();
     this.#browserUsageRead.clear();
@@ -5993,6 +6122,7 @@ export class HttpHostClient {
       workspaceRefusal: this.#savedViewReadiness.workspaceRefusal + 1,
     };
     this.#viewerGeneration += 1;
+    this.#appTabPending.clear();
     this.#browserUsageRead.clear();
     this.#browserUsageReads.clear();
     this.#browserUsageRunSources.clear();

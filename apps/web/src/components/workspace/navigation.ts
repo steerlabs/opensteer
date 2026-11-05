@@ -5,6 +5,7 @@ import {
   parseNavigationInput,
   type WorkspaceSurfaceDestination as SurfaceDestination,
 } from "@opensteer/client/host";
+import { AppIdSchema } from "@opensteer/core";
 
 /**
  * The address has two axes and this module is the only thing that writes
@@ -32,6 +33,7 @@ const placeParams = [
   "mac",
   "phone",
   "display",
+  "opensteerApp",
 ] as const;
 
 /** Addresses of the stage before places: read once, then replaced away. */
@@ -94,6 +96,8 @@ export function startPageLink(state: unknown): StartPageLink | null {
 let openings = 0;
 
 function placeDestination(params: URLSearchParams): SurfaceDestination | null {
+  const appId = AppIdSchema.safeParse(params.get("opensteerApp"));
+  if (appId.success) return { kind: "opensteer-app", appId: appId.data };
   const sessionId = params.get("browser");
   const tabId = params.get("browserTab");
   if (sessionId && tabId) return { kind: "browser", sessionId, tabId };
@@ -139,6 +143,8 @@ function placeDestination(params: URLSearchParams): SurfaceDestination | null {
 /** The place catalog's key for a destination; a browser address without its tab has none yet. */
 export function destinationPlaceKey(destination: SurfaceDestination): string | null {
   switch (destination.kind) {
+    case "opensteer-app":
+      return `opensteer-app:${destination.appId}`;
     case "browser":
       return destination.tabId ? `browser:${destination.sessionId}:${destination.tabId}` : null;
     case "app":
@@ -172,6 +178,10 @@ function writePlace(params: URLSearchParams, selection: PlaceSelection): void {
     return;
   }
   const { destination } = selection;
+  if (destination.kind === "opensteer-app") {
+    params.set("opensteerApp", destination.appId);
+    return;
+  }
   if (destination.kind === "browser") {
     params.set("browser", destination.sessionId);
     if (destination.tabId) params.set("browserTab", destination.tabId);
@@ -281,6 +291,7 @@ const RememberedPlaceSchema = z.discriminatedUnion("kind", [
     display: z.string().min(1).max(255).optional(),
     machineId: z.string().min(1).max(200),
   }),
+  z.object({ kind: z.literal("opensteer-app"), appId: AppIdSchema }),
 ]);
 
 const RememberedTalkSchema = z.object({

@@ -13,7 +13,7 @@ import { ComputerDisplay, ComputerOwnerView, ComputerTaskView } from "./phone-di
  */
 export function MacAppView(props: {
   readonly active: boolean;
-  readonly destination: Exclude<WorkspaceSurfaceDestination, { kind: "browser" }>;
+  readonly destination: Extract<WorkspaceSurfaceDestination, { kind: "app" | "phone" }>;
   readonly hostClient: HostClient;
   /** The keyboard is up for the app or phone, and its pane should make room. */
   readonly onTyping: (typing: boolean) => void;
