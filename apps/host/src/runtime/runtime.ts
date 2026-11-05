@@ -1264,7 +1264,7 @@ export async function createHostRuntime(
     // Shell audit keeps its existing `run-ended` reason; computer-use cleanup
     // closes the exact session without adding a wire reason.
     store.onRunGrantsRevoked((grants) => {
-      browser.invalidatePlaceAuthority();
+      browser.endRevokedRunActors(grants);
       computerUse?.endGrantSessions(grants);
       for (const grant of grants)
         integrationPlatform.endComputerGeneration(grant.runId, grant.bindingGeneration);

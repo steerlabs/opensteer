@@ -2079,6 +2079,21 @@ export class BrowserService {
     );
   }
 
+  /** A revoked Run can't act, so its presence ends now, before its Runner acknowledges. */
+  endRevokedRunActors(
+    grants: readonly { readonly runId: RunId; readonly bindingGeneration: number }[],
+  ): void {
+    // A lineage read already under way predates the revocation and could reinstall the actor.
+    this.#authorityGeneration++;
+    for (const actor of this.#actors.values())
+      if (
+        grants.some(
+          (grant) => grant.runId === actor.runId && grant.bindingGeneration === actor.generation,
+        )
+      )
+        this.#clearActor(actor);
+  }
+
   invalidatePlaceAuthority(workspaceId?: WorkspaceId, threadIds?: readonly ThreadId[]): void {
     // Pending lineage reads have no known scope yet; fence them without clearing live actors.
     this.#authorityGeneration++;
