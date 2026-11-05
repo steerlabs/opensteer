@@ -1,10 +1,9 @@
 import { hostsDeployment } from "@opensteer/client/computers";
 import {
-  passwordsSuggestionElsewhere,
+  passwordsOfferLine,
   passwordsSuggestionKey,
-  passwordsSuggestionLead,
-  passwordsSuggestionName,
   type HostSnapshot,
+  type PasswordsSetupOffer,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { useSyncExternalStore, type ReactNode } from "react";
@@ -15,13 +14,14 @@ import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 
 /**
- * The quiet offer of Opensteer Passwords after a sign-in found it not set up.
- * Setup needs the Mac, so the phone only says where; nothing reaches the agent.
+ * The quiet offer of Opensteer Passwords after a sign-in found it lacking.
+ * Passwords lives on the Mac, so the phone only says where; the Host wakes the
+ * agent once the login exists.
  */
 export function PasswordsSuggestion(props: {
-  readonly card?: boolean;
   readonly deploymentId: string;
   readonly hostClient: Parameters<typeof useHostSelector>[0];
+  readonly offer: PasswordsSetupOffer;
   readonly userId: string;
 }): ReactNode {
   const homeName = useHostSelector(props.hostClient, selectHomeName);
@@ -33,15 +33,19 @@ export function PasswordsSuggestion(props: {
   );
   const key = passwordsSuggestionKey(props.deploymentId, props.userId);
   if (dismissed === null || dismissed.has(key)) return null;
+  const line = passwordsOfferLine({
+    card: props.offer.credential === "card",
+    computer: homeName ?? "your Mac",
+    need: props.offer.need,
+    site: props.offer.site,
+  });
   return (
     <View accessibilityLiveRegion="polite" style={styles.line}>
       <Symbol name="key" size={15} tint={color.ember} />
       <AppText role="caption" style={styles.words} tone="soft">
-        <AppText role="caption">{passwordsSuggestionName}</AppText>{" "}
-        {props.card ? "lets agents fill saved cards at checkout." : passwordsSuggestionLead}{" "}
-        {props.card
-          ? `Open Passwords on ${homeName ?? "your Mac"} and add a card`
-          : passwordsSuggestionElsewhere(homeName)}
+        {line.before}
+        <AppText role="caption">{line.name}</AppText>
+        {line.after}
       </AppText>
       <Pressable
         accessibilityLabel="Dismiss"

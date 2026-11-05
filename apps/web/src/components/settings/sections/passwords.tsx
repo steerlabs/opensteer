@@ -17,7 +17,6 @@ import {
   passwordsDecliningAllAction,
   passwordsSetUpFacts,
   passwordsSetUpLead,
-  passwordsSetUpNote,
   passwordsWaitingDetail,
   passwordsWaitingLabel,
   type HostClient,
@@ -205,11 +204,7 @@ function StateBody({
         <div className="card">
           <div className="card__form">
             <p className="sign-in-card__lead">{passwordsSetUpLead}</p>
-            <Facts facts={passwordsSetUpFacts} icons={["download", "browser", "shield"]} />
-            <p className="notice" role="note">
-              <Icon name="desktop" />
-              <span>{passwordsSetUpNote}</span>
-            </p>
+            <Facts facts={passwordsSetUpFacts} icons={["key", "shield", "desktop"]} />
             <div>
               <button
                 className="btn btn--primary"

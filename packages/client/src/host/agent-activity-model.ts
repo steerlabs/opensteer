@@ -22,6 +22,10 @@ import type {
   ToolEntry,
   TranscriptEntry,
 } from "./client.js";
+import {
+  browserSignInPasswordsNeed,
+  type BrowserSignInPasswords,
+} from "@opensteer/protocol/browser-sources";
 import { browserSiteLabel } from "./browser-sign-in.js";
 import { readCardUseResult } from "./cards.js";
 import { browserSignInStep, readBrowserSignInResult, type BrowserSignInStep } from "./passwords.js";
@@ -442,18 +446,16 @@ export function turnState(turn: Turn): TurnState {
 }
 
 /**
- * The site to name when offering Opensteer Passwords, or null. The latest
- * word on a sign-in since the person last spoke decides, and only once the
- * agent has stopped: their next message, or a sign-in that got further, ends
- * the offer, so a Thread shows it once, at its end. A Chrome Request's ending
- * is newer than the `pending` that opened it; a repeated call adds nothing.
+ * What to offer of Opensteer Passwords, or null. The latest word on a sign-in
+ * since the person last spoke decides, and only once the agent has stopped:
+ * their next message, or a sign-in that got further, ends the offer, so a
+ * Thread shows it once, at its end. A Chrome Request's ending is newer than
+ * the `pending` that opened it; a repeated call adds nothing.
  */
 export interface PasswordsSetupOffer {
-  readonly site: string;
   readonly credential: "login" | "card";
-}
-export function passwordsSetUpSuggestion(groups: readonly TranscriptGroup[]): string | null {
-  return passwordsSetupOffer(groups)?.site ?? null;
+  readonly need: BrowserSignInPasswords;
+  readonly site: string;
 }
 export function passwordsSetupOffer(
   groups: readonly TranscriptGroup[],
@@ -467,30 +469,37 @@ export function passwordsSetupOffer(
     for (let step = group.turn.work.length - 1; step >= 0; step -= 1) {
       const entry = group.turn.work[step]!;
       if (entry.kind === "request" && entry.requestKind === "browser.sign-in") {
-        return entry.passwordsSetUpSite
-          ? { site: entry.passwordsSetUpSite, credential: "login" }
-          : null;
+        return entry.passwordsOffer ? { ...entry.passwordsOffer, credential: "login" } : null;
       }
       if (entry.kind === "tool" && entry.tool?.name === "use_card" && entry.output) {
         const result = readCardUseResult(entry.output.text);
         if (!result || result.status === "resolved") continue;
-        return result.status === "unavailable" &&
-          ["no-saved-card", "passwords-off", "passwords-not-set-up"].includes(result.reason)
-          ? { site: result.site, credential: "card" }
-          : null;
+        const need = result.status === "unavailable" ? cardOfferNeed(result.reason) : null;
+        return need ? { credential: "card", need, site: result.site } : null;
       }
       if (entry.kind !== "tool" || !isSignInTool(entry) || !entry.output) continue;
       const result = readBrowserSignInResult(entry.output.text);
       if (result === null || result.status === "resolved") continue;
       if (result.status === "pending" && result.replayed) continue;
-      const notSetUp =
-        ("passwords" in result && result.passwords === "not-set-up") ||
-        (result.status === "unavailable" && result.reason === "passwords-not-set-up");
+      const need = browserSignInPasswordsNeed(result);
       const site = "site" in result ? result.site : stringField(effectiveArguments(entry), "site");
-      return notSetUp && site ? { site, credential: "login" } : null;
+      return need && site ? { credential: "login", need, site } : null;
     }
   }
   return null;
+}
+
+function cardOfferNeed(reason: string): BrowserSignInPasswords | null {
+  switch (reason) {
+    case "no-saved-card":
+      return "no-login";
+    case "passwords-off":
+      return "off";
+    case "passwords-not-set-up":
+      return "not-set-up";
+    default:
+      return null;
+  }
 }
 
 /**

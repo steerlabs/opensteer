@@ -31,8 +31,9 @@ Only Personal's local Host can name a Workspace to the vault.
 
 Agents use `sign_in` for logins and `use_card` for checkout. Probes never prompt. For login
 requests given a Browser Session, the Host checks
-access to it first; a Chrome grant for the session's Workspace wins, otherwise a saved login selects
-Passwords, and Chrome can fill in when Passwords has none. Every path refuses loopback and the
+access to it first; a Chrome grant for the session's Workspace goes first, then a saved login if
+that Chrome has no sign-in. Without a grant a saved login selects Passwords, and Chrome can fill in
+when Passwords has none. Every path refuses loopback and the
 Deployment's own sites before creating a Request. A login reference never grants access to a
 browser, phone or Mac app: each use still needs the Run's current authority over that surface.
 
@@ -40,6 +41,16 @@ browser, phone or Mac app: each use still needs the Run's current authority over
 suggestion can't depend on a model remembering to call anything. Clients show it from that result
 at the end of the conversation until the person next speaks; absent, Passwords can't help here
 (a server Deployment or an unsupported Mac) and nothing offers it.
+
+That report is true only when made, and the person answers it in a window no agent can see. A
+Request wakes its agent when it settles; an offer has nothing to settle, so the Host
+[keeps it](../apps/host/src/browser/passwords-offers.ts), probes until the login exists and wakes
+the Thread itself. That is why nothing tells the person to go back and tell their agent. A person's
+No stands: a declined Chrome Request or a stopped Thread ends the offer, and the wake waits for the
+Run's other Requests so its outcomes still arrive together. It withdraws a Chrome Request it makes
+pointless, unless an Allow got there first. Offers are memory-only, and a finished task can't take
+input; the result itself says to call `sign_in` again, because a long-lived session keeps the guide
+it read first. Cards have no wake.
 
 ## Grants and consent
 
@@ -133,7 +144,9 @@ Versions live in the [broker wire](../packages/protocol/src/passwords-broker.ts)
 ## The broker
 
 The [broker](../apps/desktop/native/passwords/README.md) is the only vault and key owner for a macOS
-user. It accepts only the signed Opensteer desktop under the Developer ID team taken from its own
+user. It is an accessory app except while its window is open, when it is a regular one: the person
+leaves it to export, needs the Dock or Command-Tab to get back, and macOS only returns focus after
+the system prompt to a regular app. It accepts only the signed Opensteer desktop under the Developer ID team taken from its own
 signature, checked by audit token before reading any byte; desktop verifies the broker's signature
 and live peer too. Development uses a separate bundle, socket and vault, and its file protection
 cannot resist same-user rollback, so it must never ship.

@@ -21,6 +21,8 @@ public struct PasswordsWindowView: View {
           .background(Color.yellow.opacity(0.35))
       }
       content
+        .transition(.opacity)
+        .animation(.easeInOut(duration: 0.18), value: model.screen)
     }
     .frame(minWidth: 520, idealWidth: 560, minHeight: 440, idealHeight: 600)
     .sheet(item: $model.sheet) { sheet in
@@ -45,8 +47,8 @@ public struct PasswordsWindowView: View {
       CenteredScreen(symbol: "lock", title: Copy.appName, lead: Copy.notUnlockedSinceRestart) { EmptyView() }
     case .setUp, .settingUp:
       SetUpView(model: model)
-    case .setUpDone:
-      SetUpDoneView(model: model)
+    case .addPasswords:
+      AddPasswordsView(model: model)
     case .needsReset(let reason):
       NeedsResetView(model: model, reason: reason)
     case .ready:
@@ -92,30 +94,24 @@ private struct CenteredScreen<Content: View>: View {
 
 private struct SetUpView: View {
   @ObservedObject var model: PasswordsWindowModel
+  /// One for each of `Copy.setUpFacts`, in order: what is typed, who allows it, where it lives.
+  private static let factSymbols = ["keyboard", "hand.raised", "laptopcomputer"]
 
   var body: some View {
-    CenteredScreen(symbol: "key", title: Copy.appName, lead: Copy.setUpLead) {
-      VStack(alignment: .leading, spacing: 10) {
-        ForEach(Copy.setUpFacts, id: \.self) { fact in
+    CenteredScreen(symbol: "key.fill", tint: .accentColor, title: Copy.appName, lead: Copy.setUpLead) {
+      VStack(alignment: .leading, spacing: 12) {
+        ForEach(Array(zip(Copy.setUpFacts, Self.factSymbols)), id: \.0) { fact, symbol in
           Label {
             Text(fact).fixedSize(horizontal: false, vertical: true)
           } icon: {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Image(systemName: symbol).foregroundStyle(.secondary)
           }
         }
       }
+      .font(.callout)
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(14)
       .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.quaternary.opacity(0.5)))
-      Label {
-        Text(Copy.setUpNote).fixedSize(horizontal: false, vertical: true)
-      } icon: {
-        Image(systemName: "info.circle")
-      }
-      .font(.callout)
-      .foregroundStyle(.secondary)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 14)
       if let message = model.message {
         Text(message).foregroundStyle(.orange)
       }
@@ -135,22 +131,42 @@ private struct SetUpView: View {
   }
 }
 
-private struct SetUpDoneView: View {
+/// The vault is ready and empty, so nothing is finished yet: this is the step
+/// that makes it useful, and "Not Now" is the honest way out of it.
+private struct AddPasswordsView: View {
   @ObservedObject var model: PasswordsWindowModel
 
   var body: some View {
-    CenteredScreen(symbol: "checkmark.circle.fill", tint: .green, title: Copy.setUpDone, lead: Copy.setUpDoneLead) {
-      VStack(spacing: 12) {
-        Button(Copy.importPasswords) { model.startImport() }
-          .buttonStyle(.borderedProminent)
-          .controlSize(.large)
-          .keyboardShortcut(.defaultAction)
-        HStack(spacing: 8) {
-          Button(Copy.addPassword) { model.sheet = .add }
-          Button(Copy.done) { model.finishSetup() }
-        }
+    CenteredScreen(symbol: "key.fill", tint: .accentColor, title: Copy.addPasswords, lead: Copy.importWhere) {
+      SourceList { source in Task { await model.importPasswords(from: source) } }
+      if let message = model.message {
+        Text(message).foregroundStyle(.orange)
+      }
+      HStack {
+        Button(Copy.addPassword) { Task { await model.addPassword() } }
+        Spacer()
+        Button(Copy.notNow) { model.leave() }
       }
     }
+  }
+}
+
+/// The first passwords are saved, and whatever sent the person here is waiting.
+private struct FilledBar: View {
+  @ObservedObject var model: PasswordsWindowModel
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+      if case .shown(let all) = model.logins { Text(Copy.saved(all.count)) }
+      Spacer()
+      Button(Copy.backToOpensteer) { model.leave() }
+        .buttonStyle(.borderedProminent)
+        .keyboardShortcut(.defaultAction)
+    }
+    .padding(.horizontal, 20)
+    .padding(.vertical, 12)
+    .background(.bar)
   }
 }
 
@@ -233,6 +249,9 @@ private struct ReadyView: View {
       }
     }
     .formStyle(.grouped)
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      if model.filled { FilledBar(model: model) }
+    }
     .confirmationDialog(
       deleting.map { Copy.deleteConfirm($0.site, Display.account($0.username)) } ?? "",
       isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })

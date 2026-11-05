@@ -32,11 +32,12 @@ final class WindowTests: BrokerTestCase {
     XCTAssertEqual(window.screen, .setUp)
     XCTAssertTrue(window.development)
     await window.setUp()
-    XCTAssertEqual(window.screen, .setUpDone, "then Import, Add or Done")
+    XCTAssertEqual(window.screen, .addPasswords, "ready, but nothing an agent could use yet")
     XCTAssertEqual(window.logins, .shown([]), "setup opened the first visit")
-    window.finishSetup()
-    XCTAssertEqual(window.screen, .ready)
     XCTAssertTrue(window.agentSignIns)
+    _ = try await broker.addLogin(Fixtures.login())
+    XCTAssertEqual(window.screen, .ready)
+    XCTAssertTrue(window.filled, "the person's errand here is done")
     await window.setAgentSignIns(false)
     XCTAssertFalse(window.agentSignIns)
     XCTAssertEqual(broker.status?.agentSignIns, false)
@@ -54,6 +55,64 @@ final class WindowTests: BrokerTestCase {
     XCTAssertNil(window.message)
     await window.startFresh()
     XCTAssertEqual(window.screen, .setUp)
+  }
+
+  /// Setup's authentication covers the first import, with no second prompt.
+  func testTheFirstStepFollowsSetupWithoutAskingAgain() async throws {
+    let window = model()
+    await window.setUp()
+    let before = presence.askCount
+    await window.importPasswords(from: .chrome)
+    XCTAssertEqual(presence.askCount, before)
+    XCTAssertEqual(window.importFlow?.stage, .steps(.chrome))
+    window.importFlow?.back()
+    XCTAssertNil(window.importFlow, "chosen on the screen, so Back returns to it")
+    await window.addPassword()
+    XCTAssertEqual(window.sheet, .add)
+  }
+
+  /// An empty vault is the same step whenever the person comes back to it.
+  func testAnEmptyVaultReturnsToTheFirstStep() async throws {
+    let window = model()
+    await window.setUp()
+    window.windowClosed()
+    XCTAssertEqual(window.screen, .addPasswords)
+    XCTAssertEqual(window.logins, .hidden)
+    let before = presence.askCount
+    await window.importPasswords(from: .safari)
+    XCTAssertEqual(presence.askCount, before + 1, "a new visit authenticates once")
+    XCTAssertEqual(window.importFlow?.stage, .steps(.safari))
+    window.importFlow?.close()
+
+    let added = try await broker.addLogin(Fixtures.login())
+    XCTAssertEqual(window.screen, .ready)
+    _ = try await broker.deleteLogin(id: try XCTUnwrap(added?.first?.id))
+    XCTAssertEqual(window.screen, .addPasswords, "deleting the last one starts over")
+  }
+
+  func testCancellingAuthenticationLeavesTheFirstStepAlone() async throws {
+    let window = model()
+    await window.setUp()
+    window.windowClosed()
+    presence.next(.cancel)
+    await window.importPasswords(from: .chrome)
+    XCTAssertNil(window.importFlow)
+    XCTAssertEqual(window.logins, .hidden)
+  }
+
+  func testAVaultWithOnlyACardIsNotEmpty() async throws {
+    let window = model()
+    await window.setUp()
+    try await broker.saveCard(
+      CardDraft(number: "4242424242424242", expiryMonth: 3, expiryYear: 2030, cvc: "123"))
+    XCTAssertEqual(window.screen, .ready)
+  }
+
+  /// macOS picks the next app when the system prompt closes; the window takes it back.
+  func testTheWindowComesBackAfterAuthentication() async throws {
+    let before = harness.windows.opened
+    await model().setUp()
+    XCTAssertEqual(harness.windows.opened, before + 1)
   }
 
   func testCancelledSetupStaysOnSetUp() async throws {

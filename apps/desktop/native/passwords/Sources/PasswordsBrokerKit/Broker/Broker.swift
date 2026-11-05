@@ -79,6 +79,8 @@ public final class Broker: IPCServerDelegate {
   public private(set) var condition: VaultCondition = .notSetUp
   /// The stored setting; agents can sign in only when the vault is also ready.
   public private(set) var agentSignInsSetting = false
+  /// Whether a ready vault holds nothing yet, which the window answers with its first step.
+  public private(set) var vaultIsEmpty = false
   private var connections: [Int: Connection] = [:]
   private var transactions: [String: Transaction] = [:]
   private var lastStatus: Wire.Status?
@@ -107,6 +109,7 @@ public final class Broker: IPCServerDelegate {
   public func load() async {
     condition = await vault.examine()
     agentSignInsSetting = await vault.agentSignIns()
+    await readContents()
     publish()
   }
 
@@ -941,7 +944,20 @@ public final class Broker: IPCServerDelegate {
     endImport()
     apply(await vault.examine())
     agentSignInsSetting = await vault.agentSignIns()
+    await readContents()
     publish()
+  }
+
+  /// Unknown reads as not empty: the window then shows the list it can always open.
+  private func readContents() async {
+    vaultIsEmpty = condition == .ready ? ((try? await vault.isEmpty()) ?? false) : false
+  }
+
+  /// After a change to what is saved: the window may move on to the next step.
+  private func contentsChanged() async {
+    let wasEmpty = vaultIsEmpty
+    await readContents()
+    if vaultIsEmpty != wasEmpty { notify(.changed) }
   }
 
   private func apply(_ next: VaultCondition) {
@@ -958,6 +974,7 @@ public final class Broker: IPCServerDelegate {
     apply(next)
     agentSignInsSetting = await vault.agentSignIns()
     if next == .ready { beginVisit(authentication) }
+    await readContents()
     publish()
   }
 
@@ -974,6 +991,7 @@ public final class Broker: IPCServerDelegate {
     endImport()
     apply(try await vault.startFresh(authentication))
     agentSignInsSetting = await vault.agentSignIns()
+    await readContents()
     publish()
   }
 
@@ -1075,6 +1093,7 @@ public final class Broker: IPCServerDelegate {
         return VaultChanges(addCards: [draft])
       }
     }
+    await contentsChanged()
     guard visit?.serial == live.serial else { throw VaultServiceError.windowLocked }
   }
 
@@ -1087,6 +1106,7 @@ public final class Broker: IPCServerDelegate {
         return VaultChanges(delete: [id])
       }
     }
+    await contentsChanged()
     guard visit?.serial == live.serial else { throw VaultServiceError.windowLocked }
   }
 
@@ -1160,6 +1180,8 @@ public final class Broker: IPCServerDelegate {
     defer { windowPrompts[key] = nil }
     let authentication = try await prompt.value
     guard generation == windowGeneration else { throw PresenceError.cancelled }
+    // The system prompt leaves macOS to pick the next app, which needn't be this one.
+    windows?.openPasswordsWindow()
     return authentication
   }
 
@@ -1172,6 +1194,7 @@ public final class Broker: IPCServerDelegate {
     let list = try await vaultWork {
       try await self.vault.change(authentication ?? asking.authentication, listing: true, build)
     }
+    await contentsChanged()
     return visit?.serial == asking.serial ? list : nil
   }
 
@@ -1235,7 +1258,9 @@ public final class Broker: IPCServerDelegate {
       live.serial == open.visit
     else { throw VaultServiceError.noImport }
     defer { endImport(id) }
-    return try await vault.commitImport(id)
+    let count = try await vault.commitImport(id)
+    await contentsChanged()
+    return count
   }
 
   /// Ends import `id`, or whichever is open when nil, whatever the sheet

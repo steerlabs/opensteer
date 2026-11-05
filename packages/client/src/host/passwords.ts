@@ -9,6 +9,7 @@ import {
 import {
   AgentBrowserSignInResultSchema,
   type AgentBrowserSignInResult,
+  type BrowserSignInPasswords,
   type BrowserSignInUnavailableReason,
 } from "@opensteer/protocol/browser-sources";
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
@@ -434,16 +435,12 @@ const unsupportedMessages = {
   platform: "Passwords is available in the Opensteer app on a Mac.",
 } as const;
 
-export const passwordsSetUpLead =
-  "Let agents use passwords saved on this Mac in websites and apps, and saved cards on websites only. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account from any device signed in to this Opensteer.";
+export const passwordsSetUpLead = "Let agents sign in for you with passwords saved on this Mac.";
 export const passwordsSetUpFacts = [
-  "Import passwords from Chrome, Safari, Firefox, 1Password or Bitwarden. Cards are added in Passwords.",
-  "Opensteer fills the fields the agent focuses on, in the browser, on your phone or in Mac apps.",
-  "In the browser, each password goes only to its own website. In apps, the agent checks it’s the real app.",
+  "Opensteer never sends your password to the agent; it types it into the website or app, which can read it.",
+  "You allow an account from any device signed in to this Opensteer.",
+  "Passwords are kept only on this Mac and aren’t backed up. If this Mac is lost or erased, ones saved only here are gone.",
 ] as const;
-/** What the setup says plainly, apart from what Passwords does for you. */
-export const passwordsSetUpNote =
-  "Passwords are kept only on this Mac and aren’t backed up. If this Mac is lost or erased, ones saved only here are gone.";
 export const passwordsSetUpAction = "Set up Passwords";
 export const passwordsOpenAction = "Open Passwords";
 export const passwordsAgentSignInsLabel = "Agents can use saved passwords and cards";
@@ -475,16 +472,62 @@ export const passwordsNeedsReset =
   "Set up Opensteer Passwords again. The passwords saved here before can’t be opened on this Mac.";
 export const passwordsDevelopmentBanner = "Development build: use test passwords only.";
 
-/** The line that offers Passwords after a sign-in found it not set up. */
-export const passwordsSuggestionName = "Opensteer Passwords";
-export const passwordsSuggestionLead = "lets agents sign in for you.";
+/** The offer's words, with the one name the reader's eye should land on set apart. */
+export interface PasswordsOfferLine {
+  readonly after: string;
+  readonly before: string;
+  readonly name: string;
+}
+
+/**
+ * The line that offers Passwords after a sign-in found it lacking. `computer`
+ * is null on the Mac itself, where the line's button is the way there. Nothing
+ * asks the person to tell the agent: the Host does that when the login exists.
+ */
+export function passwordsOfferLine(input: {
+  readonly card: boolean;
+  readonly computer: string | null;
+  readonly need: BrowserSignInPasswords;
+  readonly site: string;
+}): PasswordsOfferLine {
+  const { computer } = input;
+  // A card has no wake: nothing watches for one, so the person still asks again.
+  if (input.card) {
+    return {
+      after:
+        computer === null
+          ? " Add a card and enable agent use, then ask the agent again."
+          : ` lets agents fill saved cards at checkout. Open Passwords on ${computer} and add a card.`,
+      before: "",
+      name: passwordsAppName,
+    };
+  }
+  const there = computer === null ? "" : ` on ${computer}`;
+  switch (input.need) {
+    case "not-set-up":
+      return {
+        after: ` lets agents sign in for you.${computer === null ? "" : ` Set it up${there}.`}`,
+        before: "",
+        name: passwordsAppName,
+      };
+    case "no-login":
+      return { after: ` login${there}.`, before: "Add your ", name: browserSiteLabel(input.site) };
+    case "off":
+      return { after: ` are off${there}.`, before: "", name: "Agent sign-ins" };
+  }
+}
+
+/** The offer as this Mac sees it now, newer than the agent's word, or null when it can't help. */
+export function passwordsOfferNeedHere(
+  state: PasswordsSettingsState["kind"] | null,
+  agentSignIns: "on" | "off" | null,
+): BrowserSignInPasswords | null {
+  if (state === "not-set-up") return "not-set-up";
+  if (state !== "ready") return null;
+  return agentSignIns === "off" ? "off" : "no-login";
+}
+
 export const passwordsSuggestionAction = "Set up";
-export function passwordsSuggestionElsewhere(homeName: string | null): string {
-  return `Set it up on ${homeName ?? "your Mac"}.`;
-}
-export function passwordsSuggestionDone(site: string): string {
-  return `Passwords is set up. Add your ${browserSiteLabel(site)} login, then tell your agent.`;
-}
 /** Dismissed with the usage notices: one small per-device list, one line of it per Deployment. */
 export function passwordsSuggestionKey(deploymentId: string, userId: string): string {
   return `passwords-suggestion:${deploymentId}:${userId}`;

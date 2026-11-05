@@ -1,4 +1,5 @@
 import type { PersonShowMessage } from "@opensteer/protocol";
+import type { BrowserSignInPasswords } from "@opensteer/protocol/browser-sources";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
 import type {
   ChannelAccessPolicy,
@@ -466,8 +467,8 @@ export interface RequestReceiptEntry {
   id: string;
   kind: "request";
   outcome: string;
-  /** The site of a Chrome sign-in that ended with Opensteer Passwords not set up. */
-  passwordsSetUpSite?: string;
+  /** What a Chrome sign-in that ended found Opensteer Passwords lacking. */
+  passwordsOffer?: { readonly need: BrowserSignInPasswords; readonly site: string };
   requestId: string;
   requestKind: Request["kind"] | null;
   runId: string | null;

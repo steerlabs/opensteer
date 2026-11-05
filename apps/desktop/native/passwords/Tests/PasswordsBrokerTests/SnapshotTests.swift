@@ -71,11 +71,13 @@ final class SnapshotTests: BrokerTestCase {
       broker: broker, activityLog: harness.activity, runner: ImportRunner(worker: builtWorker))
     try render(PasswordsWindowView(model: model), "window-1-set-up", size: size)
     await model.setUp()
-    try render(PasswordsWindowView(model: model), "window-2-set-up-done", size: size)
-    model.finishSetup()
-    _ = try await broker.addLogin(
-      Fixtures.login("github.com", username: "sam@example.com", label: "Work"))
-    _ = try await broker.addLogin(Fixtures.login("example.com", username: "alex.doe"))
+    try render(PasswordsWindowView(model: model), "window-2-add-passwords", size: size)
+    _ = await model.add(
+      website: "github.com", username: "sam@example.com", password: "synthetic-1", twoFactor: "",
+      label: "Work")
+    _ = await model.add(
+      website: "example.com", username: "alex.doe", password: "synthetic-2", twoFactor: "", label: "")
+    try render(PasswordsWindowView(model: model), "window-2b-filled", size: size)
     model.windowClosed()
     let desktop = try await harness.client()
     // Allowed for two Workspaces on github.com, then once more automatically.
@@ -107,6 +109,7 @@ final class SnapshotTests: BrokerTestCase {
     model.startImport()
     let flow = try XCTUnwrap(model.importFlow)
     try render(ImportSheet(flow: flow), "import-1-where")
+    try render(AnyView(SourceList { _ in }.frame(width: 400)), "import-1b-sources")
     flow.choose(.chrome)
     try render(ImportSheet(flow: flow), "import-2-steps")
     let export = harness.directory.appendingPathComponent("export.csv")
