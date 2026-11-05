@@ -44,8 +44,9 @@ person message can start work normally after a Run ends with durable Requests st
 
 Durable Requests return immediately and grant no authority. Agents can continue independent work,
 briefly explain the ask, and end their turn when none remains. They must not poll, repeat or route
-around the ask. An answer during a turn is visible through request_list; automatic delivery waits
-until the turn ends (or enters background) and its durable siblings settle. A newer Run releases
+around the ask. A Request's status is visible through request_list; its answer arrives only with
+the continuation, which waits until the turn ends (or enters background) and its durable siblings
+settle. A newer Run releases
 older settled outcomes too, so an abandoned ask cannot hold up later work. Eligible outcomes from
 one Run arrive together; different Runs stay independent. Requests and Assignments outlive the
 turn. Native harness Requests keep blocking natively. Trigger Occurrences have no native turn to
