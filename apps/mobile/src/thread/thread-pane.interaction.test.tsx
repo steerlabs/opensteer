@@ -4276,7 +4276,7 @@ describe("a new task Ask started", () => {
     expect(text(again.container)).not.toContain("Research page");
     expect(
       again.drafts
-        .readDraftSummary(deploymentId, userId, null)
+        .readDraftSummary(deploymentId, userId)
         .newTasks.map((draft) => [draft.draftId, draft.workspaceId]),
     ).toEqual(
       expect.arrayContaining([

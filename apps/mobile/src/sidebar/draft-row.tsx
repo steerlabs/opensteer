@@ -15,8 +15,9 @@ export const DraftRow = memo(function DraftRow(props: {
   readonly draft: NewTaskDraftSummary;
   readonly onDiscard: (draft: NewTaskDraftSummary) => void;
   readonly onOpen: (draft: NewTaskDraftSummary) => void;
+  readonly selected: boolean;
 }): ReactNode {
-  const { draft, onDiscard, onOpen } = props;
+  const { draft, onDiscard, onOpen, selected } = props;
   const menu = useRef<MenuComponentRef>(null);
   // The native menu sizes itself to what it holds, so the row inside it is
   // given the width the list gave the row.
@@ -29,6 +30,7 @@ export const DraftRow = memo(function DraftRow(props: {
       accessibilityHint="Opens this draft"
       accessibilityLabel={`Draft, ${draft.title}${draft.held ? ", not confirmed" : ""}`}
       accessibilityRole="button"
+      accessibilityState={{ selected }}
       onAccessibilityAction={(event: AccessibilityActionEvent) => {
         if (event.nativeEvent.actionName === "discard") onDiscard(draft);
       }}
@@ -38,7 +40,12 @@ export const DraftRow = memo(function DraftRow(props: {
         !draft.held && Platform.OS === "android" ? () => menu.current?.show() : undefined
       }
       onPress={() => onOpen(draft)}
-      style={({ pressed }) => [styles.row, inMenu && { width }, pressed && styles.pressed]}
+      style={({ pressed }) => [
+        styles.row,
+        inMenu && { width },
+        selected && styles.selected,
+        pressed && styles.pressed,
+      ]}
     >
       <View style={styles.mark}>
         <Symbol name="pencil" size={11} tint={color.muted} />
@@ -106,5 +113,6 @@ const styles = StyleSheet.create({
     minHeight: Platform.OS === "android" ? 48 : touchTarget,
     paddingHorizontal: space[12] - 1,
   },
+  selected: { ...material.selected },
   title: { color: color.textSoft, flex: 1, minWidth: 0 },
 });

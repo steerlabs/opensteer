@@ -324,8 +324,7 @@ export interface ThreadDraftStore {
     workspaceId: string,
   ): void;
   readDraft(deploymentId: string, userId: string, threadId: string): ThreadDraft | null;
-  /** What is saved, leaving out the draft open now: it is not waiting for anyone. */
-  readDraftSummary(deploymentId: string, userId: string, openDraftId: string | null): DraftSummary;
+  readDraftSummary(deploymentId: string, userId: string): DraftSummary;
   readPending(deploymentId: string, userId: string, threadId: string): PendingCommand | null;
   writeDraft(deploymentId: string, userId: string, threadId: string, text: string): Promise<void>;
   /** Attaches or removes the update this draft answers. Null clears it. */
@@ -606,7 +605,7 @@ export function createThreadDraftStore(options: {
       return readVisibleDraft(deploymentId, userId, threadId);
     },
 
-    readDraftSummary(deploymentId, userId, openDraftId): DraftSummary {
+    readDraftSummary(deploymentId, userId): DraftSummary {
       const scope = key(deploymentId, userId, "");
       const tasks = new Map<string, NewTaskDraftSummary & { readonly at: string }>();
       const threadIds = new Set<string>();
@@ -642,7 +641,6 @@ export function createThreadDraftStore(options: {
           workspaceId: command.start?.workspaceId ?? tasks.get(draftId)?.workspaceId ?? draftId,
         });
       }
-      tasks.delete(openDraftId ?? "");
       return {
         newTasks: [...tasks.values()]
           .sort(

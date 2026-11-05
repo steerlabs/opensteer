@@ -218,7 +218,8 @@ function useSidebarModel(
 
 /**
  * This reader's drafts, held until the list would change: the store publishes
- * every write, and a keystroke leaves this list as it was.
+ * every write, and a keystroke leaves this list as it was. The draft in front
+ * keeps the row it had, as it was; one written here joins the list on leaving.
  */
 function useDraftSummary(
   deploymentId: string | null,
@@ -228,10 +229,17 @@ function useDraftSummary(
   const { drafts } = useMobileClient();
   const cached = useRef(noDrafts);
   const read = useCallback((): DraftSummary => {
-    const next =
+    const saved =
       deploymentId === null || userId === null
         ? noDrafts
-        : drafts.readDraftSummary(deploymentId, userId, openDraftId);
+        : drafts.readDraftSummary(deploymentId, userId);
+    const listed = cached.current.newTasks.find((draft) => draft.draftId === openDraftId);
+    const next = {
+      ...saved,
+      newTasks: saved.newTasks.flatMap((draft) =>
+        draft.draftId !== openDraftId ? [draft] : listed ? [listed] : [],
+      ),
+    };
     if (!sameDraftSummary(cached.current, next)) cached.current = next;
     return cached.current;
   }, [deploymentId, drafts, openDraftId, userId]);
@@ -303,7 +311,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   /** Where the reader left the list, kept by the shell across the drawer and the column. */
   readonly scroll: ScrollMemory;
   readonly shelves: ShelfMemory;
-  /** The new-task draft in front, which is not waiting in the list. */
+  /** The new-task draft in front. */
   readonly openDraftId: string | null;
   /** The task in front, marked as the one open. */
   readonly selectedThreadId: string | null;
@@ -559,6 +567,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
                 key={draft.draftId}
                 onDiscard={discardDraft}
                 onOpen={openDraft}
+                selected={draft.draftId === props.openDraftId}
               />
             ))}
           </>

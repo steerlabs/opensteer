@@ -193,27 +193,31 @@ async function mount(
   document.body.append(container);
   const root = createRoot(container);
   roots.push(root);
-  await act(async () =>
-    root.render(
-      <VoiceContext value={controller}>
-        <SidebarPanel
-          actions={actions}
-          deploymentId="deployment-a"
-          destination={shown.destination === undefined ? "Home" : shown.destination}
-          docked
-          openDraftId={shown.openDraftId ?? null}
-          openProjectId={null}
-          openThreadId={selectedThreadId}
-          scroll={{ offset: 0 }}
-          selectedThreadId={selectedThreadId}
-          shelves={{ closedProjects: new Set(), list: null }}
-          visible
-        />
-      </VoiceContext>,
-    ),
-  );
+  const scroll = { offset: 0 };
+  const shelves = { closedProjects: new Set<string>(), list: null };
+  const draw = (openDraftId: string | null) =>
+    act(async () =>
+      root.render(
+        <VoiceContext value={controller}>
+          <SidebarPanel
+            actions={actions}
+            deploymentId="deployment-a"
+            destination={shown.destination === undefined ? "Home" : shown.destination}
+            docked
+            openDraftId={openDraftId}
+            openProjectId={null}
+            openThreadId={selectedThreadId}
+            scroll={scroll}
+            selectedThreadId={selectedThreadId}
+            shelves={shelves}
+            visible
+          />
+        </VoiceContext>,
+      ),
+    );
+  await draw(shown.openDraftId ?? null);
   const launch = host.getSnapshot().workspaces.find(({ name }) => name === "Customer launch")!;
-  return { actions, container, drafts: harness.drafts, host, launch };
+  return { actions, container, draw, drafts: harness.drafts, host, launch };
 }
 
 function button(container: HTMLElement, label: string): HTMLButtonElement {
@@ -245,6 +249,21 @@ describe("the sidebar's drafts", () => {
     expect(actions.onOpenDraft).toHaveBeenCalledWith("deployment-a", "workspace-main", "draft-new");
     await act(async () => button(container, "Draft, Saved before").click());
     expect(actions.onOpenDraft).toHaveBeenLastCalledWith("deployment-a", "wsp_gone", "wsp_gone");
+  });
+
+  it("holds the row of a draft opened from the list, its title as it was", async () => {
+    const { container, draw, drafts } = await mount(null, {
+      seed: async (store) => {
+        await store.writeDraft(...scope, newTaskDraftKey("draft-a"), "As it was");
+      },
+    });
+    await draw("draft-a");
+    await act(() => drafts.writeDraft(...scope, newTaskDraftKey("draft-a"), "Rewritten"));
+    expect(button(container, "Draft, As it was")).toBeDefined();
+    expect(container.textContent).not.toContain("Rewritten");
+
+    await draw(null);
+    expect(button(container, "Draft, Rewritten")).toBeDefined();
   });
 
   it("draws nothing for a person with no drafts", async () => {

@@ -460,8 +460,8 @@ describe("new-task drafts", () => {
     title: "Saved task",
     workspaceId,
   } as const;
-  const summary = (store: ReturnType<typeof open>["drafts"], openDraftId: string | null = null) =>
-    store.readDraftSummary(deploymentId, userId, openDraftId);
+  const summary = (store: ReturnType<typeof open>["drafts"]) =>
+    store.readDraftSummary(deploymentId, userId);
 
   /** What the release with one new task per Workspace left on this phone. */
   async function savedByOneDraftRelease() {
@@ -677,7 +677,7 @@ describe("new-task drafts", () => {
     expect(newTaskDraftBlank(drafts, deploymentId, userId, first)).toBe(false);
   });
 
-  it("shows the sidebar nothing new for a keystroke, the open draft, or another reader", async () => {
+  it("shows the sidebar nothing new for a keystroke or another reader", async () => {
     const { drafts } = open();
     await drafts.load();
     const key = newTaskDraftKey(first);
@@ -695,12 +695,6 @@ describe("new-task drafts", () => {
 
     await drafts.writeDraft(deploymentId, userId, key, "A new task, retitled");
     expect(sameDraftSummary(before, summary(drafts))).toBe(false);
-    // Typed in the draft that is open, the same words change nothing.
-    const whileOpen = summary(drafts, first);
-    expect(whileOpen.newTasks).toEqual([]);
-    await drafts.writeDraft(deploymentId, userId, key, "A new task, retitled again");
-    expect(sameDraftSummary(whileOpen, summary(drafts, first))).toBe(true);
-
     await drafts.writeDraft(deploymentId, userId, threadId, "");
     expect(summary(drafts).threadIds.size).toBe(0);
   });
