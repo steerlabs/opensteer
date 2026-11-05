@@ -98,13 +98,6 @@ export async function resolveDelegationSpecialist(
     throw forbidden(
       `${specialist.plugin} uses ${specialist.ownerName ?? specialist.ownerUserId}'s accounts; add it for yourself to use your own`,
     );
-  if (specialist?.status === "pending")
-    throw badRequest(
-      `Specialist is pending: ${specialist.access
-        .filter((a) => a.state !== "bound")
-        .map((a) => `${a.type}: ${a.state} (${a.reason})`)
-        .join("; ")}`,
-    );
   if (specialist)
     await new SpecialistStore(store.database).assertRunnable(specialist.id, workspaceId, userId);
   return specialist;

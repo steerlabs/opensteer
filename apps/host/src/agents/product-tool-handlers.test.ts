@@ -53,16 +53,17 @@ const testModelSelection = ModelSelectionSchema.parse({
 });
 
 describe("Product tool handlers", () => {
-  it("refuses pending specialists with their binding reasons", async () => {
+  it("refuses a specialist that is being removed", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main");
+    const delegateThread = vi.fn();
     const { service } = makeService({
       threads: [current],
       messages: [],
-      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+      commands: { delegateThread, enqueueThreadInput: vi.fn() },
     });
     const listing = vi.spyOn(SpecialistStore.prototype, "list").mockResolvedValue([
       {
-        id: "pending-specialist",
+        id: "removing-specialist",
         workspaceId,
         pluginId: "plugin",
         pluginVersionId: "version",
@@ -71,29 +72,17 @@ describe("Product tool handlers", () => {
         canUse: false,
         plugin: "invoices",
         version: "a".repeat(64),
-        status: "pending",
-        models: [],
+        status: "removing",
+        models: [{ role: "light" }],
         fallback: "none",
-        access: [
-          {
-            type: "browser-profile",
-            level: "read",
-            reason: "Read invoices",
-            binding: null,
-            state: "needs-access",
-            candidates: [],
-          },
-          {
-            type: "phone",
-            level: "read",
-            reason: "Choose phone",
-            binding: null,
-            state: "choose",
-            candidates: [],
-          },
-        ],
+        access: [],
       },
     ]);
+    const runnable = vi
+      .spyOn(SpecialistStore.prototype, "assertRunnable")
+      .mockRejectedValue(
+        new OpensteerError({ code: "conflict", message: "Specialist is removing" }),
+      );
     try {
       await expect(
         service.handle("run-token", {
@@ -102,9 +91,11 @@ describe("Product tool handlers", () => {
           specialist: "invoices",
           task: "Read invoices",
         }),
-      ).rejects.toThrow(/browser-profile: needs-access.*phone: choose/);
+      ).rejects.toThrow("Specialist is removing");
+      expect(delegateThread).not.toHaveBeenCalled();
     } finally {
       listing.mockRestore();
+      runnable.mockRestore();
     }
   });
 

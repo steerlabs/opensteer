@@ -2,7 +2,6 @@ import {
   administrationCommand,
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
-import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { randomUUID } from "node:crypto";
 import { type Kysely, type Transaction } from "kysely";
 import {
@@ -278,7 +277,7 @@ export class PluginStore {
     const registrations = await tx
       .selectFrom("specialists")
       .innerJoin("pluginVersions", "pluginVersions.id", "specialists.pluginVersionId")
-      .select(["specialists.id", "pluginVersions.specialistManifest"])
+      .select("specialists.id")
       .where("specialists.pluginId", "=", pluginId)
       .where("specialists.removedAt", "is", null)
       .orderBy("specialists.id")
@@ -291,23 +290,12 @@ export class PluginStore {
         code: "conflict",
         message: "Remove this plugin's specialist registrations before installing it without one",
       });
-    for (const row of registrations) {
-      // Changed access waits for its owner's choices again, with no automatic
-      // binding, since the owner consented only to the access they saw.
-      const changed =
-        canonicalJson(row.specialistManifest?.access ?? []) !== canonicalJson(next.access ?? []);
+    for (const row of registrations)
       await tx
         .updateTable("specialists")
-        .set({
-          pluginVersionId: current.id,
-          updatedAt: new Date(),
-          ...(changed
-            ? { autoBind: false, bindings: jsonValue([]), status: "pending" as const }
-            : {}),
-        })
+        .set({ pluginVersionId: current.id, updatedAt: new Date() })
         .where("id", "=", row.id)
         .execute();
-    }
   }
 
   async activateIn(

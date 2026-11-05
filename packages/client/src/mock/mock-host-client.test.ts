@@ -1196,7 +1196,7 @@ it("explicitly adopts a relocated Project in the mock and clears its notice", as
   }
 });
 
-it("mock specialists reevaluate missing, ambiguous, chosen and revoked access", async () => {
+it("mock specialists require activation authority and are ready without bindings", async () => {
   const client = new MockHostClient({
     latencyMs: 0,
     specialistPlugins: [
@@ -1248,68 +1248,14 @@ it("mock specialists reevaluate missing, ambiguous, chosen and revoked access", 
     });
     expect(added).toMatchObject({
       type: "specialist.add",
-      specialist: { status: "pending", access: [{ state: "needs-access" }] },
+      specialist: { status: "ready", access: [] },
     });
     if (added.type !== "specialist.add") throw new Error("Wrong response");
     const specialistId = String(added.specialist.id);
-    const first = await send({
-      type: "browser.profile.create",
-      input: { name: "First" },
-      idempotencyKey: "profile1",
-    });
-    const second = await send({
-      type: "browser.profile.create",
-      input: { name: "Second" },
-      idempotencyKey: "profile2",
-    });
-    if (first.type !== "browser.profile.create" || second.type !== "browser.profile.create")
-      throw new Error("Wrong response");
-    const grant1 = await send({
-      type: "browser.profile.grant",
-      workspaceId,
-      profileId: first.profile.id,
-      idempotencyKey: "grant1",
-    });
-    const grant2 = await send({
-      type: "browser.profile.grant",
-      workspaceId,
-      profileId: second.profile.id,
-      idempotencyKey: "grant2",
-    });
     const list = () => client.rpc["specialist.list"]({ workspaceId });
     expect(await list()).toMatchObject({
       ok: true,
-      data: {
-        specialists: [
-          { status: "pending", access: [{ state: "choose", candidates: expect.any(Array) }] },
-        ],
-      },
-    });
-    expect(
-      await send({
-        type: "specialist.bind",
-        workspaceId,
-        specialistId,
-        requirement: 0,
-        resourceId: second.profile.id,
-        idempotencyKey: "bind",
-      }),
-    ).toMatchObject({
-      specialist: {
-        status: "ready",
-        access: [{ state: "bound", binding: { resourceId: second.profile.id } }],
-      },
-    });
-    for (const g of [grant1, grant2]) {
-      if (g.type !== "browser.profile.grant") throw new Error("Wrong response");
-      await send({
-        type: "browser.profileGrant.revoke",
-        grantId: g.grant.id,
-        idempotencyKey: g.grant.id,
-      });
-    }
-    expect(await list()).toMatchObject({
-      data: { specialists: [{ status: "pending", access: [{ state: "rebind" }] }] },
+      data: { specialists: [{ status: "ready", access: [] }] },
     });
     await send({ type: "specialist.remove", workspaceId, specialistId, idempotencyKey: "remove" });
     expect(await list()).toMatchObject({ data: { specialists: [] } });

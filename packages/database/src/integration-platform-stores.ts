@@ -456,6 +456,10 @@ abstract class IntegrationPlatformStoreBase {
     return (await resolveResourceAccess(this.database, input)).mainAccess;
   }
 
+  protected async specialistTurnedOff(input: IntegrationRequester): Promise<boolean> {
+    return !(await resolveResourceAccess(this.database, input)).specialistAllowed;
+  }
+
   protected async installationInventory(): Promise<readonly IntegrationInstallation[]> {
     const rows = await this.database
       .selectFrom("integrationInstallations")
@@ -1799,36 +1803,8 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     connections = connections.filter(
       (c) => !c.definitionId || !deniedDefinitions.has(c.definitionId),
     );
-    const specialistThread = input.threadId
-      ? await this.database
-          .selectFrom("threads")
-          .select("specialistId")
-          .where("id", "=", input.threadId)
-          .executeTakeFirst()
-      : undefined;
-    const ceilings = new Map<string, IntegrationAccess | null>();
-    if (specialistThread?.specialistId) {
-      for (const connection of connections) {
-        const explicit = activeGrants.filter((g) => g.connectionId === connection.id);
-        const decision = await resolveResourceAccess(this.database, {
-          ...input,
-          explicitAccess: explicit.some((g) => g.access === "read-write")
-            ? "read-write"
-            : (explicit[0]?.access ?? null),
-          resource: {
-            type:
-              connection.definitionId === "macos-app"
-                ? "computer-app"
-                : connection.definitionId === "android-phone"
-                  ? "phone"
-                  : "integration",
-            id: connection.id,
-          },
-        });
-        ceilings.set(connection.id, decision.access);
-      }
-      connections = connections.filter((connection) => ceilings.get(connection.id));
-    }
+    const specialistOff = await this.specialistTurnedOff(input);
+    if (specialistOff) connections = [];
     return Promise.all(
       installations
         .filter(
@@ -1871,13 +1847,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
             connectionId: IntegrationConnectionId | null,
             requiredAccess: IntegrationAccess,
           ) => {
-            if (
-              specialistThread?.specialistId &&
-              (!connectionId ||
-                !ceilings.get(connectionId) ||
-                (requiredAccess === "read-write" && ceilings.get(connectionId) !== "read-write"))
-            )
-              return false;
+            if (specialistOff) return false;
             const connection =
               connectionId === null
                 ? null
@@ -1926,13 +1896,11 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
                   candidate.connectionId === connection.id,
               );
               return {
-                access: specialistThread?.specialistId
-                  ? (ceilings.get(connection.id) ?? null)
-                  : inheritedMainAccess
-                    ? effectiveIntegrationAccess("read-write", connection)
-                    : grant
-                      ? effectiveIntegrationAccess(grant.access, connection)
-                      : null,
+                access: inheritedMainAccess
+                  ? effectiveIntegrationAccess("read-write", connection)
+                  : grant
+                    ? effectiveIntegrationAccess(grant.access, connection)
+                    : null,
                 account: integrationAccountLabel(connection),
                 connectionId: connection.id,
                 isDefault: grant?.isDefault ?? false,
@@ -3344,50 +3312,13 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     for (;;) {
       const generation = await this.authorityGeneration(input.ownerUserId);
       const cached = this.#callableToolsCache.get({ ...scope, generation });
-      if (cached) return this.narrowSpecialistTools(input, cached);
+      if (cached) return (await this.specialistTurnedOff(input)) ? [] : cached;
       const resolved = await this.resolveCallableTools({ ...input, inheritsMain });
       const verifiedGeneration = await this.authorityGeneration(input.ownerUserId);
       if (verifiedGeneration !== generation) continue;
       this.#callableToolsCache.set({ ...scope, generation }, resolved);
-      return this.narrowSpecialistTools(input, resolved);
+      return (await this.specialistTurnedOff(input)) ? [] : resolved;
     }
-  }
-
-  private async narrowSpecialistTools(
-    input: IntegrationRequester,
-    tools: readonly CallableIntegrationTool[],
-  ): Promise<readonly CallableIntegrationTool[]> {
-    if (!input.threadId) return tools;
-    const thread = await this.database
-      .selectFrom("threads")
-      .select("specialistId")
-      .where("id", "=", input.threadId)
-      .executeTakeFirst();
-    if (!thread?.specialistId) return tools;
-    const narrowed: CallableIntegrationTool[] = [];
-    for (const entry of tools) {
-      const connectionId = entry.grant.connectionId;
-      if (!connectionId) continue;
-      const connection = await this.database
-        .selectFrom("integrationConnections")
-        .select("integrationDefinitionId")
-        .where("id", "=", connectionId)
-        .executeTakeFirst();
-      const type =
-        connection?.integrationDefinitionId === "macos-app"
-          ? "computer-app"
-          : connection?.integrationDefinitionId === "android-phone"
-            ? "phone"
-            : "integration";
-      const decision = await resolveResourceAccess(this.database, {
-        ...input,
-        explicitAccess: entry.grant.access,
-        resource: { type, id: connectionId },
-      });
-      if (decision.access)
-        narrowed.push({ ...entry, grant: { ...entry.grant, access: decision.access } });
-    }
-    return narrowed;
   }
 
   async getToolInvocation(toolId: IntegrationToolId): Promise<IntegrationToolInvocation | null> {

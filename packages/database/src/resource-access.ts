@@ -1,7 +1,5 @@
 import { pluginPolicyAllows } from "./plugin-settings-store.js";
 import {
-  SpecialistManifestSchema,
-  BrowserProfileIdSchema,
   RunIdSchema,
   ThreadIdSchema,
   TriggerOccurrenceIdSchema,
@@ -27,13 +25,10 @@ export interface ResourceAccessInput {
   /** Explicit consent must already be filtered to its owner and active membership. */
   readonly explicitAccess?: ResourceAccessLevel | null;
   readonly connectionCeiling?: ResourceAccessLevel | null;
-  readonly specialistId?: string;
   readonly resource?: {
     readonly type: "integration" | "browser-profile" | "computer-app" | "phone";
     readonly id: string;
   };
-  /** An additional ceiling supplied by a trusted caller. */
-  readonly specialistAccess?: ResourceAccessLevel | null;
 }
 
 export async function resolveResourceAccess(
@@ -121,24 +116,18 @@ export async function resolveResourceAccess(
         : !input.threadId && !input.agentBindingId);
   // Owner Off and Main exclusion bind every agent, including connections without a Thread.
   const agentRequester = Boolean(threadId || input.agentBindingId || input.connectionId);
-  let specialistAccess = input.specialistAccess;
-  const specialistId = root?.specialistId ?? input.specialistId;
-  let specialistPolicyAllowed = true;
+  const specialistId = root?.specialistId;
+  // A specialist adopts its caller's access; only its owner's live registration carries it.
+  let specialistAllowed = true;
   if (specialistId) {
     const registration = await database
       .selectFrom("specialists")
-      .innerJoin("pluginVersions", "pluginVersions.id", "specialists.pluginVersionId")
       .innerJoin(
         "workspaceMemberships",
         "workspaceMemberships.workspaceId",
         "specialists.workspaceId",
       )
-      .select([
-        "specialists.status",
-        "specialists.bindings",
-        "specialists.pluginId",
-        "pluginVersions.specialistManifest",
-      ])
+      .select("specialists.pluginId")
       .where("specialists.removedAt", "is", null)
       .where("specialists.id", "=", specialistId)
       .where("specialists.workspaceId", "=", input.workspaceId)
@@ -146,105 +135,21 @@ export async function resolveResourceAccess(
       .where("workspaceMemberships.userId", "=", input.ownerUserId)
       .where("workspaceMemberships.state", "=", "active")
       .executeTakeFirst();
-    if (registration && agentRequester)
-      specialistPolicyAllowed =
-        (await pluginPolicyAllows(
+    specialistAllowed =
+      registration !== undefined &&
+      (!agentRequester ||
+        ((await pluginPolicyAllows(
           database,
           input.ownerUserId,
           { kind: "specialist", pluginId: registration.pluginId, ownerUserId: input.ownerUserId },
           main,
         )) &&
-        (await pluginPolicyAllows(
-          database,
-          input.ownerUserId,
-          { kind: "plugin", pluginId: registration.pluginId },
-          main,
-        ));
-    const manifest = registration
-      ? SpecialistManifestSchema.parse(registration.specialistManifest)
-      : null;
-    const binding =
-      registration?.status === "ready" && input.resource
-        ? registration.bindings.find(
-            (binding) =>
-              binding.resourceId === input.resource?.id &&
-              manifest?.access?.[binding.requirement]?.type === input.resource.type,
-          )
-        : undefined;
-    let liveAccess: ResourceAccessLevel | null = null;
-    if (binding && input.resource?.type === "browser-profile") {
-      const profile = await database
-        .selectFrom("browserProfiles")
-        .select("id")
-        .where("id", "=", BrowserProfileIdSchema.parse(binding.resourceId))
-        .where("ownerId", "=", input.ownerUserId)
-        .where("archivedAt", "is", null)
-        .executeTakeFirst();
-      if (profile) {
-        const grants = await database
-          .selectFrom("browserProfileGrants")
-          .select("access")
-          .where("workspaceId", "=", input.workspaceId)
-          .where("createdBy", "=", input.ownerUserId)
-          .where("profileId", "=", profile.id)
-          .where("revokedAt", "is", null)
-          .execute();
-        liveAccess = inheritsMain
-          ? "read-write"
-          : grants.some((g) => g.access === "read-write")
-            ? "read-write"
-            : (grants[0]?.access ?? null);
-      }
-    } else if (binding && input.resource) {
-      const connection = await database
-        .selectFrom("integrationConnections")
-        .selectAll()
-        .where("id", "=", binding.resourceId as DatabaseSchema["integrationConnections"]["id"])
-        .where("ownerUserId", "=", input.ownerUserId)
-        .where("status", "=", "connected")
-        .where("computerBlockedAt", "is", null)
-        .executeTakeFirst();
-      const requirement = manifest?.access?.[binding.requirement];
-      const matches =
-        connection &&
-        requirement &&
-        (requirement.type === "integration"
-          ? connection.provider === requirement.service ||
-            connection.integrationDefinitionId === requirement.service
-          : requirement.type === "phone"
-            ? connection.integrationDefinitionId === "android-phone"
-            : requirement.type === "computer-app" &&
-              connection.integrationDefinitionId === "macos-app" &&
-              connection.computerAppKey === requirement.app.toLowerCase());
-      if (connection && matches) {
-        const grants = await database
-          .selectFrom("integrationGrants")
-          .innerJoin(
-            "integrationInstallations",
-            "integrationInstallations.id",
-            "integrationGrants.installationId",
-          )
-          .select("integrationGrants.access")
-          .where("integrationGrants.workspaceId", "=", input.workspaceId)
-          .where("integrationGrants.ownerUserId", "=", input.ownerUserId)
-          .where("integrationGrants.connectionId", "=", connection.id)
-          .where("integrationGrants.status", "=", "active")
-          .where("integrationGrants.revokedAt", "is", null)
-          .where("integrationInstallations.status", "=", "active")
-          .execute();
-        liveAccess = inheritsMain
-          ? "read-write"
-          : grants.some((g) => g.access === "read-write")
-            ? "read-write"
-            : (grants[0]?.access ?? null);
-        if (connection.connectionKind === "computer")
-          liveAccess = intersectResourceAccess(liveAccess, connection.computerAccess);
-      }
-    }
-    specialistAccess = intersectResourceAccess(
-      intersectResourceAccess(liveAccess, binding?.level ?? null),
-      specialistAccess,
-    );
+          (await pluginPolicyAllows(
+            database,
+            input.ownerUserId,
+            { kind: "plugin", pluginId: registration.pluginId },
+            main,
+          ))));
   }
   let policyAllowed = true;
   if (agentRequester && input.resource && input.resource.type !== "browser-profile") {
@@ -266,18 +171,15 @@ export async function resolveResourceAccess(
       );
   }
   const access =
-    policyAllowed && specialistPolicyAllowed
+    policyAllowed && specialistAllowed
       ? intersectResourceAccess(
-          intersectResourceAccess(
-            inheritsMain ? "read-write" : (input.explicitAccess ?? null),
-            input.connectionCeiling,
-          ),
-          specialistAccess,
+          inheritsMain ? "read-write" : (input.explicitAccess ?? null),
+          input.connectionCeiling,
         )
       : null;
   return {
     access,
-    specialistId,
+    specialistAllowed,
     inheritsMain,
     mainAccess: main ? (inheritsMain ? ("inherited" as const) : ("withheld" as const)) : null,
   };

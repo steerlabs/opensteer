@@ -16,7 +16,7 @@ The Request returns `pending`. Pending permits only independent work; do not pol
 
 To continue work, reuse the session ID from earlier in the Thread or find it with `browser_session_list` (`attached` marks sessions this Run has open). `browser_tab_read` gives every saved tab's `profileId`, asleep tabs included; null is Guest. An ended session is not listed, but its profile still exists: open the profile again.
 
-Several Runs may share a session; `activeAttachmentCount` is not a lock. Sessions outlive Runs. Close a session only when asked or when it is deliberately disposable. Main sees the owner's sessions across Workspaces. Delegated Runs use the same tools within their inherited reach; a specialist's bindings may narrow what is listed.
+Several Runs may share a session; `activeAttachmentCount` is not a lock. Sessions outlive Runs. Close a session only when asked or when it is deliberately disposable. Main sees the owner's sessions across Workspaces. Delegated Runs and specialists use the same tools within their inherited reach.
 
 A profile's data stays on its computer, fixed at first open. `environmentId` picks the computer only for a profile that has never been opened, or for Guest; it defaults to this Run's machine, else the only connected browser. It never moves a profile or changes identity.
 

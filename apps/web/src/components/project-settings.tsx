@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Link, Navigate, useParams } from "react-router";
 import {
   canRespondToRequests,
@@ -6,14 +6,10 @@ import {
   pluginAvailableIn,
   pluginSummaries,
   pluginVersionLabel,
-  specialistAccessLevel,
-  specialistAccessName,
   specialistModels,
-  specialistPendingSummary,
   unwrapRpcResult,
   type HostClient,
   type PluginSummary,
-  type SpecialistAccessItem,
   type WorkspaceMemberSummary,
   type WorkspaceSummary,
 } from "@opensteer/client/host";
@@ -23,7 +19,7 @@ import { actionErrorMessage } from "../ui-utils.js";
 import { useShell } from "./app-shell.js";
 import { Dialog } from "./dialog.js";
 import { workspaceHealth, WorkspaceIcon } from "./home-view.js";
-import { Icon, type IconName } from "./icon.js";
+import { Icon } from "./icon.js";
 import { LoadingRows } from "./loading-rows.js";
 import { PageTopbar } from "./page-header.js";
 import { useHostRead } from "@opensteer/client/react";
@@ -240,25 +236,6 @@ function PeopleSection({
 
 /* ---- Access ---- */
 
-/** Where a person allows one kind of resource for a Project. */
-export function accessSettingsPath(
-  type: SpecialistAccessItem["type"],
-  workspaceId: string,
-  service?: string,
-): string {
-  const workspace = `workspace=${encodeURIComponent(workspaceId)}`;
-  switch (type) {
-    case "integration":
-      return `/settings/plugins?${service ? `provider=${encodeURIComponent(service)}&` : ""}${workspace}`;
-    case "computer-app":
-      return `/settings/plugins?${workspace}`;
-    case "browser-profile":
-      return "/settings/sign-ins/browsers";
-    case "phone":
-      return "/settings/devices/computers";
-  }
-}
-
 function AccessSection({ workspace }: { readonly workspace: WorkspaceSummary }) {
   const { hostClient, snapshot } = useShell();
   const grants = useHostRead<readonly IntegrationGrant[]>(
@@ -283,7 +260,10 @@ function AccessSection({ workspace }: { readonly workspace: WorkspaceSummary }) 
         <h2 className="section__title" id="project-access">
           Access
         </h2>
-        <AreaLink className="btn btn--small" to={accessSettingsPath("integration", workspace.id)}>
+        <AreaLink
+          className="btn btn--small"
+          to={`/settings/plugins?workspace=${encodeURIComponent(workspace.id)}`}
+        >
           Manage access
         </AreaLink>
       </div>
@@ -492,24 +472,14 @@ function SpecialistsSection({
   readonly hostClient: HostClient;
   readonly workspace: WorkspaceSummary;
 }) {
-  const { snapshot } = useShell();
-  const browserAccess = JSON.stringify([
-    snapshot.browserProfileGrants.filter((grant) => grant.workspaceId === workspace.id),
-    snapshot.browserProfiles,
-  ]);
   const specialists = useHostRead(
     () =>
       hostClient.rpc["specialist.list"]({ workspaceId: WorkspaceIdSchema.parse(workspace.id) })
         .then(unwrapRpcResult)
         .then(({ specialists }) => specialists),
-    `specialists:${workspace.id}:${browserAccess}`,
+    `specialists:${workspace.id}`,
   );
-  const [updated, setUpdated] = useState<ReadonlyMap<string, SpecialistRegistration>>(new Map());
-  useEffect(() => setUpdated(new Map()), [specialists.data]);
-  const list = useMemo(
-    () => specialists.data?.map((registration) => updated.get(registration.id) ?? registration),
-    [specialists.data, updated],
-  );
+  const list = specialists.data ?? undefined;
   // Agents add specialists as work calls for them; with none, there is nothing to set here.
   if (list?.length === 0) return null;
   return (
@@ -520,8 +490,8 @@ function SpecialistsSection({
         </h2>
       </div>
       <p className="section__hint">
-        Agents added these to hand parts of their work to. Each runs on its own models and uses only
-        the access listed for it.
+        Agents added these to hand parts of their work to. Each runs on its own models and can use
+        what this project can.
       </p>
       {list === undefined ? (
         specialists.error ? (
@@ -544,7 +514,6 @@ function SpecialistsSection({
             connected={connected}
             hostClient={hostClient}
             key={registration.id}
-            onChanged={(next) => setUpdated((current) => new Map(current).set(next.id, next))}
             onRemoved={specialists.reload}
             registration={registration}
             workspace={workspace}
@@ -558,46 +527,21 @@ function SpecialistsSection({
 function SpecialistCard({
   connected,
   hostClient,
-  onChanged,
   onRemoved,
   registration,
   workspace,
 }: {
   readonly connected: boolean;
   readonly hostClient: HostClient;
-  readonly onChanged: (registration: SpecialistRegistration) => void;
   readonly onRemoved: () => void;
   readonly registration: SpecialistRegistration;
   readonly workspace: WorkspaceSummary;
 }) {
   const { snapshot } = useShell();
   const mine = registration.ownerUserId === snapshot.user?.id;
-  const editable =
-    mine && connected && (registration.status === "ready" || registration.status === "pending");
-  const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState<number | null>(null);
   const [removing, setRemoving] = useState(false);
   const titleId = useId();
-  const pendingSummary = specialistPendingSummary(registration);
   const models = specialistModels(registration);
-  const bind = (requirement: number, resourceId: string) => {
-    setPending(requirement);
-    setError(null);
-    void hostClient
-      .dispatch({
-        idempotencyKey: mutationIdempotencyKey(`specialist-bind:${registration.id}:${requirement}`),
-        requirement,
-        resourceId,
-        specialistId: registration.id,
-        type: "specialist.bind",
-        workspaceId: WorkspaceIdSchema.parse(workspace.id),
-      })
-      .then((result) => {
-        if (result.type === "specialist.bind") onChanged(result.specialist);
-      })
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
-      .finally(() => setPending(null));
-  };
   return (
     <article aria-labelledby={titleId} className="card specialist">
       <div className="card__row specialist__head">
@@ -620,7 +564,6 @@ function SpecialistCard({
             )}
           </span>
           <span className="card__row-detail">
-            {pendingSummary ? `${pendingSummary}. ` : ""}
             Uses {registration.ownerName ?? (mine ? "your" : "another member’s")} accounts.{" "}
             {registration.canUse === false ? "Unavailable to you. " : ""}
             Runs on {models.join(", then ")}
@@ -642,29 +585,6 @@ function SpecialistCard({
           </span>
         ) : null}
       </div>
-      {registration.access.length > 0 ? (
-        <ul aria-label={`What ${registration.plugin} can use`} className="specialist__access">
-          {registration.access.map((item, index) => (
-            <AccessItemRow
-              busy={pending === index}
-              editable={editable}
-              index={index}
-              item={item}
-              key={index}
-              onBind={bind}
-              workspaceId={workspace.id}
-            />
-          ))}
-        </ul>
-      ) : (
-        <p className="specialist__none">It needs no access beyond this project’s folder.</p>
-      )}
-      {error ? (
-        <p aria-live="assertive" className="notice notice--error specialist__error" role="alert">
-          <Icon name="alert-circle" />
-          <span>{error}</span>
-        </p>
-      ) : null}
       {mine ? null : (
         <p className="specialist__footnote">Another member added this. Only they can change it.</p>
       )}
@@ -681,103 +601,6 @@ function SpecialistCard({
         />
       ) : null}
     </article>
-  );
-}
-
-const accessGlyphs: Readonly<Record<SpecialistAccessItem["type"], IconName>> = {
-  "browser-profile": "browser",
-  "computer-app": "desktop",
-  integration: "key",
-  phone: "phone",
-};
-
-function AccessItemRow({
-  busy,
-  editable,
-  index,
-  item,
-  onBind,
-  workspaceId,
-}: {
-  readonly busy: boolean;
-  readonly editable: boolean;
-  readonly index: number;
-  readonly item: SpecialistAccessItem;
-  readonly onBind: (requirement: number, resourceId: string) => void;
-  readonly workspaceId: string;
-}) {
-  const [selectedChoice, setChoice] = useState("");
-  const choice = item.candidates.some(({ resourceId }) => resourceId === selectedChoice)
-    ? selectedChoice
-    : (item.candidates[0]?.resourceId ?? "");
-  const bound = item.binding
-    ? (item.candidates.find(({ resourceId }) => resourceId === item.binding?.resourceId)?.name ??
-      null)
-    : null;
-  const name = specialistAccessName(item);
-  return (
-    <li className={`specialist-access specialist-access--${item.state}`}>
-      <span aria-hidden className="specialist-access__glyph">
-        <Icon name={accessGlyphs[item.type]} />
-      </span>
-      <span className="specialist-access__body">
-        <span className="specialist-access__name">
-          {name}
-          <span className="specialist-access__level">{specialistAccessLevel(item)}</span>
-        </span>
-        <span className="specialist-access__reason">{item.reason}</span>
-      </span>
-      <span className="specialist-access__state">
-        {item.state === "bound" ? (
-          <span className="specialist-access__bound">
-            <Icon name="check" />
-            {bound ? `Uses ${bound}` : "Allowed"}
-          </span>
-        ) : item.state === "choose" || (item.state === "rebind" && item.candidates.length > 0) ? (
-          editable ? (
-            <span className="specialist-access__choose">
-              {item.state === "rebind" ? <span>Choose which account to use now</span> : null}
-              <select
-                aria-label={`Which to use for ${name}`}
-                className="select-input"
-                disabled={busy}
-                onChange={(event) => setChoice(event.currentTarget.value)}
-                value={choice}
-              >
-                {item.candidates.map((candidate) => (
-                  <option key={candidate.resourceId} value={candidate.resourceId}>
-                    {candidate.name}
-                  </option>
-                ))}
-              </select>
-              <button
-                className="btn btn--small btn--primary"
-                disabled={busy || !choice}
-                onClick={() => onBind(index, choice)}
-                type="button"
-              >
-                {busy ? "Saving…" : "Use"}
-              </button>
-            </span>
-          ) : (
-            <span className="specialist-access__waiting">Waiting for a choice</span>
-          )
-        ) : editable ? (
-          <AreaLink
-            className="btn btn--small"
-            to={accessSettingsPath(
-              item.type,
-              workspaceId,
-              item.type === "integration" ? item.service : undefined,
-            )}
-          >
-            Allow access
-          </AreaLink>
-        ) : (
-          <span className="specialist-access__waiting">Not allowed yet</span>
-        )}
-      </span>
-    </li>
   );
 }
 

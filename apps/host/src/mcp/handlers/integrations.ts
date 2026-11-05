@@ -29,7 +29,6 @@ import {
   UserIdSchema,
   OpensteerError,
   refused,
-  type SpecialistAccessRequirement,
   type AgentEvent,
   type Request,
   type RunId,
@@ -830,45 +829,6 @@ export class IntegrationToolHandlers {
       workspaceId: targetWorkspaceId,
     });
     if (access === "withheld") throw refused("forbidden", mainAccessWithheldRefusal);
-  }
-
-  async requestSpecialistAccess(
-    scope: IntegrationToolsRunScope,
-    requirement: SpecialistAccessRequirement,
-    callId: string,
-  ) {
-    if (requirement.type === "browser-profile") throw new Error("Use the browser access service");
-    if (requirement.type === "integration") {
-      const definition = this.#definitions.find(
-        (d) => d.id === requirement.service || d.provider === requirement.service,
-      );
-      if (!definition) throw new Error(`Unknown specialist integration: ${requirement.service}`);
-      return this.#request(
-        scope,
-        { catalog: definition.id, access: requirement.level, reason: requirement.reason },
-        callId,
-      );
-    }
-    const inventory = await this.#platform.computerAppApprovals.computerUseInventory(
-      scope.requestedBy,
-    );
-    const runnerId =
-      requirement.type === "phone"
-        ? inventory.phones.length === 1
-          ? inventory.phones[0]!.runnerId
-          : undefined
-        : undefined;
-    return this.#request(
-      scope,
-      {
-        kind: "computer-app",
-        access: requirement.level,
-        reason: requirement.reason,
-        ...(runnerId ? { runnerId } : {}),
-        ...(requirement.type === "computer-app" ? { app: requirement.app } : {}),
-      },
-      callId,
-    );
   }
 
   async #request(
