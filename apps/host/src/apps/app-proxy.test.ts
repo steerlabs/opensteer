@@ -234,3 +234,38 @@ it("returns 413 for an oversized chunked upload without destroying the client's 
     await closeHttpServerNow(upstream);
   }
 });
+
+it("preserves the public app authority for framework Origin and Referer checks", async () => {
+  const origin = "https://app.example.test";
+  const server = createServer((request, response) => {
+    const valid =
+      request.headers.origin === `https://${request.headers.host}` &&
+      request.headers.referer === `${origin}/form`;
+    response.writeHead(valid ? 200 : 403);
+    response.end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening", { signal: AbortSignal.timeout(3_000) });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing listener");
+  try {
+    const result = await requestAppHttp({
+      connect: async () => ({
+        stream: connect({ host: "127.0.0.1", port: address.port }),
+        port: address.port,
+      }),
+      method: "POST",
+      path: "/submit",
+      prefix: "",
+      theme: "dark",
+      originMode: { origin, parents: [] },
+      headers: { origin, referer: `${origin}/form` },
+      body: Readable.from(["form=value"]),
+      signal: AbortSignal.timeout(3_000),
+    });
+    result.body.resume();
+    expect(result.status).toBe(200);
+  } finally {
+    await closeHttpServerNow(server);
+  }
+});

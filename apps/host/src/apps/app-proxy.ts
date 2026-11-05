@@ -160,7 +160,7 @@ export async function requestAppHttp(input: {
   delete headers["accept-encoding"];
   headers["accept-encoding"] = "identity";
   if (!input.originMode) headers["x-forwarded-prefix"] = input.prefix;
-  headers.host = `127.0.0.1:${port}`;
+  headers.host = input.originMode ? new URL(input.originMode.origin).host : `127.0.0.1:${port}`;
   headers.connection = "close";
   const response = await new Promise<import("node:http").IncomingMessage>((resolve, reject) => {
     const upstream = httpRequest(

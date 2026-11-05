@@ -217,7 +217,7 @@ export class AppGateway {
         return;
       }
       const headers = appOriginRequestHeaders(request.headers);
-      headers.host = `127.0.0.1:${port}`;
+      headers.host = new URL(mode.origin).host;
       headers.connection = "Upgrade";
       headers.upgrade = request.headers.upgrade ?? "websocket";
       const upstream = httpRequest({
