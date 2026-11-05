@@ -444,15 +444,13 @@ describe("mobile task mark review journeys", () => {
     },
   );
 
-  it.each([null, "Reconnecting", "Offline"] as const)(
+  it.each([null, "Studio Mac offline"] as const)(
     "announces connection-first header state %s with and without an assignment",
     async (connectionLabel) => {
       const host = await client();
       const thread = host.getSnapshot().threads.find(({ role }) => role === "work")!;
-      const retry = vi.spyOn(host, "refresh").mockResolvedValue(undefined);
       for (const assigned of [false, true]) {
         const header: ThreadHeaderState = {
-          canRetry: connectionLabel !== null,
           connectionLabel,
           task: assigned
             ? {
@@ -501,11 +499,6 @@ describe("mobile task mark review journeys", () => {
         expect(label).toBe(
           `Tokyo flights, Travel${connectionLabel !== null ? `, ${connectionLabel}` : assigned ? ", Working" : ""}. Task actions`,
         );
-        if (connectionLabel !== null) {
-          const before = retry.mock.calls.length;
-          await press(container, "Retry");
-          expect(retry).toHaveBeenCalledTimes(before + 1);
-        } else expect(container.querySelector('[aria-label="Retry"]')).toBeNull();
       }
     },
   );
@@ -529,8 +522,7 @@ describe("mobile task mark review journeys", () => {
       const host = await client();
       const thread = host.getSnapshot().threads.find(({ role }) => role === "work")!;
       const header: ThreadHeaderState = {
-        canRetry: offline,
-        connectionLabel: offline ? "Offline" : null,
+        connectionLabel: offline ? "Studio Mac offline" : null,
         task: {
           announcement: word,
           assignmentId: "assignment",
@@ -569,7 +561,7 @@ describe("mobile task mark review journeys", () => {
       const container = render(options.headerTitle());
       const bar = container.textContent ?? "";
       expect(bar).toContain("Tokyo flights");
-      if (offline) expect(bar).toContain("Offline");
+      if (offline) expect(bar).toContain("Studio Mac offline");
       if (workspaceName !== null) expect(bar).toContain(workspaceName);
       // The word stands alone on its line; "Mark Done" in the menu is not that line.
       const says = [...container.querySelectorAll("*")].some(
@@ -579,13 +571,8 @@ describe("mobile task mark review journeys", () => {
       expect(
         container.querySelector('[aria-label$="Task actions"]')?.getAttribute("aria-label"),
       ).toBe(
-        `Tokyo flights${workspaceName === null ? "" : `, ${workspaceName}`}, ${offline ? "Offline" : word}. Task actions`,
+        `Tokyo flights${workspaceName === null ? "" : `, ${workspaceName}`}, ${offline ? "Studio Mac offline" : word}. Task actions`,
       );
-      if (offline) {
-        const retry = vi.spyOn(host, "refresh").mockResolvedValue(undefined);
-        await press(container, "Retry");
-        expect(retry).toHaveBeenCalledOnce();
-      }
     },
   );
 

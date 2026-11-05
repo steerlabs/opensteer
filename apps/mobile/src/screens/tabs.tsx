@@ -1,7 +1,5 @@
 import { PendingBrowserTabRows } from "../browser/pending-browser-tab.js";
 import {
-  canRespondToRequests,
-  describeHostConnection,
   placeAgents,
   placeAgentsWords,
   placeHasAgents,
@@ -172,8 +170,6 @@ function selectSignIns(snapshot: HostSnapshot): string {
 }
 
 const selectLoaded = (snapshot: HostSnapshot) => snapshot.deploymentShape !== null;
-const selectConnection = (snapshot: HostSnapshot) =>
-  canRespondToRequests(snapshot) ? null : describeHostConnection(snapshot).label;
 
 function TabsForReader(props: {
   readonly active: boolean;
@@ -189,7 +185,6 @@ function TabsForReader(props: {
   const insets = useListContentInsets(space[32]);
   const places = usePlaceList(hostClient);
   const loaded = useHostSelector(hostClient, selectLoaded);
-  const offline = useHostSelector(hostClient, selectConnection);
   const signInKeys = useHostSelector(hostClient, selectSignIns);
   const [agents, setAgents] = useState(false);
   const withAgents = useMemo(() => places.filter(placeHasAgents), [places]);
@@ -265,22 +260,13 @@ function TabsForReader(props: {
         ListHeaderComponent={
           <>
             <PendingBrowserTabRows hostClient={hostClient} deploymentId={deploymentId} />
-            {offline === null && props.failure === null ? null : (
+            {props.failure === null ? null : (
               <View style={styles.notices}>
-                {props.failure === null ? null : (
-                  <Notice
-                    title="Tabs could not be refreshed"
-                    detail={props.failure}
-                    action={{ label: "Try again", onPress: props.onRetry }}
-                  />
-                )}
-                {offline === null ? null : (
-                  <Notice
-                    title={offline}
-                    detail="Tabs reconnect when the deployment is available."
-                    tone="neutral"
-                  />
-                )}
+                <Notice
+                  title="Tabs could not be refreshed"
+                  detail={props.failure}
+                  action={{ label: "Try again", onPress: props.onRetry }}
+                />
               </View>
             )}
           </>

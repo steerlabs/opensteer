@@ -1,4 +1,4 @@
-import { FadeIn, FadeInDown, FadeOut, LinearTransition } from "react-native-reanimated";
+import { FadeIn, FadeInDown, FadeInUp, FadeOut, LinearTransition } from "react-native-reanimated";
 
 /**
  * The app's motion, named once.
@@ -22,6 +22,9 @@ export const enter = FadeInDown.duration(duration.enter);
 
 /** The same arrival for a thing that has a place already, so it does not move. */
 export const appear = FadeIn.duration(duration.enter);
+
+/** The same arrival for chrome at the top of the screen, from under the bar above it. */
+export const descend = FadeInUp.duration(duration.enter);
 
 export const exit = FadeOut.duration(duration.exit);
 

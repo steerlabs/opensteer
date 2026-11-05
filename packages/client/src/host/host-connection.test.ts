@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canRespondToRequests, describeHostConnection } from "./host-connection.js";
+import { canRespondToRequests, describeHostConnection, showsHostLive } from "./host-connection.js";
 
 describe("describeHostConnection", () => {
   it("asks for a sign-in ahead of any network state", () => {
@@ -7,26 +7,51 @@ describe("describeHostConnection", () => {
       describeHostConnection({
         network: "unknown",
         connection: "offline",
+        connectionInterrupted: true,
         session: "authentication-required",
       }),
     ).toEqual({ action: "sign-in", label: "Signed out", tone: "amber" });
   });
 
-  it("offers a retry only when being offline is the whole problem", () => {
+  it("offers a retry only for a Host it cannot reach, never a device with no network", () => {
+    for (const connection of ["offline", "connecting"] as const) {
+      expect(
+        describeHostConnection({
+          network: "unknown",
+          connection,
+          connectionInterrupted: true,
+          session: "authenticated",
+        }).action,
+      ).toBe("retry");
+    }
     expect(
       describeHostConnection({
-        network: "unknown",
+        network: "offline",
         connection: "offline",
-        session: "authenticated",
-      }).action,
-    ).toBe("retry");
-    expect(
-      describeHostConnection({
-        network: "unknown",
-        connection: "connecting",
+        connectionInterrupted: true,
         session: "authenticated",
       }).action,
     ).toBe("none");
+  });
+
+  it("says nothing about a signed-in connection until the interruption has lasted", () => {
+    const snapshot = {
+      network: "offline",
+      connection: "connecting",
+      session: "authenticated",
+    } as const;
+    expect(describeHostConnection({ ...snapshot, connectionInterrupted: false }).label).toBe(
+      "Connected",
+    );
+    expect(showsHostLive({ ...snapshot, connectionInterrupted: false })).toBe(true);
+    expect(showsHostLive({ ...snapshot, connectionInterrupted: true })).toBe(false);
+    expect(describeHostConnection({ ...snapshot, connectionInterrupted: true }).label).toBe(
+      "Offline",
+    );
+    expect(
+      describeHostConnection({ ...snapshot, connectionInterrupted: false, session: "checking" })
+        .label,
+    ).toBe("Offline");
   });
 });
 
@@ -40,7 +65,9 @@ describe("canRespondToRequests", () => {
             network !== "offline" && connection === "connected" && session === "authenticated",
           );
           if (network === "offline" && session !== "authentication-required") {
-            expect(describeHostConnection(snapshot)).toMatchObject({
+            expect(
+              describeHostConnection({ ...snapshot, connectionInterrupted: true }),
+            ).toMatchObject({
               label: "Offline",
               action: "none",
             });

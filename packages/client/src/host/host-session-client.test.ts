@@ -52,8 +52,19 @@ import {
   type WebSocketClient,
 } from "./host-session-client.js";
 import { describeHostConnection } from "./host-connection.js";
+import {
+  connectionInterruptionHoldMs,
+  realtimeIdleProbeDeadlineMs,
+  realtimeIdleProbeMs,
+  socketProbeDeadlineMs,
+} from "./lifecycle.js";
 import { healthySocketMs } from "./realtime-frames.js";
-import type { ClientLifecycle, ClientLifecycleSnapshot, ClientNetworkState } from "./lifecycle.js";
+import type {
+  ClientLifecycle,
+  ClientLifecycleSnapshot,
+  ClientNetworkPath,
+  ClientNetworkState,
+} from "./lifecycle.js";
 import { placeList } from "./places.js";
 import { visibleTranscript } from "./transcript.js";
 import { conversationRows, groupTranscriptEntries } from "./agent-activity-model.js";
@@ -9961,6 +9972,237 @@ describe("HttpHostClient lifecycle", () => {
     client.dispose();
   });
 
+  describe("what a person is told about the connection", () => {
+    function connected(
+      workspaces = [makeWorkspace()],
+      options: {
+        readonly fetch?: () => Promise<Response>;
+        readonly refreshIntervalMs?: number;
+      } = {},
+    ) {
+      vi.useFakeTimers();
+      const platform = fakeLifecycle({ network: "online", visibility: "foreground" });
+      const sockets: FakeSocket[] = [];
+      const client = createHttpHostClient({
+        fetch: options.fetch ?? (async () => json(bootstrap(workspaces))),
+        lifecycle: platform.lifecycle,
+        refreshIntervalMs: options.refreshIntervalMs ?? 0,
+        webSocketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      const synchronize = (socket: FakeSocket, workspace = workspaces[0]!) => {
+        socket.open();
+        socket.receive({ snapshot: workspaceSnapshot(workspace, "4"), type: "host.snapshot" });
+        socket.receive({
+          sequence: sequence("4"),
+          type: "host.synchronized",
+          workspaceId: workspace.id,
+        });
+      };
+      const label = () => describeHostConnection(client.getSnapshot()).label;
+      return { client, label, platform, sockets, synchronize };
+    }
+
+    it("keeps a socket that answers after a notification for the path it is on", async () => {
+      const host = connected();
+      await host.client.load();
+      host.synchronize(host.sockets[0]!);
+
+      host.platform.changeNetwork("online", "same");
+      host.sockets[0]!.receive({ nonce: sentPingNonce(host.sockets[0]!)!, type: "host.pong" });
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(host.sockets).toHaveLength(1);
+      expect(host.client.getSnapshot().connection).toBe("connected");
+      host.client.dispose();
+    });
+
+    it("follows a move it could not see when the socket stops answering", async () => {
+      const host = connected();
+      await host.client.load();
+      host.synchronize(host.sockets[0]!);
+      const events: string[] = [];
+      host.client.subscribeLifecycle?.((event) => events.push(event));
+
+      host.platform.changeNetwork("online", "same");
+      expect(host.sockets).toHaveLength(1);
+      expect(events).toEqual([]);
+      await vi.advanceTimersByTimeAsync(socketProbeDeadlineMs);
+
+      // Every other socket on the path goes too: only this one could be asked.
+      expect(events).toEqual(["network"]);
+      expect(host.sockets).toHaveLength(2);
+      host.client.dispose();
+    });
+
+    it("follows that move through a probe already in the air", async () => {
+      const host = connected();
+      await host.client.load();
+      host.synchronize(host.sockets[0]!);
+      const events: string[] = [];
+      host.client.subscribeLifecycle?.((event) => events.push(event));
+
+      await vi.advanceTimersByTimeAsync(realtimeIdleProbeMs + realtimeIdleProbeDeadlineMs / 2);
+      expect(sentPingNonce(host.sockets[0]!)).toBeTruthy();
+      host.platform.changeNetwork("online", "same");
+      await vi.advanceTimersByTimeAsync(realtimeIdleProbeDeadlineMs);
+
+      expect(events).toEqual(["network"]);
+      expect(host.sockets).toHaveLength(2);
+      host.client.dispose();
+    });
+
+    it("says nothing about a reconnect that finishes inside the hold", async () => {
+      const host = connected();
+      await host.client.load();
+      host.synchronize(host.sockets[0]!);
+      const seen = new Set<string>();
+      host.client.subscribe(() => seen.add(host.label()));
+
+      host.sockets[0]!.serverClose();
+      await vi.advanceTimersByTimeAsync(connectionInterruptionHoldMs - 1);
+      expect(host.client.getSnapshot().connection).toBe("connecting");
+      host.synchronize(host.sockets.at(-1)!);
+      await vi.advanceTimersByTimeAsync(connectionInterruptionHoldMs);
+
+      expect(seen).toEqual(new Set(["Connected"]));
+      expect(host.client.getSnapshot().connectionInterrupted).toBe(false);
+      host.client.dispose();
+    });
+
+    it("says so once the hold passes, and stops when the connection is back", async () => {
+      const host = connected();
+      await host.client.load();
+      host.synchronize(host.sockets[0]!);
+
+      host.sockets[0]!.serverClose();
+      await vi.advanceTimersByTimeAsync(connectionInterruptionHoldMs);
+      expect(host.label()).toBe("Reconnecting…");
+
+      for (const socket of host.sockets.slice(1)) if (socket.readyState === 0) socket.open();
+      host.synchronize(host.sockets.at(-1)!);
+      expect(host.client.getSnapshot().connectionInterrupted).toBe(false);
+      expect(host.label()).toBe("Connected");
+      host.client.dispose();
+    });
+
+    it("counts no time while hidden, so a frozen timer cannot fire on the way back", async () => {
+      const host = connected();
+      await host.client.load();
+      host.synchronize(host.sockets[0]!);
+
+      host.sockets[0]!.serverClose();
+      await vi.advanceTimersByTimeAsync(connectionInterruptionHoldMs);
+      expect(host.client.getSnapshot().connectionInterrupted).toBe(true);
+
+      host.platform.enterBackground();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(host.client.getSnapshot().connectionInterrupted).toBe(false);
+      host.platform.enterForeground();
+
+      expect(host.client.getSnapshot().connectionInterrupted).toBe(false);
+      await vi.advanceTimersByTimeAsync(connectionInterruptionHoldMs - 1);
+      expect(host.client.getSnapshot().connectionInterrupted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(host.client.getSnapshot().connectionInterrupted).toBe(true);
+      host.client.dispose();
+    });
+
+    it("still says a Host that never answered when the app comes back", async () => {
+      const host = connected([], {
+        fetch: async () => {
+          throw new TypeError("Network request failed");
+        },
+      });
+      await expect(host.client.load()).rejects.toThrow();
+      expect(host.client.getSnapshot().connectionInterrupted).toBe(true);
+
+      host.platform.enterBackground();
+      host.platform.enterForeground();
+
+      expect(host.client.getSnapshot().connectionInterrupted).toBe(true);
+      host.client.dispose();
+    });
+
+    it("holds through a moment with no network in the middle of a handover", async () => {
+      const host = connected();
+      await host.client.load();
+      host.synchronize(host.sockets[0]!);
+
+      host.platform.changeNetwork("offline");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(host.client.getSnapshot().connectionInterrupted).toBe(false);
+      host.platform.changeNetwork("online");
+      host.synchronize(host.sockets.at(-1)!);
+      await vi.advanceTimersByTimeAsync(connectionInterruptionHoldMs);
+
+      expect(host.client.getSnapshot().connectionInterrupted).toBe(false);
+      host.client.dispose();
+    });
+
+    it("lets a Workspace nobody is reading retry without touching the connection", async () => {
+      const main = makeWorkspace("Main");
+      const project = makeWorkspace("Project");
+      const host = connected([main, project]);
+      await host.client.load();
+      host.synchronize(host.sockets[0]!, main);
+      host.client.activateWorkspace(project.id);
+      host.synchronize(host.sockets[1]!, project);
+      host.client.activateWorkspace(main.id);
+
+      host.sockets[1]!.serverClose();
+      expect(host.client.getSnapshot().connection).toBe("connected");
+
+      host.client.activateWorkspace(project.id);
+      expect(host.client.getSnapshot().connection).toBe("connecting");
+      host.client.dispose();
+    });
+
+    it("reads one way through an outage and tries again when asked", async () => {
+      const workspace = makeWorkspace();
+      let up = true;
+      const host = connected([workspace], {
+        fetch: async () => {
+          if (!up) throw new TypeError("Network request failed");
+          return json(bootstrap([workspace]));
+        },
+        refreshIntervalMs: 15_000,
+      });
+      await host.client.load();
+      host.synchronize(host.sockets[0]!);
+      up = false;
+      host.sockets[0]!.serverClose();
+
+      const labels = new Set<string>();
+      let settled = false;
+      host.client.subscribe(() => {
+        if (settled) labels.add(host.label());
+      });
+      for (let elapsed = 0; elapsed < 90_000; elapsed += 1_000) {
+        await vi.advanceTimersByTimeAsync(1_000);
+        settled = elapsed >= 16_000;
+        const socket = host.sockets.at(-1)!;
+        if (socket.readyState === 0) socket.serverClose();
+      }
+      expect(labels).toEqual(new Set(["Unavailable"]));
+
+      // A new network is worth hoping for, with the pill already up.
+      host.platform.changeNetwork("online");
+      expect(host.label()).toBe("Reconnecting…");
+
+      up = true;
+      const retried = host.client.refresh({ retryConnection: true });
+      expect(host.label()).toBe("Reconnecting…");
+      await retried;
+      host.synchronize(host.sockets.at(-1)!);
+      expect(host.label()).toBe("Connected");
+      host.client.dispose();
+    });
+  });
+
   it("keeps a briefly backgrounded socket that answers its correlated probe", async () => {
     vi.useFakeTimers();
     const workspace = makeWorkspace();
@@ -12850,7 +13092,7 @@ function fakeLifecycle(
   let snapshot = initial;
   const background = new Set<() => void>();
   const foreground = new Set<() => void>();
-  const network = new Set<(state: ClientNetworkState) => void>();
+  const network = new Set<(state: ClientNetworkState, path: ClientNetworkPath) => void>();
   const lifecycle: ClientLifecycle = {
     getSnapshot: () => snapshot,
     onBackground: (listener) => {
@@ -12867,9 +13109,9 @@ function fakeLifecycle(
     },
   };
   return {
-    changeNetwork: (state: ClientNetworkState) => {
+    changeNetwork: (state: ClientNetworkState, path: ClientNetworkPath = "changed") => {
       snapshot = { ...snapshot, network: state };
-      for (const listener of network) listener(state);
+      for (const listener of network) listener(state, path);
     },
     enterBackground: () => {
       snapshot = { ...snapshot, visibility: "background" };

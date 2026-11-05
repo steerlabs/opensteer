@@ -269,6 +269,7 @@ function baseSnapshot(): HostSnapshot {
     browserProfiles: [],
     browserSessions: [],
     connection: "connected",
+    connectionInterrupted: false,
     deploymentShape: null,
     deploymentId: null,
     environments: [],

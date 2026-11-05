@@ -81,6 +81,7 @@ export const reanimated = {
   Easing: { inOut: () => () => 0, quad: () => 0 },
   FadeIn: transition,
   FadeInDown: transition,
+  FadeInUp: transition,
   FadeOut: transition,
   LinearTransition: transition,
   useAnimatedStyle: () => ({}),

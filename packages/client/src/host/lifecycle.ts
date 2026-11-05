@@ -8,6 +8,7 @@
  */
 export type ClientNetworkState = "offline" | "online" | "unknown";
 export type ClientVisibility = "background" | "foreground";
+export type ClientNetworkPath = "changed" | "same";
 
 export interface ClientLifecycleSnapshot {
   readonly network: ClientNetworkState;
@@ -21,12 +22,15 @@ export interface ClientLifecycle {
   /**
    * Notifies that the network path may have changed — not that the reported
    * state differs from the last one. A Wi-Fi to cellular handover is `online`
-   * on both sides of the move and still invalidates every open socket, so an
-   * implementation must deliver the notification rather than filter out
-   * repeats. The client treats each one as an invalidation; only a repeat of
-   * `offline` costs nothing, because there is nothing to replace.
+   * on both sides of the move and still invalidates every open socket, so
+   * `changed` says the platform saw a move and the client replaces its sockets.
+   * Phones also report paths that did not move, for reasons that leave sockets
+   * working, and a move between two Wi-Fi networks can look the same: `same`
+   * is delivered rather than filtered out, and the client asks its sockets.
    */
-  onNetworkChange(listener: (state: ClientNetworkState) => void): () => void;
+  onNetworkChange(
+    listener: (state: ClientNetworkState, path: ClientNetworkPath) => void,
+  ): () => void;
   /**
    * How long this platform keeps a hidden app's sockets, `socketTrustWindowMs`
    * unless it knows better. A desktop app's sockets are never torn down for
@@ -45,6 +49,14 @@ export const socketTrustWindowMs = 10_000;
 
 /** A probe that goes unanswered this long means the socket is dead. */
 export const socketProbeDeadlineMs = 3_000;
+
+/**
+ * How long a connection may be down before a person is told. A reconnect
+ * resumes from its cursor and loses nothing, so one that finishes inside this
+ * never happened as far as they can tell. It outlasts an unanswered probe and
+ * the reconnect that follows it.
+ */
+export const connectionInterruptionHoldMs = 5_000;
 
 /**
  * How long a Workspace channel may go without a frame of its own subscription

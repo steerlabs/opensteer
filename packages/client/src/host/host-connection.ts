@@ -1,6 +1,7 @@
 import type { HostSnapshot } from "./client.js";
 
-type ConnectionSnapshot = Pick<HostSnapshot, "connection" | "session" | "network">;
+type ConnectionState = Pick<HostSnapshot, "connection" | "session" | "network">;
+type ConnectionSnapshot = ConnectionState & Pick<HostSnapshot, "connectionInterrupted">;
 
 export interface HostConnectionLine {
   readonly action: "none" | "retry" | "sign-in";
@@ -8,12 +9,19 @@ export interface HostConnectionLine {
   readonly tone: "green" | "amber" | "red" | "muted";
 }
 
-/** Platform reachability is evidence of being offline; an RPC failure is not. */
+const connected: HostConnectionLine = { action: "none", label: "Connected", tone: "green" };
+
+/**
+ * Platform reachability is evidence of being offline; an RPC failure is not.
+ * A signed-in client whose connection is down reads Connected until the
+ * interruption has lasted, because decisions are what `canRespondToRequests` gates.
+ */
 export function describeHostConnection(snapshot: ConnectionSnapshot | null): HostConnectionLine {
   if (snapshot === null) return { action: "none", label: "Connecting…", tone: "muted" };
   if (snapshot.session === "authentication-required") {
     return { action: "sign-in", label: "Signed out", tone: "amber" };
   }
+  if (snapshot.session === "authenticated" && !snapshot.connectionInterrupted) return connected;
   if (snapshot.network === "offline") {
     return { action: "none", label: "Offline", tone: "muted" };
   }
@@ -24,12 +32,17 @@ export function describeHostConnection(snapshot: ConnectionSnapshot | null): Hos
     return { action: "none", label: "Connecting…", tone: "muted" };
   }
   return snapshot.connection === "connected"
-    ? { action: "none", label: "Connected", tone: "green" }
-    : { action: "none", label: "Reconnecting…", tone: "muted" };
+    ? connected
+    : { action: "retry", label: "Reconnecting…", tone: "muted" };
+}
+
+/** What is drawn as live stays drawn through a drop nobody is being told about. */
+export function showsHostLive(snapshot: ConnectionSnapshot | null): boolean {
+  return describeHostConnection(snapshot).tone === "green";
 }
 
 /** Decisions require a synchronized Host, independently of Runner availability. */
-export function canRespondToRequests(snapshot: ConnectionSnapshot | null): boolean {
+export function canRespondToRequests(snapshot: ConnectionState | null): boolean {
   return (
     snapshot !== null &&
     snapshot.network !== "offline" &&

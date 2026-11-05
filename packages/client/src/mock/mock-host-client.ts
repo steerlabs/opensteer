@@ -12999,6 +12999,7 @@ function createInitialSnapshot(): HostSnapshot {
     browserProfiles: [],
     browserSessions: [],
     connection: "connecting",
+    connectionInterrupted: false,
     network: "unknown",
     deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
     deploymentId: "dep_00000000-0000-4000-8000-000000000001",

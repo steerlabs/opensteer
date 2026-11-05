@@ -773,7 +773,7 @@ export function Composer(props: {
                 ? "This thread is archived."
                 : props.disabledReason !== null
                   ? props.disabledReason
-                  : requestBlocked
+                  : sending || pending !== null
                     ? "Finish sending your message before responding."
                     : null
             }

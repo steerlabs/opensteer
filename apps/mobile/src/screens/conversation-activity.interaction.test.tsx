@@ -516,7 +516,6 @@ describe("the conversation's title", () => {
   }
 
   const chatHeader: ThreadHeaderState = {
-    canRetry: false,
     connectionLabel: null,
     task: null,
     title: "Chat",
@@ -534,29 +533,5 @@ describe("the conversation's title", () => {
     expect(bar.textContent).toContain("Chat");
     expect(bar.querySelector("[data-chat-orb]")).not.toBeNull();
     expect(bar.querySelector("button")).toBeNull();
-  });
-
-  it("leaves the connection line and its Retry their own", () => {
-    const refresh = vi.fn(async () => undefined);
-    const client = fakeHost(snapshotWith([])).client;
-    vi.spyOn(client, "refresh").mockImplementation(refresh);
-    const bar = title(
-      {
-        ...chatHeader,
-        canRetry: true,
-        connectionLabel: "Unavailable",
-        title: "Ana Lopez",
-        workspaceName: "Main",
-      },
-      client,
-    );
-
-    expect(bar.textContent).toContain("Ana Lopez");
-    const buttons = [...bar.querySelectorAll("button")];
-    expect(buttons.map((candidate) => candidate.textContent)).toEqual(["Retry"]);
-    const retry = buttons[0];
-    expect(bar.textContent).toContain("Unavailable");
-    act(() => retry?.click());
-    expect(refresh).toHaveBeenCalled();
   });
 });

@@ -50,7 +50,7 @@ describe("the review's findings", () => {
         const snapshot = getSnapshot();
         let offline = cache.get(snapshot);
         if (!offline) {
-          offline = { ...snapshot, connection: "offline" };
+          offline = { ...snapshot, connection: "offline", connectionInterrupted: true };
           cache.set(snapshot, offline);
         }
         return offline;

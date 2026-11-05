@@ -1,8 +1,8 @@
 import {
-  canRespondToRequests,
   conversationActivityTurn,
   formatClockTime,
   groupTranscriptEntries,
+  showsHostLive,
   visibleTranscript,
   withoutOwnAssignment,
   type HostClient,
@@ -94,7 +94,7 @@ function ReplyActivity(props: {
     [groups, turnKey],
   );
   const environment = snapshot.environments.find(({ id }) => id === thread?.environmentId);
-  const live = canRespondToRequests(snapshot) && environment?.status === "connected";
+  const live = showsHostLive(snapshot) && environment?.status === "connected";
   const openStep = useCallback(
     (entryId: string) => navigation.navigate("ThreadStep", { deploymentId, entryId, threadId }),
     [deploymentId, navigation, threadId],
