@@ -1564,7 +1564,14 @@ export async function createHostRuntime(
           if (!committed.wasDuplicate) {
             liveRuns.observeCommitted([committed.event, ...committed.compensatingEvents]);
           }
-          if (!committed.wasDuplicate) publishWorkspaceEvent(committed.event);
+          if (!committed.wasDuplicate) {
+            publishWorkspaceEvent(committed.event);
+            if (
+              ["run.completed", "run.failed", "run.interrupted"].includes(committed.event.type) ||
+              (committed.event.type === "run.phase" && committed.event.data.phase === "background")
+            )
+              notifyIntegrationContinuations();
+          }
           // A restart queued the Run's next attempt.
           if (committed.event.type === "run.restarted") wakeExecutionCoordinator();
           for (const compensating of committed.compensatingEvents) {

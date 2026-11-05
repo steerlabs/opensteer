@@ -1765,8 +1765,12 @@ export class OpensteerStore {
     );
   }
 
-  async refuseSteer(commandId: CommandRow["id"], reason: string): Promise<readonly AgentEvent[]> {
-    return commandStore.refuseSteer(this.#database, commandId, reason);
+  async refuseSteer(
+    commandId: CommandRow["id"],
+    reason: string,
+    reasonCode?: string,
+  ): Promise<readonly AgentEvent[]> {
+    return commandStore.refuseSteer(this.#database, commandId, reason, reasonCode);
   }
 
   async markSteerUnknown(

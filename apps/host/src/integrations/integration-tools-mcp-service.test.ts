@@ -240,7 +240,7 @@ describe("Opensteer MCP integration access classes", () => {
     expect(call?.description).toContain("Describing grants no access");
     const describe = listed.tools.find(({ name }) => name === "integration_describe");
     expect(describe?.description).toContain("input/output schemas before calling");
-    expect(request?.description).toContain("never repeat pending/declined asks");
+    expect(request?.description).toContain("Never repeat pending/declined asks");
     expect(request?.description).not.toContain("requestSelection");
     // One object for every request shape: Claude Code drops tools whose input
     // root is a union. The Host still enforces each shape when called.
@@ -413,7 +413,7 @@ describe("Opensteer MCP integration access classes", () => {
         expect(full).toMatchObject({
           guidance: {
             readiness: expect.stringContaining("REAUTHORIZATION_REQUIRED"),
-            computers: expect.stringContaining("Do not repeat pending requests"),
+            computers: expect.stringContaining("do not repeat pending Requests"),
           },
           results: expect.arrayContaining([
             expect.objectContaining({
@@ -443,6 +443,7 @@ describe("Opensteer MCP integration access classes", () => {
 
   it("describes and calls an operation while preserving the schema digest fence", async () => {
     const entry = inventoryEntry();
+    entry.accounts[0]!.account = "Tim Jang (tim@opensteer.com)";
     const callable = callableTool({
       entry,
       effect: "read",
@@ -450,7 +451,14 @@ describe("Opensteer MCP integration access classes", () => {
       title: "Get issue",
     });
     const callTool = vi.fn(async () => ({ content: [{ text: "called", type: "text" }] }));
-    const { handler } = await createHarness({
+    callable.grant.alias = "Personal only";
+    callable.grant.ownerUserId = createId("user");
+    const { handler, store } = await createHarness({
+      connectionAccount: {
+        ownerUserId: callable.grant.ownerUserId,
+        displayName: "Tim Jang",
+        accountIdentifier: "tim@opensteer.com",
+      },
       callTool,
       callableTools: [callable],
       inventory: [entry],
@@ -461,6 +469,9 @@ describe("Opensteer MCP integration access classes", () => {
         status: "active",
       },
     });
+    store.listDiscoveryInventory.mockRejectedValue(
+      new Error("Describe must not scan discovery inventory"),
+    );
     const toolRef = toolReference(callable);
     const described = await handler(
       { params: { arguments: { toolRef }, name: "integration_describe" } },
@@ -471,7 +482,11 @@ describe("Opensteer MCP integration access classes", () => {
     const text = (described as { content: [{ text: string }] }).content[0].text;
     const newline = text.indexOf("\n");
     expect(JSON.parse(text.slice(0, newline))).toMatchObject({
-      account: { alias: "Work", connectionId: callable.grant.connectionId, isDefault: true },
+      account: {
+        alias: "Tim Jang (tim@opensteer.com)",
+        connectionId: callable.grant.connectionId,
+        isDefault: true,
+      },
       cursor: 0,
       nextCursor: null,
       operation: { title: "Get issue" },
@@ -479,6 +494,19 @@ describe("Opensteer MCP integration access classes", () => {
       toolRef,
     });
     expect(JSON.parse(text.slice(newline + 1))).toEqual(linearToolSchemas);
+    const page = await handler(
+      { params: { arguments: { toolRef, path: "/inputSchema" }, name: "integration_describe" } },
+      callExtra("describe-input"),
+    );
+    const pageText = (page as { content: [{ text: string }] }).content[0].text;
+    expect(JSON.parse(pageText.slice(0, pageText.indexOf("\n")))).toMatchObject({
+      toolRef,
+      path: "/inputSchema",
+    });
+    expect(JSON.parse(pageText.slice(pageText.indexOf("\n") + 1))).toEqual(
+      linearToolSchemas.inputSchema,
+    );
+    expect(callable.grant.alias).toBe("Personal only");
     await handler(
       { params: { arguments: { arguments: { id: "LIN-1" }, toolRef }, name: "integration_call" } },
       callExtra("call"),
@@ -1313,6 +1341,11 @@ describe("integration_request computer-app variant", () => {
 });
 
 async function createHarness(input: {
+  readonly connectionAccount?: {
+    readonly ownerUserId: string;
+    readonly displayName: string;
+    readonly accountIdentifier: string | null;
+  };
   readonly reach?: import("@opensteer/core").ThreadReachScope;
   readonly installedComputerApps?: ReturnType<typeof vi.fn>;
   readonly computerAppHolders?: ReadonlyMap<
@@ -1419,6 +1452,9 @@ async function createHarness(input: {
         : null,
     ),
     listCallableTools: vi.fn(async () => input.callableTools ?? []),
+    getConnectionAccount: vi.fn(async ({ ownerUserId }: { readonly ownerUserId: string }) =>
+      ownerUserId === input.connectionAccount?.ownerUserId ? input.connectionAccount : null,
+    ),
     getToolSchemas: vi.fn(async () => input.toolSchemas ?? null),
     listComputerAppSetupRequests: vi.fn(async () => input.computerSetupRequests ?? []),
     listDiscoveryInventory: vi.fn(async () => input.inventory),
@@ -1441,8 +1477,7 @@ async function createHarness(input: {
         if (request.callId) requestByCallId.set(request.callId, existing);
         return {
           status: "pending",
-          nextAction:
-            "Approval is pending on Alex's Mac. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.",
+          nextAction: "Approval is pending on Alex's Mac. Pending stops the Run.",
           replayed: true,
           request: existing,
           setupRequest: { id: "setup" },
@@ -1452,8 +1487,7 @@ async function createHarness(input: {
       accessByKey.set(key, created.request);
       return {
         status: "pending",
-        nextAction:
-          "Approval is pending on Alex's Mac. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.",
+        nextAction: "Approval is pending on Alex's Mac. Pending stops the Run.",
         replayed: false,
         request: created.request,
         setupRequest: { id: "setup" },

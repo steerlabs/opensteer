@@ -2888,6 +2888,7 @@ export function advertisedCapabilities(
     "ownerViewWindows",
     "browser-target-control-v1",
     "integration-app-finish-v1",
+    "integration-app-return-port-v1",
     ...(dependencies.passkeys === true ? ["browser-passkeys-v1" as const] : []),
     "browser-frame-window-v1",
     "browser-raster-demand-v1",

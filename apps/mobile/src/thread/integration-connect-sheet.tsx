@@ -34,6 +34,8 @@ import {
   type IntegrationConnectionSummary,
   type IntegrationRepositoryAccess,
   type LoadedAccessRequest,
+  integrationAuthorizationSettled,
+  integrationAuthorizationCancelUnconfirmedDetail,
 } from "@opensteer/client/integrations";
 import { useNavigation } from "@react-navigation/native";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -89,6 +91,8 @@ export function IntegrationConnectCard(props: {
   const [step, setStep] = useState<Step>("review");
   const [busy, setBusy] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const signingIn = useRef<AbortController | null>(null);
+  const [cancelUnconfirmed, setCancelUnconfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
@@ -181,6 +185,7 @@ export function IntegrationConnectCard(props: {
     setStep("review");
     setBusy(false);
     setConnecting(false);
+    setCancelUnconfirmed(false);
     setError(null);
     setNotice(null);
     setAccountId(null);
@@ -277,6 +282,7 @@ export function IntegrationConnectCard(props: {
       if (generation === operationGeneration.current) {
         setBusy(false);
         setConnecting(false);
+        setCancelUnconfirmed(false);
       }
     }
   };
@@ -380,19 +386,25 @@ export function IntegrationConnectCard(props: {
     const nextPlan = next.plan;
     if (!nextPlan) return;
     setConnecting(true);
-    const status =
+    const signIn = new AbortController();
+    signingIn.current = signIn;
+    const started =
       nextPlan.requirement.kind === "mcp-oauth" && nextPlan.serverId
-        ? await mobile.beginMcpIntegrationAuthorization({
+        ? mobile.beginMcpIntegrationAuthorization({
             displayName: accountName.trim() || `${nextPlan.installationTitle} account`,
             requestId: props.request.id,
             serverId: nextPlan.serverId,
+            signal: signIn.signal,
           })
         : nextPlan.definition && next.source
-          ? await mobile.beginIntegrationAuthorization({
+          ? mobile.beginIntegrationAuthorization({
               applicationSource: next.source,
               definitionId: nextPlan.definition.id,
+              signal: signIn.signal,
             })
           : null;
+    const status =
+      started && (await integrationAuthorizationSettled(started, () => setCancelUnconfirmed(true)));
     if (generation !== operationGeneration.current) return;
     if (!status) throw new Error("Open integration settings to finish this connection.");
     const outcome = integrationAuthorizationError(status.status, status.failureCode);
@@ -779,7 +791,9 @@ export function IntegrationConnectCard(props: {
                 <ActivityIndicator color={color.ember} size="small" />
               </View>
               <AppText role="secondary" style={styles.rowText} tone="soft">
-                Finish signing in
+                {cancelUnconfirmed
+                  ? integrationAuthorizationCancelUnconfirmedDetail
+                  : "Finish signing in"}
               </AppText>
             </View>
           ) : canAdd ? (
@@ -836,7 +850,11 @@ export function IntegrationConnectCard(props: {
           machines={snapshot.machines}
         />
       ) : null}
-      {connecting ? null : (
+      {connecting ? (
+        cancelUnconfirmed ? null : (
+          <SecondaryButton label="Cancel" onPress={() => signingIn.current?.abort()} />
+        )
+      ) : (
         <View style={styles.actions}>
           <View style={styles.actionSecondary}>
             <SecondaryButton

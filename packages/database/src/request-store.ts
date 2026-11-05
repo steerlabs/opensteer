@@ -2878,7 +2878,7 @@ export class RequestStore {
   }
 
   async listPendingContinuations(limit = 100): Promise<readonly PendingRequestContinuation[]> {
-    const rows = await this.#database
+    const pending = this.#database
       .selectFrom("requestContinuations")
       .innerJoin("requests", "requests.id", "requestContinuations.requestId")
       .selectAll("requests")
@@ -2888,9 +2888,69 @@ export class RequestStore {
         "requestContinuations.status as continuationStatus",
       ])
       .where("requestContinuations.status", "=", "waiting")
+      .where((eb) =>
+        eb.or([
+          eb("requests.originatingRunId", "is", null),
+          eb.exists(
+            eb
+              .selectFrom("runs as originRun")
+              .select("originRun.id")
+              .whereRef("originRun.id", "=", "requests.originatingRunId")
+              .where((origin) =>
+                origin.or([
+                  origin("originRun.status", "in", ["completed", "failed", "interrupted"]),
+                  origin("originRun.phase", "=", "background"),
+                ]),
+              )
+              .where((gate) =>
+                gate.or([
+                  gate.not(
+                    gate.exists(
+                      gate
+                        .selectFrom("requests as sibling")
+                        .select("sibling.id")
+                        .whereRef("sibling.originatingRunId", "=", "originRun.id")
+                        .where("sibling.mode", "=", "durable")
+                        .where("sibling.status", "=", "pending"),
+                    ),
+                  ),
+                  gate.exists(
+                    gate
+                      .selectFrom("runs as newerRun")
+                      .select("newerRun.id")
+                      .whereRef("newerRun.threadId", "=", "originRun.threadId")
+                      .whereRef("newerRun.runOrdinal", ">", "originRun.runOrdinal"),
+                  ),
+                ]),
+              ),
+          ),
+        ]),
+      )
       .orderBy(sql`request_continuations.attempted_at asc nulls first`)
       .orderBy("requestContinuations.createdAt", "asc")
+      .orderBy("requests.id", "asc");
+    const page = await pending
+      .clearSelect()
+      .select(["requests.id", "requests.originatingRunId"])
       .limit(clampLimit(limit))
+      .execute();
+    if (page.length === 0) return [];
+    const runIds = [
+      ...new Set(
+        page.flatMap(({ originatingRunId }) => (originatingRunId ? [originatingRunId] : [])),
+      ),
+    ];
+    const triggerIds = page
+      .filter(({ originatingRunId }) => originatingRunId === null)
+      .map(({ id }) => id);
+    // A row limit must never split the outcomes delivered for one Run.
+    const rows = await pending
+      .where((eb) =>
+        eb.or([
+          ...(runIds.length > 0 ? [eb("requests.originatingRunId", "in", runIds)] : []),
+          ...(triggerIds.length > 0 ? [eb("requests.id", "in", triggerIds)] : []),
+        ]),
+      )
       .execute();
     return rows.map((row) => ({
       attemptedAt: row.continuationAttemptedAt?.toISOString() ?? null,

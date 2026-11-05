@@ -33,16 +33,29 @@ resent automatically, even after Run termination or Host restart. A Run uses its
 authority, never later work's. Reports must match requester, membership generation and reply target,
 and are not exactly-once: only provider acceptance confirms consumption.
 
-In work Threads, Stop pauses admission before interrupting, cancels the Run's pending Requests and
+In work Threads, Stop pauses admission before interrupting, cancels the Run's live Requests and
 settles it as interrupted even if another outcome races it. Recovery never restarts stopped work.
 Only the person who paused or a Workspace owner can Resume, and Resume grants no execution: each
 input keeps its requester's authority. In a conversation, only a person's own messages in Chat or
 their owner DM can join the reply underway, with the same requester, membership, reply target,
 Assignment, engine and model; Stop cancels their untaken inputs without pausing the queue. An
-ordinary message never answers a Request; only its answer or Stop releases the hold.
+ordinary message never answers a Request. Live harness Requests hold their native turn; a new
+person message can start work normally after a Run ends with durable Requests still pending.
 
-Thread state is a stored projection; a pending Request keeps a Run waiting even if its Runner
-reports running. The [lock order](../packages/database/src/lock-order.ts) is authoritative: lock the
+Durable Requests return immediately and ask the model to end its turn. The Runner refuses further
+work tools while allowing the remaining setup asks, and interrupts after one bounded grace period if
+the model does not end. A turn that leaves native background work running releases this restriction
+and keeps that work alive. Awaiting the person is not a failure or a person's Stop; durable Requests
+and Assignments outlive the turn. Native harness Requests keep blocking natively. Answered durable
+Requests continue once the origin turn has ended and its durable siblings settle, joining any
+background work still running. A newer Run on the Thread releases older settled outcomes too, so an
+abandoned ask cannot hold up later work. Eligible outcomes from one Run arrive together; different
+Runs stay independent.
+Trigger Occurrences have no native turn to resume. Requests returned without a requestId, including
+plugin installation, cannot signal the Runner to stop.
+
+Thread state is a stored projection; pending Requests drive Needs you independently of whether a
+Run still executes. The [lock order](../packages/database/src/lock-order.ts) is authoritative: lock the
 complete authority and event Workspace sets in order, then rediscover; growth means rollback and
 retry. Retryable transactions return only the committed attempt's events, and callbacks doing
 external work are never blindly retried. Saved Trigger program versions are immutable syntax

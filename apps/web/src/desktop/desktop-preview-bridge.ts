@@ -435,6 +435,7 @@ export function desktopPreviewBridge(
     setBadgeCount: async () => undefined,
 
     openExternalUrl: async () => ({ opened: true }),
+    prepareIntegrationAuthorizationReturn: async () => ({ port: null }),
     openIntegrationAuthorization: async () => ({ opened: true }),
     onIntegrationAuthorizationReturn: () => () => undefined,
     finishIntegrationAuthorization: async () => undefined,

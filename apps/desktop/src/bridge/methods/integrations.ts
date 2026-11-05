@@ -1,12 +1,29 @@
 import {
   DesktopOpenIntegrationAuthorizationInputSchema,
   DesktopOpenIntegrationAuthorizationResultSchema,
+  DesktopPrepareIntegrationAuthorizationReturnInputSchema,
+  DesktopPrepareIntegrationAuthorizationReturnResultSchema,
 } from "@opensteer/protocol/desktop";
 import {
   assertAuthorizedRenderer,
   type DesktopBridgeContext,
   type DesktopBridgeHandler,
 } from "../context.js";
+
+/** Opens the listener a coming attempt returns to; null means it uses the app link. */
+export const handlePrepareIntegrationAuthorizationReturn =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  async (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    const { deploymentId } = DesktopPrepareIntegrationAuthorizationReturnInputSchema.parse(
+      envelope.input,
+    );
+    return DesktopPrepareIntegrationAuthorizationReturnResultSchema.parse(
+      (await context.options.integrationAuthorizations?.prepareReturn(deploymentId)) ?? {
+        port: null,
+      },
+    );
+  };
 
 export const handleOpenIntegrationAuthorization =
   (context: DesktopBridgeContext): DesktopBridgeHandler =>
@@ -26,12 +43,15 @@ export const handleOpenIntegrationAuthorization =
     target.searchParams.set("ticket", input.launchTicket);
     const authorizations = context.options.integrationAuthorizations;
     if (!authorizations) throw new Error("Integration authorization returns are unavailable.");
-    await authorizations.attempts.register({
-      deploymentId: input.deploymentId,
-      attemptId: input.attemptId,
-      expiresAt: input.expiresAt,
-      ...(input.userId ? { userId: input.userId } : {}),
-    });
+    await authorizations.register(
+      {
+        deploymentId: input.deploymentId,
+        attemptId: input.attemptId,
+        expiresAt: input.expiresAt,
+        ...(input.userId ? { userId: input.userId } : {}),
+      },
+      input.returnPreparation,
+    );
     await context.options.portal.openExternal(target.toString());
     return DesktopOpenIntegrationAuthorizationResultSchema.parse({ opened: true });
   };

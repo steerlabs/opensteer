@@ -1,3 +1,4 @@
+import { integrationAccountLabel } from "@opensteer/integration-core";
 import {
   administrationCommand,
   lockAdministrationCommand,
@@ -292,6 +293,7 @@ interface McpOAuthConnectionRecord extends McpOAuthServerContext {
 }
 
 interface StoredIntegrationConnectionAuthority extends IntegrationConnectionAuthority {
+  readonly accountIdentifier: string | null;
   readonly computerAccess: IntegrationAccess | null;
   readonly displayName: string;
   readonly id: IntegrationConnectionId;
@@ -352,6 +354,7 @@ abstract class IntegrationPlatformStoreBase {
       this.database
         .selectFrom("integrationConnections")
         .select([
+          "accountIdentifier",
           "applicationSource",
           "connectionKind",
           "computerAccess",
@@ -393,6 +396,7 @@ abstract class IntegrationPlatformStoreBase {
           connectionKind: connection.connectionKind,
           computerAccess: connection.computerAccess,
           definitionId: connection.integrationDefinitionId,
+          accountIdentifier: connection.accountIdentifier,
           displayName: connection.displayName,
           id: connection.id,
           integrationServerId: connection.integrationServerId,
@@ -1929,7 +1933,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
                     : grant
                       ? effectiveIntegrationAccess(grant.access, connection)
                       : null,
-                account: connection.displayName,
+                account: integrationAccountLabel(connection),
                 connectionId: connection.id,
                 isDefault: grant?.isDefault ?? false,
               };
@@ -2037,6 +2041,20 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
 }
 
 export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase {
+  async getConnectionAccount(input: {
+    readonly connectionId: IntegrationConnectionId;
+    readonly ownerUserId: UserId;
+  }) {
+    return (
+      (await this.database
+        .selectFrom("integrationConnections")
+        .select(["displayName", "accountIdentifier"])
+        .where("id", "=", input.connectionId)
+        .where("ownerUserId", "=", input.ownerUserId)
+        .executeTakeFirst()) ?? null
+    );
+  }
+
   async getConnectionKind(input: {
     readonly connectionId: IntegrationConnectionId;
     readonly ownerUserId: UserId;

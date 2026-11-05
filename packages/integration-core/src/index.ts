@@ -1,4 +1,5 @@
 export * from "./adapter.js";
+export * from "./account-label.js";
 export * from "./adapter-kind.js";
 export * from "./authorization-return.js";
 export * from "./auth-method.js";

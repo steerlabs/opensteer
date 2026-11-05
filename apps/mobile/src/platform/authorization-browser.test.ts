@@ -5,13 +5,15 @@ import {
   opensteerMobileHostOAuthCallback,
   opensteerMobileOAuthClientId,
 } from "@opensteer/core";
-import { describe, expect, it } from "vitest";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { describe, expect, it, vi } from "vitest";
 import {
   authorizationRedirectOf,
   createAuthorizationBrowser,
   createIntegrationAuthorizationBrowser,
   type AuthorizationSessionOpener,
 } from "./authorization-browser.js";
+import { IntegrationAuthorizationCancelledError } from "@opensteer/client/integrations";
 
 const oauth: NativeOAuthIdentity = {
   accountCallback: opensteerMobileAccountOAuthCallback,
@@ -24,6 +26,10 @@ const authorizeUrl = (redirect: string): string =>
   `https://account.example.com/oauth2/authorize?client_id=opensteer-mobile&redirect_uri=${encodeURIComponent(redirect)}&state=abc`;
 
 class FakeBrowser implements AuthorizationSessionOpener {
+  dismissed = 0;
+  dismissAuthSession() {
+    this.dismissed += 1;
+  }
   result: { readonly type: string; readonly url?: string } = { type: "dismiss" };
   opened: {
     readonly options: { readonly preferEphemeralSession: boolean };
@@ -63,6 +69,45 @@ describe("authorizationRedirectOf", () => {
 });
 
 describe("createIntegrationAuthorizationBrowser", () => {
+  // Android's module exposes neither dismissal, so Expo's call throws there.
+  it("ends the wait even where the platform cannot dismiss the session", async () => {
+    const browser = new FakeBrowser();
+    browser.openAuthSessionAsync = () => new Promise(() => {});
+    browser.dismissAuthSession = () => {
+      throw new Error("The method or property WebBrowser.dismissBrowser is not available.");
+    };
+    const controller = new AbortController();
+    const waiting = createIntegrationAuthorizationBrowser({ browser })(
+      "https://host.example/v1/integration-authorizations/launch",
+      controller.signal,
+    );
+    const uncaught = vi.fn();
+    process.on("uncaughtException", uncaught);
+    try {
+      controller.abort();
+      await expect(
+        withTimeout(waiting, 1_000, { timeoutError: () => new Error("The wait never ended.") }),
+      ).rejects.toBeInstanceOf(IntegrationAuthorizationCancelledError);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(uncaught).not.toHaveBeenCalled();
+    } finally {
+      process.off("uncaughtException", uncaught);
+    }
+  });
+
+  it("ends the session and the wait when its signal aborts", async () => {
+    const browser = new FakeBrowser();
+    browser.openAuthSessionAsync = () => new Promise(() => {});
+    const controller = new AbortController();
+    const waiting = createIntegrationAuthorizationBrowser({ browser })(
+      "https://host.example/v1/integration-authorizations/launch",
+      controller.signal,
+    );
+    controller.abort();
+    await expect(waiting).rejects.toBeInstanceOf(IntegrationAuthorizationCancelledError);
+    expect(browser.dismissed).toBe(1);
+  });
+
   it("watches the fixed native integration callback and returns only its identifiers", async () => {
     const browser = new FakeBrowser();
     const deploymentId = createId("deployment");

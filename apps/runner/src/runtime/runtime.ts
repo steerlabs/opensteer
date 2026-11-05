@@ -166,6 +166,7 @@ export interface RunnerRuntimeOptions {
   readonly maxConcurrentTriggerPrograms?: number;
   readonly maxRunEventBytes?: number;
   readonly maxRunEvents?: number;
+  readonly requestParkDeadlineMs?: number;
   readonly machineAccess?: {
     readonly controlCaPath?: string;
     readonly helperBinary: string;
@@ -262,6 +263,8 @@ interface ActiveRun {
   revoked?: boolean;
   /** An explicit Stop wins over an engine completion while this Run is still held. */
   interrupted?: true;
+  requestParkForced?: true;
+  requestParkTimer?: NodeJS.Timeout;
   readonly saturatedToolDeltaCallIds: Set<string>;
   readonly toolDeltaBytes: Map<string, number>;
   primaryWorkspace?: RunWorkspace;
@@ -368,6 +371,7 @@ export class RunnerRuntime {
   readonly #maxConcurrentTriggerPrograms: number;
   readonly #maxRunEventBytes: number;
   readonly #maxRunEvents: number;
+  readonly #requestParkDeadlineMs: number;
   readonly #credentialRefreshClock: Pick<Clock, "schedule">;
   readonly #executionClock: Clock | undefined;
   readonly #executionNow: () => number;
@@ -486,6 +490,7 @@ export class RunnerRuntime {
       "maxRunEvents",
     );
     this.#machineAccess = options.machineAccess;
+    this.#requestParkDeadlineMs = options.requestParkDeadlineMs ?? 60_000;
     this.#mode = options.mode ?? "development";
     this.#privateStateDirectory = resolve(options.privateStateDirectory);
     this.#voice = new VoiceCalls(join(this.#privateStateDirectory, "voice"));
@@ -2548,11 +2553,20 @@ export class RunnerRuntime {
           retryable: true,
         });
       }
+      const parkForRequest = () => {
+        if (active.requestParkTimer || active.settling || active.abort.signal.aborted) return;
+        active.requestParkTimer = setTimeout(() => {
+          if (terminal) return;
+          active.requestParkForced = true;
+          active.abort.abort(new Error("Run stopped for a pending durable Request"));
+        }, this.#requestParkDeadlineMs);
+        active.requestParkTimer.unref();
+      };
       if (warmEngine) {
         await warmEngine.plugins.cleanup();
         warmEngine = { ...warmEngine, plugins: runSkills };
         warmEngine.authority.credentials = credentials;
-        warmEngine.credentialProxy.resume();
+        warmEngine.credentialProxy.resume(parkForRequest);
         warmEngine.browserCdpRelay.resume();
         browserCdpRelay = warmEngine.browserCdpRelay;
         credentialProxy = warmEngine.credentialProxy;
@@ -2598,6 +2612,7 @@ export class RunnerRuntime {
       // with a secret that works nowhere else; Host tokens stay here.
       if (!credentialProxy) {
         credentialProxy = new CredentialProxy({
+          onPark: parkForRequest,
           routes: {
             "agent-tools": {
               token: () => current().agentTools,
@@ -2889,6 +2904,7 @@ export class RunnerRuntime {
           ? { data: { status: "interrupted" }, type: "run.interrupted" }
           : failureEvent(safeMessage(error, safeMessageOptions), "runner_execution_error");
     } finally {
+      if (active.requestParkTimer) clearTimeout(active.requestParkTimer);
       if (workspace && !context.specialistId && this.#skillObserver) {
         await this.#scanWorkspaceSkills(context.workspaceId, workspace.path).catch(() => undefined);
       }
@@ -2938,6 +2954,8 @@ export class RunnerRuntime {
       await this.#settleLiveStreams(active).catch(() => undefined);
       if (active.interrupted)
         terminal = { data: { status: "interrupted" }, type: "run.interrupted" };
+      else if (active.requestParkForced)
+        terminal = { data: { status: "completed" }, type: "run.completed" };
       await this.#emit(active, terminal).catch(() => undefined);
       if (active.shutdown) await this.#pumpJournal(active).catch(() => undefined);
       active.voiceCall?.end();
@@ -3079,6 +3097,12 @@ export class RunnerRuntime {
    * the stream it completes starts again from nothing.
    */
   async #emitDurable(active: ActiveRun, event: HarnessDurableEvent): Promise<void> {
+    if (event.type === "run.phase" && event.data.phase === "background") {
+      // The Host can steer the next turn as soon as it commits this event.
+      if (active.requestParkTimer) clearTimeout(active.requestParkTimer);
+      delete active.requestParkTimer;
+      active.credentialProxy?.clearParking();
+    }
     await active.live.flush();
     await this.#emit(active, event);
     switch (event.type) {
@@ -3305,6 +3329,16 @@ export class RunnerRuntime {
   ): Promise<CommandDecision> {
     const active = this.#runs.get(command.runId);
     if (!active) return reject("not_found", "Active run was not found", false);
+    if (active.requestParkTimer || active.credentialProxy?.parking)
+      return {
+        status: "rejected",
+        error: {
+          code: "conflict",
+          reason: "request-pending",
+          message: "Run is stopping for a pending Request; queue the message",
+          retryable: false,
+        },
+      };
     if (active.settling) return reject("conflict", "Run is finishing", false);
     if (active.command.context.threadId !== command.threadId) {
       return reject("forbidden", "Steer targets a different thread", false);

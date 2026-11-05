@@ -113,6 +113,7 @@ async function executeIntegrationCommand(
           ? { exactApplicationSource: input.exactApplicationSource }
           : {}),
         ...(input.finish ? { finish: input.finish } : {}),
+        ...(input.appReturnPort === undefined ? {} : { appReturnPort: input.appReturnPort }),
         definitionId: input.definitionId,
         ownerUserId: session.user.id,
         requestSurface: requireSurface(context),

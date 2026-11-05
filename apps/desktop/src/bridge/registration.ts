@@ -81,7 +81,10 @@ import {
   handleOpenHostWebSocket,
   handleSendHostWebSocket,
 } from "./methods/host.js";
-import { handleOpenIntegrationAuthorization } from "./methods/integrations.js";
+import {
+  handleOpenIntegrationAuthorization,
+  handlePrepareIntegrationAuthorizationReturn,
+} from "./methods/integrations.js";
 import {
   handleGetNotificationSupport,
   handleSetBadgeCount,
@@ -335,6 +338,10 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.setBadgeCount, handleSetBadgeCount(context));
   register(desktopBridgeChannels.openHostWebSocket, handleOpenHostWebSocket(context));
   register(
+    desktopBridgeChannels.prepareIntegrationAuthorizationReturn,
+    handlePrepareIntegrationAuthorizationReturn(context),
+  );
+  register(
     desktopBridgeChannels.openIntegrationAuthorization,
     handleOpenIntegrationAuthorization(context),
   );
@@ -387,11 +394,11 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
       throw new Error("Only the workspace window may finish integration returns.");
     const input = DesktopFinishIntegrationAuthorizationInputSchema.parse(envelope.input);
     if (input.attemptId)
-      await options.integrationAuthorizations?.attempts.forget({
+      await options.integrationAuthorizations?.forget({
         ...input,
         attemptId: input.attemptId,
       });
-    else await options.integrationAuthorizations?.attempts.clear(input.deploymentId);
+    else await options.integrationAuthorizations?.clear(input.deploymentId);
   });
   register(desktopBridgeChannels.pickFolder, handlePickFolder(context));
   register(desktopBridgeChannels.readAgentPhoneArtifact, handleReadAgentPhoneArtifact(context));

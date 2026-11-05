@@ -396,6 +396,65 @@ describe("hosted OAuth provider callback", () => {
     },
   );
 
+  describe("loopback handoff page", () => {
+    const proof = "P".repeat(43);
+    const appReturn = `opensteer:/oauth/integration-callback?deployment_id=dep&attempt_id=ioa&return=${proof}`;
+    const handoffResponse = async () => {
+      const server = Fastify();
+      servers.push(server);
+      registerHostedOAuthBrokerRoutes(server, {
+        authenticator: {} as never,
+        store: {} as never,
+        broker: {
+          completeAuthorization: vi.fn(async () => ({
+            attemptId,
+            status: "held",
+            returnKind: "open-app",
+            returnUrl: appReturn,
+            returnHandoff: {
+              action: "http://127.0.0.1:48203/oauth/integration-callback",
+              fields: { attempt_id: "ioa", deployment_id: "dep", return: proof },
+            },
+          })),
+        } as never,
+      });
+      return server.inject({ method: "GET", url: "/v1/oauth-broker/callback/google?code=c" });
+    };
+
+    it("submits the proof by form and leaves it in no address but the app button", async () => {
+      const response = await handoffResponse();
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.headers["referrer-policy"]).toBe("no-referrer");
+      expect(response.body).not.toContain('http-equiv="refresh"');
+      expect(response.body).toContain(
+        '<form id="app-return" method="post" action="http://127.0.0.1:48203/oauth/integration-callback">',
+      );
+      expect(response.body).toContain(`name="return" value="${proof}"`);
+      const addresses = [...response.body.matchAll(/\b(?:href|src|action|content)="([^"]*)"/gu)]
+        .map((match) => match[1]!)
+        .filter((value) => value.includes(proof));
+      expect(addresses.map((value) => value.replaceAll("&amp;", "&"))).toEqual([appReturn]);
+    });
+
+    it("runs only its own submit script, and only to that listener", async () => {
+      const response = await handoffResponse();
+      const policy = String(response.headers["content-security-policy"]);
+      const nonce = /script-src 'nonce-([^']+)'/u.exec(policy)?.[1];
+      expect(nonce).toBeTruthy();
+      expect(policy).toContain("form-action http://127.0.0.1:48203");
+      expect(response.body).toContain(`<script nonce="${nonce}">`);
+      expect((await handoffResponse()).headers["content-security-policy"]).not.toBe(policy);
+    });
+
+    it("keeps the app button for a browser with scripts off", async () => {
+      const response = await handoffResponse();
+      const withoutScript = response.body.replace(/<script[\s\S]*?<\/script>/gu, "");
+      expect(withoutScript).toContain(`href="${appReturn.replaceAll("&", "&amp;")}"`);
+      expect(withoutScript).toContain("Open Opensteer");
+    });
+  });
+
   it("redirects the native auth session to its app return with a 303", async () => {
     const server = Fastify();
     servers.push(server);

@@ -169,6 +169,10 @@ vi.mock("../ui/integration-icon.js", () => ({
   },
 }));
 
+const {
+  IntegrationAuthorizationCancelUnconfirmedError,
+  integrationAuthorizationCancelUnknownDetail,
+} = await import("@opensteer/client/integrations");
 const beginIntegrationAuthorization = vi.fn();
 const beginMcpIntegrationAuthorization = vi.fn();
 vi.mock("../ui/mobile-client-context.js", () => ({
@@ -235,6 +239,112 @@ describe("IntegrationConnectCard", () => {
     );
   });
 
+  describe("Cancel while a sign-in waits", () => {
+    const waits =
+      (settle: (reject: (reason: Error) => void, resolve: (value: unknown) => void) => void) =>
+      ({ signal }: { readonly signal: AbortSignal }) =>
+        new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () => settle(reject, resolve));
+        });
+    const cancelled = (reject: (reason: Error) => void) =>
+      reject(new Error("Integration authorization was cancelled."));
+
+    it("ends a provider sign-in and offers it again", async () => {
+      beginIntegrationAuthorization.mockImplementation(waits(cancelled));
+      await render(fakeClient({ sources: [hosted], selected: hosted }));
+      await press("Connect");
+      expect(text()).toContain("Finish signing in");
+      await press("Cancel");
+      expect(beginIntegrationAuthorization.mock.calls[0]?.[0].signal.aborted).toBe(true);
+      expect(text()).not.toContain("Finish signing in");
+      expect(buttons()).not.toContain("Cancel");
+    });
+
+    it("ends an MCP sign-in", async () => {
+      beginMcpIntegrationAuthorization.mockImplementation(waits(cancelled));
+      await render(fakeClient({ requirementKind: "mcp-oauth", sources: [] }));
+      await press("Connect");
+      await press("Cancel");
+      expect(beginMcpIntegrationAuthorization.mock.calls[0]?.[0].signal.aborted).toBe(true);
+      expect(text()).not.toContain("Finish signing in");
+    });
+
+    describe("when the Host has not answered the Cancel", () => {
+      const unconfirmed = (reconciled: Promise<unknown>) =>
+        waits((reject) =>
+          reject(
+            new IntegrationAuthorizationCancelUnconfirmedError(
+              "ioa_00000000-0000-4000-8000-000000000001",
+              reconciled as never,
+            ),
+          ),
+        );
+
+      it("says so instead of Cancelled, then shows the completion that won", async () => {
+        const client = fakeClient({ sources: [hosted], selected: hosted, workspaceKind: "main" });
+        const id = "con_00000000-0000-4000-8000-0000000000ce";
+        let settle = (_status: unknown) => {};
+        beginIntegrationAuthorization.mockImplementation(
+          unconfirmed(new Promise((resolve) => (settle = resolve))),
+        );
+        await render(client);
+        await press("Connect");
+        await press("Cancel");
+        expect(text()).toContain("Checking whether this was cancelled");
+        expect(text()).not.toMatch(/was cancelled\./u);
+        expect(buttons()).not.toContain("Cancel");
+        client.setConnections([connection(id)]);
+        client.settleRequest();
+        await act(async () => settle(completed(id)));
+        expect(text()).toContain("Slack connected · oversteer.slack.com");
+      });
+
+      it("reports the cancel once the Host confirms it", async () => {
+        let settle = (_status: unknown) => {};
+        beginIntegrationAuthorization.mockImplementation(
+          unconfirmed(new Promise((resolve) => (settle = resolve))),
+        );
+        await render(fakeClient({ sources: [hosted], selected: hosted }));
+        await press("Connect");
+        await press("Cancel");
+        await act(async () =>
+          settle({
+            connectionId: null,
+            expiresAt: "2099-01-01T00:00:00Z",
+            failureCode: null,
+            status: "cancelled",
+          }),
+        );
+        expect(text()).toContain("Authorization was cancelled.");
+        expect(text()).not.toContain("Checking whether");
+      });
+
+      it("says it could not tell when the Host can no longer answer", async () => {
+        beginIntegrationAuthorization.mockImplementation(unconfirmed(Promise.resolve(null)));
+        await render(fakeClient({ sources: [hosted], selected: hosted }));
+        await press("Connect");
+        await press("Cancel");
+        expect(text()).toContain(integrationAuthorizationCancelUnknownDetail);
+      });
+    });
+
+    it("shows the connection when it finished before Cancel reached the Host", async () => {
+      const client = fakeClient({ sources: [hosted], selected: hosted, workspaceKind: "main" });
+      const id = "con_00000000-0000-4000-8000-0000000000cd";
+      beginIntegrationAuthorization.mockImplementation(
+        waits((_reject, resolve) => {
+          client.setConnections([connection(id)]);
+          client.settleRequest();
+          resolve(completed(id));
+        }),
+      );
+      await render(client);
+      await press("Connect");
+      await press("Cancel");
+      expect(text()).toContain("Slack connected · oversteer.slack.com");
+    });
+  });
+
   it.each(["main", "project"] as const)(
     "connects %s from one tap and shows the committed result in place",
     async (workspaceKind) => {
@@ -251,6 +361,7 @@ describe("IntegrationConnectCard", () => {
       expect(beginIntegrationAuthorization).toHaveBeenCalledExactlyOnceWith({
         applicationSource: hosted,
         definitionId: "slack",
+        signal: expect.any(AbortSignal),
       });
       expect(text()).toContain("Slack connected · oversteer.slack.com");
       expect(text()).not.toMatch(/Back to the request|Account connected|Review connection/u);
@@ -431,6 +542,7 @@ describe("IntegrationConnectCard", () => {
     await press("Connect");
 
     expect(beginMcpIntegrationAuthorization).toHaveBeenCalledWith({
+      signal: expect.any(AbortSignal),
       displayName: "Slack account",
       requestId: "req_00000000-0000-4000-8000-000000000001",
       serverId: "isv_00000000-0000-4000-8000-000000000001",

@@ -5,7 +5,10 @@ import {
   type DeploymentId,
 } from "@opensteer/core";
 import { z } from "zod";
-import { IntegrationAuthorizationAttemptIdSchema } from "./models.js";
+import {
+  IntegrationAuthorizationAttemptIdSchema,
+  IntegrationAuthorizationReturnPortSchema,
+} from "./models.js";
 
 export type IntegrationAuthorizationReturnSurface = "desktop" | "native" | "web";
 /** The surfaces whose consent finishes in the app that started it. */
@@ -20,11 +23,31 @@ export type IntegrationAuthorizationAppSurface = Exclude<
  */
 export const IntegrationAuthorizationReturnProofSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
 
+/**
+ * The form a held consent's page posts to its desktop app's listener. The proof
+ * travels only in the body, so a failed return leaves it in no address bar.
+ */
+export interface IntegrationAuthorizationAppHandoff {
+  readonly action: string;
+  readonly fields: {
+    readonly attempt_id: string;
+    readonly deployment_id: string;
+    readonly return: string;
+  };
+}
+
 export type IntegrationAuthorizationBrowserReturn =
   | { readonly kind: "completion-page" }
   | { readonly kind: "redirect"; readonly location: string }
-  /** A page that offers the app return; desktop browsers open app links only when the person agrees. */
-  | { readonly kind: "open-app"; readonly location: string };
+  /**
+   * A page that offers the app return; desktop browsers open app links only when
+   * the person agrees. `handoff` is the automatic route to the app, when it has one.
+   */
+  | {
+      readonly kind: "open-app";
+      readonly location: string;
+      readonly handoff?: IntegrationAuthorizationAppHandoff;
+    };
 
 export interface IntegrationAuthorizationAppReturn {
   readonly attemptId: z.infer<typeof IntegrationAuthorizationAttemptIdSchema>;
@@ -33,13 +56,16 @@ export interface IntegrationAuthorizationAppReturn {
   readonly returnProof: string | null;
 }
 
+/** The one path a return uses, on both the app link and the loopback listener. */
+export const integrationAuthorizationReturnPath = "/oauth/integration-callback";
+
 /** The fixed app return each native surface registers with its operating system. */
 export function integrationAuthorizationAppReturnBase(
   surface: IntegrationAuthorizationAppSurface,
 ): string {
   const applicationId =
     surface === "desktop" ? opensteerDesktopApplicationId : opensteerMobileApplicationId;
-  return `${applicationId}:/oauth/integration-callback`;
+  return `${applicationId}:${integrationAuthorizationReturnPath}`;
 }
 
 /**
@@ -127,6 +153,8 @@ export function parseIntegrationAuthorizationAppReturn(
  * with only the durable attempt id.
  */
 export function integrationAuthorizationBrowserReturn(input: {
+  /** The sealed port of a desktop consent; never from the browser. */
+  readonly appReturnPort?: number;
   readonly attemptId: string;
   readonly canonicalOrigin: string;
   readonly deploymentId?: string;
@@ -141,14 +169,25 @@ export function integrationAuthorizationBrowserReturn(input: {
   if (!input.deploymentId) {
     throw new TypeError("An app integration return requires a Deployment identity");
   }
+  const attemptId = IntegrationAuthorizationAttemptIdSchema.parse(input.attemptId);
+  const deploymentId = DeploymentIdSchema.parse(input.deploymentId);
   const location = buildIntegrationAuthorizationAppReturn(input.surface, {
-    attemptId: IntegrationAuthorizationAttemptIdSchema.parse(input.attemptId),
-    deploymentId: DeploymentIdSchema.parse(input.deploymentId),
+    attemptId,
+    deploymentId,
     returnProof: input.returnProof ?? null,
   });
-  return input.surface === "desktop"
-    ? { kind: "open-app", location }
-    : { kind: "redirect", location };
+  if (input.surface !== "desktop") return { kind: "redirect", location };
+  if (input.appReturnPort === undefined || input.returnProof === undefined)
+    return { kind: "open-app", location };
+  const port = IntegrationAuthorizationReturnPortSchema.parse(input.appReturnPort);
+  return {
+    kind: "open-app",
+    location,
+    handoff: {
+      action: `http://127.0.0.1:${port}${integrationAuthorizationReturnPath}`,
+      fields: { attempt_id: attemptId, deployment_id: deploymentId, return: input.returnProof },
+    },
+  };
 }
 
 function webReturn(input: {

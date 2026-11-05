@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { once } from "node:events";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { z } from "zod";
+import { requestPendingStopText } from "@opensteer/shared/requestParking";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { closeHttpServerNow } from "@opensteer/shared/httpServer";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -172,6 +173,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
       },
     },
     store: {
+      requests: { get: async () => null },
       getThreadForOwner: async (id) => ({ ...thread, id }),
       findMainWorkspaceForOwner: async () => ({ homeThreadId: chatThreadId }) as never,
       // Eval Runs are never voice calls, so no tool is withheld from them.
@@ -370,7 +372,15 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
             }
             calls[index] = { tool: name, args, valid, result };
             return {
-              content: [{ type: "text", text: JSON.stringify(result) }],
+              content: [
+                { type: "text", text: JSON.stringify(result) },
+                ...(name !== "integration_call" &&
+                isRecord(result) &&
+                result.status === "pending" &&
+                typeof result.requestId === "string"
+                  ? [{ type: "text", text: requestPendingStopText }]
+                  : []),
+              ],
               ...(name !== "integration_describe" && isRecord(result)
                 ? { structuredContent: result }
                 : {}),

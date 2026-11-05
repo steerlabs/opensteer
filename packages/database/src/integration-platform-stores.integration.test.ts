@@ -610,6 +610,34 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     },
   });
 
+  it("reads one account identity within its owner", async ({ storeFixture }) => {
+    const { store, platform, database } = storeFixture;
+    const ownerUserId = await store.createUser("Account owner");
+    const otherOwner = await store.createUser("Other account owner");
+    const connectionId = createIntegrationId("connection");
+    const credentialId = createId("credential");
+    await insertCredential(database, credentialId, ownerUserId);
+    await insertProviderConnection(database, {
+      connectionId,
+      credentialId,
+      definitionId: "account-label",
+      ownerUserId,
+    });
+    await expect(platform.getConnectionAccount({ connectionId, ownerUserId })).resolves.toEqual({
+      displayName: "Alex",
+      accountIdentifier: "alex@example.com",
+    });
+    await expect(
+      platform.getConnectionAccount({ connectionId, ownerUserId: otherOwner }),
+    ).resolves.toBeNull();
+    await expect(
+      platform.getConnectionAccount({
+        connectionId: createIntegrationId("connection"),
+        ownerUserId,
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("orders provider tool reconciliation with grant creation without a deadlock", async ({
     storeFixture,
   }) => {
@@ -737,8 +765,9 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     storeFixture,
   }) => {
     const { store, platform, database } = storeFixture;
-    const userId = await store.createUser("Catalog owner");
-    const workspace = await createWorkspace(store, userId, "catalog-uninstall");
+    const run = await runningRunFixture(store, "catalog-uninstall");
+    const userId = run.userId;
+    const workspace = { id: run.workspaceId };
     const installationId = createIntegrationId("installation");
     const serverId = createIntegrationId("server");
     const tool = discoveredTool(createIntegrationId("tool"));
@@ -795,6 +824,21 @@ integration.sequential("PostgreSQL integration uninstall", () => {
         workspaceId: workspace.id,
       })
       .executeTakeFirstOrThrow();
+
+    await database
+      .updateTable("integrationConnections")
+      .set({ provider: "records" })
+      .where("id", "=", connectionId)
+      .execute();
+    const inventory = await platform.listDiscoveryInventory({
+      ownerUserId: userId,
+      workspaceId: workspace.id,
+      threadId: run.threadId,
+      providerAuthorizations: {},
+    });
+    expect(inventory[0]?.accounts).toContainEqual(
+      expect.objectContaining({ connectionId, account: "Alex (alex@example.com)" }),
+    );
 
     const mutation = await platform.uninstall({
       actorUserId: userId,
@@ -2528,6 +2572,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     storeFixture,
   }) => {
     const {
+      database,
       store,
       fixture,
       setApprovedComputerConnection,
@@ -2580,10 +2625,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
       status: "pending",
     });
     expect(
-      (await platform.requests.listPendingContinuations()).some(
-        ({ request }) => request.id === opened.request.id,
-      ),
-    ).toBe(false);
+      await database
+        .selectFrom("requestContinuations")
+        .selectAll()
+        .where("requestId", "=", opened.request.id)
+        .execute(),
+    ).toEqual([]);
     const widened = await connect(setup.runnerId, "read-write");
     expect(widened.requestEvents.map((event) => event.type)).toEqual(["request.resolved"]);
     await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
@@ -2843,6 +2890,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     storeFixture,
   }) => {
     const {
+      database,
       store,
       fixture,
       setApprovedComputerConnection,
@@ -2966,10 +3014,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
             status: "pending",
           });
           expect(
-            (await platform.requests.listPendingContinuations()).some(
-              ({ request }) => request.id === opened.request.id,
-            ),
-          ).toBe(false);
+            await database
+              .selectFrom("requestContinuations")
+              .selectAll()
+              .where("requestId", "=", opened.request.id)
+              .execute(),
+          ).toEqual([]);
         }
       }
     }
@@ -5568,13 +5618,14 @@ integration.sequential("PostgreSQL computer app connections", () => {
       sessionId,
       deviceLabel: "iPhone",
     });
-    // The Thread hears about it through the same continuation an
-    // `integration.access` answer produces.
+    await expect(platform.requests.listPendingContinuations()).resolves.toEqual([]);
     await expect(
-      platform.requests
-        .listPendingContinuations()
-        .then((entries) => entries.map(({ request }) => request.id)),
-    ).resolves.toContain(opened.request.id);
+      database
+        .selectFrom("requestContinuations")
+        .select("status")
+        .where("requestId", "=", opened.request.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "waiting" });
     await expect(platform.listComputerAppSetupRequests(run.userId)).resolves.toEqual([]);
   });
 

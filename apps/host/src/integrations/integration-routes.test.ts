@@ -14,6 +14,33 @@ afterEach(async () => {
 });
 
 describe("integration routes", () => {
+  it("carries a desktop return port to the service", async () => {
+    const ownerUserId = createId("user");
+    const beginAuthorization = vi.fn(async () => ({
+      attemptId: "ioa_00000000-0000-4000-8000-000000000001",
+      expiresAt: new Date("2030-01-01T00:00:00Z"),
+      launchTicket: "t".repeat(43),
+    }));
+    await handleIntegrationCommand(
+      { integrations: { beginAuthorization } } as never,
+      {
+        type: "integration.authorization.begin",
+        idempotencyKey: "begin-port",
+        input: {
+          appReturnPort: 48_203,
+          definitionId: "google",
+          finish: "app",
+          returnPath: "/integrations",
+          surface: "desktop",
+        },
+      },
+      testHostApiContext(ownerUserId),
+    );
+    expect(beginAuthorization).toHaveBeenCalledWith(
+      expect.objectContaining({ appReturnPort: 48_203, finish: "app" }),
+    );
+  });
+
   it.each([undefined, "app"] as const)("forwards the requested finish mode: %s", async (finish) => {
     const ownerUserId = createId("user");
     const attemptId = createIntegrationId("oauthAttempt");

@@ -165,6 +165,20 @@ export async function finalizeRunTransaction(
         threadId: run.threadId,
       });
     }
+    if (
+      await transaction
+        .selectFrom("requests")
+        .select("id")
+        .where("originatingRunId", "=", run.id)
+        .where("mode", "=", "durable")
+        .where("status", "=", "pending")
+        .executeTakeFirst()
+    ) {
+      await enqueueChannelConversationStatus(transaction, {
+        conversationId: replyTarget.conversationId,
+        text: `The agent needs your input before it can continue. Open the Thread in Opensteer: ${input.links.threadUrl(run.threadId)}`,
+      });
+    }
   } else if (replyTarget) {
     const threadUrl = input.links.threadUrl(run.threadId);
     await enqueueChannelConversationStatus(transaction, {

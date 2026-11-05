@@ -438,6 +438,15 @@ describe("McpOAuthService", () => {
     { reconnect: false, relay: true, finish: "app", oldAccount: true },
     { reconnect: false, relay: true, finish: "app", changedLink: true },
     { reconnect: false, relay: false, finish: "app", surface: "desktop" },
+    { reconnect: false, relay: true, finish: "app", surface: "desktop", appReturnPort: 48_203 },
+    {
+      reconnect: false,
+      relay: true,
+      finish: "app",
+      surface: "desktop",
+      appReturnPort: 48_203,
+      portlessAccount: true,
+    },
   ] as const)("authorizes a new or existing MCP account (%j)", async (scenario) => {
     const { reconnect, relay } = scenario;
     const badIssuer = "badIssuer" in scenario && scenario.badIssuer;
@@ -578,6 +587,7 @@ describe("McpOAuthService", () => {
       metadata: vi.fn(async () => ({
         mcpCallbackRelay: 1,
         ...(oldAccount ? {} : { appFinish: 1 }),
+        ...("portlessAccount" in scenario ? {} : { appReturnPort: 1 }),
       })),
       createCallbackRelay: vi.fn(
         async (input: { hostPublicKey: string; attemptId: string; expiresAt: string }) => {
@@ -656,6 +666,7 @@ describe("McpOAuthService", () => {
         serverId,
         surface: surface ?? "desktop",
         ...(finish ? { finish: "app" as const } : {}),
+        ...("appReturnPort" in scenario ? { appReturnPort: scenario.appReturnPort } : {}),
       });
     if (oldAccount) {
       await expect(begin()).rejects.toMatchObject({
@@ -670,6 +681,10 @@ describe("McpOAuthService", () => {
     if (relay) {
       expect(Object.hasOwn(broker.createCallbackRelay.mock.calls[0]![0], "finish")).toBe(!!finish);
       expect(JSON.parse(attemptPayload!.payload!).relay.finish).toBe(finish);
+      expect(
+        (broker.createCallbackRelay.mock.calls[0]![0] as { appReturnPort?: number }).appReturnPort,
+      ).toBe("appReturnPort" in scenario && !("portlessAccount" in scenario) ? 48_203 : undefined);
+      expect(attemptPayload!.payload).not.toContain("appReturnPort");
     }
     if ("changedLink" in scenario) {
       binding.linkGeneration = "h".repeat(43);

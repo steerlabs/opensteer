@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { OAuthTokenResponseIdentitySchema } from "@opensteer/integration-core";
+import {
+  IntegrationAuthorizationReturnPortSchema,
+  OAuthTokenResponseIdentitySchema,
+} from "@opensteer/integration-core";
 
 const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const digestPattern = /^[A-Za-z0-9_-]{43}$/u;
@@ -163,6 +166,8 @@ export const CreateHostedOAuthAttemptRequestSchema = z.strictObject({
   accountSubject: OAuthBrokerAccountSubjectSchema,
   clientSurface: OAuthBrokerClientSurfaceSchema.default("web"),
   finish: OAuthBrokerFinishSchema.optional(),
+  /** A desktop app finish's listener port, sealed here; the browser never chooses it. */
+  appReturnPort: IntegrationAuthorizationReturnPortSchema.optional(),
   attemptId: HostedOAuthAttemptIdSchema,
   authorizationDigest: OAuthBrokerDigestSchema,
   definitionId: z.string().min(1).max(64),
@@ -179,6 +184,8 @@ const CreateProviderOAuthCallbackRelayRequestSchema = z.strictObject({
   accountSubject: OAuthBrokerAccountSubjectSchema,
   clientSurface: OAuthBrokerClientSurfaceSchema.default("web"),
   finish: OAuthBrokerFinishSchema.optional(),
+  /** A desktop app finish's listener port, sealed here; the browser never chooses it. */
+  appReturnPort: IntegrationAuthorizationReturnPortSchema.optional(),
   attemptId: HostedOAuthAttemptIdSchema,
   authorizationDigest: OAuthBrokerDigestSchema,
   authorizationUrl: z.url().max(262_144),
@@ -324,6 +331,8 @@ export const OAuthBrokerPublicMetadataSchema = z
     mcpCallbackRelay: z.literal(1).optional(),
     /** The broker accepts `finish: "app"` attempts and their `/return`. */
     appFinish: z.literal(1).optional(),
+    /** The broker accepts `appReturnPort`; a Host drops the port otherwise. */
+    appReturnPort: z.literal(1).optional(),
     encryptionPublicKey: OAuthBrokerPublicKeySchema,
     installationUrls: z.record(OAuthBrokerProviderSchema, z.url()).default({}),
     issuer: z.url(),
