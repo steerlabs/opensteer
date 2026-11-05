@@ -142,7 +142,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     executablePath: executable,
     headless: false,
     args: [
-      "--trace-startup=toplevel,cc,viz,gpu,renderer.scheduler,disabled-by-default-renderer.scheduler",
+      "--trace-startup=toplevel,cc,viz,gpu,blink,devtools.timeline,renderer.scheduler,disabled-by-default-renderer.scheduler",
       "--trace-startup-duration=30",
       "--trace-startup-record-mode=record-continuously",
       "--trace-startup-format=json",
@@ -223,7 +223,9 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
                 visible: document.visibilityState,
                 focus: document.hasFocus(),
                 bounds: [
-                  ...document.querySelectorAll('button[aria-label="Hide the conversation"]'),
+                  ...document.querySelectorAll(
+                    '.side-tab[data-group="web"] .side-tab__main,button[aria-label="Hide the conversation"]',
+                  ),
                 ].map((e) => {
                   const r = e.getBoundingClientRect();
                   return [r.x, r.y, r.width, r.height];
@@ -346,6 +348,15 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
           const sidebar = page.getByRole("button", { name: "Open sidebar", exact: true });
           if (await sidebar.isVisible()) await sidebar.click();
           record(index, "startup.tab-control");
+          kit.artifacts.json(
+            `cases/popups/startup-${index}-tab-start.json`,
+            await profiler.send("Runtime.evaluate", {
+              expression:
+                "JSON.stringify({now:performance.now(),timeOrigin:performance.timeOrigin,diagnostic:window.startupDiagnostic})",
+              returnByValue: true,
+              timeout: 1000,
+            }),
+          );
           await page
             .locator('.side-tab[data-group="web"] .side-tab__main')
             .filter({ hasText: "Browser popup fixture" })
