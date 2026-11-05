@@ -19,7 +19,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("../voice/controls.js", () => ({
   VoiceDock: () => null,
   VoiceMic: () => null,
-  useVoiceAvailable: () => false,
 }));
 
 import {
@@ -270,6 +269,27 @@ describe("Expo engine/account/model journeys", () => {
       { expectedProviderSessionId: "session-1" },
     );
     expect(access).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Voice Thread on its own Codex account, with no engine to switch to", async () => {
+    await mount();
+    await act(async () => move({ ...snapshot, voiceThreadId: original.id }));
+    expect(document.querySelector('[aria-label^="Engine:"]')).toBeNull();
+    expect(button(cursor.models[0]!.displayName)).toBeUndefined();
+    await press(codex.models[1]!.displayName);
+    expect(execution).toHaveBeenCalledExactlyOnceWith(original.id, {
+      harnessInstanceId: codex.harnessInstanceId,
+      modelSelection: expect.objectContaining({ modelId: codex.models[1]!.modelId }),
+    });
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('[aria-label="This conversation"]')!.click(),
+    );
+    const others = executionAccounts(placements, {
+      environmentId: codex.environmentId,
+      harnessInstanceId: codex.harnessInstanceId,
+      modelSelection: codex.modelSelection,
+    }).find((row) => row.placement.harnessInstanceId === second.harnessInstanceId)!;
+    expect(button(others.title)).toBeUndefined();
   });
 
   it("restores options for the account and model rather than reusing same-model current values", async () => {

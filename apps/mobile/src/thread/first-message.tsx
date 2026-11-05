@@ -1,4 +1,5 @@
-import { VoiceDock, VoiceMic, useVoiceAvailable } from "../voice/controls.js";
+import { VoiceDock, VoiceMic } from "../voice/controls.js";
+import { useVoiceAvailable } from "../voice/use-voice-value.js";
 import {
   accountGettingReady,
   accessModeConflict,

@@ -183,11 +183,8 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
   }, []);
 
   const placements = useMemo(
-    () =>
-      threadPlacementOptions(props.snapshot.environments, props.snapshot.harnesses).filter(
-        (placement) => placement.environmentId === props.thread.environmentId,
-      ),
-    [props.snapshot.environments, props.snapshot.harnesses, props.thread.environmentId],
+    () => threadPlacements(props.snapshot, props.thread),
+    [props.snapshot, props.thread],
   );
   const disabledReason = settingsDisabledReason({
     canRespond: canRespondToRequests(props.snapshot),
@@ -257,12 +254,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
       thread,
     });
     if (reason !== null) return { error: reason };
-    return {
-      placements: threadPlacementOptions(snapshot.environments, snapshot.harnesses).filter(
-        (placement) => placement.environmentId === thread.environmentId,
-      ),
-      thread,
-    };
+    return { placements: threadPlacements(snapshot, thread), thread };
   }, [client, props.deploymentId, props.hostClient, props.snapshot.user?.id, props.threadId]);
 
   /**
@@ -637,7 +629,24 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
       onConversation={() => goToStep({ kind: "conversation" })}
       picker={picker}
       query={query}
+      engineFixed={props.snapshot.voiceThreadId === props.threadId}
     />
+  );
+}
+
+/**
+ * Where a Thread can run from its own computer. Codex hands speech to a turn on
+ * the Voice Thread itself, so that Thread stays on the harness it has.
+ */
+function threadPlacements(
+  snapshot: Pick<HostSnapshot, "environments" | "harnesses" | "voiceThreadId">,
+  thread: ThreadSummary,
+): readonly ThreadPlacementOption[] {
+  return threadPlacementOptions(snapshot.environments, snapshot.harnesses).filter(
+    (placement) =>
+      placement.environmentId === thread.environmentId &&
+      (snapshot.voiceThreadId !== thread.id ||
+        placement.harnessInstanceId === thread.harnessInstanceId),
   );
 }
 
@@ -751,6 +760,8 @@ function ModelPickerList(
   props: CurrentSettingsProps & {
     readonly applyingKey: string | null;
     readonly disabledReason: string | null;
+    /** This Thread cannot change engines, so the picker offers only models. */
+    readonly engineFixed?: boolean;
     readonly failure: string | null;
     readonly footer: ReactNode;
     readonly hostClient: HostClient;
@@ -917,39 +928,41 @@ function ModelPickerList(
               maxFontSizeMultiplier={controlFontScaleLimit}
             />
           ) : null}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={bleed}
-            contentContainerStyle={bleedContent}
-          >
-            {[...picker.menu.ready, ...picker.menu.unavailable].map((engine) => {
-              const selected = picker.menu.browsed?.driverKind === engine.driverKind;
-              return (
-                <Pressable
-                  key={engine.driverKind}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected }}
-                  accessibilityLabel={`Engine: ${engine.name}${engine.note ? `, ${engine.note}` : ""}`}
-                  onPress={() => props.onEngine(engine.driverKind)}
-                  style={({ pressed }) => [
-                    styles.chip,
-                    selected && styles.chipSelected,
-                    pressed && styles.chipPressed,
-                    engine.status !== "ready" && styles.dimmed,
-                  ]}
-                >
-                  <EngineMark
-                    driverKind={engine.driverKind}
-                    tint={selected ? color.text : color.textSoft}
-                  />
-                  <AppText role="secondaryMedium" tone={selected ? "default" : "soft"}>
-                    {engine.name}
-                  </AppText>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
+          {props.engineFixed === true ? null : (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={bleed}
+              contentContainerStyle={bleedContent}
+            >
+              {[...picker.menu.ready, ...picker.menu.unavailable].map((engine) => {
+                const selected = picker.menu.browsed?.driverKind === engine.driverKind;
+                return (
+                  <Pressable
+                    key={engine.driverKind}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    accessibilityLabel={`Engine: ${engine.name}${engine.note ? `, ${engine.note}` : ""}`}
+                    onPress={() => props.onEngine(engine.driverKind)}
+                    style={({ pressed }) => [
+                      styles.chip,
+                      selected && styles.chipSelected,
+                      pressed && styles.chipPressed,
+                      engine.status !== "ready" && styles.dimmed,
+                    ]}
+                  >
+                    <EngineMark
+                      driverKind={engine.driverKind}
+                      tint={selected ? color.text : color.textSoft}
+                    />
+                    <AppText role="secondaryMedium" tone={selected ? "default" : "soft"}>
+                      {engine.name}
+                    </AppText>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          )}
           {picker.unavailableCurrent ? (
             <Notice
               title={picker.unavailableCurrent.title}

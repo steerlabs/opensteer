@@ -167,6 +167,8 @@ export interface VoiceControls {
   subscribeShown?(listener: () => void): () => void;
   start(): Promise<void>;
   stop(): unknown;
+  /** The person's Voice Thread, created on first need; null when it cannot be opened. */
+  openThread(): Promise<string | null>;
   setMuted(muted: boolean): void;
   dismissNotice(): void;
   openMicrophoneSettings?(): void;

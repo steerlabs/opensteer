@@ -52,10 +52,6 @@ vi.mock("../ui/mobile-client-context.js", () => ({
 vi.mock("../dictation/context.js", () => ({ useDictation: () => dictation }));
 vi.mock("../platform/voice.js", () => ({ voiceMediaPort: null }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => crypto.randomUUID() }));
-vi.mock("./controls.js", async () => {
-  const { createContext } = await vi.importActual<typeof import("react")>("react");
-  return { VoiceContext: createContext(null) };
-});
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | null = null;
 afterEach(async () => {
