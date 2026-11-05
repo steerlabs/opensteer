@@ -73,6 +73,24 @@ export function appOriginRequestHeaders(
   return forwarded;
 }
 
+/**
+ * An app sees itself where it listens. Dev servers and frameworks refuse unknown Host values, and
+ * CSRF checks compare Origin with Host, so both describe loopback. The gateway has already
+ * refused other origins, so rewriting a same-origin request hides nothing from the app.
+ */
+export function appOriginLoopbackHeaders(
+  headers: Record<string, string | string[]>,
+  mode: AppOriginMode,
+  port: number,
+): void {
+  const loopback = `http://127.0.0.1:${port}`;
+  headers.host = `127.0.0.1:${port}`;
+  if (headers.origin === mode.origin) headers.origin = loopback;
+  const referer = headers.referer;
+  if (typeof referer === "string" && (referer + "/").startsWith(`${mode.origin}/`))
+    headers.referer = loopback + referer.slice(mode.origin.length);
+}
+
 export function appOriginResponseHeaders(
   headers: IncomingHttpHeaders,
   mode: AppOriginMode,
@@ -168,7 +186,8 @@ export async function requestAppHttp(input: {
   delete headers["accept-encoding"];
   headers["accept-encoding"] = "identity";
   if (!input.originMode) headers["x-forwarded-prefix"] = input.prefix;
-  headers.host = input.originMode ? new URL(input.originMode.origin).host : `127.0.0.1:${port}`;
+  if (input.originMode) appOriginLoopbackHeaders(headers, input.originMode, port);
+  else headers.host = `127.0.0.1:${port}`;
   headers.connection = "close";
   const response = await new Promise<import("node:http").IncomingMessage>((resolve, reject) => {
     const upstream = httpRequest(

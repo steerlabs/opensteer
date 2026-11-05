@@ -67,6 +67,10 @@ we reproduced:
 - **Responses.** `Clear-Site-Data` is removed, since Chromium applies it to the whole registered
   domain. So are `X-Frame-Options` and the app's CSP, which would break framing and the bootstrap.
 
+A server app sees itself at `http://127.0.0.1:$PORT`: `Host`, and a same-origin `Origin` and
+`Referer`, all describe loopback. Dev servers and frameworks refuse unknown hosts, and CSRF checks
+compare `Origin` with `Host`, so sending the public address breaks one or the other.
+
 Cookie flooding remains: a bad page can make a browser send too many cookies for the whole domain.
 It steals nothing, and Connect neighbors could already do it. Apps can move to their own domain
 later by changing the origin the Host chooses and the router; logins and browser storage stay behind.

@@ -250,12 +250,14 @@ it("returns 413 for an oversized chunked upload without destroying the client's 
   }
 });
 
-it("preserves the public app authority for framework Origin and Referer checks", async () => {
+it("shows an app its loopback self so host allowlists and CSRF checks both pass", async () => {
   const origin = "https://app.example.test";
   const server = createServer((request, response) => {
+    const local = `http://${request.headers.host}`;
     const valid =
-      request.headers.origin === `https://${request.headers.host}` &&
-      request.headers.referer === `${origin}/form`;
+      request.headers.host?.startsWith("127.0.0.1:") &&
+      request.headers.origin === local &&
+      request.headers.referer === `${local}/form`;
     response.writeHead(valid ? 200 : 403);
     response.end();
   });

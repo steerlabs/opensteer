@@ -22,6 +22,7 @@ import { z } from "zod";
 import {
   appGatewayCookieName,
   appOriginHeaders,
+  appOriginLoopbackHeaders,
   appOriginRequestHeaders,
   appOriginResponseHeaders,
   type AppOriginMode,
@@ -218,7 +219,7 @@ export class AppGateway {
         return;
       }
       const headers = appOriginRequestHeaders(request.headers);
-      headers.host = new URL(mode.origin).host;
+      appOriginLoopbackHeaders(headers, mode, port);
       headers.connection = "Upgrade";
       headers.upgrade = request.headers.upgrade ?? "websocket";
       const upstream = httpRequest({
