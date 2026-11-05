@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./requestParking": "./src/requestParking.ts",
+    "./requestGuidance": "./src/requestGuidance.ts",
     "./sessionDevice": "./src/sessionDevice.ts",
     "./plist": "./src/plist.ts",
     "./advertisedJsonSchema": "./src/advertisedJsonSchema.ts",

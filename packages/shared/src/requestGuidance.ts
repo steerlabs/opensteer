@@ -1,0 +1,2 @@
+export const requestPendingGuidance =
+  "A Request is pending; it grants no access. Briefly tell the person what you asked for. Continue work that does not depend on the answer; do not use the requested access, poll, repeat the Request or route around it (including Guest or another account). End your turn when no independent work remains. After this turn ends and its Requests settle, Opensteer delivers their outcomes together. request_list shows status, not the answer, so do not poll it.";

@@ -132,7 +132,6 @@ export const CaseSchema = z.strictObject({
     order: z.array(z.string()).default([]),
     minCalls: z.record(z.string(), z.number().int().nonnegative()).default({}),
     maxCalls: z.record(z.string(), z.number().int().nonnegative()).default({}),
-    endAfterPendingRequest: z.boolean().default(false),
     noAssistantText: z.boolean().default(false),
     textMust: z.array(regex).default([]),
     textMustNot: z.array(regex).default([]),

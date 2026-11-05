@@ -114,6 +114,17 @@ describeStore("Request continuation admission", (it) => {
         .where("id", "=", fixture.run.id)
         .execute();
       await open(store, fixture, "needs-profile");
+      await open(store, fixture, "needs-gmail");
+      const earlyNotices = await database
+        .selectFrom("channelDeliveries")
+        .select("id")
+        .where("conversationId", "=", channel.conversationId)
+        .where("kind", "=", "status")
+        .execute();
+      expect(
+        earlyNotices,
+        "The channel must hear the Request while the Run is working",
+      ).toHaveLength(1);
       if (narration)
         await store.commitRunnerEvent({
           environmentId: fixture.environmentId,
@@ -138,9 +149,7 @@ describeStore("Request continuation admission", (it) => {
         .where("kind", "=", "status")
         .execute();
       expect(notices).toHaveLength(1);
-      expect(JSON.stringify(notices)).toContain(
-        "The agent needs your input before it can continue.",
-      );
+      expect(JSON.stringify(notices)).toContain("The agent has asked for your input.");
       expect(JSON.stringify(notices)).toContain(fixture.thread.id);
     });
   }
@@ -159,6 +168,13 @@ describeStore("Request continuation admission", (it) => {
         response: { kind: "external", value: { decision: "declined" } },
       });
     await decline(secondHost, first.request.id);
+    const visible = await store.requests.visiblePage({
+      originatingThreadId: fixture.thread.id,
+      targetWorkspaceId: fixture.workspace.id,
+      limit: 50,
+    });
+    expect(visible.requests.find(({ id }) => id === first.request.id)?.status).toBe("declined");
+    expect(visible.requests.find(({ id }) => id === second.request.id)?.status).toBe("pending");
     expect(await store.requests.listPendingContinuations()).toEqual([]);
     await finish(store, fixture);
     expect(await secondHost.requests.listPendingContinuations()).toEqual([]);

@@ -167,7 +167,7 @@ export const integration_request = defineAgentTool({
   name: "integration_request",
   title: "Request integration access",
   description:
-    'Ask the person for setup/reconnection/access. Installed: integration + access + reason; catalog item: catalog instead. Omit access only for installation alone. Runs may target reachable workspaceId; programs use their Workspace. Mac app: kind: "computer-app", runnerId, app, access, reason; phone: omit app. Returns requestId/status/replayed. Pending grants no access and stops the Run. Programs receive no continuation. Never repeat pending/declined asks. Credentials belong in the Request UI.',
+    'Ask the person for setup/reconnection/access. Installed: integration + access + reason; catalog item: catalog instead. Omit access only for installation alone. Runs may target reachable workspaceId; programs use their Workspace. Mac app: kind: "computer-app", runnerId, app, access, reason; phone: omit app. Returns requestId/status/replayed. Pending grants no access; continue only independent work. Programs receive no continuation. Never repeat pending/declined asks. Credentials belong in the Request UI.',
   input: RequestInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: IntegrationRequestOutputSchema,
   access: "write",

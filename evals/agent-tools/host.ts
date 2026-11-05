@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { once } from "node:events";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { z } from "zod";
-import { requestPendingStopText } from "@opensteer/shared/requestParking";
+import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { closeHttpServerNow } from "@opensteer/shared/httpServer";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -378,7 +378,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
                 isRecord(result) &&
                 result.status === "pending" &&
                 typeof result.requestId === "string"
-                  ? [{ type: "text", text: requestPendingStopText }]
+                  ? [{ type: "text", text: requestPendingGuidance }]
                   : []),
               ],
               ...(name !== "integration_describe" && isRecord(result)

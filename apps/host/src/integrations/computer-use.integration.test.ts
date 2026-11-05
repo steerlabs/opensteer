@@ -248,7 +248,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     expect(requested).toMatchObject({
       status: "pending",
       nextAction:
-        "Approval for Alex's Mac is pending; the owner can allow or decline from any Opensteer app. Pending stops the Run.",
+        "Approval for Alex's Mac is pending; the owner can allow or decline from any Opensteer app. Pending permits only independent work; do not poll, repeat or route around the Request.",
     });
     const [setup] = await test.persistence.listComputerAppSetupRequests(test.task.userId);
     expect(setup).toMatchObject({ runnerId: test.input.runnerId, ownerUserId: test.task.userId });
