@@ -3368,7 +3368,16 @@ async function createRequestInTransaction(
       .select("replyTarget")
       .where("id", "=", canonical.originatingRunId)
       .executeTakeFirstOrThrow();
-    if (run.replyTarget) {
+    // One notice covers a Run's open asks: they all wait in the same Thread.
+    const sibling = await transaction
+      .selectFrom("requests")
+      .select("id")
+      .where("originatingRunId", "=", canonical.originatingRunId)
+      .where("mode", "=", "durable")
+      .where("status", "=", "pending")
+      .where("id", "!=", canonical.id)
+      .executeTakeFirst();
+    if (run.replyTarget && !sibling) {
       const target = ReplyTargetSchema.parse(run.replyTarget);
       await enqueueChannelConversationStatus(transaction, {
         conversationId: target.conversationId,

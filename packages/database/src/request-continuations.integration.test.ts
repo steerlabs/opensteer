@@ -114,6 +114,7 @@ describeStore("Request continuation admission", (it) => {
         .where("id", "=", fixture.run.id)
         .execute();
       await open(store, fixture, "needs-profile");
+      await open(store, fixture, "needs-gmail");
       const earlyNotices = await database
         .selectFrom("channelDeliveries")
         .select("id")
