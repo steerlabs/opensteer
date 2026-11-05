@@ -2544,6 +2544,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     storeFixture,
   }) => {
     const {
+      database,
       store,
       fixture,
       setApprovedComputerConnection,
@@ -2596,10 +2597,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
       status: "pending",
     });
     expect(
-      (await platform.requests.listPendingContinuations()).some(
-        ({ request }) => request.id === opened.request.id,
-      ),
-    ).toBe(false);
+      await database
+        .selectFrom("requestContinuations")
+        .selectAll()
+        .where("requestId", "=", opened.request.id)
+        .execute(),
+    ).toEqual([]);
     const widened = await connect(setup.runnerId, "read-write");
     expect(widened.requestEvents.map((event) => event.type)).toEqual(["request.resolved"]);
     await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
@@ -2859,6 +2862,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     storeFixture,
   }) => {
     const {
+      database,
       store,
       fixture,
       setApprovedComputerConnection,
@@ -2982,10 +2986,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
             status: "pending",
           });
           expect(
-            (await platform.requests.listPendingContinuations()).some(
-              ({ request }) => request.id === opened.request.id,
-            ),
-          ).toBe(false);
+            await database
+              .selectFrom("requestContinuations")
+              .selectAll()
+              .where("requestId", "=", opened.request.id)
+              .execute(),
+          ).toEqual([]);
         }
       }
     }

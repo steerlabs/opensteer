@@ -38,6 +38,7 @@ import {
   usageRecord,
   type UsageRecord,
 } from "./codex-usage.test-support.js";
+import { ContinuationService } from "./continuation-service.js";
 import { waitForBackgroundWork as waitFor } from "./background-work.test-support.js";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 
@@ -403,6 +404,150 @@ integration("Background work", () => {
     },
   );
 
+  it.each([false, true])(
+    "continues a fast answer when the turn ends (background=%s), without the polling tick",
+    async (background) => {
+      const finish = Promise.withResolvers<void>();
+      const turnReady = Promise.withResolvers<void>();
+      const endTurn = Promise.withResolvers<void>();
+      let service: ContinuationService | undefined;
+      const start = vi.spyOn(ContinuationService.prototype, "start").mockImplementation(function (
+        this: ContinuationService,
+      ) {
+        service = this;
+        this.notify();
+      });
+      let opening = true;
+      try {
+        stack = await startVerticalStack({
+          catalogTimeoutMs: 30_000,
+          databaseUrl: databaseUrl!,
+          harnessInstance: {
+            config: {},
+            driverKind: "claude",
+            sourceId: "anthropic",
+            stateKind: "isolated",
+          },
+          harnesses: () => {
+            const registry = new HarnessRegistry();
+            registry.registerDriver(
+              new ClaudeHarnessDriver({
+                executable: process.execPath,
+                sdk: backgroundClaudeSdk(finish.promise, {
+                  background,
+                  beforeFirstResult: async () => {
+                    if (!opening) return;
+                    opening = false;
+                    turnReady.resolve();
+                    await endTurn.promise;
+                  },
+                }),
+              }),
+            );
+            return registry;
+          },
+          harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
+          runTimeoutMs: 60_000,
+        });
+        const active = stack;
+        const model = active.catalog.models[0]!;
+        const threadId = await active.createThread({
+          modelSelection: ModelSelectionSchema.parse({
+            modelId: model.modelId,
+            options: {},
+            providerId: model.providerId,
+          }),
+          title: "Fast Request answer",
+          workspaceId: active.mainWorkspaceId,
+        });
+        const runId = (await active.queueMessage({ text: "Research in the background", threadId }))
+          .runId!;
+        await withTimeout(turnReady.promise, 8_000, {
+          timeoutError: () => new Error("The fixture did not reach its first turn result"),
+        });
+        const run = await vi.waitFor(
+          async () =>
+            active.host.store.database
+              .selectFrom("runs")
+              .selectAll()
+              .where("id", "=", runId)
+              .executeTakeFirstOrThrow(),
+          { timeout: 5_000, interval: 20 },
+        );
+        const request = await active.host.store.requests.create({
+          callId: "fast-background-answer",
+          kind: "browser.access",
+          mode: "durable",
+          originatingRunId: run.id,
+          originatingThreadId: run.threadId,
+          originatingWorkspaceId: active.mainWorkspaceId,
+          targetWorkspaceId: active.mainWorkspaceId,
+          requestedBy: run.requestedBy,
+          requiredActor: "requester",
+          payload: {
+            kind: "browser.access",
+            reason: "Read email",
+            suggestion: { kind: "user_choice" },
+          },
+          presentation: {
+            kind: "external",
+            title: "Choose a profile",
+            subject: { kind: "workspace", id: active.mainWorkspaceId },
+          },
+        });
+        await active.host.store.requests.resolveBrowserRequest({
+          requestId: request.request.id,
+          resolvedBy: run.requestedBy,
+          response: { kind: "external", value: { decision: "declined" } },
+        });
+        expect(await active.host.store.requests.listPendingContinuations()).toEqual([]);
+        service!.notify();
+        endTurn.resolve();
+        await waitFor(
+          async () => {
+            const rows = await active.host.store.database
+              .selectFrom("requestContinuations")
+              .select("status")
+              .execute();
+            const failures = await active.host.store.database
+              .selectFrom("workspaceEvents")
+              .select("data")
+              .where("type", "=", "run.failed")
+              .execute();
+            expect(failures, "The fixture Run failed before its continuation").toEqual([]);
+            expect(rows, "The fast answer was not enqueued").toEqual([{ status: "queued" }]);
+            return true;
+          },
+          "continuation without a polling tick",
+          8_000,
+        );
+        await waitFor(
+          async () => {
+            const inputs = await active.host.store.database
+              .selectFrom("threadInputs")
+              .selectAll()
+              .where("threadId", "=", threadId)
+              .where("idempotencyKey", "like", "request-continuation:%")
+              .execute();
+            expect(inputs).toHaveLength(1);
+            return (
+              inputs[0]!.state === "delivered" &&
+              (background ? inputs[0]!.runId === runId : inputs[0]!.runId !== runId)
+            );
+          },
+          "fast answer delivered to the next turn",
+          8_000,
+        );
+        finish.resolve();
+        if (background) await settled(active, runId);
+      } finally {
+        endTurn.resolve();
+        finish.resolve();
+        start.mockRestore();
+      }
+    },
+  );
+
   it(
     "keeps a Claude Run live for its background subagent, through a wake-up that races idle",
     { timeout: 120_000 },
@@ -579,7 +724,13 @@ function consumedUuids(consumed: readonly unknown[]) {
  * a message steered in is a turn of its own; when `finished` settles the task
  * notifies, the roster empties, and a second later Claude wakes a turn.
  */
-function backgroundClaudeSdk(finished: Promise<void>): ClaudeAgentSdk {
+function backgroundClaudeSdk(
+  finished: Promise<void>,
+  options: {
+    readonly background?: boolean;
+    readonly beforeFirstResult?: () => Promise<void>;
+  } = {},
+): ClaudeAgentSdk {
   return {
     inspectModels: async () => ({
       account: { email: "person@example.test", subscriptionType: "max" },
@@ -657,40 +808,45 @@ function backgroundClaudeSdk(finished: Promise<void>): ClaudeAgentSdk {
       async function* turn() {
         const opening = await prompt.next();
         yield init();
-        yield assistant([
-          {
-            id: "agent-call-1",
-            input: {
-              description: "Background research",
-              prompt: "Research in the background",
-              run_in_background: true,
+        if (options.background !== false) {
+          yield assistant([
+            {
+              id: "agent-call-1",
+              input: {
+                description: "Background research",
+                prompt: "Research in the background",
+                run_in_background: true,
+              },
+              name: "Agent",
+              type: "tool_use",
             },
-            name: "Agent",
-            type: "tool_use",
-          },
-        ]);
-        yield message({
-          description: "Background research",
-          is_backgrounded: true,
-          subtype: "task_started",
-          task_id: "agent-1",
-          task_type: "local_agent",
-          tool_use_id: "agent-call-1",
-          type: "system",
-        });
-        yield message({
-          message: {
-            content: [{ content: "Launched", tool_use_id: "agent-call-1", type: "tool_result" }],
-            role: "user",
-          },
-          parent_tool_use_id: null,
-          tool_use_result: { agentId: "agent-1", status: "async_launched" },
-          type: "user",
-        });
-        yield roster([
-          { description: "Background research", task_id: "agent-1", task_type: "local_agent" },
-        ]);
+          ]);
+          yield message({
+            description: "Background research",
+            is_backgrounded: true,
+            subtype: "task_started",
+            task_id: "agent-1",
+            task_type: "local_agent",
+            tool_use_id: "agent-call-1",
+            type: "system",
+          });
+          yield message({
+            message: {
+              content: [{ content: "Launched", tool_use_id: "agent-call-1", type: "tool_result" }],
+              role: "user",
+            },
+            parent_tool_use_id: null,
+            tool_use_result: { agentId: "agent-1", status: "async_launched" },
+            type: "user",
+          });
+          yield roster([
+            { description: "Background research", task_id: "agent-1", task_type: "local_agent" },
+          ]);
+        }
+        if (Array.isArray(parameters.options.tools) && parameters.options.tools.length > 0)
+          await options.beforeFirstResult?.();
         yield result("Started the research in the background.", [opening.value]);
+        if (options.background === false) return;
         // A message steered in while the task works is a turn of its own.
         const steered = await prompt.next();
         yield init();

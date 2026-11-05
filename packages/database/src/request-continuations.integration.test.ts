@@ -204,6 +204,77 @@ describeStore("Request continuation admission", (it) => {
     ).toHaveLength(1);
   });
 
+  for (const ends of ["before-enqueue", "after-enqueue", "after-delivery"] as const) {
+    it(`joins background after all siblings settle, preserving one continuation when it ends ${ends}`, async ({
+      storeFixture,
+    }) => {
+      const { store, database, startRunFixture } = storeFixture;
+      const fixture = await startRunFixture(`background-requests-${ends}`);
+      const first = await open(store, fixture, "first");
+      const second = await open(store, fixture, "second");
+      const answer = (requestId: typeof first.request.id) =>
+        store.requests.resolveBrowserRequest({
+          requestId,
+          resolvedBy: fixture.userId,
+          response: { kind: "external", value: { decision: "declined" } },
+        });
+      await answer(first.request.id);
+      await store.commitRunnerEvent({
+        environmentId: fixture.environmentId,
+        runnerId: fixture.runnerId,
+        runnerBootId: fixture.runnerBootId,
+        event: pendingEvent({
+          bindingGeneration: fixture.bindingGeneration,
+          environmentId: fixture.environmentId,
+          runId: fixture.run.id,
+          threadId: fixture.thread.id,
+          workspaceId: fixture.workspace.id,
+          ordinal: 1,
+          type: "run.phase",
+          data: { phase: "background" },
+        }),
+      });
+      expect(await store.requests.listPendingContinuations()).toEqual([]);
+      await answer(second.request.id);
+      expect(
+        (await store.requests.listPendingContinuations()).map(({ request }) => request.id).sort(),
+      ).toEqual([first.request.id, second.request.id].sort());
+      if (ends === "before-enqueue") await finish(store, fixture);
+      const input = {
+        content: [{ type: "text" as const, text: "Both profiles were declined." }],
+        idempotencyKey: `background-answers-${ends}`,
+        policy: "queue" as const,
+        requestedBy: fixture.userId,
+        source: {
+          kind: "platform" as const,
+          cause: "request-resolved" as const,
+          referenceId: first.request.id,
+          sourceRunId: fixture.run.id,
+        },
+        threadId: fixture.thread.id,
+      };
+      const admitted = await store.enqueueThreadInput(input);
+      expect(admitted.disposition).toBe(ends === "before-enqueue" ? "run-queued" : "steering");
+      if (ends !== "before-enqueue") {
+        expect(admitted.input.runId).toBe(fixture.run.id);
+        if (ends === "after-delivery") {
+          await store.claimCommand(admitted.command!.id, "background-continuation");
+          await store.succeedCommand(admitted.command!.id);
+        }
+        await finish(store, fixture);
+      }
+      const replay = await store.enqueueThreadInput(input);
+      expect(replay.input.messageId).toBe(admitted.input.messageId);
+      const rows = await database
+        .selectFrom("threadInputs")
+        .selectAll()
+        .where("idempotencyKey", "=", input.idempotencyKey)
+        .execute();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.state).toBe(ends === "after-delivery" ? "delivered" : "pending");
+    });
+  }
+
   it("does not release answered Requests while the origin Run can still open another", async ({
     storeFixture,
   }) => {

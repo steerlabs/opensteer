@@ -191,9 +191,11 @@ describe("engine qualification", () => {
       restorePath = undefined;
     }, 60_000);
 
-    it.each([false, true])(
-      "parks a pending Request and recalls native context after its continuation (forced=%s)",
-      async (forced) => {
+    it.each(["normal", "forced", ...(engine.driverKind === "claude" ? ["background"] : [])])(
+      "parks a pending Request and recalls native context after its continuation (mode=%s)",
+      async (mode) => {
+        const forced = mode === "forced";
+        const background = mode === "background";
         if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
         stack = await startVerticalStack({
           catalogTimeoutMs: 180_000,
@@ -227,11 +229,23 @@ describe("engine qualification", () => {
           workspaceId: workspace.id,
         });
         const nonce = randomUUID();
-        const first = await active.sendMessage({
-          text: `Remember ${nonce} for the later continuation. Request a new browser profile named Receipts with browser_profile_request for this expense task. After requesting it, try thread_list to find running tasks, subject to Opensteer's pending-Request rule. Do not open a browser or sign in. When the person chooses the profile in a later continuation, reply with the chosen profile name and the remembered code, without tools.`,
-          threadId,
-          workspaceId: workspace.id,
-        });
+        const prompt = `${background ? "First use Bash with run_in_background: true to start node -e 'setInterval(() => {}, 1000)' as a long-running task; keep it alive and remember its task ID. " : ""}Remember ${nonce} for the later continuation. Request a new browser profile named Receipts with browser_profile_request for this expense task. After requesting it, try thread_list to find running tasks, subject to Opensteer's pending-Request rule. Do not open a browser or sign in. When the person chooses the profile in a later continuation, reply with the chosen profile name and the remembered code${background ? "; before replying, stop only the background task you started using TaskStop with its captured task ID" : ", without tools"}.`;
+        const first = background
+          ? await active.queueMessage({ text: prompt, threadId })
+          : await active.sendMessage({ text: prompt, threadId, workspaceId: workspace.id });
+        if (!first.runId) throw new Error("The engine's first Run was not queued");
+        if (background)
+          await vi.waitFor(
+            async () => {
+              const run = await active.host.store.database
+                .selectFrom("runs")
+                .select(["status", "phase"])
+                .where("id", "=", first.runId!)
+                .executeTakeFirstOrThrow();
+              expect(run).toMatchObject({ status: "running", phase: "background" });
+            },
+            { timeout: 180_000, interval: 100 },
+          );
         const database = active.host.store.database;
         const requests = await database
           .selectFrom("requests")
@@ -246,7 +260,7 @@ describe("engine qualification", () => {
             .select("status")
             .where("id", "=", first.runId)
             .executeTakeFirstOrThrow(),
-        ).toEqual({ status: "completed" });
+        ).toEqual({ status: background ? "running" : "completed" });
         const before = await database
           .selectFrom("providerSessions")
           .select("providerSessionReference")
@@ -270,7 +284,7 @@ describe("engine qualification", () => {
               .selectFrom("runs")
               .select(["id", "status"])
               .where("threadId", "=", threadId)
-              .where("id", "!=", first.runId)
+              .where("id", background ? "=" : "!=", first.runId)
               .orderBy("runOrdinal", "desc")
               .executeTakeFirst();
             expect(run, "The Request did not create a continuation Run").toBeDefined();
@@ -279,6 +293,15 @@ describe("engine qualification", () => {
           },
           { timeout: 180_000, interval: 100 },
         );
+        if (background) {
+          const input = await database
+            .selectFrom("threadInputs")
+            .select(["runId", "state"])
+            .where("threadId", "=", threadId)
+            .where("idempotencyKey", "like", "request-continuation:%")
+            .execute();
+          expect(input).toEqual([{ runId: first.runId, state: "delivered" }]);
+        }
         if (forced) {
           expect(
             active
@@ -331,7 +354,7 @@ describe("engine qualification", () => {
             .where("type", "=", "run.usage")
             .execute();
           await writeFile(
-            join(evidence, `${engine.driverKind}-${forced ? "forced" : "normal"}.json`),
+            join(evidence, `${engine.driverKind}-${mode}.json`),
             JSON.stringify(
               {
                 engine: engine.label,

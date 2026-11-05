@@ -2896,7 +2896,12 @@ export class RequestStore {
               .selectFrom("runs as originRun")
               .select("originRun.id")
               .whereRef("originRun.id", "=", "requests.originatingRunId")
-              .where("originRun.status", "in", ["completed", "failed", "interrupted"])
+              .where((origin) =>
+                origin.or([
+                  origin("originRun.status", "in", ["completed", "failed", "interrupted"]),
+                  origin("originRun.phase", "=", "background"),
+                ]),
+              )
               .where((gate) =>
                 gate.or([
                   gate.not(

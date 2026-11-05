@@ -42,13 +42,15 @@ Assignment, engine and model; Stop cancels their untaken inputs without pausing 
 ordinary message never answers a Request. Live harness Requests hold their native turn; a new
 person message can start work normally after a Run ends with durable Requests still pending.
 
-Durable Requests return immediately and ask the model to stop its Run. The Runner refuses further
+Durable Requests return immediately and ask the model to end its turn. The Runner refuses further
 work tools while allowing the remaining setup asks, and interrupts after one bounded grace period if
-the model does not end. This is a completed turn awaiting the person, not a failed or person-stopped
-Run; durable Requests and Assignments outlive it. Native harness Requests keep blocking natively.
-An answered durable Request continues only after its origin Run ends and its durable siblings
-settle. A newer Run on the Thread releases older settled outcomes too, so an abandoned ask cannot
-hold up later work. Eligible outcomes from one Run arrive together; different Runs stay independent.
+the model does not end. A turn that leaves native background work running releases this restriction
+and keeps that work alive. Awaiting the person is not a failure or a person's Stop; durable Requests
+and Assignments outlive the turn. Native harness Requests keep blocking natively. Answered durable
+Requests continue once the origin turn has ended and its durable siblings settle, joining any
+background work still running. A newer Run on the Thread releases older settled outcomes too, so an
+abandoned ask cannot hold up later work. Eligible outcomes from one Run arrive together; different
+Runs stay independent.
 Trigger Occurrences have no native turn to resume. Requests returned without a requestId, including
 plugin installation, cannot signal the Runner to stop.
 

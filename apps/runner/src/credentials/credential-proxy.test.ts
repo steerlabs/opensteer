@@ -14,7 +14,7 @@ import {
   settleWithin,
   writeTransportCloseReport,
 } from "@opensteer/shared/test-support/httpServer";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { agentTools } from "@opensteer/agent-tools";
 import { CredentialProxy, requestOpeningTools } from "./credential-proxy.js";
 
@@ -175,6 +175,8 @@ describe("credential proxy", () => {
       response.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
     });
     const { proxy, secret, urls } = await proxyFor(host.origin, { current: "host-token" });
+    const onPark = vi.fn();
+    proxy.resume(onPark);
     const call = (method: string, name?: string, id: number | string = 1) =>
       fetch(urls["agent-tools"], {
         body: JSON.stringify({
@@ -217,10 +219,16 @@ describe("credential proxy", () => {
       ).arrayBuffer();
     }
     expect(host.seen).toHaveLength(11);
+    expect(onPark).toHaveBeenCalledTimes(1);
+    proxy.clearParking();
+    await (await call("tools/call", "browser_session_open")).arrayBuffer();
+    expect(host.seen).toHaveLength(12);
+    expect(onPark).toHaveBeenCalledTimes(2);
+    expect(proxy.parking).toBe(true);
     proxy.suspend();
     proxy.resume();
     await (await call("tools/call", "browser_session_open")).arrayBuffer();
-    expect(host.seen).toHaveLength(12);
+    expect(host.seen).toHaveLength(13);
   });
 
   it("refuses each work call in a batch while forwarding setup and protocol messages", async () => {

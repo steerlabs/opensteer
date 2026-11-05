@@ -138,6 +138,10 @@ export class CredentialProxy {
     return this.#parking;
   }
 
+  clearParking(): void {
+    this.#parking = false;
+  }
+
   /** A warm engine went idle: nothing it sends reaches the Host until the next Run resumes it. */
   suspend(): void {
     this.#suspended = true;
@@ -148,7 +152,7 @@ export class CredentialProxy {
   resume(onPark?: () => void): void {
     if (this.#revoked || this.#closed) throw new Error("A revoked credential proxy cannot resume");
     this.#suspended = false;
-    this.#parking = false;
+    this.clearParking();
     this.#onPark = onPark;
   }
 

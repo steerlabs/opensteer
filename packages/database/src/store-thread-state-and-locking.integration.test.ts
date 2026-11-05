@@ -1247,7 +1247,7 @@ describeStore("PostgreSQL store", (it) => {
   it("deduplicates durable Requests by call identity and withdraws them replay-safely", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, createProjectWorkspace, store } = storeFixture;
+    const { startRunFixture, createProjectWorkspace, store, database } = storeFixture;
     const fixture = await startRunFixture("request-withdrawal");
     const targetWorkspace = await createProjectWorkspace(
       fixture.userId,
@@ -1326,7 +1326,13 @@ describeStore("PostgreSQL store", (it) => {
         pendingRequests: 0,
       },
     );
-    await expect(store.requests.listPendingContinuations()).resolves.toEqual([]);
+    await expect(
+      database
+        .selectFrom("requestContinuations")
+        .selectAll()
+        .where("requestId", "=", created.request.id)
+        .execute(),
+    ).resolves.toEqual([]);
   });
 
   it.for(

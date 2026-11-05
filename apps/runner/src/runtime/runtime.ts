@@ -3097,6 +3097,12 @@ export class RunnerRuntime {
    * the stream it completes starts again from nothing.
    */
   async #emitDurable(active: ActiveRun, event: HarnessDurableEvent): Promise<void> {
+    if (event.type === "run.phase" && event.data.phase === "background") {
+      // The Host can steer the next turn as soon as it commits this event.
+      if (active.requestParkTimer) clearTimeout(active.requestParkTimer);
+      delete active.requestParkTimer;
+      active.credentialProxy?.clearParking();
+    }
     await active.live.flush();
     await this.#emit(active, event);
     switch (event.type) {
