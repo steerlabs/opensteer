@@ -164,6 +164,7 @@ describeStore("published app HTML", (it) => {
     }
     const app = Fastify();
     const gateway = new AppGateway({
+      realOrigins: true,
       identity,
       signingKey: Buffer.alloc(32, 5),
       canonicalOrigin: "http://127.0.0.1:1234",

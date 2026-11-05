@@ -82,6 +82,7 @@ it("injects HTML with exact lengths, strips connection and credential headers, r
     res.writeHead(200, {
       "content-type": "text/html",
       "content-length": "18",
+      "x-frame-options": "DENY",
       connection: "close, x-private",
       "x-private": "secret",
     });
@@ -114,6 +115,7 @@ it("injects HTML with exact lengths, strips connection and credential headers, r
     expect(text).toContain("opensteer-app:ready");
     expect(Number(html.headers["content-length"])).toBe(Buffer.byteLength(text));
     expect(html.headers["x-private"]).toBeUndefined();
+    expect(html.headers["x-frame-options"]).toBeUndefined();
     expect(seen.cookie).toBeUndefined();
     expect(seen.authorization).toBeUndefined();
     expect(seen["x-private"]).toBeUndefined();
