@@ -1,7 +1,7 @@
 # Saved payment cards
 
 At checkout, call `use_card` with the merchant site, reason and current browser sessionId.
-Pending means end your turn after independent work, without polling or resubmitting. A decline ends
+Pending stops the Run: end your turn without polling or resubmitting. A decline ends
 this attempt: do not ask again. An expired approval needs a fresh request if the purchase is still
 wanted. For no-saved-card, passwords-off or passwords-not-set-up, tell the person to open Passwords
 on their Mac, add a card or enable agent use, then ask again. Never ask for card values in chat.
