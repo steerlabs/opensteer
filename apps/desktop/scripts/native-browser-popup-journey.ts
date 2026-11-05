@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { appendFileSync } from "node:fs";
 import { access } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -138,7 +137,18 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   kit.cleanup.push(() => {
     patched._createOpensteerInputOwner = createOwner;
   });
-  const server = await chromium.launchServer({ executablePath: executable, headless: false });
+  kit.artifacts.json("cases/popups/startup-trace-status.json", { mode: "startup", seconds: 30 });
+  const server = await chromium.launchServer({
+    executablePath: executable,
+    headless: false,
+    args: [
+      "--trace-startup=toplevel,cc,viz,gpu,renderer.scheduler,disabled-by-default-renderer.scheduler",
+      "--trace-startup-duration=30",
+      "--trace-startup-record-mode=record-continuously",
+      "--trace-startup-format=json",
+      `--trace-startup-file=${path.join(kit.run, "cases/popups/startup-native-trace.json")}`,
+    ],
+  });
   const pid = server.process().pid;
   assert(pid);
   kit.ownedPids.add(pid);
@@ -147,53 +157,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     kit.ownedPids.delete(pid);
   });
   const browser = await chromium.connect(server.wsEndpoint());
-  const startupTrace = await browser.newBrowserCDPSession();
-  kit.artifacts.json("cases/popups/startup-trace-status.json", { complete: false });
-  let traceBytes = 0;
-  startupTrace.on("Tracing.dataCollected", ({ value }) => {
-    if (traceBytes >= 8 * 1024 * 1024) return;
-    const data = value.map((row) => JSON.stringify(row)).join("\n") + "\n";
-    traceBytes += Buffer.byteLength(data);
-    appendFileSync(path.join(kit.run, "cases/popups/startup-native-trace.jsonl"), data);
-  });
-  await startupTrace.send("Tracing.start", {
-    transferMode: "ReportEvents",
-    traceConfig: {
-      recordMode: "recordContinuously",
-      traceBufferSizeInKb: 4096,
-      includedCategories: [
-        "toplevel",
-        "cc",
-        "viz",
-        "gpu",
-        "renderer.scheduler",
-        "disabled-by-default-renderer.scheduler",
-      ],
-    },
-  });
-  let traceCompletion: Promise<void> | undefined;
-  const stopStartupTrace = () => {
-    traceCompletion ??= (async () => {
-      const complete = Promise.withResolvers<boolean>();
-      startupTrace.once("Tracing.tracingComplete", () => complete.resolve(true));
-      const timer = setTimeout(() => complete.resolve(false), 4000);
-      try {
-        void startupTrace.send("Tracing.end").catch(() => complete.resolve(false));
-        kit.artifacts.json("cases/popups/startup-trace-status.json", {
-          complete: await complete.promise,
-          bytes: traceBytes,
-        });
-      } finally {
-        clearTimeout(timer);
-      }
-    })();
-    return traceCompletion;
-  };
-  const traceDeadline = setTimeout(() => void stopStartupTrace().catch(() => undefined), 30000);
-  kit.cleanup.push(async () => {
-    clearTimeout(traceDeadline);
-    await stopStartupTrace();
-  });
   const counts: [number, number, number] = [0, 0, 0];
   const commands: Record<string, number> = {};
   const editingContexts: [number, number] = [0, 0];
@@ -419,8 +382,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         return { viewer, page };
       }),
     );
-    clearTimeout(traceDeadline);
-    await stopStartupTrace();
     const a = viewers[0]!.page,
       b = viewers[1]!.page;
     await b.evaluate(
@@ -765,8 +726,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     assert(closed.ok);
     await a.getByRole("dialog").waitFor({ state: "hidden" });
   } finally {
-    clearTimeout(traceDeadline);
-    await stopStartupTrace();
     const producerResult = !contents.isDestroyed()
       ? await contents
           .executeJavaScript(

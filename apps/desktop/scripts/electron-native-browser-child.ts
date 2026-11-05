@@ -108,6 +108,11 @@ const selection = {
 };
 let passkeyRequests: DesktopPasskeyRequests | undefined;
 const artifacts = new NativeSmokeArtifacts(run, selection.ids, true);
+const originalQuit = app.quit.bind(app);
+app.quit = () => {
+  artifacts.event("diagnostic.app-quit", { stack: new Error().stack });
+  originalQuit();
+};
 const kit = createNativeBrowserE2EKit({ run, inputHelper, artifacts });
 const observedBoundsViews = new WeakSet<WebContentsView>();
 let completedInitialPresentation = false;
@@ -143,7 +148,10 @@ app.on("window-all-closed", () => undefined);
 const liveness = setInterval(() => undefined, 1_000);
 let shutdownPrepared = false;
 const fatalErrors: string[] = [];
-app.on("before-quit", () => prepareShutdown());
+app.on("before-quit", () => {
+  artifacts.event("diagnostic.before-quit", { stack: new Error().stack });
+  prepareShutdown();
+});
 const shutdown = new DesktopShutdown({
   application: {
     on: app.on.bind(app),
