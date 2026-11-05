@@ -378,8 +378,7 @@ export class OpensteerMcpService {
           if (
             currentCaller.kind === "run" &&
             result.status === "pending" &&
-            typeof result.requestId === "string" &&
-            !(await this.options.store.voiceCallForRun(currentCaller.claims.runId))
+            typeof result.requestId === "string"
           ) {
             const id = RequestIdSchema.safeParse(result.requestId);
             const request = id.success ? await this.options.store.requests.get(id.data) : null;

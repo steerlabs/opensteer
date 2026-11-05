@@ -334,7 +334,7 @@ describe("VoiceSpeaker", () => {
     expect(f.said()).toEqual([
       ["message:one", "one"],
       ["request:new", "Chat needs you."],
-      ["request:mine", "Check your screen, I need your OK."],
+      ["request:mine", "Check Chat, I need your OK."],
     ]);
     f.publish({ waitingRequests: [request("new")] });
     await settle();

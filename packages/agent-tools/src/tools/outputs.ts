@@ -274,6 +274,7 @@ export const SignInOutputSchema = z.object({
   requestId: RequestIdSchema.optional(),
   replayed: z.boolean().optional(),
   waitingFor: z.string().optional(),
+  guidance: z.string().optional(),
 });
 export const BrowserSessionSchema = z.object({
   id: z.string(),
@@ -437,6 +438,7 @@ export const UseCardOutputSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.enum(["resolved", "declined", "needs-approval"]),
     site: BrowserSiteSchema,
+    guidance: z.string().optional(),
   }),
   z.strictObject({
     status: z.literal("unavailable"),

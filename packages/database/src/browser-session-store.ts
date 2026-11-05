@@ -793,9 +793,15 @@ export async function resolvePlaceActors(
     lineageWorkspaceIds: WorkspaceId[];
   }>`
     with recursive lineage as (
-      select r.id as run_id, r.thread_id, r.assignment_id, r.binding_generation as generation, 0 as depth,
-        array[]::text[] as path
-      from runs r where r.id in (${sql.join(runIds)}) and r.status in (${sql.join(nonTerminalRunStatuses)}) and r.binding_generation is not null
+      -- A call's Thread is hidden and has no Assignment; the person knows its agent as Chat.
+      select r.id as run_id, case when c.voice_session_id is null then r.thread_id else c.parent_thread_id end as thread_id,
+        r.assignment_id, r.binding_generation as generation, 0 as depth, array[]::text[] as path
+      from runs r join threads c on c.id = r.thread_id
+      where r.id in (${sql.join(runIds)}) and r.status in (${sql.join(nonTerminalRunStatuses)}) and r.binding_generation is not null
+        and not exists (
+          select 1 from grants g where g.run_id = r.id
+            and g.binding_generation = r.binding_generation and g.status = 'revoked'
+        )
       union all
       select l.run_id, d.parent_thread_id, d.parent_assignment_id, l.generation, l.depth + 1, l.path || d.id::text
       from lineage l join delegations d on d.id = l.assignment_id
