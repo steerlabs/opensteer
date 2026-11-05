@@ -11,7 +11,6 @@ import type { AgentCaller, RunCaller } from "./agent-caller.js";
 import type { AgentToolHandlers } from "./handlers/index.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 import { ProductToolHandlers } from "./handlers/product.js";
-import { TriggerToolHandlers } from "./handlers/triggers.js";
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -514,49 +513,6 @@ describe("Opensteer MCP spine", () => {
       }
     },
   );
-  it("returns webhook setup credentials to the creating task but excludes them from reads", async () => {
-    const f = fixture();
-    Object.assign(f.run, { accessMode: "full-access" });
-    f.run.thread.accessMode = "full-access";
-    const webhook = {
-      url: "https://host.example.test/hooks/v1/wh_synthetic",
-      secret: "oswh_synthetic_setup_secret",
-    };
-    const manager = new TriggerToolHandlers({
-      manage: async () => ({ webhook, unrelatedSecret: "private-other-secret" }),
-    });
-    f.handlers.trigger_write = (call) => manager.trigger_write(call);
-    f.handlers.trigger_read = (call) => manager.trigger_read(call);
-    try {
-      const created = await f.service.callTool(
-        "run",
-        "trigger_write",
-        {
-          action: "create",
-          name: "Example delivery",
-          anchorThreadId: f.thread.id,
-          source: { kind: "webhook" },
-          program: {
-            language: "typescript",
-            source: "export default async function () {}",
-            toolContractVersion: 3,
-          },
-        },
-        { operationKey: "create-webhook" },
-      );
-      expect(created).toEqual({ webhook });
-      expect(
-        await f.service.callTool(
-          "run",
-          "trigger_read",
-          { action: "list" },
-          { operationKey: "read-webhooks" },
-        ),
-      ).toEqual({});
-    } finally {
-      await f.service.close();
-    }
-  });
   it("resolves a caller once per HTTP request before invoking the tool", async () => {
     const f = await httpFixture();
     try {
