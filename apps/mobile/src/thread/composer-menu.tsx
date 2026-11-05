@@ -1,6 +1,14 @@
 import { MenuView, type MenuAction, type MenuComponentRef } from "@expo/ui/community/menu";
-import { useRef, type ReactNode } from "react";
-import { Alert, Platform, Pressable, View, type StyleProp, type ViewStyle } from "react-native";
+import { useRef, type ReactNode, type Ref } from "react";
+import {
+  Alert,
+  Platform,
+  Pressable,
+  View,
+  type HostInstance,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
 
 /**
  * A short list of choices, drawn by the operating system, hung off a control
@@ -23,6 +31,7 @@ import { Alert, Platform, Pressable, View, type StyleProp, type ViewStyle } from
 export type NativeMenuIcon =
   | "arrow.clockwise"
   | "arrow.up.left.and.arrow.down.right"
+  | "arrow.uturn.backward"
   | "bubble.left"
   | "checkmark"
   | "chevron.forward"
@@ -32,12 +41,14 @@ export type NativeMenuIcon =
   | "lock"
   | "magnifyingglass"
   | "paperclip"
+  | "pencil"
   | "person.badge.key"
   | "photo"
   | "plus.square.on.square"
   | "safari"
   | "square.and.arrow.up"
   | "square.and.pencil"
+  | "square.grid.2x2"
   | "stop.circle"
   | "stop.fill"
   | "xmark.circle";
@@ -64,13 +75,16 @@ export function NativeMenu(props: {
   /** Stated when the control is tapped while it cannot be used. */
   readonly disabledReason?: string | null;
   /** The menu is about to take over: hold the row this trigger stands in. */
-  readonly onPresent: () => void;
+  readonly onPresent?: () => void;
   /** The menu is gone, by a choice or by a dismissal. */
-  readonly onSettle: () => void;
+  readonly onSettle?: () => void;
   /** The choices, or groups of them where the menu draws a separator between groups. */
   readonly options: readonly NativeMenuOption[] | readonly NativeMenuSection[];
   readonly style?: StyleProp<ViewStyle>;
   readonly title?: string;
+  /** The view a screen reader returns to once something the menu opened closes. */
+  readonly triggerRef?: Ref<HostInstance>;
+  readonly triggerStyle?: StyleProp<ViewStyle>;
 }): ReactNode {
   const menu = useRef<MenuComponentRef>(null);
   const reason = props.disabledReason ?? null;
@@ -94,9 +108,9 @@ export function NativeMenu(props: {
     <MenuView
       actions={menuActions(props.options)}
       colorScheme="dark"
-      onCloseMenu={props.onSettle}
+      {...(props.onSettle === undefined ? {} : { onCloseMenu: props.onSettle })}
       onPressAction={({ nativeEvent }) => {
-        props.onSettle();
+        props.onSettle?.();
         props.options
           .flat()
           .find((option) => option.id === nativeEvent.event)
@@ -128,7 +142,7 @@ export function NativeMenu(props: {
               onAccessibilityAction: () => {
                 // No touch reaches the trigger this way, so the bar is told to
                 // hold its row here instead of from `onTouchStart`.
-                props.onPresent();
+                props.onPresent?.();
                 menu.current?.show();
               },
             }
@@ -137,6 +151,8 @@ export function NativeMenu(props: {
         accessibilityLabel={props.accessibilityLabel}
         accessibilityRole="button"
         onTouchStart={props.onPresent}
+        ref={props.triggerRef}
+        style={props.triggerStyle}
       >
         {props.children}
       </View>
