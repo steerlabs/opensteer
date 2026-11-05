@@ -197,7 +197,6 @@ describe("Opensteer MCP spine", () => {
     "settled",
     "live",
     "other-run",
-    "voice",
     "integration",
     "program",
   ] as const)("signals parking only for this Run's pending durable Request (%s)", async (state) => {
@@ -211,7 +210,6 @@ describe("Opensteer MCP spine", () => {
         originatingRunId: state === "other-run" ? createId("run") : f.run.claims.runId,
       })),
     });
-    if (state === "voice") f.options.store.voiceCallForRun = async () => ({}) as never;
     const pending = { requestId, kind: "browser.access", status: "pending", replayed: false };
     Object.assign(f.handlers, {
       sign_in: async () => pending,
@@ -726,7 +724,6 @@ it("refuses voice durable-work tools at invocation before their handlers", async
       ...f.options.store,
       voiceCallForRun: async () => ({
         sessionId: "voice",
-        ownerId: createId("user"),
         admittedAt: new Date(),
       }),
     },
@@ -738,6 +735,14 @@ it("refuses voice durable-work tools at invocation before their handlers", async
       { directory: "plugin" },
       { operationKey: "voice-install" },
     ),
-  ).rejects.toThrow("Hand durable work to Chat");
+  ).rejects.toThrow("Chat does this on a call");
   expect(f.handlers.plugin_install).not.toHaveBeenCalled();
+  await expect(
+    service.callTool(
+      "run",
+      "browser_profile_request",
+      { reason: "Sign in", suggestion: { kind: "new", suggestedName: "Personal" } },
+      { operationKey: "voice-profile" },
+    ),
+  ).rejects.toThrow('threadId "home"');
 });

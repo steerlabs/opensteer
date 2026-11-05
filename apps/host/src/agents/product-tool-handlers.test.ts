@@ -290,11 +290,38 @@ describe("Product tool handlers", () => {
         }),
       ).resolves.toEqual({ requestId, type: `${type}.result`, result });
       expect(agentSignIn).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId, site: result.site }),
+        expect.objectContaining({ canRequest: true, sessionId, site: result.site }),
       );
       expect(admitRunToolCall).not.toHaveBeenCalled();
     },
   );
+
+  it("keeps saved logins on a voice call but opens no Request", async () => {
+    const result = {
+      status: "unavailable",
+      site: "https://example.com",
+      reason: "needs-approval",
+    } as const;
+    const agentSignIn = vi.fn(async () => result);
+    const { service } = makeService({
+      browserSources: { agentSignIn },
+      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+      messages: [],
+      threads: [thread(currentThreadId, nativeHarnessId, "Worker")],
+      voiceCall: true,
+    });
+    const response = await service.handle("run-token", {
+      requestId: crypto.randomUUID(),
+      type: "sign-in",
+      sessionId: createBrowserSessionId(),
+      site: "https://example.com",
+      reason: "Read the account",
+    });
+    expect(agentSignIn).toHaveBeenCalledWith(expect.objectContaining({ canRequest: false }));
+    expect(response).toMatchObject({
+      result: { guidance: expect.stringContaining('threadId "home"') },
+    });
+  });
 
   it("does not preserve Main authority after its member is no longer an owner", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main");
@@ -1585,6 +1612,7 @@ function makeService(options: {
   >;
   runAssignment?: { readonly assignerThreadId: Thread["id"]; readonly open: boolean };
   runnerCapabilities?: readonly string[];
+  voiceCall?: boolean;
   commands: {
     publishPersonMessage?: ReturnType<typeof vi.fn>;
     delegateThread: ReturnType<typeof vi.fn>;
@@ -1879,8 +1907,8 @@ function makeService(options: {
     },
     findMainWorkspaceForOwner: async () =>
       workspaces.find((candidate) => candidate.homeThreadId != null) ?? null,
-    // These Runs are never voice calls, so no tool is withheld from them.
-    voiceCallForRun: async () => undefined,
+    voiceCallForRun: async () =>
+      options.voiceCall ? { sessionId: "voice", admittedAt: new Date() } : undefined,
     threadMessagePageForOwner: async (input: {
       maxItems: number;
       ownerId: typeof ownerId;

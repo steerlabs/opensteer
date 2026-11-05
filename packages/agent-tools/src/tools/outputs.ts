@@ -274,6 +274,7 @@ export const SignInOutputSchema = z.object({
   requestId: RequestIdSchema.optional(),
   replayed: z.boolean().optional(),
   waitingFor: z.string().optional(),
+  guidance: z.string().optional(),
 });
 export const BrowserSessionSchema = z.object({
   id: z.string(),

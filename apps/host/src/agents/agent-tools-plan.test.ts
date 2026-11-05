@@ -81,5 +81,7 @@ it("fences durable work from voice calls", () => {
     expect(plan.tools).not.toContain(tool);
   expect(plan.tools).toContain("thread_message");
   expect(plan.tools).toContain("person_show");
+  // Refused on a call with directions to Chat, which only reach an agent that tries them.
+  expect(plan.tools).toContain("integration_request");
   expect(plan.instructions).toContain("1–3 short sentences");
 });

@@ -44,6 +44,7 @@ import {
   resolveDelegationSpecialist,
 } from "../../agents/specialist-placement.js";
 import { delegationPlacement } from "../../agents/delegation-placement.js";
+import { voiceHandOff } from "../../agents/voice-tools.js";
 import { environmentDiscovery } from "../../agents/environment-discovery.js";
 
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
@@ -1005,11 +1006,13 @@ export class ProductToolHandlers {
   async sign_in({ caller, input, operationKey }: ToolCall<"sign_in">) {
     const claims = requireRun(caller).claims;
     const requestId = operationId(caller, operationKey, "sign_in");
+    // Saved logins still work on a call; a Request's answer can't reach its Thread.
+    const voiceCall = await this.#store.voiceCallForRun(claims.runId);
 
-    return await this.#browserSources.agentSignIn({
+    const result = await this.#browserSources.agentSignIn({
       loginFill: this.#supportsLoginFill(claims),
       callId: requestId,
-      canRequest: true,
+      canRequest: !voiceCall,
       ownerId: claims.requestedBy,
       reason: input.reason,
       runId: claims.runId,
@@ -1020,6 +1023,9 @@ export class ProductToolHandlers {
       threadId: claims.threadId,
       workspaceId: claims.workspaceId,
     });
+    return voiceCall && result.status === "unavailable" && result.reason === "needs-approval"
+      ? { ...result, guidance: voiceHandOff }
+      : result;
   }
 
   async machine_full_disk_access_request({

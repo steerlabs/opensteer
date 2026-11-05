@@ -1543,8 +1543,25 @@ export class RequestStore {
               )
               .execute()
           : [];
+        // A call's Thread is hidden too, and an engine approval pauses its agent mid-step.
+        const calls = requests.length
+          ? await transaction
+              .selectFrom("threads as call")
+              .innerJoin("workspaces as main", "main.id", "call.workspaceId")
+              .innerJoin("threads as chat", "chat.id", "main.homeThreadId")
+              .select(["call.id", "call.title", "chat.id as chatId"])
+              .where("call.voiceSessionId", "is not", null)
+              .where("call.createdBy", "=", input.userId)
+              .whereRef("call.parentThreadId", "=", "chat.id")
+              .where(
+                "call.id",
+                "in",
+                requests.map(({ originatingThreadId }) => originatingThreadId),
+              )
+              .execute()
+          : [];
         const presentations = new Map(
-          managed.map(({ id, title, chatId }) => [
+          [...managed, ...calls].map(({ id, title, chatId }) => [
             id,
             { threadId: chatId, workerThread: { id, title } },
           ]),

@@ -22,11 +22,7 @@ export function voiceCallForRun(database: Kysely<DatabaseSchema>, runId: RunId) 
   return database
     .selectFrom("threads")
     .innerJoin("runs", "runs.threadId", "threads.id")
-    .select([
-      "threads.voiceSessionId as sessionId",
-      "threads.createdBy as ownerId",
-      "runs.createdAt as admittedAt",
-    ])
+    .select(["threads.voiceSessionId as sessionId", "runs.createdAt as admittedAt"])
     .where("runs.id", "=", runId)
     .where("threads.voiceSessionId", "is not", null)
     .executeTakeFirst();

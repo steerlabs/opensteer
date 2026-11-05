@@ -27,6 +27,7 @@ import {
 } from "../../apps/runner/src/skills/agent-skills.js";
 import { resolveSkillPlan } from "../../apps/runner/src/skills/skill-plan.js";
 import { discoverWorkspaceSkills } from "../../apps/runner/src/skills/workspace-skills.js";
+import { voiceExcludedTools, voiceGuide } from "../../apps/host/src/agents/voice-tools.js";
 import { inputForCaseTurn, caseReach, type EvalCase } from "./cases.js";
 import type { startFakeHost } from "./host.js";
 import { isolate } from "./isolation.js";
@@ -115,7 +116,10 @@ export async function runEngine(input: {
   });
   const instructions = c.fixtures["AGENTS.md"];
   const guide =
-    c.caller === "run" ? platformGuideForRun({ role: c.role, reach: caseReach(c) }) : "";
+    c.caller === "run"
+      ? platformGuideForRun({ role: c.role, reach: caseReach(c) }) +
+        (c.voice ? `\n\n${voiceGuide}` : "")
+      : "";
   const treatment = {
     prompt: fingerprint({
       guide,
@@ -144,7 +148,9 @@ export async function runEngine(input: {
         kind: c.caller,
         accessMode: "full-access",
         reach: { kind: caseReach(c) },
-      }).map(({ name }) => name),
+      })
+        .filter(({ name }) => !c.voice || !voiceExcludedTools.has(name))
+        .map(({ name }) => name),
       toolsRevision: "eval-tools-v1",
       instructions: guide,
       skills: selected.map(({ fullName }) => fullName),
