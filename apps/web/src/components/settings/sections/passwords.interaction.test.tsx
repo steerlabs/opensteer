@@ -315,7 +315,6 @@ function page(
   const origin = "http://127.0.0.1:43110";
   const context: ShellContext = {
     actionError: null,
-    askOpensteerAbout: noOp,
     clearActionError: noOp,
     clearHomeHandoff: noOp,
     createThreadAndSend: async () => null,

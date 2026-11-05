@@ -283,7 +283,6 @@ function useShellContext(): ShellContext {
   return {
     actionError: null,
     clearActionError: noOp,
-    askOpensteerAbout: noOp,
     clearHomeHandoff: noOp,
     homeDraft: "",
     homeHandoff: null,

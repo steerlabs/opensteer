@@ -26,7 +26,7 @@ import {
 } from "react";
 import type { TextInputInstance } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import type { PendingCommand, ThreadDraftQuote } from "../client/thread-drafts.js";
+import type { PendingCommand } from "../client/thread-drafts.js";
 import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-files.js";
 import {
   attachmentKey,
@@ -86,9 +86,6 @@ export function HomeIntro(props: {
   readonly hostClient: HostClient;
   /** Home now holds the first message, or exists and nothing here is owed. */
   readonly onHomeReady: (threadId: string) => void;
-  readonly onQuoteTaken: () => void;
-  /** An update from a task to answer here, already saved in this draft. */
-  readonly quote: ThreadDraftQuote | null;
   readonly userId: string;
   readonly workspaceId: string;
 }): ReactNode {
@@ -135,27 +132,6 @@ export function HomeIntro(props: {
     files: introFiles,
     workspaceId,
   });
-
-  // A quote handed over while this screen is open. A task files it in Chat's
-  // draft once Chat exists, but while this first message is still owed it
-  // belongs here: it is moved into this draft, so it survives a relaunch and
-  // does not wait in Chat's composer for the message after this one.
-  const handedQuote = props.quote;
-  const onQuoteTaken = props.onQuoteTaken;
-  const quotedHome = snapshot.homeThreadId;
-  useEffect(() => {
-    if (handedQuote === null) return;
-    onQuoteTaken();
-    const failed = (): void => setDraftFailure("This quote could not be saved on this phone.");
-    void drafts
-      .writeDraftQuote(deploymentId, userId, homeIntroDraftKey, handedQuote)
-      .then(() =>
-        quotedHome === null
-          ? undefined
-          : drafts.writeDraftQuote(deploymentId, userId, quotedHome, null),
-      )
-      .catch(failed);
-  }, [deploymentId, drafts, handedQuote, onQuoteTaken, quotedHome, userId]);
 
   const workspace = snapshot.workspaces.find(({ id }) => id === workspaceId) ?? null;
   const execution = useMemo(

@@ -86,11 +86,7 @@ export function HomeIntro({
     setRestore((current) => ({ ...next, key: (current?.key ?? 0) + 1 }));
   useEffect(() => {
     if (!homeHandoff) return;
-    setRestore((current) => ({
-      key: (current?.key ?? 0) + 1,
-      ...(homeHandoff.quote ? { quote: homeHandoff.quote } : {}),
-      text: homeHandoff.text,
-    }));
+    setRestore((current) => ({ key: (current?.key ?? 0) + 1, text: homeHandoff.text }));
     clearHomeHandoff();
   }, [clearHomeHandoff, homeHandoff]);
   const [chosen, setChosen] = useState<ExecutionSelection | null>(null);

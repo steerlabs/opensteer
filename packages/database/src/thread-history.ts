@@ -93,10 +93,10 @@ export async function readThreadHistory(
       const total = await visible
         .select(({ fn }) => fn.countAll<string>().as("count"))
         .executeTakeFirstOrThrow();
+      const listed = visible.selectAll("messages").select("threadInputs.policy");
       let rows;
       if (input.aroundMessageId) {
-        const target = await visible
-          .selectAll("messages")
+        const target = await listed
           .where("messages.id", "=", input.aroundMessageId)
           .executeTakeFirst();
         if (!target)
@@ -105,14 +105,12 @@ export async function readThreadHistory(
             message: "Message is unavailable in this conversation",
           });
         const [earlier, later] = await Promise.all([
-          visible
-            .selectAll("messages")
+          listed
             .where("messages.sequence", "<", target.sequence)
             .orderBy("messages.sequence", "desc")
             .limit(Math.floor((limit - 1) / 2))
             .execute(),
-          visible
-            .selectAll("messages")
+          listed
             .where("messages.sequence", ">", target.sequence)
             .orderBy("messages.sequence", "asc")
             .limit(Math.ceil((limit - 1) / 2))
@@ -120,17 +118,14 @@ export async function readThreadHistory(
         ]);
         rows = [target, ...earlier, ...later];
       } else {
-        const page = anchor ? visible.where("messages.sequence", "<", anchor.sequence) : visible;
-        rows = await page
-          .selectAll("messages")
-          .orderBy("messages.sequence", "desc")
-          .limit(limit)
-          .execute();
+        const page = anchor ? listed.where("messages.sequence", "<", anchor.sequence) : listed;
+        rows = await page.orderBy("messages.sequence", "desc").limit(limit).execute();
       }
       const window = boundedSerializedPrefix(
-        rows.map((row) => ({
+        rows.map(({ policy, ...row }) => ({
           ...messageFromRow(row),
           ...(row.addressedToUserId ? { addressedToUserId: row.addressedToUserId } : {}),
+          ...(policy ? { policy } : {}),
         })),
         limit,
         maxBytes,

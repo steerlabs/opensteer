@@ -182,7 +182,6 @@ function shellContext(input: {
   return {
     actionError: null,
     clearActionError: noOp,
-    askOpensteerAbout: noOp,
     clearHomeHandoff: noOp,
     homeDraft: "",
     homeHandoff: null,
