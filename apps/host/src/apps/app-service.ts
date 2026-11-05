@@ -62,12 +62,22 @@ export class AppService {
   }
   async setTabOpen(appId: string, userId: UserId, open: boolean) {
     const result = await this.#options.apps.setTabOpen(appId, userId, open);
-    await this.#options.tabsChanged?.(result.workspaceId);
+    await this.#notifyTabs(async () => result.workspaceId);
     return { appTabs: result.appTabs };
   }
-  async #publishedTabsChanged(appId: string) {
-    const tab = await this.#options.apps.openTabWorkspace(appId);
-    if (tab) await this.#options.tabsChanged?.(tab.workspaceId);
+  #publishedTabsChanged(appId: string) {
+    return this.#notifyTabs(
+      async () => (await this.#options.apps.openTabWorkspace(appId))?.workspaceId,
+    );
+  }
+  /** The change is committed, and the bootstrap poll repairs a lost notice. */
+  async #notifyTabs(workspace: () => Promise<WorkspaceId | undefined>) {
+    try {
+      const workspaceId = await workspace();
+      if (workspaceId) await this.#options.tabsChanged?.(workspaceId);
+    } catch {
+      return;
+    }
   }
 
   async publish(
