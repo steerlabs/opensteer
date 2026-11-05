@@ -161,7 +161,7 @@ export const integration_call = defineAgentTool({
   name: "integration_call",
   title: "Call an integration",
   description:
-    "Run an operation search returned, as an account, with arguments matching its input. Returns operation content/error. Live account/grant checks apply. Never grant access. SMS/email sign-in code retrieval needs explicit authorization for that sign-in; other credentials stay in the Request UI. Use computer for Mac/phone interfaces.",
+    "Run an operation search returned, as an account, with arguments matching its input. Returns operation content/error. Live account/grant checks apply. Never grant access. A person's request to sign in covers retrieving its SMS/email code; other credentials stay in the Request UI. Use computer for Mac/phone interfaces.",
   input: CallInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: IntegrationCallOutputSchema,
   access: "write",

@@ -9,7 +9,7 @@ Use a fitting integration for service account and API work, including built-in c
 
 Select accounts by `connectionId`, never display name. Search shows each operation's `input`, so call it directly with its `name` and the `connectionId` as `account`. The Host checks the current account and grant at execution.
 
-Credentials belong in the Request UI. Except for explicitly authorized SMS/email sign-in codes (see boundaries), never collect or retrieve service secrets yourself, and never bypass denied access with another account or transport. Mac apps and Android phones use `app()` and `phone()` in the `computer` tool (opensteer:computer-use), never with `integration_call`.
+Credentials belong in the Request UI. Except for SMS/email codes for a sign-in the person asked for (see boundaries), never collect or retrieve service secrets yourself, and never bypass denied access with another account or transport. Mac apps and Android phones use `app()` and `phone()` in the `computer` tool (opensteer:computer-use), never with `integration_call`.
 
 Use `integration_manage` to list, disconnect, uninstall or revoke grants directly within
 full-access and reach. `channel_manage` lists/revokes bindings or pauses/resumes existing
