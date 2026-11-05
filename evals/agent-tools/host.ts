@@ -122,6 +122,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     request_withdraw: async () => unavailable(),
     browser_profile_list: async () => unavailable(),
     sign_in: async () => unavailable(),
+    use_card: async () => unavailable(),
     browser_profile_request: async () => unavailable(),
     machine_full_disk_access_request: async () => unavailable(),
     browser_tab_read: async () => unavailable(),

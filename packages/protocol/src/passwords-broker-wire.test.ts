@@ -28,70 +28,24 @@ const fixturePath = path.resolve(
   import.meta.dirname,
   "../../../apps/desktop/native/passwords/Tests/Fixtures/passwords-wire.json",
 );
-const brokerFixture = JSON.parse(readFileSync(fixturePath, "utf8")) as {
+const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as {
   readonly error: unknown;
   readonly event: unknown;
+  readonly rejected: readonly { readonly method: string; readonly params: unknown }[];
   readonly requests: Readonly<Record<string, readonly unknown[]>>;
   readonly results: Readonly<Record<string, readonly unknown[]>>;
-};
-const cardTransactionId = "00000000-0000-4000-8000-000000000001";
-const card = {
-  id: cardTransactionId,
-  revision: 1,
-  brand: "Visa",
-  lastFour: "4242",
-  label: null,
-  expiryMonth: 1,
-  expiryYear: 2030,
-};
-const cardRequests = {
-  "card.probe": [{}],
-  "card.request": [
-    {
-      protocolVersion: 7,
-      permissionVersion: 7,
-      transactionId: cardTransactionId,
-      expiresAt: "2030-01-01T00:00:00.000Z",
-      site: "https://example.com",
-      workspaceId: "wsp_00000000-0000-4000-8000-000000000002",
-      deploymentId: "test",
-      deploymentName: "Test",
-      workspaceName: "Main",
-      threadTitle: "Checkout",
-      reason: "Fill checkout",
-    },
-  ],
-  "card.approve": [
-    { transactionId: cardTransactionId, cardId: card.id, revision: 1, permissionVersion: 7 },
-  ],
-  "card.release": [
-    {
-      transactionId: cardTransactionId,
-      topOrigin: "https://example.com",
-      frameOrigin: "https://payments.example.net",
-      field: "number",
-    },
-  ],
-};
-const cardResults = {
-  "card.probe": [{ cards: "has-card" }],
-  "card.request": [{ decision: "approve", cards: [card] }],
-  "card.approve": [
-    { decision: "authorized", card: { id: card.id, revision: 1, brand: "Visa", lastFour: "4242" } },
-  ],
-  "card.release": [
-    { released: true, value: "synthetic-value" },
-    { released: false, reason: "no-field" },
-  ],
-};
-const fixture: typeof brokerFixture = {
-  ...brokerFixture,
-  requests: { ...cardRequests, ...brokerFixture.requests },
-  results: { ...cardResults, ...brokerFixture.results },
 };
 const methods = PasswordsBrokerMethodSchema.options;
 
 describe("Passwords broker wire fixture", () => {
+  it("refuses login and card shapes on each other's methods", () => {
+    expect(fixture.rejected.length).toBeGreaterThan(0);
+    for (const { method, params } of fixture.rejected) {
+      const schema = passwordsBrokerRequests[PasswordsBrokerMethodSchema.parse(method)];
+      expect(schema.safeParse(params).success).toBe(false);
+    }
+  });
+
   it("accepts 100 page-ranked accounts and refuses 101", () => {
     const account = {
       id: "00000000-0000-4000-8000-000000000001",
@@ -162,8 +116,8 @@ describe("Passwords broker wire fixture", () => {
     const answered = (fixture.results.hello ?? []).map(
       (hello) => passwordsBrokerResults.hello.parse(hello).protocolVersion,
     );
-    expect(new Set(asked)).toEqual(new Set([4, 5, 6]));
-    expect(new Set(answered)).toEqual(new Set([4, 5, 6]));
+    expect(new Set(asked)).toEqual(new Set([4, 5, 6, 7]));
+    expect(new Set(answered)).toEqual(new Set([4, 5, 6, 7]));
   });
 
   it("asks protocol-5 consent for a Workspace, never for a page or at version 4", () => {

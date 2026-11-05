@@ -49,7 +49,7 @@ it("settles card consent without reporting a login or payment and keeps choices 
     const outcome = passwordSignInOutcome(resolved);
     expect(outcome?.text).toContain("Allowed card use");
     expect(outcome?.text).not.toMatch(/sign.?in|paid|purchased/iu);
-    if (resolved.status === "pending") throw new Error("Expected settlement");
+    if (resolved.status !== "fulfilled") throw new Error("Expected settlement");
     expect(requestReceipt(resolved).title).not.toMatch(/sign.?in/iu);
   } finally {
     client.dispose();
