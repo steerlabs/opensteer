@@ -40,6 +40,7 @@ import {
   toolText,
 } from "../runtime/computer-apps.test-support.js";
 import {
+  acceptCallerRun,
   connectCallerMachine,
   createMachineAccessDatabase,
   dispatchCallerRun,
@@ -47,6 +48,7 @@ import {
   resetMachineAccessDatabase,
   signUpUser,
   startMachineAccessHost,
+  waitForExecute,
   type MachineAccessHost,
 } from "../runtime/machine-access.test-support.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
@@ -359,6 +361,8 @@ integration("API-key reconnect incident", () => {
       closers.unshift(gateway.close.bind(gateway));
       const credentialBefore = await credentialRow(host, aId);
       const connectionIdsBefore = oldBehaviorRows.map(({ id }) => id).sort();
+      // Its Run has ended, so the answer starts the next one, which a Runner must take up.
+      const continuationExecute = waitForExecute(caller.primary.socket);
       // This is the updated command sent by both the web card and mobile sheet.
       await connect("api-key-reconnect-fixed-card", keyInput(goodKey, aId));
       const repaired = await connectionRow(host, aId);
@@ -387,8 +391,10 @@ integration("API-key reconnect incident", () => {
         detail: { requestedConnectionId: aId },
       });
       await expect
-        .poll(async () => (await continuation(reconnectRequestId))?.status)
+        .poll(async () => (await continuation(reconnectRequestId))?.status, { timeout: 15_000 })
         .toBe("queued");
+      const continuationRun = await acceptCallerRun(host, caller, await continuationExecute);
+      closers.unshift(() => continuationRun.complete());
       const queuedInput = await host.store.database
         .selectFrom("threadInputs")
         .selectAll()
@@ -400,7 +406,7 @@ integration("API-key reconnect incident", () => {
         .executeTakeFirstOrThrow();
       expect(queuedInput).toMatchObject({
         threadId: run.threadId,
-        state: "pending",
+        state: "delivered",
         policy: "queue",
       });
       const after = await gateway.call("integration_search", { query: "Vapi API" });
