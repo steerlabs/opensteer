@@ -3,7 +3,7 @@
 A founder and release recipe, not a per-change gate. Run it only when Tim asks and supplies the
 signing team and device identifier privately. The device must be paired, reachable and in Developer
 Mode; a new device needs the team's current Apple Program License Agreement accepted. Reusing
-`com.opensteer.mobile` updates the existing install: never uninstall to update. Connect needs the
+`com.opensteer.opensteer` updates the existing install: never uninstall to update. Connect needs the
 Account origin baked in (`accountUrl` in `apps/desktop/src/releases/desktop-release.json`); without
 it the app lists computers but cannot reach them.
 
@@ -31,7 +31,7 @@ test -s "$MOBILE_APP_PATH/main.jsbundle"
 grep -qF "${EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN:?}" "$MOBILE_APP_PATH/main.jsbundle"
 xcrun devicectl device install app --device "$MOBILE_DEVICE_ID" "$MOBILE_APP_PATH" \
   --json-output "$MOBILE_EVIDENCE_DIR/install.json" --timeout 120
-xcrun devicectl device process launch --device "$MOBILE_DEVICE_ID" com.opensteer.mobile \
+xcrun devicectl device process launch --device "$MOBILE_DEVICE_ID" com.opensteer.opensteer \
   --json-output "$MOBILE_EVIDENCE_DIR/launch.json" --timeout 30
 ```
 
@@ -43,12 +43,13 @@ flow. Keep device IDs and private configuration out of published receipts.
 
 ## Private preview signing and acceptance
 
-Tim alone registers the App IDs `com.opensteer.mobile` and
-`com.opensteer.mobile.NotificationService`, creates the App Group
+Tim alone registers the App IDs `com.opensteer.opensteer` and
+`com.opensteer.opensteer.NotificationService`, creates the App Group
 `group.com.opensteer.mobile.notifications` and provisions both targets. Both carry
 application-groups only; never add keychain-access-groups. Preview Keychain items use the App Group
 explicitly; existing login credentials keep their default group. The extension needs no APNs key,
-topic or background mode; the APNs topic stays `com.opensteer.mobile`.
+topic or background mode; the APNs topic stays `com.opensteer.mobile` until the [required
+flip](app-store.md#move-the-push-topic), so a build under the new ID gets no push before then.
 
 With Tim's provisioning and the device's owner, verify both targets' entitlements and signed
 delivery: authenticated text; generic text on tamper, expiry or missing key; before first unlock;

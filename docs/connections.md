@@ -48,6 +48,18 @@ operation identity. Unlink keeps its credential until the Account acknowledges r
 refusal with a validated reason retires only the rejected step and keeps the credential; unknown,
 malformed, reasonless and temporary failures stay journaled and visible.
 
+Account deletion needs no Host, so a lost computer can't block it: the Account revokes Connect, then
+one transaction removes the Deployments it owns. There is no ownership transfer, so deleting a
+server's owner ends Account sign-in there for every member. The Host learns on its next call, when
+its credential answers 401, which alone could be a proxy. Activation is the probe, because it
+changes nothing and an ended link answers not-found or cancelled; never probe with unlink, which
+deletes a link that still works. Only revoke and a `disabled` projection accept that answer, since
+`ready` would report a tunnel that is gone, and revoke or unlink may replace a stuck projection. The
+link row stays until the person unlinks, so an empty Account database can't make Macs discard their
+credentials. Apple's token is revoked only after the commit, because Apple must not hear of a
+deletion that was refused. The Sign in with Apple client secret is minted at startup and lasts 180
+days, so the Account service must restart within that.
+
 For Account linking, the Host signs a per-challenge encryption key into its proof, and the Account
 seals completion to that key only after verifying the pinned Host signature, so the courier and
 desktop recovery journal hold only ciphertext. The Host verifies completion outside its transaction,

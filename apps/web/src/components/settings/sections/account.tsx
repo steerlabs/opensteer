@@ -45,7 +45,8 @@ function AccountSessionCard({
 }: {
   readonly account: DeploymentAccessSnapshot["account"] | null;
 }) {
-  const { deploymentAccess, desktopBridge } = useShell();
+  const { deploymentAccess, desktopBridge, snapshot } = useShell();
+  const portalOrigin = snapshot.identityConfig?.portalOrigin ?? null;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
@@ -115,6 +116,23 @@ function AccountSessionCard({
             </>
           }
         />
+        {action === "sign-out" && portalOrigin ? (
+          <SettingsRow
+            action={
+              <a
+                className="btn btn--ghost btn--small"
+                href={`${portalOrigin}/account/delete`}
+                rel="noreferrer"
+                target="_blank"
+              >
+                Delete Account
+              </a>
+            }
+            detail="Permanently delete this Account. You’ll confirm in your browser."
+            icon="user"
+            title="Delete Account"
+          />
+        ) : null}
       </div>
       <SettingsError message={error} />
       {signingOut && desktopBridge ? (

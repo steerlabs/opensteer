@@ -32,7 +32,9 @@ import {
 import { registerControlPlaneRoutes, toWebHeaders } from "../portal/routes.js";
 import { registerNotificationRoutes } from "../notifications/notification-routes.js";
 import type { ControlPlaneNotificationStore } from "../notifications/notification-store.js";
+import { AccountDeletionService } from "../account/account-deletion.js";
 import type { ConnectLifecycleService } from "../account/connect-lifecycle.js";
+import type { AppleSignInConfig } from "../auth/apple-sign-in.js";
 import { createPortalRouter, type PortalRouter } from "../portal/portal.js";
 import type { PortalSessionStore } from "../portal/portal-sessions.js";
 import type { ControlPlaneStore } from "../database/store.js";
@@ -62,6 +64,7 @@ const ConsentFormSchema = z.strictObject({
 
 export async function createControlPlaneServer(
   dependencies: {
+    readonly appleSignIn?: AppleSignInConfig;
     readonly auth: ControlPlaneAuth;
     readonly authenticator: ControlPlaneAuthenticator;
     readonly connectLifecycle: ConnectLifecycleService;
@@ -154,8 +157,15 @@ export async function createControlPlaneServer(
   // Which one answered a request is decided by its Host header, before any
   // request is rewritten onto the Account public origin. The machine API under
   // /v1 and /healthz belongs to neither browser vhost and stays host-agnostic.
+  const accountDeletion = new AccountDeletionService({
+    ...(dependencies.appleSignIn ? { appleSignIn: dependencies.appleSignIn } : {}),
+    auth: dependencies.auth,
+    connectLifecycle: dependencies.connectLifecycle,
+    store: dependencies.store,
+  });
   const portal = dependencies.portalSessions
     ? createPortalRouter({
+        accountDeletion,
         auth: dependencies.auth,
         ...(dependencies.iosAppUrl ? { iosAppUrl: dependencies.iosAppUrl } : {}),
         ...(dependencies.androidAppUrl ? { androidAppUrl: dependencies.androidAppUrl } : {}),
@@ -176,10 +186,11 @@ export async function createControlPlaneServer(
 
   app.get("/healthz", async () => ({ ok: true }));
   pageFonts.register(app);
-  registerControlPlaneRoutes(app, dependencies);
+  registerControlPlaneRoutes(app, { ...dependencies, accountDeletion });
   registerNotificationRoutes(app, dependencies);
   if (dependencies.hostedOAuthBroker) {
     registerHostedOAuthBrokerRoutes(app, {
+      ...(dependencies.appleSignIn ? { appleSignIn: true } : {}),
       authenticator: dependencies.authenticator,
       auth: dependencies.auth,
       broker: dependencies.hostedOAuthBroker,
@@ -240,6 +251,7 @@ function accountHostGuard(portal: PortalRouter | undefined): (request: FastifyRe
 function registerAccountPages(
   app: FastifyInstance,
   dependencies: {
+    readonly appleSignIn?: AppleSignInConfig;
     readonly auth: ControlPlaneAuth;
     readonly fonts: BrowserPageFonts;
     readonly hostedOAuthBroker?: HostedOAuthBrokerService;
@@ -288,6 +300,7 @@ function registerAccountPages(
           ? `<input type="hidden" name="return_to" value="${escapeHtml(returnTo.toString())}">`
           : `<input type="hidden" name="oauth_query" value="${escapeHtml(oauthQuery)}">`,
         reauthorization,
+        ...(dependencies.appleSignIn ? { appleSignIn: true } : {}),
         ...(returnTo ? { hostedOAuth: true } : {}),
       }),
     );
@@ -303,47 +316,52 @@ function registerAccountPages(
     return reply.redirect("/", 303);
   });
 
-  app.post("/sign-in/google", async (request, reply) => {
-    requireAccountHost(request);
-    void reply.header("cache-control", "no-store");
-    requireExactOrigin(request, publicOrigin.origin);
-    const form = UiFormSchema.parse(parseForm(request.body));
-    const returnTo = hostedOAuthLaunchReturnTo(form.return_to, publicOrigin);
-    if (form.switch_account) {
-      if (!returnTo || !dependencies.hostedOAuthBroker)
-        throw new ControlPlaneError("bad_request", "Hosted OAuth sign-in return is invalid");
-      const attemptId = HostedOAuthAttemptIdSchema.parse(returnTo.pathname.split("/").at(-1));
-      const inspection = await dependencies.hostedOAuthBroker.inspectLaunch(
-        attemptId,
-        returnTo.searchParams.get("ticket")!,
+  const signInWith =
+    (provider: "apple" | "google") => async (request: FastifyRequest, reply: FastifyReply) => {
+      requireAccountHost(request);
+      void reply.header("cache-control", "no-store");
+      requireExactOrigin(request, publicOrigin.origin);
+      const form = UiFormSchema.parse(parseForm(request.body));
+      const returnTo = hostedOAuthLaunchReturnTo(form.return_to, publicOrigin);
+      if (form.switch_account) {
+        if (!returnTo || !dependencies.hostedOAuthBroker)
+          throw new ControlPlaneError("bad_request", "Hosted OAuth sign-in return is invalid");
+        const attemptId = HostedOAuthAttemptIdSchema.parse(returnTo.pathname.split("/").at(-1));
+        const inspection = await dependencies.hostedOAuthBroker.inspectLaunch(
+          attemptId,
+          returnTo.searchParams.get("ticket")!,
+        );
+        if (inspection.status !== "ready" || inspection.finish === "app")
+          throw new ControlPlaneError("bad_request", "Hosted OAuth sign-in return is invalid");
+        const signedOut = await callAuth(auth, request, publicOrigin, "/sign-out", {});
+        copySetCookies(reply, signedOut);
+        if (!signedOut.ok) throw new ControlPlaneError("unauthorized", "Sign out failed");
+      }
+      const body = {
+        provider,
+        ...(form.switch_account && provider === "google"
+          ? { additionalParams: { prompt: "select_account" } }
+          : {}),
+        callbackURL: returnTo?.toString() ?? publicOrigin.origin,
+        ...(form.oauth_query ? { oauth_query: form.oauth_query } : {}),
+      };
+      const response = await callAuth(
+        auth,
+        request,
+        publicOrigin,
+        "/sign-in/social",
+        body,
+        Boolean(form.switch_account),
       );
-      if (inspection.status !== "ready" || inspection.finish === "app")
-        throw new ControlPlaneError("bad_request", "Hosted OAuth sign-in return is invalid");
-      const signedOut = await callAuth(auth, request, publicOrigin, "/sign-out", {});
-      copySetCookies(reply, signedOut);
-      if (!signedOut.ok) throw new ControlPlaneError("unauthorized", "Sign out failed");
-    }
-    const body = {
-      provider: "google",
-      ...(form.switch_account ? { additionalParams: { prompt: "select_account" } } : {}),
-      callbackURL: returnTo?.toString() ?? publicOrigin.origin,
-      ...(form.oauth_query ? { oauth_query: form.oauth_query } : {}),
+      copySetCookies(reply, response);
+      const payload = AuthRedirectResponseSchema.parse(await response.json());
+      if (!response.ok || !payload.url) {
+        throw new ControlPlaneError("unauthorized", "Sign-in could not be started");
+      }
+      return reply.redirect(payload.url);
     };
-    const response = await callAuth(
-      auth,
-      request,
-      publicOrigin,
-      "/sign-in/social",
-      body,
-      Boolean(form.switch_account),
-    );
-    copySetCookies(reply, response);
-    const payload = AuthRedirectResponseSchema.parse(await response.json());
-    if (!response.ok || !payload.url) {
-      throw new ControlPlaneError("unauthorized", "Google sign-in could not be started");
-    }
-    return reply.redirect(payload.url);
-  });
+  app.post("/sign-in/google", signInWith("google"));
+  if (dependencies.appleSignIn) app.post("/sign-in/apple", signInWith("apple"));
 
   app.get("/consent", async (request, reply) => {
     requireAccountHost(request);

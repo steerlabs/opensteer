@@ -22,7 +22,12 @@ import {
 import type { BrowserPageFonts } from "@opensteer/shared/browserPage";
 import { createLocalJWKSet, jwtVerify } from "jose";
 import { z } from "zod";
-import { controlPlaneAuthPath, type ControlPlaneAuth } from "../auth/auth.js";
+import type { AccountDeletionService } from "../account/account-deletion.js";
+import {
+  controlPlaneAuthPath,
+  isRecentAccountAuthentication,
+  type ControlPlaneAuth,
+} from "../auth/auth.js";
 import {
   appendSetCookie,
   expiredCookie,
@@ -33,7 +38,10 @@ import {
 import { ControlPlaneError } from "../server/errors.js";
 import type { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
 import {
+  accountDeletedBody,
   browserPagePolicyWithScript,
+  deleteAccountBody,
+  differentAccountBody,
   openPhoneBody,
   personalHandoffBody,
   personalLinkBody,
@@ -53,6 +61,7 @@ export const portalOAuthScopes = ["openid", "deployments:read", "deployments:wri
 export const portalSignInPath = "/auth/sign-in";
 export const portalCallbackPath = "/auth/callback";
 export const portalSignOutPath = "/auth/sign-out";
+export const portalDeleteAccountPath = "/account/delete";
 export const portalPersonalConnectPath = (deploymentId: string) =>
   `/deployments/${encodeURIComponent(deploymentId)}/connect`;
 export const portalRemoveDeploymentPath = (deploymentId: string) =>
@@ -68,6 +77,7 @@ const silentSignInErrors = new Set([
 ]);
 
 const SignInQuerySchema = z.strictObject({
+  reauthenticate: z.literal("1").optional(),
   silent: z.literal("1").optional(),
   return: z.string().max(maximumReturnPathLength).optional(),
 });
@@ -78,6 +88,8 @@ const CallbackQuerySchema = z.object({
   state: z.string().max(2_048).optional(),
 });
 const FlowSchema = z.strictObject({
+  /** Set when proving it's you: signing in as anyone else must change nothing. */
+  expectedAccountId: ControlPlaneAccountIdSchema.optional(),
   expiresAt: z.number().int().positive(),
   returnPath: z.string().max(maximumReturnPathLength).optional(),
   state: z.string().min(16).max(256),
@@ -91,6 +103,7 @@ const PersonalConnectParamsSchema = z.strictObject({
 type PortalFlow = z.infer<typeof FlowSchema>;
 
 interface PortalDependencies {
+  readonly accountDeletion: AccountDeletionService;
   readonly auth: ControlPlaneAuth;
   /** Where "Get the desktop app" points; without it the row is absent. */
   readonly desktopDownloadUrl?: string;
@@ -176,6 +189,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     return sendBrowserPage(reply, {
       body: portalHomeBody({
         account: { displayName: session.displayName || null, email: session.email },
+        deleteAccountHref: portalDeleteAccountPath,
         desktopDownloadUrl: dependencies.desktopDownloadUrl ?? null,
         rows: deployments.map((deployment, index) =>
           deploymentCard(deployment, presence[index] === true),
@@ -213,6 +227,30 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     });
   }
 
+  async function renderDeleteAccount(
+    reply: FastifyReply,
+    session: PortalSession,
+    failed: boolean,
+  ): Promise<string> {
+    const owned = await dependencies.store.ownedDeployments(
+      ControlPlaneAccountIdSchema.parse(session.accountId),
+    );
+    return sendBrowserPage(reply, {
+      body: deleteAccountBody({
+        action: portalDeleteAccountPath,
+        computers: owned
+          .filter((deployment) => deployment.reachability === "routed")
+          .map((deployment) => deployment.name),
+        email: session.email,
+        failed,
+        servers: owned.filter((deployment) => deployment.reachability !== "routed"),
+      }),
+      fonts,
+      layout: "card",
+      title: "Delete Account · Opensteer",
+    });
+  }
+
   function renderRestart(reply: FastifyReply): string {
     return sendBrowserPage(reply.code(400), {
       body: portalRestartBody(portalSignInPath),
@@ -228,6 +266,14 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     code: string,
   ): Promise<FastifyReply | string> {
     const identity = await proveAccountIdentity(code, flow.verifier);
+    if (flow.expectedAccountId && identity.accountId !== flow.expectedAccountId) {
+      return sendBrowserPage(reply.code(409), {
+        body: differentAccountBody(flow.returnPath ?? "/"),
+        fonts,
+        layout: "plain",
+        title: "Different Account · Opensteer",
+      });
+    }
     const created = await portalSessions.create({
       accountId: identity.accountId,
       accountSessionId: identity.accountSessionId,
@@ -376,7 +422,11 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         const query = SignInQuerySchema.parse(request.query);
         const verifier = randomBytes(32).toString("base64url");
         const returnPath = safeReturnPath(query.return);
+        const proving = query.reauthenticate ? await readSession(request, reply) : undefined;
         const flow: PortalFlow = {
+          ...(proving
+            ? { expectedAccountId: ControlPlaneAccountIdSchema.parse(proving.accountId) }
+            : {}),
           expiresAt: Date.now() + portalFlowLifetimeMilliseconds,
           state: randomBytes(32).toString("base64url"),
           verifier,
@@ -395,6 +445,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           scope: portalOAuthScopes.join(" "),
           state: flow.state,
           ...(query.silent === "1" ? { prompt: "none" } : {}),
+          ...(query.reauthenticate ? { max_age: "0", prompt: "login" } : {}),
         }).toString();
         appendSetCookie(reply, flowCookie(flow));
         return reply.redirect(authorize.toString(), 302);
@@ -444,6 +495,55 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         if (revoked) await store.revokeAccountSession(revoked.accountId, revoked.accountSessionId);
         appendSetCookie(reply, clearSessionCookie());
         return reply.redirect("/", 303);
+      });
+
+      const deleteAccountSignIn = new URLSearchParams({ return: portalDeleteAccountPath });
+      const provenSessionOrRedirect = async (request: FastifyRequest, reply: FastifyReply) => {
+        const session = await readSession(request, reply);
+        if (!session) {
+          void reply.redirect(`${portalSignInPath}?${deleteAccountSignIn.toString()}`, 303);
+          return undefined;
+        }
+        if (!isRecentAccountAuthentication(session.accountSessionCreatedAt)) {
+          void reply.redirect(
+            `${portalSignInPath}?reauthenticate=1&${deleteAccountSignIn.toString()}`,
+            303,
+          );
+          return undefined;
+        }
+        return session;
+      };
+
+      app.get(portalDeleteAccountPath, async (request, reply) => {
+        guard(request);
+        void reply.header("cache-control", "no-store");
+        const session = await provenSessionOrRedirect(request, reply);
+        return session ? renderDeleteAccount(reply, session, false) : reply;
+      });
+
+      app.post(portalDeleteAccountPath, async (request, reply) => {
+        guard(request);
+        void reply.header("cache-control", "no-store");
+        requireExactOrigin(request, origin.origin);
+        const session = await provenSessionOrRedirect(request, reply);
+        if (!session) return reply;
+        try {
+          await dependencies.accountDeletion.delete(
+            ControlPlaneAccountIdSchema.parse(session.accountId),
+          );
+        } catch (error) {
+          if (!(error instanceof ControlPlaneError)) throw error;
+          return renderDeleteAccount(reply.code(error.status), session, true);
+        }
+        // Reading the session refreshed its cookie; only the expiry may reach the browser.
+        void reply.removeHeader("set-cookie");
+        appendSetCookie(reply, clearSessionCookie());
+        return sendBrowserPage(reply, {
+          body: accountDeletedBody(),
+          fonts,
+          layout: "plain",
+          title: "Account deleted · Opensteer",
+        });
       });
 
       app.post("/deployments/:deploymentId/connect", async (request, reply) => {

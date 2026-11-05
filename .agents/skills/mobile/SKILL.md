@@ -1,6 +1,6 @@
 ---
 name: mobile
-description: Use when building or running the Opensteer Expo app on a simulator or device (including mock mode), installing a signed iPhone beta, preparing the mobile VM golden for `pnpm test:vm -- --mobile`, or testing mobile push, dictation, remote text editing and display viewing, or the iPhone Calendar, Contacts and Reminders integrations.
+description: Use when building or running the Opensteer Expo app on a simulator or device (including mock mode), installing a signed iPhone beta, uploading to the App Store, preparing the mobile VM golden for `pnpm test:vm -- --mobile`, or testing mobile push, dictation, remote text editing and display viewing, or the iPhone Calendar, Contacts and Reminders integrations.
 ---
 
 # Mobile
@@ -24,6 +24,7 @@ Procedures for the Expo client in `apps/mobile`. Constraints live in
 
 - [Build and run](references/build-and-run.md): dev client, Release, mock mode, Android push input.
 - [Signed iPhone beta](references/install-beta.md): founder install, private-preview signing.
+- [App Store upload](references/app-store.md): archive, export and upload a release.
 - [Mobile VM golden](references/vm-golden.md): licensed Xcode and runtime inputs.
 - [Push](references/push.md): physical-device push.
 - [Dictation](references/dictation.md): iPhone and Mac speech capture.

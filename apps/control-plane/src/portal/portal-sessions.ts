@@ -14,6 +14,8 @@ const portalSessionSlideMilliseconds = 24 * 60 * 60 * 1_000;
 
 export interface PortalSession {
   readonly accountId: ControlPlaneAccountId;
+  /** When the person last proved themselves; a portal row can be far younger. */
+  readonly accountSessionCreatedAt: Date;
   readonly accountSessionId: string;
   readonly displayName: string;
   readonly email: string;
@@ -71,6 +73,7 @@ export class PortalSessionStore {
       .innerJoin("authSessions", "authSessions.id", "portalSessions.accountSessionId")
       .select([
         "portalSessions.accountId as accountId",
+        "authSessions.createdAt as accountSessionCreatedAt",
         "portalSessions.accountSessionId as accountSessionId",
         "portalSessions.expiresAt as expiresAt",
         "users.displayName as displayName",

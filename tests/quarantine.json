@@ -562,5 +562,23 @@
       "Diagnostic reproduction: pnpm test:integration -- apps/host/src/runtime/runtime.integration.test.ts -t 'persists the exact managed owner' passed in 934 ms; the subsequent complete file passed all 22 tests, with the named case taking 747 ms. Temporary phase markers confirmed initial startup, both closes, restart and both expected startup rejections settled; markers were removed. No assertion, timeout or execution exemption changed. Logs: ~/.local/state/opensteer/work/d2a-skill-identity/{check-first,managed-isolated,managed-full}.log.",
       "Reproduce under the normal four-worker selected integration workload and capture bounded startup/shutdown phase diagnostics, including HostRuntime.closingStep(), if it recurs. Acceptance: identify and gate the blocking operation deterministically, preserve managed-owner identity, enrollment replay, Account publication ordering and mismatch refusal assertions, and pass the complete file plus the selected integration workload before removing this record."
     ]
+  },
+  {
+    "file": "apps/host/src/agents/stack-teardown.integration.test.ts",
+    "name": [
+      "Vertical stack teardown",
+      "joins engines and a held final save before closing Host and its database"
+    ],
+    "area": "Host",
+    "owner": "Host maintainers",
+    "status": "quarantined",
+    "firstSeen": "2026-11-05T05:15:43Z",
+    "deadline": "2026-11-12T00:00:00Z",
+    "sha": "f98094ca168baac2774a27911205a7580fd5ec93",
+    "evidence": [
+      "Load flake, not a regression. The test's 5 s withTimeout starts before the database clone, Host boot and Runner boot, so it bounds all of startup rather than the held final save. Main runs took 2.5 to 5.3 s in this test while passing (b78af23e passed at 5.31 s, before #436 and #439); shard 4 of run 41972173249 ran 1.67x slower than at eeb3f215 and crossed the limit.",
+      "From the code and timings (not reproduced locally), the 79 'That computer is not connected right now' logs in that run follow the timeout rather than cause it: onTestFinished closes the stack and stops the Runner, then the fixture's waitForValue, which ignores shutdown, polls bootstrap.get until its 10 s deadline, giving the 15.18 s duration.",
+      "Reproduction: passes locally at f98094ca and eeb3f215; lowering the 5 s limit below local startup time gives the same error. Acceptance: the deadline measures entry into the final save once startup is cancelled, so shard load can no longer fail it. Re-anchoring it gives startup more time, so it needs Tim's sign-off under the no-longer-timeouts rule."
+    ]
   }
 ]

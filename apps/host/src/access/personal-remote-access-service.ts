@@ -1083,9 +1083,13 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     if (link.accountOperation) {
       const { id: _id, ...pending } = link.accountOperation;
       if (isDeepStrictEqual(pending, input)) return link;
-      // Unlink may cancel an activation whose response was lost. Its finalizer
-      // cannot resurrect the link once this step has replaced it.
-      if (input.kind !== "unlink" || pending.kind !== "activate")
+      // Unlink may cancel an activation whose response was lost, and turning Connect
+      // off or unlinking may replace a projection the Account will never accept.
+      // A replaced step's finalizer is fenced by its id, so it cannot land later.
+      const replaces =
+        (input.kind === "unlink" && pending.kind === "activate") ||
+        ((input.kind === "unlink" || input.kind === "revoke") && pending.kind === "projection");
+      if (!replaces)
         throw new OpensteerError({
           code: "conflict",
           message: "An Account change is awaiting acknowledgement. Use Recover to resume it.",
@@ -1179,12 +1183,25 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       } catch (error) {
         if (!(error instanceof PersonalAccountLinkNotFoundError)) throw error;
       }
-    } else if (operation.kind === "projection")
-      await client.publishPersonalConnect(operation.projection);
-    else
-      result = await client.revokePersonalConnect(
-        RevokeConnectRequestSchema.parse(operation.request),
-      );
+    } else if (operation.kind === "projection") {
+      try {
+        await client.publishPersonalConnect(operation.projection);
+      } catch (error) {
+        // Only "off" is true of a link that ended. Acknowledging "ready" would report
+        // a route whose tunnel no longer exists.
+        if (operation.projection.state !== "disabled" || !(await linkEnded(client, link, error)))
+          throw error;
+      }
+    } else {
+      try {
+        result = await client.revokePersonalConnect(
+          RevokeConnectRequestSchema.parse(operation.request),
+        );
+      } catch (error) {
+        if (!(await linkEnded(client, link, error))) throw error;
+        result = { generation: 0, revoked: true };
+      }
+    }
 
     let ended: readonly AuthSessionId[] = [];
     let staleProjection = false;
@@ -1374,6 +1391,31 @@ function expiredAccountCompletion(): OpensteerError {
     message:
       "Account-link completion has expired or was already consumed. Start Account linking again.",
   });
+}
+
+/**
+ * A deleted Account leaves this credential answering 401 forever, which alone can't
+ * be told from a proxy's refusal. Activation can tell, and unlike unlink it changes
+ * nothing: a live link answers success, and only an ended one answers these two.
+ */
+async function linkEnded(
+  client: AccountDirectoryClient,
+  link: { readonly challengeId: string; readonly linkGeneration: string },
+  refusal: unknown,
+): Promise<boolean> {
+  if (!(refusal instanceof AccountRequestError) || refusal.status !== 401) return false;
+  try {
+    await client.activatePersonalAccountLink({
+      challengeId: PersonalHostAccountLinkChallengeIdSchema.parse(link.challengeId),
+      linkGeneration: AccountLinkGenerationSchema.parse(link.linkGeneration),
+    });
+    return false;
+  } catch (error) {
+    return (
+      error instanceof PersonalAccountLinkNotFoundError ||
+      error instanceof PersonalAccountLinkCancelledError
+    );
+  }
 }
 
 function accountLinkChanged(): OpensteerError {

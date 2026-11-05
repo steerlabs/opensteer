@@ -15,6 +15,7 @@ import type { JWTPayload } from "jose";
 import type { Kysely } from "kysely";
 import { ControlPlaneError } from "../server/errors.js";
 import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
+import { appleOrigin } from "./apple-sign-in.js";
 import { isOfficialNativeReference } from "../database/store.js";
 
 export const controlPlaneAuthPath = "/api/auth";
@@ -32,6 +33,8 @@ interface ControlPlaneAuthConfig {
   readonly publicOrigin: URL;
   readonly googleClientId?: string;
   readonly googleClientSecret?: string;
+  /** Minted before this runs; a process that outlives the secret needs a restart. */
+  readonly apple?: { readonly clientId: string; readonly clientSecret: string };
 }
 
 // Better Auth prefixes this configured name with __Secure- on HTTPS. Keep the
@@ -191,6 +194,7 @@ export function createControlPlaneAuth(
     ],
     rateLimit: {
       customRules: {
+        "/callback/apple": { max: 30, window: 60 },
         "/callback/google": { max: 30, window: 60 },
         "/oauth2/authorize": { max: 60, window: 60 },
         "/oauth2/token": { max: 30, window: 60 },
@@ -210,8 +214,9 @@ export function createControlPlaneAuth(
       modelName: "authSessions",
       updateAge: 24 * 60 * 60,
     },
-    socialProviders:
-      config.googleClientId && config.googleClientSecret
+    socialProviders: {
+      ...(config.apple ? { apple: config.apple } : {}),
+      ...(config.googleClientId && config.googleClientSecret
         ? {
             google: {
               clientId: config.googleClientId,
@@ -222,8 +227,11 @@ export function createControlPlaneAuth(
               prompt: "select_account",
             },
           }
-        : {},
-    trustedOrigins: [config.publicOrigin.origin],
+        : {}),
+    },
+    // Apple answers by posting from its own origin, and any cookie the edge set on
+    // this host makes that post subject to the origin check.
+    trustedOrigins: [config.publicOrigin.origin, ...(config.apple ? [appleOrigin] : [])],
     user: {
       deleteUser: { enabled: false },
       fields: { name: "displayName" },

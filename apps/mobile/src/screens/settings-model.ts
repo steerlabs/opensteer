@@ -141,6 +141,8 @@ export function deploymentSettingsModel(row: DeploymentRow | null): DeploymentSe
 }
 
 /** The Account section as facts and actions, independent of either platform renderer. */
+export const privacyPolicyUrl = "https://opensteer.com/privacy";
+
 /** Null in a build without an Account service, which has nothing to sign in to. */
 export function accountSettingsModel(
   account: AccountState,

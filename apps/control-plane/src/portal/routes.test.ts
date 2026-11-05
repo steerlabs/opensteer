@@ -43,6 +43,7 @@ describe("Host-authorized control-plane routes", () => {
     const app = Fastify();
     apps.push(app);
     registerControlPlaneRoutes(app, {
+      accountDeletion: {} as never,
       authenticator: { authenticate: accountAuthenticate } as never,
       connectLifecycle: { revokeForHost } as never,
       store: { authenticateHostCredential } as never,
@@ -76,6 +77,7 @@ describe("Host-authorized control-plane routes", () => {
     app.setErrorHandler((_error, _request, reply) => reply.status(400).send());
     apps.push(app);
     registerControlPlaneRoutes(app, {
+      accountDeletion: {} as never,
       authenticator: { authenticate: vi.fn() } as never,
       connectLifecycle: { revokeForHost } as never,
       store: { authenticateHostCredential: vi.fn(async () => authority) } as never,
@@ -115,6 +117,7 @@ describe("Host-authorized control-plane routes", () => {
     const app = Fastify();
     apps.push(app);
     registerControlPlaneRoutes(app, {
+      accountDeletion: {} as never,
       authenticator: { authenticate: vi.fn() } as never,
       connectLifecycle: {} as never,
       personalRemoteAccount: { activateLink } as never,
@@ -150,6 +153,7 @@ describe("Host-authorized control-plane routes", () => {
     const app = Fastify();
     apps.push(app);
     registerControlPlaneRoutes(app, {
+      accountDeletion: {} as never,
       authenticator: { authenticate } as never,
       connectLifecycle: {} as never,
       personalRemoteAccount: { cancelLinkOperation } as never,
@@ -186,6 +190,7 @@ describe("Host-authorized control-plane routes", () => {
     const app = Fastify();
     apps.push(app);
     registerControlPlaneRoutes(app, {
+      accountDeletion: {} as never,
       authenticator: { authenticate: vi.fn() } as never,
       connectLifecycle: {} as never,
       personalRemoteAccount: { unlinkPersonalHost } as never,
@@ -216,6 +221,7 @@ describe("Account directory routes", () => {
     const removeDeploymentFromDirectory = vi.fn(async () => undefined);
     const app = Fastify();
     registerControlPlaneRoutes(app, {
+      accountDeletion: {} as never,
       authenticator: { authenticate } as never,
       connectLifecycle: {} as never,
       store: { removeDeploymentFromDirectory } as never,
