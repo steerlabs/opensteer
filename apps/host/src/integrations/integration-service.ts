@@ -1,8 +1,9 @@
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import {
+  accountReturnPort,
+  type IntegrationAccountBinding,
   IntegrationAccountBindingSchema,
   validateIntegrationAccountBinding,
-  type IntegrationAccountBinding,
 } from "./integration-account-binding.js";
 import { inspectGitHubRepositoryAccess } from "./github-repository-access.js";
 import {
@@ -475,6 +476,7 @@ export class IntegrationService {
 
   async beginAuthorization(input: {
     readonly applicationSource?: "deployment-oauth" | "hosted-oauth";
+    readonly appReturnPort?: number;
     readonly exactApplicationSource?: IntegrationOAuthApplicationSource;
     readonly finish?: "app";
     readonly definitionId: string;
@@ -576,6 +578,7 @@ export class IntegrationService {
         message: "Link Opensteer Account to use this provider's HTTPS callback",
       });
     }
+    let appReturnPort: number | undefined;
     if (usesCallbackRelay) {
       const metadata = await hosted!.broker.metadata().catch(() => null);
       if (
@@ -587,6 +590,7 @@ export class IntegrationService {
           message: `Opensteer Account must be updated or restored before this sign-in can start. Register this exact callback in your OAuth app: ${applicationSource.callbackUrl}`,
         });
       }
+      appReturnPort = accountReturnPort(metadata, finish, input.appReturnPort);
     }
     const brokerAttemptId = HostedOAuthAttemptIdSchema.parse(
       `hoa_${attemptId.slice("ioa_".length)}`,
@@ -617,6 +621,7 @@ export class IntegrationService {
                 clientId: application.clientId,
                 clientSurface: input.surface,
                 ...(finish ? { finish } : {}),
+                ...(appReturnPort === undefined ? {} : { appReturnPort }),
                 definitionId: definition.id,
                 deploymentAuthorityDigest: hosted.deploymentAuthorityDigest,
                 expiresAt: brokerExpiresAt.toISOString(),
@@ -669,6 +674,7 @@ export class IntegrationService {
 
   async #beginHostedAuthorization(
     input: {
+      readonly appReturnPort?: number;
       readonly brokerReturnPath: string | undefined;
       readonly finish?: "app";
       readonly definitionId: string;
@@ -710,12 +716,14 @@ export class IntegrationService {
       });
     }
     const finish = input.surface !== "web" ? input.finish : undefined;
-    if (finish === "app" && (await hosted.broker.metadata()).appFinish !== 1) {
+    const metadata = finish === "app" ? await hosted.broker.metadata() : null;
+    if (metadata && metadata.appFinish !== 1) {
       throw new OpensteerError({
         code: "conflict",
         message: "Opensteer Account must be updated before this sign-in can finish in the app.",
       });
     }
+    const appReturnPort = accountReturnPort(metadata, finish, input.appReturnPort);
     const digest = authorizationDigest(definition);
     const attemptId = createIntegrationId("oauthAttempt");
     const brokerAttemptId = HostedOAuthAttemptIdSchema.parse(
@@ -736,6 +744,7 @@ export class IntegrationService {
           authorizationDigest: digest,
           clientSurface: input.surface,
           ...(finish ? { finish } : {}),
+          ...(appReturnPort === undefined ? {} : { appReturnPort }),
           definitionId: definition.id,
           deploymentAuthorityDigest: hosted.deploymentAuthorityDigest,
           expiresAt: brokerExpiresAt.toISOString(),

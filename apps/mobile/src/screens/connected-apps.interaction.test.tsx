@@ -156,6 +156,8 @@ vi.mock("../ui/primitives.js", () => ({
 }));
 
 const { PluginAccounts } = await import("./settings-plugin-accounts.js");
+const { IntegrationAuthorizationCancelUnconfirmedError } =
+  await import("@opensteer/client/integrations");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const roots: Root[] = [];
@@ -198,10 +200,96 @@ describe("Connected apps on the phone", () => {
     expect(state.begin).toHaveBeenCalledWith({
       applicationSource: dashboard.providerAuthorizations.google?.selectedSource,
       definitionId: "google-calendar",
+      signal: expect.any(AbortSignal),
     });
     await vi.waitFor(() =>
       expect(container.textContent).toContain("alex@example.com is connected."),
     );
+  });
+
+  it("says a Cancel is unconfirmed, and shows the completion that won", async () => {
+    const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
+    await client.load();
+    state.hostClient = client;
+    const dashboard = unwrapRpcResult(await client.rpc["integrations.get"]({}));
+    const signIn = phoneSignIn(client);
+    let settle = (_status: unknown) => {};
+    const reconciled = new Promise((resolve) => (settle = resolve));
+    state.begin = vi.fn(
+      ({ signal }: { readonly signal: AbortSignal }) =>
+        new Promise((_, reject) => {
+          signal.addEventListener("abort", () =>
+            reject(
+              new IntegrationAuthorizationCancelUnconfirmedError(
+                "ioa_00000000-0000-4000-8000-000000000001",
+                reconciled as never,
+              ),
+            ),
+          );
+        }),
+    );
+    const container = await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Google Calendar"));
+    const button = (label: string) =>
+      [...container.querySelectorAll("button")].find(
+        (candidate) => candidate.textContent === label,
+      );
+    const row = [...container.querySelectorAll<HTMLElement>("[role=button]")].find((candidate) =>
+      candidate.getAttribute("aria-label")?.startsWith("alex@example.com,"),
+    );
+    await act(async () =>
+      [...(row?.querySelectorAll("button") ?? [])]
+        .find((candidate) => candidate.textContent === "Reconnect")
+        ?.click(),
+    );
+    await vi.waitFor(() => expect(button("Cancel sign-in")).toBeDefined());
+    await act(async () => button("Cancel sign-in")?.click());
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Checking whether this was cancelled"),
+    );
+    expect(button("Cancel sign-in")).toBeUndefined();
+    const won = await signIn({
+      applicationSource: dashboard.providerAuthorizations.google?.selectedSource,
+      definitionId: "google-calendar",
+    });
+    await act(async () => settle(won));
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("alex@example.com is connected."),
+    );
+    expect(container.textContent).not.toContain("Checking whether");
+  });
+
+  it("cancels a sign-in that is still waiting", async () => {
+    const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
+    await client.load();
+    state.hostClient = client;
+    const begin = vi.fn(
+      ({ signal }: { readonly signal: AbortSignal }) =>
+        new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("Cancelled here.")));
+        }),
+    );
+    state.begin = begin;
+    const container = await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Google Calendar"));
+    const cancel = () =>
+      [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Cancel sign-in",
+      );
+    expect(cancel()).toBeUndefined();
+    const row = [...container.querySelectorAll<HTMLElement>("[role=button]")].find((candidate) =>
+      candidate.getAttribute("aria-label")?.startsWith("alex@example.com,"),
+    );
+    await act(async () =>
+      [...(row?.querySelectorAll("button") ?? [])]
+        .find((button) => button.textContent === "Reconnect")
+        ?.click(),
+    );
+    await vi.waitFor(() => expect(cancel()).toBeDefined());
+    await act(async () => cancel()?.click());
+    await vi.waitFor(() => expect(container.textContent).toContain("Cancelled here."));
+    expect(begin.mock.calls[0]?.[0].signal.aborted).toBe(true);
+    expect(cancel()).toBeUndefined();
   });
 
   // The ways it could fail: a GitHub sign-in announced as connected while the
@@ -443,6 +531,7 @@ it("sets up a custom OAuth app in Settings, then connects through the exact save
   await act(async () => add.onPress());
   expect(begin).toHaveBeenCalledWith({
     definitionId: "slack",
+    signal: expect.any(AbortSignal),
     applicationSource: expect.objectContaining({
       providerApplicationId: saved.application.id,
       providerApplicationRevision: saved.application.revision,

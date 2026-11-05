@@ -41,7 +41,7 @@ export const handleReauthorize = (context: DesktopBridgeContext): DesktopBridgeH
 
 export const handleSignOut = (context: DesktopBridgeContext): DesktopBridgeHandler =>
   accessOperation(context, async () => {
-    await context.options.integrationAuthorizations?.attempts.clear();
+    await context.options.integrationAuthorizations?.clear();
     await context.options.access.signOut();
   });
 

@@ -483,8 +483,24 @@ export const SetIntegrationApplicationSourceDefaultSchema = z.strictObject({
  */
 export const IntegrationAuthorizationFinishSchema = z.literal("app");
 
+/**
+ * The ports a desktop app may receive its browser return on. A hostile Host
+ * chooses this value for its own attempts, so it may only name these reserved
+ * ports, never a service a person happens to run on their computer.
+ */
+export const integrationAuthorizationReturnPorts = { first: 48_200, last: 48_215 } as const;
+export const IntegrationAuthorizationReturnPortSchema = z
+  .number()
+  .int()
+  .min(integrationAuthorizationReturnPorts.first)
+  .max(integrationAuthorizationReturnPorts.last);
+
 function refineIntegrationAuthorizationFinish(
-  value: { readonly finish?: "app" | undefined; readonly surface: "desktop" | "native" | "web" },
+  value: {
+    readonly appReturnPort?: number | undefined;
+    readonly finish?: "app" | undefined;
+    readonly surface: "desktop" | "native" | "web";
+  },
   context: z.RefinementCtx,
 ): void {
   if (value.finish === "app" && value.surface === "web") {
@@ -492,6 +508,16 @@ function refineIntegrationAuthorizationFinish(
       code: "custom",
       message: "Only desktop and native apps can finish an authorization",
       path: ["finish"],
+    });
+  }
+  if (
+    value.appReturnPort !== undefined &&
+    (value.finish !== "app" || value.surface !== "desktop")
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Only a desktop app finish can return to a port",
+      path: ["appReturnPort"],
     });
   }
 }
@@ -508,6 +534,7 @@ export const BeginIntegrationAuthorizationSchema = z
       .default("/"),
     surface: z.enum(["desktop", "native", "web"]),
     finish: IntegrationAuthorizationFinishSchema.optional(),
+    appReturnPort: IntegrationAuthorizationReturnPortSchema.optional(),
   })
   .superRefine((value, context) => {
     if (value.applicationSource && value.exactApplicationSource) {
@@ -1388,6 +1415,7 @@ export const BeginMcpAuthorizationSchema = z
     serverId: IntegrationServerIdSchema,
     surface: z.enum(["desktop", "native", "web"]),
     finish: IntegrationAuthorizationFinishSchema.optional(),
+    appReturnPort: IntegrationAuthorizationReturnPortSchema.optional(),
   })
   .superRefine(refineIntegrationAuthorizationFinish);
 

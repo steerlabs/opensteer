@@ -1,3 +1,10 @@
+import type {
+  HostApiCommandInput,
+  HostApiCommandOutput,
+  RpcCallOptions,
+} from "@opensteer/protocol";
+import { createHostNetwork } from "../platform/host-network.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { NotificationPreviews } from "../notifications/notification-preview.js";
 import { addPersonalDeployment } from "./add-deployment.js";
 import { savedViewFixture } from "../../test-support/saved-views.js";
@@ -9,11 +16,18 @@ import {
 import type { DeploymentConnectionInput, PrivateFilesystem } from "@opensteer/client/connections";
 import { createMockHostPort } from "./mock-host-port.js";
 import { mockDeploymentConnections } from "./mock-mode.js";
-import { HostClientRequestError, createMemorySavedViews } from "@opensteer/client/host";
+import {
+  HostClientRequestError,
+  createHttpHostApiClient,
+  createMemorySavedViews,
+  unwrapRpcResult,
+} from "@opensteer/client/host";
+import { HostTransportError } from "@opensteer/client/connections";
 import { MockDesktopUpdates, MockHostClient } from "@opensteer/client/mock";
 import {
   buildNativeIntegrationAuthorizationCallback,
   IntegrationAuthorizationCancelledError,
+  IntegrationAuthorizationCancelUnconfirmedError,
   IntegrationOAuthAttemptIdSchema,
   IntegrationAuthorizationAttemptIdSchema,
 } from "@opensteer/client/integrations";
@@ -141,15 +155,25 @@ function testPort(options: {
                 : {}),
             });
           }
-          if (property === "dispatch") {
-            return (command: { readonly type: string }) => {
-              commands.push(command.type);
-              if (options.refusesCommands === true) {
-                return Promise.reject(new Error("That deployment refused the command."));
-              }
-              return target.dispatch(command as Parameters<typeof target.dispatch>[0]);
-            };
-          }
+          const send: SignalledDispatch = (command, call) => {
+            commands.push(command.type);
+            if (options.refusesCommands === true) {
+              return Promise.reject(new Error("That deployment refused the command."));
+            }
+            return (target.dispatch as SignalledDispatch)(command, call);
+          };
+          if (property === "dispatch") return send;
+          // Commands sent with a signal arrive through `rpc`, where tests' `dispatch` stubs answer.
+          if (property === "rpc")
+            return new Proxy(target.rpc, {
+              get: (rpc, name) =>
+                name === "commands.dispatch"
+                  ? async (command: HostApiCommandInput, call?: RpcCallOptions) => ({
+                      data: await send(command, call),
+                      ok: true,
+                    })
+                  : Reflect.get(rpc, name),
+            });
           if (property === "subscribe") {
             return (listener: () => void) => {
               listeners.add(listener);
@@ -353,6 +377,76 @@ function blockedSignedOutWrites(privateFiles: MemoryPrivateFilesystem) {
       };
     },
     filesystem,
+  };
+}
+
+type SignalledDispatch = (
+  command: HostApiCommandInput,
+  call?: RpcCallOptions,
+) => Promise<HostApiCommandOutput>;
+
+/**
+ * The real RPC client and network above a recorded wire, with credential loading
+ * that can be held. Only the last hop is a stand-in, and it refuses an aborted
+ * signal as every platform fetch does, so what reaches `sent` truly left the phone.
+ */
+function heldCredentialWire() {
+  const sent: string[] = [];
+  const holds: Promise<void>[] = [];
+  let credentialReads = 0;
+  let lastSignal: AbortSignal | undefined;
+  const network = createHostNetwork({
+    authorization: {
+      cached: () => null,
+      current: async () => {
+        credentialReads += 1;
+        const hold = holds.shift();
+        if (hold)
+          await withTimeout(hold, 60_000, {
+            timeoutError: () => new Error("Credential loading was never released."),
+          });
+        return "Bearer test";
+      },
+    },
+    fetch: async (_input, init) => {
+      init?.signal?.throwIfAborted();
+      const { type } = JSON.parse(String(init?.body)) as { readonly type: string };
+      sent.push(type);
+      return Response.json({
+        data: {
+          connectionId: null,
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+          failureCode: null,
+          status: type === "integration.authorization.cancel" ? "cancelled" : "completed",
+          type,
+        },
+        ok: true,
+      });
+    },
+    openWebSocket: () => {
+      throw new Error("This wire carries no sockets.");
+    },
+    origin: "https://host.example.test",
+  });
+  const http = createHttpHostApiClient({
+    baseUrl: new URL("https://host.example.test"),
+    fetch: network.fetch,
+    onAuthenticationRequired: () => undefined,
+  });
+  return {
+    credentialReads: () => credentialReads,
+    /** Holds the next credential read; the call it returns lets it finish. */
+    hold: () => {
+      const gate = Promise.withResolvers<void>();
+      holds.push(gate.promise);
+      return gate.resolve;
+    },
+    lastSignal: () => lastSignal,
+    send: (command: HostApiCommandInput, call?: RpcCallOptions) => {
+      lastSignal = call?.signal;
+      return http["commands.dispatch"](command, call).then(unwrapRpcResult);
+    },
+    sent: (type: string) => sent.filter((candidate) => candidate === type),
   };
 }
 
@@ -1067,6 +1161,364 @@ describe("MobileClient integration authorization", () => {
     await expect(client.handleIntegrationAuthorizationCallback(callback)).resolves.toBeNull();
     expect(port.commands).toHaveLength(commands);
     expect(await records.read("integration-authorization-attempts")).toBeNull();
+    client.dispose();
+  });
+});
+
+describe("MobileClient cancelling an integration sign-in", () => {
+  const expiresAt = new Date(Date.now() + 600_000).toISOString();
+  const proof = "r".repeat(43);
+
+  const answered = (status: "cancelled" | "completed") => ({
+    connectionId: status === "completed" ? "con_00000000-0000-4000-8000-0000000000aa" : null,
+    expiresAt,
+    failureCode: null,
+    status,
+    type: "integration.authorization.cancel" as const,
+  });
+
+  async function signingIn(
+    input: {
+      readonly answer?: "cancelled" | "completed";
+      /** Answers the Host's cancel in order; once they run out, `answer` applies. */
+      readonly cancelTries?: readonly (() => Promise<unknown>)[];
+      readonly returned?: () => Promise<unknown>;
+      /** Sends both commands over a real client and network instead of answering them here. */
+      readonly wire?: ReturnType<typeof heldCredentialWire>;
+    } = {},
+  ) {
+    const tries = [...(input.cancelTries ?? [])];
+    const cancels = vi.fn(
+      async (_command: { attemptId: unknown }) =>
+        (await tries.shift()?.()) ?? answered(input.answer ?? "cancelled"),
+    );
+    const returns = vi.fn(
+      async () =>
+        (await input.returned?.()) ?? {
+          connectionId: null,
+          expiresAt,
+          failureCode: null,
+          status: "completed" as const,
+          type: "integration.authorization.return" as const,
+        },
+    );
+    const port = testPort({
+      held: true,
+      verification: { status: "compatible", capabilities: ["integration-app-finish-v1"] },
+      configureClient: (host) => {
+        const dispatch = host.dispatch.bind(host);
+        (host as { dispatch: SignalledDispatch }).dispatch = async (command, call) => {
+          if (
+            input.wire &&
+            (command.type === "integration.authorization.cancel" ||
+              command.type === "integration.authorization.return")
+          )
+            return input.wire.send(command, call);
+          if (command.type === "integration.authorization.cancel") return cancels(command) as never;
+          if (command.type === "integration.authorization.return") return returns() as never;
+          return dispatch(command);
+        };
+      },
+    });
+    let opened!: (url: string) => void;
+    const browserOpened = new Promise<string>((resolve) => {
+      opened = resolve;
+    });
+    const { client } = open(port.factory, new MemoryPrivateFilesystem(), {
+      // Stays open like a real session, and ends only when its signal says so.
+      openIntegrationAuthorization: (url, signal) =>
+        new Promise((_, reject) => {
+          opened(url);
+          signal?.addEventListener("abort", () =>
+            reject(new IntegrationAuthorizationCancelledError()),
+          );
+        }),
+    });
+    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.initialize();
+    await client.select(serverId);
+    const controller = new AbortController();
+    const started = client.beginIntegrationAuthorization({
+      definitionId: "slack",
+      signal: controller.signal,
+    });
+    started.catch(() => undefined);
+    const callback = buildNativeIntegrationAuthorizationCallback({
+      attemptId: IntegrationOAuthAttemptIdSchema.parse(
+        new URL(await browserOpened).pathname.split("/").at(-2),
+      ),
+      deploymentId: DeploymentIdSchema.parse(serverId),
+      returnProof: proof,
+    });
+    return { callback, cancels, client, controller, returns, started };
+  }
+
+  it("tells the Host, ends the browser wait and refuses a late return", async () => {
+    const { callback, cancels, client, controller, returns, started } = await signingIn();
+    controller.abort();
+    await expect(started).rejects.toBeInstanceOf(IntegrationAuthorizationCancelledError);
+    expect(cancels).toHaveBeenCalledTimes(1);
+    await expect(client.handleIntegrationAuthorizationCallback(callback)).resolves.toBeNull();
+    expect(returns).not.toHaveBeenCalled();
+    client.dispose();
+  });
+
+  // The ways it could fail: `withTimeout` stops only the waiter, so a request held
+  // by credential loading still goes out when they arrive. A proof reaching the
+  // Host after Cancel can finish a sign-in the person ended.
+  describe("a request still waiting for credentials", () => {
+    const flushed = () => new Promise((resolve) => setImmediate(resolve));
+    const proofs = "integration.authorization.return";
+    const cancels = "integration.authorization.cancel";
+
+    it("sends no proof once Cancel has landed", async () => {
+      const wire = heldCredentialWire();
+      const { callback, client, controller, started } = await signingIn({ wire });
+      const release = wire.hold();
+      const delivery = client.handleIntegrationAuthorizationCallback(callback);
+      await vi.waitFor(() => expect(wire.credentialReads()).toBe(1));
+      const proofRequest = wire.lastSignal();
+      expect(proofRequest?.aborted).toBe(false);
+      controller.abort();
+      expect(proofRequest?.aborted).toBe(true);
+      await expect(started).rejects.toBeInstanceOf(IntegrationAuthorizationCancelledError);
+      release();
+      await expect(delivery).resolves.toBeNull();
+      await flushed();
+      expect(wire.sent(proofs)).toEqual([]);
+      expect(wire.sent(cancels)).toHaveLength(1);
+      client.dispose();
+    });
+
+    it("sends only the retry of a proof whose first try timed out", async () => {
+      const wire = heldCredentialWire();
+      const { callback, client } = await signingIn({ wire });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const release = wire.hold();
+        const delivery = client.handleIntegrationAuthorizationCallback(callback);
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(wire.credentialReads()).toBe(1);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await delivery;
+        expect(wire.sent(proofs)).toHaveLength(1);
+        release();
+        await vi.advanceTimersByTimeAsync(0);
+      } finally {
+        vi.useRealTimers();
+      }
+      await flushed();
+      expect(wire.sent(proofs)).toHaveLength(1);
+      client.dispose();
+    });
+
+    it("sends only the retry of a Cancel whose first try timed out", async () => {
+      const wire = heldCredentialWire();
+      const { client, controller, started } = await signingIn({ wire });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const release = wire.hold();
+        controller.abort();
+        await vi.advanceTimersByTimeAsync(10_000);
+        const error = await started.catch((reason: unknown) => reason);
+        expect(error).toBeInstanceOf(IntegrationAuthorizationCancelUnconfirmedError);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expect(
+          (error as IntegrationAuthorizationCancelUnconfirmedError).reconciled,
+        ).resolves.toMatchObject({ status: "cancelled" });
+        expect(wire.sent(cancels)).toHaveLength(1);
+        release();
+        await vi.advanceTimersByTimeAsync(0);
+      } finally {
+        vi.useRealTimers();
+      }
+      await flushed();
+      expect(wire.sent(cancels)).toHaveLength(1);
+      client.dispose();
+    });
+  });
+
+  describe("when the Host does not answer the Cancel", () => {
+    const unanswered = () => Promise.reject(new HostTransportError("unreachable"));
+    const reconcile = async (started: Promise<unknown>) => {
+      const error = await started.then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+      expect(error).toBeInstanceOf(IntegrationAuthorizationCancelUnconfirmedError);
+      return error as IntegrationAuthorizationCancelUnconfirmedError;
+    };
+
+    it("says it is unconfirmed, and the completion that won still wins", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { callback, cancels, client, controller, returns, started } = await signingIn({
+          answer: "completed",
+          cancelTries: [unanswered],
+        });
+        controller.abort();
+        const error = await reconcile(started);
+        expect(error.attemptId).toMatch(/^ioa_/u);
+        await expect(client.handleIntegrationAuthorizationCallback(callback)).resolves.toBeNull();
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expect(error.reconciled).resolves.toMatchObject({ status: "completed" });
+        expect(cancels).toHaveBeenCalledTimes(2);
+        expect(returns).not.toHaveBeenCalled();
+        client.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("treats a request that hangs past its deadline the same way", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { client, controller, started } = await signingIn({
+          answer: "completed",
+          cancelTries: [() => new Promise(() => {})],
+        });
+        controller.abort();
+        await vi.advanceTimersByTimeAsync(10_000);
+        const error = await reconcile(started);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expect(error.reconciled).resolves.toMatchObject({ status: "completed" });
+        client.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("reports the cancel once the Host confirms it", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { client, controller, started } = await signingIn({ cancelTries: [unanswered] });
+        controller.abort();
+        const error = await reconcile(started);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expect(error.reconciled).resolves.toMatchObject({ status: "cancelled" });
+        client.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps trying until the Host answers, backing off", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { cancels, client, controller, started } = await signingIn({
+          answer: "completed",
+          cancelTries: [unanswered, unanswered, unanswered],
+        });
+        controller.abort();
+        const error = await reconcile(started);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(cancels).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(cancels).toHaveBeenCalledTimes(3);
+        await vi.advanceTimersByTimeAsync(4_000);
+        await expect(error.reconciled).resolves.toMatchObject({ status: "completed" });
+        client.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops claiming anything when the Host refuses the question", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const refused = new HostClientRequestError({
+          code: "forbidden",
+          message: "Wrong owner",
+          status: 403,
+        });
+        const { client, controller, started } = await signingIn({
+          cancelTries: [unanswered, () => Promise.reject(refused)],
+        });
+        controller.abort();
+        const error = await reconcile(started);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expect(error.reconciled).resolves.toBeNull();
+        client.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops asking once the attempt is long past its expiry", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      try {
+        const { client, controller, started } = await signingIn({
+          cancelTries: Array.from({ length: 200 }, () => unanswered),
+        });
+        controller.abort();
+        const error = await reconcile(started);
+        await vi.advanceTimersByTimeAsync(20 * 60_000);
+        await expect(error.reconciled).resolves.toBeNull();
+        client.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops when the app is torn down", async () => {
+      const { client, controller, started } = await signingIn({
+        cancelTries: [unanswered, unanswered],
+      });
+      controller.abort();
+      const error = await reconcile(started);
+      client.dispose();
+      await expect(error.reconciled).resolves.toBeNull();
+    });
+  });
+
+  it("reports the completion that won instead of Cancelled", async () => {
+    const { client, controller, started } = await signingIn({ answer: "completed" });
+    controller.abort();
+    await expect(started).resolves.toMatchObject({ status: "completed" });
+    client.dispose();
+  });
+
+  it("stops an app-link delivery that started first, before its proof goes out", async () => {
+    const { callback, cancels, client, controller, returns, started } = await signingIn();
+    const load = client.catalog.load.bind(client.catalog);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const catalogRead = vi.spyOn(client.catalog, "load").mockImplementationOnce(async () => {
+      await held;
+      return load();
+    });
+    const delivery = client.handleIntegrationAuthorizationCallback(callback);
+    await vi.waitFor(() => expect(catalogRead).toHaveBeenCalled());
+    controller.abort();
+    await expect(started).rejects.toBeInstanceOf(IntegrationAuthorizationCancelledError);
+    release();
+    await expect(delivery).resolves.toBeNull();
+    expect(returns).not.toHaveBeenCalled();
+    expect(cancels).toHaveBeenCalledTimes(1);
+    client.dispose();
+  });
+
+  it("lets the Host decide when the proof had already gone out", async () => {
+    let sent!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      sent = resolve;
+    });
+    const { callback, client, controller, started } = await signingIn({
+      answer: "completed",
+      returned: () => {
+        sent();
+        return new Promise(() => {});
+      },
+    });
+    const delivery = client.handleIntegrationAuthorizationCallback(callback);
+    await withTimeout(reached, 5_000, {
+      timeoutError: () => new Error("The proof never reached the Host."),
+    });
+    controller.abort();
+    await expect(started).resolves.toMatchObject({ status: "completed" });
+    await expect(delivery).resolves.toBeNull();
     client.dispose();
   });
 });

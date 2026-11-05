@@ -61,6 +61,7 @@ import {
 } from "./config.js";
 import { ensureConfiguredDeployment } from "@opensteer/client/connections";
 import { DesktopLocalVisibility } from "./app/local-visibility.js";
+import { DesktopLoginSession } from "./app/login-session.js";
 import { DesktopShutdown } from "./app/desktop-shutdown.js";
 import { DesktopMainProcess } from "./app/desktop-main-process.js";
 import { registerDesktopBridge } from "./bridge/registration.js";
@@ -192,6 +193,7 @@ const webLinks = new DesktopWebLinks((message) => {
     .catch(reportFatal);
 });
 app.once("will-quit", () => webLinks.dispose());
+app.once("will-quit", () => void integrationAuthorizations.close());
 let activeMainProcess: DesktopMainProcess | null = null;
 let desktopLog: RotatingPersonalLog | null = null;
 const shutdown = new DesktopShutdown({ application: app, power: powerMonitor, log: reportEvent });
@@ -1003,6 +1005,8 @@ async function runDesktop(
     systemPreferences,
     process.platform,
   );
+  const loginSession = new DesktopLoginSession(powerMonitor, process.platform);
+  const detachLoginSession = integrationAuthorizations.useLoginSession(loginSession);
   let workspaceContents: Electron.WebContents | null = null;
   const unregisterBridge = registerDesktopBridge({
     updates: {
@@ -1319,6 +1323,8 @@ async function runDesktop(
       tray.dispose();
       unregisterBridge();
       localVisibility.dispose();
+      detachLoginSession();
+      loginSession.dispose();
       phoneAdb.dispose();
       detachPhoneAdb();
       detachUsbDevices();

@@ -267,6 +267,11 @@ export const HostCapabilitySchema = z.enum([
    * instead of the browser signing into the Opensteer Account.
    */
   "integration-app-finish-v1",
+  /**
+   * `integration.*.authorization.begin` accepts `appReturnPort`, so a desktop
+   * app's listener can receive that proof without a click.
+   */
+  "integration-app-return-port-v1",
   /** This Host accepts a Personal remote session delivered in a request header. */
   "personal-session-header",
   /** Threads can be renamed, and a new one can ask to be named from its first message. */

@@ -91,6 +91,8 @@ import type {
   DesktopOpenHostWebSocketResult,
   DesktopOpenIntegrationAuthorizationInput,
   DesktopOpenIntegrationAuthorizationResult,
+  DesktopPrepareIntegrationAuthorizationReturnInput,
+  DesktopPrepareIntegrationAuthorizationReturnResult,
   DesktopPickFolderResult,
   DesktopRequestFullDiskAccessResult,
   DesktopRemoveAccountDeploymentInput,
@@ -143,6 +145,8 @@ import {
   DesktopOpenHostWebSocketResultSchema,
   DesktopOpenIntegrationAuthorizationInputSchema,
   DesktopOpenIntegrationAuthorizationResultSchema,
+  DesktopPrepareIntegrationAuthorizationReturnInputSchema,
+  DesktopPrepareIntegrationAuthorizationReturnResultSchema,
   DesktopRequestFullDiskAccessResultSchema,
   DesktopRemoveAccountDeploymentInputSchema,
   DesktopBadgeCountInputSchema,
@@ -717,6 +721,15 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       await invoke<DesktopOpenHostWebSocketResult>(
         desktopBridgeChannels.openHostWebSocket,
         DesktopOpenHostWebSocketInputSchema.parse(input),
+      ),
+    ),
+  prepareIntegrationAuthorizationReturn: async (
+    input: DesktopPrepareIntegrationAuthorizationReturnInput,
+  ) =>
+    DesktopPrepareIntegrationAuthorizationReturnResultSchema.parse(
+      await invoke<DesktopPrepareIntegrationAuthorizationReturnResult>(
+        desktopBridgeChannels.prepareIntegrationAuthorizationReturn,
+        DesktopPrepareIntegrationAuthorizationReturnInputSchema.parse(input),
       ),
     ),
   openIntegrationAuthorization: async (input: DesktopOpenIntegrationAuthorizationInput) =>

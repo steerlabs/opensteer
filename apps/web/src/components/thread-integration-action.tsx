@@ -13,12 +13,13 @@ import { Link, useSearchParams } from "react-router";
 import type { Request } from "@opensteer/core";
 import { desktopBridge } from "../desktop/desktop-bridge.js";
 import {
+  integrationAppButtonOffered,
   integrationAuthorizationError,
   integrationAuthorizationSurface,
-  integrationAuthorizationFinish,
   finishDesktopIntegrationAuthorization,
   beginIntegrationAuthorization,
   waitForIntegrationAuthorization,
+  type IntegrationAuthorizationReturnRoute,
 } from "../integrations/integration-authorization.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
 import { ActionNote } from "./action-rows.js";
@@ -45,6 +46,7 @@ import {
   computerAccessUpgrade,
   connectAvailability,
   effectiveIntegrationAccess,
+  integrationAuthorizationWaitingDetail,
   repositoryAccountStep,
   resolveIntegrationAccess,
   type AccessPlan,
@@ -102,6 +104,7 @@ export function ThreadIntegrationAction({
     access: IntegrationAccess;
   } | null>(null);
   const [authorization, setAuthorization] = useState<IntegrationAuthorizationStart | null>(null);
+  const [appButtonOffered, setAppButtonOffered] = useState(false);
   const authorizationController = useRef<AbortController | null>(null);
   const operationGeneration = useRef(0);
   /**
@@ -455,7 +458,12 @@ export function ThreadIntegrationAction({
       await finishDesktopIntegrationAuthorization(desktopBridge(), hostClient, started.attemptId);
       tracking.finished(started.attemptId);
       const outcome = integrationAuthorizationError(status.status, status.failureCode);
-      if (outcome) throw new Error(outcome);
+      if (outcome) {
+        setAppButtonOffered(
+          integrationAppButtonOffered(tracking, started.attemptId, status.status),
+        );
+        throw new Error(outcome);
+      }
       if (!status.connectionId)
         throw new Error(
           "Authorization finished without recording an account. Start the connection again.",
@@ -627,7 +635,7 @@ export function ThreadIntegrationAction({
         client: hostClient,
         onStarted: tracking.started,
         returnPath: `/threads/${encodeURIComponent(threadId)}`,
-        begin: async (returnPath) => {
+        begin: async (returnPath, finish) => {
           const next = await prepare();
           const nextCard = connectCard({
             loaded: next,
@@ -645,7 +653,7 @@ export function ThreadIntegrationAction({
               exactApplicationSource: nextCard.source,
               returnPath,
               surface: integrationAuthorizationSurface(desktopBridge()),
-              ...integrationAuthorizationFinish(desktopBridge(), hostClient),
+              ...finish,
             },
             type: "integration.authorization.begin",
           });
@@ -903,6 +911,9 @@ export function ThreadIntegrationAction({
       if (outcome) {
         answerAfterConnect.current = null;
         setError(outcome);
+        setAppButtonOffered(
+          integrationAppButtonOffered(tracking, authorization.attemptId, status.status),
+        );
         return;
       }
       setPending(true);
@@ -918,8 +929,9 @@ export function ThreadIntegrationAction({
     }
   };
 
-  const connect = () => {
+  const connect = (returnRoute?: IntegrationAuthorizationReturnRoute) => {
     lastAction.current = "connect";
+    setAppButtonOffered(false);
     const bridge = desktopBridge();
     repositoryCheck.current?.abort();
     if (provider && plan.definition) {
@@ -933,6 +945,7 @@ export function ThreadIntegrationAction({
           applicationSource: source,
           definitionId: plan.definition!.id,
           returnPath: `/threads/${encodeURIComponent(threadId)}`,
+          ...(returnRoute ? { returnRoute } : {}),
         });
         await handOffAuthorization(started);
       });
@@ -945,7 +958,8 @@ export function ThreadIntegrationAction({
           client: hostClient,
           onStarted: tracking.started,
           returnPath: `/threads/${encodeURIComponent(threadId)}`,
-          begin: async (returnPath) => {
+          ...(returnRoute ? { returnRoute } : {}),
+          begin: async (returnPath, finish) => {
             const result = await hostClient.dispatch({
               idempotencyKey: mutationIdempotencyKey(
                 `integration-mcp:${requestPayload.requestedServerId}`,
@@ -956,7 +970,7 @@ export function ThreadIntegrationAction({
                 returnPath,
                 serverId: IntegrationServerIdSchema.parse(loaded.request.requestedServerId),
                 surface: integrationAuthorizationSurface(bridge),
-                ...integrationAuthorizationFinish(bridge, hostClient),
+                ...finish,
               },
               type: "integration.mcp.authorization.begin",
             });
@@ -1103,6 +1117,19 @@ export function ThreadIntegrationAction({
           )
         : foot(null, accessChoice)}
       {card.error ? <ActionNote alert>{card.error}</ActionNote> : null}
+      {appButtonOffered && card.phase === "failed" ? (
+        <button
+          className="btn"
+          disabled={pending || disabled}
+          onClick={() => {
+            setError(null);
+            connect("app-button");
+          }}
+          type="button"
+        >
+          Use the Open Opensteer button
+        </button>
+      ) : null}
       {computerSetupNotice ? (
         <>
           <ActionNote>{computerSetupNotice}</ActionNote>
@@ -1191,6 +1218,11 @@ export function ThreadIntegrationAction({
             </button>
           ) : null}
         </div>
+      ) : null}
+      {authorization ? (
+        <ActionNote>
+          {integrationAuthorizationWaitingDetail(integrationAuthorizationSurface(desktopBridge()))}
+        </ActionNote>
       ) : null}
       {reconnect ? (
         <div className="connect-card__reconnect">

@@ -74,6 +74,12 @@ export class IntegrationAuthorizationAttempts {
       ? entry
       : null;
   }
+  /** When the last pending attempt expires; null when none is pending. */
+  latestExpiry(): number | null {
+    this.#prune();
+    const expiries = [...this.#entries.values()].map((entry) => Date.parse(entry.expiresAt));
+    return expiries.length === 0 ? null : Math.max(...expiries);
+  }
   async register(entry: IntegrationAuthorizationAttempt): Promise<void> {
     const generation = this.#generation;
     await this.load();

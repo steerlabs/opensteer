@@ -10,6 +10,7 @@ import {
 } from "@opensteer/integration-auth";
 import { integrationSchemaDigest } from "@opensteer/integration-core/digest";
 import {
+  accountReturnPort,
   IntegrationAccountBindingSchema,
   validateIntegrationAccountBinding,
 } from "./integration-account-binding.js";
@@ -198,6 +199,7 @@ export class McpOAuthService {
   }
 
   async beginAuthorization(input: {
+    readonly appReturnPort?: number | undefined;
     readonly displayName: string;
     readonly finish?: "app" | undefined;
     readonly ownerUserId: UserId;
@@ -241,6 +243,7 @@ export class McpOAuthService {
         message: "Opensteer Account must be updated before MCP sign-in can use its HTTPS callback.",
       });
     }
+    const appReturnPort = accountReturnPort(metadata, finish, input.appReturnPort);
     const redirectUrl = hosted ? hosted.broker.callbackUrl("mcp") : this.#callbackUrl.toString();
     const context = await this.#store.getMcpOAuthServer(input);
     const attemptId = createIntegrationId("mcpOauthAttempt");
@@ -333,6 +336,7 @@ export class McpOAuthService {
             clientId: relayContext.clientId,
             clientSurface: input.surface,
             ...(finish ? { finish } : {}),
+            ...(appReturnPort === undefined ? {} : { appReturnPort }),
             definitionId: context.server.id,
             deploymentAuthorityDigest: relayContext.deploymentAuthorityDigest,
             expiresAt: relayContext.expiresAt,
