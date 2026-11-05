@@ -756,11 +756,12 @@ function makeService(
     ...(options.passwordSignIn ? { passwordSignIn: options.passwordSignIn } : {}),
     onError: (error) => errors.push(error),
     requests: {
+      get: async (id: Request["id"]) => requests.find((request) => request.id === id) ?? null,
       listPendingContinuations,
       recordContinuationAttempt,
     } as unknown as Pick<
       OpensteerStore["requests"],
-      "listPendingContinuations" | "recordContinuationAttempt"
+      "listPendingContinuations" | "recordContinuationAttempt" | "get"
     >,
   });
   return {

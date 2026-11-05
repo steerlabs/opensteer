@@ -1125,7 +1125,7 @@ interface RequestCallJoinTable {
 
 interface RequestContinuationTable {
   requestId: RequestId;
-  status: "waiting" | "queued" | "undeliverable";
+  status: "waiting" | "queued" | "undeliverable" | "delivered";
   attemptedAt: NullableTimestamp;
   reason: string | null;
   createdAt: Timestamp;

@@ -1,3 +1,4 @@
+import { RequestHold } from "../mcp/request-hold.js";
 import { ThreadNaming } from "../agents/thread-naming.js";
 import { AdministrationService } from "../administration/administration-service.js";
 import { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
@@ -2330,6 +2331,29 @@ export async function createHostRuntime(
       (ownerId) => integrationStore.listConnections(ownerId),
     );
     const agentTools = new OpensteerMcpService({
+      requestHold: new RequestHold({
+        store,
+        continuations,
+        onStopped: (stopped) => {
+          for (const event of stopped.events) publishWorkspaceEvent(event);
+          wakeExecutionCoordinator();
+        },
+      }),
+      longRequestHold: async (caller) => {
+        const run = await database
+          .selectFrom("runs")
+          .innerJoin("harnessInstances", "harnessInstances.id", "runs.harnessInstanceId")
+          .select(["runs.environmentId", "harnessInstances.driverKind"])
+          .where("runs.id", "=", caller.claims.runId)
+          .executeTakeFirst();
+        return (
+          !!run &&
+          requiredService(runnerRegistry, "Runner registry").supportsLongRequestHold(
+            run.environmentId,
+            run.driverKind,
+          )
+        );
+      },
       publicUrl: config.runtimeOrigin,
       realtime,
       onToolError: (error, tool) => app.log.error({ err: error, tool }, "Agent tool failed"),
