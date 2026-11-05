@@ -735,14 +735,6 @@ it("refuses voice durable-work tools at invocation before their handlers", async
       { directory: "plugin" },
       { operationKey: "voice-install" },
     ),
-  ).rejects.toThrow("Chat handles this outside the call");
+  ).rejects.toThrow("Hand durable work to Chat");
   expect(f.handlers.plugin_install).not.toHaveBeenCalled();
-  await expect(
-    service.callTool(
-      "run",
-      "browser_profile_request",
-      { reason: "Sign in", suggestion: { kind: "new", suggestedName: "Personal" } },
-      { operationKey: "voice-profile" },
-    ),
-  ).rejects.toThrow('threadId "home"');
 });

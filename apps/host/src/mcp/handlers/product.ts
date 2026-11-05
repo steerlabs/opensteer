@@ -27,6 +27,7 @@ import {
   type ThreadAccessMode,
   type Workspace,
   type WorkspaceBackingKind,
+  voiceRequestHandOff,
 } from "@opensteer/core";
 import type { BrowserUsageCredit, OpensteerStore } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
@@ -44,7 +45,6 @@ import {
   resolveDelegationSpecialist,
 } from "../../agents/specialist-placement.js";
 import { delegationPlacement } from "../../agents/delegation-placement.js";
-import { voiceHandOff } from "../../agents/voice-tools.js";
 import { environmentDiscovery } from "../../agents/environment-discovery.js";
 
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
@@ -1024,7 +1024,7 @@ export class ProductToolHandlers {
       workspaceId: claims.workspaceId,
     });
     return voiceCall && result.status === "unavailable" && result.reason === "needs-approval"
-      ? { ...result, guidance: voiceHandOff }
+      ? { ...result, guidance: voiceRequestHandOff }
       : result;
   }
 

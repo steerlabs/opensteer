@@ -15,6 +15,7 @@ import {
   ModelSelectionSchema,
   ThreadAccessModeSchema,
   createId,
+  voiceRequestHandOff,
   type EnvironmentId,
   type MessageId,
   type RunnerId,
@@ -454,6 +455,31 @@ integration.sequential("thread input queue promotion", () => {
         ownerIds: [f.ownerId],
       }),
     ).resolves.toMatchObject([{ runId: call.runId, threadId: chat.thread.id, home: true }]);
+
+    await expect(
+      store.requests.create({
+        callId: "voice-durable",
+        kind: "browser.access",
+        mode: "durable",
+        originatingRunId: call.runId,
+        originatingThreadId: call.threadId,
+        originatingWorkspaceId: f.workspace.id,
+        payload: {
+          kind: "browser.access",
+          reason: "Sign in",
+          suggestion: { kind: "new", suggestedName: "Personal" },
+        },
+        presentation: {
+          detail: "Sign in",
+          kind: "external",
+          subject: { id: f.workspace.id, kind: "workspace" },
+          title: "Browser profile",
+        },
+        requestedBy: f.ownerId,
+        requiredActor: "requester",
+        targetWorkspaceId: f.workspace.id,
+      }),
+    ).rejects.toThrow(voiceRequestHandOff);
 
     // An engine approval pauses the agent mid-step, so it can't hand this one to Chat.
     const requestId = createId("request");

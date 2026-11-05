@@ -1,4 +1,4 @@
-import { voiceHandOff, voiceRefusedTools } from "../agents/voice-tools.js";
+import { voiceExcludedTools } from "../agents/voice-tools.js";
 import { IntegrationCallOutputSchema } from "@opensteer/agent-tools/outputs";
 import { z } from "zod";
 import { formatIssues } from "@opensteer/shared/validationIssues";
@@ -437,10 +437,10 @@ export class OpensteerMcpService {
     const check = async () => {
       if (
         caller.kind === "run" &&
-        voiceRefusedTools.has(tool.name) &&
+        voiceExcludedTools.has(tool.name) &&
         (await this.options.store.voiceCallForRun(caller.claims.runId))
       )
-        throw new OpensteerError({ code: "forbidden", message: voiceHandOff });
+        throw new OpensteerError({ code: "forbidden", message: "Hand durable work to Chat." });
       toolAccess[tool.access](caller, await this.#targets(caller, tool, input));
       if (!toolsFor(caller).some((spec) => spec.name === tool.name))
         throw new OpensteerError({

@@ -3,6 +3,7 @@ import {
   AssignmentIdSchema,
   BrowserProfileIdSchema,
   OpensteerError,
+  voiceRequestHandOff,
   PendingRequestSchema,
   RequestIdSchema,
   RequestJsonObjectSchema,
@@ -3160,6 +3161,15 @@ async function createRequestInTransaction(
     return { events: [], replayed: true, request: requestFromRow(replay) };
   }
 
+  if (input.mode === "durable" && origin.runId) {
+    const thread = await transaction
+      .selectFrom("threads")
+      .select("voiceSessionId")
+      .where("id", "=", origin.threadId)
+      .executeTakeFirst();
+    if (thread?.voiceSessionId)
+      throw new OpensteerError({ code: "conflict", message: voiceRequestHandOff });
+  }
   if (!origin.running) {
     throw new OpensteerError({ code: "forbidden", message: originMismatchMessage(input) });
   }
