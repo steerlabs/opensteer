@@ -27,6 +27,7 @@ import {
   resetMachineAccessDatabase,
 } from "../runtime/machine-access.test-support.js";
 import { integrationCallSubject } from "./integration-call-subject.js";
+import { operationAddress } from "./integration-operation.js";
 import {
   IntegrationPlatformService,
   type ComputerUseGateway,
@@ -364,7 +365,7 @@ integration.sequential("Host computer-use approval transactions", () => {
       })
     ).find((row) => row.tool.name === "act");
     if (!act) throw new Error("Missing internal act authority");
-    const actRef = `${act.grant.id}.${act.tool.id}.${act.tool.schemaDigest}`;
+    const actAddress = { account: act.grant.connectionId, operation: operationAddress(act) };
     const onError = vi.fn();
     const sources = {
       listCallableTools: test.service.listCallableTools.bind(test.service),
@@ -375,7 +376,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     const { task } = test;
     const toolStarted = (
       ordinal: number,
-      toolRef: string,
+      address: { readonly account: string | null; readonly operation: string },
       of: Pick<
         typeof task,
         "bindingGeneration" | "environmentId" | "runId" | "threadId" | "workspaceId"
@@ -383,7 +384,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     ): PendingAgentEvent => ({
       bindingGeneration: of.bindingGeneration,
       data: {
-        arguments: { arguments: {}, toolRef },
+        arguments: { ...address, arguments: {} },
         callId: `call-${ordinal}`,
         tool: { name: "integration_call", namespace: "opensteer.integrations" },
       },
@@ -395,7 +396,7 @@ integration.sequential("Host computer-use approval transactions", () => {
       type: "tool.started",
       workspaceId: of.workspaceId,
     });
-    const event = toolStarted(1, actRef);
+    const event = toolStarted(1, actAddress);
 
     const integration = await integrationCallSubject(sources, event);
 
@@ -455,7 +456,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     await expect(
       integrationCallSubject(
         sources,
-        toolStarted(1, actRef, {
+        toolStarted(1, actAddress, {
           ...task,
           runId: queued.run.id,
           threadId: thread.id,
@@ -463,10 +464,12 @@ integration.sequential("Host computer-use approval transactions", () => {
         }),
       ),
     ).resolves.toBeUndefined();
-    // A ref whose schema changed, and one for a removed grant, name nothing.
-    const [grantId, toolId] = actRef.split(".");
+    // An address whose schema changed, and one for a removed grant, name nothing.
     await expect(
-      integrationCallSubject(sources, toolStarted(2, `${grantId}.${toolId}.${"z".repeat(43)}`)),
+      integrationCallSubject(
+        sources,
+        toolStarted(2, { ...actAddress, operation: `${act.tool.name}@zzzzzzzz` }),
+      ),
     ).resolves.toBeUndefined();
     const [grant] = await test.persistence.listGrants({
       ownerUserId: task.userId,
@@ -478,7 +481,9 @@ integration.sequential("Host computer-use approval transactions", () => {
       requestId: "revoke-for-subject",
       workspaceId: task.workspaceId,
     });
-    await expect(integrationCallSubject(sources, toolStarted(2, actRef))).resolves.toBeUndefined();
+    await expect(
+      integrationCallSubject(sources, toolStarted(2, actAddress)),
+    ).resolves.toBeUndefined();
     expect(onError).not.toHaveBeenCalled();
   });
 

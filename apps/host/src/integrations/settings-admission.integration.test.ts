@@ -114,8 +114,9 @@ describeStore("Settings invocation admission", (test) => {
       handlers.integration_call({
         caller,
         input: {
-          toolRef: `${issued.grant.id}.${issued.tool.id}.${issued.tool.schemaDigest}`,
+          ...(issued.grant.connectionId ? { account: issued.grant.connectionId } : {}),
           arguments: {},
+          operation: issued.tool.name,
         },
         operationKey: "call",
         signal: AbortSignal.timeout(5000),

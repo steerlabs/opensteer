@@ -1,19 +1,19 @@
 # Discovering operations
 
-- `operations` — operations callable right now. Each reports `effect` (`read` or `write`),
-  `account` (the display name), `connectionId` (null for connectionless operations), and a `toolRef`;
-  describe a new ref before calling it, and pass it unchanged. Choose an account by
-  `connectionId`, never by name: names can repeat.
-- `results` — integrations installed on this Deployment. Each entry lists its accounts, skills,
-  tools, and server readiness. An account includes its `connectionId`, access class, and default
-  status. A tool includes its effect and aggregate readiness; callable toolRefs live in `operations`.
-- `catalog` — the complete list of Opensteer's built-in definitions, returned in full on every
-  call regardless of the query. Each entry carries `definitionId`, a name and short description, and either
+- `operations` — operations callable right now, best matches first. Each has its `name`, `effect`
+  (`read` or `write`), a short `description`, and `input`: its arguments as TypeScript, where `?` is
+  optional and `…` means more exists in `integration_describe`. Call it with `name` as `operation`.
+  `accounts` appears only when it works on some, not all, of its integration's accounts.
+- `results` — integrations installed on this Deployment, with their accounts and server readiness.
+  An account includes its `connectionId`, access class, and default status. Choose an account by
+  `connectionId`, never by name: names can repeat. `tools` lists only operations that need access
+  or repair, with their readiness.
+- `catalog` — every built-in definition by `definitionId`, whatever the query, so your wording never
+  hides one. Entries the search concerns also carry a name and short description, and either
   `installed: false` or `installed: true` with `installationId`, `installationStatus`, and (when
-  the installation is not active) `statusDetail`. Judge relevance yourself: a definition is never
-  withheld because your wording did not match it.
-- `guidance` — shared setup and recovery rules for the catalog, readiness codes, computers and
-  phones. Apply them to each row’s facts; a missing `inUse` means no other task holds it.
+  the installation is not active) `statusDetail`. Judge relevance yourself.
+- `guidance` — setup and recovery rules, present only when something in this response needs them:
+  the catalog, readiness codes, computers and phones. Apply them to each row’s facts; a missing `inUse` means no other task holds it.
   Tool readiness omits a detail repeated by its server; read that server’s detail too.
 - `nextOffset` / `operationNextOffset` page `results` and `operations` only.
 

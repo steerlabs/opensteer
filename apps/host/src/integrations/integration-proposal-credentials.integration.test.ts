@@ -749,7 +749,7 @@ integration("proposal credential guidance", () => {
       if (!callable) throw new Error("Missing catalog snapshot operation");
       const invoked = await gateway.callRaw("integration_call", {
         arguments: {},
-        toolRef: callable.toolRef,
+        ...callable.address,
       });
       expect(invoked.isError).toBeFalsy();
       expect(provider.fetches.slice(fetchesBeforeMutation)).toEqual([
@@ -1269,10 +1269,10 @@ integration("proposal credential guidance", () => {
   }, 120_000);
 
   // The ways it could fail: a call found by a name planned again from the stored
-  // document runs another operation, so a read tool's toolRef performs a write
+  // document runs another operation, so a read tool's address performs a write
   // under a read-only grant; two operations planned one name, so starting stops
   // on a unique violation; binding a stored tool to the wrong operation, or a
-  // renamed operation taking another's row, name or effect; a held toolRef
+  // renamed operation taking another's row, name or effect; a held address
   // reaching a different operation after a restart; the account or grant
   // changed; starting reaching the network, or changing anything a second time;
   // one integration the Host cannot bind, from a name too long, a path too
@@ -1530,19 +1530,19 @@ integration("proposal credential guidance", () => {
         for (const [name, ref] of Object.entries(held)) {
           const called = await nextGateway.callRaw("integration_call", {
             arguments: name === "details" ? { account_id: "42" } : {},
-            toolRef: ref.toolRef,
+            ...ref.address,
           });
           expect(called.isError, toolText(called)).toBeFalsy();
         }
         const retired = await nextGateway.callRaw("integration_call", {
           arguments: { account_id: "42" },
-          toolRef: retiredRef.toolRef,
+          ...retiredRef.address,
         });
         expect(retired.isError).toBe(true);
         expect(toolText(retired)).toContain("no longer available");
         const broken = await nextGateway.callRaw("integration_call", {
           arguments: {},
-          toolRef: brokenRef.toolRef,
+          ...brokenRef.address,
         });
         expect(broken.isError).toBe(true);
         expect(
@@ -1561,12 +1561,13 @@ integration("proposal credential guidance", () => {
         )!;
         const refused = await nextGateway.callRaw("integration_call", {
           arguments: {},
-          toolRef: `${grant.id}.${write.id}.${write.schemaDigest}`,
+          operation: write.name,
+          ...(grant.connectionId ? { account: grant.connectionId } : {}),
         });
         expect(refused.isError).toBe(true);
         expect(calls.some(({ method }) => method === "POST")).toBe(false);
         facts.push({
-          step: "held toolRefs call the operation they were stored for; a read grant never writes",
+          step: "held addresses call the operation they were stored for; a read grant never writes",
           observed: {
             calls: calls.map(({ method, url }) => ({ method, url: url.slice(0, 120) })),
             refusedBroken: toolText(broken),
@@ -1717,7 +1718,7 @@ integration("proposal credential guidance", () => {
   // preset again, stopping the Host, or marking it for good, so a cause that
   // has gone never lets it work again; binding it again clearing another
   // reason the integration is unavailable for; recovery losing its account, its
-  // grant or the rows held toolRefs name; the failure left unlogged.
+  // grant or the rows held addresses name; the failure left unlogged.
   it("keeps an integration it cannot store unavailable, and stores it on a later start once it can", async () => {
     const facts: { step: string; observed: unknown }[] = [];
     const recovering = await createMachineAccessDatabase(baseDatabaseUrl!);
@@ -2076,7 +2077,7 @@ integration("proposal credential guidance", () => {
       closers.unshift(() => nextGateway.close());
       const called = await nextGateway.callRaw("integration_call", {
         arguments: {},
-        toolRef: held.toolRef,
+        ...held.address,
       });
       expect(called.isError, toolText(called)).toBeFalsy();
       expect(calls).toEqual([

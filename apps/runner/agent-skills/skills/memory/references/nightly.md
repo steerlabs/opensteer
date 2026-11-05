@@ -43,8 +43,8 @@ rules or preferences.
 ## Prepare tomorrow
 
 Check commitments the person or their agents made against real sources such as calendar and
-mail. Discover connected operations with `integration_search` (`limit: 20` or less), then describe
-and call the relevant operations. Prepare for tomorrow's meetings and draft replies that would
+mail. Discover connected operations with `integration_search` (`limit: 20` or less), then call the
+relevant operations. Prepare for tomorrow's meetings and draft replies that would
 help; drafts only, never sent. Write morning notes in `memory/passes/nightly.md` for the first
 light pass after the person wakes: what to surface and where the drafts are. Queue to Chat now
 only what is truly urgent.

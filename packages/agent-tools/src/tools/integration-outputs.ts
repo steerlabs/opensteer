@@ -60,9 +60,10 @@ export const IntegrationSearchOutputSchema = z.object({
     .array(
       z.object({
         definitionId: z.string(),
-        description: z.string(),
-        integration: z.string(),
-        installed: z.boolean(),
+        // Details are for entries the search concerns; the rest list only their id.
+        description: z.string().optional(),
+        integration: z.string().optional(),
+        installed: z.boolean().optional(),
         installationId: z.string().optional(),
         installationStatus: z.string().optional(),
         statusDetail: z.string().nullable().optional(),
@@ -74,13 +75,13 @@ export const IntegrationSearchOutputSchema = z.object({
   operations: z
     .array(
       z.object({
-        account: z.string(),
-        connectionId: z.string().nullable(),
+        // Only when this operation works on some, not all, of the integration's accounts.
+        accounts: z.array(z.string()).optional(),
+        description: z.string(),
         effect: z.string(),
+        input: z.string().optional(),
         integration: z.string(),
         name: z.string(),
-        title: z.string().optional(),
-        toolRef: z.string(),
       }),
     )
     .optional(),
@@ -101,7 +102,6 @@ export const IntegrationSearchOutputSchema = z.object({
             readiness: ReadinessSchema.optional(),
           }),
         ),
-        description: z.string(),
         integration: z.string(),
         name: z.string(),
         installationId: z.string(),
@@ -112,16 +112,17 @@ export const IntegrationSearchOutputSchema = z.object({
             serverId: z.string(),
           }),
         ),
-        toolCount: z.number(),
-        tools: z.array(
-          z.object({
-            effect: z.string(),
-            name: z.string(),
-            readiness: ReadinessSchema.optional(),
-            title: z.string().optional(),
-          }),
-        ),
-        truncated: z.boolean().optional(),
+        // Only operations that need access or repair; callable ones are in `operations`.
+        tools: z
+          .array(
+            z.object({
+              effect: z.string(),
+              name: z.string(),
+              readiness: ReadinessSchema.optional(),
+              title: z.string().optional(),
+            }),
+          )
+          .optional(),
       }),
     )
     .optional(),

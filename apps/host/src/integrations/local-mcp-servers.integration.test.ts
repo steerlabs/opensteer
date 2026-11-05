@@ -248,7 +248,7 @@ integration("MCP servers on a computer", () => {
       const call = async (name: string, args: Record<string, unknown>) =>
         gateway.callRaw("integration_call", {
           arguments: args,
-          toolRef: operation(await search(), name).toolRef,
+          ...operation(await search(), name).address,
         });
       await waitForCondition(
         async () => toolReadiness(await search(), "echo").code === "READY",

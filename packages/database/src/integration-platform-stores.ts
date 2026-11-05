@@ -3372,7 +3372,7 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     if (storedToolSchemaDigest(row) !== row.schemaDigest) {
       throw new OpensteerError({
         code: "conflict",
-        message: "Integration operation schema changed; search and describe it again",
+        message: "Integration operation changed; search again",
       });
     }
     return row;
