@@ -306,11 +306,19 @@ async function runDesktop(
   const usbDevices = new DesktopUsbDeviceAccess();
   const phoneAdb = new AgentPhoneAdbServer({ isGranted: (device) => usbDevices.isGranted(device) });
   const detachPhoneAdb = usbDevices.onRevoked((device) => phoneAdb.revoke(device));
+  const appOriginPolicy = new DesktopAppOriginPolicy();
   configureDesktopSession(
     session.defaultSession,
-    new DesktopAppOriginPolicy(),
+    appOriginPolicy,
     usbDevices,
     downloads,
+    async () => {
+      try {
+        return (await hostTransport.current()).resolved.origin;
+      } catch {
+        return null;
+      }
+    },
   );
   const detachUsbDevices = usbDevices.attach(session.defaultSession);
 
@@ -1100,6 +1108,7 @@ async function runDesktop(
     .resumeIfConfigured()
     .catch((error) => reportNonFatal("desktop.personal.resume-failed", error));
   const mainWindows = new ElectronWindowFactory(loaded.config, {
+    policy: appOriginPolicy,
     onCreated: (window) => {
       workspaceContents = window.webContents;
       let detachMcpAuthorization = () => {};

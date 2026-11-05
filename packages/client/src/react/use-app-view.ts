@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { HostClient } from "../host/client.js";
 import type { OpensteerApp } from "@opensteer/core";
-import type { AppTheme } from "@opensteer/shared/appFrame";
+import { isAppOriginUrl, type AppTheme } from "@opensteer/shared/appFrame";
 const noSubscription = () => () => undefined;
 
 /** View capabilities live only in the mounted reader, never in saved client state. */
@@ -34,7 +34,18 @@ export function useAppView(
     const controller = new AbortController();
     void client.viewApp(appId, themeForRead.current, controller.signal).then(
       (view) => {
-        if (!controller.signal.aborted) setResult({ key, view });
+        if (!controller.signal.aborted)
+          setResult((previous) => ({
+            key,
+            view:
+              previous?.key === key &&
+              previous.view &&
+              isAppOriginUrl(view.url) &&
+              isAppOriginUrl(previous.view.url) &&
+              new URL(view.url).origin === new URL(previous.view.url).origin
+                ? { ...view, url: previous.view.url }
+                : view,
+          }));
       },
       () => {
         if (!controller.signal.aborted)

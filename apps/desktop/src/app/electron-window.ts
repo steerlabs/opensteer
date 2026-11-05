@@ -14,10 +14,10 @@ import {
   type OnBeforeRequestListenerDetails,
   type Session,
   type WebContents,
+  type WebFrameMain,
   type WebPreferences,
 } from "electron";
 import path from "node:path";
-import { isPublishedAppUrl } from "./published-app-protocol.js";
 import { desktopAppEntryUrl } from "./app-protocol.js";
 import type { DesktopConfiguration } from "../config.js";
 import type { DesktopWindowFactory } from "./desktop-main-process.js";
@@ -62,6 +62,7 @@ export function configureDesktopSession(
   policy: DesktopAppOriginPolicy,
   usbDevices: Pick<DesktopUsbDeviceAccess, "permitsRequest"> | null,
   downloads: Pick<DesktopDownloads, "accept">,
+  attachedHost?: () => Promise<string | null>,
 ): void {
   configureDesktopPermissions(session, policy, usbDevices, () =>
     process.platform === "darwin"
@@ -75,12 +76,18 @@ export function configureDesktopSession(
       urls: ["<all_urls>"],
     },
     (details: OnBeforeRequestListenerDetails, callback) => {
-      callback({
-        cancel: !policy.allowsNetworkRequest(details.url, {
-          url: details.frame?.url ?? "",
-          resourceType: details.resourceType,
-        }),
-      });
+      void (async () => {
+        if (attachedHost) policy.setAttachedHost(await attachedHost());
+        callback({
+          cancel: !policy.allowsNetworkRequest(details.url, {
+            url: details.frame?.url ?? "",
+            resourceType: details.resourceType,
+            ...(details.initiatorOrigin === undefined
+              ? {}
+              : { initiatorOrigin: details.initiatorOrigin }),
+          }),
+        });
+      })().catch(() => callback({ cancel: true }));
     },
   );
 }
@@ -111,24 +118,51 @@ export function configureDesktopWindowNavigation(
   webContents: WebContents,
   policy: DesktopAppOriginPolicy,
 ): void {
+  const pendingFrames = new WeakMap<WebFrameMain, string>();
+  webContents.on("did-start-navigation", (event) => {
+    if (!event.frame || event.isMainFrame) return;
+    if (policy.isPublishedApp(event.url)) pendingFrames.set(event.frame, event.url);
+    else pendingFrames.delete(event.frame);
+  });
   const guardNavigation = (event: Event, url: string) => {
     if (!policy.allowsNavigation(url)) event.preventDefault();
   };
   webContents.setWindowOpenHandler(({ url }) => {
     // App responses suppress referrers; a clicked link's focused frame identifies its source.
     const source = webContents.focusedFrame?.url;
-    if (source && isPublishedAppUrl(source) && /^https?:\/\//iu.test(url))
+    if (source && policy.isPublishedApp(source) && /^https?:\/\//iu.test(url))
       void shell.openExternal(url).catch(() => undefined);
     return { action: "deny" };
   });
   webContents.on("will-frame-navigate", (event) => {
     const source = event.frame?.url;
-    if (source && isPublishedAppUrl(source) && !isAppNavigation(event.url, source))
+    if (source && policy.isPublishedApp(source) && !isAppNavigation(event.url, source)) {
       event.preventDefault();
+      if (/^https?:\/\//iu.test(event.url))
+        void shell.openExternal(event.url).catch(() => undefined);
+    }
   });
   webContents.on("will-attach-webview", (event) => event.preventDefault());
   webContents.on("will-navigate", guardNavigation);
-  webContents.on("will-redirect", guardNavigation);
+  webContents.on("will-redirect", (event) => {
+    if (event.isMainFrame) {
+      guardNavigation(event, event.url);
+      return;
+    }
+    const source =
+      event.frame &&
+      (policy.isPublishedApp(event.frame.url) ? event.frame.url : pendingFrames.get(event.frame));
+    if (
+      !source ||
+      !policy.isPublishedApp(source) ||
+      !isAppNavigation(event.url, source) ||
+      !policy.allowsNavigation(event.url, source)
+    ) {
+      event.preventDefault();
+      if (source && policy.isPublishedApp(source) && /^https?:\/\//iu.test(event.url))
+        void shell.openExternal(event.url).catch(() => undefined);
+    }
+  });
 }
 
 export class ElectronWindowFactory implements DesktopWindowFactory {
@@ -148,10 +182,11 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
       readonly preloadPath: string;
       readonly quit: () => void;
       readonly onCreated?: (window: ElectronAppWindow) => void;
+      readonly policy?: DesktopAppOriginPolicy;
     },
   ) {
     this.#config = config;
-    this.#policy = new DesktopAppOriginPolicy();
+    this.#policy = options.policy ?? new DesktopAppOriginPolicy();
     this.#bridgeToken = options.bridgeToken;
     this.#preloadPath = options.preloadPath;
     this.#quit = options.quit;

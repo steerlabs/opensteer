@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createId, type OpensteerApp } from "@opensteer/core";
-import type { AppEntry } from "@opensteer/client/host";
+import type { AppEntry, HostSnapshot } from "@opensteer/client/host";
 import { useAppView } from "@opensteer/client/react";
 import { MockHostClient } from "@opensteer/client/mock";
 import { AppCard } from "./app-card.js";
@@ -347,4 +347,126 @@ it("keeps a live app view during a link blip and invalidates it for a publicatio
   } finally {
     await act(async () => gate.resolve({ app: metadata, url: appUrl }));
   }
+});
+
+it("keeps real-origin frames isolated and authenticates their messages under the desktop parent", async () => {
+  const { appOriginFrameSandbox, appOriginKey } = await import("@opensteer/shared/appFrame");
+  const url = `https://${appOriginKey(appId)}-${"1".repeat(32)}.example.test/?opensteer-ticket=test`;
+  vi.stubGlobal("location", { protocol: "app:" });
+  const client = new MockHostClient();
+  vi.spyOn(client, "viewApp").mockResolvedValue({ app: metadata, url });
+  const container = await mount(client);
+  const frame = container.querySelector("iframe")!;
+  expect(frame.src).toBe(url);
+  expect(frame.getAttribute("sandbox")).toBe(appOriginFrameSandbox);
+  const send = async (origin: string, source: Window | null = frame.contentWindow) => {
+    await act(() =>
+      window.dispatchEvent(
+        new MessageEvent("message", { source, origin, data: { type: "opensteer-app:ready" } }),
+      ),
+    );
+  };
+  await send("null");
+  await send("https://evil.test");
+  await send(new URL(url).origin, window);
+  expect(container.textContent).toContain("Loading app");
+  await send(new URL(url).origin);
+  await act(() => frame.dispatchEvent(new Event("load")));
+  expect(container.textContent).not.toContain("Loading app");
+  expect(frame.contentWindow!.postMessage).toHaveBeenLastCalledWith(
+    expect.objectContaining({ type: "opensteer-app:theme" }),
+    new URL(url).origin,
+  );
+});
+
+it("retains a running origin across reconnect tickets and refreshes it on every identity or publication change", async () => {
+  const { appOriginKey } = await import("@opensteer/shared/appFrame");
+  let origin = `http://${appOriginKey(appId)}.localhost:4310`;
+  const client = new MockHostClient();
+  let snapshot: HostSnapshot = { ...client.getSnapshot(), connection: "connected" };
+  const listeners = new Set<() => void>();
+  vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
+  vi.spyOn(client, "subscribe").mockImplementation((listener) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  });
+  let ticket = 0;
+  const read = vi.spyOn(client, "viewApp").mockImplementation(async () => ({
+    app: metadata,
+    url: `${origin}/?opensteer-ticket=${++ticket}`,
+  }));
+  let state: ReturnType<typeof useAppView>;
+  let id = appId;
+  function Probe() {
+    state = useAppView(client, id, "dark");
+    return <span>{state.view?.url}</span>;
+  }
+  const container = document.createElement("div");
+  root = createRoot(container);
+  await act(async () => root!.render(<Probe />));
+  const initial = container.textContent;
+  for (const connection of ["connecting", "connected"] as const) {
+    await act(async () => {
+      snapshot = { ...snapshot, connection };
+      for (const listener of listeners) listener();
+    });
+    expect(container.textContent).toBe(initial);
+  }
+  expect(read).toHaveBeenCalledTimes(3);
+  for (const change of [
+    () => {
+      snapshot = { ...snapshot, appVersions: { [appId]: 2 } };
+    },
+    () => {
+      snapshot = { ...snapshot, user: { ...snapshot.user!, id: createId("user") } };
+    },
+    () => {
+      snapshot = { ...snapshot, deploymentId: "dep_22222222-2222-4222-8222-222222222222" };
+    },
+    () => {
+      state.retry();
+    },
+    () => {
+      id = "app_22222222-2222-4222-8222-222222222222";
+      root!.render(<Probe />);
+    },
+  ]) {
+    const previous = container.textContent;
+    await act(async () => {
+      change();
+      for (const listener of listeners) listener();
+    });
+    expect(container.textContent).not.toBe(previous);
+  }
+  for (const nextOrigin of [
+    `http://${appOriginKey(appId)}.localhost:4311`,
+    "https://host.test/v1/apps/legacy/dark/token/",
+  ]) {
+    const previous = container.textContent;
+    origin = nextOrigin;
+    await act(async () => {
+      snapshot = { ...snapshot, connection: "connecting" };
+      for (const listener of listeners) listener();
+    });
+    expect(container.textContent).not.toBe(previous);
+    const next = container.textContent;
+    await act(async () => {
+      snapshot = { ...snapshot, connection: "connected" };
+      for (const listener of listeners) listener();
+    });
+    if (origin.startsWith("https://host.test")) expect(container.textContent).not.toBe(next);
+    else expect(container.textContent).toBe(next);
+  }
+});
+
+it("keeps the legacy document opaque when desktop rewrites its capability URL", async () => {
+  vi.stubGlobal("location", { protocol: "app:" });
+  const client = new MockHostClient();
+  vi.spyOn(client, "viewApp").mockResolvedValue({ app: metadata, url: appUrl });
+  const container = await mount(client);
+  const frame = container.querySelector("iframe")!;
+  expect(frame.getAttribute("src")).toBe(`opensteer-app://view${new URL(appUrl).pathname}`);
+  expect(frame.getAttribute("sandbox")).toBe("allow-scripts allow-popups");
 });
