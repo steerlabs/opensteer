@@ -15,12 +15,15 @@ Apple-side prerequisites, all Tim's:
 - "iPhone and iPad Apps on Apple Silicon Macs" turned off: the Mac app shares this bundle ID.
 - App Review notes pointing at the demo server, with its address and password.
 
-From a clean checkout of the selected commit, with an absolute `MOBILE_EVIDENCE_DIR` outside it. A
+From a clean, full-history checkout of the selected commit, with an absolute `MOBILE_EVIDENCE_DIR`
+outside it. The version is the desktop's derived number, not `package.json`'s base: a base would
+repeat, and Apple refuses a released version twice. Create that version in App Store Connect. A
 version's build numbers must only rise, so take the next one from App Store Connect.
 
 ```sh
 mkdir -p "$MOBILE_EVIDENCE_DIR"
 pnpm install --frozen-lockfile
+MOBILE_VERSION=$(node -p 'require("./scripts/release-version.cjs").stampReleaseVersion(process.cwd(), process.argv[1])' "$(git rev-parse HEAD)")
 unset EXPO_PUBLIC_OPENSTEER_MOCK EXPO_PUBLIC_OPENSTEER_MOCK_HOME EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE
 export EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN="https://accounts.opensteer.com"
 export EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN="https://app.opensteer.com"
@@ -38,7 +41,8 @@ plutil -insert method -string app-store-connect "$MOBILE_EVIDENCE_DIR/export.pli
 plutil -insert destination -string upload "$MOBILE_EVIDENCE_DIR/export.plist"
 plutil -insert signingStyle -string automatic "$MOBILE_EVIDENCE_DIR/export.plist"
 plutil -insert teamID -string "$MOBILE_SIGNING_TEAM" "$MOBILE_EVIDENCE_DIR/export.plist"
-xcodebuild -exportArchive -archivePath "$MOBILE_EVIDENCE_DIR/Opensteer.xcarchive" \
+test "$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleShortVersionString' "$MOBILE_EVIDENCE_DIR/Opensteer.xcarchive/Info.plist")" = "$MOBILE_VERSION" &&
+  xcodebuild -exportArchive -archivePath "$MOBILE_EVIDENCE_DIR/Opensteer.xcarchive" \
   -exportPath "$MOBILE_EVIDENCE_DIR/export" \
   -exportOptionsPlist "$MOBILE_EVIDENCE_DIR/export.plist" -allowProvisioningUpdates
 ```
@@ -47,13 +51,6 @@ Before exporting, check that the archive's app and extension Info.plists show th
 build number, and that its bundle holds the Account origin. Upload warnings about privacy manifests
 or export compliance are answers Tim gives in App Store Connect; never declare them on his behalf.
 Send a build to external TestFlight before submitting for review.
-
-## Move the push topic
-
-Required. `deploy/account/account.env` keeps `OPENSTEER_APNS_TOPIC=com.opensteer.mobile` until the
-first `com.opensteer.opensteer` build ships. When it does, on TestFlight or the App Store, change the
-value to `com.opensteer.opensteer`; otherwise that build gets no push. Not before: every main push
-deploys that file, the topic is one value, and moving it stops push on `com.opensteer.mobile` builds.
 
 ## Review demo server
 
