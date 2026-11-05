@@ -81,7 +81,6 @@ import {
   ElectronWindowFactory,
 } from "./app/electron-window.js";
 import { createDesktopApplicationMenu, showDesktopUpdateMenuItem } from "./app/application-menu.js";
-import { DesktopTrayService } from "./app/desktop-tray.js";
 import { AgentPhoneAdbServer } from "./app/agent-phone-adb-server.js";
 import { DesktopUsbDeviceAccess } from "./app/usb-device-access.js";
 import {
@@ -1233,23 +1232,12 @@ async function runDesktop(
     await mainProcess.activate();
   };
 
-  const tray = new DesktopTrayService({
-    catalog: deploymentCatalog,
-    iconPath: path.join(import.meta.dirname, "trayTemplate.png"),
-    onError: (error) => reportNonFatal("desktop.tray.failed", error),
-    open: () => void mainProcess.activate().catch(handleAsyncFatal),
-    quit: () => app.quit(),
-    runner: localRunner,
-  });
   updater.subscribe((state) => {
     showDesktopUpdateMenuItem(Menu.getApplicationMenu(), state);
     const ready = state.status === "downloaded";
     shutdown.setUpdateInstaller(ready && state.reservedBy !== "remote" ? installUpdate : undefined);
-    if (ready === updateReady) return;
     updateReady = ready;
-    tray.setRestartToUpdate(ready ? restartFromMenu : undefined);
   });
-  await tray.start();
   updater.start(shutdown.signal);
   shutdown.signal.throwIfAborted();
   const detachOAuthDeepLinks = oauthDeepLinks.attach(async (url) => {
@@ -1320,7 +1308,6 @@ async function runDesktop(
       hostSessions.dispose();
       closeClearedAccountSockets();
       hostTransport.closeAllSockets();
-      tray.dispose();
       unregisterBridge();
       localVisibility.dispose();
       detachLoginSession();

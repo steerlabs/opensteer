@@ -121,21 +121,19 @@ test("certification requires every channel case to install the exact draft zip",
   expect(draftCertificationPassed(draft, [...results, results[0]!])).toBe(false);
 });
 
-test("stable draft certification requires menu, tray and quit with no Beta substitution", () => {
+test("stable draft certification requires menu and quit with no Beta substitution", () => {
   const draft = {
     channel: "stable" as const,
     assets: { "Opensteer-mac-arm64.zip": "a".repeat(64) },
   };
-  const rows = ["stable:menu", "stable:tray", "stable:quit"].map((name) => ({
+  const rows = ["stable:menu", "stable:quit"].map((name) => ({
     name,
     passed: true,
     installedSha256: "a".repeat(64),
   }));
   expect(draftCertificationPassed(draft, rows)).toBe(true);
-  expect(draftCertificationPassed(draft, [rows[0], rows[2]])).toBe(false);
-  expect(
-    draftCertificationPassed(draft, [...rows.slice(0, 2), { ...rows[2], name: "beta:quit" }]),
-  ).toBe(false);
+  expect(draftCertificationPassed(draft, [rows[0]])).toBe(false);
+  expect(draftCertificationPassed(draft, [rows[0], { ...rows[1], name: "beta:quit" }])).toBe(false);
 });
 
 test("PASS publication output binds the downloaded draft ZIP, never the local N+1 ZIP", () => {

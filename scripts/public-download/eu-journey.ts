@@ -197,13 +197,6 @@ export async function githubJourney(c: {
         () => existsSync(app) && c.plist("CFBundleShortVersionString") === input.next.version,
       );
       c.run("open", ["-n", app]);
-    } else if (method === "tray") {
-      c.script(
-        `tell application "System Events" to tell ${processScript} to perform action "AXShowMenu" of menu bar item 1 of menu bar 2`,
-      );
-      c.script(
-        `tell application "System Events" to tell ${processScript} to click menu item "Restart to Update" of menu 1 of menu bar item 1 of menu bar 2`,
-      );
     } else
       c.script(
         `tell application "System Events" to tell ${processScript} to click menu item "Restart to Update" of menu 1 of menu bar item 2 of menu bar 1`,
@@ -223,7 +216,7 @@ export async function githubJourney(c: {
   if (c.scenario !== "eu-menu") {
     // The feed always puts the other channel and legacy stable release ahead of ours.
     await noOffer("equal version and channel isolation");
-    await positive(c.scenario === "eu-tray" ? "tray" : c.scenario === "eu-quit" ? "quit" : "menu");
+    await positive("quit");
     return;
   }
   await noOffer("equal version and channel isolation");
