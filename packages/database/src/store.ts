@@ -519,6 +519,14 @@ export class OpensteerStore {
     return runnerStore.revokeRunner(this.#database, this.#links, runnerId, ownerId, options);
   }
 
+  async openPhoneTab(runnerId: RunnerId): Promise<boolean> {
+    return runnerStore.openPhoneTab(this.#database, runnerId);
+  }
+
+  async closePhoneTab(runnerId: RunnerId): Promise<void> {
+    return runnerStore.closePhoneTab(this.#database, runnerId);
+  }
+
   async renameRunner(
     runnerId: RunnerId,
     ownerId: UserId,

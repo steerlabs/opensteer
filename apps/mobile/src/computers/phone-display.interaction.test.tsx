@@ -12,6 +12,7 @@ import { sharedDisplayStreams, type DisplaySnapshot } from "@opensteer/client/in
 import type { EditingProxyEvent } from "@opensteer/client/editing";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const state = vi.hoisted(() => ({
+  closed: vi.fn(),
   dispatch: vi.fn(),
   os: "android",
   recovery: undefined as number | undefined,
@@ -196,6 +197,7 @@ import {
   ComputerTaskView,
   ComputerOwnerView,
   decodeDisplayFrame,
+  PhoneTabView,
 } from "./phone-display.js";
 class Socket implements WebSocketClient {
   readyState = 0;
@@ -254,7 +256,7 @@ async function setup(
   os = "android",
   owner = false,
   interactive = true,
-  screen: "display" | "task" | "owner" | "live" = "display",
+  screen: "display" | "task" | "owner" | "live" | "tab" = "display",
 ) {
   state.os = os;
   socket = new Socket();
@@ -283,6 +285,9 @@ async function setup(
     session: "authenticated",
     user: { id: "person" },
     deploymentId: "deployment",
+    browserPlacements: [],
+    browserProfiles: [],
+    browserSessions: [],
     machines: [
       {
         id: machineId,
@@ -346,6 +351,7 @@ async function setup(
             },
       },
     ]),
+    closePhoneTab: vi.fn(async () => undefined),
     openComputerView: vi.fn(async () => ({
       viewId: "new-owner",
       generation: 2,
@@ -397,6 +403,14 @@ async function setup(
       root!.render(
         screen === "live" ? (
           <LivePlace active={active} hostClient={client} runId={runId} onOpen={noop} />
+        ) : screen === "tab" ? (
+          <PhoneTabView
+            active={active}
+            hostClient={client}
+            machineId="machine"
+            onClosed={state.closed}
+            onTyping={noop}
+          />
         ) : screen === "task" ? (
           <ComputerTaskView
             active={active}
@@ -1083,17 +1097,77 @@ it("reopens an ended phone owner view through the explicit open path", async () 
     kind: "phone",
     display: "main",
   });
-  expect(state.dispatch).toHaveBeenLastCalledWith({
-    name: "WorkspaceBrowser",
-    params: {
-      deploymentId: "deployment",
-      scope: "workspace",
-      phone: true,
-      machineId: "machine",
-      viewId: "new-owner",
-      generation: 2,
-    },
+  // A phone is its own route: its tab picks the new view up from the snapshot.
+  expect(state.dispatch).not.toHaveBeenCalled();
+});
+
+it("keeps Open's wake when the Host's notice replaces the resting page before the answer", async () => {
+  const { client, move, render } = await setup(true, "android", false, true, "tab");
+  const [held] = client.getSnapshot().machines;
+  const resting = {
+    ...held!,
+    tabOpenedAt: "2026-11-02T12:00:00.000Z",
+    computerUse: { ...held!.computerUse!, sessions: [] },
+  };
+  move!({ machines: [resting] });
+  await render();
+  const view = {
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    generation: 2,
+    machineId: "machine",
+    state: "ready",
+    target: { kind: "phone", display: "main" },
+    viewId: "new-owner",
+  };
+  let answer = (_: unknown) => undefined as void;
+  vi.mocked(client.openComputerView).mockImplementationOnce(
+    () => new Promise((resolve) => (answer = resolve as typeof answer)),
+  );
+  const cancel = vi.spyOn(sharedDisplayStreams(client), "cancelAutoWake");
+  await press("Open Your phone");
+  await vi.waitFor(() => expect(client.openComputerView).toHaveBeenCalledOnce());
+  await act(async () =>
+    move!({
+      machines: [{ ...resting, computerUse: { ...resting.computerUse, ownerViews: [view] } }],
+    } as never),
+  );
+  await act(async () => {
+    answer(view);
+    await Promise.resolve();
   });
+  await act(async () => undefined);
+  expect(cancel).not.toHaveBeenCalled();
+});
+
+it("rests a phone's tab on one Open after its task lets go, and closes it on request", async () => {
+  const { client, move, render } = await setup(true, "android", false, true, "tab");
+  await render();
+  expect(client.openComputerView).not.toHaveBeenCalled();
+  expect(container.textContent).not.toContain("to see it and use it.");
+
+  const [held] = client.getSnapshot().machines;
+  move!({
+    machines: [
+      {
+        ...held!,
+        tabOpenedAt: "2026-11-02T12:00:00.000Z",
+        computerUse: { ...held!.computerUse!, sessions: [] },
+      },
+    ],
+  });
+  await render();
+  expect(container.textContent).toContain("to see it and use it.");
+  expect(client.openComputerView).not.toHaveBeenCalled();
+
+  await press("Open Your phone");
+  expect(client.openComputerView).toHaveBeenCalledExactlyOnceWith("machine", {
+    kind: "phone",
+    display: "main",
+  });
+
+  await press("Close tab");
+  expect(client.closePhoneTab).toHaveBeenCalledExactlyOnceWith("machine");
+  await vi.waitFor(() => expect(state.closed).toHaveBeenCalledOnce());
 });
 
 it("reopens an ended Mac view by app name and the same window, replacing its route", async () => {

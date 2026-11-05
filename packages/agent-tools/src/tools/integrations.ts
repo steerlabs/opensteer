@@ -141,7 +141,7 @@ export const integration_call = defineAgentTool({
   name: "integration_call",
   title: "Call an integration",
   description:
-    "Execute a discovered toolRef with schema-matching arguments. Describe new refs first; call already-described operations directly. Describing grants no access. Returns operation content/error. Live account/grant/schema checks apply. Never approve or grant access. SMS/email sign-in code retrieval needs explicit authorization for that sign-in; other credentials stay in the Request UI. Use computer for Mac/phone interfaces.",
+    "Execute a discovered toolRef with schema-matching arguments. Describe new refs first; call already-described operations directly. Describing grants no access. Returns operation content/error. Live account/grant/schema checks apply. Never grant access. SMS/email sign-in code retrieval needs explicit authorization for that sign-in; other credentials stay in the Request UI. Use computer for Mac/phone interfaces.",
   input: CallInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: IntegrationCallOutputSchema,
   access: "write",

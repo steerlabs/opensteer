@@ -130,8 +130,6 @@ it("opens the approved phone as an independent workspace owner view", async () =
         scope: "workspace",
         phone: true,
         machineId: "phone",
-        viewId: "phone-view",
-        generation: 2,
       },
     });
   } finally {

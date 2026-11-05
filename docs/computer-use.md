@@ -116,8 +116,10 @@ restarts, and only native `reason: user` records it; remote Stop returns once Ho
 withdrawn. The transcript keeps sanitized receipts, never screenshots, AX trees or typed text.
 
 Desktop owns helper lifecycle and OS prompts; the Runner cannot request them, and Mac control needs
-an unlocked Mac. Task destinations and owner destinations never merge or substitute, even for the
-same pixels ([renderer contract](../apps/desktop/src/computer-use/RENDERER-CONTRACT.md)).
+an unlocked Mac. A Mac app's task and owner destinations never merge or substitute, even for the
+same pixels ([renderer contract](../apps/desktop/src/computer-use/RENDERER-CONTRACT.md)): they can
+bind different windows. A phone is one display, so [its tab](agent-phone.md#the-tab) chooses between
+them.
 
 ## Owner-view wire
 

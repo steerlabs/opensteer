@@ -640,7 +640,7 @@ it("opens the exact phone from its conversation chip and keeps Stop and the step
   );
   expect(chip).not.toBeNull();
   const params = new URL(chip!.href).searchParams;
-  expect(params.get("computerSession")).toBe(session.sessionId);
+  expect(params.has("computerSession")).toBe(false);
   expect(params.get("phone")).toBe(machine.id);
   expect(params.has("app")).toBe(false);
   click(chip);

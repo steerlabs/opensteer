@@ -4,8 +4,8 @@ Never ask for API keys, OAuth client secrets, passwords, or authorization codes 
 with the person's saved logins through `sign_in`. For a saved login in a genuine app, see opensteer:computer-use, references/sign-in.md. Never
 read, reveal, copy or move credentials through chat, tool output, screenshots, files or the
 clipboard, and don't fetch keys from provider dashboards yourself. Prepare non-secret setup steps
-and point the person to the key field on the request card; the UI owns secrets, consent, and every
-Request decision. For an authorized Agent Phone screen-lock PIN, follow the narrow exception in
+and point the person to the key field on the request card; the UI owns secrets and every Request
+decision. For an authorized Agent Phone screen-lock PIN, follow the narrow exception in
 opensteer:computer-use, references/phones.md; this does not cover app or website passwords.
 
 With the person's explicit authorization for the current sign-in, use an already-granted SMS/email

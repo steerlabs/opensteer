@@ -123,9 +123,11 @@ it.each(["app", "phone"] as const)(
           deploymentId: f.snapshot.deploymentId,
           scope: "workspace",
           machineId: machine.id,
-          computerSessionId: session.sessionId,
           ...(kind === "app"
-            ? { appKey: "appKey" in place ? place.appKey : null }
+            ? {
+                appKey: "appKey" in place ? place.appKey : null,
+                computerSessionId: session.sessionId,
+              }
             : { phone: true }),
         },
       },

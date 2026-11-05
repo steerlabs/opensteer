@@ -770,6 +770,7 @@ function machineFixture(overrides: Partial<MachineSummary> = {}): MachineSummary
     apps: null,
     allowedModules: ["agents", "shell"],
     computerUse: null,
+    tabOpenedAt: null,
     detail: null,
     device: null,
     enrollmentId: "ren_fixture",

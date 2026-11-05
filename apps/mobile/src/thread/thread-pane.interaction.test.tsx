@@ -4450,7 +4450,7 @@ describe("the Run's live place over the composer", () => {
         expect.objectContaining({
           params: expect.objectContaining({
             machineId: macMini!.id,
-            computerSessionId: session.sessionId,
+            ...(kind === "app" ? { computerSessionId: session.sessionId } : { phone: true }),
           }),
         }),
       );

@@ -1049,9 +1049,8 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       (place) =>
         !place.ownerView && place.icon.kind === "app" && place.icon.app.displayName === "Notes",
     )!;
-    const task = taskPlace.taskDestination;
-    if (task?.kind !== "app" || !task.computerSessionId)
-      throw new Error("No task session on Notes");
+    const task = taskPlace.destination;
+    if (task.kind !== "app" || !task.computerSessionId) throw new Error("No task session on Notes");
     const machineId = task.machineId;
     for (const [address, watch] of [
       // The task's own session, as its viewfinder opens it.
@@ -1076,8 +1075,10 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
         await act(async () => client.setComputerUseReadiness(machineId, state));
         // Long enough for the task's picture to be asked for again.
         await settle(1_500);
-        // The projection drops the task's live address while its Mac is not ready…
-        expect(order().find((place) => place.key === notes.key)?.taskDestination).toBeNull();
+        // The projection marks the task's place while its Mac is not ready…
+        expect(order().find((place) => place.key === taskPlace.key)?.availability).toBe(
+          "unavailable",
+        );
         // …and the middle keeps it, with its own words for why.
         expect(history.length).toBe(before.length);
         expect(history.at(-1)).toEqual(before.step);
@@ -1094,7 +1095,7 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
         ).toBeNull();
         await act(async () => client.setComputerUseReadiness(machineId, "ready"));
         await settle(120);
-        expect(order().find((place) => place.key === taskPlace.key)?.taskDestination).toEqual(task);
+        expect(order().find((place) => place.key === taskPlace.key)?.availability).toBe("ready");
         expect(history.length).toBe(before.length);
         expect(history.at(-1)).toEqual(before.step);
         expect(document.querySelector(watch)).not.toBeNull();

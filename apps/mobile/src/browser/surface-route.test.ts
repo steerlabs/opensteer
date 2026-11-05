@@ -75,7 +75,7 @@ describe("native viewer routes", () => {
   it.each<WorkspaceSurfaceDestination>([
     { kind: "app", machineId: "mac", appKey: "notes", source },
     { kind: "app", machineId: "mac", appKey: "notes", computerSessionId: "task" },
-    { kind: "phone", machineId: "phone", source },
+    { kind: "phone", machineId: "phone" },
   ])("keeps legacy, task and phone routes without a window ($kind)", (destination) => {
     const route = workspaceRoute("deployment", destination);
     expect(route).not.toHaveProperty("windowId");

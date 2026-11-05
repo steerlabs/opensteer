@@ -552,6 +552,8 @@ interface RunnerTable {
   enrolledAt: Timestamp;
   lastSeenAt: NullableTimestamp;
   revokedAt: NullableTimestamp;
+  /** An Agent Phone's tab: open from its first use until its owner closes it. */
+  tabOpenedAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }

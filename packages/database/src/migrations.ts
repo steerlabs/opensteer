@@ -4714,6 +4714,7 @@ export function migrationProvider() {
         "0160_memory_pass_waiting": memoryPassWaitingMigration,
         "0161_app_tabs": appTabsMigration,
         "0162_voice_thread": voiceThreadMigration,
+        "0163_phone_tabs": phoneTabsMigration,
       };
     },
   };
@@ -7508,5 +7509,14 @@ const voiceThreadMigration: Migration = {
       UPDATE threads SET status = 'archived', listed = false, updated_at = now()
         WHERE voice_session_id IS NOT NULL;
       ALTER TABLE threads DROP COLUMN voice_session_id;`.execute(database);
+  },
+};
+
+const phoneTabsMigration: Migration = {
+  async up(database) {
+    await sql`alter table runners add column tab_opened_at timestamptz`.execute(database);
+  },
+  async down(database) {
+    await sql`alter table runners drop column tab_opened_at`.execute(database);
   },
 };

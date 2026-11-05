@@ -332,6 +332,43 @@ function SelectedPlace({
           leading={leading}
           trailing={trailing}
         />
+      ) : destination.kind === "phone" ? (
+        live?.task && !live.ownerView ? (
+          <ComputerWatchView
+            app={null}
+            appKey={null}
+            marks={marks}
+            hostClient={hostClient}
+            hostConnected={hostConnected}
+            key={live.task.sessionId}
+            leading={leading}
+            machineId={destination.machineId}
+            machines={hostClient.getSnapshot().machines}
+            sessionId={live.task.sessionId}
+            trailing={trailing}
+            visible
+          />
+        ) : (
+          <OwnerView
+            destination={destination}
+            marks={marks}
+            hostClient={hostClient}
+            hostConnected={hostConnected}
+            key={live?.ownerView ? `${live.ownerView.viewId}:${live.ownerView.generation}` : "open"}
+            leading={leading}
+            place={live}
+            source={
+              live?.ownerView
+                ? {
+                    kind: "owner-view",
+                    viewId: live.ownerView.viewId,
+                    generation: live.ownerView.generation,
+                  }
+                : null
+            }
+            trailing={trailing}
+          />
+        )
       ) : destination.source?.kind === "owner-view" ? (
         <OwnerView
           destination={destination}
@@ -357,7 +394,7 @@ function SelectedPlace({
       ) : (
         <ComputerWatchView
           app={place?.icon.kind === "app" ? place.icon.app : null}
-          appKey={destination.kind === "app" ? destination.appKey : null}
+          appKey={destination.appKey}
           marks={marks}
           hostClient={hostClient}
           hostConnected={hostConnected}

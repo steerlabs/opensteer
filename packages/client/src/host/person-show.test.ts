@@ -41,13 +41,17 @@ describe("person show navigation", () => {
         ).toBe(true);
         expect(navigate).toHaveBeenCalledExactlyOnceWith({
           kind: "place",
-          destination: {
-            ...place,
-            computerSessionId: session.sessionId,
-            source: { kind: "task-session", sessionId: session.sessionId },
-          },
+          destination:
+            kind === "app"
+              ? {
+                  ...place,
+                  computerSessionId: session.sessionId,
+                  source: { kind: "task-session", sessionId: session.sessionId },
+                }
+              : { kind, machineId: machine.id },
         });
         navigate.mockClear();
+        // An app's session is the Run's own; a phone's tab outlives every Run.
         expect(
           handlePersonShow(
             snapshot,
@@ -55,8 +59,7 @@ describe("person show navigation", () => {
             { foreground: true, threadId: source.id },
             navigate,
           ),
-        ).toBe(false);
-        expect(navigate).not.toHaveBeenCalled();
+        ).toBe(kind === "phone");
       } finally {
         client.dispose();
       }

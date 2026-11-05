@@ -376,7 +376,7 @@ integration("agent-to-agent messaging round trip", () => {
     ["app", true],
     ["phone", true],
   ] as const)(
-    "shows the Run's newest %s place through its authorized session (voice: %s)",
+    "shows the Run's newest %s place through its authority (voice: %s)",
     async (kind, voice) => {
       const f = await createMessagingFixture(voice);
       const app = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null };
@@ -430,6 +430,9 @@ integration("agent-to-agent messaging round trip", () => {
           requestId: randomUUID(),
           target: { current: true },
         });
+      const ownedBy = (effectiveOwner: typeof f.userId) =>
+        new Map([[f.runnerId, { effectiveOwner, ownerKind: "user" as const }]]);
+      const owners = vi.spyOn(store, "effectiveMachineOwners").mockResolvedValue(ownedBy(f.userId));
       try {
         await expect(show()).resolves.toMatchObject({
           status: "sent-unconfirmed",
@@ -444,10 +447,19 @@ integration("agent-to-agent messaging round trip", () => {
             target: { place },
           },
         ]);
+        if (kind === "phone") {
+          // Agents release a phone before they reply, and its tab stays.
+          computerUse.sessionsForRunner.mockReturnValue([]);
+          await expect(show()).resolves.toMatchObject({ status: "sent-unconfirmed" });
+          expect(frames.filter((message) => message.type === "host.show")).toHaveLength(2);
+          owners.mockResolvedValue(ownedBy(createId("user")));
+          await expect(show()).rejects.toMatchObject({ code: "forbidden" });
+          return;
+        }
         expect(computerUse.authorizeDisplay).toHaveBeenLastCalledWith(
           session.sessionId,
           f.userId,
-          kind === "app" ? "com.apple.notes" : undefined,
+          "com.apple.notes",
         );
         computerUse.authorizeDisplay.mockRejectedValueOnce(
           new OpensteerError({
@@ -461,6 +473,7 @@ integration("agent-to-agent messaging round trip", () => {
         expect(frames.filter((message) => message.type === "host.show")).toHaveLength(1);
       } finally {
         release();
+        owners.mockRestore();
         computerUse.sessionsForRunner.mockReset();
         computerUse.authorizeDisplay.mockReset();
       }

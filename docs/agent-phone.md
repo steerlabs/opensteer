@@ -84,6 +84,18 @@ shared Projects must not hold it. Android 13+ hides the bouncer from MediaProjec
 may need the person when controls are unavailable. Wake dismisses only
 a keyguard that needs no credential. Lock is not Stop.
 
+## The tab
+
+A phone has one tab and one address, the phone itself. Sessions end with every release and Run, and
+agents release before they reply, so a tab tied to a session vanished just as the person was asked
+to use the phone. The tab opens when a session or owner view first confirms and stays until the
+owner closes it, offline included; a task holding the phone refuses the close on the Host.
+
+The tab carries no authority. It shows the owner's view while that can show anything, else the
+holding task's Watch, each under its own exact authority, else a resting page. Nothing opens by
+itself: a press of Open is the only way out of resting, because it alone may arm the wake. A second
+device on the tab shows the same owner view while the tab is in front there, and keeps renewing it.
+
 ## Live display
 
 Upgrade the Host before its phones. Human viewing is H.264, separate from agent screenshots and
