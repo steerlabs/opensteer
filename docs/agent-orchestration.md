@@ -42,15 +42,25 @@ Assignment, engine and model; Stop cancels their untaken inputs without pausing 
 ordinary message never answers a Request. Live harness Requests hold their native turn; a new
 person message can start work normally after a Run ends with durable Requests still pending.
 
-Durable Requests return immediately and grant no authority. Agents can continue independent work,
-briefly explain the ask, and end their turn when none remains. They must not poll, repeat or route
-around the ask. A Request's status is visible through request_list; its answer arrives only with
-the continuation, which waits until the turn ends (or enters background) and its durable siblings
-settle. A newer Run releases
-older settled outcomes too, so an abandoned ask cannot hold up later work. Eligible outcomes from
-one Run arrive together; different Runs stay independent. Requests and Assignments outlive the
-turn. Native harness Requests keep blocking natively. Trigger Occurrences have no native turn to
-resume.
+A foreground Run outside voice holds a tool call that opens its own durable Request until the
+person answers, then receives the real outcome. The runtime enforces this boundary rather than
+asking the model to stop. Work already running beside the call (native subagents, parallel calls
+and background shells) is not frozen until the Run stops.
+
+If the hold reaches its limit or a person's message queues behind the Run, the runtime stops the
+Run without pausing the Thread. The Request stays open; its later answer wakes the agent. A message
+steered into the Run releases the call as still open so the agent can read it; the message never
+answers the Request. Leaving the foreground also releases the call as still open. Stop, restart,
+lease loss or disconnect can end the call without settling the Request. A live harness Request in
+parallel does not end the hold.
+
+Voice and background Runs receive pending immediately. Pending grants nothing; agents must not
+poll, repeat, approve or route around a Request. request_list shows status, not the answer. Outcomes
+returned in the held call need no later wake-up. Otherwise, eligible outcomes from one Run arrive
+together after its durable siblings settle. A newer Run can also release older settled outcomes,
+so an abandoned ask cannot hold up later work. Different Runs stay independent. Requests and
+Assignments outlive a Run. Programs receive pending with no continuation: Trigger Occurrences have
+no native turn to resume.
 
 Thread state is a stored projection; pending Requests drive Needs you independently of whether a
 Run still executes. The [lock order](../packages/database/src/lock-order.ts) is authoritative: lock the

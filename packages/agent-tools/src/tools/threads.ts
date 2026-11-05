@@ -212,7 +212,7 @@ export const thread_wait = defineAgentTool({
   targetFields: ["threadId"],
   title: "Wait for a Thread",
   description:
-    "Wait for a Run to settle, a pending Request, or a message after afterMessageId. Programs/connections only; Runs end their turn for continuation. Returns running/settled/offline/timed_out, messages, optional Run state and pendingRequest {id, kind}. At most 100 seconds; disconnect ends only the wait. Use thread_read for missing history.",
+    "Wait for a Run to settle, a pending Request, or a message after afterMessageId. Programs/connections only; delegated-task results return to Runs automatically. Returns running/settled/offline/timed_out, messages, optional Run state and pendingRequest {id, kind}. At most 100 seconds; disconnect ends only the wait. Use thread_read for missing history.",
   input: z.strictObject({
     threadId: ThreadIdSchema,
     afterMessageId: MessageIdSchema.optional().describe(

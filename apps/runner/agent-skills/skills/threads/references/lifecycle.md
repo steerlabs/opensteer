@@ -1,8 +1,9 @@
 # Task lifecycle
 
 A task can take several Runs. It stays in progress while it waits on a pending Request, such as a
-sign-in approval, or on a task it delegated; the resolution resumes it. Queued inputs, waiting
-continuations, undelivered child results and active Runs also keep it open. Once nothing remains
+sign-in approval, or on a task it delegated. Request tools hold their call until answered; if the
+Run stops first, a later answer resumes the task. Queued inputs, waiting continuations, undelivered
+child results and active Runs also keep it open. Once nothing remains
 pending, a completed Run finishes the task and returns its final reply to the assigner; a failed
 Run returns an error instead. Interruption leaves the Assignment open.
 
@@ -13,9 +14,9 @@ When you are working on a task:
   message.
 - When something fails, find the cause and try the fixes within your authorization before
   reporting it. If you still cannot finish, say what blocked you, what you tried and what would
-  resolve it. If you need a decision or access you lack, end your turn with that request; your
-  assigner continues the task by delegating to this Thread again.
-- A pending Request permits independent work; end your turn when none remains. When waiting on a task you delegated, you may do independent work or end your turn.
+  resolve it. Use a Request tool for missing access; if none fits, report the missing decision or
+  access to your assigner.
+- When waiting on a task you delegated, you may do independent work or end your turn.
 
 For a distinct earlier update, message the assigner with enough context to act; do not duplicate
 the final result. Use `queue` when action is needed and `report` for passive context.
