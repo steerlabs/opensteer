@@ -3,6 +3,7 @@ import type {
   ClaimedChannelDelivery,
   FinishChannelDeliveryAttempt,
 } from "@opensteer/channel-protocol";
+import { CoalescedWake } from "@opensteer/shared/coalescedWake";
 import type { ChannelAdapterRegistry } from "./adapter-registry.js";
 import type { ChannelHostClient } from "./host-client.js";
 
@@ -11,7 +12,7 @@ export class ChannelDeliveryWorker {
   readonly #host: ChannelHostClient;
   #closed = false;
   #connected = false;
-  #draining: Promise<void> | null = null;
+  readonly #drains = new CoalescedWake({ run: () => this.#drain() });
   #streamStop: AbortController | null = null;
   #timer: ReturnType<typeof setInterval> | null = null;
 
@@ -27,11 +28,8 @@ export class ChannelDeliveryWorker {
   }
 
   wake(): void {
-    if (this.#closed || !this.#connected || this.#draining) return;
-    const operation = this.#drain().finally(() => {
-      if (this.#draining === operation) this.#draining = null;
-    });
-    this.#draining = operation;
+    if (this.#closed || !this.#connected) return;
+    this.#drains.wake();
   }
 
   resume(): void {
@@ -45,7 +43,7 @@ export class ChannelDeliveryWorker {
     this.#connected = false;
     this.#streamStop?.abort(new Error("Messaging stream disconnected"));
     this.#streamStop = null;
-    await this.#draining;
+    await this.#drains.stop();
   }
 
   async close(): Promise<void> {
@@ -54,7 +52,7 @@ export class ChannelDeliveryWorker {
     this.#streamStop?.abort(new Error("Messaging delivery worker stopping"));
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
-    await this.#draining;
+    await this.#drains.stop();
   }
 
   async #drain(): Promise<void> {

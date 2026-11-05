@@ -1,6 +1,7 @@
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import {
   OpensteerError,
+  refused,
   UserIdSchema,
   WorkspaceIdSchema,
   type UserId,
@@ -47,13 +48,16 @@ const CursorSchema = z.strictObject({
   lineageId: BrowserSessionIdSchema,
   tabId: BrowserSurfaceIdSchema,
 });
-function badRequest(message: string): never {
-  throw new OpensteerError({ code: "bad_request", message });
+const restartCursorNext = "Repeat browser_tab_read without cursor.";
+
+function badRequest(message: string, next?: string): never {
+  throw refused("bad_request", message, next);
 }
 function unreachable(): never {
   throw new OpensteerError({
     code: "forbidden",
     message: "A tab is not a saved tab you can reach.",
+    next: "Use a tabId from browser_tab_read.",
   });
 }
 
@@ -132,12 +136,12 @@ export class BrowserTabGroupService {
           JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")),
         );
       } catch {
-        badRequest("Invalid saved-tab cursor.");
+        badRequest("Invalid saved-tab cursor.", restartCursorNext);
       }
       if (cursor.ownerId !== actor.ownerId || cursor.workspaceId !== actor.workspaceId)
-        badRequest("This saved-tab cursor belongs to a different reader.");
+        badRequest("This saved-tab cursor belongs to a different reader.", restartCursorNext);
       if (cursor.queryFingerprint !== queryFingerprint)
-        badRequest("This saved-tab cursor belongs to a different search.");
+        badRequest("This saved-tab cursor belongs to a different search.", restartCursorNext);
     }
     const mayReach = this.#reach(actor);
     const ordered = await this.#groups.orderedTabs(actor.ownerId);
@@ -354,7 +358,12 @@ export class BrowserTabGroupService {
         ? await this.#visibleGroups(actor)
         : await this.#groups.groups(actor.ownerId)
     ).find((g) => g.id === input.groupId);
-    if (!group) throw new OpensteerError({ code: "not_found", message: "Tab group not found." });
+    if (!group)
+      throw refused(
+        "not_found",
+        "Tab group not found.",
+        "Get current group IDs from browser_tab_read.",
+      );
     const rows = await this.#authorize(actor, group.tabIds);
     const layout = await this.#groups.update(
       actor.ownerId,

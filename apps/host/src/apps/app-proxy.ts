@@ -1,7 +1,7 @@
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { Readable, Transform, type Duplex } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { appMaxBytes } from "@opensteer/core";
+import { appMaxBytes, refused } from "@opensteer/core";
 import { appFrameHeaders, prepareAppHtml, type AppTheme } from "@opensteer/shared/appFrame";
 
 export const appRequestBodyMaxBytes = 32 * 1_024 * 1_024;
@@ -47,10 +47,10 @@ export function appProxyHeaders(headers: IncomingHttpHeaders): Record<string, st
 }
 export function appRequestPath(value: string): string {
   if (!value.startsWith("/") || value.startsWith("//") || /[\\\0\r\n#]/u.test(value))
-    throw new Error("Use an app-relative HTTP path");
+    throw refused("bad_request", "Use an app-relative HTTP path");
   const url = new URL(value, "http://app.invalid");
   if (url.origin !== "http://app.invalid" || url.pathname !== value.split("?")[0])
-    throw new Error("Use a normalized app-relative HTTP path");
+    throw refused("bad_request", "Use a normalized app-relative HTTP path");
   return value;
 }
 export async function requestAppHttp(input: {
@@ -147,7 +147,7 @@ export async function requestAppHttp(input: {
       for await (const chunk of response) {
         const bytes = Buffer.from(chunk);
         size += bytes.length;
-        if (size > appMaxBytes) throw new Error("App HTML exceeds the 5 MiB limit");
+        if (size > appMaxBytes) throw refused("conflict", "App HTML exceeds the 5 MiB limit");
         chunks.push(bytes);
       }
     } catch (error) {

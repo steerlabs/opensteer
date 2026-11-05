@@ -110,7 +110,7 @@ export const browser_tab_write = defineAgentTool({
   name: "browser_tab_write",
   title: "Organize saved tabs",
   description:
-    "Organize saved tabs/groups; tabId is Browser Harness surfaceId. move: omit toGroupId for root, before for end. restore: up to eight tabIds, attaching their sessions here. Returns changed groups or closed/failed/restored tab/session IDs. Groups grant no access.",
+    "Organize saved tabs/groups; tabId is Browser Harness surfaceId. move: omit toGroupId for root, before for end. restore: up to eight tabIds, attaching their sessions here; use each returned sessionId with its tabId, since a restore can start a new session. Returns changed groups or closed/failed/restored tab/session IDs. Groups grant no access.",
   input: BrowserTabWriteInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: BrowserTabWriteOutputSchema,
   access: "write",

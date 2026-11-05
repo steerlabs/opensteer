@@ -1,7 +1,6 @@
 import { voiceExcludedTools } from "../agents/voice-tools.js";
 import { IntegrationCallOutputSchema } from "@opensteer/agent-tools/outputs";
 import { z } from "zod";
-import { formatIssues } from "@opensteer/shared/validationIssues";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -17,6 +16,8 @@ import {
   toolsFor,
   agentToolAnnotations,
   connectionInstructions,
+  agentToolFailureResult,
+  agentToolRecordResult,
   type AgentTool,
 } from "@opensteer/agent-tools";
 import { OpensteerError, RequestIdSchema, ThreadIdSchema, type Thread } from "@opensteer/core";
@@ -28,6 +29,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
+import { agentToolFailure, internalToolFailureCode } from "./agent-tool-failure.js";
 import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
 import { AgentCallerResolver, type AgentCaller } from "./agent-caller.js";
 import { toolAccess } from "./tool-access.js";
@@ -62,6 +64,8 @@ export class OpensteerMcpService {
       "getThreadForOwner" | "findMainWorkspaceForOwner" | "voiceCallForRun"
     > & { readonly requests: Pick<OpensteerStore["requests"], "get"> };
     readonly publicUrl: URL;
+    /** A failure the caller was told only that something went wrong. */
+    readonly onToolError?: (error: unknown, tool: string) => void;
   };
   constructor(options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
@@ -72,6 +76,7 @@ export class OpensteerMcpService {
       "getThreadForOwner" | "findMainWorkspaceForOwner" | "voiceCallForRun"
     > & { readonly requests: Pick<OpensteerStore["requests"], "get"> };
     readonly publicUrl: URL;
+    readonly onToolError?: (error: unknown, tool: string) => void;
   }) {
     this.options = options;
     this.#runtimeOrigin = options.publicUrl;
@@ -386,27 +391,12 @@ export class OpensteerMcpService {
               request.status === "pending" &&
               request.originatingRunId === currentCaller.claims.runId;
           }
-          return {
-            content: [
-              { type: "text" as const, text: JSON.stringify(result) },
-              ...(pendingRequest ? [{ type: "text" as const, text: requestPendingGuidance }] : []),
-            ],
-            structuredContent: result,
-            ...(result.isError === true ? { isError: true } : {}),
-          };
+          return agentToolRecordResult(result, pendingRequest ? requestPendingGuidance : undefined);
         } catch (error) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text:
-                  error instanceof z.ZodError
-                    ? `invalid_arguments: ${formatIssues(error.issues)}`
-                    : safeMessage(error, safeMessageOptions),
-              },
-            ],
-            isError: true,
-          };
+          const failure = agentToolFailure(error, tool.access);
+          if (failure.code === internalToolFailureCode && !extra.signal.aborted)
+            this.options.onToolError?.(error, tool.name);
+          return agentToolFailureResult(failure);
         }
       });
     }

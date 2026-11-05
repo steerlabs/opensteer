@@ -1,3 +1,4 @@
+import { refused } from "@opensteer/core";
 import { standaloneToolSchema } from "@opensteer/integration-core/tool-schemas";
 
 /**
@@ -75,12 +76,14 @@ export function renderIntegrationDescribe(input: {
   const bytes = Buffer.from(JSON.stringify(selected), "utf8");
   const { cursor } = input;
   if (cursor > 0 && cursor >= bytes.length) {
-    throw new Error(
+    throw refused(
+      "bad_request",
       `cursor ${cursor} is past the end of the ${bytes.length}-byte JSON at path "${path}"; start again at 0`,
     );
   }
   if (isContinuationByte(bytes[cursor])) {
-    throw new Error(
+    throw refused(
+      "bad_request",
       `cursor ${cursor} is not a page boundary; pass a nextCursor this tool returned`,
     );
   }
@@ -109,7 +112,8 @@ export function renderIntegrationDescribe(input: {
   const pageBytes = maximumDescribeBytes - Buffer.byteLength(header(bytes.length), "utf8") - 1;
   let end = Math.min(cursor + pageBytes, bytes.length);
   while (end < bytes.length && isContinuationByte(bytes[end])) end -= 1;
-  if (end <= cursor) throw new Error("This operation's description leaves no room for its schema");
+  if (end <= cursor)
+    throw refused("conflict", "This operation's description leaves no room for its schema");
   return `${header(end === bytes.length ? null : end)}\n${bytes.subarray(cursor, end).toString("utf8")}`;
 }
 
@@ -118,7 +122,8 @@ function pointerTokens(path: string): readonly string[] {
   const pointer = path.startsWith("#") ? path.slice(1) : path;
   if (pointer === "") return [];
   if (!pointer.startsWith("/")) {
-    throw new Error(
+    throw refused(
+      "bad_request",
       `path "${path}" is not a JSON Pointer; start it with "/", as in "/inputSchema/properties"`,
     );
   }
@@ -127,7 +132,7 @@ function pointerTokens(path: string): readonly string[] {
     .split("/")
     .map((token) => {
       if (/~(?![01])/u.test(token)) {
-        throw new Error(`path "${path}" has a "~" that is neither "~0" nor "~1"`);
+        throw refused("bad_request", `path "${path}" has a "~" that is neither "~0" nor "~1"`);
       }
       return token.replaceAll("~1", "/").replaceAll("~0", "~");
     });
@@ -149,7 +154,8 @@ function resolvePointer(document: unknown, tokens: readonly string[], path: stri
         ? (value as JsonObject)[token]
         : undefined;
     if (next === undefined) {
-      throw new Error(
+      throw refused(
+        "bad_request",
         `path "${path}" is not in this operation's schemas: "${reached}" has no "${token}"`,
       );
     }

@@ -22,7 +22,7 @@ export const person_show = defineAgentTool({
   name: "person_show",
   title: "Show a place",
   description:
-    "Bring your work into the person's view without waiting to be asked: {current: true} opens the page, Mac app or Agent Phone you are in, on devices viewing this conversation. Also opens a saved tab (tabId from browser_tab_read or Browser Harness surfaceId) or Thread. Showing current needs no new browser attach or computer observation. If current has no place, a known surfaceId can still be shown as tabId. Run-only, refused on Assignments. Never invent native IDs. Returns sent-unconfirmed/device count, not proof of viewing.",
+    "Bring your work into the person's view without waiting to be asked: {current: true} opens the page, Mac app or Agent Phone you are in, on devices viewing this conversation. Also opens a saved tab, even asleep, with no restore or attach (tabId from browser_tab_read or Browser Harness surfaceId), or a Thread. Showing current needs no new browser attach or computer observation. If current has no place, a known surfaceId can still be shown as tabId. Run-only, refused on Assignments. Never invent native IDs. Returns sent-unconfirmed/device count, not proof of viewing.",
   input: z
     .strictObject({ target: PersonShowTargetSchema })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),

@@ -22,7 +22,7 @@ it("returns a native runtime update refusal as an MCP tool error after validatio
     );
     const call = testCase.expect.calls[0]!;
     const result = await client.callTool({ name: call.tool, arguments: call.args });
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       isError: true,
       content: [{ type: "text", text: "Update this computer to open this profile." }],
     });
