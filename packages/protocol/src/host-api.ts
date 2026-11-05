@@ -921,14 +921,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    type: z.literal("specialist.bind"),
-    workspaceId: WorkspaceIdSchema,
-    specialistId: z.string().min(1),
-    requirement: z.number().int().nonnegative(),
-    resourceId: z.string().min(1),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
     type: z.literal("specialist.remove"),
     workspaceId: WorkspaceIdSchema,
     specialistId: z.string().min(1),
@@ -1425,7 +1417,6 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("plugin.update") }),
   z.object({ type: z.literal("plugin.remove") }),
   z.object({ type: z.literal("specialist.add"), specialist: SpecialistRegistrationViewSchema }),
-  z.object({ type: z.literal("specialist.bind"), specialist: SpecialistRegistrationViewSchema }),
   z.object({ type: z.literal("specialist.remove") }),
   z.object({
     type: z.literal("specialist.list"),

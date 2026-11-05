@@ -1,9 +1,5 @@
 import { z } from "zod";
-import {
-  harnessDriverLabel,
-  type SpecialistAccessRequirement,
-  type SpecialistRegistration,
-} from "@opensteer/core";
+import { harnessDriverLabel, type SpecialistRegistration } from "@opensteer/core";
 
 /**
  * `plugin.list` returns stored rows for administrators and a safe projection for
@@ -119,27 +115,6 @@ export function pluginContents(plugin: Pick<PluginSummary, "servers" | "skills">
 
 /* ---- Specialists ---- */
 
-export type SpecialistAccessItem = SpecialistRegistration["access"][number];
-
-/** What a specialist asks to use, named for a person: "GitHub", "A browser profile". */
-export function specialistAccessName(requirement: SpecialistAccessRequirement): string {
-  switch (requirement.type) {
-    case "integration":
-      return serviceName(requirement.service);
-    case "browser-profile":
-      return "A browser profile";
-    case "computer-app":
-      return appName(requirement.app);
-    case "phone":
-      return "An Agent Phone";
-  }
-}
-
-/** How much of it the specialist uses. */
-export function specialistAccessLevel(requirement: SpecialistAccessRequirement): string {
-  return requirement.level === "read" ? "Read only" : "Read and make changes";
-}
-
 /** The models a specialist runs on, in its order of preference: "Claude Code · opus". */
 export function specialistModels(registration: Pick<SpecialistRegistration, "models">): string[] {
   return registration.models.map((entry) =>
@@ -149,51 +124,4 @@ export function specialistModels(registration: Pick<SpecialistRegistration, "mod
         ? `${entry.role === "light" ? "Quick model" : "Strong model"} · per your settings`
         : `${harnessDriverLabel(entry.engine)} · ${entry.model}`,
   );
-}
-
-/** One line on what still stands between a pending specialist and its first task. */
-export function specialistPendingSummary(
-  registration: Pick<SpecialistRegistration, "access" | "status">,
-): string | null {
-  if (registration.status === "ready") return null;
-  if (registration.status === "removing") return "Removing";
-  if (registration.status === "removal-failed") return "Removal failed; retry removal";
-  const choose = registration.access.filter(
-    ({ state }) => state === "choose" || state === "rebind",
-  ).length;
-  const missing = registration.access.filter(({ state }) => state === "needs-access").length;
-  const parts = [
-    choose > 0 ? `${choose} ${choose === 1 ? "choice" : "choices"} to make` : null,
-    missing > 0 ? `${missing} ${missing === 1 ? "needs" : "need"} access` : null,
-  ].filter((part): part is string => part !== null);
-  return parts.length > 0 ? parts.join(", ") : "Setting up";
-}
-
-function serviceName(service: string): string {
-  const known: Readonly<Record<string, string>> = {
-    github: "GitHub",
-    gitlab: "GitLab",
-    gmail: "Gmail",
-    google: "Google",
-    "google-calendar": "Google Calendar",
-    "google-drive": "Google Drive",
-    linear: "Linear",
-    notion: "Notion",
-    slack: "Slack",
-  };
-  const id = service.toLowerCase();
-  return (
-    known[id] ??
-    service
-      .split(/[-_\s]+/u)
-      .filter(Boolean)
-      .map((part) => part[0]!.toUpperCase() + part.slice(1))
-      .join(" ")
-  );
-}
-
-function appName(bundleId: string): string {
-  const last = bundleId.split(".").at(-1) ?? bundleId;
-  const words = last.replace(/([a-z])([A-Z])/gu, "$1 $2").replace(/[-_]+/gu, " ");
-  return `${words[0]?.toUpperCase() ?? ""}${words.slice(1)} on a Mac`;
 }

@@ -479,128 +479,12 @@
   margin-top: var(--space-10);
 }
 
-.specialist__access {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  border-top: 1px solid var(--line);
-}
-
-.specialist-access {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-12);
-  padding: var(--space-10) var(--space-16) var(--space-10) var(--space-22);
-}
-
-.specialist-access + .specialist-access {
-  border-top: 1px solid var(--line);
-}
-
-.specialist-access__glyph {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  color: var(--muted);
-}
-
-.specialist-access__glyph > .icon {
-  width: 15px;
-  height: 15px;
-}
-
-.specialist-access--needs-access .specialist-access__glyph,
-.specialist-access--choose .specialist-access__glyph {
-  color: var(--amber-text);
-}
-
-.specialist-access__body {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.specialist-access__name {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-2) var(--space-8);
-  color: var(--text);
-  font-size: var(--text-lg);
-  font-weight: var(--weight-medium);
-}
-
-.specialist-access__level {
-  color: var(--muted);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-normal);
-}
-
-.specialist-access__reason {
-  color: var(--text-soft);
-  font-size: var(--text-md);
-  line-height: 1.45;
-}
-
-.specialist-access__state {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.specialist-access__bound {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-4);
-  color: var(--text-soft);
-  font-size: var(--text-md);
-}
-
-.specialist-access__bound > .icon {
-  width: 13px;
-  height: 13px;
-  color: var(--green);
-}
-
-.specialist-access__choose {
-  display: flex;
-  gap: var(--space-6);
-}
-
-.specialist-access__choose .select-input {
-  max-width: 12rem;
-}
-
-.specialist-access__waiting {
-  color: var(--amber-text);
-  font-size: var(--text-md);
-}
-
-.specialist__none,
 .specialist__footnote {
   margin: 0;
   padding: var(--space-10) var(--space-16) var(--space-12);
   border-top: 1px solid var(--line);
   color: var(--muted);
   font-size: var(--text-md);
-}
-
-.specialist__error {
-  margin: 0 var(--space-12) var(--space-12);
-}
-
-@media (max-width: 680px) {
-  .specialist-access {
-    grid-template-columns: auto minmax(0, 1fr);
-    padding-left: var(--space-16);
-  }
-
-  .specialist-access__state {
-    grid-column: 2;
-    justify-content: flex-start;
-  }
 }
 
 /* ---- Settings → Plugins ---- */

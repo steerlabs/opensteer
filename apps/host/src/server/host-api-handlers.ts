@@ -333,7 +333,6 @@ function isIntegrationPlatformCommand(
     case "plugin.update":
     case "plugin.remove":
     case "plugin.activation.set":
-    case "specialist.bind":
     case "specialist.add":
     case "specialist.remove":
     case "specialist.list":

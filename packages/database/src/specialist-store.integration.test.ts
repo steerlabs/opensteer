@@ -10,7 +10,7 @@ import { assertLineageCompatibleReuse, resolveResourceAccess } from "./resource-
 import { describeStore, testReadyHarnessCatalog } from "./store.integration.test-support.js";
 
 describeStore("specialist registration", (test) => {
-  test("repins every owner's bindings and refuses a version that drops the specialist", async ({
+  test("repins every owner's registration and refuses a version that drops the specialist", async ({
     storeFixture: fixture,
   }) => {
     const owner = await fixture.createRunFixture("repin-owners");
@@ -63,12 +63,6 @@ describeStore("specialist registration", (test) => {
       activate: false,
     });
     expect((await platform.plugins.list()).find((p) => p.id === pluginId)?.activations).toEqual([]);
-    const bindings = [{ requirement: 0, resourceId: "chosen", level: "read" as const }];
-    await fixture.database
-      .updateTable("specialists")
-      .set({ bindings: sql`${JSON.stringify(bindings)}::jsonb` })
-      .where("pluginId", "=", pluginId)
-      .execute();
     // As an install does: the new version, then its registrations moved to it.
     const update = (digest: string, specialistManifest: typeof manifest | null) =>
       fixture.database.transaction().execute(async (tx) => {
@@ -88,14 +82,15 @@ describeStore("specialist registration", (test) => {
         .selectAll()
         .where("pluginId", "=", pluginId)
         .execute();
-    for (const row of await rows()) expect(row.bindings).toEqual(bindings);
+    for (const row of await rows()) expect(row.status).toBe("ready");
+    const previousVersion = (await rows())[0]!.pluginVersionId;
     expect(new Set((await rows()).map((r) => r.pluginVersionId)).size).toBe(1);
     await update("changed-access", {
       ...manifest,
       access: [{ type: "browser-profile", level: "read", reason: "Research" }],
     });
     expect(
-      (await rows()).every((r) => r.status === "pending" && r.bindings.length === 0 && !r.autoBind),
+      (await rows()).every((r) => r.status === "ready" && r.pluginVersionId !== previousVersion),
     ).toBe(true);
     const pinned = (await rows()).map((r) => r.pluginVersionId);
     await expect(update("not-specialist", null)).rejects.toThrow(
@@ -104,7 +99,7 @@ describeStore("specialist registration", (test) => {
     expect((await rows()).map((r) => r.pluginVersionId)).toEqual(pinned);
   });
 
-  test("pins versions, binds consent, narrows access and removes registration", async ({
+  test("pins versions, adopts Project consent and removes registration", async ({
     storeFixture: fixture,
   }) => {
     const run = await fixture.startRunFixture("specialist-" + randomUUID());
@@ -129,53 +124,40 @@ describeStore("specialist registration", (test) => {
     expect(version.specialistManifest).toEqual(manifest);
     const add = () =>
       platform.specialists.add({ workspaceId: workspace.id, pluginId, actorUserId: run.userId });
-    const pending = await add();
-    expect(pending).toMatchObject({
-      status: "pending",
+    const registered = await add();
+    expect(registered).toMatchObject({
+      status: "ready",
       pluginVersionId: version.id,
       ownerUserId: run.userId,
     });
-    const request = await fixture.store.requests.create({
-      callId: `specialist:${pending.id}:0`,
-      kind: "browser.access",
-      mode: "durable",
-      originatingRunId: run.run.id,
-      originatingThreadId: run.thread.id,
-      originatingWorkspaceId: run.workspace.id,
-      targetWorkspaceId: workspace.id,
-      requestedBy: run.userId,
-      requiredActor: "requester",
-      payload: {
-        kind: "browser.access",
-        reason: "Research invoices",
-        suggestion: { kind: "user_choice" },
-      },
-      presentation: {
-        kind: "external",
-        title: "Browser profile access",
-        subject: { id: workspace.id, kind: "workspace" },
-      },
-    });
-    expect(request.request).toMatchObject({ kind: "browser.access", originatingRunId: run.run.id });
     const profile = await fixture.store.createBrowserProfile({
       ownerId: run.userId,
       name: "Invoices",
       idempotencyKey: "specialist-profile",
     });
+    const mainOnly = await fixture.store.createBrowserProfile({
+      ownerId: run.userId,
+      name: "Main only",
+      idempotencyKey: "main-only-profile",
+    });
     const resource = { type: "browser-profile" as const, id: profile.id };
-    const check = (resourceId: string) =>
+    let checkingThreadId: import("@opensteer/core").ThreadId | undefined;
+    const check = async (resourceId: string) =>
       resolveResourceAccess(fixture.database, {
         workspaceId: workspace.id,
         ownerUserId: run.userId,
-        explicitAccess: "read-write",
-        specialistId: pending.id,
+        explicitAccess:
+          (
+            await fixture.store.listActiveBrowserProfileGrantsForWorkspace(workspace.id, run.userId)
+          ).find((grant) => grant.profileId === resourceId)?.access ?? null,
+        threadId: checkingThreadId,
         resource: { ...resource, id: resourceId },
       });
-    expect((await check(profile.id)).access).toBeNull();
-    await fixture.store.requests.resolveBrowserRequest({
-      requestId: request.request.id,
-      resolvedBy: run.userId,
-      response: { kind: "external", value: { decision: "fulfilled", profileId: profile.id } },
+    await fixture.store.createBrowserProfileGrant({
+      workspaceId: workspace.id,
+      createdBy: run.userId,
+      profileId: profile.id,
+      access: "read",
     });
     const ready = (await platform.specialists.list(workspace.id, run.userId))[0]!;
     expect(ready.status).toBe("ready");
@@ -238,6 +220,15 @@ describeStore("specialist registration", (test) => {
       inheritsMain: false,
       specialistId: ready.id,
     });
+    checkingThreadId = independent.thread.id;
+    expect(
+      await fixture.store.listActiveBrowserProfileGrantsForWorkspace(
+        workspace.id,
+        run.userId,
+        `thread:${independent.thread.id}`,
+      ),
+    ).toEqual([expect.objectContaining({ profileId: profile.id, access: "read" })]);
+    expect((await check(mainOnly.id)).access).toBeNull();
     const rootChild = await fixture.store.createThread({
       createdBy: run.userId,
       environmentId: run.environmentId,
@@ -260,11 +251,6 @@ describeStore("specialist registration", (test) => {
         .where("id", "=", rootChild.thread.id)
         .execute(),
     ).rejects.toThrow(/specialist.*immutable/u);
-    const beforeOff = await fixture.database
-      .selectFrom("specialists")
-      .selectAll()
-      .where("id", "=", ready.id)
-      .executeTakeFirstOrThrow();
     const target = { kind: "specialist" as const, pluginId, ownerUserId: run.userId };
     await platform.settings.setEnabled(run.userId, {
       type: "settings.plugin.enabled.set",
@@ -276,16 +262,7 @@ describeStore("specialist registration", (test) => {
     await expect(
       platform.specialists.assertRunnable(ready.id, workspace.id, run.userId),
     ).rejects.toMatchObject({ code: "forbidden" });
-    expect(
-      (
-        await fixture.database
-          .selectFrom("specialists")
-          .selectAll()
-          .where("id", "=", ready.id)
-          .executeTakeFirstOrThrow()
-      ).bindings,
-    ).toEqual(beforeOff.bindings);
-    expect((await check(profile.id)).access).toBe("read");
+    expect((await check(profile.id)).access).toBeNull();
     await platform.settings.setEnabled(run.userId, {
       type: "settings.plugin.enabled.set",
       target,
@@ -441,7 +418,7 @@ describeStore("specialist registration", (test) => {
           workspaceId: workspace.id,
           ownerUserId: run.userId,
           threadId: descendant.thread.id,
-          explicitAccess: "read-write",
+          explicitAccess: "read",
           resource,
         })
       ).access,
@@ -484,7 +461,7 @@ describeStore("specialist registration", (test) => {
       workspaceId: workspace.id,
       ownerUserId: run.userId,
       threadId: child.thread.id,
-      explicitAccess: "read-write",
+      explicitAccess: "read",
       resource,
     });
     expect(guarded.access).toBe("read");
@@ -543,8 +520,14 @@ describeStore("specialist registration", (test) => {
         })
       ).access,
     ).toBeNull();
+    expect(
+      await fixture.store.listActiveBrowserProfileGrantsForWorkspace(
+        run.workspace.id,
+        run.userId,
+        `thread:${specialistThreadId}`,
+      ),
+    ).toEqual([]);
 
-    expect(ready.access[0]?.binding).toMatchObject({ resourceId: profile.id, level: "read" });
     expect((await check(profile.id)).access).toBe("read");
     expect((await check("unbound")).access).toBeNull();
     expect(
@@ -552,7 +535,7 @@ describeStore("specialist registration", (test) => {
         await resolveResourceAccess(fixture.database, {
           workspaceId: workspace.id,
           ownerUserId: run.userId,
-          specialistId: pending.id,
+          threadId: independent.thread.id,
           resource,
           explicitAccess: null,
         })
@@ -571,7 +554,7 @@ describeStore("specialist registration", (test) => {
       version.id,
     );
     const updated = await add();
-    expect(updated.id).toBe(pending.id);
+    expect(updated.id).toBe(registered.id);
     expect(updated.pluginVersionId).not.toBe(version.id);
     expect(
       updated.models[0] && "engine" in updated.models[0] ? updated.models[0].engine : undefined,
@@ -584,14 +567,14 @@ describeStore("specialist registration", (test) => {
       .execute();
     // A stale ready row cannot preserve withdrawn Workspace consent.
     expect((await check(profile.id)).access).toBeNull();
-    expect((await platform.specialists.refresh(pending.id)).status).toBe("pending");
+    expect((await platform.specialists.list(workspace.id, run.userId))[0]?.status).toBe("ready");
     platform.specialists.setRemovalHandler(async () => {
       throw new Error("Runner offline");
     });
     await expect(
       platform.specialists.remove({
         workspaceId: workspace.id,
-        specialistId: pending.id,
+        specialistId: registered.id,
         actorUserId: run.userId,
       }),
     ).rejects.toThrow("Runner offline");
@@ -604,14 +587,180 @@ describeStore("specialist registration", (test) => {
     if (workspace.backing.kind !== "local-directory") throw new Error("Expected local storage");
     await platform.specialists.resumeRemovals([workspace.backing.ownerEnvironmentId]);
     expect(await platform.specialists.list(workspace.id, run.userId)).toEqual([]);
-    expect((await add()).id).not.toBe(pending.id);
+    expect((await add()).id).not.toBe(registered.id);
     await platform.specialists.retirePlugin(pluginId);
     await platform.plugins.remove(pluginId);
     expect(await platform.specialists.list(workspace.id, run.userId)).toEqual([]);
     await expect(
-      platform.specialists.assertRunnable(pending.id, workspace.id, run.userId),
+      platform.specialists.assertRunnable(registered.id, workspace.id, run.userId),
     ).rejects.toThrow("removed");
     expect((await check(profile.id)).access).toBeNull();
+  });
+
+  test("Main specialists adopt all owner profiles and live Off switches deny a running Thread", async ({
+    storeFixture: f,
+  }) => {
+    const run = await f.startRunFixture("main-specialist-access");
+    const platform = new IntegrationPlatformStore(f.database);
+    const pluginId = randomUUID();
+    await platform.plugins.install({
+      id: pluginId,
+      name: "main-specialist",
+      actorUserId: run.userId,
+      source: {},
+      digest: "main",
+      manifest: { name: "main-specialist" },
+      specialistManifest: SpecialistManifestSchema.parse({
+        version: 1,
+        models: [{ engine: "codex", model: "fast" }],
+        access: [],
+      }),
+    });
+    const registration = await platform.specialists.add({
+      workspaceId: run.workspace.id,
+      pluginId,
+      actorUserId: run.userId,
+    });
+    const child = await f.store.delegateThread({
+      accessMode: run.thread.accessMode,
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      harnessInstanceId: run.harnessInstance.id,
+      idempotencyKey: randomUUID(),
+      modelSelection: run.thread.modelSelection,
+      specialistId: registration.id,
+      origin: { kind: "run", parentRunId: run.run.id, parentThreadId: run.thread.id },
+      task: [{ type: "text", text: "Research" }],
+      title: "Research",
+      workspaceId: run.workspace.id,
+    });
+    const profiles = [];
+    for (const name of ["Work", "Personal"])
+      profiles.push(
+        await f.store.createBrowserProfile({ ownerId: run.userId, name, idempotencyKey: name }),
+      );
+    const grants = () =>
+      f.store.listActiveBrowserProfileGrantsForWorkspace(
+        run.workspace.id,
+        run.userId,
+        `run:${child.run.id}`,
+      );
+    expect((await grants()).map((g) => g.profileId).sort()).toEqual(
+      profiles.map((p) => p.id).sort(),
+    );
+    for (const profile of profiles)
+      expect(
+        await resolveResourceAccess(f.database, {
+          workspaceId: run.workspace.id,
+          ownerUserId: run.userId,
+          agentBindingId: `run:${child.run.id}`,
+          resource: { type: "browser-profile", id: profile.id },
+        }),
+      ).toMatchObject({ access: "read-write", inheritsMain: true });
+    const installationId = createIntegrationId("installation");
+    await platform.install({
+      actorUserId: run.userId,
+      adapterSnapshot: null,
+      requestId: "specialist-records",
+      installation: {
+        id: installationId,
+        name: "records",
+        title: "Records",
+        description: "",
+        version: "1",
+        sourceKind: "built-in",
+        status: "active",
+        trust: "built-in",
+        manifest: {},
+        provenance: {},
+      },
+      servers: [
+        {
+          id: createIntegrationId("server"),
+          name: "default",
+          status: "active",
+          statusDetail: null,
+          connectionRequirement: { kind: "none" },
+          transport: { type: "streamable-http", url: "https://records.example/mcp", headers: {} },
+          catalog: {
+            definitions: {},
+            tools: [
+              {
+                id: createIntegrationId("tool"),
+                name: "read",
+                title: "Read",
+                description: "",
+                annotations: { readOnlyHint: true },
+                connectionId: null,
+                inputSchema: { type: "object" },
+                outputSchema: null,
+                status: "active",
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const requester = {
+      ownerUserId: run.userId,
+      workspaceId: run.workspace.id,
+      threadId: child.thread.id,
+      providerAuthorizations: {},
+    };
+    const callable = () => platform.listCallableTools(requester);
+    const discovery = () => platform.listDiscoveryInventory(requester);
+    expect((await callable()).map((t) => t.tool.name)).toEqual(["read"]);
+    const readyDiscovery = await discovery();
+    expect(readyDiscovery[0]?.readiness.tools).toEqual([
+      expect.objectContaining({ readiness: expect.objectContaining({ code: "READY" }) }),
+    ]);
+    for (const target of [
+      { kind: "specialist" as const, pluginId, ownerUserId: run.userId },
+      { kind: "plugin" as const, pluginId },
+    ]) {
+      for (const enabled of [false, true]) {
+        await platform.settings.setEnabled(run.userId, {
+          type: "settings.plugin.enabled.set",
+          target,
+          expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
+            .revision,
+          enabled,
+          idempotencyKey: randomUUID(),
+        });
+        if (enabled) {
+          expect(await grants()).toHaveLength(2);
+          expect(await callable()).toHaveLength(1);
+          expect(await discovery()).toEqual(readyDiscovery);
+        } else {
+          expect(await grants()).toEqual([]);
+          expect(await callable()).toEqual([]);
+          const denied = await discovery();
+          expect(denied[0]?.readiness.tools).toEqual([
+            expect.objectContaining({
+              readiness: expect.objectContaining({ code: "ACCESS_GRANT_REQUIRED" }),
+            }),
+          ]);
+        }
+      }
+    }
+    platform.specialists.setRemovalHandler(async () => {
+      throw new Error("Computer offline");
+    });
+    await expect(
+      platform.specialists.remove({
+        workspaceId: run.workspace.id,
+        specialistId: registration.id,
+        actorUserId: run.userId,
+      }),
+    ).rejects.toThrow("Computer offline");
+    expect(await grants()).toEqual([]);
+    expect(await callable()).toEqual([]);
+    expect(
+      await resolveResourceAccess(f.database, {
+        ...requester,
+        resource: { type: "browser-profile", id: profiles[0]!.id },
+      }),
+    ).toMatchObject({ access: null, specialistAllowed: false });
   });
 
   test("plugin retirement keeps other Projects ready when one cleanup fails and can be retried", async ({
@@ -732,7 +881,6 @@ describeStore("specialist registration", (test) => {
       .insertInto("specialists")
       .values({
         ...legacy,
-        bindings: sql`'[]'::jsonb`,
       })
       .execute();
     cleanup.mockImplementation(async ({ workspaceId }) => {
@@ -745,169 +893,7 @@ describeStore("specialist registration", (test) => {
     expect(await platform.specialists.list(b.id, owner.userId)).toEqual([]);
   });
 
-  test("an agent-registered specialist waits for its owner to choose even a sole candidate", async ({
-    storeFixture: fixture,
-  }) => {
-    const owner = await fixture.createRunFixture("specialist-agent-registered");
-    const workspace = await fixture.createProjectWorkspace(owner.userId, "agent-registered");
-    const platform = new IntegrationPlatformStore(fixture.database);
-    const pluginId = randomUUID();
-    await platform.plugins.install({
-      id: pluginId,
-      name: "agent-installed",
-      actorUserId: owner.userId,
-      source: {},
-      digest: "e".repeat(64),
-      manifest: { name: "agent-installed" },
-      specialistManifest: SpecialistManifestSchema.parse({
-        version: 1,
-        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
-        access: [{ type: "browser-profile", level: "read", reason: "Browse" }],
-      }),
-    });
-    const profile = await fixture.store.createBrowserProfile({
-      ownerId: owner.userId,
-      name: "Only",
-      idempotencyKey: "only",
-    });
-    await fixture.store.createBrowserProfileGrant({
-      workspaceId: workspace.id,
-      createdBy: owner.userId,
-      profileId: profile.id,
-      access: "read",
-    });
-    const registered = await platform.specialists.add({
-      workspaceId: workspace.id,
-      pluginId,
-      actorUserId: owner.userId,
-      autoBind: false,
-    });
-    expect(registered).toMatchObject({
-      status: "pending",
-      access: [{ state: "choose", binding: null }],
-    });
-    // Later reads, including the check before running it, never bind for the owner.
-    expect((await platform.specialists.list(workspace.id, owner.userId))[0]).toMatchObject({
-      status: "pending",
-      access: [{ state: "choose", binding: null }],
-    });
-    await expect(
-      platform.specialists.assertRunnable(registered.id, workspace.id, owner.userId),
-    ).rejects.toThrow();
-    const ready = await platform.specialists.bind({
-      workspaceId: workspace.id,
-      specialistId: registered.id,
-      actorUserId: owner.userId,
-      requirement: 0,
-      resourceId: profile.id,
-    });
-    expect(ready).toMatchObject({ status: "ready", access: [{ state: "bound" }] });
-  });
-
-  test("ambiguous consent requires an owner choice and list revalidates revocations", async ({
-    storeFixture: fixture,
-  }) => {
-    const owner = await fixture.createRunFixture("specialist-choice");
-    const workspace = await fixture.createProjectWorkspace(owner.userId, "choice");
-    const platform = new IntegrationPlatformStore(fixture.database);
-    const pluginId = randomUUID();
-    await platform.plugins.install({
-      id: pluginId,
-      name: "chooser",
-      actorUserId: owner.userId,
-      source: {},
-      digest: "c".repeat(64),
-      manifest: { name: "chooser" },
-      specialistManifest: SpecialistManifestSchema.parse({
-        version: 1,
-        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
-        access: [{ type: "browser-profile", level: "read-write", reason: "Browse" }],
-      }),
-    });
-    const pending = await platform.specialists.add({
-      workspaceId: workspace.id,
-      pluginId,
-      actorUserId: owner.userId,
-    });
-    expect(pending.access[0]).toMatchObject({ state: "needs-access", candidates: [] });
-    const profiles = [];
-    for (const name of ["First", "Second"]) {
-      const p = await fixture.store.createBrowserProfile({
-        ownerId: owner.userId,
-        name,
-        idempotencyKey: name,
-      });
-      await fixture.store.createBrowserProfileGrant({
-        workspaceId: workspace.id,
-        createdBy: owner.userId,
-        profileId: p.id,
-        access: "read-write",
-      });
-      profiles.push(p);
-    }
-    const [choice] = await platform.specialists.list(workspace.id, owner.userId);
-    expect(choice?.access[0]).toMatchObject({ state: "choose", binding: null });
-    expect(choice?.access[0]?.candidates).toHaveLength(2);
-    await expect(
-      platform.specialists.bind({
-        workspaceId: workspace.id,
-        specialistId: pending.id,
-        actorUserId: owner.userId,
-        requirement: 0,
-        resourceId: "unavailable",
-      }),
-    ).rejects.toThrow("candidate");
-    const ready = await platform.specialists.bind({
-      workspaceId: workspace.id,
-      specialistId: pending.id,
-      actorUserId: owner.userId,
-      requirement: 0,
-      resourceId: profiles[1]!.id,
-    });
-    expect(ready).toMatchObject({
-      status: "ready",
-      access: [{ state: "bound", binding: { resourceId: profiles[1]!.id } }],
-    });
-    expect(
-      (await platform.specialists.list(workspace.id, owner.userId))[0]?.access[0]?.binding
-        ?.resourceId,
-    ).toBe(profiles[1]!.id);
-    await fixture.database
-      .updateTable("browserProfileGrants")
-      .set({ revokedAt: new Date() })
-      .where("workspaceId", "=", workspace.id)
-      .where("profileId", "=", profiles[1]!.id)
-      .execute();
-    expect((await platform.specialists.list(workspace.id, owner.userId))[0]).toMatchObject({
-      status: "pending",
-      access: [
-        {
-          state: "rebind",
-          binding: null,
-          candidates: [{ resourceId: profiles[0]!.id, name: "First" }],
-        },
-      ],
-    });
-    expect((await platform.specialists.list(workspace.id, owner.userId))[0]?.status).toBe(
-      "pending",
-    );
-    await expect(
-      platform.specialists.assertRunnable(pending.id, workspace.id, owner.userId),
-    ).rejects.toThrow("pending");
-    expect(
-      (
-        await platform.specialists.bind({
-          workspaceId: workspace.id,
-          specialistId: pending.id,
-          actorUserId: owner.userId,
-          requirement: 0,
-          resourceId: profiles[0]!.id,
-        })
-      ).status,
-    ).toBe("ready");
-  });
-
-  test("a shared Project never binds another member's browser consent", async ({
+  test("a shared Project never adopts another member's browser consent", async ({
     storeFixture: fixture,
   }) => {
     const owner = await fixture.createRunFixture("specialist-owner");
@@ -1017,41 +1003,49 @@ describeStore("specialist registration", (test) => {
         ],
       }),
     });
-    expect(
-      await platform.specialists.add({
-        workspaceId: workspace.id,
-        pluginId,
-        actorUserId: owner.userId,
-      }),
-    ).toMatchObject({
-      status: "pending",
-      ownerUserId: owner.userId,
-      access: [
-        { binding: null, state: "needs-access", candidates: [] },
-        { binding: null, state: "needs-access", candidates: [] },
-      ],
+    const registration = await platform.specialists.add({
+      workspaceId: workspace.id,
+      pluginId,
+      actorUserId: owner.userId,
     });
-    const [registration] = await platform.specialists.list(workspace.id, owner.userId);
-    await expect(
-      platform.specialists.bind({
-        workspaceId: workspace.id,
-        specialistId: registration!.id,
-        actorUserId: other.userId,
-        requirement: 0,
-        resourceId: profile.id,
-      }),
-    ).rejects.toThrow("consent owner");
+    expect(registration).toMatchObject({ status: "ready", ownerUserId: owner.userId });
     const own = await platform.specialists.add({
       workspaceId: workspace.id,
       pluginId,
       actorUserId: other.userId,
     });
     expect(own).toMatchObject({ status: "ready", ownerUserId: other.userId });
+    const thread = await fixture.store.createThread({
+      createdBy: owner.userId,
+      environmentId: owner.environmentId,
+      harnessInstanceId: owner.harnessInstance.id,
+      modelSelection: owner.thread.modelSelection,
+      workspaceId: workspace.id,
+      specialistId: registration.id,
+      title: "Owner specialist",
+      idempotencyKey: "owner-specialist",
+    });
+    expect(
+      await fixture.store.listActiveBrowserProfileGrantsForWorkspace(
+        workspace.id,
+        other.userId,
+        `thread:${thread.thread.id}`,
+      ),
+    ).toEqual([]);
+    expect(
+      await resolveResourceAccess(fixture.database, {
+        workspaceId: workspace.id,
+        ownerUserId: other.userId,
+        threadId: thread.thread.id,
+        explicitAccess: "read-write",
+        resource: { type: "browser-profile", id: profile.id },
+      }),
+    ).toMatchObject({ access: null, specialistAllowed: false });
     const listed = await platform.specialists.list(workspace.id, other.userId);
     expect(listed).toHaveLength(2);
-    expect(listed.find((r) => r.id === registration!.id)).toMatchObject({ canUse: false });
+    expect(listed.find((r) => r.id === registration.id)).toMatchObject({ canUse: false });
     await expect(
-      platform.specialists.assertRunnable(registration!.id, workspace.id, other.userId),
+      platform.specialists.assertRunnable(registration.id, workspace.id, other.userId),
     ).rejects.toThrow("add it for yourself");
   });
 });

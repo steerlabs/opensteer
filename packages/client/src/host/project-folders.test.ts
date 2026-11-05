@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceSummary } from "./client.js";
-import { pluginSummaries, pluginVersionLabel, specialistPendingSummary } from "./plugins.js";
+import { pluginSummaries, pluginVersionLabel } from "./plugins.js";
 import { groupTasksByProject, relocationPaths } from "./project-folders.js";
 import type { TaskRow } from "./task-list.js";
 
@@ -110,24 +110,6 @@ describe("pluginSummaries", () => {
     });
     expect(pluginVersionLabel(plugin!)).toBe("Build bbbbbbbb");
     expect(pluginVersionLabel({ digest: "x", version: "v2.1.0" })).toBe("Version 2.1.0");
-  });
-
-  it("says what a pending specialist still needs", () => {
-    const access = (state: "bound" | "choose" | "needs-access") => ({
-      type: "phone" as const,
-      level: "read" as const,
-      reason: "Texts",
-      binding: null,
-      candidates: [],
-      state,
-    });
-    expect(
-      specialistPendingSummary({
-        status: "pending",
-        access: [access("choose"), access("needs-access"), access("needs-access")],
-      }),
-    ).toBe("1 choice to make, 2 need access");
-    expect(specialistPendingSummary({ status: "ready", access: [access("bound")] })).toBe(null);
   });
 });
 

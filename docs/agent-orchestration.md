@@ -119,9 +119,12 @@ Resource access intersects [consent reach](#one-mcp-live-caller-authority) with 
 [resource guard](../packages/database/src/resource-access.ts). Main inheritance needs the lineage
 root to act as the requester in their own Main. Projects need the requester's explicit grants;
 browser consent also needs the grant creator's active membership, and reads never create grants.
-Connection ceilings, owner Off or Main exclusions and specialist bindings only narrow access, and
-cannot erase instructions already in an engine's history. Plugin owner settings are never
-agent-reachable. A caller without Main authority cannot reuse, queue to or steer a Main-lineage
+Connection ceilings and owner Off or Main exclusions only narrow access, and cannot erase
+instructions already in an engine's history. A specialist adopts its caller's access in its
+Workspace, because installing it or asking an agent to make it is the consent: there are no
+per-specialist bindings, and a manifest's `access` field grants and limits nothing. Only its owner's
+live registration carries that access, so another member's or a removed one reaches nothing. Plugin
+owner settings are never agent-reachable. A caller without Main authority cannot reuse, queue to or steer a Main-lineage
 Thread; a specialist sends only reports outside its registration. Every capability names the current
 attempt's grant. Tool admission needs an active grant, live binding, matching Runner boot and
 non-deleting Workspace; reporting needs only the binding, so a stopped Run can record its end.
