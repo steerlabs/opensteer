@@ -674,7 +674,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       sessionId: context.sessionId,
       surfaceId,
       expectedGeneration: catalog.data.generation,
-      expectedRevision: catalog.data.revision,
+      expectedRevision: catalog.data.inventoryRevision ?? catalog.data.revision,
       idempotencyKey: randomUUID(),
     });
     assert(closed.ok, `Tab close failed: ${JSON.stringify(closed)}`);
