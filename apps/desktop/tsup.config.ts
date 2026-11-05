@@ -36,8 +36,6 @@ export default defineConfig([
         delete release.portalUrl;
         await writeFile(releaseTarget, JSON.stringify(release, null, 2) + "\n");
       }
-      await copyFile("resources/trayTemplate.png", path.join("dist", "trayTemplate.png"));
-      await copyFile("resources/trayTemplate@2x.png", path.join("dist", "trayTemplate@2x.png"));
     },
   }),
   {

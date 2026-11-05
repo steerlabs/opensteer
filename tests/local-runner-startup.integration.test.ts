@@ -284,7 +284,7 @@ integration("local Runner startup with a real credentialed worker", () => {
         await expect(
           access(path.join(config.localExecution.dataDirectory, "deployments", input.deploymentId)),
         ).rejects.toThrow();
-        expect(await service.enrolledRunners()).toEqual([]);
+        expect(await service.hasEnrolledRunners()).toBe(false);
         await mkdir(artifactDirectory, { recursive: true });
         await writeFile(
           path.join(artifactDirectory, `startup-cleanup-${fault}.json`),

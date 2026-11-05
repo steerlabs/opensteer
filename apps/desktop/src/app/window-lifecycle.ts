@@ -2,7 +2,7 @@ export interface DesktopWindowLifecycleApplication {
   on(event: "window-all-closed", listener: () => void): void;
 }
 
-/** A closed shell leaves background computer lending and the tray running. */
+/** A closed shell leaves background computer lending running. */
 export function keepDesktopAliveWithoutWindows(
   application: DesktopWindowLifecycleApplication,
 ): void {
