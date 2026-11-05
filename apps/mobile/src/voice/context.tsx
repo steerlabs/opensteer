@@ -1,6 +1,7 @@
 import { conversationRoute, show } from "./navigation.js";
 import { VoiceController } from "@opensteer/client/voice";
 import { handlePersonShow } from "@opensteer/client/host";
+import { VoiceContext } from "@opensteer/client/react";
 import { AppState } from "react-native";
 import { randomUUID } from "expo-crypto";
 import { useEffect, useState, type ReactNode } from "react";
@@ -9,7 +10,6 @@ import { navigationRef } from "../navigation-ref.js";
 import { useVoiceBackgroundStop } from "../platform/use-voice-background-stop.js";
 import { voiceMediaPort } from "../platform/voice.js";
 import { useMobileClient, useSelectedHostClient } from "../ui/mobile-client-context.js";
-import { VoiceContext } from "./controls.js";
 
 type RouteParams = { deploymentId?: string; threadId?: string; tabId?: string } | undefined;
 

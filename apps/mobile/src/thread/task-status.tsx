@@ -176,6 +176,7 @@ export function useTaskMenuChoices(
       threadId !== null &&
       snapshot.threadRenameAvailable &&
       snapshot.homeThreadId !== threadId &&
+      snapshot.voiceThreadId !== threadId &&
       !snapshot.workspaces.some((workspace) => workspace.homeThreadId === threadId),
   );
   const canChangeIcon = useHostSelector(
@@ -184,6 +185,7 @@ export function useTaskMenuChoices(
       threadId !== null &&
       snapshot.taskMarksAvailable &&
       snapshot.homeThreadId !== threadId &&
+      snapshot.voiceThreadId !== threadId &&
       !snapshot.workspaces.some((workspace) => workspace.homeThreadId === threadId),
   );
   const canBeDone = useHostSelector(hostClient, (snapshot) => {

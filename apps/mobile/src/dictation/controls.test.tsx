@@ -6,6 +6,8 @@ import type { DictationPort } from "@opensteer/protocol/dictation";
 import "../screens/thread-settings.test-support.js";
 import { DictationBar } from "./controls.js";
 
+// Voice's controls reach native modules that cannot load here; these tests are not about voice.
+vi.mock("../voice/controls.js", () => ({ VoiceDock: () => null, VoiceMic: () => null }));
 vi.mock("react-native-reanimated", async () => {
   const { View } = await import("react-native");
   return {

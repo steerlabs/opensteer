@@ -35,15 +35,16 @@ export function requestTitleLine(request: Request): string {
 /**
  * The one question the work a Thread handed out docks above its composer, and
  * the task it arrived through. Questions asked in the Thread itself are the
- * composer's own.
+ * composer's own, unless `own` says it has none.
  */
 export function waitingQuestion(
   waitingRequests: readonly WaitingRequest[],
   threadId: string,
   user: Pick<AuthenticatedUser, "id" | "instanceRole">,
+  options: { readonly own?: boolean } = {},
 ): { readonly surface: SurfaceModel; readonly waiting: WaitingRequest | null } | null {
   const waiting = requestsWaitingOn(waitingRequests, threadId).filter(
-    ({ request }) => request.originatingThreadId !== threadId,
+    ({ request }) => options.own === true || request.originatingThreadId !== threadId,
   );
   const surface = deriveSurface(
     waiting.map(({ request }) => request),
