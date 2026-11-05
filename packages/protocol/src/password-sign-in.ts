@@ -378,7 +378,9 @@ export type PasswordSignInAuthorityEvent = z.infer<typeof PasswordSignInAuthorit
 export const SessionlessPasswordSignInRequestPayloadSchema = z.strictObject({
   kind: z.literal("browser.password-sign-in"),
   scope: z.literal("workspace"),
+  // Older readers require 5; credential names the consent.
   permissionVersion: z.literal(5),
+  credential: z.literal("card").optional(),
   computerName: z.string().trim().min(1).max(160),
   expiresAt: z.iso.datetime({ offset: true }),
   operationId: z.uuid(),
