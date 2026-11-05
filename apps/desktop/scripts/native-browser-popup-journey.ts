@@ -137,7 +137,13 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
   kit.cleanup.push(() => {
     patched._createOpensteerInputOwner = createOwner;
   });
-  const server = await chromium.launchServer({ executablePath: executable, headless: false });
+  // Viewers and the producer otherwise contend for the VM's one paravirtual GPU,
+  // stalling every viewer frame for seconds with idle CPUs.
+  const server = await chromium.launchServer({
+    executablePath: executable,
+    headless: false,
+    args: ["--disable-gpu"],
+  });
   const pid = server.process().pid;
   assert(pid);
   kit.ownedPids.add(pid);
