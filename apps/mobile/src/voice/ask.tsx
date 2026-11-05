@@ -116,7 +116,7 @@ function AskedPasswords(props: { readonly hostClient: HostClient }): ReactNode {
 }
 
 const styles = StyleSheet.create({
-  asked: { gap: space[6] },
+  asked: { gap: space[4] },
   more: {
     ...material.plate,
     alignSelf: "center",

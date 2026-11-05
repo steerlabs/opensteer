@@ -145,9 +145,9 @@ export function VoiceDock(props: { readonly slot?: boolean }): ReactNode {
 /**
  * The bar for screens without any composer. Mount once, above the navigator.
  *
- * It stays under iOS sheets by choice: a `FullWindowOverlay` joins the window
- * once, so a sheet opened during the call covers it anyway, and from outside any
- * view controller its Request card's own `Modal` review would never present.
+ * It stays under iOS sheets by choice. In a `FullWindowOverlay` it would stay on
+ * top, but a Request card's `Modal` review needs a view controller to present
+ * from, and that window-level view has none: Review would silently do nothing.
  */
 export function VoiceOverlay(): ReactNode {
   const controller = useContext(VoiceContext);
@@ -560,7 +560,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[12],
     paddingVertical: space[6],
   },
-  stack: { gap: space[8] },
+  stack: { gap: space[6] },
   tasks: {
     ...material.quiet,
     borderRadius: radius.full,

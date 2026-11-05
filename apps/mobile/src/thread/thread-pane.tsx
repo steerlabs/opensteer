@@ -164,6 +164,7 @@ export interface ThreadHeaderState {
   readonly icon: ThreadSummary["icon"];
   readonly color: ThreadSummary["color"];
   readonly isHome: boolean;
+  readonly isVoice: boolean;
   /** The work this Thread is doing for another conversation, or null. */
   readonly task: TaskHeading | null;
 }
@@ -183,6 +184,7 @@ export function sameThreadHeader(
     left.icon === right.icon &&
     left.color === right.color &&
     left.isHome === right.isHome &&
+    left.isVoice === right.isVoice &&
     sameTaskHeading(left.task, right.task)
   );
 }
@@ -730,6 +732,7 @@ function ThreadPaneForUser(
       icon,
       color: markColor,
       isHome,
+      isVoice: voiceThread,
     });
   }, [
     connectionLabel,
@@ -743,6 +746,7 @@ function ThreadPaneForUser(
     icon,
     markColor,
     isHome,
+    voiceThread,
   ]);
 
   // The reader's choices survive rows leaving the list's mounted window.
