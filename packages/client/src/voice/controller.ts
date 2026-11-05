@@ -418,7 +418,10 @@ export class VoiceController {
     const tasks = snapshot.activeTasks.filter(
       ({ thread }) => thread.parentThreadId === threadId,
     ).length;
-    this.#publish({ tasks, ask: this.#ask(snapshot, threadId) });
+    const ask = this.#ask(snapshot, threadId);
+    const held = this.#snapshot.ask;
+    // The Host changes many times a second; only a different ask redraws the bar.
+    this.#publish({ tasks, ask: JSON.stringify(ask) === JSON.stringify(held) ? held : ask });
   }
 
   #ask(snapshot: HostSnapshot, threadId: string): VoiceAsk | null {

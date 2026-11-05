@@ -240,6 +240,9 @@ describe("VoiceController", () => {
     // The card the person is reading stays put when an earlier Request appears.
     f.publish({ waitingRequests: [waiting("newer"), waiting("first")] as never });
     expect(f.controller.getSnapshot().ask).toMatchObject({ requestId: "first" });
+    const held = f.controller.getSnapshot();
+    f.publish({ network: "online" } as never);
+    expect(f.controller.getSnapshot()).toBe(held);
     f.publish({ activeTasks: [], waitingRequests: [] });
     expect(f.controller.getSnapshot()).toMatchObject({ tasks: 0, ask: null });
     f.dispose();
