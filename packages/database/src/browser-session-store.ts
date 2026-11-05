@@ -798,6 +798,10 @@ export async function resolvePlaceActors(
         r.assignment_id, r.binding_generation as generation, 0 as depth, array[]::text[] as path
       from runs r join threads c on c.id = r.thread_id
       where r.id in (${sql.join(runIds)}) and r.status in (${sql.join(nonTerminalRunStatuses)}) and r.binding_generation is not null
+        and not exists (
+          select 1 from grants g where g.run_id = r.id
+            and g.binding_generation = r.binding_generation and g.status = 'revoked'
+        )
       union all
       select l.run_id, d.parent_thread_id, d.parent_assignment_id, l.generation, l.depth + 1, l.path || d.id::text
       from lineage l join delegations d on d.id = l.assignment_id

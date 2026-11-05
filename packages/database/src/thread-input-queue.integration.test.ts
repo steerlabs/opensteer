@@ -491,6 +491,27 @@ integration.sequential("thread input queue promotion", () => {
       threadId: chat.thread.id,
       workerThread: { id: call.threadId, title: "Voice call" },
     });
+    await database
+      .updateTable("threads")
+      .set({ voiceSessionId: null })
+      .where("id", "=", call.threadId)
+      .execute();
+    expect(
+      (await store.requests.waitingOnUserPage({ userId: f.ownerId, limit: 10 })).requests.find(
+        ({ request }) => request.id === requestId,
+      )?.presentation,
+    ).toBeNull();
+    expect(
+      await store.resolvePlaceActors({
+        agentBindingIds: [`run:${call.runId}`],
+        ownerIds: [f.ownerId],
+      }),
+    ).toEqual([]);
+    await database
+      .updateTable("threads")
+      .set({ voiceSessionId: call.sessionId })
+      .where("id", "=", call.threadId)
+      .execute();
   });
 
   it("starts voice on its own account's catalog default at low effort, never another model", async ({

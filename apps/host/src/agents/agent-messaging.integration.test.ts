@@ -370,10 +370,15 @@ integration("agent-to-agent messaging round trip", () => {
     await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({ code: "forbidden" });
   });
 
-  it.each(["app", "phone"] as const)(
-    "shows the Run's newest %s place through its authorized session",
-    async (kind) => {
-      const f = await createMessagingFixture();
+  it.each([
+    ["app", false],
+    ["phone", false],
+    ["app", true],
+    ["phone", true],
+  ] as const)(
+    "shows the Run's newest %s place through its authorized session (voice: %s)",
+    async (kind, voice) => {
+      const f = await createMessagingFixture(voice);
       const app = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null };
       const session = ComputerUseSessionSummarySchema.parse({
         sessionId: mintComputerUseSessionId(),
@@ -1293,7 +1298,7 @@ integration("agent-to-agent messaging round trip", () => {
     }
   });
 
-  async function createMessagingFixture() {
+  async function createMessagingFixture(voice = false) {
     const userId = await store.createUser("Alex");
     const runnerId = createId("runner");
     const environmentId = createId("environment");
@@ -1320,7 +1325,20 @@ integration("agent-to-agent messaging round trip", () => {
       sourceId: "native",
       stateKind: "isolated",
     });
+    const chat = voice
+      ? await store.createThread({
+          createdBy: userId,
+          environmentId,
+          harnessInstanceId: harnessInstance.id,
+          idempotencyKey: `voice-home-${randomUUID()}`,
+          modelSelection: testModelSelection,
+          title: "Chat",
+          workspaceId: mainWorkspace.id,
+          home: true,
+        })
+      : null;
     const { thread: threadA } = await store.createThread({
+      ...(chat ? { parentThreadId: chat.thread.id } : {}),
       createdBy: userId,
       environmentId,
       harnessInstanceId: harnessInstance.id,
@@ -1362,6 +1380,14 @@ integration("agent-to-agent messaging round trip", () => {
       humanTurn.run,
       threadA,
     );
+    if (voice) {
+      await database
+        .updateTable("threads")
+        .set({ voiceSessionId: randomUUID(), listed: false, title: "Voice call" })
+        .where("id", "=", threadA.id)
+        .execute();
+      expect(await store.voiceCallForRun(humanTurn.run.id)).toBeDefined();
+    }
     const tokenA = `token-a-${randomUUID()}`;
     claimsByToken.set(
       tokenA,

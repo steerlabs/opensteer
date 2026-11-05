@@ -577,6 +577,7 @@ interface BrowserServiceOptions {
   readonly workspaceTabs?: WorkspaceTabStore;
   readonly tabGroups?: BrowserTabGroupStore;
   readonly onCatalogChanged?: (sessionId: BrowserSessionId, workspaceId: WorkspaceId) => void;
+  readonly onMissingActor?: (sessionId: BrowserSessionId, agentBindingId: string) => void;
   readonly onPlaceNotice?: (
     ownerId: UserId,
     notice:
@@ -662,6 +663,7 @@ export class BrowserService {
     { fingerprint: string; outcome: BrowserTabCloseResult["outcome"] }
   >();
   readonly #onProfilesChanged: NonNullable<BrowserServiceOptions["onProfilesChanged"]>;
+  readonly #onMissingActor: NonNullable<BrowserServiceOptions["onMissingActor"]>;
   readonly #onCatalogChanged: NonNullable<BrowserServiceOptions["onCatalogChanged"]>;
   readonly #onPlaceNotice: NonNullable<BrowserServiceOptions["onPlaceNotice"]>;
   #placeOrder = 0;
@@ -727,6 +729,7 @@ export class BrowserService {
     this.#onHistoryChanged = options.onHistoryChanged ?? (() => undefined);
     this.#workspaceTabs = options.workspaceTabs;
     this.#tabGroups = options.tabGroups;
+    this.#onMissingActor = options.onMissingActor ?? (() => undefined);
     this.#onCatalogChanged = options.onCatalogChanged ?? (() => undefined);
     this.#onPlaceNotice = options.onPlaceNotice ?? (() => undefined);
     this.#connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
@@ -2212,6 +2215,7 @@ export class BrowserService {
     const key = `${sessionId}:${input.agentBindingId}`;
     const source = audience[0];
     if (!source) {
+      this.#onMissingActor(sessionId, input.agentBindingId);
       const old = [...this.#actors.values()].find(
         (actor) => actor.sessionId === sessionId && actor.binding === input.agentBindingId,
       );
@@ -2219,9 +2223,13 @@ export class BrowserService {
       this.#actorKeys.set(key, null);
       return;
     }
-    const old = [...this.#actors.values()].find(
+    let old = [...this.#actors.values()].find(
       (actor) => actor.sessionId === sessionId && actor.binding === input.agentBindingId,
     );
+    if (old && old.generation !== source.generation) {
+      this.#clearActor(old);
+      old = undefined;
+    }
     const actor: BrowserActor = old ?? {
       token: randomUUID(),
       sessionId,

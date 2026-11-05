@@ -781,7 +781,9 @@ export async function createHostRuntime(
       console.warn("Browser usage recording failed", error);
     };
     const browserTabGroups = new BrowserTabGroupStore(database);
+    let logMissingBrowserActor: (sessionId: string, bindingId: string) => void = () => undefined;
     const browser = new BrowserService({
+      onMissingActor: (sessionId, bindingId) => logMissingBrowserActor(sessionId, bindingId),
       hostOrigin: config.canonicalOrigin,
       personal: deployment.deploymentShape.kind === "personal",
       localProfiles,
@@ -1262,6 +1264,7 @@ export async function createHostRuntime(
     // Shell audit keeps its existing `run-ended` reason; computer-use cleanup
     // closes the exact session without adding a wire reason.
     store.onRunGrantsRevoked((grants) => {
+      browser.invalidatePlaceAuthority();
       computerUse?.endGrantSessions(grants);
       for (const grant of grants)
         integrationPlatform.endComputerGeneration(grant.runId, grant.bindingGeneration);
@@ -1301,6 +1304,11 @@ export async function createHostRuntime(
             : event.type === "assignment.updated"
               ? [event.data.assignment.parentThreadId, event.data.assignment.workerThread.id]
               : undefined,
+        );
+      if (event.type === "place.entered")
+        app.log.info(
+          { runId: event.runId, threadId: event.threadId, workspaceId: event.workspaceId },
+          "place.entered",
         );
       liveRuns.observeCommitted([event]);
       realtime.publish(event);
@@ -2108,7 +2116,19 @@ export async function createHostRuntime(
       memoryPasses,
       realtime,
       computerUse,
-      personShow: (userId, message) => realtime.showToPerson(userId, message),
+      personShow: async (userId, message) => {
+        const connectedDevices = await realtime.showToPerson(userId, message);
+        app.log.info(
+          {
+            userId,
+            runId: message.runId,
+            threadId: message.threadId,
+            workspaceId: message.workspaceId,
+          },
+          "host.show",
+        );
+        return connectedDevices;
+      },
       browserTabs,
       supportsLoginFill: (scope) => {
         const runner = runners.identityForEnvironment(scope.environmentId);
@@ -2431,6 +2451,10 @@ export async function createHostRuntime(
       );
     reportWorkspaceDeletionError = (error, workspaceId) =>
       app.log.error({ err: error, workspaceId }, "Workspace deletion teardown failed");
+    logMissingBrowserActor = (sessionId, bindingId) => {
+      if (bindingId.startsWith("run:"))
+        app.log.info({ sessionId, runId: bindingId.slice(4) }, "Browser Run has no actor");
+    };
     logComputerLifecycle = (event, details) => app.log.info(details, event);
     reportHarnessAuthenticationNudgeError = (environmentId, error) =>
       app.log.warn(

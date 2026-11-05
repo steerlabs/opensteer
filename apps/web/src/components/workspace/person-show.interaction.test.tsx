@@ -218,6 +218,15 @@ it("opens what the voice call's agent shows from any screen, and ignores a call 
   await act(async () => client.receivePersonShow(show(call)));
   expect(history.at(-1)!.path).toBe(`/threads/${target.id}`);
   expect(showed).toHaveBeenCalledTimes(1);
+  // One long Run can show again after the person changes screens.
+  for (const path of ["/", `/threads/${createId("thread")}`, "/settings/ai-engines"]) {
+    await act(async () => goTo!(path));
+    const before = history.length;
+    await act(async () => client.receivePersonShow(show(call)));
+    expect(history.length).toBeGreaterThan(before);
+    expect(history.at(-1)!.path).toBe(`/threads/${target.id}`);
+  }
+  expect(showed).toHaveBeenCalledTimes(4);
 
   await act(async () => goTo!("/"));
   const before = history.length;
@@ -227,5 +236,5 @@ it("opens what the voice call's agent shows from any screen, and ignores a call 
   current = { ...call, runId: createId("run") };
   await act(async () => client.receivePersonShow(show(call)));
   expect(history).toHaveLength(before);
-  expect(showed).toHaveBeenCalledTimes(1);
+  expect(showed).toHaveBeenCalledTimes(4);
 });
