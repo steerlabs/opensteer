@@ -21,7 +21,13 @@ import { browserNoticeDismissals } from "./usage-notice.js";
  * Setup needs the Mac itself, so only the desktop app on that Mac has a button;
  * everywhere else names the Mac. Nothing here reaches the agent.
  */
-export function PasswordsSuggestion({ site }: { readonly site: string }) {
+export function PasswordsSuggestion({
+  site,
+  card = false,
+}: {
+  readonly site: string;
+  readonly card?: boolean;
+}) {
   const { desktopBridge, desktopDeployment, snapshot } = useShell();
   const home = useHomeComputer();
   const store = browserNoticeDismissals("opensteer.usage-notices.dismissed");
@@ -35,20 +41,25 @@ export function PasswordsSuggestion({ site }: { readonly site: string }) {
   return desktopBridge !== null &&
     desktopDeployment?.kind === "personal" &&
     desktopDeployment.onThisComputer ? (
-    <OnThisMac bridge={desktopBridge} onDismiss={onDismiss} site={site} />
+    <OnThisMac card={card} bridge={desktopBridge} onDismiss={onDismiss} site={site} />
   ) : (
     <SuggestionLine onDismiss={onDismiss}>
-      <strong>{passwordsSuggestionName}</strong> {passwordsSuggestionLead}{" "}
-      {passwordsSuggestionElsewhere(home.name)}
+      <strong>{passwordsSuggestionName}</strong>{" "}
+      {card ? "lets agents fill saved cards at checkout." : passwordsSuggestionLead}{" "}
+      {card
+        ? `Open Passwords on ${home.name ?? "your Mac"} and add a card`
+        : passwordsSuggestionElsewhere(home.name)}
     </SuggestionLine>
   );
 }
 
 function OnThisMac({
+  card,
   bridge,
   onDismiss,
   site,
 }: {
+  readonly card: boolean;
   readonly bridge: Pick<
     OpensteerDesktopBridge,
     "onPasswordsStatusChanged" | "passwordsOpen" | "passwordsStatus"
@@ -63,7 +74,7 @@ function OnThisMac({
   // only after this Mac said it wasn't, here, on this screen.
   const offered = useRef(false);
   const state = status === null ? null : passwordsSettingsState(status).kind;
-  if (state === "not-set-up") {
+  if (state === "not-set-up" || (card && state === "ready")) {
     offered.current = true;
     return (
       <SuggestionLine
@@ -81,14 +92,17 @@ function OnThisMac({
             }}
             type="button"
           >
-            {passwordsSuggestionAction}
+            {card ? "Open Passwords" : passwordsSuggestionAction}
           </button>
         }
         onDismiss={onDismiss}
       >
         {error ?? (
           <>
-            <strong>{passwordsSuggestionName}</strong> {passwordsSuggestionLead}
+            <strong>{passwordsSuggestionName}</strong>{" "}
+            {card
+              ? "Add a card and enable agent use, then ask the agent again."
+              : passwordsSuggestionLead}
           </>
         )}
       </SuggestionLine>

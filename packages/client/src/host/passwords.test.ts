@@ -240,8 +240,12 @@ describe("passwordsSettingsState", () => {
   });
 
   it("counts the sign-ins waiting in the chat", () => {
-    expect(passwordsWaitingDetail(1)).toBe("1 sign-in to answer in its conversation");
-    expect(passwordsWaitingDetail(2)).toBe("2 sign-ins to answer in their conversations");
+    expect(passwordsWaitingDetail(1)).toBe(
+      "1 password or card request to answer in its conversation",
+    );
+    expect(passwordsWaitingDetail(2)).toBe(
+      "2 password or card requests to answer in their conversations",
+    );
   });
 });
 

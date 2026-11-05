@@ -27,7 +27,8 @@ import {
   conversationActivities,
   conversationActivityTurn,
   conversationRows,
-  passwordsSetUpSuggestion,
+  passwordsSetupOffer,
+  type PasswordsSetupOffer,
   conversationTurn,
   formatClockTime,
   groupTranscriptEntries,
@@ -272,7 +273,10 @@ export function AgentTranscript({
    */
   queued?: ReactNode;
   /** Draws the offer of Opensteer Passwords for a site; a screen that has none shows no offer. */
-  renderPasswordsSuggestion?: (site: string) => ReactNode;
+  renderPasswordsSuggestion?: (
+    site: string,
+    credential?: PasswordsSetupOffer["credential"],
+  ) => ReactNode;
   viewerUserId?: string | null;
   workspaces?: readonly WorkspaceSummary[];
 }) {
@@ -323,7 +327,7 @@ export function AgentTranscript({
       : null;
   const speakers = useMemo(() => ({ threadId, workspaces }), [threadId, workspaces]);
   const passwordsSite = useMemo(
-    () => (renderPasswordsSuggestion ? passwordsSetUpSuggestion(groups) : null),
+    () => (renderPasswordsSuggestion ? passwordsSetupOffer(groups) : null),
     [groups, renderPasswordsSuggestion],
   );
 
@@ -385,7 +389,10 @@ export function AgentTranscript({
                                 )}
                                 {passwordsSite === null
                                   ? null
-                                  : renderPasswordsSuggestion?.(passwordsSite)}
+                                  : renderPasswordsSuggestion?.(
+                                      passwordsSite.site,
+                                      passwordsSite.credential,
+                                    )}
                                 {queued}
                               </Speakers>
                             </TranscriptBrowsers>
