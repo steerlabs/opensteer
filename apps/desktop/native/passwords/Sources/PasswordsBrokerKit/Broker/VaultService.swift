@@ -457,6 +457,55 @@ public final class VaultService: @unchecked Sendable {
     }
   }
 
+  func cardChoices() async throws -> [Wire.CardChoice] {
+    try await run {
+      let unlocked = try self.unlockNow()
+      defer { unlocked.close() }
+      return try unlocked.cards().map(Wire.CardChoice.init).sorted {
+        ($0.label ?? "", $0.brand, $0.lastFour, $0.id) < ($1.label ?? "", $1.brand, $1.lastFour, $1.id)
+      }
+    }
+  }
+
+  func releaseCard(_ params: Wire.CardReleaseParams, card: Wire.CardChoice, site: String,
+                   authority: TransactionAuthority, expiresAt: Date) async throws -> JSONValue {
+    try await run {
+      let unlocked = try self.unlockNow()
+      defer { unlocked.close() }
+      guard self.agentSignInsNow() else { return Wire.cardRefused("passwords-off") }
+      guard let current = try? unlocked.card(id: card.id), current.revision == card.revision else {
+        return Wire.cardRefused("revoked")
+      }
+      guard Origins.isWithinSite(params.topOrigin, site: site), WireRules.origin(params.frameOrigin) else {
+        return Wire.cardRefused("wrong-site")
+      }
+      return authority.whileLive {
+        guard expiresAt > Date() else { return Wire.cardRefused("ended") }
+        let draft = current.draft
+        let value: String?
+        switch params.field {
+        case .number: value = draft.number
+        case .expiry: value = String(format: "%02lld/%02lld", draft.expiryMonth, draft.expiryYear % 100)
+        case .expiryMonth: value = String(format: "%02lld", draft.expiryMonth)
+        case .expiryYear: value = String(format: "%04lld", draft.expiryYear)
+        case .cvc: value = draft.cvc
+        case .name: value = draft.name
+        case .postalCode: value = draft.postalCode
+        }
+        guard let value else { return Wire.cardRefused("no-field") }
+        return Wire.ReleaseResult.released(value).json
+      } ?? Wire.cardRefused("ended")
+    }
+  }
+
+  func readCard(id: String) async throws -> CardItem {
+    try await run {
+      let unlocked = try self.unlockNow()
+      defer { unlocked.close() }
+      return try unlocked.card(id: id)
+    }
+  }
+
   // MARK: The Passwords window
 
   /// Every login, without passwords, with its grants.

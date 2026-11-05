@@ -26,12 +26,16 @@ public final class PasswordsWindowModel: ObservableObject {
   }
 
   public enum Sheet: Identifiable, Equatable {
+    case addCard
+    case editCard(Wire.CardChoice)
     case add
     case edit(LoginSummary)
     case importing
 
     public var id: String {
       switch self {
+      case .addCard: return "add-card"
+      case .editCard(let card): return "card-\(card.id)"
       case .add: return "add"
       case .edit(let login): return "edit-\(login.id)"
       case .importing: return "import"
@@ -44,6 +48,7 @@ public final class PasswordsWindowModel: ObservableObject {
   /// Newest first.
   @Published public private(set) var activity: [ActivityEntry] = []
   @Published public private(set) var logins: Logins = .hidden
+  @Published public private(set) var cards: [Wire.CardChoice] = []
   @Published public var search = ""
   @Published public var sheet: Sheet?
   @Published public private(set) var importFlow: ImportFlow?
@@ -111,6 +116,7 @@ public final class PasswordsWindowModel: ObservableObject {
   /// and the import that needed it close.
   func relock() {
     logins = .hidden
+    cards = []
     search = ""
     sheet = nil
     importFlow = nil
@@ -185,7 +191,10 @@ public final class PasswordsWindowModel: ObservableObject {
     do {
       let list = try await broker.showLogins()
       // A lock while Touch ID was showing already set the list back to hidden.
-      if logins == .showing { logins = .shown(list) }
+      if logins == .showing {
+        let choices = try await broker.listCards()
+        if logins == .showing { cards = choices; logins = .shown(list) }
+      }
     } catch PresenceError.cancelled {
       logins = .hidden
     } catch {
@@ -295,6 +304,35 @@ public final class PasswordsWindowModel: ObservableObject {
     } catch {
       return .stays(Self.sentence(for: error))
     }
+  }
+
+  public func cardForEditing(id: String) async throws -> CardItem {
+    try await broker.cardForEditing(id: id)
+  }
+
+  public func saveCard(_ draft: CardDraft, id: String?) async -> Bool {
+    working = true
+    defer { working = false }
+    do {
+      try await broker.saveCard(draft, id: id)
+      let choices = try await broker.listCards()
+      guard case .shown = logins else { return false }
+      cards = choices
+      sheet = nil
+      return true
+    } catch PresenceError.cancelled { return false }
+    catch VaultError.invalidItem {
+      message = "Check the card details and try again."
+      return false
+    } catch { message = Self.sentence(for: error); return false }
+  }
+
+  public func deleteCard(id: String) async {
+    do {
+      try await broker.deleteCard(id: id)
+      let choices = try await broker.listCards()
+      if case .shown = logins { cards = choices }
+    } catch { message = Self.sentence(for: error) }
   }
 
   // MARK: Import

@@ -1,19 +1,23 @@
 import Foundation
 import PasswordsCore
 
-/// The broker IPC, v4, v5 and v6: exactly the shapes `packages/protocol/src/passwords-broker.ts`
+/// The broker IPC, v4 through v7: exactly the shapes `packages/protocol/src/passwords-broker.ts`
 /// declares. Frames are parsed with the strict JSON parser (no duplicate keys,
 /// integers only) and every object is closed, as `z.strictObject` is. Answers
 /// are encoded canonically. `Tests/Fixtures/passwords-wire.json` is written
 /// from these types and parsed by the protocol's schemas.
 public enum Wire {
-  /// Legacy read/release callers keep their scope; new consent requires version 6.
+  /// Login requests retain the v6 shape on v7 connections.
   public static let protocolVersion: Int64 = 6
-  public static let latestProtocolVersion: Int64 = 6
-  public static let supportedProtocolVersions: [Int64] = [4, 5, 6]
+  public static let latestProtocolVersion: Int64 = 7
+  public static let supportedProtocolVersions: [Int64] = [7, 6, 5, 4]
   public static let maxAccounts = 100
 
   public enum Method: String, CaseIterable, Sendable {
+    case cardProbe = "card.probe"
+    case cardRequest = "card.request"
+    case cardApprove = "card.approve"
+    case cardRelease = "card.release"
     case hello
     case status
     case windowOpen = "window.open"
@@ -175,7 +179,7 @@ public enum Wire {
     public init(json: JSONValue, protocolVersion negotiated: Int64? = nil) throws {
       let version: Int64
       if let negotiated {
-        version = negotiated
+        version = negotiated == 7 ? 6 : negotiated
       } else if case .object(let fields) = json,
         case .integer(let offered)? = fields["protocolVersion"]
       {
@@ -362,7 +366,7 @@ public enum Wire {
     public init(json: JSONValue, protocolVersion negotiated: Int64? = nil) throws {
       let version: Int64
       if let negotiated {
-        version = negotiated
+        version = negotiated == 7 ? 6 : negotiated
       } else if case .object(let fields) = json, fields["kind"] != nil {
         version = 5
       } else {
@@ -563,6 +567,102 @@ public enum Wire {
   }
 
   public static let emptyResult: JSONValue = .object([:])
+
+  public struct CardRequestParams: Sendable {
+    public let request: SignInRequestParams
+    public init(json: JSONValue) throws {
+      guard case .object(var fields) = json, fields["protocolVersion"] == .integer(7),
+        fields["permissionVersion"] == .integer(7) else { throw Failure.invalid("Card use needs version 7.") }
+      fields["permissionVersion"] = .integer(5)
+      fields["protocolVersion"] = .integer(6)
+      request = try SignInRequestParams(json: .object(fields), protocolVersion: 6)
+    }
+    public var json: JSONValue {
+      guard case .object(var fields) = request.json else { preconditionFailure() }
+      fields["permissionVersion"] = .integer(7)
+      fields["protocolVersion"] = .integer(7)
+      return .object(fields)
+    }
+  }
+
+  public struct CardApproveParams: Sendable {
+    public let transactionId: String
+    public let cardId: String
+    public let revision: Int64
+    public init(json: JSONValue) throws {
+      let object = try strict(json, ["transactionId", "cardId", "revision", "permissionVersion"])
+      transactionId = try transaction(object)
+      cardId = try string(object, "cardId")
+      revision = try integer(object, "revision")
+      guard WireRules.isUUID(cardId), revision >= 0, try integer(object, "permissionVersion") == 7 else {
+        throw Failure.invalid("Invalid card approval.")
+      }
+    }
+  }
+
+  public enum CardField: String, CaseIterable, Sendable {
+    case number, expiry, cvc, name
+    case expiryMonth = "expiry-month"
+    case expiryYear = "expiry-year"
+    case postalCode = "billing-postal-code"
+  }
+
+  public struct CardReleaseParams: Sendable {
+    public let transactionId: String
+    public let topOrigin: String
+    public let frameOrigin: String
+    public let field: CardField
+    public init(json: JSONValue) throws {
+      let object = try strict(json, ["transactionId", "topOrigin", "frameOrigin", "field"])
+      transactionId = try transaction(object)
+      topOrigin = try string(object, "topOrigin")
+      frameOrigin = try string(object, "frameOrigin")
+      guard let field = CardField(rawValue: try string(object, "field")),
+        WireRules.origin(topOrigin), WireRules.origin(frameOrigin) else {
+        throw Failure.invalid("Invalid card destination or field.")
+      }
+      self.field = field
+    }
+  }
+
+  public struct CardChoice: Equatable, Sendable {
+    public let id: String
+    public let revision: Int64
+    public let brand: String
+    public let lastFour: String
+    public let label: String?
+    public let expiryMonth: Int64
+    public let expiryYear: Int64
+    public init(_ card: CardItem) {
+      id = card.id
+      revision = card.revision
+      brand = card.brand
+      lastFour = card.lastFour
+      label = card.draft.label
+      expiryMonth = card.draft.expiryMonth
+      expiryYear = card.draft.expiryYear
+    }
+    public var descriptor: JSONValue {
+      .object(["id": .string(id), "revision": .integer(revision),
+        "brand": .string(brand), "lastFour": .string(lastFour)])
+    }
+    public var json: JSONValue {
+      guard case .object(var fields) = descriptor else { preconditionFailure() }
+      fields["label"] = label.map(JSONValue.string) ?? .null
+      fields["expiryMonth"] = .integer(expiryMonth)
+      fields["expiryYear"] = .integer(expiryYear)
+      return .object(fields)
+    }
+  }
+
+  static func cardChoices(_ cards: [CardChoice], message: String? = nil) -> JSONValue {
+    var fields: [String: JSONValue] = ["decision": .string("approve"), "cards": .array(cards.map(\.json))]
+    if let message { fields["message"] = .string(message) }
+    return .object(fields)
+  }
+  static func cardRefused(_ reason: String) -> JSONValue {
+    .object(["released": .bool(false), "reason": .string(reason)])
+  }
 
   // MARK: Reading
 
