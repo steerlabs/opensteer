@@ -53,6 +53,7 @@ import {
 } from "./execution-review.js";
 import { TaskLines } from "./task-line.js";
 import { UsageNotice } from "./usage-notice.js";
+import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { Icon } from "./icon.js";
 import type { ComposerQuote, ComposerRestore } from "./composer.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
@@ -155,6 +156,8 @@ const readingPositions = new Map<
   string,
   { readonly scrollTop: number; readonly seenSequence: string | null }
 >();
+
+const renderPasswordsSuggestion = (site: string) => <PasswordsSuggestion site={site} />;
 
 function ThreadView({
   canLoadEarlier,
@@ -1031,6 +1034,7 @@ function ThreadView({
                 waitingRequests={snapshot.waitingRequests}
                 assignments={snapshot.assignments}
                 inputQueuePaused={thread.inputQueuePaused}
+                renderPasswordsSuggestion={renderPasswordsSuggestion}
                 queued={
                   inputQueue && thread.role === "work" ? (
                     <QueuedMessages

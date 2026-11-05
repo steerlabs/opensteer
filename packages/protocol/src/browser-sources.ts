@@ -167,6 +167,9 @@ export const BrowserSignInUnavailableReasonSchema = z.enum([
   "interrupted",
 ]);
 export type BrowserSignInUnavailableReason = z.infer<typeof BrowserSignInUnavailableReasonSchema>;
+/** What Opensteer Passwords needs before it could sign in; absent, it can't be offered at all. */
+export const BrowserSignInPasswordsSchema = z.enum(["no-login", "not-set-up", "off"]);
+export type BrowserSignInPasswords = z.infer<typeof BrowserSignInPasswordsSchema>;
 export const AgentBrowserSignInResultSchema = z.discriminatedUnion("status", [
   z.object({
     status: z.literal("ready"),
@@ -198,6 +201,7 @@ export const AgentBrowserSignInResultSchema = z.discriminatedUnion("status", [
     status: z.literal("needs-code"),
   }),
   z.object({
+    passwords: BrowserSignInPasswordsSchema.optional(),
     replayed: z.boolean(),
     requestId: RequestIdSchema,
     status: z.literal("pending"),
@@ -206,7 +210,11 @@ export const AgentBrowserSignInResultSchema = z.discriminatedUnion("status", [
   z.object({ requestId: RequestIdSchema, status: z.literal("declined") }),
   /** A repeated call whose Request already ended; its continuation carries the result. */
   z.object({ requestId: RequestIdSchema, status: z.literal("resolved") }),
-  z.object({ site: BrowserSiteSchema, status: z.literal("not-signed-in") }),
+  z.object({
+    passwords: BrowserSignInPasswordsSchema.optional(),
+    site: BrowserSiteSchema,
+    status: z.literal("not-signed-in"),
+  }),
   z.object({
     reason: BrowserSignInUnavailableReasonSchema,
     site: BrowserSiteSchema,
@@ -224,7 +232,10 @@ export const BrowserSignInRequestResponseSchema = z.discriminatedUnion("outcome"
   }),
   z.strictObject({ outcome: z.literal("session-closed") }),
   /** Chrome connected after the Request opened, and no Chrome has a sign-in to the site. */
-  z.strictObject({ outcome: z.literal("not-signed-in") }),
+  z.strictObject({
+    outcome: z.literal("not-signed-in"),
+    passwords: BrowserSignInPasswordsSchema.optional(),
+  }),
 ]);
 export type BrowserSignInRequestResponse = z.infer<typeof BrowserSignInRequestResponseSchema>;
 

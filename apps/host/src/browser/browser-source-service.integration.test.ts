@@ -1326,6 +1326,49 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     },
   );
 
+  it("tells the agent Passwords isn't set up, through a Request Chrome couldn't serve", async () => {
+    const ready = await passwordScene();
+    ready.connection.passwords = "not-set-up";
+    const site = "https://first-use.test";
+    const callId = randomUUID();
+    const asked = await service.agentSignIn({ ...ready.agent, callId, site });
+    expect(asked).toMatchObject({ passwords: "not-set-up", status: "pending" });
+    if (asked.status !== "pending") throw new Error("Expected a pending Request");
+
+    const paired = await pairChrome(ready.ownerId, "Chrome");
+    const chrome = await connectChrome(paired, "no-state");
+    try {
+      await waitFor(
+        async () => (await store.requests.get(asked.requestId))?.status === "fulfilled",
+      );
+      expect(await store.requests.get(asked.requestId)).toMatchObject({
+        response: { value: { outcome: "not-signed-in", passwords: "not-set-up" } },
+      });
+      expect(await service.agentSignIn({ ...ready.agent, callId, site })).toEqual({
+        passwords: "not-set-up",
+        site,
+        status: "not-signed-in",
+      });
+      expect(await service.agentSignIn({ ...ready.agent, callId: randomUUID(), site })).toEqual({
+        passwords: "not-set-up",
+        site,
+        status: "not-signed-in",
+      });
+
+      // Passwords can't help on this Mac, so nothing may offer it.
+      ready.connection.passwords = "unavailable";
+      expect(
+        await service.agentSignIn({
+          ...ready.agent,
+          callId: randomUUID(),
+          site: "https://no-passwords.test",
+        }),
+      ).toEqual({ site: "https://no-passwords.test", status: "not-signed-in" });
+    } finally {
+      await chrome.close();
+    }
+  });
+
   it("keeps an existing Chrome grant ahead of Passwords", async () => {
     const ready = await passwordScene();
     const paired = await pairChrome(ready.ownerId, "Chrome");

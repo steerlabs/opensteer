@@ -29,6 +29,11 @@ Passwords, and Chrome can fill in when Passwords has none. Every path refuses lo
 Deployment's own sites before creating a Request. A login reference never grants access to a
 browser, phone or Mac app: each use still needs the Run's current authority over that surface.
 
+`sign_in` reports what Passwords still needs instead of a separate tool suggesting it, so the
+suggestion can't depend on a model remembering to call anything. Clients show it from that result
+at the end of the conversation until the person next speaks; absent, Passwords can't help here
+(a server Deployment or an unsupported Mac) and nothing offers it.
+
 ## Grants and consent
 
 A remembered grant in the signed vault maps Deployment, Workspace and site to a login revision. The
