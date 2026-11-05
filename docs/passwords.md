@@ -49,8 +49,8 @@ the Thread itself. That is why nothing tells the person to go back and tell thei
 No stands: a declined Chrome Request or a stopped Thread ends the offer, and the wake waits for the
 Run's other Requests so its outcomes still arrive together. It withdraws a Chrome Request it makes
 pointless, unless an Allow got there first. Offers are memory-only, and a finished task can't take
-input; the result itself says to call `sign_in` again, because a long-lived session keeps the guide
-it read first. Cards have no wake.
+input, so the result and the Run guide also say to call `sign_in` again when the person returns.
+Those two reach every Run; a long-lived session keeps the skill it read first. Cards have no wake.
 
 ## Grants and consent
 

@@ -116,7 +116,7 @@ export class PasswordsOffers {
     if (this.#sweeping) return;
     this.#sweeping = true;
     try {
-      for (const [key, offer] of [...this.#offers]) {
+      for (const [key, offer] of this.#offers) {
         await this.#check(key, offer).catch((error: unknown) => {
           // A Thread that can't take input now never will: a finished task, say.
           if (error instanceof OpensteerError && !error.retryable) this.#offers.delete(key);
