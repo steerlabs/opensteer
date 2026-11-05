@@ -1426,6 +1426,7 @@ export class ControlPlaneStore {
    */
   async deleteAccount(accountId: ControlPlaneAccountId): Promise<void> {
     await this.#database.transaction().execute(async (transaction) => {
+      await transaction.deleteFrom("authAccounts").where("userId", "=", accountId).execute();
       const account = await transaction
         .selectFrom("users")
         .select("id")
@@ -1460,6 +1461,8 @@ export class ControlPlaneStore {
         .forUpdate()
         .execute();
       if (owned.length > 0) {
+        // Locked, because a provision committing after a plain read would lose its row
+        // to the cascade and leave its tunnel unrecorded.
         const resources = await transaction
           .selectFrom("deploymentConnectResources")
           .select("state")
@@ -1469,8 +1472,7 @@ export class ControlPlaneStore {
             owned.map((deployment) => deployment.id),
           )
           .orderBy("deploymentId", "asc")
-          // FOR UPDATE: A provision committing after an unlocked read would lose its row
-          // to the cascade and leave its tunnel unrecorded.
+          // FOR UPDATE: Deleting the deployment cascades to this Connect resource.
           .forUpdate()
           .execute();
         if (resources.some((resource) => resource.state !== "revoked")) {
@@ -1486,7 +1488,6 @@ export class ControlPlaneStore {
       await transaction.deleteFrom("oauthRefreshToken").where("userId", "=", accountId).execute();
       await transaction.deleteFrom("oauthConsents").where("userId", "=", accountId).execute();
       await transaction.deleteFrom("authSessions").where("userId", "=", accountId).execute();
-      await transaction.deleteFrom("authAccounts").where("userId", "=", accountId).execute();
       const deleted = await transaction
         .deleteFrom("users")
         .where("id", "=", accountId)

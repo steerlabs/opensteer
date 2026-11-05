@@ -61,16 +61,8 @@ function manifest(mod) {
   );
   return mod;
 }
-function project(project, config) {
-  if (
-    Object.values(project.pbxNativeTargetSection()).some(
-      (target) => target.name?.replaceAll('"', "") === targetName,
-    )
-  )
-    return project;
-  const appIdentifier = config.ios?.bundleIdentifier;
-  if (!appIdentifier) throw new Error("Notification preview requires an iOS bundle identifier");
-  const extensionIdentifier = `${appIdentifier}.NotificationService`;
+function addTarget(project, extensionIdentifier) {
+  // xcode's addTarget creates the container dependency and Embed App Extensions phase.
   const target = project.addTarget(targetName, "app_extension", targetName, extensionIdentifier);
   const sources = ["NotificationService.swift", "Preview.swift", "KeyStore.swift"].map(
     (f) => `${targetName}/${f}`,
@@ -80,13 +72,24 @@ function project(project, config) {
   for (const name of ["CryptoKit", "Security", "UserNotifications"]) {
     project.addFramework(`${name}.framework`, { target: target.uuid, link: true });
   }
-  // xcode's addTarget creates the container dependency and Embed App Extensions phase.
+  return target.pbxNativeTarget.buildConfigurationList;
+}
+function project(project, config) {
+  const appIdentifier = config.ios?.bundleIdentifier;
+  if (!appIdentifier) throw new Error("Notification preview requires an iOS bundle identifier");
+  const extensionIdentifier = `${appIdentifier}.NotificationService`;
+  const existing = Object.values(project.pbxNativeTargetSection()).find(
+    (target) => target.name?.replaceAll('"', "") === targetName,
+  );
+  const configurationList = existing
+    ? existing.buildConfigurationList
+    : addTarget(project, extensionIdentifier);
   const configs = project.pbxXCBuildConfigurationSection();
   const parent =
     Object.values(configs).find(
       (c) => c.buildSettings?.PRODUCT_BUNDLE_IDENTIFIER?.replaceAll('"', "") === appIdentifier,
     )?.buildSettings || {};
-  const list = project.pbxXCConfigurationList()[target.pbxNativeTarget.buildConfigurationList];
+  const list = project.pbxXCConfigurationList()[configurationList];
   for (const ref of list.buildConfigurations) {
     const settings = configs[ref.value].buildSettings;
     Object.assign(settings, {

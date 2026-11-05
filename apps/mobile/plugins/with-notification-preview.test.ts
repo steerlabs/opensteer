@@ -108,6 +108,20 @@ it("embeds one extension target with standalone native sources and signing setti
   expect(once).toContain("CryptoKit.framework");
   expect(once).toContain("PBXCopyFilesBuildPhase");
   expect(once).not.toContain("keychain-access-groups");
+
+  // A prebuild over an existing ios/ reuses the target, and must still move it.
+  plugin.project(project, {
+    version: "1.2.4",
+    ios: { buildNumber: "43", bundleIdentifier: "com.example.renamed" },
+  });
+  const moved = project.writeSync();
+  expect(moved).toContain("com.example.renamed.NotificationService");
+  expect(moved).not.toContain("com.example.app.NotificationService");
+  expect(moved).toContain("MARKETING_VERSION = 1.2.4;");
+  expect(moved).toContain("CURRENT_PROJECT_VERSION = 43;");
+  expect(moved.match(/isa = PBXNativeTarget;/gu)).toHaveLength(
+    once.match(/isa = PBXNativeTarget;/gu)?.length ?? 0,
+  );
 });
 
 it("enables the app to consume the desugared notification module after repeated prebuilds", () => {
