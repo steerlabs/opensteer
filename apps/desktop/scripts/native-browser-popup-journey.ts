@@ -661,7 +661,9 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       "remaining viewer's replacement admission",
       4000,
     );
-    // The focused field's caret keeps painting, so only a later picture is from the new stream.
+    // The focused field's caret keeps painting. The first picture after admission can still refuse
+    // a tap, so the replacement stream has to present a second one.
+    await pictureAfter(a, async () => undefined);
     await pictureAfter(a, async () => undefined);
     await tap(a, "single");
     await a.getByRole("dialog").waitFor();
@@ -675,7 +677,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       expectedRevision: catalog.data.revision,
       idempotencyKey: randomUUID(),
     });
-    assert(closed.ok);
+    assert(closed.ok, `Tab close failed: ${JSON.stringify(closed)}`);
     await a.getByRole("dialog").waitFor({ state: "hidden" });
   } finally {
     const producerResult = !contents.isDestroyed()
